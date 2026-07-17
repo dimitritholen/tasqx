@@ -54,6 +54,7 @@ const CLEARABLE: [&str; 8] =
     name = "tasqx",
     version,
     about = "A fast, terminal-first, AI-native task manager.",
+    after_help = "Run `tasqx manual` for the full in-terminal guide, or `tasqx <command> -h` for examples.",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -85,6 +86,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Create a project (maps to project.create).
+    #[command(after_help = crate::cmddoc::after_help("init"))]
     Init {
         /// Project name, e.g. work.tasqx
         name: String,
@@ -93,7 +95,7 @@ enum Command {
         desc: Option<String>,
     },
     /// Add a task (maps to task.add). Supports inline +tag / project: / !prio sugar.
-    #[command(alias = "a", alias = "new")]
+    #[command(alias = "a", alias = "new", after_help = crate::cmddoc::after_help("add"))]
     Add {
         /// The task title (may carry inline sugar).
         title: Vec<String>,
@@ -147,7 +149,7 @@ enum Command {
     ///   tasqx modify 42 --clear due --clear remind
     ///   tasqx modify 42 repeat:"every monday"     # set a recurrence
     ///   tasqx modify 42 --clear recurrence        # stop it recurring
-    #[command(alias = "mod", alias = "m", alias = "edit")]
+    #[command(alias = "mod", alias = "m", alias = "edit", after_help = crate::cmddoc::after_help("modify"))]
     Modify {
         /// short_id or UUID.
         r#ref: String,
@@ -200,13 +202,13 @@ enum Command {
         expected_rev: Option<i64>,
     },
     /// List tasks (maps to task.list). Bare `tasqx` shows the working set.
-    #[command(alias = "ls", alias = "l")]
+    #[command(alias = "ls", alias = "l", after_help = crate::cmddoc::after_help("list"))]
     List {
         /// Filter DSL, e.g. "project:work status:pending +api".
         filter: Vec<String>,
     },
     /// Start a task timer (maps to task.start).
-    #[command(alias = "s")]
+    #[command(alias = "s", after_help = crate::cmddoc::after_help("start"))]
     Start {
         /// short_id or UUID.
         r#ref: String,
@@ -215,35 +217,37 @@ enum Command {
         keep: bool,
     },
     /// Stop the task timer (maps to task.stop).
-    #[command(alias = "st")]
+    #[command(alias = "st", after_help = crate::cmddoc::after_help("stop"))]
     Stop {
         /// short_id or UUID.
         r#ref: String,
     },
     /// Complete a task (maps to task.done).
-    #[command(alias = "d", alias = "x", alias = "complete")]
+    #[command(alias = "d", alias = "x", alias = "complete", after_help = crate::cmddoc::after_help("done"))]
     Done {
         /// short_id or UUID.
         r#ref: String,
     },
     /// Show a task's full detail incl. tags/annotations/deps (maps to task.get).
-    #[command(alias = "get")]
+    #[command(alias = "get", after_help = crate::cmddoc::after_help("show"))]
     Show {
         /// short_id or UUID.
         r#ref: String,
     },
     /// Cancel a task (maps to task.cancel).
+    #[command(after_help = crate::cmddoc::after_help("cancel"))]
     Cancel {
         /// short_id or UUID.
         r#ref: String,
     },
     /// Reopen a done/cancelled task (maps to task.reopen).
+    #[command(after_help = crate::cmddoc::after_help("reopen"))]
     Reopen {
         /// short_id or UUID.
         r#ref: String,
     },
     /// Annotate a task (maps to annotation.add).
-    #[command(alias = "note")]
+    #[command(alias = "note", after_help = crate::cmddoc::after_help("annotate"))]
     Annotate {
         /// short_id or UUID.
         r#ref: String,
@@ -251,6 +255,7 @@ enum Command {
         text: Vec<String>,
     },
     /// Add a dependency: <ref> depends on <depends_on> (maps to dependency.add).
+    #[command(after_help = crate::cmddoc::after_help("dep"))]
     Dep {
         /// The dependent task (short_id or UUID).
         r#ref: String,
@@ -258,6 +263,7 @@ enum Command {
         depends_on: String,
     },
     /// Remove a dependency (maps to dependency.remove).
+    #[command(after_help = crate::cmddoc::after_help("undep"))]
     Undep {
         /// The dependent task (short_id or UUID).
         r#ref: String,
@@ -269,11 +275,13 @@ enum Command {
     ///
     /// The project must already exist (`tasqx init <name>`) and must not be
     /// archived. `tasqx projects` marks the current default with `*`.
+    #[command(after_help = crate::cmddoc::after_help("use"))]
     Use {
         /// An existing, non-archived project name.
         name: String,
     },
     /// List projects (maps to project.list).
+    #[command(after_help = crate::cmddoc::after_help("projects"))]
     Projects {
         /// Include archived projects.
         #[arg(long)]
@@ -281,6 +289,7 @@ enum Command {
     },
     /// Grouped summary report (maps to report.summary), or a self-contained
     /// HTML review with `--html` (DESIGN.md §8).
+    #[command(after_help = crate::cmddoc::after_help("report"))]
     Report {
         /// Optional group_by (project|status|priority) then optional filter DSL.
         args: Vec<String>,
@@ -293,37 +302,45 @@ enum Command {
         out: Option<String>,
     },
     /// Native terminal charts from the event log (DESIGN.md §8).
+    #[command(after_help = crate::cmddoc::after_help("chart"))]
     Chart {
         #[command(subcommand)]
         kind: ChartKind,
     },
     /// Theme tools: list built-ins or preview a theme's roles (DESIGN.md §8).
+    #[command(after_help = crate::cmddoc::after_help("theme"))]
     Theme {
         #[command(subcommand)]
         action: ThemeAction,
     },
     /// Export tasks as canonical JSON (maps to store.export).
+    #[command(after_help = crate::cmddoc::after_help("export"))]
     Export {
         /// Optional filter DSL.
         filter: Vec<String>,
     },
     /// Import tasks from a file, or `-` for stdin (maps to store.import).
+    #[command(after_help = crate::cmddoc::after_help("import"))]
     Import {
         /// Path to a canonical JSON file (array of tasks), or `-` for stdin.
         file: String,
     },
     /// Print the single highest-urgency unblocked task (the "what now" button).
+    #[command(after_help = crate::cmddoc::after_help("next"))]
     Next,
     /// Explain a task's urgency breakdown (maps to task.get + the D1 formula).
+    #[command(after_help = crate::cmddoc::after_help("why"))]
     Why {
         /// short_id or UUID.
         r#ref: String,
     },
     /// stdio one-shot: read ONE JSON request envelope on stdin, write ONE response.
+    #[command(after_help = crate::cmddoc::after_help("api"))]
     Api,
     /// Run the long-lived daemon: bind a local socket / named pipe and serve the
     /// JSON API to many concurrent clients, pushing live change notifications
     /// (DESIGN.md §2). Ctrl-C stops it cleanly.
+    #[command(after_help = crate::cmddoc::after_help("daemon"))]
     Daemon {
         /// Store path for the daemon's single Engine (default: $TASQX_DB or the
         /// platform data dir). The socket address comes from the global
@@ -333,11 +350,13 @@ enum Command {
     },
     /// Live view: connect to a daemon, subscribe, and re-render the working set
     /// on every `task.changed` push (DESIGN.md §6a). Needs a running daemon.
+    #[command(after_help = crate::cmddoc::after_help("watch"))]
     Watch {
         /// Filter DSL (default: the working set).
         filter: Vec<String>,
     },
     /// Bundled MCP server (DESIGN.md §7, §12-D7).
+    #[command(after_help = crate::cmddoc::after_help("mcp"))]
     Mcp {
         #[command(subcommand)]
         action: McpAction,
@@ -354,6 +373,7 @@ enum Command {
     ///   tasqx docs --out guide.html   # write it there; never opens a browser
     ///   tasqx docs --no-open          # write the temp file, print the path
     ///   tasqx docs --stdout           # write the HTML to stdout
+    #[command(after_help = crate::cmddoc::after_help("docs"))]
     Docs {
         /// Write the guide to this path instead of a temp file. Implies --no-open:
         /// naming an output file is asking for the file, not for a browser.
