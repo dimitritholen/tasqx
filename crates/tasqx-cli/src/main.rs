@@ -13,6 +13,7 @@
 //! `tasqx` as both organization and application).
 
 mod chart;
+mod cmddoc;
 mod docs;
 mod html;
 mod render;
