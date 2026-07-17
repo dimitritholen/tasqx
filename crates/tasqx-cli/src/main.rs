@@ -144,12 +144,6 @@ enum Command {
     /// `--clear due`. There is no magic empty value — `--due ""` is a bad date,
     /// not an erasure, so a shell that expands a variable to nothing can never
     /// silently wipe a field it meant to set.
-    ///
-    ///   tasqx modify 42 due:friday !high est:4h
-    ///   tasqx modify 42 --due -1d --remind -30m
-    ///   tasqx modify 42 --clear due --clear remind
-    ///   tasqx modify 42 repeat:"every monday"     # set a recurrence
-    ///   tasqx modify 42 --clear recurrence        # stop it recurring
     #[command(alias = "mod", alias = "m", alias = "edit", after_help = crate::cmddoc::after_help("modify"))]
     Modify {
         /// short_id or UUID.
@@ -369,11 +363,6 @@ enum Command {
     /// is a courtesy, so a missing browser is never an error — the launch is
     /// attempted, a failure is reported on stderr with the path, and the command
     /// exits 0. That keeps `docs` headless/CI-safe by default rather than by flag.
-    ///
-    ///   tasqx docs                    # write a temp file and open it
-    ///   tasqx docs --out guide.html   # write it there; never opens a browser
-    ///   tasqx docs --no-open          # write the temp file, print the path
-    ///   tasqx docs --stdout           # write the HTML to stdout
     #[command(after_help = crate::cmddoc::after_help("docs"))]
     Docs {
         /// Write the guide to this path instead of a temp file. Implies --no-open:
