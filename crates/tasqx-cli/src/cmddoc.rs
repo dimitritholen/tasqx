@@ -449,6 +449,21 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         see_also: &["manual"],
         topic: Topic::GettingStarted,
     },
+    CmdDoc {
+        verb: "manual",
+        aliases: &["man"],
+        method: "— (no store)",
+        summary: "Browse the complete guide in your terminal.",
+        usage: "tasqx manual [<command|topic>]",
+        examples: &[
+            ex("tasqx manual"),
+            ex("tasqx manual init"),
+            ex("tasqx manual filters"),
+        ],
+        notes: &["No store, no network. `tasqx docs` is the fuller browser guide."],
+        see_also: &["docs"],
+        topic: Topic::GettingStarted,
+    },
 ];
 
 /// Resolve a verb or alias to its record.

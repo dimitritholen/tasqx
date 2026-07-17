@@ -16,6 +16,7 @@ mod chart;
 mod cmddoc;
 mod docs;
 mod html;
+mod manual;
 mod render;
 mod sugar;
 mod theme;
@@ -386,6 +387,14 @@ enum Command {
         #[arg(long)]
         stdout: bool,
     },
+    /// Browse the complete manual in your terminal: a themed, navigable guide.
+    /// `tasqx manual` prints the table of contents; `tasqx manual <command|topic>`
+    /// opens one section. Needs no store and no network.
+    #[command(alias = "man", after_help = crate::cmddoc::after_help("manual"))]
+    Manual {
+        /// A command (e.g. `init`), an alias, or a topic slug (e.g. `filters`).
+        topic: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -485,6 +494,13 @@ fn main() {
         return;
     }
 
+    // `manual` needs the themed Ctx but no store and no network; dispatch it
+    // here beside `theme`, before the engine is ever opened.
+    if let Some(Command::Manual { topic }) = &cli.command {
+        run_manual(&ctx, topic.as_deref());
+        return;
+    }
+
     // `watch` is socket-only: it subscribes to a daemon and re-renders on push.
     if let Some(Command::Watch { filter }) = &cli.command {
         run_watch(cli.socket.as_deref(), cli.no_daemon, filter, &ctx);
@@ -581,6 +597,7 @@ fn main() {
         Some(Command::Api) => unreachable!("handled above"),
         Some(Command::Daemon { .. }) => unreachable!("handled above"),
         Some(Command::Mcp { .. }) => unreachable!("handled above"),
+        Some(Command::Manual { .. }) => unreachable!("handled above"),
     };
 
     match outcome {
@@ -1372,6 +1389,17 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
                 })
                 .collect();
             println!("  {:<14} {strip}  {}", "urgency.ramp", preview.paint("muted", "cold → hot"));
+        }
+    }
+}
+
+/// `tasqx manual` — print a themed guide section (or the TOC). No store, no net.
+fn run_manual(ctx: &Ctx, topic: Option<&str>) {
+    match manual::render(ctx, topic) {
+        Ok(page) => println!("{page}"),
+        Err(msg) => {
+            eprintln!("{msg}");
+            exit(ErrorCode::BadRequest.exit_code()); // exit 2
         }
     }
 }
