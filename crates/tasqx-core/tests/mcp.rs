@@ -1,0 +1,276 @@
+//! Tests for the bundled MCP server (DESIGN.md §7, §12-D7).
+//!
+//! These drive the pure `McpServer::handle_message` function directly against a
+//! real in-memory Engine — no stdio piping — exercising the initialize
+//! handshake, tools/list, tools/call, scope enforcement, and ApiError
+//! passthrough as `isError` results.
+
+use serde_json::{json, Value};
+use tasqx_core::{Engine, McpServer, Scope};
+
+fn engine() -> Engine {
+    Engine::open_in_memory().expect("open in-memory store")
+}
+
+/// Extract and parse the first text-content block of a tools/call result.
+fn tool_text(result: &Value) -> Value {
+    let text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tools/call result carries text content");
+    serde_json::from_str(text).unwrap_or(Value::String(text.to_string()))
+}
+
+fn is_error(result: &Value) -> bool {
+    result["result"]["isError"].as_bool().unwrap_or(false)
+}
+
+fn call(server: &McpServer, id: i64, name: &str, arguments: Value) -> Value {
+    server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments }
+        }))
+        .expect("tools/call is a request and yields a response")
+}
+
+// ---- full protocol sequence --------------------------------------------------
+
+#[test]
+fn full_protocol_sequence() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+
+    // 1. initialize
+    let init = server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test-harness", "version": "0.0.0" }
+            }
+        }))
+        .expect("initialize is a request");
+    assert_eq!(init["jsonrpc"], "2.0");
+    assert_eq!(init["id"], 1);
+    assert_eq!(init["result"]["serverInfo"]["name"], "tasqx");
+    assert!(init["result"]["serverInfo"]["version"].is_string());
+    assert!(init["result"]["protocolVersion"].is_string());
+    // capabilities.tools must be present (an object).
+    assert!(init["result"]["capabilities"]["tools"].is_object());
+
+    // 2. notifications/initialized — a notification yields NO response.
+    let note = server.handle_message(&json!({
+        "jsonrpc": "2.0", "method": "notifications/initialized"
+    }));
+    assert!(note.is_none(), "notifications must not produce a response");
+
+    // 3. tools/list — all ~11 tools present, each with an inputSchema.
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    assert_eq!(tools.len(), 11, "expected 11 tools");
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    for expected in [
+        "tasqx_list_tasks",
+        "tasqx_get_task",
+        "tasqx_summary",
+        "tasqx_list_projects",
+        "tasqx_add_task",
+        "tasqx_modify_task",
+        "tasqx_complete_task",
+        "tasqx_start_timer",
+        "tasqx_stop_timer",
+        "tasqx_tag_task",
+        "tasqx_create_project",
+    ] {
+        assert!(names.contains(&expected), "missing tool {expected}");
+    }
+    for t in tools {
+        assert_eq!(
+            t["inputSchema"]["type"], "object",
+            "tool {} must have an object inputSchema",
+            t["name"]
+        );
+    }
+    // Write tools are annotated destructive; reads are read-only.
+    let get_add = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
+    assert_eq!(get_add("tasqx_add_task")["annotations"]["destructiveHint"], true);
+    assert_eq!(get_add("tasqx_list_tasks")["annotations"]["readOnlyHint"], true);
+
+    // 4. tools/call tasqx_add_task
+    let added = call(
+        &server,
+        3,
+        "tasqx_add_task",
+        json!({ "title": "Ship the v1 JSON API freeze", "priority": "H" }),
+    );
+    assert!(!is_error(&added));
+    let added_body = tool_text(&added);
+    let short_id = added_body["short_id"].as_i64().expect("short_id in add result");
+
+    // 5. tools/call tasqx_list_tasks — the added task appears.
+    let listed_tasks = call(&server, 4, "tasqx_list_tasks", json!({ "filter": "status:pending" }));
+    assert!(!is_error(&listed_tasks));
+    let body = tool_text(&listed_tasks);
+    let titles: Vec<&str> = body["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["title"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        titles.contains(&"Ship the v1 JSON API freeze"),
+        "added task should appear in the list"
+    );
+
+    // 6. tools/call tasqx_complete_task
+    let done = call(&server, 5, "tasqx_complete_task", json!({ "ref": short_id }));
+    assert!(!is_error(&done));
+    let done_body = tool_text(&done);
+    assert_eq!(done_body["status"], "done");
+}
+
+// ---- unknown method ----------------------------------------------------------
+
+#[test]
+fn unknown_method_is_jsonrpc_error() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 9, "method": "resources/list" }))
+        .expect("a request yields a response");
+    assert_eq!(resp["id"], 9);
+    assert_eq!(resp["error"]["code"], -32601);
+    assert!(resp.get("result").is_none());
+}
+
+// ---- scope enforcement -------------------------------------------------------
+
+#[test]
+fn read_scope_rejects_writes_and_does_not_mutate() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Read);
+
+    // A write tool under read scope => isError, no mutation.
+    let attempt = call(&server, 1, "tasqx_add_task", json!({ "title": "should not exist" }));
+    assert!(is_error(&attempt), "write under read scope must be isError");
+    let msg = attempt["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(msg.contains("read-only") || msg.contains("write scope"));
+
+    // A read tool is still allowed, and shows nothing was created.
+    let listed = call(&server, 2, "tasqx_list_tasks", json!({ "filter": "status:pending" }));
+    assert!(!is_error(&listed));
+    let body = tool_text(&listed);
+    assert_eq!(body["count"].as_i64().unwrap(), 0, "no task should have been created");
+}
+
+// ---- ApiError passthrough ----------------------------------------------------
+
+#[test]
+fn bad_ref_get_task_is_not_found_iserror() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(&server, 1, "tasqx_get_task", json!({ "ref": 999999 }));
+    assert!(is_error(&resp), "bad ref must yield isError");
+    let msg = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(msg.contains("not_found"), "message should carry the not_found code: {msg}");
+}
+
+// ---- tools/list is scope-filtered --------------------------------------------
+
+#[test]
+fn read_scope_tools_list_hides_write_tools() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Read);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    // A read-only session advertises only the four read tools.
+    assert_eq!(tools.len(), 4, "read scope should list only the read tools");
+    for t in tools {
+        assert_eq!(
+            t["annotations"]["readOnlyHint"], true,
+            "read scope must not advertise a write tool: {}",
+            t["name"]
+        );
+    }
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert!(!names.contains(&"tasqx_add_task"), "write tool leaked into read-scope list");
+}
+
+// ---- optimistic concurrency by default ---------------------------------------
+
+#[test]
+fn modify_pins_expected_rev_by_default() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+
+    // Create a task (starts at _rev 1).
+    let added = call(&server, 1, "tasqx_add_task", json!({ "title": "concurrency guard" }));
+    let short_id = tool_text(&added)["short_id"].as_i64().expect("short_id");
+
+    // A modify with NO expected_rev supplied still succeeds — the server reads
+    // the current _rev and pins it — advancing the task to _rev 2.
+    let m1 = call(
+        &server,
+        2,
+        "tasqx_modify_task",
+        json!({ "ref": short_id, "set": { "priority": "M" } }),
+    );
+    assert!(!is_error(&m1), "default modify should succeed");
+    assert_eq!(tool_text(&m1)["_rev"].as_i64(), Some(2));
+
+    // A caller pinning a now-stale rev (simulating a human edit under it) gets a
+    // conflict instead of a silent clobber — the §7 guarantee, model-visible.
+    let stale = call(
+        &server,
+        3,
+        "tasqx_modify_task",
+        json!({ "ref": short_id, "set": { "priority": "L" }, "expected_rev": 1 }),
+    );
+    assert!(is_error(&stale), "stale expected_rev must conflict");
+    let msg = stale["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(msg.contains("conflict"), "message should carry the conflict code: {msg}");
+}
+
+// ---- protocol version negotiation --------------------------------------------
+
+#[test]
+fn initialize_negotiates_supported_protocol_version() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Read);
+
+    // A supported requested version is echoed back.
+    let older = server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "protocolVersion": "2025-03-26", "capabilities": {} }
+        }))
+        .expect("initialize is a request");
+    assert_eq!(older["result"]["protocolVersion"], "2025-03-26");
+
+    // An unknown requested version falls back to the server's own default.
+    let unknown = server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 2, "method": "initialize",
+            "params": { "protocolVersion": "1999-01-01", "capabilities": {} }
+        }))
+        .expect("initialize is a request");
+    assert_eq!(unknown["result"]["protocolVersion"], "2025-06-18");
+}
+
+// ---- token / scope round-trip ------------------------------------------------
+
+#[test]
+fn token_encodes_and_recovers_scope() {
+    let read = Scope::Read.mint_token();
+    let write = Scope::Write.mint_token();
+    assert_eq!(Scope::from_token(&read), Some(Scope::Read));
+    assert_eq!(Scope::from_token(&write), Some(Scope::Write));
+    assert_eq!(Scope::from_token("garbage"), None);
+    assert!(!Scope::Read.allows_write());
+    assert!(Scope::Write.allows_write());
+}

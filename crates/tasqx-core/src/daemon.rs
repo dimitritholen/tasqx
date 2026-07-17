@@ -1,0 +1,912 @@
+//! Daemon transport: a long-lived local-socket server over the *same* dispatch
+//! table the one-shot CLI uses (DESIGN.md §2, "One API, two transports").
+//!
+//! The daemon holds **no** task logic. It binds a local socket — a Unix domain
+//! socket on Linux/macOS, a Windows named pipe on Windows (via `interprocess`)
+//! — accepts many concurrent clients (thread-per-connection, blocking I/O),
+//! and runs every newline-delimited JSON request envelope through
+//! [`crate::handle_envelope`], writing back the correlated response envelope.
+//!
+//! Concurrency model (deliberately runtime-free — no tokio):
+//!  * One shared [`Engine`] behind a `Mutex`. The lock is held **only** around
+//!    `handle_envelope` (the dispatch), never across socket I/O, so slow or
+//!    idle clients never serialize each other.
+//!  * Per connection: a reader thread pulls request lines; a dedicated writer
+//!    thread owns the send half and drains a single `mpsc` channel. Every
+//!    outbound line — responses *and* event pushes — funnels through that one
+//!    channel, so a notification can never interleave with an in-flight
+//!    response on the same connection.
+//!  * Live event push (§2, §6a): a client sends `{"method":"subscribe"}` and
+//!    thereafter receives unsolicited `{"event":"task.changed",...}` frames.
+//!    Change detection is unified through a single watermark over the
+//!    append-only `events` rowid: mutations that arrive through the daemon are
+//!    pumped immediately after commit, and a background poller (~400 ms) picks
+//!    up EXTERNAL one-shot writes from another process on the same DB. Both
+//!    paths advance the same watermark under one lock, so every event is
+//!    broadcast exactly once regardless of which path observes it first.
+//!  * Reminders (§9): a third thread owns the [`ReminderScheduler`] min-heap and
+//!    the notifier. A ripe reminder writes its `reminded` event and is pumped
+//!    like any other — so the reminder's verification surface is the ordinary
+//!    event stream, not the OS notification. See [`reminder_loop`].
+
+use std::collections::VecDeque;
+use std::io::{self, BufRead, BufReader, Write};
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+use serde_json::{json, Map, Value};
+
+use interprocess::local_socket::prelude::*;
+use interprocess::local_socket::{
+    Listener, ListenerNonblockingMode, ListenerOptions, RecvHalf, SendHalf, Stream,
+};
+#[cfg(windows)]
+use interprocess::local_socket::GenericNamespaced;
+#[cfg(unix)]
+use interprocess::local_socket::GenericFilePath;
+
+use crate::dispatch::handle_envelope;
+use crate::engine::Engine;
+use crate::error::ApiError;
+use crate::notify::{LogNotifier, Notifier};
+use crate::scheduler::{self, ReminderScheduler};
+
+/// Poll interval for detecting external (out-of-daemon) writes.
+const POLL_MS: u64 = 400;
+
+/// Reminder scheduler tick. Reminders are human-scale, so ~200 ms of latency is
+/// imperceptible while keeping the idle thread essentially free.
+const REMINDER_TICK_MS: u64 = 200;
+
+/// Per-connection outbound queue depth. Responses *and* event pushes share this
+/// bounded channel, so a subscriber that stops reading its socket can never make
+/// daemon memory grow without bound: broadcasts to a full queue are dropped
+/// (the subscriber simply misses events until it drains — `watch` re-renders the
+/// whole working set on the next event it *does* receive, so a coalesced drop is
+/// self-healing rather than corrupting).
+const OUT_QUEUE_CAP: usize = 1024;
+
+/// Hard cap on a single request frame (bytes up to and including the newline).
+/// A client that streams bytes without ever sending `\n` can otherwise force the
+/// daemon to buffer unbounded input. 1 MiB is far larger than any real envelope.
+const MAX_FRAME_BYTES: usize = 1 << 20;
+
+/// Lock a mutex, recovering the guard even if a previous holder panicked while
+/// holding it. A single panicked dispatch must never permanently wedge the
+/// daemon for every other client (DESIGN §2: "a client must never crash the
+/// daemon"); the worst case is one operation observing partially-updated state,
+/// which is strictly better than a poisoned lock that panics every future
+/// acquisition.
+fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+// ---- name resolution --------------------------------------------------------
+
+/// On Windows, map an arbitrary `--socket` string onto a valid named-pipe name.
+/// A bare, already-safe name (e.g. the default `tasqx-default`) is used as-is,
+/// so the pipe is `\\.\pipe\tasqx-default`; a filesystem-looking path is
+/// sanitized and given a stable hash suffix so distinct paths never collide.
+#[cfg(windows)]
+fn win_pipe_name(raw: &str) -> String {
+    let safe = !raw.is_empty()
+        && raw.len() <= 200
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+    if safe {
+        return raw.to_string();
+    }
+    let mut base = String::new();
+    for c in raw.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+            base.push(c);
+        } else {
+            base.push('_');
+        }
+    }
+    if base.len() > 80 {
+        base.truncate(80);
+    }
+    // FNV-1a over the full raw string for a stable, collision-resistant suffix.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in raw.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("tasqx-{base}-{:08x}", h as u32)
+}
+
+/// Bind a blocking listener at `socket`. On Unix a stale socket file left by a
+/// crashed daemon is removed first (DESIGN §2: no custom lockfile, but a dead
+/// path must not wedge a restart).
+fn bind(socket: &str) -> io::Result<Listener> {
+    #[cfg(windows)]
+    {
+        let s = win_pipe_name(socket);
+        let name = s.as_str().to_ns_name::<GenericNamespaced>()?;
+        ListenerOptions::new().name(name).create_sync()
+    }
+    #[cfg(unix)]
+    {
+        remove_if_stale(socket);
+        if let Some(parent) = std::path::Path::new(socket).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let name = socket.to_fs_name::<GenericFilePath>()?;
+        ListenerOptions::new().name(name).create_sync()
+    }
+}
+
+/// Open a client stream to `socket`. Fails fast if no daemon is listening.
+fn connect_stream(socket: &str) -> io::Result<Stream> {
+    #[cfg(windows)]
+    {
+        let s = win_pipe_name(socket);
+        let name = s.as_str().to_ns_name::<GenericNamespaced>()?;
+        Stream::connect(name)
+    }
+    #[cfg(unix)]
+    {
+        let name = socket.to_fs_name::<GenericFilePath>()?;
+        Stream::connect(name)
+    }
+}
+
+#[cfg(unix)]
+fn remove_if_stale(socket: &str) {
+    let p = std::path::Path::new(socket);
+    if p.exists() && connect_stream(socket).is_err() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Remove the Unix socket file on clean shutdown (no-op for Windows pipes,
+/// which vanish with the last handle).
+fn cleanup(socket: &str) {
+    #[cfg(unix)]
+    {
+        let _ = std::fs::remove_file(socket);
+    }
+    #[cfg(windows)]
+    {
+        let _ = socket;
+    }
+}
+
+// ---- subscriber hub ---------------------------------------------------------
+
+/// A simple in-memory broadcast hub: every subscriber registers the `Sender`
+/// end of its connection's writer channel, so a broadcast is just an in-memory
+/// `send` per subscriber (never blocks on socket I/O).
+#[derive(Clone)]
+struct Hub {
+    subs: Arc<Mutex<Vec<(u64, mpsc::SyncSender<String>)>>>,
+    next: Arc<AtomicU64>,
+}
+
+impl Hub {
+    fn new() -> Self {
+        Hub { subs: Arc::new(Mutex::new(Vec::new())), next: Arc::new(AtomicU64::new(1)) }
+    }
+    fn register(&self, tx: mpsc::SyncSender<String>) -> u64 {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        lock_recover(&self.subs).push((id, tx));
+        id
+    }
+    fn unregister(&self, id: u64) {
+        lock_recover(&self.subs).retain(|(i, _)| *i != id);
+    }
+    /// Push a line to every subscriber. Never blocks the daemon: the send is a
+    /// non-blocking `try_send` on a bounded queue. A disconnected subscriber is
+    /// pruned; a *full* one keeps its slot but drops this event (bounded memory,
+    /// no head-of-line blocking of the broadcaster).
+    fn broadcast(&self, line: &str) {
+        let mut subs = lock_recover(&self.subs);
+        subs.retain(|(_, tx)| match tx.try_send(line.to_string()) {
+            Ok(()) => true,
+            Err(mpsc::TrySendError::Full(_)) => true,
+            Err(mpsc::TrySendError::Disconnected(_)) => false,
+        });
+    }
+}
+
+/// Shared server state cloned into every worker and the poller.
+#[derive(Clone)]
+struct Shared {
+    engine: Arc<Mutex<Engine>>,
+    hub: Hub,
+    /// Highest `events.rowid` already broadcast. Guards against double-sends
+    /// when the immediate (post-commit) and poll paths race.
+    watermark: Arc<Mutex<i64>>,
+}
+
+fn max_event_rowid(engine: &Engine) -> i64 {
+    engine
+        .conn()
+        .query_row("SELECT COALESCE(MAX(rowid), 0) FROM events", [], |r| r.get(0))
+        .unwrap_or(0)
+}
+
+/// Broadcast every `events` row newer than the watermark as a `task.changed`
+/// notification, then advance the watermark. Holds the watermark lock across
+/// the whole call so concurrent pumps can't emit the same row twice; the
+/// engine lock is taken only briefly to read the new rows (never during the
+/// broadcast).
+fn pump(sh: &Shared) {
+    let mut wm = lock_recover(&sh.watermark);
+    let last = *wm;
+    let rows: Vec<(i64, String, String, String, Option<i64>, Option<i64>)> = {
+        let g = lock_recover(&sh.engine);
+        let conn = g.conn();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT e.rowid, e.entity, e.entity_id, e.op, t.short_id, t.rev \
+             FROM events e LEFT JOIN tasks t ON t.id = e.entity_id \
+             WHERE e.rowid > ?1 ORDER BY e.rowid",
+        ) else {
+            return;
+        };
+        let mapped = stmt.query_map([last], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+            ))
+        });
+        let Ok(iter) = mapped else { return };
+        iter.filter_map(Result::ok).collect()
+    };
+    for (rowid, entity, entity_id, op, short_id, rev) in rows {
+        let mut data = Map::new();
+        data.insert("entity".into(), json!(entity));
+        data.insert("entity_id".into(), json!(entity_id));
+        data.insert("op".into(), json!(op));
+        if let Some(s) = short_id {
+            data.insert("short_id".into(), json!(s));
+        }
+        if let Some(r) = rev {
+            data.insert("_rev".into(), json!(r));
+        }
+        let notif = json!({
+            "tasqx": crate::API_VERSION,
+            "event": "task.changed",
+            "data": Value::Object(data),
+        });
+        sh.hub.broadcast(&format!("{notif}\n"));
+        if rowid > *wm {
+            *wm = rowid;
+        }
+    }
+}
+
+// ---- server -----------------------------------------------------------------
+
+/// Bind `socket` and serve until `shutdown` is set, delivering reminders through
+/// the always-safe [`LogNotifier`]. Consumes the [`Engine`]. Blocking; run it on
+/// its own thread.
+///
+/// The log backend is the default on purpose: `serve` is what tests and CI call,
+/// and neither should ever grow an OS-notification dependency. A caller that
+/// wants native toasts opts in explicitly via [`serve_with_notifier`].
+pub fn serve(engine: Engine, socket: &str, shutdown: Arc<AtomicBool>) -> io::Result<()> {
+    serve_with_notifier(engine, socket, shutdown, Arc::new(LogNotifier))
+}
+
+/// [`serve`], with the reminder [`Notifier`] injected — the seam the CLI uses to
+/// honour `[notify] enabled` (§9) and tests use to observe delivery without an
+/// OS transport.
+pub fn serve_with_notifier(
+    engine: Engine,
+    socket: &str,
+    shutdown: Arc<AtomicBool>,
+    notifier: Arc<dyn Notifier>,
+) -> io::Result<()> {
+    let listener = bind(socket)?;
+    // Non-blocking accept so the loop can observe `shutdown`; accepted streams
+    // stay blocking, which the thread-per-connection model wants.
+    listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
+
+    let start = max_event_rowid(&engine);
+    let shared = Shared {
+        engine: Arc::new(Mutex::new(engine)),
+        hub: Hub::new(),
+        watermark: Arc::new(Mutex::new(start)),
+    };
+
+    // Background poller: surfaces external one-shot writes on the same DB.
+    {
+        let sh = shared.clone();
+        let sd = shutdown.clone();
+        thread::spawn(move || {
+            while !sd.load(Ordering::Relaxed) {
+                pump(&sh);
+                // Sleep in small steps so shutdown stays responsive.
+                for _ in 0..(POLL_MS / 50).max(1) {
+                    if sd.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        });
+    }
+
+    // Reminder scheduler (§9): its own thread, so a slow notification transport
+    // can never stall the accept loop or a client's dispatch.
+    {
+        let sh = shared.clone();
+        let sd = shutdown.clone();
+        thread::spawn(move || reminder_loop(sh, notifier, sd));
+    }
+
+    while !shutdown.load(Ordering::Relaxed) {
+        match listener.accept() {
+            Ok(stream) => {
+                let sh = shared.clone();
+                thread::spawn(move || handle_conn(stream, sh));
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => thread::sleep(Duration::from_millis(20)),
+        }
+    }
+
+    cleanup(socket);
+    Ok(())
+}
+
+// ---- reminder scheduler (DESIGN.md §9) --------------------------------------
+
+/// The daemon's reminder thread: own the min-heap, the clock, and the notifier.
+///
+/// Heap maintenance is **rebuild-on-change**, keyed off the same append-only
+/// `events` rowid the push path watermarks against. When the max rowid moves,
+/// *something* changed a task — a new `remind`, a moved `due`, a completion —
+/// and the heap is rebuilt from the store (two queries). That satisfies §9's
+/// "updated on every event notification" while keeping exactly one code path
+/// that can construct the heap: incremental patching would need to re-derive
+/// per-event which task changed and how, for no measurable gain at this scale,
+/// and would be a second source of truth to drift.
+///
+/// External writes are covered for free — the rowid moves regardless of which
+/// process wrote it, so a `remind` set by a one-shot CLI lands on the heap
+/// within a tick without the daemon knowing that path exists.
+///
+/// This is the one place a clock is read: [`ReminderScheduler::pop_ripe`] takes
+/// `now` as an argument, so the ripeness decision itself stays pure and testable.
+fn reminder_loop(sh: Shared, notifier: Arc<dyn Notifier>, shutdown: Arc<AtomicBool>) {
+    // -1 can't be a real rowid, so the first tick always rebuilds.
+    let mut seen_rowid: i64 = -1;
+    let mut sched = ReminderScheduler::new();
+
+    while !shutdown.load(Ordering::Relaxed) {
+        seen_rowid = reminder_tick(
+            &sh,
+            &mut sched,
+            seen_rowid,
+            jiff::Timestamp::now(),
+            &*notifier,
+            &scheduler::fire_one,
+        );
+
+        // Sleep in small steps so shutdown stays responsive.
+        for _ in 0..(REMINDER_TICK_MS / 50).max(1) {
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// How a ripe reminder is recorded. Only ever [`scheduler::fire_one`] in
+/// production; the indirection exists so tests can inject a failing write and
+/// pin the recovery behaviour of the error path, which is otherwise reachable
+/// only through disk/lock faults that cannot be provoked from a test.
+type FireFn = dyn Fn(&Engine, &scheduler::Pending) -> Result<bool, ApiError> + Send + Sync;
+
+/// One tick of [`reminder_loop`]: rebuild if the log moved, fire what is ripe.
+/// Returns the watermark to carry into the next tick. `now` is injected, so a
+/// test drives ripeness by argument and never sleeps.
+///
+/// **The returned watermark may only ever be a rowid the heap was actually built
+/// from** (or `-1`, meaning "rebuild unconditionally next tick"). Advancing it to
+/// a rowid read at any *later* point silently swallows writes the heap never saw:
+/// an external `task.add` committing during the fire/notify window would be
+/// marked seen without being scheduled, and its reminder would never fire. That
+/// is why there is no post-fire adoption of `max_event_rowid` here — the daemon's
+/// own `reminded` rows do cost one extra rebuild on the next tick, but a rebuild
+/// is two queries and is idempotent (`rebuild` filters already-reminded pairs via
+/// `reminded_keys`), so re-seeing our own writes can never re-fire anything.
+fn reminder_tick(
+    sh: &Shared,
+    sched: &mut ReminderScheduler,
+    seen_rowid: i64,
+    now: jiff::Timestamp,
+    notifier: &dyn Notifier,
+    fire: &FireFn,
+) -> i64 {
+    let mut seen = seen_rowid;
+
+    // 1. Rebuild if the event log moved (start, or any task change).
+    let cur = {
+        let g = lock_recover(&sh.engine);
+        max_event_rowid(&g)
+    };
+    if cur != seen {
+        let rebuilt = {
+            let g = lock_recover(&sh.engine);
+            ReminderScheduler::rebuild(&g)
+        };
+        match rebuilt {
+            Ok(s) => {
+                *sched = s;
+                seen = cur;
+            }
+            Err(e) => {
+                // Keep the previous heap and retry next tick: a transient
+                // read failure must not silently stop all reminders.
+                eprintln!("tasqx daemon: reminder rebuild failed: {}", e.message);
+            }
+        }
+    }
+
+    // 2. Fire everything ripe. The engine lock is held only for the event
+    //    write and released before notifying — a D-Bus/WinRT call can block
+    //    for a long time and must never serialize other clients.
+    let ripe = sched.pop_ripe(now);
+    let mut fired_any = false;
+    for p in &ripe {
+        let fired = {
+            let g = lock_recover(&sh.engine);
+            fire(&g, p)
+        };
+        match fired {
+            // Deduped (already reminded) => do NOT notify.
+            Ok(false) => {}
+            Ok(true) => {
+                fired_any = true;
+                notifier.notify(&scheduler::notification_for(p));
+            }
+            Err(e) => {
+                eprintln!(
+                    "tasqx daemon: could not record reminder for #{}: {}",
+                    p.short_id, e.message
+                );
+                // `pop_ripe` already took this entry off the heap and the failed
+                // write left no event behind, so the watermark would otherwise
+                // still match and the next tick would skip the rebuild — dropping
+                // the reminder forever. Invalidate instead: the store is the
+                // source of truth and will re-schedule it (or filter it, if the
+                // write did land after all).
+                seen = -1;
+            }
+        }
+    }
+    // Push the `reminded` rows to subscribers immediately rather than waiting
+    // for the poller — this is the headless verification surface (§9).
+    if fired_any {
+        pump(sh);
+    }
+    seen
+}
+
+/// One connection: a reader loop (this thread) + a writer thread draining a
+/// single channel, so responses and pushes never interleave.
+fn handle_conn(stream: Stream, sh: Shared) {
+    let (recv, send) = stream.split();
+    // Bounded queue: a subscriber that stops reading can't grow memory without
+    // bound (see OUT_QUEUE_CAP). Responses use the blocking `send` (only ever
+    // stalls this one connection); broadcasts use non-blocking `try_send`.
+    let (out_tx, out_rx) = mpsc::sync_channel::<String>(OUT_QUEUE_CAP);
+
+    let writer = thread::spawn(move || {
+        let mut send: SendHalf = send;
+        while let Ok(line) = out_rx.recv() {
+            if send.write_all(line.as_bytes()).is_err() {
+                break;
+            }
+            let _ = send.flush();
+        }
+    });
+
+    let mut sub_id: Option<u64> = None;
+    let mut reader = BufReader::new(recv);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match read_frame_capped(&mut reader, &mut line, MAX_FRAME_BYTES) {
+            Ok(0) => break, // EOF: client closed.
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                // `subscribe` is a transport-level verb, not a core method: it
+                // registers this connection for pushes and acks.
+                if let Some(ack) = try_subscribe(trimmed, &sh, &out_tx, &mut sub_id) {
+                    if out_tx.send(ack).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                // Lock ONLY around dispatch; never across the socket write. A
+                // panic inside dispatch is caught and turned into a per-client
+                // `internal` error — it must never take down the daemon (and the
+                // poison-recovering lock keeps a mid-panic guard drop from
+                // wedging every other client).
+                let resp = {
+                    let g = lock_recover(&sh.engine);
+                    match panic::catch_unwind(AssertUnwindSafe(|| handle_envelope(&g, trimmed))) {
+                        Ok(v) => v,
+                        Err(_) => internal_error_envelope(trimmed),
+                    }
+                };
+                let out = format!("{}\n", serde_json::to_string(&resp).unwrap_or_default());
+                if out_tx.send(out).is_err() {
+                    break;
+                }
+                // Low-latency push for a write we just committed (idempotent with
+                // the poller via the shared watermark). Skip it for pure reads:
+                // they emit no events, so pumping only re-locks watermark+engine
+                // and runs the JOIN for nothing.
+                if !is_read_method(trimmed) {
+                    pump(&sh);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    if let Some(id) = sub_id {
+        sh.hub.unregister(id);
+    }
+    drop(out_tx); // closes the channel → writer thread exits.
+    let _ = writer.join();
+}
+
+/// Read one newline-terminated frame into `buf`, but refuse to buffer more than
+/// `max` bytes for a single frame (returns `InvalidData` past the cap instead of
+/// growing memory unbounded for a client that never sends `\n`). Returns the
+/// number of bytes read (0 on EOF), mirroring `BufRead::read_line`.
+fn read_frame_capped<R: BufRead>(reader: &mut R, buf: &mut String, max: usize) -> io::Result<usize> {
+    buf.clear();
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(b) => b,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            break; // EOF
+        }
+        if let Some(i) = available.iter().position(|&b| b == b'\n') {
+            if bytes.len() + i + 1 > max {
+                reader.consume(i + 1);
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "request frame exceeds limit"));
+            }
+            bytes.extend_from_slice(&available[..=i]);
+            reader.consume(i + 1);
+            break;
+        }
+        if bytes.len() + available.len() > max {
+            let n = available.len();
+            reader.consume(n);
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "request frame exceeds limit"));
+        }
+        let n = available.len();
+        bytes.extend_from_slice(available);
+        reader.consume(n);
+    }
+    // Bytes are copied out once, so a multi-byte char split across fill_buf
+    // boundaries is reassembled before the lossy decode.
+    buf.push_str(&String::from_utf8_lossy(&bytes));
+    Ok(bytes.len())
+}
+
+/// True if `line` is a request whose method never appends to the `events` log,
+/// so the post-dispatch `pump` can be skipped. Anything unrecognized (including
+/// unparseable input) is treated as a potential writer and still pumps.
+fn is_read_method(line: &str) -> bool {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|v| v.get("method").and_then(Value::as_str).map(str::to_string))
+        .map(|m| {
+            matches!(
+                m.as_str(),
+                "task.list"
+                    | "task.get"
+                    | "project.list"
+                    | "report.summary"
+                    | "store.export"
+                    | "event.list"
+                    | "core.capabilities"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// A well-formed `internal` error envelope for a request whose dispatch panicked,
+/// correlated to the request `id` when it can be recovered from the raw line.
+fn internal_error_envelope(line: &str) -> Value {
+    let id = serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|v| v.get("id").cloned())
+        .unwrap_or(Value::Null);
+    let mut m = Map::new();
+    m.insert("tasqx".into(), json!(crate::API_VERSION));
+    if !id.is_null() {
+        m.insert("id".into(), id);
+    }
+    m.insert("ok".into(), json!(false));
+    m.insert(
+        "error".into(),
+        json!({ "code": "internal", "message": "internal error: request handler panicked" }),
+    );
+    Value::Object(m)
+}
+
+/// If `line` is a `subscribe` request, register the connection and return an
+/// ack envelope line; otherwise `None`.
+fn try_subscribe(
+    line: &str,
+    sh: &Shared,
+    out_tx: &mpsc::SyncSender<String>,
+    sub_id: &mut Option<u64>,
+) -> Option<String> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v.get("method").and_then(Value::as_str) != Some("subscribe") {
+        return None;
+    }
+    if sub_id.is_none() {
+        *sub_id = Some(sh.hub.register(out_tx.clone()));
+    }
+    let id = v.get("id").cloned().unwrap_or(Value::Null);
+    let mut m = Map::new();
+    m.insert("tasqx".into(), json!(crate::API_VERSION));
+    if !id.is_null() {
+        m.insert("id".into(), id);
+    }
+    m.insert("ok".into(), json!(true));
+    m.insert("result".into(), json!({ "subscribed": true }));
+    Some(format!("{}\n", Value::Object(m)))
+}
+
+// ---- client -----------------------------------------------------------------
+
+/// A connected client. Wraps the split stream so a single connection can both
+/// issue request/response calls and read unsolicited event pushes.
+pub struct Conn {
+    reader: BufReader<RecvHalf>,
+    writer: SendHalf,
+    id: u64,
+    /// Response envelopes read while draining event pushes are buffered here so
+    /// no reply is ever lost when a push arrives mid-call.
+    pending: VecDeque<Value>,
+}
+
+/// Try to connect to a daemon at `socket`. Returns `None` immediately (no
+/// hang) if nothing is listening — the CLI uses this to fall back to the
+/// in-process path.
+pub fn try_connect(socket: &str) -> Option<Conn> {
+    let stream = connect_stream(socket).ok()?;
+    let (recv, send) = stream.split();
+    Some(Conn { reader: BufReader::new(recv), writer: send, id: 0, pending: VecDeque::new() })
+}
+
+impl Conn {
+    /// Write one framed line (appends the newline if absent).
+    pub fn send_line(&mut self, line: &str) -> io::Result<()> {
+        self.writer.write_all(line.as_bytes())?;
+        if !line.ends_with('\n') {
+            self.writer.write_all(b"\n")?;
+        }
+        self.writer.flush()
+    }
+
+    /// Read one line; `Ok(None)` on EOF (daemon gone).
+    pub fn read_line(&mut self) -> io::Result<Option<String>> {
+        let mut s = String::new();
+        let n = self.reader.read_line(&mut s)?;
+        if n == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(s))
+        }
+    }
+
+    /// Read the next line, classifying it. Event pushes are surfaced as
+    /// [`Frame::Event`]; response envelopes as [`Frame::Response`].
+    pub fn next_frame(&mut self) -> io::Result<Option<Frame>> {
+        if let Some(v) = self.pending.pop_front() {
+            return Ok(Some(Frame::Response(v)));
+        }
+        loop {
+            match self.read_line()? {
+                None => return Ok(None),
+                Some(l) => {
+                    let t = l.trim();
+                    if t.is_empty() {
+                        continue;
+                    }
+                    let v: Value = serde_json::from_str(t)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                    if v.get("event").is_some() {
+                        return Ok(Some(Frame::Event(v)));
+                    }
+                    return Ok(Some(Frame::Response(v)));
+                }
+            }
+        }
+    }
+
+    /// Send a request envelope and return the correlated response envelope,
+    /// transparently skipping (and dropping) any event pushes that arrive while
+    /// waiting. Safe to call on a subscribed connection.
+    pub fn request(&mut self, method: &str, params: &Value) -> io::Result<Value> {
+        self.id += 1;
+        let env = json!({
+            "tasqx": crate::API_VERSION,
+            "id": self.id,
+            "method": method,
+            "params": params,
+        });
+        self.send_line(&env.to_string())?;
+        loop {
+            match self.next_frame()? {
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "daemon closed the connection",
+                    ))
+                }
+                Some(Frame::Event(_)) => continue, // drop pushes while awaiting a reply
+                Some(Frame::Response(v)) => return Ok(v),
+            }
+        }
+    }
+
+    /// Subscribe to live `task.changed` pushes on this connection.
+    pub fn subscribe(&mut self) -> io::Result<()> {
+        self.request("subscribe", &json!({})).map(|_| ())
+    }
+}
+
+/// A line read from the daemon: either an unsolicited event or a response.
+pub enum Frame {
+    Event(Value),
+    Response(Value),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::Pending;
+    use jiff::Timestamp;
+    use std::sync::atomic::AtomicUsize;
+
+    fn ts(s: &str) -> Timestamp {
+        s.parse().unwrap()
+    }
+
+    fn shared(engine: Engine) -> Shared {
+        Shared {
+            engine: Arc::new(Mutex::new(engine)),
+            hub: Hub::new(),
+            watermark: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    /// Records deliveries, so a test asserts on the notification surface itself
+    /// rather than on internal bookkeeping.
+    #[derive(Default)]
+    struct Collecting(Mutex<Vec<i64>>);
+
+    impl Notifier for Collecting {
+        fn notify(&self, n: &crate::notify::Notification) {
+            lock_recover(&self.0).push(n.short_id);
+        }
+    }
+
+    impl Collecting {
+        fn fired(&self) -> Vec<i64> {
+            lock_recover(&self.0).clone()
+        }
+    }
+
+    fn add(sh: &Shared, title: &str, due: &str, remind: &str) -> i64 {
+        let g = lock_recover(&sh.engine);
+        let r = g
+            .task_add(&json!({ "title": title, "due": due, "remind": remind }))
+            .unwrap();
+        r.get("short_id").and_then(Value::as_i64).unwrap()
+    }
+
+    /// A failed write must not consume the reminder. `pop_ripe` has already taken
+    /// the entry off the heap, and a fire that fails leaves no event behind — so
+    /// if the tick still reported "nothing changed", the next tick would skip the
+    /// rebuild and the reminder would be lost forever, in neither the heap nor the
+    /// store's reminded set. It must be retried instead.
+    #[test]
+    fn a_failed_fire_is_retried_on_the_next_tick_rather_than_dropped() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let id = add(&sh, "ship it", "2026-07-20T17:00:00Z", "-1h"); // ripens 16:00Z
+        let notifier = Collecting::default();
+        let mut sched = ReminderScheduler::new();
+        let now = ts("2026-07-20T16:00:00Z");
+
+        // Tick 1: the write fails the way a disk error / busy-timeout would —
+        // no event row is written, so the event rowid does NOT move.
+        let calls = AtomicUsize::new(0);
+        let flaky = move |e: &Engine, p: &Pending| -> Result<bool, ApiError> {
+            if calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Err(ApiError::internal("disk I/O error"));
+            }
+            scheduler::fire_one(e, p)
+        };
+        let seen = reminder_tick(&sh, &mut sched, -1, now, &notifier, &flaky);
+        assert!(notifier.fired().is_empty(), "a failed write must not notify");
+        assert_eq!(seen, -1, "a failed fire must force the next tick to rebuild");
+
+        // Tick 2: nothing external happened. The reminder must still come back.
+        let seen = reminder_tick(&sh, &mut sched, seen, now, &notifier, &flaky);
+        assert_eq!(notifier.fired(), vec![id], "the reminder must fire after a retry");
+        assert_ne!(seen, -1, "a clean tick re-establishes the watermark");
+    }
+
+    /// The watermark may only ever advance to a rowid the heap was actually built
+    /// from. Adopting the max rowid *after* firing swallows any write that landed
+    /// during the fire/notify window: that task is marked seen without ever being
+    /// scheduled, so its reminder never fires. The fire closure below commits
+    /// exactly in that window — which is what a client dispatch thread does.
+    #[test]
+    fn a_write_landing_during_the_fire_window_is_still_scheduled() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        add(&sh, "ship it", "2026-07-20T17:00:00Z", "-1h"); // ripens 16:00Z
+        let notifier = Collecting::default();
+        let mut sched = ReminderScheduler::new();
+        let now = ts("2026-07-20T16:00:00Z");
+
+        // Fires for real, then — still inside the tick, exactly as a concurrent
+        // client would — commits a brand-new task whose reminder is already ripe.
+        // This task was never on the heap the tick was built from.
+        let injected = AtomicUsize::new(0);
+        let racing = move |e: &Engine, p: &Pending| -> Result<bool, ApiError> {
+            let out = scheduler::fire_one(e, p);
+            if injected.fetch_add(1, Ordering::Relaxed) == 0 {
+                e.task_add(&json!({
+                    "title": "pay rent",
+                    "due": "2026-07-20T17:00:00Z",
+                    "remind": "-2h",
+                }))
+                .unwrap();
+            }
+            out
+        };
+        let seen = reminder_tick(&sh, &mut sched, -1, now, &notifier, &racing);
+
+        // The tick must NOT claim to have seen the racing write.
+        let cur = {
+            let g = lock_recover(&sh.engine);
+            max_event_rowid(&g)
+        };
+        assert_ne!(seen, cur, "must not adopt a rowid the heap was never built from");
+
+        // Next tick: "pay rent" (ripe at 15:00Z) must be picked up and fire.
+        reminder_tick(&sh, &mut sched, seen, now, &notifier, &scheduler::fire_one);
+        let fired = notifier.fired();
+        assert!(
+            fired.contains(&2),
+            "a reminder created during the fire window must still fire, got {fired:?}",
+        );
+    }
+}

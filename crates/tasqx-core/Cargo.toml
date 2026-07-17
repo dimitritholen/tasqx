@@ -1,0 +1,22 @@
+[package]
+name = "tasqx-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless task-manager engine: SQLite storage, domain model, and the stable JSON API dispatch layer."
+
+[features]
+# OFF BY DEFAULT, deliberately (DESIGN.md §9). `notify-rust` pulls WinRT in on
+# Windows and a visual toast is not headlessly verifiable, so it must not sit in
+# the default build's dependency graph or its test surface. The `Notifier` trait
+# and the log backend are always compiled; this only adds the OS backend.
+notify-os = ["dep:notify-rust"]
+
+[dependencies]
+interprocess = "2.2"
+jiff = "0.2.32"
+notify-rust = { version = "4", optional = true }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { version = "1.23.5", features = ["v7"] }

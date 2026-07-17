@@ -1,0 +1,374 @@
+//! Daemon transport integration tests (DESIGN.md §2, §6a).
+//!
+//! Each test starts a real daemon on a temporary socket in a background thread
+//! and drives it with the real `daemon::Conn` client — exercising the actual
+//! newline-delimited envelope transport, not a mock. Event-wait paths use a
+//! reader thread + `recv_timeout` so a regression fails fast instead of hanging.
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use serde_json::{json, Value};
+
+use tasqx_core::daemon::{self, Frame};
+use tasqx_core::notify::{LogNotifier, Notification, Notifier};
+use tasqx_core::{dispatch, Engine};
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A unique (db path, socket address) pair, isolated per test.
+fn unique_target() -> (String, String) {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stem = format!("tasqx-test-{pid}-{n}-{nanos}");
+    let db = std::env::temp_dir().join(format!("{stem}.db"));
+    let sock = if cfg!(windows) {
+        // A bare, safe name → mapped to \\.\pipe\<name> by the transport.
+        stem
+    } else {
+        std::env::temp_dir().join(format!("{stem}.sock")).to_string_lossy().into_owned()
+    };
+    (db.to_string_lossy().into_owned(), sock)
+}
+
+/// A notifier that records every delivery, so a test can assert on reminder
+/// delivery with no OS notification transport anywhere in the picture (§9).
+#[derive(Default)]
+struct Collecting(Mutex<Vec<Notification>>);
+
+impl Notifier for Collecting {
+    fn notify(&self, n: &Notification) {
+        self.0.lock().unwrap().push(n.clone());
+    }
+}
+
+impl Collecting {
+    fn titles(&self) -> Vec<String> {
+        self.0.lock().unwrap().iter().map(|n| n.title.clone()).collect()
+    }
+}
+
+/// Start a daemon in a background thread; returns the shutdown flag once the
+/// socket is connectable (bounded wait).
+fn start_daemon(db: &str, sock: &str) -> Arc<AtomicBool> {
+    start_daemon_with_notifier(db, sock, Arc::new(LogNotifier))
+}
+
+/// [`start_daemon`], with the reminder notifier injected.
+fn start_daemon_with_notifier(db: &str, sock: &str, notifier: Arc<dyn Notifier>) -> Arc<AtomicBool> {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let sd = shutdown.clone();
+    let db = db.to_string();
+    let sk = sock.to_string();
+    thread::spawn(move || {
+        let engine = Engine::open(&db).expect("open engine");
+        daemon::serve_with_notifier(engine, &sk, sd, notifier).expect("serve");
+    });
+    // Wait until the listener is up (fast — usually the first or second try).
+    for _ in 0..200 {
+        if let Some(c) = daemon::try_connect(sock) {
+            drop(c);
+            return shutdown;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("daemon never became connectable at {sock}");
+}
+
+fn ok(env: &Value) -> &Value {
+    assert_eq!(env.get("ok"), Some(&Value::Bool(true)), "expected ok envelope, got {env}");
+    env.get("result").expect("result field")
+}
+
+#[test]
+fn transport_round_trip_initialize_add_list() {
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+    let mut c = daemon::try_connect(&sock).expect("connect");
+
+    // capabilities == the "initialize" handshake for this transport.
+    let caps = c.request("core.capabilities", &json!({})).unwrap();
+    assert_eq!(caps.get("id"), Some(&json!(1)), "response correlates request id");
+    let r = ok(&caps);
+    assert_eq!(r.get("api"), Some(&json!("1")));
+
+    let added = c.request("task.add", &json!({ "title": "ship the daemon" })).unwrap();
+    assert_eq!(added.get("id"), Some(&json!(2)));
+    let short_id = ok(&added).get("short_id").and_then(Value::as_i64).unwrap();
+    assert!(short_id >= 1);
+
+    let listed = c.request("task.list", &json!({ "filter": "status:pending" })).unwrap();
+    assert_eq!(listed.get("id"), Some(&json!(3)));
+    let tasks = ok(&listed).get("tasks").and_then(Value::as_array).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].get("title"), Some(&json!("ship the daemon")));
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+#[test]
+fn two_clients_concurrent_no_deadlock_and_ids_match() {
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+
+    let mut handles = Vec::new();
+    for client in 0..2u64 {
+        let sock = sock.clone();
+        handles.push(thread::spawn(move || {
+            let mut c = daemon::try_connect(&sock).expect("connect");
+            for i in 0..25u64 {
+                // A mix of a write and a read per iteration.
+                let add = c
+                    .request("task.add", &json!({ "title": format!("c{client}-t{i}") }))
+                    .unwrap();
+                // The response id must equal the request id this client sent.
+                let sent_add_id = 2 * i + 1; // ids: 1,3,5,... (add), 2,4,6,... (list)
+                assert_eq!(add.get("id"), Some(&json!(sent_add_id)), "add id correlates");
+                assert_eq!(add.get("ok"), Some(&Value::Bool(true)));
+
+                let list = c.request("task.list", &json!({ "filter": "status:pending" })).unwrap();
+                let sent_list_id = 2 * i + 2;
+                assert_eq!(list.get("id"), Some(&json!(sent_list_id)), "list id correlates");
+                assert_eq!(list.get("ok"), Some(&Value::Bool(true)));
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("client thread panicked (deadlock/corruption?)");
+    }
+
+    // Both clients committed 25 adds each → 50 pending tasks, no lost writes.
+    let mut c = daemon::try_connect(&sock).expect("connect");
+    let listed = c.request("task.list", &json!({ "filter": "status:pending", "limit": 1000 })).unwrap();
+    let n = ok(&listed).get("tasks").and_then(Value::as_array).unwrap().len();
+    assert_eq!(n, 50, "all concurrent writes landed exactly once");
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+#[test]
+fn subscriber_receives_push_after_in_daemon_mutation() {
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+
+    // Subscriber connection, drained on its own thread with a timeout.
+    let mut sub = daemon::try_connect(&sock).expect("connect sub");
+    sub.subscribe().expect("subscribe");
+    let (tx, rx) = mpsc::channel::<Value>();
+    thread::spawn(move || {
+        while let Ok(Some(frame)) = sub.next_frame() {
+            if let Frame::Event(v) = frame {
+                if tx.send(v).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    // A second connection applies a mutation *through the daemon*.
+    let mut writer = daemon::try_connect(&sock).expect("connect writer");
+    let added = writer.request("task.add", &json!({ "title": "live update me" })).unwrap();
+    let short_id = ok(&added).get("short_id").and_then(Value::as_i64).unwrap();
+
+    let evt = rx.recv_timeout(Duration::from_secs(5)).expect("no task.changed push arrived");
+    assert_eq!(evt.get("event"), Some(&json!("task.changed")));
+    let data = evt.get("data").unwrap();
+    assert_eq!(data.get("op"), Some(&json!("add")), "push carries the event op");
+    assert_eq!(data.get("short_id"), Some(&json!(short_id)), "push carries the changed short_id");
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+#[test]
+fn subscriber_receives_push_from_external_write() {
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+
+    let mut sub = daemon::try_connect(&sock).expect("connect sub");
+    sub.subscribe().expect("subscribe");
+    let (tx, rx) = mpsc::channel::<Value>();
+    thread::spawn(move || {
+        while let Ok(Some(frame)) = sub.next_frame() {
+            if let Frame::Event(v) = frame {
+                if tx.send(v).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    // A SEPARATE Engine on the same DB file writes directly — no daemon
+    // involved. The poller must detect the new event row and push it.
+    let external = Engine::open(&db).expect("second engine on same db");
+    let res = dispatch(&external, "task.add", &json!({ "title": "written out-of-band" })).unwrap();
+    let short_id = res.get("short_id").and_then(Value::as_i64).unwrap();
+    drop(external);
+
+    let evt = rx.recv_timeout(Duration::from_secs(5)).expect("external write not detected");
+    assert_eq!(evt.get("event"), Some(&json!("task.changed")));
+    assert_eq!(evt.get("data").and_then(|d| d.get("short_id")), Some(&json!(short_id)));
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+// ---- §9: reminders over the daemon ------------------------------------------
+
+/// Subscribe and return a receiver of every event push (drained off-thread).
+fn subscribe_events(sock: &str) -> mpsc::Receiver<Value> {
+    let mut sub = daemon::try_connect(sock).expect("connect sub");
+    sub.subscribe().expect("subscribe");
+    let (tx, rx) = mpsc::channel::<Value>();
+    thread::spawn(move || {
+        while let Ok(Some(frame)) = sub.next_frame() {
+            if let Frame::Event(v) = frame {
+                if tx.send(v).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    rx
+}
+
+/// Wait for a `task.changed` push carrying `op`, ignoring the others.
+fn wait_for_op(rx: &mpsc::Receiver<Value>, op: &str) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(!left.is_zero(), "no {op:?} push arrived within the deadline");
+        match rx.recv_timeout(left) {
+            Ok(v) => {
+                if v["data"]["op"] == json!(op) {
+                    return v;
+                }
+            }
+            Err(_) => panic!("no {op:?} push arrived within the deadline"),
+        }
+    }
+}
+
+/// The headless verification surface (§9): a ripe reminder must reach a `watch`
+/// subscriber as an ordinary event push, with no OS notification involved.
+///
+/// Time is not slept for — the reminder is set to an instant already long past,
+/// so it is ripe the moment the scheduler sees it. The only wait is on the push
+/// itself, with a timeout, exactly as the other daemon tests do.
+#[test]
+fn subscriber_receives_a_reminded_push_when_a_reminder_ripens() {
+    let (db, sock) = unique_target();
+    let collector: Arc<Collecting> = Arc::new(Collecting::default());
+    let shutdown = start_daemon_with_notifier(&db, &sock, collector.clone());
+    let rx = subscribe_events(&sock);
+
+    let mut writer = daemon::try_connect(&sock).expect("connect writer");
+    // An absolute reminder in the past => ripe immediately, deterministically.
+    let added = writer
+        .request("task.add", &json!({ "title": "ripe now", "remind": "2020-01-01T00:00:00Z" }))
+        .unwrap();
+    let short_id = ok(&added).get("short_id").and_then(Value::as_i64).unwrap();
+
+    let evt = wait_for_op(&rx, "reminded");
+    assert_eq!(evt.get("event"), Some(&json!("task.changed")));
+    assert_eq!(evt["data"]["short_id"], json!(short_id), "the push names the reminded task");
+
+    // The event log is the durable record behind that push.
+    let evts = writer.request("event.list", &json!({ "ref": short_id, "limit": 100 })).unwrap();
+    let reminded: Vec<&Value> = ok(&evts)["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["op"] == json!("reminded"))
+        .collect();
+    assert_eq!(reminded.len(), 1, "exactly one reminded event");
+    assert_eq!(reminded[0]["payload"]["at"], json!("2020-01-01T00:00:00Z"));
+
+    // And the notifier ran — once, for this task.
+    assert_eq!(collector.titles(), vec!["ripe now".to_string()]);
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+/// Dedupe across a daemon **restart** (§9): a reminder already delivered must not
+/// fire again when a fresh daemon rebuilds its heap from the same store.
+///
+/// The negative assertion is made deterministic with a barrier rather than a
+/// sleep: a *second* task's reminder is fired by the restarted daemon, which
+/// proves it completed a full scheduling pass — only then is the first task's
+/// event count asserted.
+///
+/// The restart binds a *fresh* socket against the same store. Dedupe lives in
+/// the store, not the transport, and reusing the address would only test how
+/// fast Windows releases a named pipe whose connection threads are still
+/// unwinding — a different (and irrelevant) race.
+#[test]
+fn a_restarted_daemon_does_not_refire_an_already_reminded_reminder() {
+    let (db, sock) = unique_target();
+    let (_, sock2) = unique_target();
+
+    // ---- first run: the reminder ripens and fires.
+    let first_collector: Arc<Collecting> = Arc::new(Collecting::default());
+    let shutdown = start_daemon_with_notifier(&db, &sock, first_collector.clone());
+    let rx = subscribe_events(&sock);
+    let mut writer = daemon::try_connect(&sock).expect("connect writer");
+    let added = writer
+        .request("task.add", &json!({ "title": "fire once", "remind": "2020-01-01T00:00:00Z" }))
+        .unwrap();
+    let short_id = ok(&added).get("short_id").and_then(Value::as_i64).unwrap();
+    wait_for_op(&rx, "reminded");
+    assert_eq!(first_collector.titles(), vec!["fire once".to_string()]);
+    drop(writer);
+    shutdown.store(true, Ordering::Relaxed);
+
+    // ---- restart against the SAME store.
+    let second_collector: Arc<Collecting> = Arc::new(Collecting::default());
+    let shutdown2 = start_daemon_with_notifier(&db, &sock2, second_collector.clone());
+    let rx2 = subscribe_events(&sock2);
+    let mut writer2 = daemon::try_connect(&sock2).expect("connect writer 2");
+
+    // The barrier: a new ripe reminder the restarted daemon must deliver.
+    writer2
+        .request("task.add", &json!({ "title": "barrier", "remind": "2020-01-02T00:00:00Z" }))
+        .unwrap();
+    wait_for_op(&rx2, "reminded");
+
+    // The restarted daemon has now demonstrably run a full scheduling pass.
+    // The first task must still carry exactly one `reminded` event.
+    let evts = writer2.request("event.list", &json!({ "ref": short_id, "limit": 100 })).unwrap();
+    let n = ok(&evts)["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["op"] == json!("reminded"))
+        .count();
+    assert_eq!(n, 1, "a restart must not re-fire an already-reminded reminder");
+    assert_eq!(
+        second_collector.titles(),
+        vec!["barrier".to_string()],
+        "only the new reminder is delivered after the restart"
+    );
+
+    shutdown2.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+#[test]
+fn connect_to_absent_daemon_is_none_and_fast() {
+    // No daemon here: the CLI's fallback decision must be immediate, never hang.
+    let (_db, sock) = unique_target();
+    let t0 = std::time::Instant::now();
+    let got = daemon::try_connect(&sock);
+    assert!(got.is_none(), "connecting to a nonexistent socket must yield None");
+    assert!(t0.elapsed() < Duration::from_secs(2), "fallback must be fast, took {:?}", t0.elapsed());
+}
