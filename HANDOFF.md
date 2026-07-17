@@ -1,6 +1,17 @@
 # tasqx — Session Handoff
 
-_Last updated: 2026-07-16 (D23 pass). `DESIGN.md` is the authoritative spec: §4 JSON API contract, §8 filter grammar, §9 notifications, §11 roadmap + build status, §11a explicit deferrals, §12 locked decisions **D1–D23**. Durable context also lives in the memory dir `C:\Users\dimitri\.claude\projects\C--dev-tasqx\memory\`._
+_Last updated: 2026-07-17 (help/terminal-manual revamp + first git commits). `DESIGN.md` is the authoritative spec: §4 JSON API contract, §8 filter grammar, §9 notifications, §11 roadmap + build status, §11a explicit deferrals, §12 locked decisions **D1–D23**. Durable context also lives in the memory dir `C:\Users\dimitri\.claude\projects\C--dev-tasqx\memory\`._
+
+## 2026-07-17 session — the repo is now under git, and the CLI help is a terminal manual
+
+- **Git initialised** by the user; the whole v1 baseline + this session's work is committed on `master` (initial commit `409b3c0`). `.gitignore` covers `target/`; `.remember/` self-ignores. Line-ending note: Windows CRLF conversion warns on commit — harmless; a `.gitattributes` pinning `*.rs` to LF is offered-but-not-done.
+- **Help revamp shipped (brainstorm → spec → plan → ultracode workflow → independently verified green).** Spec `docs/superpowers/specs/2026-07-17-help-manual-revamp-design.md`, plan `docs/superpowers/plans/2026-07-17-help-manual-revamp.md`. One CLI-only registry `crates/tasqx-cli/src/cmddoc.rs` (`COMMAND_REF`, one `CmdDoc` per subcommand: summary/usage/examples/notes/see_also/topic) is the single source feeding three surfaces:
+  1. **clap `after_help`** on every variant → examples/notes/"See also" appear on **both `-h` and `--help`** (this fixed the reported bug: `tasqx init -h` never showed you could pass a name).
+  2. **`tasqx manual`** (alias `man`, `crates/tasqx-cli/src/manual.rs`) — themed, navigable terminal guide: `manual` = TOC (10 concept topics + command index); `manual <command|topic>` = one section; unknown arg → helpful list, **exit 2**. Themed via `theme.rs` `Ctx`/`Caps`, degrades to plain when piped (verified 0 ESC bytes). No pager (deliberate). No store, no network — dispatched early in `main()` after `build_ctx`.
+  3. **HTML `docs`** — `docs.rs::VERBS` gained the `manual` row; a new `html_verbs_agree_with_cmddoc` test pins verb/aliases/method against the registry.
+- **Drift guards (extend D15/D20):** `command_ref_covers_exactly_the_clap_surface` + `command_ref_aliases_match_clap` (registry ↔ clap), plus an **executable-examples** integration guard `crates/tasqx-cli/tests/help.rs::safe_examples_all_exit_zero` that runs the safe examples against `CARGO_BIN_EXE_tasqx` on a temp DB (exit 0), and `manual_unknown_topic_exits_2`. The workflow ran the revert-and-watch-it-fail discipline on both new guards.
+- **Verified independently this session (not inherited):** `cargo clean -p tasqx-core -p tasqx-cli && cargo build --workspace` → **0 warnings**; `cargo test --workspace --no-fail-fast` → **261 passed / 0 failed** (108 bin-unit + 5 `tests/help.rs` + 56 core + 7 daemon + 14 engine + 63 increment + 8 mcp + 0 doctest). Drove the real binary: `init -h`/`add -h` show examples; `manual`/`manual dates`/`manual use` render real content; `manual bogus` → exit 2; piped `manual` → 0 ESC bytes.
+- **Known small notes:** `cmddoc` uses `#[allow(dead_code)]` on `Example.run` (the integration guard mirrors the Safe set by hand — a separate crate can't see cmddoc internals) and on the unused `exn` helper. The `api` example is `tasqx api <<< '{…}'` (here-string) rather than `echo … | tasqx api`, so it satisfies the "every example starts with `tasqx `" guard. `tasqx-cli` has **no lib target**, so unit tests run via `--bin tasqx` / `--bins`, not `--lib`.
 
 ## Current state
 
@@ -77,14 +88,14 @@ Recorded in `DESIGN.md` §11a with full rationale. In short: **git-first sync (D
 
 ## How to resume
 
-Working dir: `C:\dev\tasqx` (**NOT a git repo** — there are no commits; "current state" evidence is the test run plus driving the binary, never a hash). Rust 1.95, `stable-x86_64-pc-windows-msvc` (MSVC is discovered via **vswhere, not PATH** — verify a toolchain by running `cargo build`, never `Get-Command`).
+Working dir: `C:\dev\tasqx` (**now a git repo** as of 2026-07-17 — `master`, initial commit `409b3c0`; still verify "current state" by running tests + driving the binary, not by trusting a message). Rust 1.95, `stable-x86_64-pc-windows-msvc` (MSVC is discovered via **vswhere, not PATH** — verify a toolchain by running `cargo build`, never `Get-Command`).
 
 ```bash
 cd /c/dev/tasqx
 
 # honest warning count: incremental builds DO NOT re-emit warnings
 cargo clean -p tasqx-core -p tasqx-cli && cargo build --workspace   # expect 0 warnings
-cargo test --workspace                                              # expect 241 passed / 0 failed (add --no-fail-fast while iterating)
+cargo test --workspace                                              # 261 passed / 0 failed as of 2026-07-17 — MEASURE, don't inherit (add --no-fail-fast while iterating)
 cargo build -p tasqx-cli                                            # REBUILD before driving the binary
 BIN=./target/debug/tasqx.exe
 
