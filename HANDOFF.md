@@ -1,6 +1,6 @@
 # tasqx — Session Handoff
 
-_Last updated: 2026-07-17 (help/terminal-manual revamp + first git commits). `DESIGN.md` is the authoritative spec: §4 JSON API contract, §8 filter grammar, §9 notifications, §11 roadmap + build status, §11a explicit deferrals, §12 locked decisions **D1–D23**. Durable context also lives in the memory dir `C:\Users\dimitri\.claude\projects\C--dev-tasqx\memory\`._
+_Last updated: 2026-07-18 (help/terminal-manual revamp, first git commits, PATH reinstall). `DESIGN.md` is the authoritative spec: §4 JSON API contract, §8 filter grammar, §9 notifications, §11 roadmap + build status, §11a explicit deferrals, §12 locked decisions **D1–D23**. Durable context also lives in the memory dir `C:\Users\dimitri\.claude\projects\C--dev-tasqx\memory\`._
 
 ## 2026-07-17 session — the repo is now under git, and the CLI help is a terminal manual
 
@@ -12,6 +12,7 @@ _Last updated: 2026-07-17 (help/terminal-manual revamp + first git commits). `DE
 - **Drift guards (extend D15/D20):** `command_ref_covers_exactly_the_clap_surface` + `command_ref_aliases_match_clap` (registry ↔ clap), plus an **executable-examples** integration guard `crates/tasqx-cli/tests/help.rs::safe_examples_all_exit_zero` that runs the safe examples against `CARGO_BIN_EXE_tasqx` on a temp DB (exit 0), and `manual_unknown_topic_exits_2`. The workflow ran the revert-and-watch-it-fail discipline on both new guards.
 - **Verified independently this session (not inherited):** `cargo clean -p tasqx-core -p tasqx-cli && cargo build --workspace` → **0 warnings**; `cargo test --workspace --no-fail-fast` → **261 passed / 0 failed** (108 bin-unit + 5 `tests/help.rs` + 56 core + 7 daemon + 14 engine + 63 increment + 8 mcp + 0 doctest). Drove the real binary: `init -h`/`add -h` show examples; `manual`/`manual dates`/`manual use` render real content; `manual bogus` → exit 2; piped `manual` → 0 ESC bytes.
 - **Known small notes:** `cmddoc` uses `#[allow(dead_code)]` on `Example.run` (the integration guard mirrors the Safe set by hand — a separate crate can't see cmddoc internals) and on the unused `exn` helper. The `api` example is `tasqx api <<< '{…}'` (here-string) rather than `echo … | tasqx api`, so it satisfies the "every example starts with `tasqx `" guard. `tasqx-cli` has **no lib target**, so unit tests run via `--bin tasqx` / `--bins`, not `--lib`.
+- **PATH binary reinstalled (2026-07-18).** The user's shell `tasqx` (`C:\Users\dimitri\.cargo\bin\tasqx.exe`) is a `cargo install` build and did NOT know `manual` until reinstalled: `cargo install --path crates/tasqx-cli --force`. Verified: the installed binary now renders `tasqx manual` and shows `init -h` examples. Repo edits do not reach the PATH copy — reinstall after a change the user will run themselves.
 
 ## Current state
 
@@ -121,13 +122,24 @@ echo '{"tasqx":"1","id":"a","method":"project.create","params":{"name":"prive"}}
 sqlite3 "$TASQX_DB" "UPDATE config SET value='prive' WHERE key='default_project'; \
                      UPDATE projects SET archived=1 WHERE name='prive';"
 "$BIN" projects && "$BIN" add "orphan"   # expect: no default marked, add is projectless (was: landed in `prive`)
+
+# probes for the 2026-07-18 help/manual revamp
+"$BIN" init -h | grep -q EXAMPLES && echo "init -h has examples"   # the reported bug, fixed
+"$BIN" manual >/dev/null && echo "manual TOC ok"
+"$BIN" manual bogus; echo "exit=$?"                                 # expect exit 2 + valid-name list
+"$BIN" manual | od -An -tx1 -v | tr ' ' '\n' | grep -c '^1b$'      # piped manual: expect 0 ESC bytes
+
+# make the user's PATH `tasqx` current after a change (the shell copy is a separate cargo install)
+cargo install --path crates/tasqx-cli --force
 ```
 
-Key files: spec `DESIGN.md`; core `crates/tasqx-core/src/` (`engine.rs` handlers, `dispatch.rs` method table, `storage.rs` schema, `datetime.rs`/`recur.rs`/`remind.rs` scheduling — all take an explicit `now` for deterministic tests, `util.rs` **now `pub`**, `scheduler.rs`, `notify.rs`, `daemon.rs`, `mcp.rs`, `filter.rs`, `types.rs`, `urgency.rs`); CLI `crates/tasqx-cli/src/` (`main.rs`, `sugar.rs`, `render.rs`, `theme.rs`, `chart.rs`, `html.rs`, `docs.rs`); tests `crates/tasqx-core/tests/` + unit tests inside the cli crate.
+Key files: spec `DESIGN.md`; core `crates/tasqx-core/src/` (`engine.rs` handlers, `dispatch.rs` method table, `storage.rs` schema, `datetime.rs`/`recur.rs`/`remind.rs` scheduling — all take an explicit `now` for deterministic tests, `util.rs` **now `pub`**, `scheduler.rs`, `notify.rs`, `daemon.rs`, `mcp.rs`, `filter.rs`, `types.rs`, `urgency.rs`); CLI `crates/tasqx-cli/src/` (`main.rs`, `cmddoc.rs` **command-doc registry (single source)**, `manual.rs` **themed `tasqx manual`**, `sugar.rs`, `render.rs`, `theme.rs`, `chart.rs`, `html.rs`, `docs.rs`); tests `crates/tasqx-core/tests/`, `crates/tasqx-cli/tests/help.rs` **(help/manual integration guards)** + unit tests inside the cli crate. Spec/plan: `docs/superpowers/{specs,plans}/2026-07-17-help-manual-revamp*`.
 
 ## Watch out for
 
 - **Rebuild the binary before driving it.** `cargo test` refreshes the test harness but NOT `target/debug/tasqx.exe`. A stale exe shows old behavior while tests pass. Bitten twice.
+- **The user's PATH `tasqx` is a separate `cargo install` copy** (`~/.cargo/bin/tasqx.exe`). Repo edits and `cargo build` do NOT reach it — a new command fails with "unrecognized subcommand" in their shell until `cargo install --path crates/tasqx-cli --force`. Reinstall after any change they will run themselves (2026-07-18).
+- **Two help surfaces render examples from ONE registry** (`cmddoc::COMMAND_REF`): clap `after_help` (both `-h` and `--help`) and `tasqx manual`, plus the HTML `docs` VERBS table. Add a new subcommand ⇒ the coverage guard fails until it has a `COMMAND_REF` entry AND a `docs.rs` VERBS row; a broken "safe" example fails `tests/help.rs::safe_examples_all_exit_zero`. Don't add a second copy of an example — the registry is the home.
 - **Incremental builds do not re-emit warnings.** To honestly claim 0 warnings you must `cargo clean -p tasqx-core -p tasqx-cli` first.
 - **Shell env vars do not persist between tool calls.** A multi-step repro (temp DB → export → import) must run in ONE call or it silently probes the wrong store.
 - **clap reads a leading-hyphen value as a flag** (`--remind -30m` broke while the inline form worked, and no test noticed). Use `allow_hyphen_values` and test the *flag* form, not just the sugar form.
