@@ -33,7 +33,7 @@ use crate::html::esc;
 /// This is the single source — the page is generated from it and
 /// [`documented_verbs`] reads it, so there is no parallel list to fall out of
 /// sync. Order is reading order, not clap's.
-const VERBS: [(&str, &str, &str, &str); 27] = [
+const VERBS: [(&str, &str, &str, &str); 28] = [
     ("init", "—", "project.create", "Create a project."),
     (
         "use",
@@ -76,6 +76,7 @@ const VERBS: [(&str, &str, &str, &str); 27] = [
     ("watch", "—", "task.list + push", "Live view over a daemon."),
     ("mcp", "—", "(subset)", "MCP server and tokens."),
     ("docs", "—", "— (no store)", "This guide."),
+    ("manual", "<code>man</code>", "— (no store)", "The complete guide, in your terminal."),
 ];
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
@@ -1992,6 +1993,35 @@ mod tests {
             "`tasqx docs` documents these verbs, but the CLI has no such subcommand: {invented:?}"
         );
         assert_eq!(real, documented);
+    }
+
+    /// The HTML verb table and the terminal registry may not disagree on the
+    /// structural fields. Prose (`what`) stays hand-tuned; verb/aliases/method
+    /// are single-sourced in spirit by being asserted equal here.
+    #[test]
+    fn html_verbs_agree_with_cmddoc() {
+        use crate::cmddoc::COMMAND_REF;
+        for (verb, aliases_html, method, _what) in VERBS {
+            let d = COMMAND_REF.iter().find(|d| d.verb == verb)
+                .unwrap_or_else(|| panic!("VERBS has `{verb}`, cmddoc does not"));
+            assert_eq!(d.method, method, "method drift on `{verb}`");
+            let mut html_aliases: Vec<String> = if aliases_html == "—" {
+                vec![]
+            } else {
+                aliases_html.split(',')
+                    .map(|a| a.trim().replace("<code>", "").replace("</code>", ""))
+                    .collect()
+            };
+            let mut ours: Vec<String> = d.aliases.iter().map(|s| s.to_string()).collect();
+            html_aliases.sort(); ours.sort();
+            assert_eq!(html_aliases, ours, "alias drift (html vs cmddoc) on `{verb}`");
+        }
+        // reverse direction: every cmddoc verb (incl. `manual`) must be documented
+        // in the HTML guide too.
+        for d in COMMAND_REF {
+            assert!(VERBS.iter().any(|(v, ..)| *v == d.verb),
+                "cmddoc verb `{}` missing from the HTML VERBS table", d.verb);
+        }
     }
 
     /// Aliases are part of the documented surface too: the table claims specific

@@ -18,6 +18,10 @@ pub enum RunKind {
 pub struct Example {
     pub cmd: &'static str,
     pub note: Option<&'static str>,
+    /// Classification only: the executable-examples guard in `tests/help.rs`
+    /// (a separate crate that cannot see these internals) mirrors the Safe set
+    /// by hand, so this field is never read inside the crate.
+    #[allow(dead_code)]
     pub run: RunKind,
 }
 
@@ -547,5 +551,32 @@ mod tests {
     #[test]
     fn after_help_of_unknown_verb_is_empty() {
         assert_eq!(after_help("nope"), "");
+    }
+
+    #[test]
+    fn command_ref_covers_exactly_the_clap_surface() {
+        use clap::CommandFactory;
+        let mut real: Vec<String> = crate::Cli::command()
+            .get_subcommands().map(|c| c.get_name().to_string()).collect();
+        let mut doc: Vec<String> = verbs().iter().map(|s| s.to_string()).collect();
+        real.sort(); doc.sort();
+        let missing: Vec<_> = real.iter().filter(|v| !doc.contains(v)).collect();
+        assert!(missing.is_empty(), "verbs with no cmddoc entry: {missing:?}");
+        let invented: Vec<_> = doc.iter().filter(|v| !real.contains(v)).collect();
+        assert!(invented.is_empty(), "cmddoc entries with no clap subcommand: {invented:?}");
+    }
+
+    #[test]
+    fn command_ref_aliases_match_clap() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        for d in COMMAND_REF {
+            let sub = cmd.get_subcommands().find(|c| c.get_name() == d.verb)
+                .unwrap_or_else(|| panic!("no clap subcommand: {}", d.verb));
+            let mut real: Vec<String> = sub.get_all_aliases().map(|a| a.to_string()).collect();
+            let mut ours: Vec<String> = d.aliases.iter().map(|a| a.to_string()).collect();
+            real.sort(); ours.sort();
+            assert_eq!(real, ours, "alias drift on `{}`", d.verb);
+        }
     }
 }
