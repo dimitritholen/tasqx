@@ -14,6 +14,7 @@
 
 mod chart;
 pub mod cmddoc;
+pub mod config;
 mod docs;
 mod html;
 mod manual;
