@@ -30,3 +30,10 @@ mutants.out.old/
 
 # Stray agent skills — kept on disk, not part of this project.
 .agents/
+
+# Session handoff notes: written for the next AI session, not for this repo.
+# Goes stale within a day and names local paths. Kept on disk.
+HANDOFF.md
+
+# Execution plans: agent task-checklists for work already shipped.
+docs/plans/

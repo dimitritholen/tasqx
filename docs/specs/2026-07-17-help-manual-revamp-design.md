@@ -117,7 +117,7 @@ Guard-authoring discipline from the handoff: when adding each guard, **revert th
 - **modify** `crates/tasqx-cli/src/main.rs` — `after_help` on every variant; new `Manual` subcommand + early dispatch; register the new module(s).
 - **modify** `crates/tasqx-cli/src/docs.rs` — derive `VERBS` from the registry; rewire the drift guard.
 
-## Risks / watch-outs (from HANDOFF.md)
+## Risks / watch-outs (from the session handoff notes)
 
 - **Rebuild the binary before driving it** — `cargo build -p tasqx-cli`; `cargo test` does not refresh `target/debug/tasqx.exe`.
 - **Incremental builds don't re-emit warnings** — `cargo clean -p …` before claiming 0 warnings.
