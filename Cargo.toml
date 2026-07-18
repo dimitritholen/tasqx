@@ -5,6 +5,10 @@ members = ["crates/tasqx-core", "crates/tasqx-cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# `std::sync::LazyLock` (crates/tasqx-cli/src/lib.rs) stabilised in 1.80, so this
+# is a real floor rather than a guess. Stated here so cargo enforces it instead
+# of the README claiming it.
+rust-version = "1.80"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
