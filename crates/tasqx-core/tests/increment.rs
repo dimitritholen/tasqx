@@ -123,6 +123,73 @@ fn blocked_excluded_from_working_then_visible_and_unblocked() {
     assert_eq!(working2["tasks"][0]["short_id"], asid);
 }
 
+/// `compute_unblocked` restricts its dependent scan to *open* tasks, and until
+/// this test nothing exercised that restriction — widening the status set there
+/// left the whole suite green. It matters because `unblocked` is what the CLI
+/// prints as "now actionable" and what an MCP agent reads to decide what to pick
+/// up next: naming a task that is already finished or abandoned sends a human or
+/// an agent back to work that no longer exists. `done` and `cancelled` are
+/// checked separately because they reach terminal state by different code paths.
+#[test]
+fn a_terminal_dependent_is_never_announced_as_unblocked() {
+    use tasqx_core::types::Status;
+    // Derived from `Status::ALL`, not a hand-written ["done", "cancelled"]: the
+    // clause under test is itself derived from `is_terminal`, so a hardcoded
+    // loop would keep checking two cases while production silently followed a
+    // third variant — the parallel-list-one-layer-up mistake that let an earlier
+    // guard in this repo ship a false promise.
+    for finish in Status::ALL.into_iter().filter(|s| s.is_terminal()) {
+        let e = engine();
+        let dependent = e.task_add(&json!({ "title": "dependent" })).unwrap()["short_id"].clone();
+        let blocker = e.task_add(&json!({ "title": "blocker" })).unwrap()["short_id"].clone();
+        e.dependency_add(&json!({ "ref": dependent, "depends_on": blocker })).unwrap();
+
+        // Take the dependent itself out of play *before* its blocker resolves.
+        // Exhaustive on purpose: a new terminal status fails to compile here
+        // until someone wires up the transition that reaches it.
+        match finish {
+            Status::Done => e.task_done(&json!({ "ref": dependent })).unwrap(),
+            Status::Cancelled => e.task_cancel(&json!({ "ref": dependent })).unwrap(),
+            Status::Backlog | Status::Pending | Status::Active => {
+                unreachable!("filtered to terminal statuses")
+            }
+        };
+
+        let res = e.task_done(&json!({ "ref": blocker })).unwrap();
+        assert!(
+            !res["unblocked"].as_array().unwrap().contains(&dependent),
+            "a {} dependent must not be reported as newly actionable",
+            finish.as_str()
+        );
+    }
+}
+
+/// The inclusion side of the same clause, and the reason it needed its own test:
+/// every guard around `compute_unblocked` was exclusion-only — they proved
+/// `done`/`cancelled` dependents stay OUT, and only ever used pending dependents
+/// (the default status). Nothing asserted a `backlog` dependent is let IN, so
+/// dropping `'backlog'` from the generated `IN (…)` list left all 292 tests
+/// green while a waiting task whose blocker finished would silently never be
+/// announced as actionable.
+#[test]
+fn a_backlog_dependent_is_still_announced_as_unblocked() {
+    let e = engine();
+    // `wait` in the future is what parks a task in `backlog`.
+    let dependent = e
+        .task_add(&json!({ "title": "waiting", "wait": "2999-01-01T00:00:00Z" }))
+        .unwrap();
+    assert_eq!(dependent["status"], "backlog", "fixture must actually be backlog");
+    let dependent = dependent["short_id"].clone();
+    let blocker = e.task_add(&json!({ "title": "blocker" })).unwrap()["short_id"].clone();
+    e.dependency_add(&json!({ "ref": dependent, "depends_on": blocker })).unwrap();
+
+    let res = e.task_done(&json!({ "ref": blocker })).unwrap();
+    assert!(
+        res["unblocked"].as_array().unwrap().contains(&dependent),
+        "a backlog dependent must still be announced when its blocker resolves"
+    );
+}
+
 #[test]
 fn dependency_self_and_cycle_are_conflicts() {
     let e = engine();
@@ -1672,4 +1739,83 @@ fn task_modify_rejects_an_unknown_or_archived_project() {
     // Clearing the project is still allowed - null is not a project name.
     e.task_modify(&json!({ "ref": r, "set": { "project": null } })).unwrap();
     assert_eq!(e.task_get(&json!({ "ref": r })).unwrap()["project"], json!(null));
+}
+
+// ---- status write/read round trip -------------------------------------------
+
+/// Every `Status` variant must be reachable through the API and read back as
+/// itself. This closes a silent-corruption path that no test covered.
+///
+/// The engine WRITES status as bare SQL literals (`SET status='done'`, six of
+/// them) while `storage.rs` READS with `Status::parse(..).unwrap_or(Pending)`.
+/// Those are two independent hand-written spellings of the same five names,
+/// joined by a fallback that cannot fail loudly. Rename a variant in `types.rs`
+/// — exactly what `as_str_and_parse_round_trip` exists to protect against — and
+/// the UPDATEs keep emitting the old string, `parse` returns `None`, and every
+/// affected row silently becomes `pending`. A finished task would quietly
+/// reappear as actionable work, with no error anywhere.
+///
+/// `as_str_and_parse_round_trip` cannot catch this: it checks the two matches in
+/// `types.rs` against each other, never against what the writers actually emit.
+/// This drives the real transitions through SQLite instead.
+#[test]
+fn every_status_survives_a_write_read_round_trip() {
+    use tasqx_core::types::Status;
+
+    // Exhaustive: a new variant fails to compile until someone names the
+    // transition that reaches it, rather than silently going untested.
+    for want in Status::ALL {
+        let e = engine();
+        let r = match want {
+            Status::Pending => e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone(),
+            Status::Backlog => e
+                .task_add(&json!({ "title": "t", "wait": "2999-01-01T00:00:00Z" }))
+                .unwrap()["short_id"]
+                .clone(),
+            Status::Active => {
+                let r = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+                e.task_start(&json!({ "ref": r })).unwrap();
+                r
+            }
+            Status::Done => {
+                let r = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+                e.task_done(&json!({ "ref": r })).unwrap();
+                r
+            }
+            Status::Cancelled => {
+                let r = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+                e.task_cancel(&json!({ "ref": r })).unwrap();
+                r
+            }
+        };
+
+        let got = e.task_get(&json!({ "ref": r })).unwrap();
+        assert_eq!(
+            got["status"], want.as_str(),
+            "a {} task did not read back as {} — the write literal and \
+             Status::as_str have diverged, and the read fallback hid it",
+            want.as_str(), want.as_str()
+        );
+    }
+}
+
+/// The transitions back out of a terminal state, for the same reason: `stop` and
+/// `reopen` each carry their own `SET status='pending'` literal, and the silent
+/// read fallback is *also* `Pending` — so a desync in exactly these two writes
+/// would be invisible to the round trip above, which only ever asserts the
+/// happy value they coincidentally share.
+#[test]
+fn stop_and_reopen_write_a_readable_pending() {
+    use tasqx_core::types::Status;
+    let e = engine();
+
+    let started = e.task_add(&json!({ "title": "a" })).unwrap()["short_id"].clone();
+    e.task_start(&json!({ "ref": started })).unwrap();
+    e.task_stop(&json!({ "ref": started })).unwrap();
+    assert_eq!(e.task_get(&json!({ "ref": started })).unwrap()["status"], Status::Pending.as_str());
+
+    let finished = e.task_add(&json!({ "title": "b" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": finished })).unwrap();
+    e.task_reopen(&json!({ "ref": finished })).unwrap();
+    assert_eq!(e.task_get(&json!({ "ref": finished })).unwrap()["status"], Status::Pending.as_str());
 }

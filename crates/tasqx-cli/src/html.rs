@@ -71,8 +71,7 @@ impl<'a> Report<'a> {
 
         for t in &tasks {
             let status = t.get("status").and_then(Value::as_str).unwrap_or("");
-            let is_open = !matches!(status, "done" | "cancelled");
-            if is_open {
+            if crate::render::status_is_open(status) {
                 open += 1;
                 if let Some(due) = t.get("due").and_then(Value::as_str).and_then(parse_ts) {
                     if due < now_ts {
@@ -81,7 +80,10 @@ impl<'a> Report<'a> {
                     }
                 }
             }
-            if status == "done" {
+            // Via the enum, like the open/overdue counters three lines up. A bare
+            // `status == "done"` here would be a second spelling of the same
+            // question inside one loop, and invisible to any Status-derived guard.
+            if tasqx_core::types::Status::parse(status) == Some(tasqx_core::types::Status::Done) {
                 if let Some(c) = t.get("completed").and_then(Value::as_str).and_then(parse_ts) {
                     if c >= cutoff {
                         completed_recent.push(t);
@@ -115,7 +117,7 @@ impl<'a> Report<'a> {
         let mut tag_counts: HashMap<String, u32> = HashMap::new();
         for t in &tasks {
             let status = t.get("status").and_then(Value::as_str).unwrap_or("");
-            if matches!(status, "done" | "cancelled") {
+            if !crate::render::status_is_open(status) {
                 continue;
             }
             if let Some(tags) = t.get("tags").and_then(Value::as_array) {
@@ -677,7 +679,7 @@ mod tests {
     /// `active` — so the one task you are working on right now vanished from the
     /// "By project" roll-up. The counts silently disagreed with the Rust-side
     /// open/overdue derivation a few lines below, which uses
-    /// `!matches!(status, "done" | "cancelled")`. The fix is to pass no filter
+    /// `render::status_is_open`. The fix is to pass no filter
     /// and inherit core's default, so both sides answer the same question.
     #[test]
     fn project_summary_counts_the_task_being_worked_on() {

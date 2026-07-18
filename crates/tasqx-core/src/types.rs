@@ -80,6 +80,37 @@ impl Status {
         }
     }
 
+    /// Render the statuses satisfying `pred` as a SQL literal list ready to drop
+    /// between the parentheses of an `IN (...)`, e.g. `'backlog','pending'`.
+    ///
+    /// This is string-built SQL, so the injection question has to be answered
+    /// out loud: **no caller-supplied text can reach it**. The only values ever
+    /// emitted are [`Status::as_str`] on members of [`Status::ALL`] — five
+    /// compile-time `&'static str` literals of lowercase ASCII letters. `pred`
+    /// chooses *which* of those five appear; it cannot introduce a sixth. The
+    /// `debug_assert` below pins that invariant so a future variant spelled with
+    /// a quote or a space fails loudly in tests rather than silently producing
+    /// malformed SQL.
+    ///
+    /// It exists because the status sets were previously typed by hand into four
+    /// separate `IN`/`NOT IN` clauses, so a new variant meant remembering all
+    /// four — and forgetting one does not error, it just quietly drops rows.
+    pub fn sql_in_list(pred: fn(Status) -> bool) -> String {
+        Status::ALL
+            .into_iter()
+            .filter(|s| pred(*s))
+            .map(|s| {
+                let name = s.as_str();
+                debug_assert!(
+                    name.chars().all(|c| c.is_ascii_lowercase()),
+                    "Status::as_str must stay a bare lowercase word to be SQL-literal-safe: {name:?}"
+                );
+                format!("'{name}'")
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     pub fn parse(s: &str) -> Option<Status> {
         match s {
             "backlog" => Some(Status::Backlog),
@@ -211,6 +242,37 @@ mod tests {
         }
         assert_eq!(Status::parse("canceled"), None, "a near-miss must not parse");
         assert_eq!(Status::parse(""), None);
+    }
+
+    /// `sql_in_list` builds SQL by string concatenation, and four live queries
+    /// now depend on it. Two distinct ways it could go wrong silently: emitting
+    /// the wrong *set* (a filter predicate applied inversely would swap which
+    /// tasks a burndown or a blocked-check sees, with no error anywhere), or
+    /// emitting the wrong *shape* — a missing quote or a stray separator turns
+    /// the clause into a SQLite parse error at runtime, in code paths a unit test
+    /// of the predicate alone never executes. Both are checked here against the
+    /// exact literals the queries used before this was derived.
+    #[test]
+    fn sql_in_list_emits_quoted_names_for_exactly_the_matching_statuses() {
+        assert_eq!(Status::sql_in_list(Status::is_open), "'backlog','pending','active'");
+        assert_eq!(Status::sql_in_list(Status::is_terminal), "'done','cancelled'");
+        assert_eq!(
+            Status::sql_in_list(Status::counts_in_reports),
+            "'backlog','pending','active','done'"
+        );
+
+        // Shape, independent of any one predicate: every element is a bare
+        // lowercase word in single quotes, and the set matches the predicate.
+        for pred in [Status::is_open, Status::is_terminal, Status::counts_in_reports] {
+            let list = Status::sql_in_list(pred);
+            let parts: Vec<&str> = list.split(',').collect();
+            let want: Vec<&str> =
+                Status::ALL.into_iter().filter(|s| pred(*s)).map(Status::as_str).collect();
+            assert_eq!(parts.len(), want.len(), "wrong element count in {list:?}");
+            for (part, name) in parts.iter().zip(&want) {
+                assert_eq!(*part, format!("'{name}'"), "malformed element in {list:?}");
+            }
+        }
     }
 
     /// The three status sets the codebase actually reasons about, pinned by

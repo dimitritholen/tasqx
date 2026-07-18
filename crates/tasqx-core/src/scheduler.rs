@@ -90,11 +90,16 @@ impl ReminderScheduler {
     pub fn rebuild(engine: &Engine) -> Result<Self, ApiError> {
         let fired = reminded_keys(engine.conn())?;
         let conn = engine.conn();
-        let mut stmt = conn.prepare(
+        // "Live task" here is exactly `is_open()` — the doc comment above states
+        // the rule as "skip done/cancelled", which is the same partition, so this
+        // shares the predicate rather than keeping a fourth hand-typed copy.
+        // Enum-derived, never caller text — see `Status::sql_in_list`.
+        let open = crate::types::Status::sql_in_list(crate::types::Status::is_open);
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, short_id, title, due, remind FROM tasks \
-             WHERE remind IS NOT NULL AND status IN ('pending', 'backlog', 'active') \
+             WHERE remind IS NOT NULL AND status IN ({open}) \
              ORDER BY short_id",
-        )?;
+        ))?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -242,6 +247,35 @@ mod tests {
         let done = add(&e, "finished", Some("2026-07-20T17:00:00Z"), "2026-07-19T08:00:00Z");
         e.task_done(&json!({ "ref": done })).unwrap();
         assert_eq!(ReminderScheduler::rebuild(&e).unwrap().len(), 0);
+    }
+
+    /// The inclusion side of `rebuild`'s status filter. Every guard here was
+    /// exclusion-only — `unanchored_and_finished_tasks_are_not_scheduled` seeds
+    /// a `done` task, and the `add` helper always produces `pending` — so no
+    /// test ever gave a `backlog` task a reminder. Narrowing the generated
+    /// `IN (…)` list to drop `'backlog'` therefore left the whole suite green
+    /// while every reminder on a waiting or scheduled task silently stopped
+    /// firing, which is indistinguishable from never having set one.
+    ///
+    /// `backlog` is exactly the status where a reminder matters most: the task
+    /// is parked until a future date, so the reminder is the only thing that
+    /// will bring it back to your attention.
+    #[test]
+    fn a_backlog_task_still_gets_its_reminder_scheduled() {
+        let e = Engine::open_in_memory().unwrap();
+        // `wait` in the future parks the task in `backlog`.
+        let r = e
+            .task_add(&json!({
+                "title": "parked but due later",
+                "wait": "2999-01-01T00:00:00Z",
+                "remind": "2026-07-19T08:00:00Z",
+            }))
+            .unwrap();
+        assert_eq!(r["status"], "backlog", "fixture must actually be backlog");
+
+        let s = ReminderScheduler::rebuild(&e).unwrap();
+        assert_eq!(s.len(), 1, "a backlog task's reminder must still be scheduled");
+        assert_eq!(s.peek_at().unwrap(), ts("2026-07-19T08:00:00Z"));
     }
 
     #[test]

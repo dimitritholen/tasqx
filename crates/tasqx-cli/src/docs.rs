@@ -752,7 +752,7 @@ fn page_filters() -> String {
             &["<code>+api</code>", "Tasks tagged <code>api</code>."],
             &["<code>-api</code>", "Tasks <em>not</em> tagged <code>api</code>."],
             &["<code>project:work.tasqx</code>", "Exact project match."],
-            &["<code>status:pending</code>", "Exact status: <code>pending</code>, <code>active</code>, <code>done</code>, <code>cancelled</code>."],
+            &["<code>status:pending</code>", "Exact status: <code>backlog</code>, <code>pending</code>, <code>active</code>, <code>done</code>, <code>cancelled</code>."],
             &["<code>@working</code>", "Status pending or active, <em>and</em> not blocked. The default filter."],
             &["<code>@blocked</code>", "At least one dependency that is not yet done. Also spelled <code>+blocked</code> or <code>status:blocked</code>."],
             &["<code>due.before:&lt;RFC3339&gt;</code>", "Due strictly before that instant."],
@@ -2170,6 +2170,30 @@ mod tests {
     /// by `tasqx list`, just absent from the roll-up. The VERBS/METHODS drift
     /// guards cannot catch this: the rule is prose, not a table they render from.
     #[test]
+    /// The filter page tells the reader which values `status:` accepts, and it
+    /// listed four of the five — `backlog` was missing. That is not a drift risk,
+    /// it was already wrong in shipped output: DESIGN.md defines `backlog` as a
+    /// status and documents `tasqx ls status:backlog`, so the guide taught a
+    /// reader there was no way to find work parked behind a future `wait:` or
+    /// `scheduled:`. None of the twenty-odd docs guards enumerated statuses, so
+    /// nothing noticed.
+    ///
+    /// Derived from `Status::ALL` rather than restating the names: a guard that
+    /// hand-lists what it checks is the same parallel list it exists to police.
+    #[test]
+    fn the_filter_page_documents_every_status_value() {
+        let doc = generate();
+        let missing: Vec<&str> = tasqx_core::types::Status::ALL
+            .into_iter()
+            .map(|s| s.as_str())
+            .filter(|name| !doc.contains(&format!("<code>{name}</code>")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "statuses a user can filter on but the guide never names: {missing:?}"
+        );
+    }
+
     fn reports_section_states_which_statuses_count() {
         let doc = generate();
         let reports = doc

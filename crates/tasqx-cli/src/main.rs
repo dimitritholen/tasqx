@@ -1150,10 +1150,18 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) {
 /// "no filter = all rows" contract (D24 is a *report* rule, applied in core to
 /// `report.summary` only), so the exclusion has to live here, at the CLI.
 ///
-/// If a new `Status` variant is ever added it must be listed here too; the
-/// completeness guard in this module's tests fails if it is not, because a
-/// burndown silently missing tasks still looks like a valid burndown.
-const NOT_CANCELLED: &str = "status:backlog or status:pending or status:active or status:done";
+/// Derived from `Status::ALL` + `counts_in_reports()` rather than typed out, so
+/// a new variant joins the burndown by construction. The hand-written version of
+/// this constant had already lost `status:backlog` once, and nothing failed —
+/// a burndown silently missing tasks still looks like a valid burndown.
+static NOT_CANCELLED: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    tasqx_core::types::Status::ALL
+        .into_iter()
+        .filter(|s| s.counts_in_reports())
+        .map(|s| format!("status:{}", s.as_str()))
+        .collect::<Vec<_>>()
+        .join(" or ")
+});
 
 /// Resolve the task ids a burndown covers, plus its label. Split out of the
 /// `ChartKind::Burndown` arm so the scope rule is testable on its own.
@@ -1166,7 +1174,7 @@ fn burndown_members(
     project: &Option<String>,
 ) -> (std::collections::HashSet<String>, String) {
     let (filter, label) = match project {
-        Some(p) => (format!("project:{p} and ({NOT_CANCELLED})"), p.clone()),
+        Some(p) => (format!("project:{p} and ({})", *NOT_CANCELLED), p.clone()),
         None => (NOT_CANCELLED.to_string(), "all tasks".to_string()),
     };
     let listed = dispatch(engine, "task.list", &json!({ "filter": filter, "fields": ["id"] }));
@@ -1835,10 +1843,10 @@ mod tests {
     /// automatically, so a `NOT_CANCELLED` that forgot it goes red.
     #[test]
     fn burndown_scope_keeps_every_status_except_cancelled() {
-        let f = tasqx_core::filter::Filter::parse(NOT_CANCELLED);
+        let f = tasqx_core::filter::Filter::parse(&NOT_CANCELLED);
         for status in tasqx_core::types::Status::ALL {
             let ctx = tasqx_core::filter::MatchCtx {
-                status: status.as_str(),
+                status,
                 project: None,
                 tags: &[],
                 due: None,

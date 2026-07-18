@@ -28,11 +28,17 @@
 //! and (b) the boolean/grouping tree is trivial to evaluate. Unknown tokens are
 //! ignored (treated as the always-true term) to keep the surface forgiving.
 
+use crate::types::Status;
 use crate::util::parse_ts;
 
 /// A single leaf predicate.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pred {
+    /// `status:VALUE`. Deliberately still a `String`, not a [`Status`]: this is
+    /// raw user input from the DSL and may be a typo (`status:pendign`). Parsing
+    /// at match time — where an unrecognised name matches nothing — keeps the
+    /// "unknown tokens are forgiving, unknown *values* just don't match" split
+    /// that the rest of the grammar already has.
     Status(String),
     Project(String),
     TagInclude(String),
@@ -57,7 +63,11 @@ pub enum Expr {
 
 /// The fields a predicate is evaluated against.
 pub struct MatchCtx<'a> {
-    pub status: &'a str,
+    /// The row's status as the typed enum, never a bare string. While this was
+    /// `&str` the whole module compared status with `==` against hand-typed
+    /// literals, so `Status` could not participate in its own matching rules and
+    /// a renamed or added variant went unnoticed here.
+    pub status: Status,
     pub project: Option<&'a str>,
     pub tags: &'a [String],
     pub due: Option<&'a str>,
@@ -122,11 +132,14 @@ fn eval(e: &Expr, ctx: &MatchCtx) -> bool {
 fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
     match p {
         Pred::Always => true,
-        Pred::Status(s) => ctx.status == s,
+        // An unparseable value (`status:bogus`) yields `None`, which never
+        // equals `Some(..)` — so it matches nothing, exactly as the previous
+        // string comparison against a always-valid `ctx.status` did.
+        Pred::Status(s) => Status::parse(s) == Some(ctx.status),
         Pred::Project(pr) => ctx.project == Some(pr.as_str()),
         Pred::TagInclude(t) => ctx.tags.iter().any(|x| x == t),
         Pred::TagExclude(t) => !ctx.tags.iter().any(|x| x == t),
-        Pred::Working => (ctx.status == "pending" || ctx.status == "active") && !ctx.blocked,
+        Pred::Working => matches!(ctx.status, Status::Pending | Status::Active) && !ctx.blocked,
         Pred::Blocked => ctx.blocked,
         Pred::DueBefore(bound) => instant_cmp(ctx.due, bound, true),
         Pred::DueAfter(bound) => instant_cmp(ctx.due, bound, false),
@@ -301,6 +314,69 @@ mod tests {
                 want,
                 "constrains_status({input:?})"
             );
+        }
+    }
+
+    fn ctx_for(status: Status) -> MatchCtx<'static> {
+        MatchCtx { status, project: None, tags: &[], due: None, blocked: false }
+    }
+
+    /// `Pred::Status` holds raw DSL text but is now compared by *parsing* it
+    /// against a typed `Status`. The regression that buys: a value the parser
+    /// does not recognise must keep matching nothing. If `Status::parse` were
+    /// ever made lenient (trimming, case-folding, aliasing `canceled`), or if the
+    /// comparison fell back to "unparseable means match anything", then
+    /// `status:bogus` would start selecting rows — and a filter that silently
+    /// widens is far worse than one that returns nothing, because the caller
+    /// gets a plausible-looking answer to a question they did not ask.
+    #[test]
+    fn an_unrecognised_status_value_matches_no_row() {
+        // All whitespace-free: a value containing a space is split by the
+        // tokenizer long before status parsing sees it, so those inputs would
+        // exercise the tokenizer rather than this rule.
+        for bogus in ["bogus", "canceled", "PENDING", "Done", "pending2", ""] {
+            let f = Filter::parse(&format!("status:{bogus}"));
+            for status in Status::ALL {
+                assert!(
+                    !f.matches(&ctx_for(status)),
+                    "status:{bogus:?} must match nothing, but matched {status:?}"
+                );
+            }
+        }
+    }
+
+    /// Every real status name must select exactly its own rows — the property the
+    /// old `ctx.status == s` string compare gave for free and that parsing must
+    /// not quietly lose. Driven off `Status::ALL`, so a new variant is covered
+    /// the moment it exists rather than when someone remembers to add a case.
+    #[test]
+    fn each_status_value_selects_exactly_that_status() {
+        for want in Status::ALL {
+            let f = Filter::parse(&format!("status:{}", want.as_str()));
+            for have in Status::ALL {
+                assert_eq!(
+                    f.matches(&ctx_for(have)),
+                    want == have,
+                    "status:{} vs a {have:?} row",
+                    want.as_str()
+                );
+            }
+        }
+    }
+
+    /// `@working` is documented as "pending|active AND not blocked". It used to
+    /// be two string equality checks; now it is a `matches!` on the enum, and the
+    /// set it covers is exactly the thing a new `Status` variant would perturb.
+    /// Pinned by enumeration so the doc comment and the code cannot drift apart.
+    #[test]
+    fn working_covers_pending_and_active_only_and_never_when_blocked() {
+        let f = Filter::parse("@working");
+        for status in Status::ALL {
+            let want = matches!(status, Status::Pending | Status::Active);
+            assert_eq!(f.matches(&ctx_for(status)), want, "@working vs {status:?}");
+
+            let blocked = MatchCtx { blocked: true, ..ctx_for(status) };
+            assert!(!f.matches(&blocked), "@working must exclude blocked {status:?}");
         }
     }
 

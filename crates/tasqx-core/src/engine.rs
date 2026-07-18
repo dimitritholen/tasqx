@@ -648,12 +648,14 @@ impl Engine {
         // Only *open* dependents can "become actionable" — a dependent that is
         // itself already done/cancelled must never be reported as unblocked.
         let dependents: Vec<String> = {
-            let mut stmt = tx.prepare(
+            // Enum-derived, never caller text — see `Status::sql_in_list`.
+            let open = Status::sql_in_list(Status::is_open);
+            let mut stmt = tx.prepare(&format!(
                 "SELECT d.task_id FROM dependencies d \
                  JOIN tasks t ON t.id = d.task_id \
                  WHERE d.depends_on_id = ?1 \
-                 AND t.status IN ('pending','active','backlog')",
-            )?;
+                 AND t.status IN ({open})",
+            ))?;
             let rows = stmt.query_map(params![done_id], |r| r.get::<_, String>(0))?;
             let mut v = Vec::new();
             for r in rows {
@@ -667,10 +669,14 @@ impl Engine {
             // Count this dependent's still-unresolved blockers. A dependency is
             // resolved when it is `done` OR `cancelled` (DESIGN §3, D11), so a
             // cancelled blocker no longer keeps the dependent blocked.
+            // Enum-derived, never caller text — see `Status::sql_in_list`.
+            let terminal = Status::sql_in_list(Status::is_terminal);
             let remaining: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM dependencies d \
-                 JOIN tasks t ON t.id = d.depends_on_id \
-                 WHERE d.task_id = ?1 AND t.status NOT IN ('done','cancelled')",
+                &format!(
+                    "SELECT COUNT(*) FROM dependencies d \
+                     JOIN tasks t ON t.id = d.depends_on_id \
+                     WHERE d.task_id = ?1 AND t.status NOT IN ({terminal})"
+                ),
                 params![dep_task],
                 |r| r.get(0),
             )?;
@@ -927,7 +933,7 @@ impl Engine {
             let tags = task_tags(&self.conn, &t.id)?;
             let blocked = self.is_blocked(&t.id)?;
             let ctx = MatchCtx {
-                status: t.status.as_str(),
+                status: t.status,
                 project: t.project.as_deref(),
                 tags: &tags,
                 due: t.due.as_deref(),
@@ -981,10 +987,14 @@ impl Engine {
     /// forever is a trap — cancellation releases dependents. Consistent with
     /// `compute_unblocked`. Read helper; no mutation.
     fn is_blocked(&self, task_id: &str) -> Result<bool, ApiError> {
+        // Enum-derived, never caller text — see `Status::sql_in_list`.
+        let terminal = Status::sql_in_list(Status::is_terminal);
         let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM dependencies d \
-             JOIN tasks t ON t.id = d.depends_on_id \
-             WHERE d.task_id = ?1 AND t.status NOT IN ('done','cancelled')",
+            &format!(
+                "SELECT COUNT(*) FROM dependencies d \
+                 JOIN tasks t ON t.id = d.depends_on_id \
+                 WHERE d.task_id = ?1 AND t.status NOT IN ({terminal})"
+            ),
             params![task_id],
             |r| r.get(0),
         )?;
@@ -1354,13 +1364,13 @@ impl Engine {
         let rows = stmt.query_map([], map_task_row)?;
         for r in rows {
             let t = r?;
-            if apply_default && t.status == Status::Cancelled {
+            if apply_default && !t.status.counts_in_reports() {
                 continue;
             }
             let tags = task_tags(&self.conn, &t.id)?;
             let blocked = self.is_blocked(&t.id)?;
             let ctx = MatchCtx {
-                status: t.status.as_str(),
+                status: t.status,
                 project: t.project.as_deref(),
                 tags: &tags,
                 due: t.due.as_deref(),
@@ -1384,8 +1394,7 @@ impl Engine {
                 agg.est_secs = agg.est_secs.saturating_add(e);
             }
             agg.tracked_secs = agg.tracked_secs.saturating_add(t.tracked_seconds);
-            let is_open = !matches!(t.status, Status::Done | Status::Cancelled);
-            if is_open {
+            if t.status.is_open() {
                 if let (Some(due), Some(n)) = (t.due.as_deref().and_then(parse_ts), now_ts) {
                     if due < n {
                         agg.overdue += 1;
@@ -1445,7 +1454,7 @@ impl Engine {
             let tags = task_tags(&self.conn, &t.id)?;
             let blocked = self.is_blocked(&t.id)?;
             let ctx = MatchCtx {
-                status: t.status.as_str(),
+                status: t.status,
                 project: t.project.as_deref(),
                 tags: &tags,
                 due: t.due.as_deref(),

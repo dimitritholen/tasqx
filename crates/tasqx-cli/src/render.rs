@@ -19,6 +19,23 @@ pub fn san(s: &str) -> String {
     s.chars().filter(|&c| c == '\t' || !c.is_control()).collect()
 }
 
+/// Is this task still open, given the `status` string as it arrived in a JSON
+/// payload? The one place the CLI turns a wire status back into a [`Status`].
+///
+/// The fallback is the whole point. The CLI reads these strings from JSON that
+/// may come from a *different build of core* over the daemon socket, so a status
+/// this binary has never heard of is a real possibility — and the previous
+/// `!matches!(status, "done" | "cancelled")` treated it as open by accident,
+/// simply because it was not one of the two names it knew. Guessing "open" is
+/// the safe guess: an unknown status shows up in the open counts and on the
+/// overdue list, where a human will notice it, instead of vanishing from every
+/// total and leaving a report that is quietly short a task. That behaviour is
+/// preserved here deliberately rather than inherited, so a future editor changes
+/// it on purpose.
+pub fn status_is_open(status: &str) -> bool {
+    tasqx_core::types::Status::parse(status).map_or(true, tasqx_core::types::Status::is_open)
+}
+
 /// Extract a string field, sanitized — every field pulled here is display text
 /// that may originate from `store.import` or an MCP write tool.
 fn s(v: &Value, key: &str) -> String {
@@ -170,7 +187,7 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
             .and_then(|d| d.parse::<jiff::Timestamp>().ok())
             .map(|d| d < now)
             .unwrap_or(false)
-            && !matches!(s(t, "status").as_str(), "done" | "cancelled");
+            && status_is_open(&s(t, "status"));
         let due = truncate(&due_raw, 22, ctx.caps.unicode);
         let tags = t
             .get("tags")
@@ -492,6 +509,25 @@ mod tests {
     use super::*;
     use crate::theme::{self, Caps, Ctx};
     use serde_json::json;
+
+    /// The CLI and core are separately deployable — `tasqx` talks to a daemon it
+    /// did not necessarily ship with — so a status string this binary cannot
+    /// parse can genuinely arrive on the wire. The old `!matches!(status, "done"
+    /// | "cancelled")` called such a status open purely as a side effect of not
+    /// recognising it; now it is a stated rule, and this test is what stops
+    /// someone "tidying" the fallback to `false`. Flip the `map_or` default and
+    /// an unknown status disappears from open counts, the overdue list and the
+    /// tag roll-up at once — three wrong numbers, no error.
+    #[test]
+    fn an_unknown_wire_status_is_treated_as_open() {
+        for unknown in ["", "snoozed", "DONE", "canceled", "archived"] {
+            assert!(status_is_open(unknown), "{unknown:?} should fall back to open");
+        }
+        // ...while the statuses core actually defines still answer for themselves.
+        for s in tasqx_core::types::Status::ALL {
+            assert_eq!(status_is_open(s.as_str()), s.is_open(), "{s:?}");
+        }
+    }
 
     #[test]
     fn san_strips_control_and_escape_bytes() {
