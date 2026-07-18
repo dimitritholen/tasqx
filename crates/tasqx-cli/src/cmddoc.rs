@@ -375,6 +375,24 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Reports,
     },
     CmdDoc {
+        verb: "config",
+        aliases: &[],
+        method: "— (registry + core.capabilities)",
+        summary: "Read and change tasqx settings.",
+        usage: "tasqx config <list|get <key>|path>",
+        examples: &[
+            ex("tasqx config list"),
+            ex("tasqx config get theme.name"),
+            ex("tasqx config path"),
+        ],
+        notes: &[
+            "`list` shows both homes. Most settings live in `config.toml`; `default_project` lives in the store and is set with `tasqx use` (D21).",
+            "Resolution order is `--flag`, then `$TASQX_*`, then `config.toml`, then the built-in default (D9). The SOURCE column names the layer that won.",
+        ],
+        see_also: &["use", "theme", "manual"],
+        topic: Topic::GettingStarted,
+    },
+    CmdDoc {
         verb: "export",
         aliases: &[],
         method: "store.export",

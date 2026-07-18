@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 28] = [
+const VERBS: [(&str, &str, &str); 29] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("add", "<code>a</code>, <code>new</code>", "task.add"),
@@ -77,6 +77,7 @@ const VERBS: [(&str, &str, &str); 28] = [
     ("report", "—", "report.summary"),
     ("chart", "—", "event.list"),
     ("theme", "—", "— (no store)"),
+    ("config", "—", "— (registry + core.capabilities)"),
     ("export", "—", "store.export"),
     ("import", "—", "store.import"),
     ("api", "—", "(any)"),

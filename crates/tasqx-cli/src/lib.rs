@@ -322,6 +322,12 @@ enum Command {
         #[command(subcommand)]
         action: ThemeAction,
     },
+    /// Read and change tasqx settings (DESIGN.md §12-D25).
+    #[command(after_help = crate::cmddoc::after_help("config"))]
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Export tasks as canonical JSON (maps to store.export).
     #[command(after_help = crate::cmddoc::after_help("export"))]
     Export {
@@ -440,6 +446,19 @@ enum ThemeAction {
         /// Theme name to preview.
         name: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Show every setting with its value, source and default.
+    List,
+    /// Print one setting's resolved value.
+    Get {
+        /// Setting key, e.g. `theme.name`.
+        key: String,
+    },
+    /// Print the path of `config.toml` (it may not exist yet).
+    Path,
 }
 
 #[derive(Subcommand)]
@@ -589,6 +608,7 @@ pub fn run() {
         Some(Command::Use { name }) => run_use(&mut backend, &ctx, name),
         Some(Command::Projects { all }) => run_projects(&mut backend, &ctx, all),
         Some(Command::Report { args, all, .. }) => run_report(&mut backend, &ctx, args, all),
+        Some(Command::Config { action }) => run_config(&mut backend, &ctx, &action),
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, file),
         Some(Command::Next) => run_next(&mut backend, &ctx),
@@ -1393,6 +1413,87 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
     }
 }
 
+/// The live value of a `Home::Store` setting. Read from `core.capabilities`,
+/// which already reports `default_project`, so this needs no new API method.
+fn store_value(be: &mut Backend, key: &str) -> Option<String> {
+    let caps = be.call("core.capabilities", &json!({})).ok()?;
+    caps.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+/// An unknown key must name the valid ones. Without the list the user's only
+/// recourse is to guess, and the registry already knows the answer.
+fn unknown_key(key: &str) -> ApiError {
+    let valid: Vec<&str> = config::SETTINGS.iter().map(|s| s.key).collect();
+    ApiError::bad_request(format!("unknown setting {key:?} (valid: {})", valid.join(", ")))
+}
+
+/// `tasqx config list|get|path`.
+fn run_config(be: &mut Backend, ctx: &Ctx, action: &ConfigAction) -> CmdOutcome {
+    match action {
+        ConfigAction::Path => {
+            let p = config::config_path()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "(no config directory on this platform)".to_string());
+            Ok((json!({ "path": p }), format!("{p}\n")))
+        }
+        ConfigAction::Get { key } => {
+            let s = config::find(key).ok_or_else(|| unknown_key(key))?;
+            let value = match s.home {
+                config::Home::Store => store_value(be, s.key).unwrap_or_default(),
+                config::Home::Toml => config::resolve(s, None, config::toml_value(s).as_deref()).0,
+            };
+            let text = format!("{value}\n");
+            Ok((json!({ "key": s.key, "value": value }), text))
+        }
+        ConfigAction::List => {
+            let mut rows = Vec::new();
+            for s in config::SETTINGS {
+                let (value, source) = match s.home {
+                    config::Home::Store => {
+                        (store_value(be, s.key).unwrap_or_default(), "store".to_string())
+                    }
+                    config::Home::Toml => {
+                        let (v, src) = config::resolve(s, None, config::toml_value(s).as_deref());
+                        (v, src.label(s))
+                    }
+                };
+                rows.push(json!({
+                    "key": s.key,
+                    "value": value,
+                    "source": source,
+                    "default": s.default,
+                    "home": match s.home {
+                        config::Home::Store => "store",
+                        config::Home::Toml => "config.toml",
+                    },
+                    "summary": s.summary,
+                }));
+            }
+            let text = render_config_table(ctx, &rows);
+            Ok((json!({ "settings": rows }), text))
+        }
+    }
+}
+
+/// One row per setting: key, value, and which layer supplied it. The source
+/// column is the point — the question behind a surprising setting is always
+/// "which layer won", and a bare value cannot answer it.
+fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{}\n",
+        ctx.paint("header", &format!("{:<18} {:<22} {}", "SETTING", "VALUE", "SOURCE"))
+    ));
+    for r in rows {
+        let key = r["key"].as_str().unwrap_or("");
+        let val = r["value"].as_str().unwrap_or("");
+        let src = r["source"].as_str().unwrap_or("");
+        let shown = if val.is_empty() { "(unset)" } else { val };
+        out.push_str(&format!("{:<18} {:<22} {}\n", key, shown, ctx.paint("muted", src)));
+    }
+    out
+}
+
 /// `tasqx manual` — print a themed guide section (or the TOC). No store, no net.
 fn run_manual(ctx: &Ctx, topic: Option<&str>) {
     match manual::render(ctx, topic) {
@@ -2181,5 +2282,46 @@ mod tests {
         let b = docs_temp_path();
         assert_eq!(a, b, "the temp path must not vary between invocations");
         assert_eq!(a.extension().and_then(|e| e.to_str()), Some("html"));
+    }
+
+    // ---- the config verb ----------------------------------------------------
+
+    /// `config list` has to show BOTH homes. A user asking "what are my
+    /// settings" expects their default project in the list, and omitting it
+    /// because it lives in the store rather than the file would be a lie by
+    /// omission. Writing is a different question — reading is not.
+    #[test]
+    fn config_list_reports_both_homes_with_their_source() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "work" })).unwrap();
+        let mut be = Backend::Local(e);
+        let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
+
+        let (result, text) = run_config(&mut be, &ctx, &ConfigAction::List).expect("list ran");
+
+        let rows = result["settings"].as_array().expect("a settings array");
+        let keys: Vec<&str> = rows.iter().map(|r| r["key"].as_str().unwrap()).collect();
+        assert!(keys.contains(&"theme.name"), "{keys:?}");
+        assert!(keys.contains(&"default_project"), "the store home must appear too: {keys:?}");
+
+        let dp = rows.iter().find(|r| r["key"] == "default_project").unwrap();
+        assert_eq!(dp["value"], "work", "the store value must be the live one");
+        assert_eq!(dp["home"], "store");
+        assert!(text.contains("default_project"), "the human table must show it too");
+    }
+
+    /// `config get` on a key nobody registered must say so and list the valid
+    /// ones. Today an unknown key in config.toml is read by nothing and
+    /// reported by nothing, so a typo looks like it worked.
+    #[test]
+    fn config_get_rejects_an_unknown_key_and_names_the_valid_ones() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        let mut be = Backend::Local(e);
+        let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
+
+        let err = run_config(&mut be, &ctx, &ConfigAction::Get { key: "theme.nmae".into() })
+            .expect_err("an unknown key must not succeed");
+        assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
+        assert!(err.message.contains("theme.name"), "must list valid keys: {}", err.message);
     }
 }
