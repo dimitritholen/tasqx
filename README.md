@@ -1,6 +1,6 @@
 # tasqx
 
-A terminal task manager for people who live in the shell — Taskwarrior's power without its friction, and built so an AI agent is a first-class user rather than a bolted-on afterthought.
+A task manager that lives in the terminal. It does what Taskwarrior does, with less friction, and it treats an AI agent as a normal user instead of an add-on.
 
 ```console
 $ tasqx add Ship the release notes due:friday +docs !high --project work
@@ -18,18 +18,18 @@ Why #42 has urgency 11.7
   = total          11.7
 ```
 
-## Why it exists
+## The idea
 
-Every surface — the CLI, the HTML report, the MCP server for agents — is a **client of one JSON API**. There is no logic in the CLI that an agent cannot reach, and no agent capability the CLI lacks. That constraint is the whole design: the API is the load-bearing artifact, and UIs are replaceable.
+There is one JSON API, and everything else is a client of it. The CLI, the HTML report, the MCP server an agent talks to. Nothing lives in the CLI that an agent can't reach, and an agent has no capability the CLI lacks, because both go through the same dispatch.
 
-Your data is a single SQLite file on your disk. No account, no cloud, no lock-in. Every mutation is recorded in an append-only event log, which is what makes cancellation reversible, agent actions auditable, and future sync an addition rather than a migration.
+Your tasks are a SQLite file on your disk. It works offline and there's nothing to sign up for. Every change is written to an append-only event log in the same transaction as the change itself, which is why cancelling a task is reversible and why sync can be added later without a migration.
 
 ## Install
 
-Requires Rust 1.80 or newer (enforced by `rust-version` in `Cargo.toml`).
+No prebuilt binaries yet, so you build it. Needs Rust 1.80 or newer, which `Cargo.toml` enforces.
 
 ```console
-git clone git@github.com:dimitritholen/tasqx.git
+git clone https://github.com/dimitritholen/tasqx.git
 cd tasqx
 cargo install --path crates/tasqx-cli --force
 ```
@@ -37,29 +37,26 @@ cargo install --path crates/tasqx-cli --force
 ## Getting started
 
 ```console
-tasqx init work              # a project is just a name
+tasqx init work              # a project is just a name, no folder
 tasqx use work               # make it the default
 tasqx add Buy milk           # lands in the default project
 tasqx                        # bare `tasqx` lists your working set
 tasqx done 1
 ```
 
-`tasqx manual` is a full terminal manual; `tasqx <verb> -h` gives per-command help with runnable examples. `tasqx docs` renders the same material as a self-contained HTML page.
+`tasqx manual` is a real manual, not a wall of flags. `tasqx <verb> -h` gives you per-command help with examples you can copy. `tasqx docs` renders the same content as a single HTML file you can open in a browser.
 
-## What it does
+## What works
 
-| | |
-|---|---|
-| **Capture** | Inline sugar — `+tag`, `project:p`, `!high`, `due:friday`, `est:4h`, `repeat:"every monday"`, `remind:-1h` |
-| **Dates** | Natural language: `tomorrow`, `friday 17:00`, `in 3 days`, `eom`, `at 6pm`, `-1d`, plus RFC3339 |
-| **Lifecycle** | `start`/`stop` with time tracking, `done`, `cancel`, `reopen`, dependencies with automatic blocked/unblocked |
-| **Recurrence** | `every N days`, `weekly on Mon,Wed`, `monthly on day 15`, `monthly on the 2nd tuesday` |
-| **Reminders** | Anchored to `due` (`-1h`, re-anchors when the date moves) or absolute, fired by an optional daemon |
-| **Filters** | `project:work status:pending +api -infra due.before:friday`, with `and`/`or` and parentheses |
-| **Reports** | Grouped summaries, throughput / heatmap / burndown charts in the terminal, and a themed self-contained HTML report |
-| **Themes** | Five built-ins, user themes, graceful degradation from truecolor down to a dumb terminal |
-| **Agents** | `tasqx mcp serve` — an MCP server over stdio with read/write scoping that fails closed |
-| **Scripting** | Every command speaks human-readable text *and* `--json`; exit codes are contract, not decoration |
+Capture is where most of the ergonomics went. You can write `tasqx add Ship it due:friday +api !high est:4h repeat:"every monday" remind:-1h` and it parses the whole thing, or use flags for any of it if you prefer.
+
+Dates take natural language: `tomorrow`, `friday 17:00`, `in 3 days`, `eom`, `at 6pm`, `-1d`, and full RFC3339 when you want to be exact. A bare time rolls to tomorrow if it's already passed.
+
+Beyond that: start/stop with time tracking, dependencies that mark tasks blocked and announce them when they unblock, recurrence (`every 3 days`, `weekly on Mon,Wed`, `monthly on the 2nd tuesday`), reminders anchored to the due date so they move when it moves, and a filter language with `and`, `or` and parentheses.
+
+Reports come as grouped summaries in the terminal, three chart types (throughput, heatmap, burndown), or a self-contained themed HTML page. Five built-in themes, and the output degrades cleanly from truecolor down to a terminal that can't do color at all.
+
+Every command prints readable text and takes `--json`. Exit codes mean something and don't change.
 
 ## For agents
 
@@ -68,9 +65,9 @@ tasqx mcp token --scope read     # or --scope write
 tasqx mcp serve
 ```
 
-Tokens encode a scope, and a read-only session never sees the write tools advertised at all. There is deliberately no bulk-delete tool: cancellation goes through the normal reversible, logged path, so an agent cannot quietly destroy work.
+A read-only session never sees the write tools in its tool list, so an agent can't call what it isn't allowed to call. There's no bulk-delete tool on purpose. Cancelling goes through the same reversible, logged path everything else does, so an agent can't quietly destroy a week of work.
 
-The same API is available directly:
+You can also talk to the API directly:
 
 ```console
 echo '{"tasqx":"1","method":"task.list","params":{"filter":"@working"}}' | tasqx api
@@ -84,12 +81,18 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo mutants                    # see docs/mutation-testing.md
 ```
 
-CI runs the suite on Linux and Windows, builds the off-by-default `notify-os` feature, and gates on clippy. `RUSTFLAGS=-D warnings` is deliberate: an orphaned `#[test]` once stopped a guard from running and surfaced only as a warning nobody read.
+CI runs the suite on Linux and Windows, builds the `notify-os` feature that's off by default, and gates on clippy. Rustc warnings are fatal, which sounds strict until you've had a `#[test]` get separated from its function by a careless edit. The test stops running, rustc says "function is never used" in every build after that, and nobody reads it.
 
-The suite includes a layer of **drift guards** — tests that fail the build when documentation and reality disagree. Every CLI flag must appear in its verb's usage line, every documented example must parse, every `RunKind::Safe` example is executed for real, and status sets across SQL, the filter DSL and Rust all derive from one enum. Documentation rot is a build failure here, not a reader's problem.
+A good chunk of the suite is drift guards: tests that break the build when the docs and the code disagree. Every CLI flag has to show up in its verb's usage line. Every example in the docs has to parse, and the ones marked safe get executed for real. Status sets in SQL, in the filter language and in Rust all come from one enum, so you can't add a status and forget one of them.
 
-`DESIGN.md` is the specification and carries the numbered decision log (D1–D24) explaining why things are the way they are.
+`cargo mutants` is the interesting one. It breaks the code on purpose and checks whether any test notices. It found a bug where deleting one line made `(a or b) and c` silently parse as `a or (b and c)`, which would have returned a perfectly normal-looking table full of the rows you filtered out. 316 passing tests hadn't caught it.
 
-## Status
+`DESIGN.md` is the spec and carries the decision log, D1 through D24, explaining why things are the way they are.
 
-Daily-usable. 316 tests. Not yet built: a full TUI, plugins, and sync — all three are specified in `DESIGN.md` and none has data-model implications, by design.
+## What's missing
+
+You can't change settings without hand-editing a TOML file. There's no `tasqx config`, no way to set a theme from the CLI. That's the roughest edge right now.
+
+The TUI, plugins and sync are all specified in `DESIGN.md` and none of them exist. They were designed together so that adding them later doesn't touch the data model, but "designed" is doing a lot of work in that sentence.
+
+Also: `tasqx theme show` with a name that doesn't exist prints the default theme and exits 0 instead of telling you that you typo'd.
