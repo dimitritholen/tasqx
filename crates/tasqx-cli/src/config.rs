@@ -10,6 +10,8 @@
 
 use std::path::PathBuf;
 
+use tasqx_core::ApiError;
+
 /// Which config store owns a key.
 ///
 /// tasqx deliberately has two. D21 put `default_project` in the store's own
@@ -160,27 +162,145 @@ pub fn config_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config.toml"))
 }
 
-/// Parse `config.toml`, or `None` if it is missing or unreadable.
+/// Parse `config.toml` under an explicit directory, or `None` if it is missing
+/// or unreadable.
 ///
 /// Deliberately silent: this is on the path of every command, and a malformed
 /// config must never block a task capture. `tasqx config` does NOT use this —
 /// it reports the parse error, because there the user is asking about the file.
-fn read_table() -> Option<toml::Table> {
-    let text = std::fs::read_to_string(config_path()?).ok()?;
+fn read_table_in(dir: &std::path::Path) -> Option<toml::Table> {
+    let text = std::fs::read_to_string(dir.join("config.toml")).ok()?;
     text.parse::<toml::Table>().ok()
 }
 
-/// One setting's raw value from `config.toml`, rendered as a string so every
-/// `Kind` shares one path. `None` when the file, section or key is absent.
-pub fn toml_value(s: &Setting) -> Option<String> {
+/// One setting's raw value from a `config.toml` under an explicit directory.
+///
+/// The directory is a parameter rather than an ambient `$TASQX_CONFIG_DIR`
+/// read so tests can exercise a real file without mutating process-global env,
+/// which cargo's parallel test threads make racy. Same move `datetime.rs`
+/// already makes by taking an explicit `now`.
+pub fn toml_value_in(dir: &std::path::Path, s: &Setting) -> Option<String> {
     let (section, name) = s.parts();
-    let v = read_table()?.get(section)?.get(name)?.clone();
+    let v = read_table_in(dir)?.get(section)?.get(name)?.clone();
     match v {
         toml::Value::String(x) => Some(x),
         toml::Value::Boolean(b) => Some(b.to_string()),
         toml::Value::Integer(i) => Some(i.to_string()),
         _ => None,
     }
+}
+
+/// One setting's raw value from the user's real `config.toml`.
+pub fn toml_value(s: &Setting) -> Option<String> {
+    toml_value_in(&config_dir()?, s)
+}
+
+/// Load a `config.toml` as an editable document, preserving comments and
+/// layout. An absent file is an empty document; an unparseable one is an error,
+/// because the caller is about to write and must not clobber content it cannot
+/// read.
+fn read_document(path: &std::path::Path) -> Result<toml_edit::DocumentMut, ApiError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => text.parse::<toml_edit::DocumentMut>().map_err(|e| {
+            ApiError::bad_request(format!(
+                "{} is not valid TOML and was left untouched: {e}",
+                path.display()
+            ))
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml_edit::DocumentMut::new()),
+        Err(e) => Err(ApiError::bad_request(format!("cannot read {}: {e}", path.display()))),
+    }
+}
+
+/// Write the document back atomically: a temp file in the same directory, then
+/// a rename. A crash mid-write would otherwise leave no config at all — and the
+/// reader degrades silently, so the user would get no error, just their theme
+/// quietly reverting.
+fn write_document(path: &std::path::Path, doc: &toml_edit::DocumentMut) -> Result<PathBuf, ApiError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ApiError::internal(format!("cannot create {}: {e}", parent.display())))?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, doc.to_string())
+        .map_err(|e| ApiError::internal(format!("cannot write {}: {e}", tmp.display())))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| ApiError::internal(format!("cannot replace {}: {e}", path.display())))?;
+    Ok(path.to_path_buf())
+}
+
+/// Set one setting in a `config.toml` under an explicit directory, creating the
+/// section if needed.
+pub fn write_value_in(dir: &std::path::Path, s: &Setting, value: &str) -> Result<PathBuf, ApiError> {
+    if s.home != Home::Toml {
+        return Err(ApiError::bad_request(format!(
+            "{} lives in the store, not config.toml — set it with `tasqx use <project>`, \
+             which validates the name against this store (D21)",
+            s.key
+        )));
+    }
+    let parsed = match s.kind {
+        Kind::Bool => match value {
+            "true" => toml_edit::value(true),
+            "false" => toml_edit::value(false),
+            _ => {
+                return Err(ApiError::bad_request(format!(
+                    "{} takes true or false, got {value:?}",
+                    s.key
+                )))
+            }
+        },
+        Kind::Str => toml_edit::value(value),
+    };
+    let path = dir.join("config.toml");
+    let mut doc = read_document(&path)?;
+    let (section, name) = s.parts();
+    // Seed a real `[section]` table when the file does not have one yet.
+    // Assigning straight into a missing key makes toml_edit emit an implicit
+    // inline table (`theme = { name = "mono" }`), which is valid TOML but not
+    // the hand-editable shape a config file the user opens should have.
+    if !doc.contains_key(section) {
+        doc.insert(section, toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+    doc[section][name] = parsed;
+    write_document(&path, &doc)
+}
+
+/// Set one setting in the user's real `config.toml`.
+pub fn write_value(s: &Setting, value: &str) -> Result<PathBuf, ApiError> {
+    let dir = config_dir()
+        .ok_or_else(|| ApiError::bad_request("no config directory on this platform"))?;
+    write_value_in(&dir, s, value)
+}
+
+/// Remove one setting from a `config.toml` under an explicit directory, so it
+/// falls back to its default. Returns whether the key was actually present.
+pub fn clear_value_in(dir: &std::path::Path, s: &Setting) -> Result<bool, ApiError> {
+    if s.home != Home::Toml {
+        return Err(ApiError::bad_request(format!(
+            "{} lives in the store, not config.toml",
+            s.key
+        )));
+    }
+    let path = dir.join("config.toml");
+    let mut doc = read_document(&path)?;
+    let (section, name) = s.parts();
+    let existed = doc
+        .get_mut(section)
+        .and_then(|t| t.as_table_like_mut())
+        .map(|t| t.remove(name).is_some())
+        .unwrap_or(false);
+    if existed {
+        write_document(&path, &doc)?;
+    }
+    Ok(existed)
+}
+
+/// Remove one setting from the user's real `config.toml`.
+pub fn clear_value(s: &Setting) -> Result<bool, ApiError> {
+    let dir = config_dir()
+        .ok_or_else(|| ApiError::bad_request("no config directory on this platform"))?;
+    clear_value_in(&dir, s)
 }
 
 #[cfg(test)]
@@ -232,32 +352,135 @@ mod tests {
         }
     }
 
+    /// A private directory per test. These tests used to set `$TASQX_CONFIG_DIR`,
+    /// which is process-global and therefore racy under cargo's parallel test
+    /// threads: one test's writer could observe another's directory. Passing the
+    /// directory in removes the shared mutable state entirely.
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tasqx-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
     /// `config.toml` reading used to be three functions that each hard-coded a
     /// key path and swallowed every failure. The registry-driven reader has to
     /// return the same values for the same file, including returning None for a
     /// key the file does not mention.
     #[test]
     fn toml_value_reads_a_setting_out_of_a_real_file() {
-        let dir = std::env::temp_dir().join(format!("tasqx-cfg-{}", std::process::id()));
+        let dir = temp_dir("cfg");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("config.toml"),
-            "[theme]\nname = \"gruvbox\"\n\n[notify]\nenabled = true\n",
+            "[theme]
+name = \"gruvbox\"
+
+[notify]
+enabled = true
+",
         )
         .unwrap();
-        let prev = std::env::var("TASQX_CONFIG_DIR").ok();
-        std::env::set_var("TASQX_CONFIG_DIR", &dir);
 
-        assert_eq!(toml_value(find("theme.name").unwrap()).as_deref(), Some("gruvbox"));
-        assert_eq!(toml_value(find("notify.enabled").unwrap()).as_deref(), Some("true"));
+        assert_eq!(toml_value_in(&dir, find("theme.name").unwrap()).as_deref(), Some("gruvbox"));
+        assert_eq!(toml_value_in(&dir, find("notify.enabled").unwrap()).as_deref(), Some("true"));
 
-        std::fs::write(dir.join("config.toml"), "[theme]\nname = \"mono\"\n").unwrap();
-        assert_eq!(toml_value(find("notify.enabled").unwrap()), None, "absent key is None");
+        std::fs::write(dir.join("config.toml"), "[theme]
+name = \"mono\"
+").unwrap();
+        assert_eq!(toml_value_in(&dir, find("notify.enabled").unwrap()), None, "absent key is None");
 
-        match prev {
-            Some(v) => std::env::set_var("TASQX_CONFIG_DIR", v),
-            None => std::env::remove_var("TASQX_CONFIG_DIR"),
-        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The reason this module writes through toml_edit rather than a
+    /// toml::Table round trip. Verified by running it: the round trip drops
+    /// every comment AND reorders sections alphabetically. A user who wrote
+    /// "# gruvbox because the office projector washes out nord" loses it on the
+    /// first `tasqx config set`, with no warning.
+    #[test]
+    fn writing_a_setting_preserves_comments_and_order() {
+        let dir = temp_dir("w");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = "# chosen for the projector
+[theme]
+name = \"gruvbox\"
+
+[notify]
+enabled = true
+";
+        std::fs::write(&path, original).unwrap();
+
+        write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+
+        assert!(after.contains("# chosen for the projector"), "comment lost:
+{after}");
+        assert!(after.contains("name = \"mono\""), "value not written:
+{after}");
+        assert!(after.find("[theme]") < after.find("[notify]"), "sections reordered:
+{after}");
+        assert!(after.contains("enabled = true"), "other section damaged:
+{after}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Writing must work when there is no file and no directory yet, which is
+    /// the state of every fresh install — and it must produce a real `[theme]`
+    /// section. Assigning into a missing key makes toml_edit emit an implicit
+    /// inline table (`theme = { name = "mono" }`): valid TOML, but not a shape
+    /// a user opening the file would recognise or extend by hand.
+    #[test]
+    fn writing_creates_the_file_and_its_directory() {
+        let dir = temp_dir("new");
+
+        write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
+        let after = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(after.contains("[theme]"), "{after}");
+        assert!(after.contains("mono"), "{after}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file we cannot parse must NOT be overwritten. Replacing it with a
+    /// valid file that has lost the user's content is worse than refusing, and
+    /// the silent reader would never have told them either way.
+    #[test]
+    fn writing_refuses_to_clobber_an_unparseable_file() {
+        let dir = temp_dir("bad");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[theme
+name = broken").unwrap();
+
+        let err = write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap_err();
+        assert!(err.message.contains("config.toml"), "{}", err.message);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[theme
+name = broken",
+            "the unparseable file must be left exactly as it was"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A key set then read back must round-trip through a real file, and
+    /// unsetting it must fall back to the built-in default. This is the whole
+    /// contract of `config set` / `config unset` in one assertion chain.
+    #[test]
+    fn a_toml_key_round_trips_and_unset_falls_back_to_the_default() {
+        let dir = temp_dir("rt");
+        let s = find("theme.name").unwrap();
+
+        write_value_in(&dir, s, "gruvbox").unwrap();
+        assert_eq!(toml_value_in(&dir, s).as_deref(), Some("gruvbox"));
+
+        assert!(clear_value_in(&dir, s).unwrap(), "the key was present, so removal is reported");
+        assert_eq!(toml_value_in(&dir, s), None, "unset means the file no longer names it");
+        assert!(!clear_value_in(&dir, s).unwrap(), "a second unset removes nothing");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

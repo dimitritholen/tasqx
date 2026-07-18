@@ -457,6 +457,18 @@ enum ConfigAction {
         /// Setting key, e.g. `theme.name`.
         key: String,
     },
+    /// Set a setting in `config.toml`.
+    Set {
+        /// Setting key, e.g. `theme.name`.
+        key: String,
+        /// New value.
+        value: String,
+    },
+    /// Remove a setting so it falls back to its default.
+    Unset {
+        /// Setting key.
+        key: String,
+    },
     /// Print the path of `config.toml` (it may not exist yet).
     Path,
 }
@@ -1445,6 +1457,22 @@ fn run_config(be: &mut Backend, ctx: &Ctx, action: &ConfigAction) -> CmdOutcome 
             let text = format!("{value}\n");
             Ok((json!({ "key": s.key, "value": value }), text))
         }
+        ConfigAction::Set { key, value } => {
+            let s = config::find(key).ok_or_else(|| unknown_key(key))?;
+            let path = config::write_value(s, value)?;
+            let text = format!("{} = {}  ({})\n", s.key, value, path.display());
+            Ok((json!({ "key": s.key, "value": value, "path": path.to_string_lossy() }), text))
+        }
+        ConfigAction::Unset { key } => {
+            let s = config::find(key).ok_or_else(|| unknown_key(key))?;
+            let existed = config::clear_value(s)?;
+            let text = if existed {
+                format!("{} unset; now {} (default)\n", s.key, s.default)
+            } else {
+                format!("{} was not set\n", s.key)
+            };
+            Ok((json!({ "key": s.key, "removed": existed }), text))
+        }
         ConfigAction::List => {
             let mut rows = Vec::new();
             for s in config::SETTINGS {
@@ -2323,5 +2351,24 @@ mod tests {
             .expect_err("an unknown key must not succeed");
         assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
         assert!(err.message.contains("theme.name"), "must list valid keys: {}", err.message);
+    }
+
+    /// D21 put default_project in the store on purpose. `config set` must
+    /// refuse it and name the verb that owns it, rather than writing a second
+    /// copy into config.toml where nothing validates it against the store.
+    #[test]
+    fn config_set_refuses_a_store_owned_key_and_names_its_verb() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        let mut be = Backend::Local(e);
+        let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
+
+        let err = run_config(
+            &mut be,
+            &ctx,
+            &ConfigAction::Set { key: "default_project".into(), value: "work".into() },
+        )
+        .expect_err("a store-owned key must not be writable through config set");
+        assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
+        assert!(err.message.contains("tasqx use"), "must name the verb: {}", err.message);
     }
 }

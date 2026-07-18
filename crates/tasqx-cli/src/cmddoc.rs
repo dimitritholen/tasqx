@@ -379,11 +379,12 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "— (registry + core.capabilities)",
         summary: "Read and change tasqx settings.",
-        usage: "tasqx config <list|get <key>|path>",
+        usage: "tasqx config <list|get <key>|set <key> <value>|unset <key>|path>",
         examples: &[
             ex("tasqx config list"),
             ex("tasqx config get theme.name"),
             ex("tasqx config path"),
+            ex_norun("tasqx config set theme.name gruvbox", "writes config.toml, preserving your comments"),
         ],
         notes: &[
             "`list` shows both homes. Most settings live in `config.toml`; `default_project` lives in the store and is set with `tasqx use` (D21).",
