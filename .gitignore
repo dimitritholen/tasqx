@@ -27,3 +27,6 @@ rustc-ice-*.txt
 .claude/worktrees/
 mutants.out/
 mutants.out.old/
+
+# Stray agent skills — kept on disk, not part of this project.
+.agents/
