@@ -60,7 +60,12 @@ const VERBS: [(&str, &str, &str, &str); 28] = [
         "task.done",
         "Complete it (and spawn the next recurrence).",
     ),
-    ("cancel", "—", "task.cancel", "Cancel without completing."),
+    (
+        "cancel",
+        "<code>delete</code>, <code>del</code>, <code>rm</code>",
+        "task.cancel",
+        "Cancel without completing. There is no hard delete — this is reversible via <code>reopen</code>.",
+    ),
     ("reopen", "—", "task.reopen", "Reopen a done/cancelled task."),
     ("annotate", "<code>note</code>", "annotation.add", "Attach a timestamped note."),
     ("dep", "—", "dependency.add", "<code>&lt;ref&gt;</code> depends on <code>&lt;depends_on&gt;</code>."),
@@ -832,6 +837,7 @@ fn page_scheduling() -> String {
             &["Short offsets", "<code>3d</code>, <code>2w</code>, <code>1mo</code>, <code>1y</code> — signed: <code>+3d</code>, <code>-1d</code>"],
             &["Boundaries", "<code>eom</code> / <code>\"end of month\"</code>, <code>eow</code> / <code>\"end of week\"</code> (ISO week ends Sunday)"],
             &["Trailing time", "<code>\"friday 17:00\"</code>, <code>\"tomorrow 9am\"</code>, <code>\"monday 5pm\"</code>"],
+            &["Leading filler", "<code>\"at 6pm\"</code>, <code>\"on friday\"</code>, <code>\"by monday 5pm\"</code> — <code>at</code>/<code>on</code>/<code>by</code>/<code>@</code> are ignored"],
         ],
     ));
 

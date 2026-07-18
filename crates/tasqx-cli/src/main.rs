@@ -230,7 +230,12 @@ enum Command {
         r#ref: String,
     },
     /// Cancel a task (maps to task.cancel).
-    #[command(after_help = crate::cmddoc::after_help("cancel"))]
+    #[command(
+        alias = "delete",
+        alias = "del",
+        alias = "rm",
+        after_help = crate::cmddoc::after_help("cancel")
+    )]
     Cancel {
         /// short_id or UUID.
         r#ref: String,
@@ -1791,6 +1796,21 @@ mod tests {
                     assert_eq!(priority.as_deref(), Some("H"), "verb: {verb}");
                 }
                 _ => panic!("expected a modify command for {verb}"),
+            }
+        }
+    }
+
+    /// `tasqx delete 3` is what a human reaches for, and it exited with
+    /// "unrecognized subcommand" while suggesting `complete`, `l` and `d` —
+    /// three verbs, none of them the right one. tasqx has no hard delete by
+    /// design (DESIGN.md §725: cancellation is reversible and logged), so the
+    /// fix is to make the word people actually type land on that verb.
+    #[test]
+    fn delete_aliases_resolve_to_cancel() {
+        for verb in ["cancel", "delete", "del", "rm"] {
+            match add_of(&["tasqx", verb, "42"]) {
+                Command::Cancel { r#ref, .. } => assert_eq!(r#ref, "42", "verb: {verb}"),
+                _ => panic!("expected a cancel command for {verb}"),
             }
         }
     }

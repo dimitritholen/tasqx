@@ -19,13 +19,20 @@
 //!    `2w`, `1mo`, `1y`, each optionally signed (`+3d`, `-1d` = yesterday);
 //!  * `eom` / `end of month`, `eow` / `end of week` (ISO week ends Sunday);
 //!  * an optional trailing time on any of the above — `friday 17:00`,
-//!    `tomorrow 9am`, `monday 5pm`.
+//!    `tomorrow 9am`, `monday 5pm`;
+//!  * an optional *leading* filler word — `at 6pm`, `on friday`, `by monday
+//!    5pm`. Only leading fillers are ignored, so `at fridya` stays an error
+//!    rather than quietly resolving to a date nobody asked for.
 
 use jiff::civil::{Date, DateTime, Time, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
 
 use crate::error::ApiError;
+
+/// Leading words a human types that carry no date meaning: `--due "at 6pm"` and
+/// `--due "on friday"` mean exactly what `6pm` and `friday` mean.
+const FILLERS: &[&str] = &["at", "on", "by", "@", "due"];
 
 /// Parse `input` relative to `now`, returning an RFC3339 (UTC, `…Z`) string.
 ///
@@ -69,8 +76,30 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
         }
     }
 
+    // Peel leading filler words (`at 6pm`, `on friday`, `by monday 5pm`). These
+    // carry no meaning, so a grammar that is "forgiving by default" must not
+    // trip over them — but the forgiveness is LEADING-only and deliberately so:
+    // `at fridya` still has to fail rather than silently resolve to something
+    // the user never typed.
+    while let Some(first) = tokens.first() {
+        if FILLERS.contains(first) {
+            tokens.remove(0);
+        } else {
+            break;
+        }
+    }
+
     let today = now.to_zoned(TimeZone::UTC).date();
+    // Empty tokens now has two causes: a clock was peeled (`6pm` — a real bare
+    // time), or the input was filler and nothing else (`at`). Only the first is
+    // a date; the second is a bad request, not "today at midnight".
     let bare_time = tokens.is_empty();
+    if bare_time && time.is_none() {
+        return Err(ApiError::bad_request(format!(
+            "could not parse date: {raw:?} (try e.g. tomorrow, friday, \
+             2026-07-20, \"in 3 days\", eom, or 2026-07-20T17:00)"
+        )));
+    }
 
     let date = if bare_time {
         today
@@ -515,6 +544,36 @@ mod tests {
         assert!(parse_when("not a date", now()).is_err());
         assert!(parse_when("", now()).is_err());
         assert!(parse_when("bluesday", now()).is_err());
+    }
+
+    /// `--due "at 6pm"` is what a human types, and it errored with "could not
+    /// parse date" while the *time* had been understood perfectly — the leading
+    /// preposition was the only thing left over, and no `resolve_date` arm
+    /// matches a bare `["at"]`. "Forgiving by default" (§5) has to cover the
+    /// filler words that carry no meaning: they are noise, not input.
+    #[test]
+    fn leading_filler_words_are_ignored() {
+        // now is Wed 2026-07-15T12:00Z; 18:00 is still ahead -> today.
+        assert_eq!(p("at 6pm"), "2026-07-15T18:00:00Z");
+        assert_eq!(p("@ 6pm"), "2026-07-15T18:00:00Z");
+        assert_eq!(p("on friday"), "2026-07-17T00:00:00Z");
+        assert_eq!(p("by monday 5pm"), "2026-07-20T17:00:00Z");
+        assert_eq!(p("on 2026-07-20"), "2026-07-20T00:00:00Z");
+        // Stacked fillers still reduce to the same date.
+        assert_eq!(p("by on friday"), "2026-07-17T00:00:00Z");
+        // The bare-time roll-forward still applies behind a filler.
+        assert_eq!(p("at 9am"), "2026-07-16T09:00:00Z");
+    }
+
+    /// The forgiveness is deliberately LEADING-only. A filler in the middle, a
+    /// filler with junk after it, or a filler alone must stay a clean error —
+    /// otherwise `at fridya` (a typo) silently becomes a date the user never
+    /// meant, and a wrong due date you don't see beats an error you do.
+    #[test]
+    fn filler_stripping_does_not_swallow_junk() {
+        for bad in ["at", "on", "by", "@", "at fridya", "on someday", "friday at bogus"] {
+            assert!(parse_when(bad, now()).is_err(), "{bad:?} must stay an error");
+        }
     }
 
     /// An absurd unit count is a `bad_request`, NOT a panic. jiff's `Span::days`

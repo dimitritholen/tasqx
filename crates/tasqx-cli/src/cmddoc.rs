@@ -240,12 +240,18 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     },
     CmdDoc {
         verb: "cancel",
-        aliases: &[],
+        aliases: &["delete", "del", "rm"],
         method: "task.cancel",
         summary: "Cancel a task.",
         usage: "tasqx cancel <ref>",
-        examples: &[ex_norun("tasqx cancel 1", "a cancelled dependency releases its dependents (D11)")],
-        notes: &[],
+        examples: &[
+            ex_norun("tasqx cancel 1", "a cancelled dependency releases its dependents (D11)"),
+            ex_norun("tasqx delete 1", "same thing — tasqx has no hard delete; reverse it with `reopen`"),
+        ],
+        notes: &[
+            "There is no destructive delete. `delete`/`rm` are aliases for cancel: the task \
+             keeps its history, stays in the event log, and `tasqx reopen <ref>` undoes it.",
+        ],
         see_also: &["done", "reopen"],
         topic: Topic::Capturing,
     },
