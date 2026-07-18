@@ -446,6 +446,11 @@ enum ThemeAction {
         /// Theme name to preview.
         name: Option<String>,
     },
+    /// Persist a theme choice to `config.toml`.
+    Set {
+        /// Theme name: a built-in or a user file in the themes directory.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1421,6 +1426,25 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
                 })
                 .collect();
             println!("  {:<14} {strip}  {}", "urgency.ramp", preview.paint("muted", "cold → hot"));
+        }
+        ThemeAction::Set { name } => {
+            // Validate before writing: `theme::load` falls back to the default
+            // for an unknown name, so an unchecked write would persist a name
+            // that silently does nothing every run from then on.
+            let known = theme::BUILTINS.contains(&name.as_str())
+                || themes_dir().is_some_and(|d| d.join(format!("{name}.toml")).is_file());
+            if !known {
+                eprintln!("error [bad_request]: unknown theme {name:?} (try `tasqx theme list`)");
+                exit(2);
+            }
+            let s = config::find("theme.name").expect("theme.name is a registered setting");
+            match config::write_value(s, name) {
+                Ok(path) => println!("theme.name = {name}  ({})", path.display()),
+                Err(e) => {
+                    eprintln!("error [{}]: {}", code_str(&e), e.message);
+                    exit(e.exit_code());
+                }
+            }
         }
     }
 }

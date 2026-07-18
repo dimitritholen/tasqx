@@ -323,6 +323,35 @@ fn page_overview() -> String {
          touching your real store. Every example below was run exactly that way.",
     ));
 
+    // Rendered from `config::SETTINGS` rather than hand-written, so a new
+    // setting cannot ship undocumented — `every_setting_appears_in_the_guide`
+    // fails the build if it does.
+    s.push_str(&h3("Settings"));
+    s.push_str(&p(
+        "<code>tasqx config list</code> shows every setting with the layer that supplied it. \
+         Resolution order is the CLI flag, then the <code>TASQX_*</code> environment variable, \
+         then <code>config.toml</code>, then the built-in default.",
+    ));
+    let setting_rows: Vec<Vec<String>> = crate::config::SETTINGS
+        .iter()
+        .map(|st| {
+            vec![
+                format!("<code>{}</code>", st.key),
+                match st.home {
+                    crate::config::Home::Toml => "<code>config.toml</code>".to_string(),
+                    crate::config::Home::Store => "the store".to_string(),
+                },
+                if st.default.is_empty() {
+                    "—".to_string()
+                } else {
+                    format!("<code>{}</code>", st.default)
+                },
+                esc(st.summary),
+            ]
+        })
+        .collect();
+    s.push_str(&table_owned(&["Setting", "Home", "Default", "What it does"], &setting_rows));
+
     s.push_str(&page_close("overview"));
     s
 }
@@ -2304,6 +2333,67 @@ mod tests {
                 "verb `{verb}` claims method `{named}`, which core.capabilities does not list"
             );
         }
+    }
+
+    /// Every setting a user can reach must be documented. The flags guard found
+    /// eleven real gaps the day it was written; settings are the same class of
+    /// surface and had none.
+    #[test]
+    fn every_setting_appears_in_the_guide() {
+        let doc = generate();
+        let missing: Vec<&str> = crate::config::SETTINGS
+            .iter()
+            .map(|s| s.key)
+            .filter(|k| !doc.contains(&format!("<code>{k}</code>")))
+            .collect();
+        assert!(missing.is_empty(), "settings the guide never names: {missing:?}");
+    }
+
+    /// Every `TASQX_*` variable the code reads must be declared in SETTINGS or
+    /// listed here as a deliberate exception. Without this, an env var that
+    /// overrides behaviour can exist with nothing documenting it — which is
+    /// exactly the state TASQX_FORCE_COLOR was in when this guard was written.
+    #[test]
+    fn every_env_var_is_either_a_registered_setting_or_a_named_exception() {
+        // Not settings: these select a whole store/transport rather than tuning
+        // behaviour, and giving them a config layer is a separate decision
+        // (see the spec's "out of scope").
+        const EXCEPTIONS: &[&str] = &[
+            "TASQX_DB",
+            "TASQX_SOCK",
+            "TASQX_CONFIG_DIR",
+            "TASQX_MCP_TOKEN",
+            "TASQX_FORCE_COLOR",
+        ];
+        let sources = [
+            include_str!("lib.rs"),
+            include_str!("theme.rs"),
+            include_str!("config.rs"),
+        ];
+        let mut found: Vec<String> = Vec::new();
+        for src in sources {
+            let mut rest = src;
+            while let Some(i) = rest.find("TASQX_") {
+                let tail = &rest[i..];
+                let end = tail
+                    .find(|c: char| !(c.is_ascii_uppercase() || c == '_'))
+                    .unwrap_or(tail.len());
+                // `TASQX_` with nothing after it is prose, not a variable —
+                // doc comments write `TASQX_*` and the `*` ends the scan.
+                if end > "TASQX_".len() {
+                    found.push(tail[..end].to_string());
+                }
+                rest = &tail[end..];
+            }
+        }
+        found.sort();
+        found.dedup();
+        let registered: Vec<&str> = crate::config::SETTINGS.iter().filter_map(|s| s.env).collect();
+        let orphans: Vec<&String> = found
+            .iter()
+            .filter(|v| !registered.contains(&v.as_str()) && !EXCEPTIONS.contains(&v.as_str()))
+            .collect();
+        assert!(orphans.is_empty(), "env vars with no setting and no exception: {orphans:?}");
     }
 
     /// `modify --clear` takes a closed set; the page prints it. If `main::CLEARABLE`

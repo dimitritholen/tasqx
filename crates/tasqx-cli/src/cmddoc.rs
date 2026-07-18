@@ -365,7 +365,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "— (no store)",
         summary: "List or preview terminal themes.",
-        usage: "tasqx theme <list|show [name]>",
+        usage: "tasqx theme <list|show [name]|set <name>>",
         examples: &[
             ex("tasqx theme list"),
             ex("tasqx theme show nord"),
