@@ -1,0 +1,63 @@
+name: CI
+
+# Every guard in this repo — the drift guards, the executable examples, the
+# status-set invariants — only ran when a human typed `cargo test` on one
+# machine. That made the whole net advisory. This makes it binding.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both, deliberately. `documented_store_path_matches_the_real_one` is
+        # `#[cfg(windows)]`, so the non-Windows store paths in the user guide
+        # were never checked by anything; and the daemon's transport differs per
+        # platform (Unix socket vs named pipe), which no single-OS run exercises.
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-targets
+
+  # The OS-notification backend is off by default and therefore compiled by
+  # nothing in the normal test run — a break in it would surface only on a
+  # user's machine, at the moment a reminder fires.
+  notify-feature:
+    name: build --features notify-os
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - run: cargo build -p tasqx-core --features notify-os
+
+  # Advisory, NOT a gate — and deliberately so for now. The tree currently has
+  # ~11 clippy findings (mostly `type_complexity` in daemon.rs) and has never
+  # been run through rustfmt; its compact one-line struct literals are a
+  # deliberate house style that `cargo fmt` would rewrite wholesale. Turning
+  # either into a gate today would paint CI red on its first run, which trains
+  # everyone to ignore it. Clean the findings first, then flip
+  # `continue-on-error` off and add `cargo fmt --all --check` here.
+  lint:
+    name: clippy (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets

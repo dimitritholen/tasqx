@@ -1825,25 +1825,32 @@ mod tests {
     /// constant left the whole suite green while every backlog task silently
     /// vanished from every burndown. A chart missing tasks still looks like a
     /// valid chart, which is the same silent-omission class D24 exists to fix.
-    /// This asserts the constant covers every non-cancelled status, so adding a
-    /// variant without listing it fails loudly.
+    ///
+    /// This drives the expectation off `Status::ALL` and `counts_in_reports()`
+    /// rather than restating the names. An earlier version of this guard looped
+    /// over a hardcoded `["backlog", "pending", "active", "done"]` while its doc
+    /// comment claimed a new variant would fail loudly — it would not have; the
+    /// guard was the very kind of hand-maintained parallel list it existed to
+    /// police. Adding a `Status` variant now changes this test's expectation
+    /// automatically, so a `NOT_CANCELLED` that forgot it goes red.
     #[test]
     fn burndown_scope_keeps_every_status_except_cancelled() {
         let f = tasqx_core::filter::Filter::parse(NOT_CANCELLED);
-        let ctx_for = |status: &'static str| tasqx_core::filter::MatchCtx {
-            status,
-            project: None,
-            tags: &[],
-            due: None,
-            blocked: false,
-        };
-        for status in ["backlog", "pending", "active", "done"] {
-            assert!(
-                f.matches(&ctx_for(status)),
-                "NOT_CANCELLED drops `{status}` out of every burndown"
+        for status in tasqx_core::types::Status::ALL {
+            let ctx = tasqx_core::filter::MatchCtx {
+                status: status.as_str(),
+                project: None,
+                tags: &[],
+                due: None,
+                blocked: false,
+            };
+            assert_eq!(
+                f.matches(&ctx),
+                status.counts_in_reports(),
+                "NOT_CANCELLED disagrees with Status::counts_in_reports about `{}`",
+                status.as_str()
             );
         }
-        assert!(!f.matches(&ctx_for("cancelled")), "NOT_CANCELLED must exclude cancelled");
     }
 
     /// Regression: clap reads a leading `-` as a flag, so `--remind -1h` parsed

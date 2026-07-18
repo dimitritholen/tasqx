@@ -122,7 +122,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["a", "new"],
         method: "task.add",
         summary: "Capture a task — title plus inline sugar.",
-        usage: "tasqx add <title…> [--project p] [--due d] [-p H|M|L] [-t tag]… [--repeat r] [--remind r] [-e est]",
+        usage: "tasqx add <title…> [--project p] [--due d] [--scheduled s] [--wait w] [-p H|M|L] [-t tag]… [--repeat r] [--remind r] [-e est]",
         examples: &[
             ex("tasqx add Buy milk"),
             ex("tasqx add Ship it due:friday +api !high --project work"),
@@ -141,7 +141,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["mod", "m", "edit"],
         method: "task.modify",
         summary: "Change a task — set fields or --clear them.",
-        usage: "tasqx modify <ref> [words/sugar…] [--clear <field>]… [--expected-rev N]",
+        usage: "tasqx modify <ref> [words/sugar…] [--project p] [--due d] [--scheduled s] [--wait w] [-p H|M|L] [-t tag]… [--repeat r] [--remind r] [-e est] [--clear <field>]… [--expected-rev N]",
         examples: &[
             ex_norun("tasqx modify 42 due:friday !high est:4h", "set fields"),
             ex_norun("tasqx modify 42 --clear due --clear remind", "clear fields"),
@@ -581,6 +581,72 @@ mod tests {
         let h = after_help("report").to_lowercase();
         assert!(h.contains("--all"), "{h}");
         assert!(h.contains("cancelled"), "{h}");
+    }
+
+    /// Pull the flag-shaped tokens out of a usage line. Usage strings mix flags
+    /// with placeholders and punctuation (`[--due d]`, `[-p H|M|L]…`), so the
+    /// separators have to include the bracket/pipe family, not just whitespace.
+    fn usage_flags(usage: &str) -> Vec<&str> {
+        usage
+            .split(|c: char| c.is_whitespace() || "[]<>|()…,".contains(c))
+            .filter(|t| t.starts_with('-') && t.len() > 1)
+            .collect()
+    }
+
+    /// The general form of the guard above. Until this existed, NOTHING in the
+    /// repo inspected clap's arguments — `get_arguments` appeared zero times —
+    /// so every one of the eighteen drift guards compared verbs, aliases and
+    /// methods while a flag could ship entirely undocumented. That is how
+    /// `--all` shipped: the suite stayed green with the flag absent from every
+    /// user-facing surface, and the gap was found by a human reading the code.
+    ///
+    /// A flag the user can type must appear in the `usage` line of its verb, so
+    /// `tasqx <verb> -h` names it. `--help`/`--version` are clap's own and carry
+    /// no documentation obligation.
+    #[test]
+    fn every_clap_flag_is_documented_in_its_verbs_usage() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let mut undocumented: Vec<String> = Vec::new();
+
+        for sub in cmd.get_subcommands() {
+            let verb = sub.get_name();
+            let Some(doc) = find(verb) else { continue }; // covered by the verb guard
+            for arg in sub.get_arguments() {
+                let Some(long) = arg.get_long() else { continue };
+                if matches!(long, "help" | "version") {
+                    continue;
+                }
+                // Either spelling counts as documented: `add`'s usage names
+                // `-p H|M|L`, and a reader who sees the short form knows the
+                // option exists. The obligation is discoverability, not a
+                // particular spelling.
+                //
+                // Matched against TOKENS, not as a substring. A `contains("-e")`
+                // is satisfied by `--expected-rev`, which is how `modify -e`
+                // first passed this guard while being genuinely undocumented —
+                // the same lexical-vs-structural trap `Filter::constrains_status`
+                // exists to avoid.
+                let documented = usage_flags(doc.usage).iter().any(|tok| {
+                    tok.trim_start_matches('-') == long
+                        || arg.get_short().is_some_and(|c| {
+                            tok.len() == 2 && tok.starts_with('-') && tok.ends_with(c)
+                        })
+                });
+                if !documented {
+                    undocumented.push(match arg.get_short() {
+                        Some(c) => format!("{verb} --{long} (or -{c})"),
+                        None => format!("{verb} --{long}"),
+                    });
+                }
+            }
+        }
+
+        assert!(
+            undocumented.is_empty(),
+            "flags the CLI accepts but no usage line mentions:\n  {}",
+            undocumented.join("\n  ")
+        );
     }
 
     #[test]
