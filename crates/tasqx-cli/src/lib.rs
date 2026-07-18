@@ -625,9 +625,10 @@ pub fn run() {
 /// Resolve the active theme (flag > $TASQX_THEME > config > default) and detect
 /// terminal capability, producing the render context every command shares.
 fn build_ctx(flag: Option<&str>) -> Ctx {
-    let env = std::env::var("TASQX_THEME").ok();
-    let config = config_theme_name();
-    let name = theme::resolve_name(flag, env.as_deref(), config.as_deref());
+    // One chain for every setting (config::resolve), rather than a per-setting
+    // fold. The env layer is read inside the resolver so a caller cannot forget it.
+    let s = config::find("theme.name").expect("theme.name is a registered setting");
+    let (name, _) = config::resolve(s, flag, config::toml_value(s).as_deref());
     let dir = themes_dir();
     let theme = theme::load(&name, dir.as_deref());
     Ctx::new(theme, Caps::detect())
@@ -645,44 +646,15 @@ fn themes_dir() -> Option<PathBuf> {
         .map(|dirs| dirs.config_dir().join("themes"))
 }
 
-/// Read the user's `config.toml` (`$TASQX_CONFIG_DIR` or the platform config
-/// dir). A missing, unreadable, or invalid file is simply "no config" — config
-/// is never load-bearing enough to fail a command over.
-fn config_table() -> Option<toml::Table> {
-    let base: PathBuf = if let Ok(d) = std::env::var("TASQX_CONFIG_DIR") {
-        if d.is_empty() {
-            return None;
-        }
-        PathBuf::from(d)
-    } else {
-        directories::ProjectDirs::from("dev", "tasqx", "tasqx")?.config_dir().to_path_buf()
-    };
-    let src = std::fs::read_to_string(base.join("config.toml")).ok()?;
-    src.parse::<toml::Table>().ok()
-}
-
-/// Read `[theme] name` from `config.toml`, if present.
-fn config_theme_name() -> Option<String> {
-    let val = config_table()?;
-    val.get("theme")
-        .and_then(|t| t.get("name"))
-        .and_then(|n| n.as_str())
-        .map(str::to_string)
-}
-
 /// Read `[notify] enabled` from `config.toml` (DESIGN.md §9).
 ///
-/// Absent means **false**: quiet by default is the whole point, so every failure
-/// mode here — no config dir, no file, malformed TOML, wrong type — has to land
-/// on "don't notify", never on "notify anyway".
+/// Native OS toasts are opt-in: absent config means `false`, so every failure
+/// mode here — no config dir, no file, malformed TOML, wrong type — lands on
+/// "don't notify", never on "notify anyway", and a fresh install is quiet.
 fn config_notify_enabled() -> bool {
-    config_table()
-        .and_then(|val| {
-            val.get("notify")
-                .and_then(|n| n.get("enabled"))
-                .and_then(toml::Value::as_bool)
-        })
-        .unwrap_or(false)
+    let s = config::find("notify.enabled").expect("notify.enabled is a registered setting");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    v == "true"
 }
 
 /// Result of a rendered command: the raw API result (for `--json`) plus the

@@ -8,6 +8,8 @@
 //! nothing said so. One registry plus one resolver means a new setting is a
 //! table row, not four edits in three files.
 
+use std::path::PathBuf;
+
 /// Which config store owns a key.
 ///
 /// tasqx deliberately has two. D21 put `default_project` in the store's own
@@ -137,6 +139,50 @@ pub fn resolve(s: &Setting, flag: Option<&str>, file: Option<&str>) -> (String, 
     (s.default.to_string(), Source::Default)
 }
 
+/// The directory holding `config.toml`: `$TASQX_CONFIG_DIR` when set and
+/// non-empty, else the platform config dir. An empty variable means "no config
+/// dir at all", which is how tests isolate themselves.
+pub fn config_dir() -> Option<PathBuf> {
+    if let Ok(d) = std::env::var("TASQX_CONFIG_DIR") {
+        if d.is_empty() {
+            return None;
+        }
+        return Some(PathBuf::from(d));
+    }
+    Some(
+        directories::ProjectDirs::from("dev", "tasqx", "tasqx")?
+            .config_dir()
+            .to_path_buf(),
+    )
+}
+
+pub fn config_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("config.toml"))
+}
+
+/// Parse `config.toml`, or `None` if it is missing or unreadable.
+///
+/// Deliberately silent: this is on the path of every command, and a malformed
+/// config must never block a task capture. `tasqx config` does NOT use this —
+/// it reports the parse error, because there the user is asking about the file.
+fn read_table() -> Option<toml::Table> {
+    let text = std::fs::read_to_string(config_path()?).ok()?;
+    text.parse::<toml::Table>().ok()
+}
+
+/// One setting's raw value from `config.toml`, rendered as a string so every
+/// `Kind` shares one path. `None` when the file, section or key is absent.
+pub fn toml_value(s: &Setting) -> Option<String> {
+    let (section, name) = s.parts();
+    let v = read_table()?.get(section)?.get(name)?.clone();
+    match v {
+        toml::Value::String(x) => Some(x),
+        toml::Value::Boolean(b) => Some(b.to_string()),
+        toml::Value::Integer(i) => Some(i.to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +230,34 @@ mod tests {
         for s in SETTINGS {
             assert!(find(s.key).is_some(), "{} is not findable", s.key);
         }
+    }
+
+    /// `config.toml` reading used to be three functions that each hard-coded a
+    /// key path and swallowed every failure. The registry-driven reader has to
+    /// return the same values for the same file, including returning None for a
+    /// key the file does not mention.
+    #[test]
+    fn toml_value_reads_a_setting_out_of_a_real_file() {
+        let dir = std::env::temp_dir().join(format!("tasqx-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[theme]\nname = \"gruvbox\"\n\n[notify]\nenabled = true\n",
+        )
+        .unwrap();
+        let prev = std::env::var("TASQX_CONFIG_DIR").ok();
+        std::env::set_var("TASQX_CONFIG_DIR", &dir);
+
+        assert_eq!(toml_value(find("theme.name").unwrap()).as_deref(), Some("gruvbox"));
+        assert_eq!(toml_value(find("notify.enabled").unwrap()).as_deref(), Some("true"));
+
+        std::fs::write(dir.join("config.toml"), "[theme]\nname = \"mono\"\n").unwrap();
+        assert_eq!(toml_value(find("notify.enabled").unwrap()), None, "absent key is None");
+
+        match prev {
+            Some(v) => std::env::set_var("TASQX_CONFIG_DIR", v),
+            None => std::env::remove_var("TASQX_CONFIG_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
