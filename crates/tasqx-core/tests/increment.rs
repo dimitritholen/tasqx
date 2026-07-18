@@ -332,6 +332,94 @@ fn report_summary_aggregates_count_est_and_overdue() {
     assert_eq!(q["overdue"], 0);
 }
 
+// ---- D24: report aggregations exclude cancelled by default -------------------
+
+/// Seed one project `P` with one task per interesting status, each carrying a
+/// 1-hour estimate so `est_total` reads back as a count of included rows.
+fn engine_with_one_task_per_status() -> Engine {
+    let e = engine();
+    e.project_create(&json!({ "name": "P" })).unwrap(); // D23
+    for title in ["pend", "act", "fin", "dead"] {
+        e.task_add(&json!({ "title": title, "project": "P", "estimate": "PT1H" })).unwrap();
+    }
+    // short ids 1..4 in insertion order.
+    e.task_start(&json!({ "ref": "2" })).unwrap();
+    e.task_done(&json!({ "ref": "3" })).unwrap();
+    e.task_cancel(&json!({ "ref": "4" })).unwrap();
+    e
+}
+
+fn report(e: &Engine, params: serde_json::Value) -> serde_json::Value {
+    let rep = e.report_summary(&params).unwrap();
+    rep["groups"].as_array().unwrap().first().cloned().unwrap_or(json!({}))
+}
+
+/// D24: cancelling is tasqx's only way to get rid of a task (there is no hard
+/// delete, DESIGN §7), so before this rule every throwaway task inflated the
+/// headline `count`/`est_total`/`tracked_total` forever. An unfiltered report
+/// must not count abandoned work.
+#[test]
+fn report_summary_excludes_cancelled_by_default() {
+    let e = engine_with_one_task_per_status();
+    // `tracked_total` is deliberately absent: elapsed time is 0s in a fresh
+    // fixture, so it would assert nothing here. Its D24 behaviour is pinned by
+    // engine.rs::report_summary_tracked_total_drops_cancelled_but_keeps_done,
+    // which forges `tracked_seconds` directly.
+    let g = report(&e, json!({ "metrics": ["count", "est_total"] }));
+    assert_eq!(g["count"], 3, "pending+active+done, not the cancelled one");
+    assert_eq!(g["est_total"], "PT3H");
+}
+
+/// The other half of D24: `done` is real work and keeps counting. Excluding it
+/// alongside `cancelled` would make `tracked_total` useless — tracked time is
+/// overwhelmingly logged against tasks that are now finished.
+#[test]
+fn report_summary_still_counts_done_tasks() {
+    let e = engine_with_one_task_per_status();
+    let rep = e.report_summary(&json!({ "group_by": "status", "metrics": ["count"] })).unwrap();
+    let groups = rep["groups"].as_array().unwrap();
+    let done = groups.iter().find(|g| g["status"] == "done");
+    assert!(done.is_some(), "done must survive the default: {groups:?}");
+    assert_eq!(done.unwrap()["count"], 1);
+    assert!(
+        groups.iter().all(|g| g["status"] != "cancelled"),
+        "cancelled must not appear: {groups:?}"
+    );
+}
+
+/// D24 rule 1: `--all` turns the default off entirely, which is the only way to
+/// see abandoned work in an aggregation.
+#[test]
+fn report_summary_all_true_includes_cancelled_again() {
+    let e = engine_with_one_task_per_status();
+    let g = report(&e, json!({ "all": true, "metrics": ["count", "est_total"] }));
+    assert_eq!(g["count"], 4);
+    assert_eq!(g["est_total"], "PT4H");
+}
+
+/// D24 rule 2 beats rule 3: an explicitly-typed filter is used literally. Typing
+/// `tasqx report status:cancelled` and getting an empty table back reads as a
+/// bug however well the default is documented.
+#[test]
+fn report_summary_honours_an_explicit_status_filter() {
+    let e = engine_with_one_task_per_status();
+    let g = report(&e, json!({ "filter": "status:cancelled", "metrics": ["count"] }));
+    assert_eq!(g["count"], 1, "the default must step aside, not narrow to nothing");
+}
+
+/// Rule 2 also covers `@working`, which names a status set without using the
+/// word `status`. Note what this test does and does not prove: `@working`
+/// already restricts to pending+active, so the skip-cancelled default would
+/// change nothing on top of it — the count is 2 either way. It pins that
+/// `@working` is honoured literally; the structural-vs-lexical distinction it
+/// motivates is guarded by filter::tests::constrains_status_sees_only_real_status_predicates.
+#[test]
+fn report_summary_honours_working_literally() {
+    let e = engine_with_one_task_per_status();
+    let g = report(&e, json!({ "filter": "@working", "metrics": ["count"] }));
+    assert_eq!(g["count"], 2, "pending + active");
+}
+
 // ---- store.export -> store.import round-trip --------------------------------
 
 #[test]

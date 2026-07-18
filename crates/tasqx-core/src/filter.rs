@@ -86,6 +86,29 @@ impl Filter {
     pub fn matches(&self, ctx: &MatchCtx) -> bool {
         eval(&self.root, ctx)
     }
+
+    /// True when this filter already constrains status, so `report.summary`'s
+    /// exclude-cancelled default must step aside rather than silently narrowing
+    /// what the caller asked for (DESIGN §12-D24, rule 2). Without it,
+    /// `tasqx report status:cancelled` would return an empty table — which reads
+    /// as a bug no matter how well documented the default is.
+    ///
+    /// The walk is structural, over the parsed tree, including `Or` branches: a
+    /// lexical `input.contains("status")` would both over-match (`+status-page`)
+    /// and under-match (`@working`, which carries no such substring).
+    pub fn constrains_status(&self) -> bool {
+        constrains_status(&self.root)
+    }
+}
+
+fn constrains_status(e: &Expr) -> bool {
+    match e {
+        Expr::And(v) | Expr::Or(v) => v.iter().any(constrains_status),
+        // `@working` counts: it expands to `status in {pending,active}`, so the
+        // caller has named a status set just as explicitly as `status:pending`.
+        Expr::Pred(Pred::Status(_) | Pred::Working) => true,
+        Expr::Pred(_) => false,
+    }
 }
 
 fn eval(e: &Expr, ctx: &MatchCtx) -> bool {
@@ -250,4 +273,53 @@ fn predicate(tok: &str) -> Pred {
         return Pred::DueAfter(v.to_string());
     }
     Pred::Always // unknown token — ignored
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `report.summary` only applies its exclude-cancelled default when the
+    /// caller has *not* said anything about status (D24 rule 2). Getting this
+    /// predicate wrong is silent: too eager and `tasqx report status:cancelled`
+    /// returns an empty table, too lax and the default never fires. The check
+    /// must be structural — a lexical `contains("status")` would call
+    /// `+status-page` a status constraint and miss `@working` entirely.
+    #[test]
+    fn constrains_status_sees_only_real_status_predicates() {
+        for (input, want) in [
+            ("", false),
+            ("project:x", false),
+            ("+api -infra", false),
+            ("status:pending", true),
+            ("@working", true),                 // expands to pending|active
+            ("project:x or status:done", true), // must reach into Or branches
+            ("(project:x and +api) or @working", true),
+        ] {
+            assert_eq!(
+                Filter::parse(input).constrains_status(),
+                want,
+                "constrains_status({input:?})"
+            );
+        }
+    }
+
+    /// `status:blocked` is the one input where the token a user typed and the
+    /// predicate they get diverge: `predicate()` maps it to `Pred::Blocked`, not
+    /// `Pred::Status`, so D24's default still fires even though the word
+    /// `status:` was typed. That is deliberate, not an oversight. `blocked` is a
+    /// *derived flag* (has >=1 unresolved dependency), not a member of the
+    /// status set — and a cancelled task can still carry unresolved edges, so
+    /// without the default "show me blocked work" would quietly include work
+    /// nobody will ever unblock. Pinned here so a future editor who spots the
+    /// asymmetry changes it on purpose rather than by accident.
+    #[test]
+    fn blocked_is_a_derived_flag_not_a_status_constraint() {
+        for input in ["status:blocked", "@blocked", "+blocked"] {
+            assert!(
+                !Filter::parse(input).constrains_status(),
+                "{input:?} must not suppress the exclude-cancelled default"
+            );
+        }
+    }
 }

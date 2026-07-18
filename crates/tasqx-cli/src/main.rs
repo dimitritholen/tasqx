@@ -300,6 +300,14 @@ enum Command {
         /// Write the HTML report to this file (default: stdout).
         #[arg(long)]
         out: Option<String>,
+        /// Count cancelled tasks too. By default a report excludes cancelled
+        /// tasks, unless the filter itself names a status (DESIGN D24).
+        ///
+        /// Rejected alongside `--html`: the HTML page builds its own scope and
+        /// has no way to honour this yet, and accepting a flag we then ignore is
+        /// exactly the silent omission D24 exists to stop.
+        #[arg(long, conflicts_with = "html")]
+        all: bool,
     },
     /// Native terminal charts from the event log (DESIGN.md §8).
     #[command(after_help = crate::cmddoc::after_help("chart"))]
@@ -579,7 +587,7 @@ fn main() {
         Some(Command::Undep { r#ref, depends_on }) => run_dep(&mut backend, &ctx, "dependency.remove", r#ref, depends_on),
         Some(Command::Use { name }) => run_use(&mut backend, &ctx, name),
         Some(Command::Projects { all }) => run_projects(&mut backend, &ctx, all),
-        Some(Command::Report { args, .. }) => run_report(&mut backend, &ctx, args),
+        Some(Command::Report { args, all, .. }) => run_report(&mut backend, &ctx, args, all),
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, file),
         Some(Command::Next) => run_next(&mut backend, &ctx),
@@ -1013,11 +1021,14 @@ fn run_projects(be: &mut Backend, ctx: &Ctx, all: bool) -> CmdOutcome {
     Ok((result, text))
 }
 
-fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>) -> CmdOutcome {
+/// Build the `report.summary` params from the CLI's positional args plus the
+/// `--all` flag. Split out of [`run_report`] so the CLI→core contract can be
+/// asserted without standing up a backend.
+fn report_params(args: &[String], all: bool) -> Value {
     // First token, if a known group_by keyword, selects grouping; the rest is
     // the filter. Otherwise everything is the filter (group_by defaults).
     let mut group_by = "project".to_string();
-    let mut rest: &[String] = &args;
+    let mut rest: &[String] = args;
     if let Some(first) = args.first() {
         if matches!(first.as_str(), "project" | "status" | "priority") {
             group_by = first.clone();
@@ -1031,6 +1042,17 @@ fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>) -> CmdOutcome {
     if !rest.is_empty() {
         params["filter"] = Value::String(rest.join(" "));
     }
+    // Sent only when set: core already defaults `all` to false, and an explicit
+    // `false` would be the same thing said twice.
+    if all {
+        params["all"] = Value::Bool(true);
+    }
+    params
+}
+
+fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>, all: bool) -> CmdOutcome {
+    let params = report_params(&args, all);
+    let group_by = params["group_by"].as_str().unwrap_or("project").to_string();
     let result = be.call("report.summary", &params)?;
     let text = render::report(ctx, &result, &group_by);
     Ok((result, text))
@@ -1116,45 +1138,48 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) {
         }
         ChartKind::Burndown { project, days } => {
             let days = days.unwrap_or(30);
-            // Resolve project membership (task ids) via a pure task.list read.
-            let (members, label) = match &project {
-                Some(p) => {
-                    let filter = format!("project:{p}");
-                    let listed = dispatch(
-                        engine,
-                        "task.list",
-                        &json!({ "filter": filter, "fields": ["id"] }),
-                    );
-                    let ids = listed
-                        .ok()
-                        .and_then(|v| v.get("tasks").and_then(Value::as_array).cloned())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
-                                .collect::<std::collections::HashSet<String>>()
-                        })
-                        .unwrap_or_default();
-                    (ids, p.clone())
-                }
-                None => {
-                    // All tasks: gather ids from the export.
-                    let all = dispatch(engine, "store.export", &json!({}));
-                    let ids = all
-                        .ok()
-                        .and_then(|v| v.get("tasks").and_then(Value::as_array).cloned())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
-                                .collect::<std::collections::HashSet<String>>()
-                        })
-                        .unwrap_or_default();
-                    (ids, "all tasks".to_string())
-                }
-            };
+            let (members, label) = burndown_members(engine, &project);
             chart::render_burndown(ctx, &events, &members, days, &label)
         }
     };
     print!("{out}");
+}
+
+/// Every status a burndown counts as membership — i.e. everything but
+/// `cancelled`. Spelled out positively because `task.list` keeps its literal
+/// "no filter = all rows" contract (D24 is a *report* rule, applied in core to
+/// `report.summary` only), so the exclusion has to live here, at the CLI.
+///
+/// If a new `Status` variant is ever added it must be listed here too; the
+/// completeness guard in this module's tests fails if it is not, because a
+/// burndown silently missing tasks still looks like a valid burndown.
+const NOT_CANCELLED: &str = "status:backlog or status:pending or status:active or status:done";
+
+/// Resolve the task ids a burndown covers, plus its label. Split out of the
+/// `ChartKind::Burndown` arm so the scope rule is testable on its own.
+///
+/// Both branches go through `task.list` with [`NOT_CANCELLED`]. The `None`
+/// branch previously used an unfiltered `store.export`, which is what let
+/// cancelled tasks inflate the whole-store burndown's "remaining work" line.
+fn burndown_members(
+    engine: &Engine,
+    project: &Option<String>,
+) -> (std::collections::HashSet<String>, String) {
+    let (filter, label) = match project {
+        Some(p) => (format!("project:{p} and ({NOT_CANCELLED})"), p.clone()),
+        None => (NOT_CANCELLED.to_string(), "all tasks".to_string()),
+    };
+    let listed = dispatch(engine, "task.list", &json!({ "filter": filter, "fields": ["id"] }));
+    let ids = listed
+        .ok()
+        .and_then(|v| v.get("tasks").and_then(Value::as_array).cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
+                .collect::<std::collections::HashSet<String>>()
+        })
+        .unwrap_or_default();
+    (ids, label)
 }
 
 /// `tasqx report --html`: write the self-contained HTML review.
@@ -1687,6 +1712,138 @@ mod tests {
 
     fn add_of(argv: &[&str]) -> Command {
         Cli::try_parse_from(argv).expect("argv should parse").command.expect("a subcommand")
+    }
+
+    // ---- report scope (DESIGN.md §12-D24) -----------------------------------
+
+    /// D24 rule 1 has to survive the CLI→core hop. `--all` is the only escape
+    /// from the exclude-cancelled default, so if the flag parses but never
+    /// reaches `report.summary` as `all: true` the user has no way to see
+    /// abandoned work at all — and the failure is silent, since a report that
+    /// quietly omits rows still looks like a perfectly good report.
+    #[test]
+    fn report_all_flag_reaches_core_as_all_true() {
+        assert_eq!(report_params(&[], true)["all"], json!(true));
+        // Absent by default: core's `all` defaults to false, and sending an
+        // explicit `false` would be the same thing said twice.
+        assert!(report_params(&[], false).get("all").is_none());
+    }
+
+    /// The group_by-then-filter split is positional and easy to break; `--all`
+    /// is a flag and must compose with both halves rather than displacing them.
+    #[test]
+    fn report_all_composes_with_group_by_and_filter() {
+        let p = report_params(&["status".to_string(), "project:x".to_string()], true);
+        assert_eq!(p["group_by"], "status");
+        assert_eq!(p["filter"], "project:x");
+        assert_eq!(p["all"], json!(true));
+    }
+
+    #[test]
+    fn report_all_flag_parses() {
+        match add_of(&["tasqx", "report", "--all"]) {
+            Command::Report { all, .. } => assert!(all),
+            _ => panic!("expected a report command"),
+        }
+        match add_of(&["tasqx", "report"]) {
+            Command::Report { all, .. } => assert!(!all, "default is the D24 exclusion"),
+            _ => panic!("expected a report command"),
+        }
+    }
+
+    /// `--all` cannot reach the HTML page, so accepting the combination would
+    /// silently ignore it — the exact failure mode D24 exists to stop. clap must
+    /// reject it rather than parse it into a no-op.
+    #[test]
+    fn report_all_is_rejected_alongside_html() {
+        assert!(Cli::try_parse_from(["tasqx", "report", "--html", "--all"]).is_err());
+    }
+
+    /// The two `report_params` tests above cover disjoint halves — clap parses
+    /// `--all` into the struct, and `report_params` turns a `true` into
+    /// `all: true` — but nothing exercised the JOIN between them. `run_report`
+    /// is the only place the parsed flag is handed to `report_params`, and
+    /// severing it there (`report_params(&args, false)`) left the entire suite
+    /// green. This drives the real seam end-to-end against a live engine, so the
+    /// one escape hatch from D24 cannot be silently disconnected.
+    #[test]
+    fn run_report_all_flag_reaches_the_engine_end_to_end() {
+        let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
+        // One open task, one cancelled: the total is 1 under D24's default and 2
+        // only if `--all` survives the whole path.
+        let count = |all: bool| -> i64 {
+            let e = tasqx_core::Engine::open_in_memory().unwrap();
+            e.project_create(&json!({ "name": "P" })).unwrap(); // D23
+            for title in ["live", "abandoned"] {
+                e.task_add(&json!({ "title": title, "project": "P" })).unwrap();
+            }
+            e.task_cancel(&json!({ "ref": "2" })).unwrap();
+            let mut be = Backend::Local(e);
+            let (result, _) = run_report(&mut be, &ctx, vec![], all).expect("report ran");
+            result["groups"].as_array().unwrap().iter().map(|g| g["count"].as_i64().unwrap()).sum()
+        };
+
+        assert_eq!(count(false), 1, "the default must leave the cancelled task out");
+        assert_eq!(count(true), 2, "--all must reach the engine and bring it back");
+    }
+
+    /// `chart burndown` draws "remaining open work", so a cancelled task must
+    /// leave the scope entirely — otherwise abandoning a task shows up as a flat
+    /// line instead of a burn-down, and the "N left" footer keeps counting work
+    /// nobody will ever do. `task.list` keeps its literal "no filter = all rows"
+    /// contract (D24 is a *report* rule), so the exclusion is spelled out at the
+    /// CLI, for both the whole-store and the per-project scope.
+    #[test]
+    fn burndown_scope_excludes_cancelled_tasks() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "P" })).unwrap(); // D23
+        for title in ["live", "gone", "finished"] {
+            e.task_add(&json!({ "title": title, "project": "P" })).unwrap();
+        }
+        e.task_cancel(&json!({ "ref": "2" })).unwrap();
+        e.task_done(&json!({ "ref": "3" })).unwrap();
+        let id_of = |short: &str| -> String {
+            e.task_get(&json!({ "ref": short })).unwrap()["id"].as_str().unwrap().to_string()
+        };
+        let (live, gone, finished) = (id_of("1"), id_of("2"), id_of("3"));
+
+        for scope in [None, Some("P".to_string())] {
+            let (members, _) = burndown_members(&e, &scope);
+            assert!(members.contains(&live), "scope {scope:?} lost the open task");
+            assert!(
+                !members.contains(&gone),
+                "scope {scope:?} still counts a cancelled task as remaining work"
+            );
+            // `done` stays in scope: the burndown needs the completion event to
+            // draw the line coming down. Dropping it would flatten the chart.
+            assert!(members.contains(&finished), "scope {scope:?} lost the done task");
+        }
+    }
+
+    /// `NOT_CANCELLED` spells out its statuses by hand, and the test above only
+    /// seeds pending/cancelled/done — so dropping `status:backlog` from the
+    /// constant left the whole suite green while every backlog task silently
+    /// vanished from every burndown. A chart missing tasks still looks like a
+    /// valid chart, which is the same silent-omission class D24 exists to fix.
+    /// This asserts the constant covers every non-cancelled status, so adding a
+    /// variant without listing it fails loudly.
+    #[test]
+    fn burndown_scope_keeps_every_status_except_cancelled() {
+        let f = tasqx_core::filter::Filter::parse(NOT_CANCELLED);
+        let ctx_for = |status: &'static str| tasqx_core::filter::MatchCtx {
+            status,
+            project: None,
+            tags: &[],
+            due: None,
+            blocked: false,
+        };
+        for status in ["backlog", "pending", "active", "done"] {
+            assert!(
+                f.matches(&ctx_for(status)),
+                "NOT_CANCELLED drops `{status}` out of every burndown"
+            );
+        }
+        assert!(!f.matches(&ctx_for("cancelled")), "NOT_CANCELLED must exclude cancelled");
     }
 
     /// Regression: clap reads a leading `-` as a flag, so `--remind -1h` parsed

@@ -1326,6 +1326,20 @@ impl Engine {
         let filter = Filter::parse(&opt_str(p, "filter").unwrap_or_default());
         let now_ts = parse_ts(&now());
 
+        // D24: a report is an *aggregation*, so abandoned work must not inflate
+        // any total. tasqx has no hard delete (DESIGN §725) — cancelling is how
+        // you get rid of a task — so without this every throwaway task counted
+        // forever. `done` deliberately still counts: completed work is real work
+        // and carries nearly all the tracked time.
+        //
+        // Resolution order (D24): `all` wins; otherwise a caller who already
+        // named a status is taken literally, so `status:cancelled` returns
+        // cancelled tasks rather than a baffling empty table; otherwise the
+        // default applies. The rule lives here, in core, so the CLI, the HTML
+        // report and MCP agents all inherit one answer.
+        let all = p.get("all").and_then(Value::as_bool).unwrap_or(false);
+        let apply_default = !all && !filter.constrains_status();
+
         // Accumulator per group key (insertion via BTreeMap => sorted output).
         use std::collections::BTreeMap;
         struct Agg {
@@ -1340,6 +1354,9 @@ impl Engine {
         let rows = stmt.query_map([], map_task_row)?;
         for r in rows {
             let t = r?;
+            if apply_default && t.status == Status::Cancelled {
+                continue;
+            }
             let tags = task_tags(&self.conn, &t.id)?;
             let blocked = self.is_blocked(&t.id)?;
             let ctx = MatchCtx {
@@ -1984,6 +2001,46 @@ mod tests {
         assert!(
             e.depends_on_ids(&did).unwrap().is_empty(),
             "the export reader must not see what no other reader can see"
+        );
+    }
+
+    /// D24 applies to every metric, not just `count`. `tracked_total` is the one
+    /// that matters most in both directions: time logged against a *cancelled*
+    /// task is time spent on work that was abandoned and must not inflate the
+    /// total, while time logged against a *done* task is the bulk of all tracked
+    /// time and must survive. Excluding done alongside cancelled would leave
+    /// `tracked_total` reading ~PT0S on a mature store.
+    ///
+    /// Elapsed wall-clock through `task_start`/`task_stop` is 0s in a test, so
+    /// the tracked totals are written directly.
+    #[test]
+    fn report_summary_tracked_total_drops_cancelled_but_keeps_done() {
+        let e = Engine::open_in_memory().unwrap();
+        let done = e.task_add(&json!({ "title": "done" })).unwrap();
+        let gone = e.task_add(&json!({ "title": "cancelled" })).unwrap();
+        e.task_done(&json!({ "ref": done["short_id"].clone() })).unwrap();
+        e.task_cancel(&json!({ "ref": gone["short_id"].clone() })).unwrap();
+        for (row, secs) in [(&done, 3600i64), (&gone, 1800i64)] {
+            e.conn
+                .execute(
+                    "UPDATE tasks SET tracked_seconds=?1 WHERE id=?2",
+                    params![secs, row["id"].as_str().unwrap()],
+                )
+                .unwrap();
+        }
+
+        let g = |p: Value| -> Value {
+            e.report_summary(&p).unwrap()["groups"][0].clone()
+        };
+        assert_eq!(
+            g(json!({ "metrics": ["tracked_total"] }))["tracked_total"],
+            "PT1H",
+            "the done task's hour survives; the cancelled task's half hour does not"
+        );
+        assert_eq!(
+            g(json!({ "all": true, "metrics": ["tracked_total"] }))["tracked_total"],
+            "PT1H30M",
+            "`all` restores the cancelled task's tracked time"
         );
     }
 }

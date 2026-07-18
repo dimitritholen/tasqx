@@ -1552,10 +1552,18 @@ fn page_themes() -> String {
 
     s.push_str(&h3("Reports"));
     s.push_str(&p(
-        "<code>tasqx report [group_by] [filter]</code> — group by <code>project</code> (default), \
+        "<code>tasqx report [group_by] [filter] [--all]</code> — group by <code>project</code> (default), \
          <code>status</code>, or <code>priority</code>. Estimates total as ISO-8601 durations, which \
          is why <a href=\"#scheduling\"><code>est:</code></a> is parsed at the edge rather than stored \
          as opaque text.",
+    ));
+    s.push_str(&p(
+        "<strong>What counts.</strong> A report is an aggregation, so it leaves <em>cancelled</em> \
+         tasks out — tasqx has no hard delete, and without this every task you ever threw away \
+         would inflate your totals forever. <em>Done</em> tasks still count: completed work is real \
+         work, and it carries nearly all your tracked time. Two ways to override that: pass \
+         <code>--all</code> to count everything including cancelled, or name a status in the filter \
+         — <code>tasqx report status:cancelled</code> means what it says and is taken literally.",
     ));
     s.push_str(&snippet(
         "tasqx report",
@@ -2155,6 +2163,30 @@ mod tests {
         }
         assert!(!doc.contains("&lt;a href"), "escaped <a href> renders as literal text");
         assert!(doc.contains("&lt;addr&gt;"), "prose placeholders must stay escaped");
+    }
+
+    /// A reader who cannot see D24 in the guide has no way to explain a report
+    /// count that looks too low — the tasks are still in the store, still listed
+    /// by `tasqx list`, just absent from the roll-up. The VERBS/METHODS drift
+    /// guards cannot catch this: the rule is prose, not a table they render from.
+    #[test]
+    fn reports_section_states_which_statuses_count() {
+        let doc = generate();
+        let reports = doc
+            .split(&h3("Reports"))
+            .nth(1)
+            .expect("a Reports section")
+            .split("<h3")
+            .next()
+            .unwrap();
+        assert!(
+            reports.contains("cancelled"),
+            "the reports section must name the excluded status: {reports}"
+        );
+        assert!(
+            reports.contains("--all"),
+            "and the escape hatch from it: {reports}"
+        );
     }
 
     #[test]

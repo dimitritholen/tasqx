@@ -51,6 +51,7 @@ fn safe_examples_all_exit_zero() {
         "next",
         "projects",
         "report",
+        "report --all",
         "why 1",
         "show 1",
         "manual",

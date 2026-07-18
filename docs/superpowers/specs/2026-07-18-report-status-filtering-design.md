@@ -8,7 +8,7 @@
 
 `tasqx report` counts everything. `Engine::report_summary` selects `SELECT {TASK_COLS} FROM tasks` (`engine.rs:1339`) with no status predicate, so `count`, `est_total` and `tracked_total` include done *and* cancelled tasks. Only the `overdue` metric excludes them (`engine.rs:1370`, via `is_open`). On a mature store the headline count is dominated by finished and abandoned work.
 
-This surfaced while capturing throwaway test tasks: cancelling them (tasqx has no hard delete by design — DESIGN.md §725) left them counted in reports forever.
+This surfaced while capturing throwaway test tasks: cancelling them (tasqx has no hard delete by design — DESIGN.md §7) left them counted in reports forever.
 
 There is no single answer to "which statuses count". Three different hardcoded answers exist today:
 

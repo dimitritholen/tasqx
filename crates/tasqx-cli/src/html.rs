@@ -20,9 +20,14 @@ pub fn generate(engine: &Engine, theme: &Theme) -> Result<String, ApiError> {
     let summary = dispatch(
         engine,
         "report.summary",
+        // No filter on purpose: the scope is core's business (D24), which
+        // excludes cancelled and keeps everything else. The filter that used to
+        // live here was `status:pending`, and `pending` does not include
+        // `active` — so the task you were working on right now disappeared from
+        // the per-project roll-up. Passing a filter here also meant this page
+        // answered a different question than the CLI's `tasqx report`.
         &json!({
             "group_by": "project",
-            "filter": "status:pending",
             "metrics": ["count", "est_total", "tracked_total", "overdue"],
         }),
     )?;
@@ -250,9 +255,18 @@ impl<'a> Report<'a> {
             ));
         }
         let table = format!(
-            "<table class=\"grid\"><thead><tr><th>Project</th><th>Open</th><th>Est</th><th>Tracked</th><th>Overdue</th></tr></thead><tbody>{rows}</tbody></table>"
+            "<table class=\"grid\"><thead><tr><th>Project</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th></tr></thead><tbody>{rows}</tbody></table>"
         );
-        section("By project", "Open count, estimate vs. tracked time, and overdue per project.", &table)
+        // "Tasks", not "Open": under D24 this count includes `done`, because
+        // completed work is real work and carries nearly all the tracked time.
+        // Only `cancelled` is left out. The header stat above says "open" and
+        // means something narrower (html.rs's own derivation excludes done too),
+        // so this column must not borrow that word for a different number.
+        section(
+            "By project",
+            "Task count (cancelled excluded), estimate vs. tracked time, and overdue per project.",
+            &table,
+        )
     }
 
     fn actionable_section(&self) -> String {
@@ -656,6 +670,45 @@ mod tests {
             now: &now,
         }
         .render()
+    }
+
+    /// The bug the D24 rework inherits: the summary was fetched with a
+    /// hardcoded `status:pending` filter, and `pending` does not include
+    /// `active` — so the one task you are working on right now vanished from the
+    /// "By project" roll-up. The counts silently disagreed with the Rust-side
+    /// open/overdue derivation a few lines below, which uses
+    /// `!matches!(status, "done" | "cancelled")`. The fix is to pass no filter
+    /// and inherit core's default, so both sides answer the same question.
+    #[test]
+    fn project_summary_counts_the_task_being_worked_on() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "P" })).unwrap(); // D23
+        for title in ["waiting", "in-flight", "finished", "abandoned"] {
+            e.task_add(&json!({ "title": title, "project": "P" })).unwrap();
+        }
+        e.task_start(&json!({ "ref": "2" })).unwrap();
+        e.task_done(&json!({ "ref": "3" })).unwrap();
+        e.task_cancel(&json!({ "ref": "4" })).unwrap();
+
+        let summary = dispatch(
+            &e,
+            "report.summary",
+            &json!({ "group_by": "project", "metrics": ["count"] }),
+        )
+        .unwrap();
+        let g = &summary["groups"][0];
+        assert_eq!(g["project"], "P");
+        // pending + active + done. The active task is the regression; the
+        // cancelled one must stay out (D24).
+        assert_eq!(g["count"], 3, "active must be counted, cancelled must not: {summary:?}");
+
+        // And the generator must actually ask for that unfiltered summary — the
+        // rendered row is where the hardcoded filter used to show up as a 1.
+        let html = generate(&e, &theme::builtin("nord").unwrap()).unwrap();
+        assert!(
+            html.contains("<td class=\"proj\">P</td><td>3</td>"),
+            "the By-project row must show 3, not the pending-only 1: {html}"
+        );
     }
 
     #[test]

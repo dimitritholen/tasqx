@@ -329,13 +329,17 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "report.summary",
         summary: "Summary counts, optionally grouped, as text or HTML.",
-        usage: "tasqx report [group_by] [filter…] [--html] [--out FILE]",
+        usage: "tasqx report [group_by] [filter…] [--all] [--html] [--out FILE]",
         examples: &[
             ex("tasqx report"),
             ex("tasqx report project"),
+            ex("tasqx report --all"),
             ex_norun("tasqx report --html --out review.html", "self-contained HTML"),
         ],
-        notes: &["group_by ∈ project|status|priority. `--html` defaults to stdout."],
+        notes: &[
+            "group_by ∈ project|status|priority. `--html` defaults to stdout.",
+            "Cancelled tasks are not counted, unless you pass `--all` or your filter names a status.",
+        ],
         see_also: &["chart", "list", "why"],
         topic: Topic::Reports,
     },
@@ -557,6 +561,26 @@ mod tests {
     #[test]
     fn after_help_of_unknown_verb_is_empty() {
         assert_eq!(after_help("nope"), "");
+    }
+
+    /// D24 changed what `tasqx report` counts, and a default that silently drops
+    /// rows is only defensible if the surface says so. The existing drift guards
+    /// compare verbs and aliases, not flags, so a flag can ship undocumented
+    /// without anything going red — this pins the one flag whose absence would
+    /// leave users unable to explain a count they think is wrong.
+    #[test]
+    fn report_documents_the_all_flag_and_the_cancelled_default() {
+        let d = find("report").unwrap();
+        assert!(d.usage.contains("--all"), "usage must offer --all: {}", d.usage);
+        let notes = d.notes.join(" ").to_lowercase();
+        assert!(
+            notes.contains("cancelled"),
+            "the notes must state the D24 default in the user's own vocabulary: {notes}"
+        );
+        // `after_help` is what a user actually reads at `tasqx report -h`.
+        let h = after_help("report").to_lowercase();
+        assert!(h.contains("--all"), "{h}");
+        assert!(h.contains("cancelled"), "{h}");
     }
 
     #[test]
