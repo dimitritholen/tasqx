@@ -526,6 +526,9 @@ pub fn run() {
     // Build the render context: resolve the active theme (flag > env > config >
     // default) and detect the terminal's real capability (DESIGN.md §8).
     let ctx = build_ctx(cli.theme.as_deref());
+    // Captured before `cli.command` is matched by value below; `config`
+    // needs it to report the flag layer it would otherwise be blind to.
+    let theme_flag = cli.theme.clone();
 
     // `theme` needs no store; handle it before opening the engine.
     if let Some(Command::Theme { action }) = &cli.command {
@@ -625,7 +628,9 @@ pub fn run() {
         Some(Command::Use { name }) => run_use(&mut backend, &ctx, name),
         Some(Command::Projects { all }) => run_projects(&mut backend, &ctx, all),
         Some(Command::Report { args, all, .. }) => run_report(&mut backend, &ctx, args, all),
-        Some(Command::Config { action }) => run_config(&mut backend, &ctx, &action),
+        Some(Command::Config { action }) => {
+            run_config(&mut backend, &ctx, &action, theme_flag.as_deref())
+        }
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, file),
         Some(Command::Next) => run_next(&mut backend, &ctx),
@@ -1428,14 +1433,9 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
             println!("  {:<14} {strip}  {}", "urgency.ramp", preview.paint("muted", "cold → hot"));
         }
         ThemeAction::Set { name } => {
-            // Validate before writing: `theme::load` falls back to the default
-            // for an unknown name, so an unchecked write would persist a name
-            // that silently does nothing every run from then on.
-            let known = theme::BUILTINS.contains(&name.as_str())
-                || themes_dir().is_some_and(|d| d.join(format!("{name}.toml")).is_file());
-            if !known {
-                eprintln!("error [bad_request]: unknown theme {name:?} (try `tasqx theme list`)");
-                exit(2);
+            if let Err(e) = validate_setting("theme.name", name) {
+                eprintln!("error [{}]: {}", code_str(&e), e.message);
+                exit(e.exit_code());
             }
             let s = config::find("theme.name").expect("theme.name is a registered setting");
             match config::write_value(s, name) {
@@ -1464,7 +1464,45 @@ fn unknown_key(key: &str) -> ApiError {
 }
 
 /// `tasqx config list|get|path`.
-fn run_config(be: &mut Backend, ctx: &Ctx, action: &ConfigAction) -> CmdOutcome {
+/// Reject a value that would persist but never take effect.
+///
+/// This lives here, shared, because the first version put theme validation
+/// inline in `theme set` only — so `tasqx theme set bogus` was rejected while
+/// `tasqx config set theme.name bogus` wrote it happily and exited 0. The
+/// primitive was looser than its own alias, which is backwards: `theme::load`
+/// falls back to the default for an unknown name, so the write persists a value
+/// that silently does nothing on every run from then on.
+fn validate_setting(key: &str, value: &str) -> Result<(), ApiError> {
+    if key == "theme.name" {
+        let known = theme::BUILTINS.contains(&value)
+            || themes_dir().is_some_and(|d| d.join(format!("{value}.toml")).is_file());
+        if !known {
+            return Err(ApiError::bad_request(format!(
+                "unknown theme {value:?} (try `tasqx theme list`)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `flag` carries the CLI override for the setting being reported — today only
+/// `--theme`. Without it `config` reports the file value while the binary
+/// renders with the flag's, so the one command whose job is naming the layer
+/// that won cannot see the layer that wins most.
+fn run_config(
+    be: &mut Backend,
+    ctx: &Ctx,
+    action: &ConfigAction,
+    theme_flag: Option<&str>,
+) -> CmdOutcome {
+    // The flag layer applies per setting; only `theme.name` has one today.
+    let flag_for = |s: &config::Setting| -> Option<&str> {
+        if s.key == "theme.name" {
+            theme_flag
+        } else {
+            None
+        }
+    };
     match action {
         ConfigAction::Path => {
             let p = config::config_path()
@@ -1476,13 +1514,16 @@ fn run_config(be: &mut Backend, ctx: &Ctx, action: &ConfigAction) -> CmdOutcome 
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;
             let value = match s.home {
                 config::Home::Store => store_value(be, s.key).unwrap_or_default(),
-                config::Home::Toml => config::resolve(s, None, config::toml_value(s).as_deref()).0,
+                config::Home::Toml => {
+                    config::resolve(s, flag_for(s), config::toml_value_strict(s)?.as_deref()).0
+                }
             };
             let text = format!("{value}\n");
             Ok((json!({ "key": s.key, "value": value }), text))
         }
         ConfigAction::Set { key, value } => {
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;
+            validate_setting(s.key, value)?;
             let path = config::write_value(s, value)?;
             let text = format!("{} = {}  ({})\n", s.key, value, path.display());
             Ok((json!({ "key": s.key, "value": value, "path": path.to_string_lossy() }), text))
@@ -1505,7 +1546,8 @@ fn run_config(be: &mut Backend, ctx: &Ctx, action: &ConfigAction) -> CmdOutcome 
                         (store_value(be, s.key).unwrap_or_default(), "store".to_string())
                     }
                     config::Home::Toml => {
-                        let (v, src) = config::resolve(s, None, config::toml_value(s).as_deref());
+                        let (v, src) =
+                            config::resolve(s, flag_for(s), config::toml_value_strict(s)?.as_deref());
                         (v, src.label(s))
                     }
                 };
@@ -2349,7 +2391,7 @@ mod tests {
         let mut be = Backend::Local(e);
         let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
 
-        let (result, text) = run_config(&mut be, &ctx, &ConfigAction::List).expect("list ran");
+        let (result, text) = run_config(&mut be, &ctx, &ConfigAction::List, None).expect("list ran");
 
         let rows = result["settings"].as_array().expect("a settings array");
         let keys: Vec<&str> = rows.iter().map(|r| r["key"].as_str().unwrap()).collect();
@@ -2371,10 +2413,67 @@ mod tests {
         let mut be = Backend::Local(e);
         let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
 
-        let err = run_config(&mut be, &ctx, &ConfigAction::Get { key: "theme.nmae".into() })
+        let err = run_config(&mut be, &ctx, &ConfigAction::Get { key: "theme.nmae".into() }, None)
             .expect_err("an unknown key must not succeed");
         assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
         assert!(err.message.contains("theme.name"), "must list valid keys: {}", err.message);
+    }
+
+
+    /// `--theme` is the highest-precedence layer in D9, and `config` — the one
+    /// command whose stated job is naming the layer that won — could not see it.
+    /// Driven before the fix: with `[theme] name = "gruvbox"` on disk,
+    /// `tasqx --theme mono theme list` rendered "mono ← active" while
+    /// `tasqx --theme mono config get theme.name` answered "gruvbox". The binary
+    /// disagreed with its own settings report. `Source::Flag` was constructible
+    /// only from a unit test and unreachable from every user-facing path.
+    #[test]
+    fn config_reports_the_flag_layer_when_one_is_given() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        let mut be = Backend::Local(e);
+        let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
+
+        let (result, _) = run_config(
+            &mut be,
+            &ctx,
+            &ConfigAction::Get { key: "theme.name".into() },
+            Some("mono"),
+        )
+        .expect("get ran");
+        assert_eq!(result["value"], "mono", "the flag must win over file and default");
+
+        let (listed, _) =
+            run_config(&mut be, &ctx, &ConfigAction::List, Some("mono")).expect("list ran");
+        let row = listed["settings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == "theme.name")
+            .unwrap()
+            .clone();
+        assert_eq!(row["value"], "mono");
+        assert_eq!(row["source"], "--theme", "the SOURCE column must name the flag");
+    }
+
+    /// `theme set bogus` was rejected while `config set theme.name bogus` wrote
+    /// it and exited 0 — the primitive was looser than its own alias, which is
+    /// backwards. The written name silently does nothing on every run from then
+    /// on, because `theme::load` falls back to the default for an unknown name.
+    #[test]
+    fn config_set_validates_the_value_not_just_the_key() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        let mut be = Backend::Local(e);
+        let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
+
+        let err = run_config(
+            &mut be,
+            &ctx,
+            &ConfigAction::Set { key: "theme.name".into(), value: "not-a-theme".into() },
+            None,
+        )
+        .expect_err("an unknown theme must not be persisted");
+        assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
+        assert!(err.message.contains("theme list"), "must point at the lister: {}", err.message);
     }
 
     /// D21 put default_project in the store on purpose. `config set` must
@@ -2390,6 +2489,7 @@ mod tests {
             &mut be,
             &ctx,
             &ConfigAction::Set { key: "default_project".into(), value: "work".into() },
+            None,
         )
         .expect_err("a store-owned key must not be writable through config set");
         assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);

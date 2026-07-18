@@ -323,9 +323,12 @@ fn page_overview() -> String {
          touching your real store. Every example below was run exactly that way.",
     ));
 
-    // Rendered from `config::SETTINGS` rather than hand-written, so a new
-    // setting cannot ship undocumented — `every_setting_appears_in_the_guide`
-    // fails the build if it does.
+    // Rendered from `config::SETTINGS` rather than hand-written. That makes
+    // drift structurally impossible rather than merely detected: a new setting
+    // appears here the moment it is registered, with no second list to forget.
+    // Note what that means for the guard below — since both sides derive from
+    // one constant, it CANNOT catch an undocumented setting, and does not claim
+    // to. It catches the section being deleted.
     s.push_str(&h3("Settings"));
     s.push_str(&p(
         "<code>tasqx config list</code> shows every setting with the layer that supplied it. \
@@ -2335,11 +2338,23 @@ mod tests {
         }
     }
 
-    /// Every setting a user can reach must be documented. The flags guard found
-    /// eleven real gaps the day it was written; settings are the same class of
-    /// surface and had none.
+    /// A smoke test on the settings section, and deliberately not more.
+    ///
+    /// Read this before trusting it: the table is GENERATED from
+    /// `config::SETTINGS`, so both sides of the assertion come from one
+    /// constant through one format string and a new setting can never be
+    /// "missing". Proven by mutation — adding a fourth Setting with no guide
+    /// entry leaves this green; deleting the `table_owned` call turns it red.
+    ///
+    /// That is the right state (generated docs cannot drift) but it makes this
+    /// a check that the section still renders, NOT a coverage guard. An earlier
+    /// version of this comment invoked the flags guard that "found eleven real
+    /// gaps" as its peer, which presented a structurally impossible result as
+    /// evidence of health. The real coverage guard for this area is
+    /// `every_env_var_is_either_a_registered_setting_or_a_named_exception`,
+    /// which is mutation-proven load-bearing.
     #[test]
-    fn every_setting_appears_in_the_guide() {
+    fn the_settings_section_renders_every_registered_setting() {
         let doc = generate();
         let missing: Vec<&str> = crate::config::SETTINGS
             .iter()

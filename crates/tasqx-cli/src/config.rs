@@ -162,6 +162,27 @@ pub fn config_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config.toml"))
 }
 
+/// Map a TOML value onto a setting's declared `Kind`, or `None` if the types
+/// disagree.
+///
+/// One function because there are two readers — the silent one on every
+/// command's path and the strict one behind `tasqx config` — and they must
+/// agree on what counts as a value. They started as two copies of this match,
+/// which is the parallel-list problem one layer down: a mutation test aimed at
+/// the coercion rule hit one copy and passed, because the other still enforced
+/// it.
+fn coerce(kind: Kind, v: toml::Value) -> Option<String> {
+    match (kind, v) {
+        (Kind::Str, toml::Value::String(x)) => Some(x),
+        (Kind::Bool, toml::Value::Boolean(b)) => Some(b.to_string()),
+        // A value of the wrong type is not a value. It falls through to the
+        // default, exactly as it did before the registry existed: the old
+        // reader used `toml::Value::as_bool`, so `enabled = "true"` (a quoted
+        // boolean, a common mistake) was a type mismatch that fell to `false`.
+        _ => None,
+    }
+}
+
 /// Parse `config.toml` under an explicit directory, or `None` if it is missing
 /// or unreadable.
 ///
@@ -173,21 +194,56 @@ fn read_table_in(dir: &std::path::Path) -> Option<toml::Table> {
     text.parse::<toml::Table>().ok()
 }
 
+/// The loud counterpart of [`read_table_in`], for `tasqx config` only.
+///
+/// Silent degradation is right on the path of every command — a malformed
+/// config must never block a task capture. It is indefensible for `config
+/// list`/`get`, where the user is explicitly asking about the file: they would
+/// be told they never set the value, which is the exact confusion that sends
+/// someone looking at the wrong thing. `set` already reported the parse error;
+/// the read side just did not use the same door.
+///
+/// `Ok(None)` means "no file", which is a legitimate fresh-install state.
+pub fn read_table_strict(dir: &std::path::Path) -> Result<Option<toml::Table>, ApiError> {
+    let path = dir.join("config.toml");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => text.parse::<toml::Table>().map(Some).map_err(|e| {
+            ApiError::bad_request(format!("{} is not valid TOML: {e}", path.display()))
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(ApiError::bad_request(format!("cannot read {}: {e}", path.display()))),
+    }
+}
+
+/// One setting's value, reading the file strictly. Used by `tasqx config`.
+pub fn toml_value_strict(s: &Setting) -> Result<Option<String>, ApiError> {
+    let Some(dir) = config_dir() else { return Ok(None) };
+    let Some(table) = read_table_strict(&dir)? else { return Ok(None) };
+    let (section, name) = s.parts();
+    let Some(v) = table.get(section).and_then(|t| t.get(name)).cloned() else {
+        return Ok(None);
+    };
+    Ok(coerce(s.kind, v))
+}
+
 /// One setting's raw value from a `config.toml` under an explicit directory.
 ///
 /// The directory is a parameter rather than an ambient `$TASQX_CONFIG_DIR`
 /// read so tests can exercise a real file without mutating process-global env,
 /// which cargo's parallel test threads make racy. Same move `datetime.rs`
 /// already makes by taking an explicit `now`.
+/// Matching is by declared `Kind`, not "whatever converts". The first version
+/// of this accepted any scalar and stringified it, which quietly changed
+/// behaviour: the old reader used `toml::Value::as_bool`, so `enabled = "true"`
+/// (a quoted boolean, a common mistake) was a type mismatch and fell to
+/// `false`. Stringifying turned that exact input into `true`, so a user who had
+/// been silent since install would start getting OS toasts after an upgrade —
+/// on the one code path whose doc comment promises every failure mode lands on
+/// "don't notify".
 pub fn toml_value_in(dir: &std::path::Path, s: &Setting) -> Option<String> {
     let (section, name) = s.parts();
     let v = read_table_in(dir)?.get(section)?.get(name)?.clone();
-    match v {
-        toml::Value::String(x) => Some(x),
-        toml::Value::Boolean(b) => Some(b.to_string()),
-        toml::Value::Integer(i) => Some(i.to_string()),
-        _ => None,
-    }
+    coerce(s.kind, v)
 }
 
 /// One setting's raw value from the user's real `config.toml`.
@@ -239,10 +295,12 @@ pub fn write_value_in(dir: &std::path::Path, s: &Setting, value: &str) -> Result
             s.key
         )));
     }
-    let parsed = match s.kind {
+    // Built once as a bare `Value` so both branches below can use it: the
+    // decor-preserving path needs a Value, the insert path wraps it in an Item.
+    let parsed: toml_edit::Value = match s.kind {
         Kind::Bool => match value {
-            "true" => toml_edit::value(true),
-            "false" => toml_edit::value(false),
+            "true" => true.into(),
+            "false" => false.into(),
             _ => {
                 return Err(ApiError::bad_request(format!(
                     "{} takes true or false, got {value:?}",
@@ -250,7 +308,7 @@ pub fn write_value_in(dir: &std::path::Path, s: &Setting, value: &str) -> Result
                 )))
             }
         },
-        Kind::Str => toml_edit::value(value),
+        Kind::Str => value.into(),
     };
     let path = dir.join("config.toml");
     let mut doc = read_document(&path)?;
@@ -262,7 +320,20 @@ pub fn write_value_in(dir: &std::path::Path, s: &Setting, value: &str) -> Result
     if !doc.contains_key(section) {
         doc.insert(section, toml_edit::Item::Table(toml_edit::Table::new()));
     }
-    doc[section][name] = parsed;
+    // Replace the VALUE, not the Item. `doc[section][name] = parsed` swaps the
+    // whole entry including its decor, which silently drops an inline comment:
+    // `name = "gruvbox"  # for the projector` came back as `name = "mono"`.
+    // That is the spec's own motivating example, and cmddoc tells the user this
+    // command preserves their comments — so losing it made the help text a lie.
+    match doc[section].get_mut(name).and_then(|i| i.as_value_mut()) {
+        Some(existing) => {
+            let decor = existing.decor().clone();
+            *existing = parsed;
+            *existing.decor_mut() = decor;
+        }
+        // The key is absent: a plain insert, with no decor to carry over.
+        None => doc[section][name] = toml_edit::Item::Value(parsed),
+    }
     write_document(&path, &doc)
 }
 
@@ -483,4 +554,141 @@ name = broken",
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The old reader used `toml::Value::as_bool`, so a quoted boolean was a
+    /// type mismatch that fell to `false`. The first registry version
+    /// stringified every scalar and compared `v == "true"`, which turned that
+    /// exact input into `true` — a real user who wrote `enabled = "true"` and
+    /// had been silent since install would start getting OS toasts after an
+    /// upgrade. Found by a differential test against the pre-registry reader,
+    /// not by review: no test in the suite covered a wrong-typed value.
+    #[test]
+    fn a_wrong_typed_value_falls_back_to_the_default_rather_than_being_coerced() {
+        let dir = temp_dir("wrongtype");
+        std::fs::create_dir_all(&dir).unwrap();
+        let notify = find("notify.enabled").unwrap();
+        let theme = find("theme.name").unwrap();
+
+        for bad in ["\"true\"", "\" true \"", "1"] {
+            std::fs::write(dir.join("config.toml"), format!("[notify]
+enabled = {bad}
+")).unwrap();
+            assert_eq!(
+                toml_value_in(&dir, notify),
+                None,
+                "a quoted/numeric boolean must not be read as one: {bad}"
+            );
+        }
+        // The right type still reads.
+        std::fs::write(dir.join("config.toml"), "[notify]
+enabled = true
+").unwrap();
+        assert_eq!(toml_value_in(&dir, notify).as_deref(), Some("true"));
+
+        // Symmetric: a bare boolean where a string is declared is not a string.
+        std::fs::write(dir.join("config.toml"), "[theme]
+name = true
+").unwrap();
+        assert_eq!(toml_value_in(&dir, theme), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `tasqx config` must be LOUD about a file the user is explicitly asking
+    /// about. `set` already reported the parse error while `list`/`get` read
+    /// through the silent path and answered with the built-in default — so
+    /// someone whose theme had mysteriously reverted asked `config get` and was
+    /// told they never set it, which is the exact confusion the spec called
+    /// indefensible.
+    #[test]
+    fn the_strict_reader_reports_a_malformed_file_where_the_silent_one_hides_it() {
+        let dir = temp_dir("strict");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[theme
+name = broken").unwrap();
+
+        assert!(read_table_in(&dir).is_none(), "the silent reader still degrades");
+        let err = read_table_strict(&dir).expect_err("the strict reader must report it");
+        assert!(err.message.contains("not valid TOML"), "{}", err.message);
+        assert!(err.message.contains("config.toml"), "{}", err.message);
+
+        // A missing file is not an error: that is a fresh install.
+        let empty = temp_dir("strict-empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(read_table_strict(&empty).expect("no file is fine").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    /// The spec's own motivating example for choosing toml_edit carries an
+    /// INLINE comment, and the first implementation dropped exactly that one:
+    /// `doc[section][name] = parsed` replaces the whole Item including its
+    /// decor. The block comment survived, so the original guard passed while
+    /// the headline case failed — and cmddoc tells the user this command
+    /// preserves their comments.
+    #[test]
+    fn writing_preserves_an_inline_comment_on_the_edited_line() {
+        let dir = temp_dir("inline");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "# block note
+[theme]
+name = \"gruvbox\"  # inline note
+",
+        )
+        .unwrap();
+
+        write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
+        let after = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+
+        assert!(after.contains("# block note"), "block comment lost:
+{after}");
+        assert!(after.contains("# inline note"), "INLINE comment lost:
+{after}");
+        assert!(after.contains("name = \"mono\""), "value not written:
+{after}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The write lands via a temp file and a rename so a crash cannot leave the
+    /// user with no config at all — and the reader degrades silently, so they
+    /// would get no error, just their theme quietly reverting. Nothing checked
+    /// it: replacing the two-step write with a direct `fs::write` left all 330
+    /// tests green, so the doc comment sold a durability property CI could not
+    /// see.
+    #[test]
+    fn writing_leaves_no_temp_file_behind_and_replaces_atomically() {
+        let dir = temp_dir("atomic");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[theme]
+name = \"nord\"
+").unwrap();
+
+        write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
+
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "config.toml")
+            .collect();
+        assert!(leftovers.is_empty(), "temp file not cleaned up: {leftovers:?}");
+        // The rename target is the real file, not a sibling.
+        assert!(std::fs::read_to_string(dir.join("config.toml")).unwrap().contains("mono"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Defaults are user-visible behaviour, and the registry makes flipping one
+    /// a single-token edit. `notify.enabled` was unpinned: changing it from
+    /// "false" to "true" left all 330 tests green while turning native OS
+    /// notifications on for every install. Pinned by literal here rather than
+    /// by reading `Setting::default`, because a test that derives both sides
+    /// from the same constant moves with it and guards nothing.
+    #[test]
+    fn the_shipped_defaults_are_pinned_by_literal() {
+        assert_eq!(find("theme.name").unwrap().default, "nord");
+        assert_eq!(find("notify.enabled").unwrap().default, "false", "toasts are opt-in");
+        assert_eq!(find("default_project").unwrap().default, "");
+    }
+
 }
