@@ -18,10 +18,12 @@ pub enum RunKind {
 pub struct Example {
     pub cmd: &'static str,
     pub note: Option<&'static str>,
-    /// Classification only: the executable-examples guard in `tests/help.rs`
-    /// (a separate crate that cannot see these internals) mirrors the Safe set
-    /// by hand, so this field is never read inside the crate.
-    #[allow(dead_code)]
+    /// Whether the executable-examples guard runs this for real. It is read by
+    /// `tests/help.rs`, which selects the `Safe` entries straight out of
+    /// `COMMAND_REF`. It used to be `#[allow(dead_code)]` because that guard
+    /// hand-copied its own list — and that copy had drifted to thirteen of the
+    /// twenty-seven Safe examples before the crate grew a lib target the test
+    /// could import.
     pub run: RunKind,
 }
 
@@ -647,6 +649,53 @@ mod tests {
             "flags the CLI accepts but no usage line mentions:\n  {}",
             undocumented.join("\n  ")
         );
+    }
+
+    /// `see_also` is a cross-reference the reader is invited to follow, and
+    /// nothing has ever checked that it names a real verb. A dangling entry
+    /// renders as a normal suggestion in `-h` and in `tasqx manual`, so the
+    /// reader types it, gets "unrecognized subcommand", and concludes the tool
+    /// is broken rather than the doc. Aliases count: pointing at `ls` is fine.
+    #[test]
+    fn every_see_also_names_a_real_verb() {
+        let known: Vec<&str> = COMMAND_REF
+            .iter()
+            .flat_map(|d| std::iter::once(d.verb).chain(d.aliases.iter().copied()))
+            .collect();
+        let mut dangling = Vec::new();
+        for d in COMMAND_REF {
+            for target in d.see_also {
+                if !known.contains(target) {
+                    dangling.push(format!("{} -> {target}", d.verb));
+                }
+            }
+        }
+        assert!(dangling.is_empty(), "see_also entries naming no real verb: {dangling:?}");
+    }
+
+    /// `Topic::ALL` drives every topic page in `tasqx manual`. The compiler
+    /// forces a new variant to gain `slug()` and `title()` arms — both are
+    /// exhaustive matches — but it does NOT force membership in `ALL`, which is
+    /// a plain array. A variant missing from it is invisible: its commands
+    /// silently vanish from the manual's table of contents while every command
+    /// still renders individually, so nothing looks wrong.
+    #[test]
+    fn topic_all_lists_every_topic() {
+        // Distinctness via slug: `ALL` is the hand-written list, so a duplicate
+        // entry would satisfy the declared length while dropping a topic.
+        let mut slugs: Vec<&str> = Topic::ALL.iter().map(Topic::slug).collect();
+        let before = slugs.len();
+        slugs.sort_unstable();
+        slugs.dedup();
+        assert_eq!(slugs.len(), before, "Topic::ALL contains a duplicate");
+
+        // Every topic a command actually claims must be reachable from ALL.
+        let missing: Vec<&str> = COMMAND_REF
+            .iter()
+            .map(|d| d.topic.slug())
+            .filter(|s| !slugs.contains(s))
+            .collect();
+        assert!(missing.is_empty(), "topics used by commands but absent from Topic::ALL: {missing:?}");
     }
 
     #[test]

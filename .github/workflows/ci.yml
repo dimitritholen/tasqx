@@ -32,7 +32,17 @@ jobs:
       # BINARY that fails, so a break in tests/engine.rs hides every failure in
       # tests/increment.rs (the largest suite). That turns one red run into a
       # sequence of them, each revealing a failure that was there all along.
+      #
+      # -D warnings covers RUSTC lints only (clippy stays advisory below, since
+      # that tree is not clean yet). It is a gate rather than noise because of a
+      # specific failure this repo already had: an editing accident separated a
+      # `#[test]` from its function, so a docs drift guard silently stopped
+      # running. rustc reported it as `function is never used` and nobody looked.
+      # A test that quietly stops running is indistinguishable from a test that
+      # passes, so the warning has to be fatal.
       - run: cargo test --workspace --all-targets --no-fail-fast
+        env:
+          RUSTFLAGS: -D warnings
 
   # The OS-notification backend is off by default and therefore compiled by
   # nothing in the normal test run — a break in it would surface only on a

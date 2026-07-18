@@ -1,5 +1,7 @@
 use std::process::Command;
 
+use tasqx_cli::cmddoc::{RunKind, COMMAND_REF};
+
 fn bin() -> Command { Command::new(env!("CARGO_BIN_EXE_tasqx")) }
 
 fn help_of(verb: &str) -> String {
@@ -31,41 +33,98 @@ fn fresh_db(tag: &str) -> std::path::PathBuf {
     p
 }
 
+/// Split an example's command text the way a shell would: on whitespace, but
+/// with double-quoted runs held together.
+///
+/// Naive `split_whitespace` would turn `--desc "Day job"` into three arguments
+/// and hand clap a stray positional, so the guard would fail on examples that
+/// are perfectly correct. Kept deliberately small: the reference examples use
+/// double quotes and nothing else.
+fn shell_split(cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut started = false;
+    for c in cmd.chars() {
+        match c {
+            '"' => {
+                in_quotes = !in_quotes;
+                started = true;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
+}
+
+/// Every `RunKind::Safe` example in `COMMAND_REF`, in declaration order, with
+/// the leading `tasqx` stripped.
+fn safe_examples() -> Vec<&'static str> {
+    COMMAND_REF
+        .iter()
+        .flat_map(|d| d.examples.iter())
+        .filter(|e| matches!(e.run, RunKind::Safe))
+        .map(|e| e.cmd)
+        .collect()
+}
+
+/// The reference examples are the first thing a new user copies, so a broken one
+/// is a documentation bug that ships silently. This guard used to hand-copy the
+/// list of commands it executed: thirteen of the twenty-seven Safe examples were
+/// covered and the rest — every `chart`, `theme` and `export` example among them
+/// — had never been run by anything. It now iterates `COMMAND_REF` itself, so
+/// adding a Safe example automatically puts it under test and the two can no
+/// longer drift apart.
 #[test]
 fn safe_examples_all_exit_zero() {
     let db = fresh_db("safe");
-    // Seed the projects the examples reference so they exit 0 under D23.
-    for setup in ["init work", "init keuken-verbouwen"] {
-        let ok = bin().env("TASQX_DB", &db).args(setup.split_whitespace())
-            .status().unwrap().success();
-        assert!(ok, "setup `{setup}` failed");
-    }
-    // Representative safe examples (read-only / idempotent). Keep in sync with
-    // COMMAND_REF Safe entries; the unit guards assert each parses/starts with
-    // `tasqx `, and these run them for real.
-    let safe: &[&str] = &[
-        "add Buy milk",
-        "add Ship it due:friday +api !high --project work",
-        "list",
-        "list project:work",
-        "next",
-        "projects",
-        "report",
-        "report --all",
-        "why 1",
-        "show 1",
-        "manual",
-        "manual init",
-        "manual filters",
-    ];
-    for cmd in safe {
-        let args: Vec<&str> = cmd.split_whitespace().collect();
-        let out = bin().env("TASQX_DB", &db).args(&args).output().unwrap();
-        assert!(out.status.success(),
-            "example `tasqx {cmd}` exited {:?}\nstderr: {}",
-            out.status.code(), String::from_utf8_lossy(&out.stderr));
+
+    // No seeding is needed: the Safe set is self-sufficient in declaration
+    // order — the `init` examples create the projects the later `add
+    // --project work` and `list project:work` examples consume, and the `add`
+    // examples create the tasks the reports and charts read. Pre-creating
+    // those projects here would make the `init` examples collide and exit 5.
+
+    // Declaration order matters and is preserved on purpose: `init work` must
+    // run before `add … --project work`, and the report/chart examples need the
+    // tasks the earlier `add` examples created.
+    let examples = safe_examples();
+    // A filter bug that selected nothing would leave this test green while
+    // executing zero commands; the floor makes that impossible to miss.
+    assert!(examples.len() >= 27, "expected the full Safe set, got {}", examples.len());
+
+    let mut failures = Vec::new();
+    for cmd in examples {
+        let args = shell_split(cmd);
+        assert_eq!(args.first().map(String::as_str), Some("tasqx"), "`{cmd}` must start with tasqx");
+        let out = bin().env("TASQX_DB", &db).args(&args[1..]).output().unwrap();
+        if !out.status.success() {
+            failures.push(format!(
+                "`{cmd}` exited {:?}\n    stderr: {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
     }
     let _ = std::fs::remove_file(&db);
+    assert!(
+        failures.is_empty(),
+        "{} Safe example(s) in COMMAND_REF do not exit 0:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
 }
 
 #[test]

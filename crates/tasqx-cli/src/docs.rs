@@ -2165,11 +2165,6 @@ mod tests {
         assert!(doc.contains("&lt;addr&gt;"), "prose placeholders must stay escaped");
     }
 
-    /// A reader who cannot see D24 in the guide has no way to explain a report
-    /// count that looks too low — the tasks are still in the store, still listed
-    /// by `tasqx list`, just absent from the roll-up. The VERBS/METHODS drift
-    /// guards cannot catch this: the rule is prose, not a table they render from.
-    #[test]
     /// The filter page tells the reader which values `status:` accepts, and it
     /// listed four of the five — `backlog` was missing. That is not a drift risk,
     /// it was already wrong in shipped output: DESIGN.md defines `backlog` as a
@@ -2194,6 +2189,11 @@ mod tests {
         );
     }
 
+    /// A reader who cannot see D24 in the guide has no way to explain a report
+    /// count that looks too low — the tasks are still in the store, still listed
+    /// by `tasqx list`, just absent from the roll-up. The VERBS/METHODS drift
+    /// guards cannot catch this: the rule is prose, not a table they render from.
+    #[test]
     fn reports_section_states_which_statuses_count() {
         let doc = generate();
         let reports = doc
@@ -2213,7 +2213,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// The store path the guide prints must be the one the binary actually opens.
     /// It said `%APPDATA%\tasqx\tasks.db` while `db_path()` opens
     /// `%APPDATA%\tasqx\tasqx\data\tasks.db` — a reader following the page looked
