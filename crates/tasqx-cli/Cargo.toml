@@ -21,3 +21,9 @@ toml = "1.1.3"
 # comment and reorders sections, which is data loss in a file the user
 # hand-edits. This is the crate cargo uses to edit Cargo.toml.
 toml_edit = "0.22"
+# The interactive layer (D26). Only `config edit` uses it today; `tasqx pick`
+# is meant to sit on the same foundation. `crossterm` is NOT a separate
+# dependency: ratatui re-exports the exact version it was built against as
+# `ratatui::crossterm`, so raw mode and the alt screen cannot drift out of sync
+# with the backend that draws into them.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }

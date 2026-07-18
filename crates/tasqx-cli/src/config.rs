@@ -57,6 +57,23 @@ impl Source {
     }
 }
 
+/// Whether a setting has a closed set of acceptable values that an interactive
+/// picker can offer, and where that set comes from.
+///
+/// The registry names the *source* rather than the values because the theme
+/// list is a filesystem question (built-ins plus `themes/*.toml`) and this
+/// module must stay free of that lookup. Without this field the settings TUI
+/// would have had to test `key == "theme.name"` to decide whether Enter opens a
+/// picker — a hardcoded key in a second place, which is exactly the
+/// parallel-list problem this registry exists to remove.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Choices {
+    /// Any string the validator accepts. An editor offers no list.
+    Free,
+    /// The installed themes: the built-ins plus the user's theme files.
+    Themes,
+}
+
 /// One setting. The `[section] key` form in `config.toml` is derived by
 /// splitting `key` on its single dot.
 pub struct Setting {
@@ -68,6 +85,8 @@ pub struct Setting {
     pub env: Option<&'static str>,
     /// The CLI flag that overrides everything, if any.
     pub flag: Option<&'static str>,
+    /// Where an interactive editor gets the list of acceptable values, if any.
+    pub choices: Choices,
     pub summary: &'static str,
 }
 
@@ -86,6 +105,7 @@ pub const SETTINGS: &[Setting] = &[
         default: crate::theme::DEFAULT_THEME,
         env: Some("TASQX_THEME"),
         flag: Some("--theme"),
+        choices: Choices::Themes,
         summary: "Terminal theme: a built-in (nord, gruvbox, dracula, solarized, mono) or a user file.",
     },
     Setting {
@@ -95,6 +115,7 @@ pub const SETTINGS: &[Setting] = &[
         default: "false",
         env: None,
         flag: None,
+        choices: Choices::Free,
         summary: "Allow the daemon to raise native OS notifications for reminders.",
     },
     Setting {
@@ -104,6 +125,7 @@ pub const SETTINGS: &[Setting] = &[
         default: "",
         env: None,
         flag: None,
+        choices: Choices::Free,
         summary: "Project a bare `tasqx add` files into. Lives in the store; set it with `tasqx use`.",
     },
 ];
@@ -285,15 +307,26 @@ fn write_document(path: &std::path::Path, doc: &toml_edit::DocumentMut) -> Resul
     Ok(path.to_path_buf())
 }
 
+/// The one explanation of why a `Home::Store` setting cannot be written through
+/// `config.toml`, and what to do instead.
+///
+/// Two places refuse this now — `write_value_in`, which is reached by `config
+/// set`, and the settings screen, which never attempts the write and so cannot
+/// borrow the writer's error. A second literal would drift, and the two answers
+/// a user gets to the same question would disagree about which command works.
+pub fn store_home_message(s: &Setting) -> String {
+    format!(
+        "{} lives in the store, not config.toml — set it with `tasqx use <project>`, \
+         which validates the name against this store (D21)",
+        s.key
+    )
+}
+
 /// Set one setting in a `config.toml` under an explicit directory, creating the
 /// section if needed.
 pub fn write_value_in(dir: &std::path::Path, s: &Setting, value: &str) -> Result<PathBuf, ApiError> {
     if s.home != Home::Toml {
-        return Err(ApiError::bad_request(format!(
-            "{} lives in the store, not config.toml — set it with `tasqx use <project>`, \
-             which validates the name against this store (D21)",
-            s.key
-        )));
+        return Err(ApiError::bad_request(store_home_message(s)));
     }
     // Built once as a bare `Value` so both branches below can use it: the
     // decor-preserving path needs a Value, the insert path wraps it in an Item.
@@ -691,4 +724,36 @@ name = \"nord\"
         assert_eq!(find("default_project").unwrap().default, "");
     }
 
+    /// `write_value_in` refuses a store-homed key with a sentence that tells the
+    /// user where to go instead (`tasqx use`). The settings TUI must refuse with
+    /// the SAME sentence, and it cannot call `write_value_in` to get it — it
+    /// never attempts the write at all. Before this function the text existed
+    /// only as a literal inside `write_value_in`, so the second refusal site had
+    /// no way to reuse it and would have answered the same question differently.
+    #[test]
+    fn the_store_home_refusal_has_exactly_one_wording() {
+        let dir = temp_dir("storemsg");
+        let s = find("default_project").unwrap();
+
+        let from_writer = write_value_in(&dir, s, "work").unwrap_err().message;
+        assert_eq!(from_writer, store_home_message(s), "two wordings for one refusal");
+        assert!(from_writer.contains("tasqx use"), "must name the command that works: {from_writer}");
+        assert!(from_writer.contains("default_project"), "must name the key: {from_writer}");
+        // The refusal happens before any filesystem work: a rejected write must
+        // not leave a config directory behind.
+        assert!(!dir.exists(), "a refused write created {}", dir.display());
+    }
+
+    /// `Choices` is what lets an interactive editor decide "Enter opens a
+    /// picker" without testing `key == "theme.name"` itself. Pinned by literal
+    /// per key: deriving both sides from `Setting::choices` would move with any
+    /// edit and guard nothing. A `theme.name` silently downgraded to `Free`
+    /// leaves `config edit` with no theme picker — and the live theme preview is
+    /// the whole reason that screen exists.
+    #[test]
+    fn only_the_theme_setting_declares_a_closed_value_set() {
+        assert_eq!(find("theme.name").unwrap().choices, Choices::Themes);
+        assert_eq!(find("notify.enabled").unwrap().choices, Choices::Free);
+        assert_eq!(find("default_project").unwrap().choices, Choices::Free);
+    }
 }

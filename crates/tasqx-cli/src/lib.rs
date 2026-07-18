@@ -21,6 +21,7 @@ mod manual;
 mod render;
 mod sugar;
 mod theme;
+mod tui;
 
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::PathBuf;
@@ -476,6 +477,8 @@ enum ConfigAction {
     },
     /// Print the path of `config.toml` (it may not exist yet).
     Path,
+    /// Edit settings on an interactive screen, previewing themes live.
+    Edit,
 }
 
 #[derive(Subcommand)]
@@ -674,6 +677,32 @@ fn build_ctx(flag: Option<&str>) -> Ctx {
     let dir = themes_dir();
     let theme = theme::load(&name, dir.as_deref());
     Ctx::new(theme, Caps::detect())
+}
+
+/// The stems of `themes/*.toml`, sorted. A missing directory is an empty list —
+/// built-ins need no files.
+///
+/// Extracted from `theme list` when `config edit` needed the same list for its
+/// picker. Two copies would have let the printed list and the interactive one
+/// disagree about which themes exist, and only the interactive one can act on
+/// the answer.
+fn user_theme_names() -> Vec<String> {
+    let Some(dir) = themes_dir() else { return Vec::new() };
+    let mut user: Vec<String> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) == Some("toml") {
+                p.file_stem().and_then(|x| x.to_str()).map(str::to_string)
+            } else {
+                None
+            }
+        })
+        .collect();
+    user.sort();
+    user
 }
 
 /// The user's `themes/` directory: `$TASQX_CONFIG_DIR/themes` or the platform
@@ -1382,20 +1411,7 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
                 println!("  {}{}", name, ctx.paint("muted", marker));
             }
             if let Some(dir) = themes_dir() {
-                let mut user: Vec<String> = std::fs::read_dir(&dir)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter_map(|e| {
-                        let p = e.path();
-                        if p.extension().and_then(|x| x.to_str()) == Some("toml") {
-                            p.file_stem().and_then(|x| x.to_str()).map(str::to_string)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                user.sort();
+                let user = user_theme_names();
                 if !user.is_empty() {
                     println!("{}", ctx.paint("header", "User themes"));
                     println!("  {}", ctx.paint("muted", &dir.to_string_lossy()));
@@ -1504,6 +1520,7 @@ fn run_config(
         }
     };
     match action {
+        ConfigAction::Edit => run_config_edit(be, ctx, theme_flag),
         ConfigAction::Path => {
             let p = config::config_path()
                 .map(|p| p.to_string_lossy().into_owned())
@@ -1565,6 +1582,174 @@ fn run_config(
             }
             let text = render_config_table(ctx, &rows);
             Ok((json!({ "settings": rows }), text))
+        }
+    }
+}
+
+/// `tasqx config edit` — the interactive settings screen (D26).
+///
+/// The three pieces this function owns are the three the state machine must not:
+/// the TTY gate, the row snapshot (which reads the store and `config.toml`), and
+/// the writes. Everything between them is `tui::settings`.
+fn run_config_edit(be: &mut Backend, ctx: &Ctx, theme_flag: Option<&str>) -> CmdOutcome {
+    // Refuse before a single escape byte is written. Piped, redirected or dumb
+    // stdout gets a message on stderr and exit 2, not an alt screen it cannot
+    // clear and a command that looks hung.
+    if !tui::is_interactive(&ctx.caps) {
+        return Err(ApiError::bad_request(
+            "`tasqx config edit` needs an interactive terminal (stdout is piped, redirected, \
+             or TERM=dumb). Use `tasqx config list` and `tasqx config set <key> <value>`.",
+        ));
+    }
+
+    // The picker's candidate list. The registry says a setting HAS a closed set
+    // and where it comes from; resolving it to values is this layer's job,
+    // because it is a filesystem question the state machine must stay free of.
+    let mut themes: Vec<String> = theme::BUILTINS.iter().map(|t| t.to_string()).collect();
+    for name in user_theme_names() {
+        if !themes.contains(&name) {
+            themes.push(name);
+        }
+    }
+
+    let mut rows = Vec::new();
+    for s in config::SETTINGS {
+        let flag = if s.key == "theme.name" { theme_flag } else { None };
+        let (value, source) = match s.home {
+            config::Home::Store => (store_value(be, s.key).unwrap_or_default(), "store".to_string()),
+            config::Home::Toml => {
+                let (v, src) = config::resolve(s, flag, config::toml_value_strict(s)?.as_deref());
+                (v, src.label(s))
+            }
+        };
+        rows.push(build_row(s, value, source, &themes));
+    }
+
+    let mut app = tui::settings::App::new(rows);
+    let caps = ctx.caps;
+    let saved = tui::with_terminal(|term| settings_loop(term, &mut app, caps, theme_flag))
+        .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
+
+    // Printed after the alt screen is gone, so the user's scrollback keeps a
+    // record of what the session changed — an interactive screen that leaves no
+    // trace is impossible to audit afterwards.
+    let text = if saved.is_empty() {
+        "no changes\n".to_string()
+    } else {
+        saved.iter().map(|(k, v)| format!("{k} = {v}\n")).collect()
+    };
+    let changed: Vec<Value> = saved.iter().map(|(k, v)| json!({ "key": k, "value": v })).collect();
+    Ok((json!({ "changed": changed }), text))
+}
+
+
+/// One screen row for one registered setting.
+///
+/// Extracted from `run_config_edit`'s snapshot loop so the mapping is reachable
+/// from a test. It was inline, and dropping `Home::Store` settings from that
+/// loop — so `default_project` silently never reached the screen — left the
+/// whole suite green: every TUI test built its rows by hand, so none of them
+/// exercised the code that decides which settings a user actually sees.
+fn build_row(
+    s: &'static config::Setting,
+    value: String,
+    source: String,
+    themes: &[String],
+) -> tui::settings::Row {
+    tui::settings::Row {
+        setting: s,
+        value,
+        source,
+        choices: match s.choices {
+            config::Choices::Themes => themes.to_vec(),
+            config::Choices::Free => Vec::new(),
+        },
+    }
+}
+
+/// The theme name the NEXT frame must be painted in.
+///
+/// Named and extracted because the live preview is the only reason this screen
+/// exists, and nothing proved the loop re-derived it. Hoisting `theme::load`
+/// out of the loop body — resolving once instead of per frame, which kills the
+/// preview outright — left all 362 tests green: the render test passed a theme
+/// in directly, so it proved `render` honours what it is given and nothing
+/// about where that came from.
+fn frame_theme_name(app: &tui::settings::App, theme_flag: Option<&str>) -> String {
+    // A `--theme` flag outranks everything, including a preview: the user asked
+    // for that theme for this invocation, and previewing another would be the
+    // screen disagreeing with the terminal it is drawn in.
+    if let Some(f) = theme_flag.map(str::trim).filter(|f| !f.is_empty()) {
+        return f.to_string();
+    }
+    app.preview_theme().unwrap_or(theme::DEFAULT_THEME).to_string()
+}
+
+/// Apply one `Save` action: validate, write, re-resolve, record.
+///
+/// `write` is injected so a test can observe that the write actually happens.
+/// Inline, this whole path could be replaced with a validate-only no-op — so
+/// `config edit` changed nothing on disk — with the suite staying green at
+/// 362/362. The state machine was thoroughly covered; the twelve lines that
+/// turn its decision into a file were not covered at all.
+fn apply_save(
+    app: &mut tui::settings::App,
+    key: &'static str,
+    value: &str,
+    theme_flag: Option<&str>,
+    saved: &mut Vec<(String, String)>,
+    mut write: impl FnMut(&'static config::Setting, &str) -> Result<(), ApiError>,
+) {
+    let s = config::find(key).expect("the screen only names registered settings");
+    // The same validator `config set` uses. The picker can only offer valid
+    // values today, but a validator applied on one write path and not the other
+    // is how `theme set` and `config set` diverged once already.
+    match validate_setting(key, value).and_then(|()| write(s, value)) {
+        Ok(()) => {
+            // Re-resolve rather than assume: a `$TASQX_THEME` or a `--theme`
+            // flag still outranks the file we just wrote, and the screen has to
+            // say so instead of reporting a change the user's next command will
+            // not show.
+            let flag = if s.key == "theme.name" { theme_flag } else { None };
+            let (v, src) = config::resolve(s, flag, config::toml_value(s).as_deref());
+            app.refresh(key, v, src.label(s));
+            saved.retain(|(k, _)| k != key);
+            saved.push((key.to_string(), value.to_string()));
+        }
+        Err(e) => app.report_error(e.message),
+    }
+}
+
+/// Draw, read one key, fold it in, perform whatever the state machine asked for.
+///
+/// The theme is reloaded from `app.preview_theme()` on EVERY frame, which is
+/// what makes the preview live: moving the picker changes what that returns, so
+/// the next frame is painted in the candidate theme before anything is written.
+fn settings_loop(
+    term: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    app: &mut tui::settings::App,
+    caps: Caps,
+    theme_flag: Option<&str>,
+) -> std::io::Result<Vec<(String, String)>> {
+    use ratatui::crossterm::event::{self, Event};
+
+    let dir = themes_dir();
+    let mut saved: Vec<(String, String)> = Vec::new();
+    loop {
+        let name = frame_theme_name(app, theme_flag);
+        let active = theme::load(&name, dir.as_deref());
+        term.draw(|f| tui::settings::render(app, &active, &caps, f))?;
+
+        // Resize and paste events just redraw; only keys are decisions.
+        let Event::Key(key) = event::read()? else { continue };
+        match app.on_key(key) {
+            Some(tui::settings::Action::Quit) => return Ok(saved),
+            Some(tui::settings::Action::Save { key, value }) => {
+                apply_save(app, key, &value, theme_flag, &mut saved, |s, v| {
+                    config::write_value(s, v).map(|_| ())
+                });
+            }
+            None => {}
         }
     }
 }
@@ -1976,6 +2161,122 @@ mod tests {
         // 52 examples (27 Safe + 25 NoRun), two of which are two-command
         // pipelines and so contribute two segments each.
         assert!(checked >= 54, "expected every example, only checked {checked}");
+    }
+
+
+    // ---- config edit: the glue between the screen and the disk -------------
+
+    /// `config edit` could be severed from `config::write_value` entirely — a
+    /// validate-only no-op, so the screen reported success and nothing reached
+    /// the file — with all 362 tests green. The state machine was covered by 22
+    /// tests; the twelve lines that turn its decision into a write were covered
+    /// by none, because every TUI test stopped at the Action.
+    #[test]
+    fn a_save_action_actually_reaches_the_writer() {
+        let s = config::find("theme.name").unwrap();
+        let mut app = tui::settings::App::new(vec![build_row(
+            s,
+            "nord".into(),
+            "default".into(),
+            &["nord".to_string(), "mono".to_string()],
+        )]);
+        let mut saved = Vec::new();
+        let mut seen: Vec<(String, String)> = Vec::new();
+
+        apply_save(&mut app, "theme.name", "mono", None, &mut saved, |st, v| {
+            seen.push((st.key.to_string(), v.to_string()));
+            Ok(())
+        });
+
+        assert_eq!(seen, vec![("theme.name".to_string(), "mono".to_string())], "the writer must be called");
+        assert_eq!(saved, vec![("theme.name".to_string(), "mono".to_string())], "and the change recorded");
+    }
+
+    /// A failed write must surface on the screen and must NOT be recorded as a
+    /// change — otherwise the summary printed after the alt screen closes lists
+    /// a setting the user's next command will not show.
+    #[test]
+    fn a_failed_write_is_reported_and_not_recorded() {
+        let s = config::find("theme.name").unwrap();
+        let mut app = tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &[])]);
+        let mut saved = Vec::new();
+
+        apply_save(&mut app, "theme.name", "mono", None, &mut saved, |_, _| {
+            Err(ApiError::bad_request("disk on fire"))
+        });
+
+        assert!(saved.is_empty(), "a failed write must not count as a change");
+    }
+
+    /// An unknown value must never reach the writer, on this path as much as on
+    /// `config set` — `theme set` and `config set` already diverged on exactly
+    /// this once.
+    #[test]
+    fn an_invalid_value_never_reaches_the_writer() {
+        let s = config::find("theme.name").unwrap();
+        let mut app = tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &[])]);
+        let mut saved = Vec::new();
+        let mut called = false;
+
+        apply_save(&mut app, "theme.name", "not-a-theme", None, &mut saved, |_, _| {
+            called = true;
+            Ok(())
+        });
+
+        assert!(!called, "validation must run before the writer");
+        assert!(saved.is_empty());
+    }
+
+    /// The live preview is the only reason this screen exists, and nothing
+    /// proved the frame theme follows the picker: hoisting `theme::load` out of
+    /// the loop — resolving once instead of per frame — left the suite green,
+    /// because the render test passed a theme in directly.
+    #[test]
+    fn the_frame_theme_follows_the_picker_and_yields_to_a_flag() {
+        let s = config::find("theme.name").unwrap();
+        let themes = vec!["nord".to_string(), "gruvbox".to_string()];
+        let mut app =
+            tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &themes)]);
+
+        assert_eq!(frame_theme_name(&app, None), "nord", "browsing shows the saved value");
+
+        // Open the picker and move: the frame theme must follow the cursor
+        // BEFORE anything is committed.
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let press = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        app.on_key(press(KeyCode::Enter));
+        app.on_key(press(KeyCode::Down));
+        let previewed = frame_theme_name(&app, None);
+        assert_ne!(previewed, "nord", "moving the picker must change the frame theme");
+        assert!(themes.contains(&previewed), "and it must be a real candidate: {previewed}");
+
+        // An explicit --theme outranks the preview: the screen must not paint
+        // itself in a theme the surrounding terminal is not using.
+        assert_eq!(frame_theme_name(&app, Some("mono")), "mono");
+        assert_eq!(frame_theme_name(&app, Some("   ")), previewed, "a blank flag is not a flag");
+    }
+
+    /// Dropping `Home::Store` settings from the snapshot loop — so
+    /// `default_project` silently never appeared on the screen — left the suite
+    /// green, because every TUI test built its rows by hand and none exercised
+    /// the code deciding which settings a user sees.
+    #[test]
+    fn every_registered_setting_becomes_a_row() {
+        let themes = vec!["nord".to_string()];
+        let rows: Vec<_> = config::SETTINGS
+            .iter()
+            .map(|s| build_row(s, String::new(), "default".into(), &themes))
+            .collect();
+        assert_eq!(rows.len(), config::SETTINGS.len());
+
+        let store_row = rows
+            .iter()
+            .find(|r| r.setting.home == config::Home::Store)
+            .expect("a store-homed setting must still reach the screen, read-only");
+        assert!(store_row.choices.is_empty(), "a store setting offers no picker");
+
+        let theme_row = rows.iter().find(|r| r.setting.key == "theme.name").unwrap();
+        assert_eq!(theme_row.choices, themes, "the theme row must carry its candidates");
     }
 
     // ---- report scope (DESIGN.md §12-D24) -----------------------------------

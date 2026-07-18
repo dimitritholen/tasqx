@@ -127,6 +127,27 @@ fn safe_examples_all_exit_zero() {
     );
 }
 
+/// `config edit` is the first subcommand that wants a terminal. Run from a test,
+/// a script or CI its stdout is a pipe, and a TUI that starts anyway writes
+/// `\x1b[?1049h` into that pipe and then blocks on a key press that never comes
+/// — the command looks hung and the captured output is unreadable.
+///
+/// This exercises the whole refusal through the real binary: the exit code a
+/// script branches on, and a message that names the commands that DO work
+/// non-interactively. `Command::output()` gives piped stdout, which is exactly
+/// the situation being guarded.
+#[test]
+fn config_edit_refuses_a_piped_stdout_with_a_nonzero_exit() {
+    let out = bin().args(["config", "edit"]).output().expect("run config edit");
+
+    assert_eq!(out.status.code(), Some(2), "a refused TUI must exit non-zero (bad_request)");
+    assert!(out.stdout.is_empty(), "nothing may reach a piped stdout: {:?}", out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains('\x1b'), "escape codes leaked into the refusal: {err:?}");
+    assert!(err.contains("interactive terminal"), "{err}");
+    assert!(err.contains("config set"), "the refusal must name the way that works: {err}");
+}
+
 #[test]
 fn manual_toc_and_sections_work() {
     let out = bin().arg("manual").output().unwrap();

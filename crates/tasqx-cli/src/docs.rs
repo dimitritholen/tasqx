@@ -354,6 +354,16 @@ fn page_overview() -> String {
         })
         .collect();
     s.push_str(&table_owned(&["Setting", "Home", "Default", "What it does"], &setting_rows));
+    s.push_str(&p(
+        "<code>tasqx config edit</code> opens the same settings on a full-screen editor: up and \
+         down move, enter toggles a switch or opens a theme picker, escape leaves. Moving through \
+         the theme list repaints the screen in that theme <em>before</em> anything is written, \
+         which is the one thing editing <code>config.toml</code> by hand cannot do. \
+         <code>default_project</code> is shown there but not editable — it lives in the store and \
+         is set with <code>tasqx use</code>. Piped or redirected, <code>config edit</code> refuses \
+         and exits 2 instead of writing escape codes into your pipe; scripts should use \
+         <code>config set</code>.",
+    ));
 
     s.push_str(&page_close("overview"));
     s

@@ -76,7 +76,13 @@ impl Rgb {
     }
 
     /// Nearest xterm-256 index (16..=231 color cube, 232..=255 grayscale).
-    fn to_xterm256(self) -> u8 {
+    ///
+    /// Public because the TUI backend needs the same index the SGR printer
+    /// picks. A second nearest-color search in the TUI module would let the
+    /// alt-screen settings screen and the printed table disagree about what
+    /// "nord accent" looks like on a 256-color terminal, which is precisely the
+    /// question the live theme preview is there to answer.
+    pub fn to_xterm256(self) -> u8 {
         const LEVELS: [i32; 6] = [0, 95, 135, 175, 215, 255];
         let nearest = |v: u8| -> (usize, i32) {
             let mut best = 0usize;
@@ -114,6 +120,21 @@ impl Rgb {
     /// Nearest of the 16 standard ANSI colors, as an SGR fg code (`30..37` /
     /// `90..97`).
     fn to_ansi16_fg(self) -> String {
+        let i = self.to_ansi16();
+        if i < 8 {
+            format!("3{}", i) // 30..37
+        } else {
+            format!("9{}", i - 8) // 90..97
+        }
+    }
+
+    /// Index 0..=15 of the nearest standard ANSI color.
+    ///
+    /// Split out of `to_ansi16_fg` for the same reason `to_xterm256` is public:
+    /// the TUI needs the color, not an SGR string, and two independent nearest-
+    /// color searches would let the two renderers disagree on a 16-color
+    /// terminal.
+    pub fn to_ansi16(self) -> u8 {
         // Canonical xterm 16-color palette.
         const PAL: [(u8, u8, u8); 16] = [
             (0, 0, 0),
@@ -142,11 +163,7 @@ impl Rgb {
                 best = i;
             }
         }
-        if best < 8 {
-            format!("3{}", best) // 30..37
-        } else {
-            format!("9{}", best - 8) // 90..97
-        }
+        best as u8
     }
 }
 
