@@ -1,0 +1,96 @@
+# cargo-mutants configuration (https://mutants.rs/).
+#
+# WHY THIS EXISTS
+# ---------------
+# Three separate times, a change shipped here with a fully green suite and a
+# hand-run mutation pass found a real gap the tests missed: a CLI flag that
+# could be severed from its only consumer, `backlog` droppable from two
+# generated SQL IN-lists (so a reminder on a waiting task would silently never
+# fire), and a test that had stopped running altogether. Every one of those is
+# the same failure mode — code whose behaviour nothing asserts, which stays
+# green while it breaks. Mutation testing is the only technique that has caught
+# this class consistently, so it lives in a config file rather than in
+# somebody's shell history.
+#
+# Run it with a bare `cargo mutants` — the scope and timeouts below are the
+# defaults, so nobody has to remember the flags. See docs/mutation-testing.md
+# for how to read the output and how to triage a survivor.
+
+# SCOPE — the deliberate part.
+#
+# cargo-mutants rebuilds and reruns the suite once per mutant, so the whole
+# workspace (~16.5k lines) is not affordable as a routine check. These four
+# files are the highest-value surface in the repo: they are small, pure,
+# heavily depended upon, and they fail *quietly* — a wrong answer here is a
+# plausible-looking list, not a crash.
+#
+#   types.rs    the Status predicates every status set now derives from; the
+#               `backlog`-in-SQL near-miss came from exactly this code.
+#   filter.rs   the filter grammar, `constrains_status`, and the tag/date
+#               predicates that decide which rows a user is shown.
+#   remind.rs   reminder offset maths — a wrong sign or unit means a reminder
+#               fires at the wrong time or never, with nothing to notice it.
+#   urgency.rs  the scoring formula behind the default ordering of `tasqx list`.
+#               It had zero direct tests when this config was written.
+#
+# Deliberately NOT here: engine.rs (2k lines, mostly SQL plumbing already
+# covered by integration tests), the CLI render/docs/theme modules (large, and
+# their drift guards are a better fit), and daemon.rs (its mutants are mostly
+# I/O paths that a mutation run cannot meaningfully exercise). Widening this
+# list is a real cost — measure the wall clock before you do it.
+examine_globs = [
+    "crates/tasqx-core/src/types.rs",
+    "crates/tasqx-core/src/filter.rs",
+    "crates/tasqx-core/src/remind.rs",
+    "crates/tasqx-core/src/urgency.rs",
+]
+
+# TIMEOUTS — generous on purpose.
+#
+# Several mutants in filter.rs's recursive-descent parser turn `pos += 1` into
+# `pos -= 1` or `pos *= 1`, which makes the parser loop forever. Those SHOULD
+# time out; that is the signal, not a flake. But the timeout has to be well
+# clear of an honest slow run, or a cold cache on a loaded CI runner starts
+# reporting healthy mutants as timeouts and the whole report becomes noise.
+# The baseline suite finishes in ~3s, so 120s is ~40x headroom.
+minimum_test_timeout = 120
+timeout_multiplier = 8.0
+
+# cap_lints is load-bearing, not a tidy-up.
+#
+# CI runs the suite with RUSTFLAGS="-D warnings", and rustc lints are a real
+# gate here (an orphaned `#[test]` once stopped a guard from running and showed
+# up only as a "never used" warning). But a mutant frequently makes a variable
+# unused or a branch unreachable — which under `-D warnings` fails to COMPILE.
+# cargo-mutants would then score it "unviable" rather than "missed", silently
+# hiding exactly the untested code this run exists to find. Capping lints keeps
+# the deny-warnings gate on the real build and off the mutation build.
+cap_lints = true
+
+# EQUIVALENT MUTANTS — suppressed so a non-zero exit means "new gap".
+#
+# Both of these were triaged by hand and are observably identical to the
+# original through the entire public API, so NO test could ever kill them.
+# Leaving them in would mean the sweep always exits 3, and a check that is
+# always red is a check nobody reads — the same reasoning that kept clippy
+# advisory until its findings were actually cleaned.
+#
+# Suppressing a survivor is only legitimate when it is provably unkillable.
+# Anything that is merely hard to test belongs in the known-survivors table in
+# docs/mutation-testing.md, not here.
+exclude_re = [
+    # `and` is skipped as an explicit separator. Without the guard it falls
+    # through to parse_term, matches no predicate prefix, and becomes
+    # Pred::Always — the identity of the enclosing And. `eval` uses `.all()`
+    # and `constrains_status` uses `.any()` (where Always reads as false), so
+    # And([a, Always, b]) and And([a, b]) agree on every input. `root` is
+    # private and nothing compares Expr trees, so the difference is not
+    # observable anywhere.
+    'replace match guard t\.eq_ignore_ascii_case\("and"\) with false in Parser::parse_and',
+
+    # `let sign = if *secs < 0` — `<` and `<=` differ only at secs == 0, and
+    # that is exactly the input where `sign` is never read: the next lines
+    # compute `n = secs.abs()` and return the literal "+0s" before `sign`
+    # reaches any format!.
+    'replace < with <= in spec_to_string',
+]

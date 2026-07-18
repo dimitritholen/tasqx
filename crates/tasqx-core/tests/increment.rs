@@ -114,7 +114,7 @@ fn blocked_excluded_from_working_then_visible_and_unblocked() {
     // Completing B unblocks A (reported by task.done).
     let done = e.task_done(&json!({ "ref": bsid })).unwrap();
     let unblocked = done["unblocked"].as_array().unwrap();
-    assert!(unblocked.iter().any(|v| *v == asid), "A's short_id in unblocked");
+    assert!(unblocked.contains(&asid), "A's short_id in unblocked");
 
     // A is no longer blocked and now appears in @working.
     assert_eq!(e.task_get(&json!({ "ref": asid })).unwrap()["blocked"], false);

@@ -8,6 +8,9 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+  # For the mutation sweep below, which is too slow to run per-push.
+  schedule:
+    - cron: '0 4 * * 1' # Mondays, 04:00 UTC
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,8 +36,8 @@ jobs:
       # tests/increment.rs (the largest suite). That turns one red run into a
       # sequence of them, each revealing a failure that was there all along.
       #
-      # -D warnings covers RUSTC lints only (clippy stays advisory below, since
-      # that tree is not clean yet). It is a gate rather than noise because of a
+      # -D warnings covers RUSTC lints here; clippy is gated in its own job
+      # below. It is a gate rather than noise because of a
       # specific failure this repo already had: an editing accident separated a
       # `#[test]` from its function, so a docs drift guard silently stopped
       # running. rustc reported it as `function is never used` and nobody looked.
@@ -57,21 +60,88 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - run: cargo build -p tasqx-core --features notify-os
 
-  # Advisory, NOT a gate — and deliberately so for now. The tree currently has
-  # ~11 clippy findings (mostly `type_complexity` in daemon.rs) and has never
-  # been run through rustfmt; its compact one-line struct literals are a
-  # deliberate house style that `cargo fmt` would rewrite wholesale. Turning
-  # either into a gate today would paint CI red on its first run, which trains
-  # everyone to ignore it. Clean the findings first, then flip
-  # `continue-on-error` off and add `cargo fmt --all --check` here.
+  # A REAL GATE as of the clippy cleanup. The tree was carrying ~11 findings,
+  # which is why this used to be advisory: a job that is always yellow teaches
+  # everyone to scroll past it, so it may as well not exist. All of them are now
+  # fixed at the source — no `#[allow]` was added to reach zero, so the gate
+  # measures the code rather than the suppressions.
+  #
+  # rustfmt is deliberately still NOT here. The compact one-line struct literals
+  # throughout this tree are a house style `cargo fmt` would rewrite wholesale;
+  # that is a separate decision from lint cleanliness and should not ride in on
+  # its back.
   lint:
-    name: clippy (advisory)
+    name: clippy
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Mutation testing: does the suite NOTICE when the code is wrong?
+  #
+  # Advisory, NOT a gate — the same reasoning that kept clippy advisory until
+  # its findings were cleaned. The
+  # scoped sweep currently ends with 5 surviving mutants that have been triaged
+  # and deliberately left (two are equivalent mutants no test could ever catch;
+  # see docs/mutation-testing.md). A job that is red on its first run trains
+  # everyone to ignore it, and `cargo mutants` exits 3 whenever ANY mutant
+  # survives — including the equivalent ones.
+  #
+  # BEFORE THIS BECOMES A GATE — status as of the last local sweep
+  # (160 mutants, 143 caught, 0 missed):
+  #   1. DONE. Both real gaps the first sweep found are closed and
+  #      mutation-verified: the parenthesised-filter precedence inversion
+  #      (filter.rs `parse_and`) and the non-strict `due.before`/`due.after`
+  #      boundary. Neither was found by review or by 299 passing tests.
+  #   2. DONE. The two equivalent mutants are suppressed via `exclude_re` in
+  #      .cargo/mutants.toml, each with a justification. `missed` is now 0.
+  #   3. NOT DONE, and this is the whole remaining blocker. `cargo mutants`
+  #      exits 3 on TIMEOUTS as well as on survivors, and the parser's
+  #      `pos += 1` mutants time out by design (they make it loop forever).
+  #      Worse, WHICH of them time out varies run to run — three local sweeps
+  #      produced 5, 4 and 2 timeouts from identical code, because a mutant
+  #      that loses the race is scored caught instead. So the exit code is not
+  #      yet a stable signal.
+  #
+  # Two honest ways forward, neither taken here: give the parser a provable
+  # termination bound so those mutants get caught rather than hanging, or
+  # accept the timeouts and gate on the parsed `missed` count from
+  # mutants.out/outcomes.json instead of on the exit code. Do NOT reach for a
+  # blanket `exclude_re` on `pos +=` — that would suppress a real property
+  # (loop termination rests entirely on monotonic cursor advance) to buy a
+  # green tick.
+  # Scheduled weekly + manually dispatchable rather than per-push: the sweep
+  # rebuilds and reruns the suite once per mutant (159 of them), which is ~5min
+  # on a 24-core dev box and 25-40min on a GitHub runner.
+  mutants:
+    name: cargo-mutants (advisory)
+    runs-on: ubuntu-latest
+    # Only on the schedule or a manual click — never on a PR, where a 40-minute
+    # advisory job would just delay the checks people actually wait for.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Built from source rather than via a third-party install action: this job
+      # is weekly, so the extra minutes cost nothing, and it keeps the release
+      # pipeline free of another supply-chain dependency. --locked pins the
+      # tool's own lockfile so a broken upstream release cannot turn this red.
+      - run: cargo install cargo-mutants --locked
+      # No flags: scope, timeouts and cap_lints all come from
+      # .cargo/mutants.toml, so this runs exactly what a developer runs locally.
+      # Exit 3 means "mutants survived", which is a report, not a failure.
+      - run: cargo mutants --jobs 2
+      # The report is the deliverable; without it a red run says nothing
+      # actionable and the next person has to reproduce it locally.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-report
+          path: mutants.out/

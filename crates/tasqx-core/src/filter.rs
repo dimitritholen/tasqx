@@ -321,6 +321,104 @@ mod tests {
         MatchCtx { status, project: None, tags: &[], due: None, blocked: false }
     }
 
+    fn ctx_tagged(tags: &[String]) -> MatchCtx<'_> {
+        MatchCtx { status: Status::Pending, project: None, tags, due: None, blocked: false }
+    }
+
+    /// Grouping has to actually GROUP. Nothing in this suite ever *evaluated* a
+    /// parenthesised filter — the only paren case was inside a
+    /// `constrains_status` assertion, which returns true either way — so the
+    /// `Some(")") => break` arm in `parse_and` could be deleted with the whole
+    /// workspace staying green. Without it, `)` is swallowed as an ordinary
+    /// token (becoming `Pred::Always`) instead of closing the group, and
+    /// `(a or b) and c` silently reassociates to `a or (b and c)`.
+    ///
+    /// That is the worst shape a filter bug can take: no error, no crash, just a
+    /// full and entirely credible table containing exactly the rows the user
+    /// asked to exclude. Found by cargo-mutants, not by review.
+    #[test]
+    fn parentheses_group_rather_than_reassociating() {
+        // a = project:home -> TRUE, b = +api -> FALSE, c = status:done -> FALSE.
+        // Correct: (a or b) and c == (T or F) and F == FALSE.
+        // Reassociated: a or (b and c) == T or (F and F) == TRUE.
+        let ctx = MatchCtx {
+            status: Status::Pending,
+            project: Some("home"),
+            tags: &[],
+            due: None,
+            blocked: false,
+        };
+        assert!(
+            !Filter::parse("(project:home or +api) and status:done").matches(&ctx),
+            "the group must bind before `and` — this row was filtered out"
+        );
+        // The same tokens without parentheses DO match, which is what proves the
+        // assertion above is about grouping and not about the predicates.
+        assert!(Filter::parse("project:home or +api and status:done").matches(&ctx));
+    }
+
+    /// `due.before`/`due.after` are documented as STRICT, and the boundary was
+    /// the one input no test supplied: every fixture used a due either clearly
+    /// inside or clearly outside the bound, so `<` -> `<=` and `>` -> `>=`
+    /// both survived. A task due at exactly the bound appears as one extra row
+    /// in an otherwise correct list — the kind of off-by-one a user blames on
+    /// themselves rather than reporting.
+    #[test]
+    fn due_bounds_are_strict_at_the_exact_instant() {
+        let bound = "2026-07-17T00:00:00Z";
+        let ctx = MatchCtx {
+            status: Status::Pending,
+            project: None,
+            tags: &[],
+            due: Some(bound),
+            blocked: false,
+        };
+        assert!(!Filter::parse(&format!("due.before:{bound}")).matches(&ctx), "before is strict");
+        assert!(!Filter::parse(&format!("due.after:{bound}")).matches(&ctx), "after is strict");
+        // One second either side still resolves the way the names promise.
+        let earlier = MatchCtx { due: Some("2026-07-16T23:59:59Z"), ..ctx };
+        assert!(Filter::parse(&format!("due.before:{bound}")).matches(&earlier));
+        let later = MatchCtx { due: Some("2026-07-17T00:00:01Z"), ..ctx };
+        assert!(Filter::parse(&format!("due.after:{bound}")).matches(&later));
+    }
+
+    /// `-tag` was the one predicate whose *evaluation* nothing exercised. The
+    /// engine's `task.list` test covers `+tag`, and every context built in this
+    /// module used an empty tag list — the single case where including and
+    /// excluding return the same answer — so `Pred::TagExclude` was only ever
+    /// asked about tasks that had no tags to exclude.
+    ///
+    /// Mutation testing found three separate one-character edits that the whole
+    /// 299-test suite accepted: deleting the `!` in `eval_pred`, flipping its
+    /// `==` to `!=`, and deleting the `!` in `predicate`'s emptiness check (which
+    /// routes `-infra` to the always-true token instead of an exclusion). All
+    /// three ship the same user-visible bug, and it is the worst possible shape:
+    /// `tasqx list -infra` returns a full, plausible-looking table consisting of
+    /// exactly the tasks the user asked to hide.
+    #[test]
+    fn tag_exclusion_hides_tagged_tasks_and_keeps_every_other_task() {
+        let has_infra: Vec<String> = vec!["infra".into(), "api".into()];
+        let other_tag: Vec<String> = vec!["docs".into()];
+        let no_tags: Vec<String> = vec![];
+
+        let f = Filter::parse("-infra");
+        assert!(!f.matches(&ctx_tagged(&has_infra)), "-infra must hide a task tagged infra");
+        // Load-bearing: a task carrying some *other* tag is what separates a
+        // correct exclusion from one whose comparison has been inverted.
+        assert!(f.matches(&ctx_tagged(&other_tag)), "-infra must keep a task tagged only docs");
+        assert!(f.matches(&ctx_tagged(&no_tags)), "-infra must keep an untagged task");
+
+        // The include/exclude pair must stay exact opposites on the same rows.
+        let inc = Filter::parse("+infra");
+        for tags in [&has_infra, &other_tag, &no_tags] {
+            assert_ne!(
+                inc.matches(&ctx_tagged(tags)),
+                f.matches(&ctx_tagged(tags)),
+                "+infra and -infra disagree on {tags:?}"
+            );
+        }
+    }
+
     /// `Pred::Status` holds raw DSL text but is now compared by *parsing* it
     /// against a typed `Status`. The regression that buys: a value the parser
     /// does not recognise must keep matching nothing. If `Status::parse` were

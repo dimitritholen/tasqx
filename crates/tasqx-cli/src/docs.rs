@@ -15,73 +15,76 @@
 //! a page and, absent any hash, the page simply renders as one long scrollable
 //! document — the content is never *hidden behind* the script.
 //!
-//! **The doc-drift guard lives here, not in prose.** [`DOCUMENTED_VERBS`],
-//! [`DOCUMENTED_METHODS`], and [`DOCUMENTED_CLEAR_FIELDS`] are the lists the page
-//! renders *from*, and the tests at the bottom of this file assert each one equals
-//! the real surface it claims to describe — clap's subcommand table, the core's
-//! `core.capabilities`, and `main::CLEARABLE`. Adding a verb without documenting it
-//! fails the build, which is the cheapest honest guard available: the docs cannot
-//! silently fall behind the CLI, because the CLI's own table is the assertion.
+//! **The doc-drift guard lives here, not in prose.** [`VERBS`], [`METHODS`], and
+//! [`DOCUMENTED_CLEAR_FIELDS`] are the lists the page renders *from*, and the
+//! tests at the bottom of this file assert each one equals the real surface it
+//! claims to describe — clap's subcommand table, the core's `core.capabilities`,
+//! and `main::CLEARABLE`. Adding a verb without documenting it fails the build,
+//! which is the cheapest honest guard available: the docs cannot silently fall
+//! behind the CLI, because the CLI's own table is the assertion.
+//!
+//! Beyond the *names*, the guards now reach some of the descriptive columns too:
+//! each verb's one-line description is rendered from [`crate::cmddoc`] rather
+//! than restated here (so `-h` and this guide cannot disagree), and every
+//! method's documented **required** parameters are checked against the engine's
+//! own "missing required field" complaint. Two honest gaps remain, both named at
+//! their tests: *optional* parameter names are unguarded (the engine ignores
+//! unknown keys, so there is no failure to observe), and only the six
+//! bare-callable methods have their return shapes checked.
 //!
 //! Every command and every block of output on this page was executed against the
 //! real binary on an isolated store; nothing here is illustrative.
 
 use crate::html::esc;
 
-/// The verb table the Commands page renders: `(verb, aliases, method, what)`.
+/// The verb table the Commands page renders: `(verb, aliases, method)`.
 ///
 /// This is the single source — the page is generated from it and
 /// [`documented_verbs`] reads it, so there is no parallel list to fall out of
 /// sync. Order is reading order, not clap's.
-const VERBS: [(&str, &str, &str, &str); 28] = [
-    ("init", "—", "project.create", "Create a project."),
-    (
-        "use",
-        "—",
-        "project.use",
-        "Set the default project — where a bare <code>add</code> lands.",
-    ),
-    ("add", "<code>a</code>, <code>new</code>", "task.add", "Capture a task, with inline sugar."),
-    (
-        "modify",
-        "<code>mod</code>, <code>m</code>, <code>edit</code>",
-        "task.modify",
-        "Change fields; <code>--clear</code> unsets them.",
-    ),
-    ("list", "<code>ls</code>, <code>l</code>", "task.list", "List tasks matching a filter."),
-    ("next", "—", "task.list", "The single hottest unblocked task."),
-    ("show", "<code>get</code>", "task.get", "Full detail: tags, annotations, deps."),
-    ("why", "—", "task.get", "Explain a task's urgency score."),
-    ("start", "<code>s</code>", "task.start", "Start the timer."),
-    ("stop", "<code>st</code>", "task.stop", "Stop the timer."),
-    (
-        "done",
-        "<code>d</code>, <code>x</code>, <code>complete</code>",
-        "task.done",
-        "Complete it (and spawn the next recurrence).",
-    ),
-    (
-        "cancel",
-        "<code>delete</code>, <code>del</code>, <code>rm</code>",
-        "task.cancel",
-        "Cancel without completing. There is no hard delete — this is reversible via <code>reopen</code>.",
-    ),
-    ("reopen", "—", "task.reopen", "Reopen a done/cancelled task."),
-    ("annotate", "<code>note</code>", "annotation.add", "Attach a timestamped note."),
-    ("dep", "—", "dependency.add", "<code>&lt;ref&gt;</code> depends on <code>&lt;depends_on&gt;</code>."),
-    ("undep", "—", "dependency.remove", "Remove that edge."),
-    ("projects", "—", "project.list", "List projects."),
-    ("report", "—", "report.summary", "Grouped summary, or <code>--html</code>."),
-    ("chart", "—", "event.list", "Terminal charts from the event log."),
-    ("theme", "—", "— (no store)", "List or preview themes."),
-    ("export", "—", "store.export", "Canonical JSON out."),
-    ("import", "—", "store.import", "Canonical JSON in."),
-    ("api", "—", "(any)", "stdio: one JSON envelope in, one out."),
-    ("daemon", "—", "(serves all)", "Long-lived socket server."),
-    ("watch", "—", "task.list + push", "Live view over a daemon."),
-    ("mcp", "—", "(subset)", "MCP server and tokens."),
-    ("docs", "—", "— (no store)", "This guide."),
-    ("manual", "<code>man</code>", "— (no store)", "The complete guide, in your terminal."),
+///
+/// **There is deliberately no "what it does" column.** There used to be, and it
+/// was a second hand-written prose description of every verb sitting next to
+/// [`crate::cmddoc::CmdDoc::summary`] — the one `tasqx <verb> -h` prints — with
+/// nothing comparing them. They had already diverged in wording on most rows
+/// (`init` read "Create a project." here and "Create a project — just a name, no
+/// folder." under `-h`), and nothing could ever have caught a divergence in
+/// *meaning*: the guide and the terminal simply describing the same verb
+/// differently is not a state any test can distinguish from correct.
+///
+/// A guard comparing the two would have had to accept "merely consistent",
+/// which is unassertable prose-equivalence. So the column is gone and the page
+/// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
+/// both surfaces, with no second copy left to drift.
+const VERBS: [(&str, &str, &str); 28] = [
+    ("init", "—", "project.create"),
+    ("use", "—", "project.use"),
+    ("add", "<code>a</code>, <code>new</code>", "task.add"),
+    ("modify", "<code>mod</code>, <code>m</code>, <code>edit</code>", "task.modify"),
+    ("list", "<code>ls</code>, <code>l</code>", "task.list"),
+    ("next", "—", "task.list"),
+    ("show", "<code>get</code>", "task.get"),
+    ("why", "—", "task.get"),
+    ("start", "<code>s</code>", "task.start"),
+    ("stop", "<code>st</code>", "task.stop"),
+    ("done", "<code>d</code>, <code>x</code>, <code>complete</code>", "task.done"),
+    ("cancel", "<code>delete</code>, <code>del</code>, <code>rm</code>", "task.cancel"),
+    ("reopen", "—", "task.reopen"),
+    ("annotate", "<code>note</code>", "annotation.add"),
+    ("dep", "—", "dependency.add"),
+    ("undep", "—", "dependency.remove"),
+    ("projects", "—", "project.list"),
+    ("report", "—", "report.summary"),
+    ("chart", "—", "event.list"),
+    ("theme", "—", "— (no store)"),
+    ("export", "—", "store.export"),
+    ("import", "—", "store.import"),
+    ("api", "—", "(any)"),
+    ("daemon", "—", "(serves all)"),
+    ("watch", "—", "task.list + push"),
+    ("mcp", "—", "(subset)"),
+    ("docs", "—", "— (no store)"),
+    ("manual", "<code>man</code>", "— (no store)"),
 ];
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
@@ -117,8 +120,8 @@ const METHODS: [(&str, &str, &str); 23] = [
     ),
     (
         "task.list",
-        "<code>filter</code>, <code>sort?</code>, <code>limit?</code>, <code>fields?</code>",
-        "<code>{count, tasks}</code>.",
+        "<code>filter?</code>, <code>sort?</code>, <code>limit?</code>, <code>fields?</code>",
+        "<code>{count, tasks}</code>. An omitted <code>filter</code> matches everything.",
     ),
     ("task.get", "<code>ref</code>", "Full detail incl. annotations, deps, <code>blocked</code>."),
     ("task.start", "<code>ref</code>, <code>keep?</code>", "The task, timer running."),
@@ -137,8 +140,9 @@ const METHODS: [(&str, &str, &str); 23] = [
     ("dependency.remove", "<code>ref</code>, <code>depends_on</code>", "Dep state + <code>blocked</code>."),
     (
         "report.summary",
-        "<code>group_by</code>, <code>filter?</code>, <code>metrics?</code>",
-        "<code>{groups, generated}</code>.",
+        "<code>group_by?</code>, <code>filter?</code>, <code>metrics?</code>",
+        "<code>{groups, generated}</code>. <code>group_by</code> defaults to \
+         <code>project</code>.",
     ),
     ("store.export", "<code>filter?</code>", "<code>{tasks, dropped_dependencies}</code>."),
     ("store.import", "<code>tasks</code>", "<code>{imported}</code>."),
@@ -152,7 +156,7 @@ const METHODS: [(&str, &str, &str); 23] = [
 /// let the drift guard compare that same table against clap.
 #[cfg(test)]
 fn documented_verbs() -> Vec<&'static str> {
-    VERBS.iter().map(|(v, _, _, _)| *v).collect()
+    VERBS.iter().map(|(v, _, _)| *v).collect()
 }
 
 /// The JSON API methods this guide documents — read straight off [`METHODS`].
@@ -160,6 +164,16 @@ fn documented_verbs() -> Vec<&'static str> {
 #[cfg(test)]
 fn documented_methods() -> Vec<&'static str> {
     METHODS.iter().map(|(m, _, _)| *m).collect()
+}
+
+/// The one-line description of `verb`, taken from the terminal command registry
+/// so the guide and `tasqx <verb> -h` cannot disagree.
+///
+/// Falls back to the empty string rather than panicking: a missing entry is
+/// already a hard test failure in `html_verbs_agree_with_cmddoc`, and the
+/// generator has no business aborting `tasqx docs` over a documentation gap.
+fn verb_summary(verb: &str) -> &'static str {
+    crate::cmddoc::find(verb).map(|d| d.summary).unwrap_or("")
 }
 
 /// The fields `modify --clear` accepts. Asserted equal to `main::CLEARABLE`.
@@ -467,21 +481,36 @@ fn page_commands() -> String {
     ));
 
     s.push_str(&h3("The verb table"));
-    s.push_str(&p(
-        "Twenty-six verbs. The method column is the API call the verb makes — that mapping is \
+    // The count is counted, not spelled out. It was written as "Twenty-six" and
+    // the table had already grown to 28 — the same restated-value bug as the
+    // prose column below, and one no test could see because a wrong number reads
+    // exactly like a right one.
+    s.push_str(&p(&format!(
+        "{} verbs. The method column is the API call the verb makes — that mapping is \
          the whole contract.",
-    ));
+        VERBS.len()
+    )));
     // Rendered from VERBS, which the drift test asserts against clap's own
     // subcommand table. The page cannot list a verb the CLI lacks, or omit one it has.
+    //
+    // The "What it does" cell comes from `cmddoc` — the same string `tasqx
+    // <verb> -h` prints — rather than from a prose column here, so the guide and
+    // the terminal cannot describe a verb differently. It is plain text, so it
+    // goes through `esc` like every other untrusted-shaped cell.
     let verb_rows: Vec<Vec<String>> = VERBS
         .iter()
-        .map(|(verb, aliases, method, what)| {
+        .map(|(verb, aliases, method)| {
             let m = if method.starts_with('—') || method.starts_with('(') {
                 method.to_string()
             } else {
                 format!("<code>{method}</code>")
             };
-            vec![format!("<code>{verb}</code>"), aliases.to_string(), m, what.to_string()]
+            vec![
+                format!("<code>{verb}</code>"),
+                aliases.to_string(),
+                m,
+                esc(verb_summary(verb)),
+            ]
         })
         .collect();
     s.push_str(&table_owned(&["Verb", "Aliases", "Method", "What it does"], &verb_rows));
@@ -2010,12 +2039,13 @@ mod tests {
     }
 
     /// The HTML verb table and the terminal registry may not disagree on the
-    /// structural fields. Prose (`what`) stays hand-tuned; verb/aliases/method
-    /// are single-sourced in spirit by being asserted equal here.
+    /// structural fields: verb/aliases/method are asserted equal here. Prose is
+    /// no longer comparable because it is no longer duplicated — the page
+    /// renders `cmddoc`'s summary directly (see [`VERBS`]).
     #[test]
     fn html_verbs_agree_with_cmddoc() {
         use crate::cmddoc::COMMAND_REF;
-        for (verb, aliases_html, method, _what) in VERBS {
+        for (verb, aliases_html, method) in VERBS {
             let d = COMMAND_REF.iter().find(|d| d.verb == verb)
                 .unwrap_or_else(|| panic!("VERBS has `{verb}`, cmddoc does not"));
             assert_eq!(d.method, method, "method drift on `{verb}`");
@@ -2043,7 +2073,7 @@ mod tests {
     #[test]
     fn documented_aliases_match_the_cli_surface() {
         let cmd = crate::Cli::command();
-        for (verb, aliases, _, _) in VERBS {
+        for (verb, aliases, _) in VERBS {
             let sub = cmd
                 .get_subcommands()
                 .find(|c| c.get_name() == verb)
@@ -2074,6 +2104,156 @@ mod tests {
             assert!(
                 doc.contains(&format!("<code>{verb}</code>")),
                 "verb `{verb}` is in the VERBS table but never rendered onto the page"
+            );
+        }
+    }
+
+    /// Strip a `params`/`returns` cell down to the bare identifiers it names, so
+    /// a test can compare the documented parameter names against the engine.
+    /// `<code>x</code>, <code>y?</code>` → `["x", "y?"]`; the em-dash "no
+    /// params" marker yields an empty list.
+    #[cfg(test)]
+    fn param_names(cell: &str) -> Vec<String> {
+        cell.replace("<code>", "")
+            .replace("</code>", "")
+            .split(',')
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty() && p != "—")
+            .collect()
+    }
+
+    /// The `params` column claims which arguments each JSON API method takes and
+    /// which of them are mandatory (no trailing `?`). Nothing checked either.
+    ///
+    /// Two real failures this guards, both silent today:
+    ///
+    /// 1. A row claims a **required** parameter the engine no longer demands.
+    ///    Found exactly this on `task.list` (`filter`) and `report.summary`
+    ///    (`group_by`) — both are optional in the engine and were documented as
+    ///    required, sending readers hunting for an argument they do not need.
+    /// 2. A row claims a required parameter under a **name the engine renamed**.
+    ///    The engine's own "missing required field: X" message names the field
+    ///    it wanted, so calling each method with `{}` and matching that message
+    ///    against the documented name pins the spelling, not just the count.
+    ///
+    /// What this does NOT cover, stated plainly: the *optional* parameters
+    /// (`project?`, `sort?`, `expected_rev?`, …) are unguarded. The engine reads
+    /// them with `opt_str`-style lookups that succeed by ignoring anything they
+    /// do not recognise, so a renamed optional param produces no error to
+    /// observe — proving those names would mean a real call per parameter with a
+    /// value round-tripped back out, which is an integration suite, not a
+    /// doc-drift guard.
+    #[test]
+    fn documented_required_params_match_what_the_engine_demands() {
+        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+
+        for (method, params, _returns) in METHODS {
+            let names = param_names(params);
+            let required: Vec<&String> = names.iter().filter(|p| !p.ends_with('?')).collect();
+            let outcome = tasqx_core::dispatch(&e, method, &serde_json::json!({}));
+
+            match required.first() {
+                // The table says every argument is optional. That is a checkable
+                // claim: the method must succeed with no arguments at all.
+                None => assert!(
+                    outcome.is_ok(),
+                    "`{method}` documents no required params, but rejects an empty call: {:?}",
+                    outcome.err()
+                ),
+                // The table names a mandatory argument. The engine must refuse
+                // the empty call *and* name that same argument when it does.
+                Some(first) => {
+                    let err = outcome.err().unwrap_or_else(|| {
+                        panic!("`{method}` documents required param `{first}`, but an empty call succeeded")
+                    });
+                    assert!(
+                        err.message.contains(first.as_str()),
+                        "`{method}` documents required param `{first}`, but the engine's \
+                         complaint names something else: {}",
+                        err.message
+                    );
+                }
+            }
+        }
+    }
+
+    /// The `returns` column describes each method's response shape. Where it
+    /// spells the shape as an explicit `{a, b}` brace list, those really must be
+    /// top-level keys of the real response.
+    ///
+    /// Partial by construction, and worth naming precisely: this only covers the
+    /// methods callable with no arguments, because those are the ones a
+    /// doc-drift test can invoke without inventing fixture data. That is six of
+    /// the twenty-three rows. The write methods' return shapes, and every prose
+    /// `returns` cell that describes rather than enumerates ("The task, timer
+    /// running."), stay unguarded — asserting on English is not a thing a test
+    /// can do, and asserting on the write shapes needs a fixture store per
+    /// method.
+    ///
+    /// The failure it does catch: a renamed response key. `{count, tasks}`
+    /// becoming `{count, rows}` in the engine leaves the guide confidently
+    /// telling every API client to read a field that is no longer there.
+    #[test]
+    fn documented_return_shapes_match_the_real_response_where_checkable() {
+        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        let mut checked = 0;
+
+        for (method, params, returns) in METHODS {
+            // Only the no-required-params methods are callable here.
+            if param_names(params).iter().any(|p| !p.ends_with('?')) {
+                continue;
+            }
+            // Only the rows that enumerate a shape, e.g. "<code>{count, tasks}</code>".
+            let Some(open) = returns.find('{') else { continue };
+            let Some(close) = returns[open..].find('}') else { continue };
+            let keys = param_names(&returns[open + 1..open + close]);
+            if keys.is_empty() {
+                continue;
+            }
+
+            let result = tasqx_core::dispatch(&e, method, &serde_json::json!({}))
+                .unwrap_or_else(|err| panic!("`{method}` should be callable bare: {err:?}"));
+            for key in &keys {
+                assert!(
+                    result.get(key).is_some(),
+                    "the guide says `{method}` returns `{key}`, but the response has no such \
+                     top-level key: {result}"
+                );
+            }
+            checked += 1;
+        }
+
+        // Pin the coverage claim itself. If a future edit makes this loop skip
+        // everything, the test would pass while guarding nothing.
+        assert_eq!(
+            checked, 6,
+            "expected to check all 6 bare-callable return shapes; a row that stopped being \
+             checkable is coverage lost silently"
+        );
+    }
+
+    /// The Commands page's description column is rendered from `cmddoc`, not
+    /// stored in [`VERBS`]. That single-sourcing is the whole point of deleting
+    /// the old prose column, so it needs a guard of its own.
+    ///
+    /// The failure: [`verb_summary`] returns `""` for a verb `cmddoc` does not
+    /// know, deliberately (the generator must not panic over a doc gap). Without
+    /// this test that fallback is invisible — the page renders with a blank
+    /// column and every other guard still passes, because they all check verb
+    /// names and never the prose. This asserts the terminal's exact string
+    /// reaches the page, which is only possible while there is one copy of it.
+    #[test]
+    fn the_commands_page_shows_the_same_summary_as_the_terminal() {
+        let doc = generate();
+        for verb in documented_verbs() {
+            let summary = verb_summary(verb);
+            assert!(
+                !summary.is_empty(),
+                "verb `{verb}` renders an empty description — cmddoc has no summary for it"
+            );
+            assert!(
+                doc.contains(&esc(summary)),
+                "verb `{verb}`'s -h summary ({summary:?}) never reaches the Commands page"
             );
         }
     }
@@ -2112,7 +2292,7 @@ mod tests {
     #[test]
     fn verb_table_only_names_real_methods() {
         let methods = documented_methods();
-        for (verb, _, method, _) in VERBS {
+        for (verb, _, method) in VERBS {
             // Verbs that frame their own transport have no single method.
             if method.starts_with('—') || method.starts_with('(') {
                 continue;
@@ -2503,7 +2683,7 @@ mod tests {
         let mut named: Vec<String> = Vec::new();
         for c in &writes {
             for tok in c.split_whitespace() {
-                let tok = tok.trim_start_matches(|c| c == '"' || c == '\\');
+                let tok = tok.trim_start_matches(['"', '\\']);
                 if let Some(p) = tok.strip_prefix("project:").or_else(|| tok.strip_prefix("proj:")) {
                     named.push(clean(p));
                 }

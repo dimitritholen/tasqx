@@ -18,7 +18,8 @@
 use serde_json::{json, Value};
 
 use crate::dispatch::dispatch;
-use crate::engine::Engine;
+use crate::engine::{Engine, SUMMARY_GROUP_BY, SUMMARY_METRICS};
+use crate::types::Priority;
 
 /// MCP protocol revision this server implements by default (the `initialize`
 /// handshake reports it when it cannot honor the client's request). Kept
@@ -89,6 +90,19 @@ struct ToolSpec {
     schema: Value,
 }
 
+/// Render a Rust list of accepted string values as a JSON-Schema `enum` array.
+///
+/// Every closed value set in these schemas goes through here rather than being
+/// retyped as a JSON literal. The schemas are the *only* thing an agent sees
+/// before choosing an argument: a value the engine accepts but the schema omits
+/// is an option the agent will never try, and a value the schema advertises but
+/// the engine rejects is a call that always fails. Both used to be possible with
+/// nothing going red, because the JSON enums were hand-copies of Rust lists that
+/// nothing compared them against.
+fn enum_of(values: impl IntoIterator<Item = &'static str>) -> Value {
+    Value::Array(values.into_iter().map(|v| json!(v)).collect())
+}
+
 /// Schema fragment for a `ref` argument (short_id int OR full UUID string).
 fn ref_schema() -> Value {
     json!({
@@ -148,14 +162,14 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "group_by": {
                         "type": "string",
-                        "enum": ["project", "status", "priority"]
+                        "enum": enum_of(SUMMARY_GROUP_BY)
                     },
                     "filter": { "type": "string", "description": "Optional filter DSL to scope the report." },
                     "metrics": {
                         "type": "array",
                         "items": {
                             "type": "string",
-                            "enum": ["count", "est_total", "overdue", "tracked_total"]
+                            "enum": enum_of(SUMMARY_METRICS)
                         }
                     }
                 },
@@ -187,7 +201,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                     "project": { "type": "string" },
                     "priority": {
                         "type": "string",
-                        "enum": ["H", "M", "L"],
+                        "enum": enum_of(Priority::ALL.map(Priority::as_str)),
                         "description": "Priority: H (high), M (medium), or L (low)."
                     },
                     "due": { "type": "string", "description": "Due date/time, RFC3339, e.g. \"2026-07-20T17:00:00+02:00\"." },
@@ -465,4 +479,178 @@ fn rpc_result(id: Value, result: Value) -> Value {
 
 fn rpc_error(id: Value, code: i64, message: impl Into<String>) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message.into() } })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Read the JSON-Schema `enum` array at `properties.<prop>[.items]` of a
+    /// tool's `inputSchema`, as the strings an agent would actually see.
+    ///
+    /// The tests below deliberately go through the *published schema* rather
+    /// than through the Rust constants it is built from. Asserting the schema
+    /// equals the constant it is rendered from would be a tautology; asserting
+    /// that every value the schema advertises is one the engine really honors
+    /// is the property that was unguarded.
+    fn schema_enum(tool: &str, prop: &str, in_items: bool) -> Vec<String> {
+        let specs = tool_specs();
+        let spec = specs.iter().find(|s| s.name == tool).expect("no such tool");
+        let mut node = &spec.schema["properties"][prop];
+        if in_items {
+            node = &node["items"];
+        }
+        node["enum"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{tool}.{prop} has no enum in its schema"))
+            .iter()
+            .map(|v| v.as_str().expect("enum values are strings").to_string())
+            .collect()
+    }
+
+    fn engine() -> Engine {
+        Engine::open_in_memory().expect("in-memory store")
+    }
+
+    /// Every `group_by` the `tasqx_summary` schema advertises must be an axis
+    /// `report.summary` actually accepts, and the schema must not omit one it
+    /// accepts.
+    ///
+    /// The failure this guards: the schema's enum was a hand-typed JSON copy of
+    /// the engine's `matches!` arm. Drop `priority` from the JSON and an agent
+    /// never groups by priority again — every existing test still passes,
+    /// because a report that simply never gets asked for looks like no bug at
+    /// all. Add a fourth value and every call using it fails at runtime only.
+    #[test]
+    fn summary_group_by_schema_matches_what_the_engine_accepts() {
+        let e = engine();
+        let advertised = schema_enum("tasqx_summary", "group_by", false);
+
+        // Direction 1 — nothing advertised is rejected. This walks the values
+        // an agent would actually pick out of the published schema.
+        for axis in &advertised {
+            let out = dispatch(&e, "report.summary", &json!({ "group_by": axis }));
+            assert!(out.is_ok(), "schema advertises group_by `{axis}`, engine rejects it: {out:?}");
+        }
+
+        // Direction 2 — nothing accepted is *hidden*. This is the direction a
+        // behavioural loop cannot cover: an axis the schema omits is simply
+        // never exercised, so every test still passes while the agent loses the
+        // option. `SUMMARY_GROUP_BY` is the engine's own validation list, and
+        // direction 3 below proves it is not itself a shrunken copy.
+        assert_eq!(
+            advertised,
+            SUMMARY_GROUP_BY.map(String::from).to_vec(),
+            "the MCP schema no longer advertises exactly the axes the engine validates against"
+        );
+
+        // Direction 3 — the list really is closed, so direction 2 is not
+        // satisfied by an engine that accepts anything. `""` is deliberately
+        // not probed: an empty `group_by` reads as "omitted" and takes the
+        // default, which is a separate contract.
+        for bogus in ["tag", "urgency", "Project", "due"] {
+            assert!(
+                dispatch(&e, "report.summary", &json!({ "group_by": bogus })).is_err(),
+                "engine accepts group_by `{bogus}`, which the schema never advertises"
+            );
+        }
+    }
+
+    /// Every `metrics` value the schema advertises must produce a real field in
+    /// the report, and a value outside the set must not.
+    ///
+    /// The failure this guards: the metric names live in a `match` inside
+    /// `report_summary` whose `_ => {}` arm *silently ignores* anything it does
+    /// not know. So a schema that advertises `est_hours` after the engine
+    /// renamed it to `est_total` produces a successful, empty-looking report —
+    /// no error, no failing test, just an agent that concludes tasqx cannot
+    /// total estimates.
+    #[test]
+    fn summary_metrics_schema_matches_the_fields_the_engine_emits() {
+        let e = engine();
+        dispatch(&e, "task.add", &json!({ "title": "t", "estimate": "PT1H" })).unwrap();
+
+        let advertised = schema_enum("tasqx_summary", "metrics", true);
+
+        // A metric the schema *omits* is never exercised by the loop below, so
+        // it would drop out of the agent's vocabulary in total silence. Pin the
+        // published set against the engine's own list first.
+        assert_eq!(
+            advertised,
+            SUMMARY_METRICS.map(String::from).to_vec(),
+            "the MCP schema no longer advertises exactly the metrics the engine emits"
+        );
+
+        for metric in &advertised {
+            let out =
+                dispatch(&e, "report.summary", &json!({ "group_by": "status", "metrics": [metric] }))
+                    .expect("report.summary");
+            let group = &out["groups"][0];
+            assert!(
+                group.get(metric).is_some(),
+                "schema advertises metric `{metric}`, but the report has no such field: {group}"
+            );
+        }
+        // The `_ => {}` arm is the trap: an unknown metric is accepted and
+        // dropped. Pin that a name NOT in the schema really is unknown, so the
+        // check above cannot be satisfied by an always-present field.
+        let out = dispatch(
+            &e,
+            "report.summary",
+            &json!({ "group_by": "status", "metrics": ["est_hours"] }),
+        )
+        .expect("report.summary");
+        assert!(
+            out["groups"][0].get("est_hours").is_none(),
+            "`est_hours` is not a real metric; if it became one, the schema must list it"
+        );
+    }
+
+    /// Every priority letter the `tasqx_add_task` schema advertises must be one
+    /// `task.add` stores and reads back unchanged.
+    ///
+    /// The failure this guards: the schema's `["H","M","L"]` was a hand-copy of
+    /// the `Priority` enum. It is now rendered from `Priority::ALL`, and this
+    /// walks the rendered list through a real add/get round trip — so adding a
+    /// variant without teaching the engine to persist it fails here rather than
+    /// at an agent's call site.
+    #[test]
+    fn priority_schema_values_round_trip_through_the_engine() {
+        let e = engine();
+        let advertised = schema_enum("tasqx_add_task", "priority", false);
+        assert_eq!(advertised.len(), Priority::ALL.len(), "schema lost a priority");
+
+        for p in &advertised {
+            let added = dispatch(&e, "task.add", &json!({ "title": format!("p{p}"), "priority": p }))
+                .unwrap_or_else(|err| panic!("schema advertises priority `{p}`, add failed: {err:?}"));
+            let got = dispatch(&e, "task.get", &json!({ "ref": added["short_id"] })).expect("get");
+            assert_eq!(
+                got["priority"].as_str(),
+                Some(p.as_str()),
+                "priority `{p}` did not survive a round trip"
+            );
+        }
+    }
+
+    /// The tool registry is what an agent enumerates before it can call
+    /// anything, and every entry names a core dispatch method by string. A
+    /// renamed method leaves the tool listed and permanently broken — the
+    /// scope fence and the schema both still look fine, and nothing calls
+    /// `dispatch` with that name until an agent does.
+    #[test]
+    fn every_tool_names_a_method_dispatch_actually_routes() {
+        let e = engine();
+        for spec in tool_specs() {
+            let err = dispatch(&e, spec.method, &json!({}))
+                .err()
+                .map(|err| err.message)
+                .unwrap_or_default();
+            assert!(
+                !err.starts_with("unknown method"),
+                "tool `{}` maps onto `{}`, which dispatch does not route",
+                spec.name,
+                spec.method
+            );
+        }
+    }
 }

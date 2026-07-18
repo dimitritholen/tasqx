@@ -507,7 +507,7 @@ fn project_finish(series: &[RemainingPoint], mid: &str) -> String {
     }
     // Recent burn rate over the last min(7, n) days.
     let n = series.len();
-    let look = n.min(7).max(2);
+    let look = n.clamp(2, 7);
     let a = series[n - look].remaining as i64;
     let b = last;
     let per_day = (a - b) as f64 / (look - 1) as f64;

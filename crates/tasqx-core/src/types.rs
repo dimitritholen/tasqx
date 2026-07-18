@@ -132,6 +132,19 @@ pub enum Priority {
 }
 
 impl Priority {
+    /// Every priority, highest first. The canonical list, following the
+    /// [`Status::ALL`] precedent for the same reason: anything that needs to
+    /// enumerate "all priorities" derives from here rather than retyping `H`,
+    /// `M`, `L`.
+    ///
+    /// This exists because the letters were retyped in the MCP tool schema
+    /// (`crate::mcp`), which an agent reads to decide what it is allowed to
+    /// send. A schema listing a letter the engine rejects makes the agent's
+    /// call fail; a schema *omitting* a letter the engine accepts makes the
+    /// agent never use it — and neither shows up as an error anywhere, because
+    /// nothing was comparing the two lists.
+    pub const ALL: [Priority; 3] = [Priority::H, Priority::M, Priority::L];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Priority::H => "H",
@@ -242,6 +255,24 @@ mod tests {
         }
         assert_eq!(Status::parse("canceled"), None, "a near-miss must not parse");
         assert_eq!(Status::parse(""), None);
+    }
+
+    /// `Priority::ALL` is hand-written, exactly like `Status::ALL`, and carries
+    /// the same silent-failure mode: a duplicate entry satisfies the declared
+    /// array length while dropping a real priority, and the MCP tool schema is
+    /// now rendered from this list — so a dropped letter becomes a priority no
+    /// agent is ever told it may send.
+    #[test]
+    fn priority_all_lists_every_variant_exactly_once() {
+        let mut seen: Vec<&str> = Priority::ALL.iter().map(|p| p.as_str()).collect();
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "Priority::ALL contains a duplicate");
+        assert_eq!(before, 3, "Priority::ALL must list every variant");
+        for p in Priority::ALL {
+            assert_eq!(Priority::parse(p.as_str()), Some(p), "round trip failed for {p:?}");
+        }
     }
 
     /// `sql_in_list` builds SQL by string concatenation, and four live queries

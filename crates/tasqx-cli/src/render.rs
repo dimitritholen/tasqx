@@ -33,7 +33,7 @@ pub fn san(s: &str) -> String {
 /// preserved here deliberately rather than inherited, so a future editor changes
 /// it on purpose.
 pub fn status_is_open(status: &str) -> bool {
-    tasqx_core::types::Status::parse(status).map_or(true, tasqx_core::types::Status::is_open)
+    tasqx_core::types::Status::parse(status).is_none_or(tasqx_core::types::Status::is_open)
 }
 
 /// Extract a string field, sanitized — every field pulled here is display text
@@ -670,7 +670,7 @@ mod tests {
         assert!(uni.ends_with('…') && !uni.contains("..."));
         let ascii = truncate(&long, 10, false);
         assert!(ascii.ends_with("...") && !ascii.contains('…'));
-        assert!(!ascii.chars().any(|c| !c.is_ascii()), "no non-ASCII in plain path");
+        assert!(ascii.is_ascii(), "no non-ASCII in plain path");
         assert_eq!(ascii.chars().count(), 10);
     }
 }

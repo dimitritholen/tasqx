@@ -76,7 +76,7 @@ impl Rgb {
     }
 
     /// Nearest xterm-256 index (16..=231 color cube, 232..=255 grayscale).
-    fn to_xterm256(&self) -> u8 {
+    fn to_xterm256(self) -> u8 {
         const LEVELS: [i32; 6] = [0, 95, 135, 175, 215, 255];
         let nearest = |v: u8| -> (usize, i32) {
             let mut best = 0usize;
@@ -97,7 +97,7 @@ impl Rgb {
         let cube_dist = sqdist(self.r, self.g, self.b, rv as u8, gv as u8, bv as u8);
 
         // Grayscale ramp 232..=255 (levels 8,18,…,238).
-        let gray = ((self.r as i32 + self.g as i32 + self.b as i32) / 3) as i32;
+        let gray = (self.r as i32 + self.g as i32 + self.b as i32) / 3;
         let gi2 = ((gray - 8).clamp(0, 238) as f64 / 10.0).round() as i32;
         let gi2 = gi2.clamp(0, 23);
         let gval = 8 + gi2 * 10;
@@ -113,7 +113,7 @@ impl Rgb {
 
     /// Nearest of the 16 standard ANSI colors, as an SGR fg code (`30..37` /
     /// `90..97`).
-    fn to_ansi16_fg(&self) -> String {
+    fn to_ansi16_fg(self) -> String {
         // Canonical xterm 16-color palette.
         const PAL: [(u8, u8, u8); 16] = [
             (0, 0, 0),
@@ -694,10 +694,11 @@ pub struct UserTheme {
 /// flatten them back to literal role names.
 pub fn parse_user_theme(src: &str) -> Result<UserTheme, String> {
     let val: toml::Table = src.parse().map_err(|e| format!("invalid theme TOML: {e}"))?;
-    let mut ut = UserTheme::default();
-
-    ut.name = val.get("name").and_then(|v| v.as_str()).map(str::to_string);
-    ut.extends = val.get("extends").and_then(|v| v.as_str()).map(str::to_string);
+    let mut ut = UserTheme {
+        name: val.get("name").and_then(|v| v.as_str()).map(str::to_string),
+        extends: val.get("extends").and_then(|v| v.as_str()).map(str::to_string),
+        ..Default::default()
+    };
 
     if let Some(pal) = val.get("palette").and_then(|v| v.as_table()) {
         for (k, v) in pal {

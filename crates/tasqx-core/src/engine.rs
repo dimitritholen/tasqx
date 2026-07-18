@@ -33,6 +33,25 @@ use crate::util::{
 /// The config key holding the default project name (inherited by `task.add`).
 pub const DEFAULT_PROJECT_KEY: &str = "default_project";
 
+/// The axes `report.summary` can group by. **First entry is the default** when
+/// the caller omits `group_by`.
+///
+/// This is the source of truth: [`Engine::report_summary`] validates against it
+/// and builds its rejection message from it, and the MCP tool schema
+/// (`crate::mcp`) renders its JSON-Schema `enum` from it. Those two lists used
+/// to be typed out separately, and the MCP one is what an agent reads to decide
+/// what it may send — so a drifted schema either forbids a valid axis forever
+/// or produces calls the engine rejects, with no test anywhere going red.
+pub const SUMMARY_GROUP_BY: [&str; 3] = ["project", "status", "priority"];
+
+/// The metrics `report.summary` can emit per group. `count` is always present;
+/// the rest are opt-in via the `metrics` param.
+///
+/// Source of truth for the same reason as [`SUMMARY_GROUP_BY`]: the MCP schema's
+/// `enum` is built from this, and a test drives every entry through the engine
+/// to prove the name still produces a field.
+pub const SUMMARY_METRICS: [&str; 4] = ["count", "est_total", "overdue", "tracked_total"];
+
 /// The core engine. Cheap to construct; holds one open store connection.
 pub struct Engine {
     conn: Connection,
@@ -1321,10 +1340,11 @@ impl Engine {
     // ---- report.summary ------------------------------------------------------
 
     pub fn report_summary(&self, p: &Value) -> Result<Value, ApiError> {
-        let group_by = opt_str(p, "group_by").unwrap_or_else(|| "project".to_string());
-        if !matches!(group_by.as_str(), "project" | "status" | "priority") {
+        let group_by = opt_str(p, "group_by").unwrap_or_else(|| SUMMARY_GROUP_BY[0].to_string());
+        if !SUMMARY_GROUP_BY.contains(&group_by.as_str()) {
             return Err(ApiError::bad_request(format!(
-                "group_by must be project|status|priority (got {group_by})"
+                "group_by must be {} (got {group_by})",
+                SUMMARY_GROUP_BY.join("|")
             )));
         }
         let metrics: Vec<String> = p

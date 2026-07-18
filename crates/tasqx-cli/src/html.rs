@@ -589,13 +589,16 @@ fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
 
     let first = series.first().map(|p| p.date);
     let last = series.last().map(|p| p.date);
+    // ISO date for an axis label. Named rather than inlined so the two ends of
+    // the axis cannot be formatted differently by accident.
+    let ymd = |d: jiff::civil::Date| format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day());
     let date_labels = match (first, last) {
         (Some(f), Some(l)) => format!(
             "<text x=\"{pad_l}\" y=\"{ly:.1}\" class=\"axl\">{fs}</text>\
              <text x=\"{xr:.1}\" y=\"{ly:.1}\" text-anchor=\"end\" class=\"axl\">{ls}</text>",
             ly = h - 8.0, xr = pad_l + plot_w,
-            fs = format!("{:04}-{:02}-{:02}", f.year(), f.month(), f.day()),
-            ls = format!("{:04}-{:02}-{:02}", l.year(), l.month(), l.day()),
+            fs = ymd(f),
+            ls = ymd(l),
         ),
         _ => String::new(),
     };

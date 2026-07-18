@@ -180,12 +180,18 @@ fn cleanup(socket: &str) {
 
 // ---- subscriber hub ---------------------------------------------------------
 
+/// One registered subscriber: its hub-assigned id and the sending half of its
+/// connection's writer channel. Named because the bare tuple appears in the
+/// hub's field type, in `retain` closures, and in `register`'s push — three
+/// places where `(u64, SyncSender<String>)` says nothing about which `u64`.
+type Subscriber = (u64, mpsc::SyncSender<String>);
+
 /// A simple in-memory broadcast hub: every subscriber registers the `Sender`
 /// end of its connection's writer channel, so a broadcast is just an in-memory
 /// `send` per subscriber (never blocks on socket I/O).
 #[derive(Clone)]
 struct Hub {
-    subs: Arc<Mutex<Vec<(u64, mpsc::SyncSender<String>)>>>,
+    subs: Arc<Mutex<Vec<Subscriber>>>,
     next: Arc<AtomicU64>,
 }
 
@@ -225,6 +231,23 @@ struct Shared {
     watermark: Arc<Mutex<i64>>,
 }
 
+/// One `events` row joined to its task, as [`pump`] reads it before turning it
+/// into a `task.changed` notification.
+///
+/// This was a bare six-field tuple. Six positional fields of which four are
+/// `String`/`Option<i64>` is a shape where transposing two columns in either the
+/// `SELECT` or the `query_map` still compiles and still type-checks — it just
+/// broadcasts `entity_id` in the `op` field forever. Names make that a compile
+/// error instead.
+struct EventRow {
+    rowid: i64,
+    entity: String,
+    entity_id: String,
+    op: String,
+    short_id: Option<i64>,
+    rev: Option<i64>,
+}
+
 fn max_event_rowid(engine: &Engine) -> i64 {
     engine
         .conn()
@@ -240,7 +263,7 @@ fn max_event_rowid(engine: &Engine) -> i64 {
 fn pump(sh: &Shared) {
     let mut wm = lock_recover(&sh.watermark);
     let last = *wm;
-    let rows: Vec<(i64, String, String, String, Option<i64>, Option<i64>)> = {
+    let rows: Vec<EventRow> = {
         let g = lock_recover(&sh.engine);
         let conn = g.conn();
         let Ok(mut stmt) = conn.prepare(
@@ -251,27 +274,27 @@ fn pump(sh: &Shared) {
             return;
         };
         let mapped = stmt.query_map([last], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, Option<i64>>(5)?,
-            ))
+            Ok(EventRow {
+                rowid: r.get(0)?,
+                entity: r.get(1)?,
+                entity_id: r.get(2)?,
+                op: r.get(3)?,
+                short_id: r.get(4)?,
+                rev: r.get(5)?,
+            })
         });
         let Ok(iter) = mapped else { return };
         iter.filter_map(Result::ok).collect()
     };
-    for (rowid, entity, entity_id, op, short_id, rev) in rows {
+    for row in rows {
         let mut data = Map::new();
-        data.insert("entity".into(), json!(entity));
-        data.insert("entity_id".into(), json!(entity_id));
-        data.insert("op".into(), json!(op));
-        if let Some(s) = short_id {
+        data.insert("entity".into(), json!(row.entity));
+        data.insert("entity_id".into(), json!(row.entity_id));
+        data.insert("op".into(), json!(row.op));
+        if let Some(s) = row.short_id {
             data.insert("short_id".into(), json!(s));
         }
-        if let Some(r) = rev {
+        if let Some(r) = row.rev {
             data.insert("_rev".into(), json!(r));
         }
         let notif = json!({
@@ -280,8 +303,8 @@ fn pump(sh: &Shared) {
             "data": Value::Object(data),
         });
         sh.hub.broadcast(&format!("{notif}\n"));
-        if rowid > *wm {
-            *wm = rowid;
+        if row.rowid > *wm {
+            *wm = row.rowid;
         }
     }
 }
