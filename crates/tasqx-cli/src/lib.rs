@@ -669,11 +669,47 @@ pub fn run() {
 
 /// Resolve the active theme (flag > $TASQX_THEME > config > default) and detect
 /// terminal capability, producing the render context every command shares.
+/// Warn, but never refuse, when a theme name cannot be honoured.
+///
+/// `theme set` and `config set` REJECT an unknown name because they persist it,
+/// and a persisted name that silently does nothing is a lie the user carries
+/// forever. `--theme` and `$TASQX_THEME` apply to one invocation, so the same
+/// treatment would be wrong in the other direction: `tasqx --theme typo add
+/// "urgent thing"` must still capture the task. Refusing to record work because
+/// a colour scheme was misspelled is the one thing a task manager may not do.
+///
+/// So the fallback stays and the silence goes. Before this, a typo'd `--theme`
+/// or a stale `$TASQX_THEME` rendered nord with no hint, which reads as the
+/// flag being ignored rather than the name being wrong.
+/// The message, or `None` when there is nothing to say.
+///
+/// Split from the printing so it is testable at all: the emitting version can
+/// only be observed through process-global stderr, and a first version of this
+/// was pinned by a test that checked `validate_setting` and that `build_ctx`
+/// did not panic — so disabling the warning outright left the suite green.
+fn unknown_theme_warning(name: &str, source: &str) -> Option<String> {
+    validate_setting("theme.name", name).err().map(|_| {
+        format!("warning: unknown theme {name:?} from {source}; using the default (try `tasqx theme list`)")
+    })
+}
+
+fn warn_unknown_theme(name: &str, source: &str) {
+    if let Some(msg) = unknown_theme_warning(name, source) {
+        eprintln!("{msg}");
+    }
+}
+
 fn build_ctx(flag: Option<&str>) -> Ctx {
     // One chain for every setting (config::resolve), rather than a per-setting
     // fold. The env layer is read inside the resolver so a caller cannot forget it.
     let s = config::find("theme.name").expect("theme.name is a registered setting");
-    let (name, _) = config::resolve(s, flag, config::toml_value(s).as_deref());
+    let (name, source) = config::resolve(s, flag, config::toml_value(s).as_deref());
+    // Only the layers the user typed for THIS run. A stale name in config.toml
+    // is `tasqx config`'s business to report, and warning about it on every
+    // single command would be noise.
+    if matches!(source, config::Source::Flag | config::Source::Env) {
+        warn_unknown_theme(&name, &source.label(s));
+    }
     let dir = themes_dir();
     let theme = theme::load(&name, dir.as_deref());
     Ctx::new(theme, Caps::detect())
@@ -1074,7 +1110,11 @@ fn report_params(args: &[String], all: bool) -> Value {
     let mut group_by = "project".to_string();
     let mut rest: &[String] = args;
     if let Some(first) = args.first() {
-        if matches!(first.as_str(), "project" | "status" | "priority") {
+        // The engine's own list, not a third copy. The MCP schema already
+        // renders from this const; the CLI hard-coded the same three names, so
+        // adding a fourth axis would have made the API accept it and the CLI
+        // silently treat it as a filter token instead.
+        if tasqx_core::engine::SUMMARY_GROUP_BY.contains(&first.as_str()) {
             group_by = first.clone();
             rest = &args[1..];
         }
@@ -1545,6 +1585,15 @@ fn theme_pointer(key: &str) -> Option<&'static str> {
     (key == "theme.name").then_some("See it with `tasqx theme show`.")
 }
 
+/// Reject a value that would persist but never take effect.
+///
+/// Shared because the first version put theme validation inline in `theme set`
+/// only — so `tasqx theme set bogus` was rejected while
+/// `tasqx config set theme.name bogus` wrote it happily and exited 0, and
+/// `theme show bogus` previewed the default as if nothing were wrong. The
+/// primitive was looser than its own alias, which is backwards: `theme::load`
+/// falls back to the default for an unknown name, so the write persists a value
+/// that silently does nothing on every run from then on.
 fn validate_setting(key: &str, value: &str) -> Result<(), ApiError> {
     if key == "theme.name" {
         let known = theme::BUILTINS.contains(&value)
@@ -2282,6 +2331,47 @@ mod tests {
         assert!(checked >= 54, "expected every example, only checked {checked}");
     }
 
+
+
+    /// `theme set` rejects an unknown name because it PERSISTS one; `--theme`
+    /// and `$TASQX_THEME` apply to a single run, so they must still render —
+    /// `tasqx --theme typo add "urgent thing"` may not refuse to record work
+    /// because a colour scheme was misspelled. But the silence was wrong: a
+    /// typo rendered nord with no hint, which reads as the flag being ignored
+    /// rather than the name being wrong.
+    #[test]
+    fn an_unknown_theme_from_a_flag_warns_without_refusing() {
+        assert!(validate_setting("theme.name", "geen-thema-xyz").is_err(), "fixture must be unknown");
+        assert!(validate_setting("theme.name", "nord").is_ok(), "a built-in must stay valid");
+        // The warning itself, not a proxy for it.
+        let msg = unknown_theme_warning("geen-thema-xyz", "--theme").expect("must warn");
+        assert!(msg.contains("geen-thema-xyz"), "{msg}");
+        assert!(msg.contains("--theme"), "must name the layer it came from: {msg}");
+        assert!(msg.contains("theme list"), "must point somewhere useful: {msg}");
+        assert!(unknown_theme_warning("nord", "--theme").is_none(), "a real theme is silent");
+
+        // And the command still runs: rendering must never refuse over a theme.
+        let ctx = build_ctx(Some("geen-thema-xyz"));
+        assert_eq!(ctx.theme.name, theme::DEFAULT_THEME, "an unknown name falls back, it does not panic");
+    }
+
+    /// The CLI kept its own copy of the group_by allowlist while the MCP schema
+    /// rendered from `engine::SUMMARY_GROUP_BY`. Adding a fourth axis would have
+    /// made the API accept it and the CLI silently treat it as a filter token,
+    /// so `tasqx report <new-axis>` would group by project and say nothing.
+    #[test]
+    fn the_cli_group_by_keywords_come_from_the_engine() {
+        for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
+            let p = report_params(&[axis.to_string()], false);
+            assert_eq!(p["group_by"], axis, "{axis} must be read as a grouping, not a filter");
+            assert!(p.get("filter").is_none(), "{axis} must not also land in the filter");
+        }
+        // A word that is not an axis stays a filter token, which is the
+        // documented forgiving behaviour (D8) and not this test's business.
+        let p = report_params(&["+api".to_string()], false);
+        assert_eq!(p["group_by"], tasqx_core::engine::SUMMARY_GROUP_BY[0]);
+        assert_eq!(p["filter"], "+api");
+    }
 
     // ---- config edit: the glue between the screen and the disk -------------
 
