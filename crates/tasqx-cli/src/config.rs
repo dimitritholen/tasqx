@@ -237,15 +237,104 @@ pub fn read_table_strict(dir: &std::path::Path) -> Result<Option<toml::Table>, A
     }
 }
 
+impl Kind {
+    /// The declared type, named the way a TOML author would name it. Used only
+    /// in the mismatch warning, so it must match `toml::Value::type_str`'s
+    /// vocabulary — a user comparing "expected boolean, found string" against
+    /// their file should not have to translate Rust's spelling.
+    fn type_str(self) -> &'static str {
+        match self {
+            Kind::Str => "string",
+            Kind::Bool => "boolean",
+        }
+    }
+}
+
+/// The file names a key, but with a value of a type the setting does not
+/// declare — `name = 42` where a string was expected.
+///
+/// Carried out of the reader instead of printed inside it so `config.rs` stays
+/// free of I/O and a test can assert the detection without capturing stderr.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mismatch {
+    pub key: &'static str,
+    pub declared: &'static str,
+    pub found: &'static str,
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for Mismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Deliberately does NOT claim which value is used instead: `$TASQX_THEME`
+        // and `--theme` both outrank the file, so "falling back to the default"
+        // would be a lie in exactly the sessions where it matters most.
+        //
+        // No articles before the type names: "a integer" is what an `a {}`
+        // template produces, and the set of found types is open enough
+        // (integer, array, …) that hand-picking articles is a bug waiting to
+        // happen for one word of polish.
+        write!(
+            f,
+            "{} in {}: expected {}, found {} — the file's value is ignored",
+            self.key,
+            self.path.display(),
+            self.declared,
+            self.found
+        )
+    }
+}
+
+/// What `config.toml` says about one setting, read strictly.
+///
+/// `value` is `None` both when the key is absent and when it is present but
+/// wrong-typed; `mismatch` is what distinguishes those two, and it is the whole
+/// reason this type exists. Before it, `toml_value_strict` returned a bare
+/// `Option` and the two cases were indistinguishable — so `config get
+/// theme.name` answered `nord` for a file that plainly said `name = 42`, which
+/// is the "you never set this" confusion D25 set out to kill, one layer down.
+#[derive(Clone, Debug, Default)]
+pub struct FileValue {
+    pub value: Option<String>,
+    pub mismatch: Option<Mismatch>,
+}
+
 /// One setting's value, reading the file strictly. Used by `tasqx config`.
-pub fn toml_value_strict(s: &Setting) -> Result<Option<String>, ApiError> {
-    let Some(dir) = config_dir() else { return Ok(None) };
-    let Some(table) = read_table_strict(&dir)? else { return Ok(None) };
+///
+/// Reports a wrong type rather than swallowing it. The silent counterpart
+/// [`toml_value_in`] must keep swallowing it: it is on the path of every
+/// command, and nothing about a bad config line may stand between a user and a
+/// captured task.
+pub fn toml_value_strict(s: &Setting) -> Result<FileValue, ApiError> {
+    let Some(dir) = config_dir() else { return Ok(FileValue::default()) };
+    toml_value_strict_in(&dir, s)
+}
+
+/// [`toml_value_strict`] under an explicit directory.
+///
+/// The directory is a parameter for the same reason [`toml_value_in`] takes
+/// one: tests must exercise a real file without mutating process-global env,
+/// which cargo's parallel test threads make racy. Without this split the
+/// wrong-type detection below could only be tested through the ambient
+/// `$TASQX_CONFIG_DIR`, and two tests setting it at once would flake.
+pub fn toml_value_strict_in(dir: &std::path::Path, s: &Setting) -> Result<FileValue, ApiError> {
+    let Some(table) = read_table_strict(dir)? else { return Ok(FileValue::default()) };
     let (section, name) = s.parts();
     let Some(v) = table.get(section).and_then(|t| t.get(name)).cloned() else {
-        return Ok(None);
+        return Ok(FileValue::default());
     };
-    Ok(coerce(s.kind, v))
+    let found = v.type_str();
+    match coerce(s.kind, v) {
+        Some(value) => Ok(FileValue { value: Some(value), mismatch: None }),
+        None => Ok(FileValue {
+            value: None,
+            mismatch: Some(Mismatch {
+                key: s.key,
+                declared: s.kind.type_str(),
+                found,
+                path: dir.join("config.toml"),
+            }),
+        }),
+    }
 }
 
 /// One setting's raw value from a `config.toml` under an explicit directory.
@@ -623,6 +712,63 @@ enabled = true
 name = true
 ").unwrap();
         assert_eq!(toml_value_in(&dir, theme), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The silent fallback above is right, but `tasqx config` must not inherit
+    /// it. D25 made `config` loud about a MALFORMED file; `name = 42` parses
+    /// fine and only the declared kind disagrees, so it slipped through and
+    /// `config get theme.name` answered `nord` for a file that plainly said
+    /// otherwise — the same "you never set this" confusion D25 called
+    /// indefensible, one layer down. The report has to carry the key, the
+    /// declared type and what was actually found, because with any one of those
+    /// missing the user still cannot tell which line to fix.
+    #[test]
+    fn the_strict_reader_reports_a_wrong_typed_value_where_the_silent_one_hides_it() {
+        let dir = temp_dir("mismatch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let theme = find("theme.name").unwrap();
+        std::fs::write(dir.join("config.toml"), "[theme]\nname = 42\n").unwrap();
+
+        assert_eq!(toml_value_in(&dir, theme), None, "the silent reader still degrades");
+
+        let read = toml_value_strict_in(&dir, theme).expect("a wrong type is not a parse error");
+        assert_eq!(read.value, None, "the caller still gets the fallback");
+        let m = read.mismatch.expect("the strict reader must report the mismatch");
+        assert_eq!(m.key, "theme.name");
+        assert_eq!(m.declared, "string");
+        assert_eq!(m.found, "integer");
+        let msg = m.to_string();
+        assert!(msg.contains("theme.name"), "{msg}");
+        assert!(msg.contains("config.toml"), "the message must locate the file: {msg}");
+
+        // Symmetric for the other Kind, so the report is not string-specific.
+        std::fs::write(dir.join("config.toml"), "[notify]\nenabled = \"true\"\n").unwrap();
+        let n = toml_value_strict_in(&dir, find("notify.enabled").unwrap()).unwrap();
+        let m = n.mismatch.expect("a quoted boolean is a mismatch too");
+        assert_eq!((m.declared, m.found), ("boolean", "string"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A mismatch check that fired on a well-typed value, or on a key the file
+    /// never mentions, would make `tasqx config` warn on every run — noise that
+    /// trains the user to ignore the one warning that matters.
+    #[test]
+    fn the_strict_reader_is_silent_when_there_is_nothing_wrong() {
+        let dir = temp_dir("nomismatch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let theme = find("theme.name").unwrap();
+
+        std::fs::write(dir.join("config.toml"), "[theme]\nname = \"gruvbox\"\n").unwrap();
+        let ok = toml_value_strict_in(&dir, theme).unwrap();
+        assert_eq!(ok.value.as_deref(), Some("gruvbox"));
+        assert!(ok.mismatch.is_none(), "a value of the declared type is not a problem");
+
+        // An absent key is a fresh install, not a mistake.
+        std::fs::write(dir.join("config.toml"), "[notify]\nenabled = true\n").unwrap();
+        let absent = toml_value_strict_in(&dir, theme).unwrap();
+        assert_eq!(absent.value, None);
+        assert!(absent.mismatch.is_none(), "a key the file omits must not warn");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

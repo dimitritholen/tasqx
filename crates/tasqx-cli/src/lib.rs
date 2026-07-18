@@ -1426,6 +1426,20 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
             let preview = match name {
                 Some(n) => {
                     let resolved = theme::resolve_name(None, None, Some(n));
+                    // `theme::load` falls back to the default for a name it does
+                    // not know. That is right on the render path — a bad theme
+                    // must never fail a task capture — and wrong here, where
+                    // showing the user a theme they did not ask for is the whole
+                    // failure: a typo'd `gruvbux` printed nord and exited 0, and
+                    // nothing distinguished it from a theme that looks like nord.
+                    // Validated AFTER resolving so a blank argument still means
+                    // "the default", and through the shared validator so this
+                    // cannot drift from `theme set` and `config set` the way an
+                    // inline copy already did once.
+                    if let Err(e) = validate_setting("theme.name", &resolved) {
+                        eprintln!("error [{}]: {}", code_str(&e), e.message);
+                        exit(e.exit_code());
+                    }
                     Ctx::new(theme::load(&resolved, themes_dir().as_deref()), ctx.caps)
                 }
                 None => Ctx::new(ctx.theme.clone(), ctx.caps),
@@ -1455,7 +1469,12 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
             }
             let s = config::find("theme.name").expect("theme.name is a registered setting");
             match config::write_value(s, name) {
-                Ok(path) => println!("theme.name = {name}  ({})", path.display()),
+                Ok(path) => {
+                    println!("theme.name = {name}  ({})", path.display());
+                    if let Some(p) = theme_pointer("theme.name") {
+                        println!("{p}");
+                    }
+                }
                 Err(e) => {
                     eprintln!("error [{}]: {}", code_str(&e), e.message);
                     exit(e.exit_code());
@@ -1488,6 +1507,44 @@ fn unknown_key(key: &str) -> ApiError {
 /// primitive was looser than its own alias, which is backwards: `theme::load`
 /// falls back to the default for an unknown name, so the write persists a value
 /// that silently does nothing on every run from then on.
+/// Read one setting from `config.toml` strictly, reporting a wrong-typed value
+/// on stderr before returning the fallback.
+///
+/// A warning and not an error, on purpose. A malformed file is a parse error
+/// because nothing in it can be trusted; a wrong-typed value is one bad line in
+/// a file whose other keys still work, and failing the command would break
+/// `config list` — the command you run to find exactly this — over that one
+/// line. stderr keeps stdout scriptable, so `$(tasqx config get theme.name)`
+/// still yields a usable value while the human sees what the file did.
+///
+/// Every `tasqx config` read goes through here rather than calling
+/// `toml_value_strict` directly, so a new read site cannot quietly re-acquire
+/// the silence this replaced.
+fn file_value(s: &config::Setting) -> Result<Option<String>, ApiError> {
+    let read = config::toml_value_strict(s)?;
+    if let Some(m) = &read.mismatch {
+        eprintln!("warning: {m}");
+    }
+    Ok(read.value)
+}
+
+/// The one-line pointer to the command that makes a theme change visible.
+///
+/// tasqx's normal output carries only a few coloured accents, so a user who
+/// switches themes sees almost nothing change in `tasqx list` and reasonably
+/// concludes the write did not take — which is exactly what happened: gruvbox
+/// was saved correctly from `config edit` and the user came back asking where
+/// they were supposed to notice. `tasqx theme show` prints every role with a
+/// swatch and is the only place the choice is obvious.
+///
+/// One function, three callers (`theme set`, `config set`, `config edit`),
+/// because a pointer added to one write path and not the others is precisely
+/// how those three drifted apart over validation once already. `None` for every
+/// other key: `notify.enabled = true` has nothing to do with themes.
+fn theme_pointer(key: &str) -> Option<&'static str> {
+    (key == "theme.name").then_some("See it with `tasqx theme show`.")
+}
+
 fn validate_setting(key: &str, value: &str) -> Result<(), ApiError> {
     if key == "theme.name" {
         let known = theme::BUILTINS.contains(&value)
@@ -1532,7 +1589,7 @@ fn run_config(
             let value = match s.home {
                 config::Home::Store => store_value(be, s.key).unwrap_or_default(),
                 config::Home::Toml => {
-                    config::resolve(s, flag_for(s), config::toml_value_strict(s)?.as_deref()).0
+                    config::resolve(s, flag_for(s), file_value(s)?.as_deref()).0
                 }
             };
             let text = format!("{value}\n");
@@ -1542,7 +1599,10 @@ fn run_config(
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;
             validate_setting(s.key, value)?;
             let path = config::write_value(s, value)?;
-            let text = format!("{} = {}  ({})\n", s.key, value, path.display());
+            let mut text = format!("{} = {}  ({})\n", s.key, value, path.display());
+            if let Some(p) = theme_pointer(s.key) {
+                text.push_str(&format!("{p}\n"));
+            }
             Ok((json!({ "key": s.key, "value": value, "path": path.to_string_lossy() }), text))
         }
         ConfigAction::Unset { key } => {
@@ -1563,8 +1623,7 @@ fn run_config(
                         (store_value(be, s.key).unwrap_or_default(), "store".to_string())
                     }
                     config::Home::Toml => {
-                        let (v, src) =
-                            config::resolve(s, flag_for(s), config::toml_value_strict(s)?.as_deref());
+                        let (v, src) = config::resolve(s, flag_for(s), file_value(s)?.as_deref());
                         (v, src.label(s))
                     }
                 };
@@ -1618,7 +1677,7 @@ fn run_config_edit(be: &mut Backend, ctx: &Ctx, theme_flag: Option<&str>) -> Cmd
         let (value, source) = match s.home {
             config::Home::Store => (store_value(be, s.key).unwrap_or_default(), "store".to_string()),
             config::Home::Toml => {
-                let (v, src) = config::resolve(s, flag, config::toml_value_strict(s)?.as_deref());
+                let (v, src) = config::resolve(s, flag, file_value(s)?.as_deref());
                 (v, src.label(s))
             }
         };
@@ -1633,15 +1692,32 @@ fn run_config_edit(be: &mut Backend, ctx: &Ctx, theme_flag: Option<&str>) -> Cmd
     // Printed after the alt screen is gone, so the user's scrollback keeps a
     // record of what the session changed — an interactive screen that leaves no
     // trace is impossible to audit afterwards.
-    let text = if saved.is_empty() {
-        "no changes\n".to_string()
-    } else {
-        saved.iter().map(|(k, v)| format!("{k} = {v}\n")).collect()
-    };
+    let text = saved_summary(&saved);
     let changed: Vec<Value> = saved.iter().map(|(k, v)| json!({ "key": k, "value": v })).collect();
     Ok((json!({ "changed": changed }), text))
 }
 
+
+/// The scrollback record `config edit` leaves behind after the alt screen is
+/// gone — an interactive screen that leaves no trace is impossible to audit
+/// afterwards.
+///
+/// Extracted from `run_config_edit` so the theme pointer on this path is
+/// reachable from a test at all: the rest of that function needs a real
+/// terminal, so the summary was the one piece of it no test could ever see.
+fn saved_summary(saved: &[(String, String)]) -> String {
+    if saved.is_empty() {
+        return "no changes\n".to_string();
+    }
+    let mut out = String::new();
+    for (k, v) in saved {
+        out.push_str(&format!("{k} = {v}\n"));
+        if let Some(p) = theme_pointer(k) {
+            out.push_str(&format!("{p}\n"));
+        }
+    }
+    out
+}
 
 /// One screen row for one registered setting.
 ///
@@ -2073,6 +2149,49 @@ mod tests {
 
     fn add_of(argv: &[&str]) -> Command {
         Cli::try_parse_from(argv).expect("argv should parse").command.expect("a subcommand")
+    }
+
+    // ---- the theme pointer (D26 follow-up) ----------------------------------
+
+    /// `config edit` saved a theme and said only `theme.name = gruvbox`, which
+    /// the user could not act on: tasqx's own output barely changes colour, so
+    /// they came back asking where they were supposed to see it. This is the
+    /// only reachable test of that path — the rest of `run_config_edit` needs a
+    /// real terminal — so without it the TUI could lose the pointer silently
+    /// while the two non-interactive paths stayed covered end to end.
+    #[test]
+    fn config_edit_summary_points_a_saved_theme_at_theme_show() {
+        let saved = vec![("theme.name".to_string(), "gruvbox".to_string())];
+        let text = saved_summary(&saved);
+        assert!(text.contains("theme.name = gruvbox"), "{text}");
+        assert!(text.contains("tasqx theme show"), "{text}");
+    }
+
+    /// The pointer is theme-specific. An unconditional append would satisfy the
+    /// test above while telling someone who toggled notifications to go look at
+    /// a colour swatch.
+    #[test]
+    fn config_edit_summary_says_nothing_about_themes_for_other_keys() {
+        let saved = vec![("notify.enabled".to_string(), "true".to_string())];
+        let text = saved_summary(&saved);
+        assert_eq!(text, "notify.enabled = true\n");
+    }
+
+    /// The no-op case still has to read as a no-op; folding the pointer in
+    /// unconditionally would have printed advice about a theme nobody set.
+    #[test]
+    fn config_edit_summary_reports_an_untouched_session() {
+        assert_eq!(saved_summary(&[]), "no changes\n");
+    }
+
+    /// The pointer names a command that must actually exist and take no
+    /// arguments. A hint pointing at a verb tasqx does not have is worse than
+    /// no hint; this pins the text to something clap can parse.
+    #[test]
+    fn the_pointed_at_command_is_a_real_one() {
+        let hint = theme_pointer("theme.name").expect("theme.name has a pointer");
+        assert!(hint.contains("tasqx theme show"), "{hint}");
+        Cli::try_parse_from(["tasqx", "theme", "show"]).expect("`tasqx theme show` must parse");
     }
 
     // ---- the reference examples parse ---------------------------------------
