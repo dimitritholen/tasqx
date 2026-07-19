@@ -1036,3 +1036,37 @@ fn the_truncation_hedge_only_fires_when_a_word_could_have_been_cut() {
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(!err.contains(hedge), "a quoted name is whole by construction: {err}");
 }
+
+/// The same refusal, through the real binary and the JSON envelope.
+///
+/// `fields` has no CLI flag — the API is the only way to send it, and the API
+/// is exactly the surface a script binds to. An unknown key came back
+/// `ok: true` with the column missing, so a typo and an empty value were
+/// indistinguishable to the only consumer that cannot squint at the output.
+#[test]
+fn the_api_refuses_an_unknown_fields_key() {
+    use std::io::Write;
+    let dir = fresh_config_dir("fields-api");
+    let mut child = bin("fields-api", &dir)
+        .arg("api")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tasqx api");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(
+            br#"{"tasqx":"1","id":"f","method":"task.list","params":{"fields":["short_id","titel"]}}"#,
+        )
+        .expect("write envelope");
+    let out = child.wait_with_output().expect("wait");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON response");
+
+    assert_eq!(v["ok"], false, "an unknown field came back ok: {v}");
+    assert_eq!(v["error"]["code"], "bad_request", "{v}");
+    let msg = v["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("titel"), "the error must name the offending key: {msg}");
+    assert!(msg.contains("title"), "the error must list the valid fields: {msg}");
+}

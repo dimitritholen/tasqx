@@ -9,6 +9,7 @@
 //! no event. State and history therefore move together, always.
 
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use jiff::Timestamp;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -27,8 +28,8 @@ use crate::remind;
 use crate::types::{effective_status, Priority, Status, Task};
 use crate::urgency;
 use crate::util::{
-    duration_secs, iso_duration, now, opt_str, opt_str_array, parse_ts, req_str,
-    seconds_between,
+    duration_secs, iso_duration, now, opt_array, opt_bool, opt_i64, opt_str, opt_str_array,
+    opt_u64, parse_ts, req_array, req_i64, req_object, req_str, seconds_between,
 };
 
 /// The config key holding the default project name (inherited by `task.add`).
@@ -67,6 +68,36 @@ pub const SUMMARY_METRICS: [&str; 4] = ["count", "est_total", "overdue", "tracke
 /// render their key lists from it.
 pub const SORT_KEYS: [&str; 7] =
     ["urgency", "short_id", "priority", "due", "created", "modified", "title"];
+
+/// The keys `task.list`'s `fields` param may name. Sorted, since it is read off
+/// a `serde_json` object.
+///
+/// Source of truth for the same reasons as [`SORT_KEYS`], and it paid the same
+/// price: the projection loop kept a key only `if let Some(v) = full.get(k)`,
+/// so `fields:["short_id","titel"]` returned rows missing the field with
+/// `ok: true` — a typo and an empty column look identical, forever.
+///
+/// **Derived, not typed out.** It is the key set of one real
+/// [`list_row_json`] call, so a field added to the projection joins this list
+/// the moment it exists, and a field removed leaves it. The alternative — a
+/// hand-written array next to `task_to_json` — is exactly the parallel-copy
+/// drift this codebase keeps paying for (D30's rule: derive it). The probe task
+/// carries `status_raw`, because `status_unrecognized` is emitted only for an
+/// unrecognized status (D28) and must still be a name a caller may ask for.
+pub static TASK_FIELDS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let probe = Task {
+        id: String::new(), short_id: 0, title: String::new(), status: Status::Pending,
+        status_raw: Some(String::new()), priority: None, project: None, due: None,
+        scheduled: None, wait: None, estimate: None, recurrence: None, remind: None,
+        urgency: 0.0, active_since: None, tracked_seconds: 0, rev: 0,
+        created: String::new(), modified: String::new(), completed: None,
+    };
+    match list_row_json(&probe, &[], false) {
+        Value::Object(m) => m.keys().cloned().collect(),
+        // Unreachable: `task_to_json` builds an object literal.
+        _ => Vec::new(),
+    }
+});
 
 /// The core engine. Cheap to construct; holds one open store connection.
 pub struct Engine {
@@ -173,7 +204,7 @@ impl Engine {
         if name.trim().is_empty() {
             return Err(ApiError::bad_request("project name cannot be empty"));
         }
-        let description = opt_str(p, "description");
+        let description = opt_str(p, "description")?;
 
         let id = Uuid::now_v7().to_string();
         let ts = now();
@@ -295,9 +326,9 @@ impl Engine {
         // D23: an *explicit* project is validated below, inside the transaction.
         // The inherited one needs no check — create/use/archive plus the D23
         // open-time repair keep the key aimed at a live project.
-        let explicit_project = opt_str(p, "project");
+        let explicit_project = opt_str(p, "project")?;
         let project = explicit_project.clone().or_else(|| self.default_project());
-        let priority = match opt_str(p, "priority") {
+        let priority = match opt_str(p, "priority")? {
             Some(s) => Some(
                 Priority::parse(&s)
                     .ok_or_else(|| ApiError::bad_request(format!("invalid priority: {s}")))?,
@@ -308,14 +339,14 @@ impl Engine {
         let due = opt_when(p, "due", now_ts)?;
         let scheduled = opt_when(p, "scheduled", now_ts)?;
         let wait = opt_when(p, "wait", now_ts)?;
-        let estimate = match opt_str(p, "estimate") {
+        let estimate = match opt_str(p, "estimate")? {
             Some(s) => Some(datetime::parse_duration(&s)?),
             None => None,
         };
-        let tags = opt_str_array(p, "tags");
+        let tags = opt_str_array(p, "tags")?;
         // Recurrence rule (optional). Validate + normalize before storing so a
         // bad rule fails the add cleanly and the stored form is canonical.
-        let recurrence = match opt_str(p, "recurrence") {
+        let recurrence = match opt_str(p, "recurrence")? {
             Some(s) => Some(recur::rule_to_string(&recur::parse_rule(&s)?)),
             None => None,
         };
@@ -323,7 +354,7 @@ impl Engine {
         // recurrence, so a bad spec fails the add cleanly and the stored form is
         // canonical. Accepts a `due`-anchored offset (`-1h`) or any NL date; the
         // absolute branch resolves against this add's `now` (see `crate::remind`).
-        let remind = match opt_str(p, "remind") {
+        let remind = match opt_str(p, "remind")? {
             Some(s) => Some(remind::spec_to_string(&remind::parse_remind(
                 &s,
                 Timestamp::now(),
@@ -412,7 +443,7 @@ impl Engine {
 
     pub fn task_start(&self, p: &Value) -> Result<Value, ApiError> {
         let task = self.resolve_ref(p)?;
-        let keep = p.get("keep").and_then(Value::as_bool).unwrap_or(false);
+        let keep = opt_bool(p, "keep")?.unwrap_or(false);
 
         match task.status {
             Status::Active => {
@@ -734,16 +765,17 @@ impl Engine {
 
     pub fn task_modify(&self, p: &Value) -> Result<Value, ApiError> {
         let task = self.resolve_ref(p)?;
-        let set = p
-            .get("set")
-            .and_then(Value::as_object)
-            .ok_or_else(|| ApiError::bad_request("modify requires a non-empty `set` object"))?;
+        let set = req_object(p, "set")
+            .map_err(|e| ApiError::bad_request(format!("{} (modify requires a `set` object)", e.message)))?;
         if set.is_empty() {
             return Err(ApiError::bad_request("`set` must contain at least one field"));
         }
 
         // Optional optimistic concurrency.
-        if let Some(exp) = p.get("expected_rev").and_then(Value::as_i64) {
+        // D32: read through the typed layer. As `.and_then(Value::as_i64)` this
+        // guard FAILED OPEN — `expected_rev: "1"` was indistinguishable from no
+        // guard at all, so the stale write landed and the caller was told `ok`.
+        if let Some(exp) = opt_i64(p, "expected_rev")? {
             if exp != task.rev {
                 return Err(ApiError::conflict(format!(
                     "expected_rev {} but task is at rev {}",
@@ -908,7 +940,7 @@ impl Engine {
 
     pub fn tag_add(&self, p: &Value) -> Result<Value, ApiError> {
         let task = self.resolve_ref(p)?;
-        let tags = opt_str_array(p, "tags");
+        let tags = opt_str_array(p, "tags")?;
         if tags.is_empty() {
             return Err(ApiError::bad_request("tag.add requires a non-empty `tags` array"));
         }
@@ -945,7 +977,7 @@ impl Engine {
     // ---- task.list -----------------------------------------------------------
 
     pub fn task_list(&self, p: &Value) -> Result<Value, ApiError> {
-        let filter_str = opt_str(p, "filter").unwrap_or_default();
+        let filter_str = opt_str(p, "filter")?.unwrap_or_default();
         let filter = Filter::parse(&filter_str).map_err(ApiError::bad_request)?;
 
         // Fetch all rows, then evaluate the filter in Rust: the §12-D8 grammar
@@ -993,24 +1025,17 @@ impl Engine {
         tasks.sort_by(|a, b| compare_by(&a.0, &b.0, &sort_keys));
 
         // Limit.
-        if let Some(limit) = p.get("limit").and_then(Value::as_u64) {
+        if let Some(limit) = opt_u64(p, "limit")? {
             tasks.truncate(limit as usize);
         }
 
-        // Field projection (default set when `fields` absent).
-        let fields = p
-            .get("fields")
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>());
+        // Field projection (whole row when `fields` absent). Validated, so an
+        // unknown key fails here rather than quietly yielding a narrower row.
+        let fields = parse_fields(p)?;
 
         let mut out = Vec::with_capacity(tasks.len());
         for (t, tags, blocked) in &tasks {
-            // Set on the object rather than inside `task_to_json`: `blocked` is
-            // a derived fact about the store, not a column, and the two other
-            // callers of that helper (`task.get`, which computes it itself) must
-            // keep saying it exactly once. The shape matches `task.get`'s.
-            let mut full = task_to_json(t, tags);
-            full["blocked"] = json!(blocked);
+            let full = list_row_json(t, tags, *blocked);
             match &fields {
                 Some(keys) => {
                     let mut obj = Map::new();
@@ -1187,7 +1212,7 @@ impl Engine {
     // ---- project.list --------------------------------------------------------
 
     pub fn project_list(&self, p: &Value) -> Result<Value, ApiError> {
-        let include_archived = p.get("include_archived").and_then(Value::as_bool).unwrap_or(false);
+        let include_archived = opt_bool(p, "include_archived")?.unwrap_or(false);
         let sql = if include_archived {
             "SELECT id, name, description, archived FROM projects ORDER BY name"
         } else {
@@ -1370,20 +1395,40 @@ impl Engine {
     // ---- report.summary ------------------------------------------------------
 
     pub fn report_summary(&self, p: &Value) -> Result<Value, ApiError> {
-        let group_by = opt_str(p, "group_by").unwrap_or_else(|| SUMMARY_GROUP_BY[0].to_string());
+        let group_by = opt_str(p, "group_by")?.unwrap_or_else(|| SUMMARY_GROUP_BY[0].to_string());
         if !SUMMARY_GROUP_BY.contains(&group_by.as_str()) {
             return Err(ApiError::bad_request(format!(
                 "group_by must be {} (got {group_by})",
                 SUMMARY_GROUP_BY.join("|")
             )));
         }
-        let metrics: Vec<String> = p
-            .get("metrics")
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_else(|| vec!["count".to_string()]);
+        // Validated against the same constant the MCP schema renders its `enum`
+        // from. It used to `filter_map` unknown names away and answer `ok`, so
+        // `metrics:["overdeu"]` produced a table with the column missing — the
+        // `fields` and sort-key drop again, on the surface that had already
+        // published its valid set and simply did not enforce it.
+        let metrics: Vec<String> = match p.get("metrics") {
+            None => vec![SUMMARY_METRICS[0].to_string()],
+            Some(Value::Array(a)) => {
+                let mut v = Vec::with_capacity(a.len());
+                for m in a {
+                    let name = m.as_str().filter(|s| SUMMARY_METRICS.contains(s));
+                    let Some(name) = name else {
+                        return Err(ApiError::bad_request(format!(
+                            "unknown metric {m} (valid metrics: {})",
+                            SUMMARY_METRICS.join(", ")
+                        )));
+                    };
+                    v.push(name.to_string());
+                }
+                v
+            }
+            Some(_) => {
+                return Err(ApiError::bad_request("`metrics` must be an array of metric names"))
+            }
+        };
 
-        let filter = Filter::parse(&opt_str(p, "filter").unwrap_or_default())
+        let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default())
             .map_err(ApiError::bad_request)?;
         let now_ts = parse_ts(&now());
 
@@ -1398,7 +1443,7 @@ impl Engine {
         // cancelled tasks rather than a baffling empty table; otherwise the
         // default applies. The rule lives here, in core, so the CLI, the HTML
         // report and MCP agents all inherit one answer.
-        let all = p.get("all").and_then(Value::as_bool).unwrap_or(false);
+        let all = opt_bool(p, "all")?.unwrap_or(false);
         let apply_default = !all && !filter.constrains_status();
 
         // Accumulator per group key (insertion via BTreeMap => sorted output).
@@ -1493,7 +1538,7 @@ impl Engine {
     /// `dropped_dependencies` is always present and is 0 for an unfiltered
     /// export, which stays a byte-identical round trip.
     pub fn store_export(&self, p: &Value) -> Result<Value, ApiError> {
-        let filter = Filter::parse(&opt_str(p, "filter").unwrap_or_default())
+        let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default())
             .map_err(ApiError::bad_request)?;
         let mut stmt = self.conn.prepare(&format!("SELECT {TASK_COLS} FROM tasks ORDER BY short_id"))?;
         let rows = stmt.query_map([], map_task_row)?;
@@ -1576,22 +1621,28 @@ impl Engine {
     // ---- store.import --------------------------------------------------------
 
     pub fn store_import(&self, p: &Value) -> Result<Value, ApiError> {
-        let tasks = p
-            .get("tasks")
-            .and_then(Value::as_array)
-            .ok_or_else(|| ApiError::bad_request("store.import requires a `tasks` array"))?;
+        let tasks = req_array(p, "tasks")
+            .map_err(|e| ApiError::bad_request(format!("{} — store.import requires a `tasks` array", e.message)))?;
 
         let mut imported = 0i64;
         // (task_id, its raw `depends_on` value) collected during pass 1.
-        let mut edges: Vec<(String, Option<Value>)> = Vec::new();
+        // (task_id, its validated `depends_on` ids) — typed at collection time so
+        // pass 2 cannot inherit a silently-dropped edge from a wrong-typed value.
+        let mut edges: Vec<(String, Vec<String>)> = Vec::new();
         let tx = self.begin()?;
         for tv in tasks {
-            let id = tv.get("id").and_then(Value::as_str).ok_or_else(|| {
-                ApiError::bad_request("each imported task requires a string `id`")
+            // Shape first, fields second: a non-object entry used to be
+            // diagnosed by `req_str` as "missing required field: id", sending
+            // the reader to hunt for a key in a value that cannot hold one.
+            let tv = import_shape("", "task", tv)?;
+            let id = req_str(tv, "id").map_err(|e| {
+                ApiError::bad_request(format!("{} — each imported task requires a string `id`", e.message))
             })?;
-            let short_id = tv.get("short_id").and_then(Value::as_i64).ok_or_else(|| {
-                ApiError::bad_request("each imported task requires an integer `short_id`")
-            })?;
+            let id = id.as_str();
+            // After `id`, so the error can name the task the caller must edit —
+            // one bad field in a thousand-line export is useless without it.
+            import_keys(&format!("task {id}, "), "task", tv, IMPORT_TASK_KEYS)?;
+            let short_id = import_field(id, "short_id", req_i64(tv, "short_id"))?;
             // D17's rule where the value ENTERS: `short_id` is untrusted i64 and
             // the mint floor below is `short_id + 1`, which panicked in debug and
             // wrapped in release at `i64::MAX` — leaving a floor of `i64::MIN`, so
@@ -1608,14 +1659,16 @@ impl Engine {
                         i64::MAX - 1
                     ))
                 })?;
-            let title = tv.get("title").and_then(Value::as_str).unwrap_or("");
+            let title = import_field(id, "title", opt_str(tv, "title"))?.unwrap_or_default();
             // Validated, not carried verbatim: an unrecognized status used to be
             // written to the row as-is and then laundered back to `pending` by
             // `map_task_row`, so a `done` task with a mis-cased status resurfaced
             // as open work while still carrying `completed`. Reject like D12 does
             // for a bad reference, and store the canonical spelling so the reader
             // never has to guess.
-            let raw_status = tv.get("status").and_then(Value::as_str).unwrap_or("pending");
+            let raw_status = import_field(id, "status", opt_str(tv, "status"))?
+                .unwrap_or_else(|| "pending".to_string());
+            let raw_status = raw_status.as_str();
             let status = Status::parse(raw_status)
                 .ok_or_else(|| {
                     ApiError::bad_request(format!(
@@ -1624,8 +1677,8 @@ impl Engine {
                     ))
                 })?
                 .as_str();
-            let priority = match tv.get("priority").and_then(Value::as_str) {
-                Some(raw) => Some(Priority::parse(raw).map(Priority::as_str).ok_or_else(|| {
+            let priority = match import_field(id, "priority", opt_str(tv, "priority"))? {
+                Some(raw) => Some(Priority::parse(&raw).map(Priority::as_str).ok_or_else(|| {
                     ApiError::bad_request(format!(
                         "store.import: task {id} has priority {raw:?} — expected one of {}",
                         Priority::ALL.map(Priority::as_str).join(", ")
@@ -1633,7 +1686,7 @@ impl Engine {
                 })?),
                 None => None,
             };
-            let project = tv.get("project").and_then(Value::as_str);
+            let project = import_field(id, "project", opt_str(tv, "project"))?;
             // The same gate the CLI, the JSON API and MCP pass, called on the
             // import payload itself rather than restated here: these four fields
             // used to be read raw into the INSERT, so `due whenever` entered a
@@ -1645,16 +1698,33 @@ impl Engine {
             let due = import_field(id, "due", opt_when(tv, "due", now_ts))?;
             let scheduled = import_field(id, "scheduled", opt_when(tv, "scheduled", now_ts))?;
             let wait = import_field(id, "wait", opt_when(tv, "wait", now_ts))?;
-            let estimate = match opt_str(tv, "estimate") {
+            let estimate = match opt_str(tv, "estimate")? {
                 Some(s) => Some(import_field(id, "estimate", datetime::parse_duration(&s))?),
                 None => None,
             };
-            let recurrence = tv.get("recurrence").and_then(Value::as_str);
-            // Carried verbatim, like `recurrence`: the export form is already the
-            // canonical spec, and re-normalizing here would risk perturbing a
-            // byte-identical round trip. An unparseable spec simply never
-            // schedules (the rebuild skips it) rather than failing the import.
-            let remind = tv.get("remind").and_then(Value::as_str);
+            // The last two fields D28 skipped, now through the SAME two parsers
+            // `task.add` and `task.modify` already call — parse-then-normalize,
+            // not a second spelling of the rule. Carried verbatim, these let a
+            // payload write `remind:"sometime"` that `add` rejects, and then
+            // re-export it to every downstream store (D16); unparseable, neither
+            // field ever schedules, so the user is simply never reminded and
+            // nothing says why. "Re-normalizing perturbs the round trip" was a
+            // code comment, never a decision: normalization runs the same
+            // functions that WROTE the stored form, so it is idempotent on
+            // anything an export produced (D12 stays byte-identical).
+            let recurrence = match opt_str(tv, "recurrence")? {
+                Some(s) => Some(import_field(id, "recurrence", recur::parse_rule(&s))
+                    .map(|r| recur::rule_to_string(&r))?),
+                None => None,
+            };
+            // `parse_remind` validates the SHAPE without collapsing it: an
+            // offset stays the symbolic `-1h` that re-anchors when `due` moves,
+            // and only the absolute branch resolves — exactly as on `add`.
+            let remind = match opt_str(tv, "remind")? {
+                Some(s) => Some(import_field(id, "remind", remind::parse_remind(&s, now_ts))
+                    .map(|r| remind::spec_to_string(&r))?),
+                None => None,
+            };
             // Through the SAME gate as due/scheduled/wait above, not a second
             // spelling of it. B2 closed those four and left these three, so
             // `"created":"not-a-date"` still imported with rc=0 and came back out
@@ -1666,7 +1736,7 @@ impl Engine {
             let created = import_field(id, "created", opt_when(tv, "created", now_ts))?.unwrap_or_else(now);
             let modified = import_field(id, "modified", opt_when(tv, "modified", now_ts))?.unwrap_or_else(now);
             let completed = import_field(id, "completed", opt_when(tv, "completed", now_ts))?;
-            let rev = tv.get("_rev").and_then(Value::as_i64).unwrap_or(1);
+            let rev = import_field(id, "_rev", opt_i64(tv, "_rev"))?.unwrap_or(1);
             let urgency = urgency::score(
                 priority.and_then(Priority::parse),
                 due.as_deref(),
@@ -1694,20 +1764,32 @@ impl Engine {
 
             // Replace tags.
             tx.execute("DELETE FROM task_tags WHERE task_id = ?1", params![id])?;
-            if let Some(tags) = tv.get("tags").and_then(Value::as_array) {
-                for tg in tags.iter().filter_map(Value::as_str) {
-                    ensure_tag_link(&tx, id, tg)?;
-                }
+            for tg in import_field(id, "tags", opt_str_array(tv, "tags"))? {
+                ensure_tag_link(&tx, id, &tg)?;
             }
 
             // Replace annotations.
             tx.execute("DELETE FROM annotations WHERE task_id = ?1", params![id])?;
-            if let Some(anns) = tv.get("annotations").and_then(Value::as_array) {
+            if let Some(anns) = import_field(id, "annotations", opt_array(tv, "annotations"))? {
                 for a in anns {
-                    let aid = a.get("id").and_then(Value::as_str).map(str::to_string)
+                    // `Value::get` answers None on a non-object, so every field
+                    // fell back to its default: `annotations:[42]` MINTED a
+                    // blank annotation with a fresh uuid, and `{"text":"hi"}`
+                    // stored an empty body. Fabricating a row is worse than
+                    // dropping one — the caller's note is gone and something
+                    // stands in its place.
+                    import_keys(
+                        &format!("task {id}, "),
+                        "annotations[]",
+                        a,
+                        IMPORT_ANNOTATION_KEYS,
+                    )?;
+                    let aid = import_field(id, "annotations[].id", opt_str(a, "id"))?
                         .unwrap_or_else(|| Uuid::now_v7().to_string());
-                    let body = a.get("body").and_then(Value::as_str).unwrap_or("");
-                    let acreated = a.get("created").and_then(Value::as_str).map(str::to_string).unwrap_or_else(now);
+                    let body = import_field(id, "annotations[].body", opt_str(a, "body"))?
+                        .unwrap_or_default();
+                    let acreated = import_field(id, "annotations[].created", opt_str(a, "created"))?
+                        .unwrap_or_else(now);
                     tx.execute(
                         "INSERT OR REPLACE INTO annotations (id, task_id, body, created) VALUES (?1,?2,?3,?4)",
                         params![aid, id, body, acreated],
@@ -1718,7 +1800,10 @@ impl Engine {
             // Edges are deferred to pass 2: a payload may list a target *after*
             // its dependent, and the FOREIGN KEY would reject it here.
             tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
-            edges.push((id.to_string(), tv.get("depends_on").cloned()));
+            edges.push((
+                id.to_string(),
+                import_field(id, "depends_on", opt_str_array(tv, "depends_on"))?,
+            ));
 
             insert_event(&tx, "task", id, "import", &json!({ "short_id": short_id }))?;
             imported += 1;
@@ -1732,8 +1817,8 @@ impl Engine {
         // see and no `undep` could remove, which detonated the moment the target
         // finally arrived. Same transaction, so a reject writes nothing at all.
         for (id, deps) in &edges {
-            let Some(deps) = deps.as_ref().and_then(|d| d.as_array()) else { continue };
-            for d in deps.iter().filter_map(Value::as_str) {
+            for d in deps {
+                let d = d.as_str();
                 let exists: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1)",
                     params![d],
@@ -1780,13 +1865,13 @@ impl Engine {
     // ---- event.list ----------------------------------------------------------
 
     pub fn event_list(&self, p: &Value) -> Result<Value, ApiError> {
-        let limit = p.get("limit").and_then(Value::as_u64).unwrap_or(50) as i64;
+        let limit = opt_u64(p, "limit")?.unwrap_or(50) as i64;
 
         // Optional scoping: `ref` (a task) or `entity` (a type name).
         let (where_sql, arg): (String, Option<String>) = if let Some(r) = p.get("ref") {
             let task = self.resolve_ref_value(r)?;
             ("WHERE entity_id = ?1".to_string(), Some(task.id))
-        } else if let Some(ent) = opt_str(p, "entity") {
+        } else if let Some(ent) = opt_str(p, "entity")? {
             ("WHERE entity = ?1".to_string(), Some(ent))
         } else {
             ("".to_string(), None)
@@ -1990,6 +2075,65 @@ fn import_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result<T, A
     r.map_err(|e| ApiError::bad_request(format!("store.import: task {id}, {field}: {}", e.message)))
 }
 
+/// Every key a `store.export` task object can carry. D34.
+///
+/// Three of these are read by nobody and belong here anyway: `urgency` is
+/// derived (recomputed on import from priority/due/created, so honouring a
+/// supplied one would let a payload contradict the ranking rule), and
+/// `status_unrecognized` is a D28 read-side annotation, not stored state.
+/// "Accepted and deliberately ignored" is a different fact from "unknown", and
+/// only this table can tell them apart — which is why the gate is a list of
+/// what an EXPORT emits rather than a list of what the importer reads.
+pub const IMPORT_TASK_KEYS: &[&str] = &[
+    "id", "short_id", "title", "status", "priority", "project", "tags", "due", "scheduled",
+    "wait", "estimate", "recurrence", "remind", "depends_on", "annotations", "urgency",
+    "created", "modified", "completed", "_rev", "status_unrecognized",
+];
+
+/// Every key an exported annotation object can carry. D34.
+pub const IMPORT_ANNOTATION_KEYS: &[&str] = &["id", "body", "created"];
+
+/// Require an object and refuse any key outside `accepted`. D34.
+///
+/// This is D33's gate one level down, and it stops here rather than at the top
+/// level on purpose: the params object is an ENVELOPE, where an unknown key is
+/// a future field a newer export added around the data, but a task object IS
+/// the data. There is no required sibling to catch a typo the way `tasks`
+/// catches `taskss`, so `{"tag":"red"}` had nothing to fail against and
+/// imported as `ok:true` with the tags gone. Silently dropping a field on a
+/// WRITE tells the caller their data arrived when it did not (D12, D16).
+/// The shape half, split from the key half because a task's key error must name
+/// the task — and the id can only be read once the value is known to be an
+/// object, so the two checks cannot happen at the same moment.
+fn import_shape<'a>(ctx: &str, label: &str, v: &'a Value) -> Result<&'a Value, ApiError> {
+    if v.is_object() {
+        return Ok(v);
+    }
+    Err(ApiError::bad_request(format!(
+        "store.import: {ctx}{label} must be an object, but {} was given ({v})",
+        crate::util::type_of(v)
+    )))
+}
+
+fn import_keys(ctx: &str, label: &str, v: &Value, accepted: &[&str]) -> Result<(), ApiError> {
+    let obj = import_shape(ctx, label, v)?.as_object().expect("import_shape proved it");
+    let unknown: Vec<&str> =
+        obj.keys().filter(|k| !accepted.contains(&k.as_str())).map(String::as_str).collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    // Naming the accepted set is the whole point: the caller mistyped a field,
+    // and the fix is one glance away only if the right names are in the error.
+    Err(ApiError::bad_request(format!(
+        "store.import: {ctx}unknown {label} field{} {} (accepted: {}) — check the spelling or \
+         drop it; it was silently ignored before, so the import reported success and the value \
+         never arrived",
+        if unknown.len() == 1 { "" } else { "s" },
+        unknown.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", "),
+        accepted.join(", ")
+    )))
+}
+
 /// Read an optional date-shaped param, validated and normalized to RFC3339.
 ///
 /// The CLI parses dates before it calls, so it can fail without a round-trip and
@@ -2006,7 +2150,7 @@ fn import_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result<T, A
 /// short-circuits on it; `the_date_gate_leaves_an_export_import_round_trip_byte_identical`
 /// is what holds that true.
 fn opt_when(p: &Value, field: &str, now: Timestamp) -> Result<Option<String>, ApiError> {
-    match opt_str(p, field) {
+    match opt_str(p, field)? {
         Some(s) => Ok(Some(datetime::parse_when(&s, now)?)),
         None => Ok(None),
     }
@@ -2081,6 +2225,21 @@ pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
     }))
 }
 
+/// One `task.list` row: the canonical task object plus the derived `blocked`
+/// fact.
+///
+/// `blocked` is set here rather than inside `task_to_json` because it is a fact
+/// about the store, not a column, and `task.get`/`store.export` must keep
+/// saying it (or not) exactly once themselves. It is a named function rather
+/// than two lines in the loop so [`TASK_FIELDS`] can be read off the very
+/// object the loop projects — one call site's keys, not a second list that has
+/// to be remembered.
+fn list_row_json(t: &Task, tags: &[String], blocked: bool) -> Value {
+    let mut v = task_to_json(t, tags);
+    v["blocked"] = json!(blocked);
+    v
+}
+
 /// Add `status_unrecognized: true` when — and only when — the row's status is a
 /// value no writer of this engine could have produced.
 ///
@@ -2113,28 +2272,59 @@ struct SortKey {
 /// refusing is the only thing that turns a wrong answer into a fixable one.
 fn parse_sort(p: &Value) -> Result<Vec<SortKey>, ApiError> {
     let mut keys: Vec<SortKey> = Vec::new();
-    if let Some(arr) = p.get("sort").and_then(Value::as_array) {
-        for s in arr.iter().filter_map(Value::as_str) {
-            // Strip the direction prefix BEFORE validating, or `-bogus` would
-            // slip past a check that only ever saw the raw token.
-            let (key, desc) = match s.strip_prefix('-') {
-                Some(rest) => (rest, true),
-                None => (s, false),
-            };
-            if !SORT_KEYS.contains(&key) {
-                return Err(ApiError::bad_request(format!(
-                    "unknown sort key \"{key}\" (valid keys: {}; prefix any with `-` for descending)",
-                    SORT_KEYS.join(", ")
-                )));
-            }
-            keys.push(SortKey { key: key.to_string(), desc });
+    // D32: `sort: "urgency"` (a bare string, the obvious thing to type) used to
+    // vanish here, and the rows came back in an order nobody asked for.
+    for s in opt_str_array(p, "sort")? {
+        // Strip the direction prefix BEFORE validating, or `-bogus` would
+        // slip past a check that only ever saw the raw token.
+        let (key, desc) = match s.strip_prefix('-') {
+            Some(rest) => (rest, true),
+            None => (s.as_str(), false),
+        };
+        if !SORT_KEYS.contains(&key) {
+            return Err(ApiError::bad_request(format!(
+                "unknown sort key \"{key}\" (valid keys: {}; prefix any with `-` for descending)",
+                SORT_KEYS.join(", ")
+            )));
         }
+        keys.push(SortKey { key: key.to_string(), desc });
     }
     if keys.is_empty() {
         // The documented default, spelled from the same list it validates.
         keys.push(SortKey { key: SORT_KEYS[0].to_string(), desc: true });
     }
     Ok(keys)
+}
+
+/// Parse the `fields` param into a projection list, REFUSING any name the
+/// projection does not emit.
+///
+/// The loop used to keep a key only when `full.get(k)` hit, so a typo'd name
+/// was dropped without a word: `fields:["short_id","titel"]` answered `ok` with
+/// rows that simply lacked the column, and a script built on it renders blanks
+/// forever with nothing to notice. Same family as D27's unknown filter token,
+/// the invalid `!priority` and the unknown sort key one function up: on a READ
+/// path nothing is lost by refusing — the caller retypes — while a silent wrong
+/// answer is unfalsifiable.
+///
+/// A non-string entry is refused for the same reason rather than skipped: it is
+/// a caller asking for something that cannot be a field name.
+fn parse_fields(p: &Value) -> Result<Option<Vec<String>>, ApiError> {
+    // D32: the array-ness and the string-ness of every entry are the typed
+    // layer's job now; only the *name* check is specific to this param.
+    if opt_array(p, "fields")?.is_none() {
+        return Ok(None);
+    }
+    let keys = opt_str_array(p, "fields")?;
+    for k in &keys {
+        if !TASK_FIELDS.iter().any(|f| f == k) {
+            return Err(ApiError::bad_request(format!(
+                "unknown field \"{k}\" (valid fields: {})",
+                TASK_FIELDS.join(", ")
+            )));
+        }
+    }
+    Ok(Some(keys))
 }
 
 fn priority_rank(p: Option<Priority>) -> i32 {

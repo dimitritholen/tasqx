@@ -141,13 +141,17 @@ const METHODS: [(&str, &str, &str); 23] = [
     ("dependency.remove", "<code>ref</code>, <code>depends_on</code>", "Dep state + <code>blocked</code>."),
     (
         "report.summary",
-        "<code>group_by?</code>, <code>filter?</code>, <code>metrics?</code>",
+        "<code>group_by?</code>, <code>filter?</code>, <code>metrics?</code>, <code>all?</code>",
         "<code>{groups, generated}</code>. <code>group_by</code> defaults to \
          <code>project</code>.",
     ),
     ("store.export", "<code>filter?</code>", "<code>{tasks, dropped_dependencies}</code>."),
     ("store.import", "<code>tasks</code>", "<code>{imported}</code>."),
-    ("event.list", "<code>limit?</code>", "<code>{count, events}</code> — the append-only log."),
+    (
+        "event.list",
+        "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>",
+        "<code>{count, events}</code> — the append-only log.",
+    ),
     ("reminder.fire", "<code>ref</code>, <code>at</code>", "<code>{fired, short_id, at}</code>. Idempotent."),
     ("core.capabilities", "—", "<code>{api, methods, features, default_project}</code>."),
 ];
@@ -638,6 +642,19 @@ fn page_commands() -> String {
          pass <code>sort</code>; the valid keys are {}, each optionally prefixed with <code>-</code> \
          for descending. An unknown key is rejected rather than ignored.",
         tasqx_core::engine::SORT_KEYS
+            .iter()
+            .map(|k| format!("<code>{k}</code>"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )));
+    // Same rule, same reason: `fields` is rendered from `engine::TASK_FIELDS`,
+    // which is itself read off the projection, so this page cannot name a field
+    // the engine does not emit.
+    s.push_str(&p(&format!(
+        "They can also pass <code>fields</code> to trim each row to the keys they need. The valid \
+         fields are {}. An unknown field is rejected rather than dropped, so a typo fails loudly \
+         instead of rendering an empty column forever.",
+        tasqx_core::engine::TASK_FIELDS
             .iter()
             .map(|k| format!("<code>{k}</code>"))
             .collect::<Vec<_>>()
@@ -1422,13 +1439,15 @@ fn page_api() -> String {
     ));
     s.push_str(&snippet(
         "echo '{\"tasqx\":\"1\",\"id\":\"c1\",\"method\":\"core.capabilities\"}' | tasqx api",
-        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"dependency.add\",\"dependency.remove\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"]},\"tasqx\":\"1\"}",
+        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"dependency.add\",\"dependency.remove\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\"],\"task.stop\":[\"ref\"]}},\"tasqx\":\"1\"}",
     ));
 
     s.push_str(&h3("The methods"));
     s.push_str(&p(
-        "All twenty-two — and this table is what the tests compare against \
-         <code>core.capabilities</code>, so it cannot describe a method this build does not have.",
+        "All twenty-three — and this table is what the tests compare against \
+         <code>core.capabilities</code>: the method names, and (D33) the Params column against its \
+         <code>params</code> map, so it cannot describe a method — or a key — this build does not \
+         have. A key not in the accepted set is refused, never ignored.",
     ));
     let method_rows: Vec<Vec<String>> = METHODS
         .iter()
@@ -1576,6 +1595,35 @@ fn page_data() -> String {
     s.push_str(&snippet(
         "tasqx export +api | TASQX_DB=/tmp/other.db tasqx import -",
         "Imported 1 task(s)",
+    ));
+
+    s.push_str(&h3("A field the schema does not name is rejected"));
+    // Rendered from `IMPORT_TASK_KEYS` for the same reason `sort` and `fields`
+    // are rendered from their constants: a hand-typed list here would be wrong
+    // the day a field is added, and nothing would fail. D15's rule.
+    s.push_str(&p(&format!(
+        "A task object may carry {} and nothing else; an annotation may carry <code>id</code>, \
+         <code>body</code>, <code>created</code>. A key outside that set is a <code>bad_request</code> \
+         naming the task and the field, because the alternative is worse than an error: a \
+         misspelled <code>tags</code> used to import as <code>ok</code> with the tags silently \
+         gone, so the report said your data arrived when it had not.",
+        tasqx_core::engine::IMPORT_TASK_KEYS
+            .iter()
+            .map(|k| format!("<code>{k}</code>"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )));
+    s.push_str(&pre_plain(
+        "error [bad_request]: store.import: task 019f6a0f-99df-…, unknown task field `tag`\n\
+         \x20 (accepted: id, short_id, title, …) — check the spelling or drop it; it was silently\n\
+         \x20 ignored before, so the import reported success and the value never arrived",
+    ));
+    s.push_str(&p(
+        "Two of those keys are accepted and deliberately <em>ignored</em>: <code>urgency</code> is \
+         recomputed on the way in (it is derived from priority, due date and age, so a supplied \
+         value could contradict the ranking rule) and <code>status_unrecognized</code> is a \
+         read-side flag rather than stored state. They are listed because <code>export</code> \
+         emits them and a round trip has to keep working.",
     ));
 
     s.push_str(&h3("A dangling edge is rejected, not repaired"));
@@ -2339,6 +2387,34 @@ mod tests {
         real.sort();
         documented.sort();
         assert_eq!(real, documented, "the JSON API page has drifted from core.capabilities");
+    }
+
+    /// The API page's Params column against the set the core now ENFORCES
+    /// (D33). Both directions bite, and neither is cosmetic: a param the guide
+    /// names and the gate refuses sends a reader to a `bad_request` for doing
+    /// what they were told, and a param the gate accepts and the guide omits is
+    /// a capability nobody can find — the invisible-field failure, on the one
+    /// surface whose whole job is to be the published answer.
+    #[test]
+    fn documented_params_match_the_accepted_set() {
+        for (method, params, _) in METHODS {
+            let mut documented: Vec<&str> = Vec::new();
+            for chunk in params.split("<code>").skip(1) {
+                let name = chunk.split("</code>").next().unwrap_or_default();
+                documented.push(name.trim_end_matches('?'));
+            }
+            documented.sort_unstable();
+            let (_, accepted, _) = tasqx_core::PARAMS
+                .iter()
+                .find(|(m, _, _)| *m == method)
+                .unwrap_or_else(|| panic!("the guide documents `{method}`, which the core lacks"));
+            let mut expected: Vec<&str> = accepted.to_vec();
+            expected.sort_unstable();
+            assert_eq!(
+                documented, expected,
+                "`{method}`: the guide's Params column has drifted from the accepted key set"
+            );
+        }
     }
 
     /// Every documented method must reach the page too.

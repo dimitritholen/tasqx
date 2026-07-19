@@ -583,6 +583,116 @@ fn import_rejects_an_unparseable_status_or_priority() {
     assert_eq!(d.store_export(&json!({})).unwrap()["tasks"], good);
 }
 
+/// D28's rule in the last two fields it skipped. `remind` and `recurrence` were
+/// read straight into the INSERT, so a payload carrying `remind:"sometime"` or
+/// `recurrence:"every blue moon"` imported with exit 0 — values `task.add` and
+/// `task.modify` reject through these very parsers — and then came back out of
+/// the next export verbatim, propagating to every downstream store (D16's
+/// concern). Neither field ever schedules anything when unparseable, so the
+/// damage is silent: the user asked to be reminded and simply never is.
+#[test]
+fn import_rejects_an_unparseable_remind_or_recurrence() {
+    let seed = || {
+        json!([{ "id": "0193bbbb-0000-7000-8000-00000000000b", "short_id": 1,
+                 "title": "hostile", "status": "pending" }])
+    };
+
+    let mut bad = seed();
+    bad[0]["remind"] = json!("sometime");
+    let a = engine();
+    let err = a.store_import(&json!({ "tasks": bad })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("sometime"), "must name the offending value: {}", err.message);
+    assert!(err.message.contains("remind"), "must name the offending field: {}", err.message);
+    assert_eq!(count(&a.task_list(&json!({ "all": true })).unwrap()), 0, "a rejected import writes nothing");
+
+    let mut bad = seed();
+    bad[0]["recurrence"] = json!("every blue moon");
+    let b = engine();
+    let err = b.store_import(&json!({ "tasks": bad })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("every blue moon"), "must name the offending value: {}", err.message);
+    assert!(err.message.contains("recurrence"), "must name the offending field: {}", err.message);
+    assert_eq!(count(&b.task_list(&json!({ "all": true })).unwrap()), 0, "a rejected import writes nothing");
+
+    // D28(2), the other half of the same rule: stores written before this gate
+    // existed DO hold these values, and export is the only rescue path. The
+    // door refuses them; the window must still open. Seeded by raw SQL because
+    // `store.import` is now a strict door and can no longer produce the row.
+    let c = engine();
+    c.task_add(&json!({ "title": "legacy" })).unwrap();
+    c.conn()
+        .execute("UPDATE tasks SET remind = 'sometime', recurrence = 'every blue moon'", [])
+        .unwrap();
+    let out = c.store_export(&json!({})).expect("a reader never refuses stored data");
+    assert_eq!(out["tasks"][0]["remind"], json!("sometime"), "carried verbatim to the reader");
+    assert_eq!(out["tasks"][0]["recurrence"], json!("every blue moon"));
+    assert_eq!(count(&c.task_list(&json!({ "all": true })).unwrap()), 1, "and it still lists");
+}
+
+/// The anchoring rule, pinned. A relative `remind` is SYMBOLIC — `-1h` means
+/// "an hour before whatever `due` currently is" — so validating it on import
+/// must check its shape without resolving it to an absolute instant. Collapsing
+/// it would look like a successful import and silently sever the reminder from
+/// `due`, which is exactly the invisible-field failure this project keeps
+/// paying for. So: import an offset, then MOVE `due`, and require the reminder
+/// to have moved with it.
+#[test]
+fn an_imported_relative_remind_still_re_anchors_when_due_moves() {
+    let e = engine();
+    e.store_import(&json!({ "tasks": [{
+        "id": "0193cccc-0000-7000-8000-00000000000c", "short_id": 1,
+        "title": "anchored", "status": "pending",
+        "due": "2099-01-01T12:00:00Z", "remind": "-1h",
+    }] }))
+    .unwrap();
+
+    let stored = e.task_get(&json!({ "ref": 1 })).unwrap();
+    assert_eq!(stored["remind"], json!("-1h"), "stored symbolically, not collapsed to an instant");
+    assert_eq!(
+        tasqx_core::remind::resolve("-1h", Some("2099-01-01T12:00:00Z")).map(|t| t.to_string()),
+        Some("2099-01-01T11:00:00Z".to_string()),
+    );
+
+    // Move `due` a day later; the reminder must follow it, not stay behind.
+    e.task_modify(&json!({ "ref": 1, "set": { "due": "2099-01-02T12:00:00Z" } })).unwrap();
+    let moved = e.task_get(&json!({ "ref": 1 })).unwrap();
+    assert_eq!(moved["remind"], json!("-1h"), "the offset survives a due move verbatim");
+    assert_eq!(
+        tasqx_core::remind::resolve(
+            moved["remind"].as_str().unwrap(),
+            moved["due"].as_str(),
+        )
+        .map(|t| t.to_string()),
+        Some("2099-01-02T11:00:00Z".to_string()),
+        "the reminder re-anchored on the new due",
+    );
+}
+
+/// D12's unfiltered round trip stays byte-identical with both newly-validated
+/// fields populated: validation normalizes through the same functions that
+/// WROTE the stored form, so it is idempotent on anything an export produced.
+#[test]
+fn export_import_round_trip_is_byte_identical_with_remind_and_recurrence() {
+    let a = engine();
+    a.project_create(&json!({ "name": "rt" })).unwrap();
+    a.task_add(&json!({
+        "title": "repeating", "due": "2099-01-01T12:00:00Z",
+        "remind": "-1h", "recurrence": "every 3 days",
+    }))
+    .unwrap();
+    a.task_add(&json!({
+        "title": "absolute reminder", "remind": "2099-06-01T09:00:00Z",
+        "recurrence": "weekly on mon,wed",
+    }))
+    .unwrap();
+
+    let tasks_a = a.store_export(&json!({})).unwrap()["tasks"].clone();
+    let b = engine();
+    b.store_import(&json!({ "tasks": tasks_a.clone() })).unwrap();
+    assert_eq!(b.store_export(&json!({})).unwrap()["tasks"], tasks_a, "export -> import -> export is identity");
+}
+
 /// D17's rule at a new edge: `short_id` arrives from untrusted JSON as an i64
 /// and was fed straight into `short_id + 1` to raise the mint floor. At
 /// `i64::MAX` that panicked in debug and — far worse — wrapped in release,
@@ -2284,4 +2394,239 @@ fn an_unknown_sort_key_is_rejected_and_every_published_one_works() {
             assert_eq!(count(&r), 2, "sort by {spelling} lost rows");
         }
     }
+}
+
+// ---- G1: an unknown `fields` key is refused, not silently dropped -----------
+
+/// The projection loop did `if let Some(v) = full.get(k)` and dropped anything
+/// that missed, so `fields:["short_id","titel"]` returned rows without the
+/// field, `ok: true`, and no way to tell a typo from an empty column. A script
+/// built on it renders blanks forever.
+///
+/// Fourth instance of one shape (D27's filter token, `!priority`, SORT_KEYS):
+/// on a READ path nothing is lost by refusing — the caller retypes — while a
+/// silent wrong answer is unfalsifiable.
+#[test]
+fn an_unknown_fields_key_is_rejected_and_every_published_one_projects() {
+    let e = engine();
+    e.task_add(&json!({ "title": "write the report" })).unwrap();
+
+    let err = e
+        .task_list(&json!({ "fields": ["short_id", "titel"] }))
+        .expect_err("an unknown field must not be silently dropped");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("titel"), "the error must name the offending key: {}", err.message);
+    assert!(err.message.contains("title"), "the error must list the way out: {}", err.message);
+
+    // Every published name really is a key the projection emits, and asking for
+    // it returns it. `status_unrecognized` is the one field absent from a
+    // well-formed row by design (D28), so it is proven separately below.
+    for f in tasqx_core::engine::TASK_FIELDS.iter() {
+        let r = e
+            .task_list(&json!({ "fields": [f] }))
+            .unwrap_or_else(|e| panic!("published field {f} was rejected: {}", e.message));
+        assert_eq!(count(&r), 1, "projecting {f} lost rows");
+        if f != "status_unrecognized" {
+            assert!(r["tasks"][0].get(f).is_some(), "published field {f} projected nothing");
+        }
+    }
+
+    // Cross-check between two independently maintained constants: every key you
+    // may SORT by must also be a key you may ASK FOR. Neither side derives from
+    // the other, so this fails if either drifts.
+    for k in tasqx_core::engine::SORT_KEYS {
+        assert!(
+            tasqx_core::engine::TASK_FIELDS.iter().any(|f| f == k),
+            "sort key {k} is not a projectable field"
+        );
+    }
+}
+
+/// The same silent drop, one method over: `report.summary`'s `metrics`.
+///
+/// `SUMMARY_METRICS` was already published and the MCP schema already renders
+/// it as an `enum` — so an agent is told the set is closed while the engine
+/// filtered unknown names out with `filter_map` and answered `ok`. A caller
+/// asking for `overdeu` got a table with the column missing and no reason to
+/// doubt it. Fixed against the constant that already existed.
+#[test]
+fn an_unknown_metric_is_rejected_rather_than_filtered_out() {
+    let e = engine();
+    e.task_add(&json!({ "title": "a" })).unwrap();
+
+    let err = e
+        .report_summary(&json!({ "group_by": "project", "metrics": ["count", "overdeu"] }))
+        .expect_err("an unknown metric must not be silently dropped");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("overdeu"), "the error must name it: {}", err.message);
+    for m in tasqx_core::engine::SUMMARY_METRICS {
+        assert!(err.message.contains(m), "the error must list the way out ({m}): {}", err.message);
+    }
+
+    for m in tasqx_core::engine::SUMMARY_METRICS {
+        e.report_summary(&json!({ "group_by": "project", "metrics": [m] }))
+            .unwrap_or_else(|e| panic!("published metric {m} was rejected: {}", e.message));
+    }
+}
+
+// ---- D34: the import document is strict one level down ----------------------
+
+/// D33 closed the params object and stopped at the top level. A task object
+/// inside `tasks` is the record itself, not an envelope, so a key it does not
+/// read is data the import DROPS while answering `imported: 1`.
+#[test]
+fn an_unknown_key_on_an_imported_task_is_rejected_rather_than_ignored() {
+    let e = engine();
+    let err = e
+        .store_import(&json!({ "tasks": [
+            { "id": "019f6a0f-99df-7000-8000-000000000001", "short_id": 1, "title": "t",
+              "tag": "red", "prioritee": "H" }
+        ] }))
+        .expect_err("a misspelled task field must not import as `ok`");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("019f6a0f-99df-7000-8000-000000000001"), "name the task: {}", err.message);
+    assert!(err.message.contains("tag"), "name the field: {}", err.message);
+    assert!(err.message.contains("prioritee"), "name every field: {}", err.message);
+    assert!(err.message.contains("tags"), "name the way out: {}", err.message);
+    // Nothing landed: the refusal is not cosmetic.
+    assert_eq!(e.task_list(&json!({})).unwrap()["count"], 0);
+}
+
+/// `urgency` is emitted by every export and deliberately NOT read back (it is
+/// derived), so it must be accepted-and-ignored rather than refused — the one
+/// case where "the code does not read it" is correct behaviour, not a drop.
+#[test]
+fn a_derived_export_only_field_is_accepted_by_the_import_key_gate() {
+    let e = engine();
+    e.store_import(&json!({ "tasks": [
+        { "id": "019f6a0f-99df-7000-8000-000000000002", "short_id": 1, "title": "t",
+          "urgency": 9.5, "status_unrecognized": false }
+    ] }))
+    .expect("a field an export emits must stay importable");
+}
+
+/// Worse than a drop: a non-object annotation entry MINTED a blank annotation
+/// with a fresh uuid, so `[42, "note"]` became two empty rows and the note
+/// itself vanished. `Value::get` answers `None` on a non-object, so every
+/// field fell back to its default and nothing was refused.
+#[test]
+fn a_non_object_annotation_entry_is_rejected_rather_than_minting_a_blank_one() {
+    let e = engine();
+    let err = e
+        .store_import(&json!({ "tasks": [
+            { "id": "019f6a0f-99df-7000-8000-000000000003", "short_id": 1, "title": "t",
+              "annotations": [42] }
+        ] }))
+        .expect_err("a non-object annotation must not become a blank annotation");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("019f6a0f-99df-7000-8000-000000000003"), "name the task: {}", err.message);
+    assert!(err.message.contains("annotations"), "name the field: {}", err.message);
+    assert_eq!(e.task_list(&json!({})).unwrap()["count"], 0);
+}
+
+/// The same hole with the right container type: `{"text":"hello"}` imported as
+/// one empty annotation, so the body the caller sent was lost at exit 0.
+#[test]
+fn an_unknown_key_on_an_imported_annotation_is_rejected_rather_than_ignored() {
+    let e = engine();
+    let err = e
+        .store_import(&json!({ "tasks": [
+            { "id": "019f6a0f-99df-7000-8000-000000000004", "short_id": 1, "title": "t",
+              "annotations": [{ "text": "hello" }] }
+        ] }))
+        .expect_err("a misspelled annotation field must not import as `ok`");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("text"), "name the field: {}", err.message);
+    assert!(err.message.contains("body"), "name the way out: {}", err.message);
+    assert_eq!(e.task_list(&json!({})).unwrap()["count"], 0);
+}
+
+/// A non-object task entry was refused, but by the WRONG rule: `req_str` said
+/// "missing or empty required field: id" for a payload whose problem is that it
+/// is a string. The message sent the reader hunting for an `id` key in a value
+/// that can never have one.
+#[test]
+fn a_non_object_task_entry_is_refused_naming_its_type() {
+    let e = engine();
+    let err = e.store_import(&json!({ "tasks": ["nope"] })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("object"), "name what was expected: {}", err.message);
+    assert!(!err.message.contains("missing"), "do not misdiagnose it as absence: {}", err.message);
+}
+
+/// D34's drift guard, and the reason the key table is safe to exist at all: it
+/// is checked against a REAL export rather than against a reading of the
+/// import code, so a field added to `export_task` tomorrow either joins the
+/// table or turns the suite red. A second copy nothing compares is the failure
+/// this project keeps paying for (D30: derive it).
+///
+/// Both directions matter. A key an export emits and the table omits makes the
+/// round trip D12 guarantees fail outright — the strict gate would refuse our
+/// own output. A key the table declares and no export emits is a name nothing
+/// will ever send, i.e. a typo that has quietly become part of the contract.
+#[test]
+fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
+    use std::collections::BTreeSet;
+
+    let keys = |t: &serde_json::Value| -> BTreeSet<String> {
+        t.as_object().expect("an exported task is an object").keys().cloned().collect()
+    };
+
+    // A task carrying every optional field, so the export emits every key it
+    // can — an export of a bare task would silently under-report the set.
+    let e = engine();
+    e.project_create(&json!({ "name": "work" })).unwrap();
+    let t = e
+        .task_add(&json!({
+            "title": "everything", "project": "work", "priority": "H", "due": "2030-01-01",
+            // Both dates PAST: a future `wait` OR `scheduled` makes the task
+            // backlog (D29) and `done` is then a conflict, leaving `completed`
+            // null — the one key this test most needs populated.
+            "scheduled": "2020-01-02", "wait": "2020-01-01", "estimate": "4h",
+            "tags": ["red"], "recurrence": "every 3 days", "remind": "-1h"
+        }))
+        .unwrap();
+    let sid = t["short_id"].clone();
+    e.annotation_add(&json!({ "ref": sid, "body": "note" })).unwrap();
+    e.task_done(&json!({ "ref": sid })).unwrap();
+
+    let exported = e.store_export(&json!({})).unwrap()["tasks"][0].clone();
+    let mut emitted = keys(&exported);
+    // `status_unrecognized` appears only on an anomalous row, so it needs the
+    // one store that can produce it.
+    let (bad, _) = store_with_an_unrecognized_status();
+    emitted.extend(keys(&bad.store_export(&json!({})).unwrap()["tasks"][0]));
+
+    let declared: BTreeSet<String> =
+        tasqx_core::engine::IMPORT_TASK_KEYS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        declared, emitted,
+        "IMPORT_TASK_KEYS and store.export disagree — a key an export emits but the table omits \
+         makes the gate refuse our own output (D12), and a key the table declares but no export \
+         emits is a name nothing will ever send"
+    );
+
+    let ann_declared: BTreeSet<String> =
+        tasqx_core::engine::IMPORT_ANNOTATION_KEYS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(ann_declared, keys(&exported["annotations"][0]), "IMPORT_ANNOTATION_KEYS drifted");
+}
+
+/// D12's contract, re-checked against the strict gate: the export the gate now
+/// polices is still exactly what the gate accepts, byte for byte.
+#[test]
+fn the_import_key_gate_leaves_an_unfiltered_round_trip_byte_identical() {
+    let a = engine();
+    a.project_create(&json!({ "name": "work" })).unwrap();
+    let t = a
+        .task_add(&json!({
+            "title": "everything", "project": "work", "priority": "H", "due": "2030-01-01",
+            "estimate": "4h", "tags": ["red", "blue"], "remind": "-1h"
+        }))
+        .unwrap();
+    a.annotation_add(&json!({ "ref": t["short_id"].clone(), "body": "note" })).unwrap();
+    let export_a = a.store_export(&json!({})).unwrap();
+
+    let b = engine();
+    b.store_import(&json!({ "tasks": export_a["tasks"].clone() })).unwrap();
+    assert_eq!(export_a, b.store_export(&json!({})).unwrap());
 }

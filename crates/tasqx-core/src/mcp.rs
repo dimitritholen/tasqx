@@ -600,19 +600,19 @@ mod tests {
                 "schema advertises metric `{metric}`, but the report has no such field: {group}"
             );
         }
-        // The `_ => {}` arm is the trap: an unknown metric is accepted and
-        // dropped. Pin that a name NOT in the schema really is unknown, so the
-        // check above cannot be satisfied by an always-present field.
-        let out = dispatch(
+        // Pin that a name NOT in the schema really is unknown, so the check
+        // above cannot be satisfied by an always-present field. This used to
+        // assert the *drop* — the engine accepted `est_hours` and answered a
+        // report without it — which is the bug the G1 cluster closed here too:
+        // an unknown metric is now refused, so the assertion is that the engine
+        // says so rather than that the column is quietly absent.
+        let err = dispatch(
             &e,
             "report.summary",
             &json!({ "group_by": "status", "metrics": ["est_hours"] }),
         )
-        .expect("report.summary");
-        assert!(
-            out["groups"][0].get("est_hours").is_none(),
-            "`est_hours` is not a real metric; if it became one, the schema must list it"
-        );
+        .expect_err("`est_hours` is not a real metric; if it became one, the schema must list it");
+        assert!(err.message.contains("est_hours"), "the refusal must name it: {}", err.message);
     }
 
     /// Every priority letter the `tasqx_add_task` schema advertises must be one
@@ -660,6 +660,33 @@ mod tests {
                 spec.name,
                 spec.method
             );
+        }
+    }
+
+    /// A schema property the engine will now REFUSE is worse than a missing
+    /// one: the agent reads the schema, sends the argument, and gets a
+    /// `bad_request` for doing exactly what it was told. D33 made unknown keys
+    /// an error, so the schemas — the only thing an agent sees before choosing
+    /// an argument — must be a subset of the accepted set, checked against the
+    /// same table the gate enforces rather than by eye.
+    #[test]
+    fn every_schema_property_is_a_param_the_method_accepts() {
+        for spec in tool_specs() {
+            let (_, accepted, _) = crate::dispatch::PARAMS
+                .iter()
+                .find(|(m, _, _)| *m == spec.method)
+                .unwrap_or_else(|| panic!("tool `{}` names an unlisted method", spec.name));
+            let props = spec.schema["properties"].as_object().expect("an object schema");
+            for key in props.keys() {
+                assert!(
+                    accepted.contains(&key.as_str()),
+                    "tool `{}` advertises `{key}`, which {} does not accept (accepted: {}) — \
+                     an agent following the schema would be refused",
+                    spec.name,
+                    spec.method,
+                    accepted.join(", ")
+                );
+            }
         }
     }
 }

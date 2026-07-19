@@ -45,7 +45,7 @@ pub mod types;
 pub mod urgency;
 pub mod util;
 
-pub use dispatch::{capabilities, dispatch, handle_envelope, API_VERSION};
+pub use dispatch::{capabilities, dispatch, handle_envelope, API_VERSION, PARAMS};
 pub use mcp::{McpServer, Scope};
 pub use engine::Engine;
 pub use error::{ApiError, ErrorCode};

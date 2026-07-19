@@ -426,3 +426,184 @@ fn a_spawned_instance_is_parked_or_released_by_its_shifted_wait() {
         assert_eq!(listed["count"], 1, "wait {wait} => {expect}, got {listed}");
     }
 }
+
+// ---- H1: a present param of the wrong JSON type is refused, not ignored -----
+
+/// THE BLOCKER, and the reason this whole family is one decision rather than
+/// ten fixes: `expected_rev` was read with `.and_then(Value::as_i64)`, so a
+/// stringified number — exactly what a JavaScript client sends — made the
+/// optimistic-concurrency guard evaporate and the write proceed. A guard that
+/// fails open is worse than no guard, because the caller believes it holds.
+#[test]
+fn a_stringified_expected_rev_conflicts_rather_than_overwriting() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "original" })).unwrap()["short_id"].clone();
+    e.task_modify(&json!({ "ref": sid, "set": { "title": "bump" } })).unwrap();
+
+    let err = e
+        .task_modify(&json!({ "ref": sid, "set": { "title": "LOST UPDATE" }, "expected_rev": "1" }))
+        .expect_err("a stringified expected_rev must not silently skip the guard");
+    assert_eq!(err.code, ErrorCode::BadRequest, "got {err:?}");
+    assert!(err.message.contains("expected_rev"), "message must name the param: {}", err.message);
+
+    // The write must not have landed.
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    assert_eq!(got["title"], "bump", "the stale write overwrote the title");
+    assert_eq!(got["_rev"], 1_i64 + 1);
+}
+
+/// An integer `expected_rev` keeps working on both sides — the guard must not
+/// become stricter about the type it was always documented to take.
+#[test]
+fn an_integer_expected_rev_still_guards_and_still_passes() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_modify(&json!({ "ref": sid, "set": { "title": "two" } })).unwrap();
+
+    let stale = e
+        .task_modify(&json!({ "ref": sid, "set": { "title": "x" }, "expected_rev": 1 }))
+        .expect_err("stale rev must conflict");
+    assert_eq!(stale.code, ErrorCode::Conflict);
+
+    e.task_modify(&json!({ "ref": sid, "set": { "title": "three" }, "expected_rev": 2 }))
+        .expect("a matching expected_rev must still succeed");
+}
+
+/// Every other instance of the same shape, driven through the real handlers.
+/// Each pair is (method, params) where the params carry ONE wrong-typed value;
+/// each must be a `bad_request` naming that param rather than a silent default.
+#[test]
+fn a_wrong_typed_param_is_a_bad_request_naming_it() {
+    let e = engine();
+    e.project_create(&json!({ "name": "work" })).unwrap();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        // A non-string filter used to become the EMPTY filter, matching everything.
+        ("task.list", json!({ "filter": 5 }), "filter"),
+        ("report.summary", json!({ "filter": true }), "filter"),
+        // A limit of the wrong type used to be dropped, returning every row.
+        ("task.list", json!({ "limit": "2" }), "limit"),
+        ("task.list", json!({ "limit": -1 }), "limit"),
+        ("task.list", json!({ "limit": 2.7 }), "limit"),
+        ("event.list", json!({ "limit": "5" }), "limit"),
+        // `sort:"urgency"` (a bare string) used to leave the rows unsorted.
+        ("task.list", json!({ "sort": "urgency" }), "sort"),
+        // A non-string group_by used to fall back to the first summary key.
+        ("report.summary", json!({ "group_by": 3 }), "group_by"),
+        // "true" is not true: these three all silently meant `false`.
+        ("project.list", json!({ "include_archived": "true" }), "include_archived"),
+        ("task.start", json!({ "ref": sid, "keep": "yes" }), "keep"),
+        ("report.summary", json!({ "all": 1 }), "all"),
+        // opt_str_array dropped a non-array, a non-string entry and an empty
+        // string — and its two callers disagreed about which of those mattered.
+        ("task.add", json!({ "title": "x", "tags": "home" }), "tags"),
+        ("task.add", json!({ "title": "x", "tags": ["ok", 7] }), "tags"),
+        ("task.add", json!({ "title": "x", "tags": ["ok", ""] }), "tags"),
+        ("tag.add", json!({ "ref": sid, "tags": "home" }), "tags"),
+        ("tag.add", json!({ "ref": sid, "tags": [7] }), "tags"),
+        // A non-string ref, and a non-object `set`.
+        ("task.modify", json!({ "ref": sid, "set": [] }), "set"),
+        ("store.import", json!({ "tasks": {} }), "tasks"),
+    ];
+
+    for (method, params, key) in cases {
+        let err = dispatch(&e, method, &params)
+            .err()
+            .unwrap_or_else(|| panic!("{method} {params} must be refused, not silently defaulted"));
+        assert_eq!(err.code, ErrorCode::BadRequest, "{method} {params} => {err:?}");
+        assert!(
+            err.message.contains(key),
+            "{method} {params}: message must name `{key}`, got {}",
+            err.message
+        );
+    }
+}
+
+/// Absent must stay absent. A stricter gate that turned optional params into
+/// required ones would break every existing caller, so the defaults are pinned.
+#[test]
+fn an_absent_param_keeps_its_default() {
+    let e = engine();
+    e.task_add(&json!({ "title": "a" })).unwrap();
+    let sid = e.task_add(&json!({ "title": "b" })).unwrap()["short_id"].clone();
+
+    assert_eq!(e.task_list(&json!({})).unwrap()["count"], 2);
+    e.task_start(&json!({ "ref": sid })).expect("keep absent");
+    e.project_list(&json!({})).expect("include_archived absent");
+    e.report_summary(&json!({})).expect("group_by/all absent");
+    e.event_list(&json!({})).expect("limit absent");
+    e.task_modify(&json!({ "ref": sid, "set": { "title": "b2" } }))
+        .expect("expected_rev absent");
+    // An explicit null is how a JS client spells "no value" — still absent.
+    e.task_modify(&json!({ "ref": sid, "set": { "title": "b3" }, "expected_rev": null }))
+        .expect("an explicit null expected_rev stays absent");
+    assert_eq!(e.task_list(&json!({ "limit": null })).unwrap()["count"], 2);
+}
+
+/// D33. A misspelled params key was accepted and silently ignored, which on a
+/// WRITE discards intent unfalsifiably: `task.add {"prioritee":"H"}` answered
+/// `ok:true` and created a task with `priority: null`, and nothing anywhere
+/// recorded that a priority had been asked for. Reads were the same story one
+/// step milder (`limitt` returned an unlimited page that looks exactly like a
+/// limited one).
+///
+/// Enforced at `dispatch`, the one seam every surface shares, so no method can
+/// forget to check — the D31 "structurally unrepresentable" move applied to the
+/// key set.
+#[test]
+fn an_unknown_params_key_is_refused_and_names_itself() {
+    let e = engine();
+    e.project_create(&json!({ "name": "work" })).unwrap();
+    let sid = e.task_add(&json!({ "title": "a" })).unwrap()["short_id"].clone();
+
+    let cases = [
+        ("task.add", json!({ "title": "b", "prioritee": "H" }), "prioritee", "priority"),
+        ("task.list", json!({ "limitt": 2 }), "limitt", "limit"),
+        ("event.list", json!({ "bogus": 1 }), "bogus", "limit"),
+        ("task.modify", json!({ "ref": sid, "set": { "title": "x" }, "expect_rev": 1 }), "expect_rev", "expected_rev"),
+        ("report.summary", json!({ "groupby": "status" }), "groupby", "group_by"),
+        ("project.create", json!({ "name": "x", "desc": "y" }), "desc", "description"),
+        ("store.export", json!({ "filtr": "" }), "filtr", "filter"),
+        ("tag.add", json!({ "ref": sid, "tag": ["x"] }), "tag", "tags"),
+        ("task.start", json!({ "ref": sid, "kep": true }), "kep", "keep"),
+        ("core.capabilities", json!({ "anything": 1 }), "anything", "no params"),
+    ];
+
+    for (method, params, bad, hint) in cases {
+        let err = dispatch(&e, method, &params).err().unwrap_or_else(|| {
+            panic!("{method} {params}: an unknown key must be refused, not ignored")
+        });
+        assert_eq!(err.code, ErrorCode::BadRequest, "{method} {params} => {err:?}");
+        assert!(err.message.contains(bad), "message must name `{bad}`: {}", err.message);
+        assert!(
+            err.message.contains(hint),
+            "message must list the accepted set (expected `{hint}` in it): {}",
+            err.message
+        );
+    }
+
+    // The write really did not happen: the refusal is not cosmetic.
+    assert_eq!(e.task_list(&json!({})).unwrap()["count"], 1);
+}
+
+/// D12 requires an export from a NEWER tasqx to stay readable by an older
+/// binary, so the gate stops at the request surface: `store.import`'s params
+/// object IS a data document, and a top-level key this build has never heard of
+/// is a future field, not a typo. The required `tasks` key is what keeps that
+/// tolerance safe — a misspelled `taskss` is still refused, by absence.
+#[test]
+fn the_import_document_tolerates_a_future_key_but_still_needs_tasks() {
+    let e = engine();
+    let payload = json!({
+        "tasks": [{ "id": "019f6a0f-99df-7000-8000-000000000001", "short_id": 1, "title": "t" }],
+        "dropped_dependencies": 0,
+        "exported_by": "tasqx 2.0",
+    });
+    let r = dispatch(&e, "store.import", &payload).expect("a newer export must stay importable");
+    assert_eq!(r["imported"], 1);
+
+    let err = dispatch(&e, "store.import", &json!({ "taskss": [] })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("tasks"), "{}", err.message);
+}
