@@ -2375,8 +2375,10 @@ mod tests {
             assert_eq!(p["group_by"], axis, "{axis} must be read as a grouping, not a filter");
             assert!(p.get("filter").is_none(), "{axis} must not also land in the filter");
         }
-        // A word that is not an axis stays a filter token, which is the
-        // documented forgiving behaviour (D8) and not this test's business.
+        // A word that is not an axis stays a filter token. `+api` is a *valid*
+        // one, so this still holds now that unknown tokens are rejected (D27):
+        // routing to the filter is this test's business, whether the filter
+        // then accepts the token is filter.rs's.
         let p = report_params(&["+api".to_string()], false);
         assert_eq!(p["group_by"], tasqx_core::engine::SUMMARY_GROUP_BY[0]);
         assert_eq!(p["filter"], "+api");
@@ -2618,7 +2620,11 @@ mod tests {
     /// automatically, so a `NOT_CANCELLED` that forgot it goes red.
     #[test]
     fn burndown_scope_keeps_every_status_except_cancelled() {
-        let f = tasqx_core::filter::Filter::parse(&NOT_CANCELLED);
+        // `expect` earns its keep now that parsing is fallible: NOT_CANCELLED is
+        // our own constant, so a malformed one is a bug this guard should fail
+        // on rather than route around.
+        let f = tasqx_core::filter::Filter::parse(&NOT_CANCELLED)
+            .expect("NOT_CANCELLED must be a valid filter");
         for status in tasqx_core::types::Status::ALL {
             let ctx = tasqx_core::filter::MatchCtx {
                 status,

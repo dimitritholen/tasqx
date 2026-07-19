@@ -25,8 +25,21 @@
 //! Evaluation is done in Rust against each candidate row (not compiled to SQL)
 //! so that: (a) `due.before/after` compare as **instants** — RFC3339 strings are
 //! parsed to timestamps and compared, never lexicographically (offsets differ);
-//! and (b) the boolean/grouping tree is trivial to evaluate. Unknown tokens are
-//! ignored (treated as the always-true term) to keep the surface forgiving.
+//! and (b) the boolean/grouping tree is trivial to evaluate.
+//!
+//! **An unrecognised token is an error, not an always-true term.** It used to
+//! be the latter, "to keep the surface forgiving" — but a filter's whole job is
+//! to narrow, so a token that matches everything makes a typo *widen* the
+//! result set and present the wrong answer as the right one. `tasqx list onzin`
+//! returned every task; `tasqx report onzin` silently grouped by project. The
+//! JSON API already rejected the equivalent `group_by`, so the two surfaces
+//! disagreed about the same input. This follows §12-D23's precedent, where an
+//! unknown `--project` became an error for the same reason: on a *read* path
+//! nothing is lost by refusing, while a silent wrong answer is unfalsifiable.
+//!
+//! Note the deliberate split, unchanged: an unknown *value* still just fails to
+//! match (`status:pendign` matches no row), because values are data and the set
+//! of valid ones is a runtime question. Token shapes are grammar, and closed.
 
 use crate::types::Status;
 use crate::util::parse_ts;
@@ -36,9 +49,9 @@ use crate::util::parse_ts;
 pub enum Pred {
     /// `status:VALUE`. Deliberately still a `String`, not a [`Status`]: this is
     /// raw user input from the DSL and may be a typo (`status:pendign`). Parsing
-    /// at match time — where an unrecognised name matches nothing — keeps the
-    /// "unknown tokens are forgiving, unknown *values* just don't match" split
-    /// that the rest of the grammar already has.
+    /// at match time — where an unrecognised name matches nothing — is the
+    /// *value* half of the module's split: token shapes are grammar and are
+    /// rejected at parse time, values are data and simply fail to match.
     Status(String),
     Project(String),
     TagInclude(String),
@@ -49,7 +62,9 @@ pub enum Pred {
     Working,
     /// The blocked flag: a task with >=1 dependency not yet `done` (DESIGN §3).
     Blocked,
-    /// Unknown/ignored token — always matches (forgiving).
+    /// Always matches. Reachable from exactly one place: the empty filter,
+    /// meaning the caller asked for no filtering. It is deliberately NOT what
+    /// an unrecognised token maps to any more — that is an error.
     Always,
 }
 
@@ -74,22 +89,34 @@ pub struct MatchCtx<'a> {
     pub blocked: bool,
 }
 
-/// A parsed filter. `Filter::parse` never fails; `matches` evaluates it.
+/// A parsed filter. `Filter::parse` rejects what it cannot parse; `matches`
+/// evaluates what it accepted.
 #[derive(Debug, Clone)]
 pub struct Filter {
     root: Expr,
 }
 
 impl Filter {
-    /// Parse a filter string. An empty string matches everything.
-    pub fn parse(input: &str) -> Filter {
+    /// Parse a filter string, or say why it is not a filter.
+    ///
+    /// An empty string matches everything — that is the caller passing no
+    /// filter at all, not a malformed one. Every other input must parse: a
+    /// token this grammar does not recognise is an error rather than a term
+    /// that quietly matches every row (see the module comment).
+    pub fn parse(input: &str) -> Result<Filter, String> {
         let toks = tokenize(input);
         if toks.is_empty() {
-            return Filter { root: Expr::Pred(Pred::Always) };
+            return Ok(Filter { root: Expr::Pred(Pred::Always) });
         }
         let mut p = Parser { toks, pos: 0 };
-        let root = p.parse_or();
-        Filter { root }
+        let root = p.parse_or()?;
+        // `parse_or` stops at the first token it cannot continue on. Anything
+        // left is unbalanced — a stray `)` — and dropping it would silently
+        // evaluate a filter the user did not write.
+        if let Some(t) = p.peek() {
+            return Err(format!("unexpected {t:?} in filter"));
+        }
+        Ok(Filter { root })
     }
 
     /// True when `ctx` satisfies the filter.
@@ -204,20 +231,20 @@ impl Parser {
         self.peek().map(|t| t.eq_ignore_ascii_case(kw)).unwrap_or(false)
     }
 
-    fn parse_or(&mut self) -> Expr {
-        let mut parts = vec![self.parse_and()];
+    fn parse_or(&mut self) -> Result<Expr, String> {
+        let mut parts = vec![self.parse_and()?];
         while self.is_kw("or") {
             self.pos += 1; // consume 'or'
-            parts.push(self.parse_and());
+            parts.push(self.parse_and()?);
         }
         if parts.len() == 1 {
-            parts.pop().unwrap()
+            Ok(parts.pop().unwrap())
         } else {
-            Expr::Or(parts)
+            Ok(Expr::Or(parts))
         }
     }
 
-    fn parse_and(&mut self) -> Expr {
+    fn parse_and(&mut self) -> Result<Expr, String> {
         let mut parts = Vec::new();
         loop {
             match self.peek() {
@@ -228,69 +255,95 @@ impl Parser {
                     self.pos += 1; // explicit AND separator, skip
                     continue;
                 }
-                _ => parts.push(self.parse_term()),
+                _ => parts.push(self.parse_term()?),
             }
         }
         if parts.is_empty() {
-            Expr::Pred(Pred::Always)
-        } else if parts.len() == 1 {
-            parts.pop().unwrap()
+            // Reached from a dangling operator or an empty group — `+api or`,
+            // `()`. This used to yield the always-true term, so a trailing
+            // `or` widened the result to every task instead of failing. The
+            // genuinely empty filter never arrives here: `Filter::parse`
+            // returns early on no tokens at all, which is the one case that
+            // legitimately means "match everything".
+            return Err("expected a filter term".to_string());
+        }
+        if parts.len() == 1 {
+            Ok(parts.pop().unwrap())
         } else {
-            Expr::And(parts)
+            Ok(Expr::And(parts))
         }
     }
 
-    fn parse_term(&mut self) -> Expr {
+    fn parse_term(&mut self) -> Result<Expr, String> {
         if self.peek() == Some("(") {
             self.pos += 1; // consume '('
-            let inner = self.parse_or();
-            if self.peek() == Some(")") {
-                self.pos += 1; // consume ')'
+            let inner = self.parse_or()?;
+            if self.peek() != Some(")") {
+                // Previously the missing `)` was skipped in silence, which let
+                // `(+api or +infra` parse as though the group were closed.
+                return Err("unclosed '(' in filter".to_string());
             }
-            return inner;
+            self.pos += 1; // consume ')'
+            return Ok(inner);
         }
         let tok = self.toks[self.pos].clone();
         self.pos += 1;
-        Expr::Pred(predicate(&tok))
+        Ok(Expr::Pred(predicate(&tok)?))
     }
 }
 
-/// Map a single token to a leaf predicate.
-fn predicate(tok: &str) -> Pred {
+/// Map a single token to a leaf predicate, or say why it is not one.
+///
+/// The error names the token and the shapes that would have worked. A filter
+/// is typed by hand far more often than it is generated, so the message is the
+/// whole user experience of a typo.
+fn predicate(tok: &str) -> Result<Pred, String> {
     if tok == "@working" {
-        return Pred::Working;
+        return Ok(Pred::Working);
     }
     if tok == "@blocked" || tok == "+blocked" || tok == "status:blocked" {
-        return Pred::Blocked;
+        return Ok(Pred::Blocked);
     }
     if let Some(rest) = tok.strip_prefix('+') {
         if !rest.is_empty() {
-            return Pred::TagInclude(rest.to_string());
+            return Ok(Pred::TagInclude(rest.to_string()));
         }
     }
     if let Some(rest) = tok.strip_prefix('-') {
         if !rest.is_empty() {
-            return Pred::TagExclude(rest.to_string());
+            return Ok(Pred::TagExclude(rest.to_string()));
         }
     }
     if let Some(v) = tok.strip_prefix("project:") {
-        return Pred::Project(v.to_string());
+        return Ok(Pred::Project(v.to_string()));
     }
     if let Some(v) = tok.strip_prefix("status:") {
-        return Pred::Status(v.to_string());
+        return Ok(Pred::Status(v.to_string()));
     }
     if let Some(v) = tok.strip_prefix("due.before:") {
-        return Pred::DueBefore(v.to_string());
+        return Ok(Pred::DueBefore(v.to_string()));
     }
     if let Some(v) = tok.strip_prefix("due.after:") {
-        return Pred::DueAfter(v.to_string());
+        return Ok(Pred::DueAfter(v.to_string()));
     }
-    Pred::Always // unknown token — ignored
+    Err(format!(
+        "unknown filter token {tok:?} (expected +tag, -tag, @working, @blocked, \
+         project:, status:, due.before: or due.after:)"
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Parse a filter that the test asserts is valid.
+    ///
+    /// Every filter below is a hand-written literal, so a parse failure here
+    /// means the test itself is wrong — worth panicking on rather than
+    /// threading a Result through assertions about matching.
+    fn parsed(s: &str) -> Filter {
+        Filter::parse(s).unwrap_or_else(|e| panic!("test filter {s:?} must parse: {e}"))
+    }
 
     /// `report.summary` only applies its exclude-cancelled default when the
     /// caller has *not* said anything about status (D24 rule 2). Getting this
@@ -310,7 +363,7 @@ mod tests {
             ("(project:x and +api) or @working", true),
         ] {
             assert_eq!(
-                Filter::parse(input).constrains_status(),
+                parsed(input).constrains_status(),
                 want,
                 "constrains_status({input:?})"
             );
@@ -349,12 +402,12 @@ mod tests {
             blocked: false,
         };
         assert!(
-            !Filter::parse("(project:home or +api) and status:done").matches(&ctx),
+            !parsed("(project:home or +api) and status:done").matches(&ctx),
             "the group must bind before `and` — this row was filtered out"
         );
         // The same tokens without parentheses DO match, which is what proves the
         // assertion above is about grouping and not about the predicates.
-        assert!(Filter::parse("project:home or +api and status:done").matches(&ctx));
+        assert!(parsed("project:home or +api and status:done").matches(&ctx));
     }
 
     /// `due.before`/`due.after` are documented as STRICT, and the boundary was
@@ -373,13 +426,13 @@ mod tests {
             due: Some(bound),
             blocked: false,
         };
-        assert!(!Filter::parse(&format!("due.before:{bound}")).matches(&ctx), "before is strict");
-        assert!(!Filter::parse(&format!("due.after:{bound}")).matches(&ctx), "after is strict");
+        assert!(!parsed(&format!("due.before:{bound}")).matches(&ctx), "before is strict");
+        assert!(!parsed(&format!("due.after:{bound}")).matches(&ctx), "after is strict");
         // One second either side still resolves the way the names promise.
         let earlier = MatchCtx { due: Some("2026-07-16T23:59:59Z"), ..ctx };
-        assert!(Filter::parse(&format!("due.before:{bound}")).matches(&earlier));
+        assert!(parsed(&format!("due.before:{bound}")).matches(&earlier));
         let later = MatchCtx { due: Some("2026-07-17T00:00:01Z"), ..ctx };
-        assert!(Filter::parse(&format!("due.after:{bound}")).matches(&later));
+        assert!(parsed(&format!("due.after:{bound}")).matches(&later));
     }
 
     /// `-tag` was the one predicate whose *evaluation* nothing exercised. The
@@ -401,7 +454,7 @@ mod tests {
         let other_tag: Vec<String> = vec!["docs".into()];
         let no_tags: Vec<String> = vec![];
 
-        let f = Filter::parse("-infra");
+        let f = parsed("-infra");
         assert!(!f.matches(&ctx_tagged(&has_infra)), "-infra must hide a task tagged infra");
         // Load-bearing: a task carrying some *other* tag is what separates a
         // correct exclusion from one whose comparison has been inverted.
@@ -409,7 +462,7 @@ mod tests {
         assert!(f.matches(&ctx_tagged(&no_tags)), "-infra must keep an untagged task");
 
         // The include/exclude pair must stay exact opposites on the same rows.
-        let inc = Filter::parse("+infra");
+        let inc = parsed("+infra");
         for tags in [&has_infra, &other_tag, &no_tags] {
             assert_ne!(
                 inc.matches(&ctx_tagged(tags)),
@@ -433,7 +486,7 @@ mod tests {
         // tokenizer long before status parsing sees it, so those inputs would
         // exercise the tokenizer rather than this rule.
         for bogus in ["bogus", "canceled", "PENDING", "Done", "pending2", ""] {
-            let f = Filter::parse(&format!("status:{bogus}"));
+            let f = parsed(&format!("status:{bogus}"));
             for status in Status::ALL {
                 assert!(
                     !f.matches(&ctx_for(status)),
@@ -450,7 +503,7 @@ mod tests {
     #[test]
     fn each_status_value_selects_exactly_that_status() {
         for want in Status::ALL {
-            let f = Filter::parse(&format!("status:{}", want.as_str()));
+            let f = parsed(&format!("status:{}", want.as_str()));
             for have in Status::ALL {
                 assert_eq!(
                     f.matches(&ctx_for(have)),
@@ -468,7 +521,7 @@ mod tests {
     /// Pinned by enumeration so the doc comment and the code cannot drift apart.
     #[test]
     fn working_covers_pending_and_active_only_and_never_when_blocked() {
-        let f = Filter::parse("@working");
+        let f = parsed("@working");
         for status in Status::ALL {
             let want = matches!(status, Status::Pending | Status::Active);
             assert_eq!(f.matches(&ctx_for(status)), want, "@working vs {status:?}");
@@ -491,7 +544,7 @@ mod tests {
     fn blocked_is_a_derived_flag_not_a_status_constraint() {
         for input in ["status:blocked", "@blocked", "+blocked"] {
             assert!(
-                !Filter::parse(input).constrains_status(),
+                !parsed(input).constrains_status(),
                 "{input:?} must not suppress the exclude-cancelled default"
             );
         }

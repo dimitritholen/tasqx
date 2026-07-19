@@ -855,11 +855,13 @@ fn page_filters() -> String {
          instant, and the filter knows it — a lexicographic comparison would not.",
     ));
     s.push_str(&warn(
-        "<strong>Unknown tokens are ignored, not rejected.</strong> The grammar is deliberately \
-         forgiving: a token it does not recognise is treated as always-true. So \
-         <code>tasqx list \"priority:H\"</code> does not error — it silently lists everything, \
-         because <code>priority:</code> is not a predicate. If a filter returns more than you \
-         expect, suspect a typo before you suspect your data.",
+        "<strong>Unknown tokens are rejected.</strong> A token the grammar does not recognise \
+         is an error naming the token, not a term that matches everything. So \
+         <code>tasqx list \"priority:H\"</code> fails — <code>priority:</code> is not a \
+         predicate — instead of silently listing every task. The same goes for a dangling \
+         <code>or</code> or an unclosed <code>(</code>. Values are the other half of the rule \
+         and behave differently on purpose: <code>status:pendign</code> parses fine and simply \
+         matches no row, because the token shape is grammar while the value is data.",
     ));
 
     s.push_str(&h3("Where the grammar stops"));

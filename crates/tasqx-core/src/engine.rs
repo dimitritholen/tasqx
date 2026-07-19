@@ -926,7 +926,7 @@ impl Engine {
 
     pub fn task_list(&self, p: &Value) -> Result<Value, ApiError> {
         let filter_str = opt_str(p, "filter").unwrap_or_default();
-        let filter = Filter::parse(&filter_str);
+        let filter = Filter::parse(&filter_str).map_err(ApiError::bad_request)?;
 
         // Fetch all rows, then evaluate the filter in Rust: the §12-D8 grammar
         // (or/parens) and instant `due` comparison are evaluated on the loaded
@@ -1353,7 +1353,8 @@ impl Engine {
             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
             .unwrap_or_else(|| vec!["count".to_string()]);
 
-        let filter = Filter::parse(&opt_str(p, "filter").unwrap_or_default());
+        let filter = Filter::parse(&opt_str(p, "filter").unwrap_or_default())
+            .map_err(ApiError::bad_request)?;
         let now_ts = parse_ts(&now());
 
         // D24: a report is an *aggregation*, so abandoned work must not inflate
@@ -1462,7 +1463,8 @@ impl Engine {
     /// `dropped_dependencies` is always present and is 0 for an unfiltered
     /// export, which stays a byte-identical round trip.
     pub fn store_export(&self, p: &Value) -> Result<Value, ApiError> {
-        let filter = Filter::parse(&opt_str(p, "filter").unwrap_or_default());
+        let filter = Filter::parse(&opt_str(p, "filter").unwrap_or_default())
+            .map_err(ApiError::bad_request)?;
         let mut stmt = self.conn.prepare(&format!("SELECT {TASK_COLS} FROM tasks ORDER BY short_id"))?;
         let rows = stmt.query_map([], map_task_row)?;
 

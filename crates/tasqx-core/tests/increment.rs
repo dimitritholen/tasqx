@@ -246,18 +246,49 @@ fn cancelled_dependency_releases_dependent() {
 }
 
 #[test]
-fn unknown_filter_token_is_forgiving_and_matches_all() {
-    // §12-D8 / filter.rs: unknown or malformed tokens are deliberately ignored
-    // (treated as the always-true term). Pin the documented contract.
+fn unknown_filter_token_is_rejected_rather_than_widening_the_result() {
+    // The inverse of what this test used to pin. Unknown tokens were the
+    // always-true term, so `staus:pending` (missing 't') returned BOTH tasks —
+    // a typo in a filter handed back more rows than the correct filter would,
+    // and nothing said so. A filter exists to narrow; the one failure mode it
+    // must not have is silently widening.
     let e = engine();
     e.task_add(&json!({ "title": "one" })).unwrap();
     e.task_add(&json!({ "title": "two" })).unwrap();
 
-    // Typo (missing dot) and a nonsense token both match everything.
-    let r = e.task_list(&json!({ "filter": "staus:pending" })).unwrap();
+    for bogus in ["staus:pending", "totally_unknown_token"] {
+        let err = e.task_list(&json!({ "filter": bogus })).expect_err(bogus);
+        assert_eq!(err.code, ErrorCode::BadRequest, "{bogus} must be a bad_request");
+        assert!(err.message.contains(bogus), "the message must name the token: {}", err.message);
+    }
+
+    // The empty filter is NOT a malformed one: no filter means no filtering,
+    // and breaking that would break every unfiltered list in the tool.
+    let r = e.task_list(&json!({ "filter": "" })).unwrap();
     assert_eq!(count(&r), 2);
-    let r = e.task_list(&json!({ "filter": "totally_unknown_token" })).unwrap();
+    let r = e.task_list(&json!({})).unwrap();
     assert_eq!(count(&r), 2);
+
+    // A valid filter still narrows, so the guard cannot be satisfied by a
+    // parser that simply rejects everything.
+    let r = e.task_list(&json!({ "filter": "status:pending" })).unwrap();
+    assert_eq!(count(&r), 2);
+    let r = e.task_list(&json!({ "filter": "status:done" })).unwrap();
+    assert_eq!(count(&r), 0);
+}
+
+#[test]
+fn a_dangling_operator_or_unbalanced_paren_is_rejected() {
+    // Same silent-widening shape, reached through the grammar rather than a
+    // token: `+api or` used to parse as `+api OR <always-true>`, i.e. every
+    // task, and `(+api or +infra` dropped the missing paren without a word.
+    let e = engine();
+    e.task_add(&json!({ "title": "one" })).unwrap();
+
+    for bad in ["+api or", "(+api or +infra", "+api)", "()"] {
+        let err = e.task_list(&json!({ "filter": bad })).expect_err(bad);
+        assert_eq!(err.code, ErrorCode::BadRequest, "{bad} must be a bad_request");
+    }
 }
 
 // ---- B: new method happy paths ----------------------------------------------
