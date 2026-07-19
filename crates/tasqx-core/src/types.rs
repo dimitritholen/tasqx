@@ -11,6 +11,52 @@ use serde_json::Value;
 
 use crate::util::is_future_at;
 
+/// The kinds of thing the event log records against (`events.entity`).
+///
+/// This exists so the set is **derived rather than retyped**. The entity column
+/// was previously written only as the bare literals `"task"` and `"project"` at
+/// nineteen `insert_event` call sites, which made the accepted set of
+/// `event.list {entity}` a fact nobody owned: the reader passed the caller's
+/// string straight into `WHERE entity = ?1`, so `entity: "tsak"` was an empty
+/// list at `ok: true` — a closed vocabulary answering a typo with silence, the
+/// same shape as `status:pendign`. With `insert_event` taking this type, the
+/// writers *cannot* introduce a third spelling and the reader's accepted set is
+/// [`Entity::ALL`] by construction, which is D30's "derive it, don't keep a list
+/// in sync" applied one layer in from clap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Entity {
+    Task,
+    Project,
+}
+
+impl Entity {
+    /// Every variant. Hand-written like [`Status::ALL`], and pinned by the same
+    /// exhaustiveness test, because Rust has no way to enumerate a plain enum.
+    pub const ALL: [Entity; 2] = [Entity::Task, Entity::Project];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Entity::Task => "task",
+            Entity::Project => "project",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Entity> {
+        match s {
+            "task" => Some(Entity::Task),
+            "project" => Some(Entity::Project),
+            _ => None,
+        }
+    }
+
+    /// The accepted set as a message fragment, e.g. `task, project`. Built from
+    /// [`Entity::ALL`] so an error message can never fall behind the enum.
+    pub fn accepted() -> String {
+        Entity::ALL.iter().map(|e| e.as_str()).collect::<Vec<_>>().join(", ")
+    }
+}
+
 /// Task lifecycle states (DESIGN.md §3). Serialized as lowercase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -152,6 +198,12 @@ impl Status {
             })
             .collect::<Vec<_>>()
             .join(",")
+    }
+
+    /// The accepted set as a message fragment, e.g. `backlog, pending, …`.
+    /// Built from [`Status::ALL`] so no error message can list four of five.
+    pub fn accepted() -> String {
+        Status::ALL.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
     }
 
     pub fn parse(s: &str) -> Option<Status> {
@@ -326,6 +378,27 @@ mod tests {
         }
         assert_eq!(Status::parse("canceled"), None, "a near-miss must not parse");
         assert_eq!(Status::parse(""), None);
+    }
+
+    /// `Entity::ALL` carries the same silent-failure mode as `Status::ALL` and
+    /// one extra consequence of its own: it is now the *published accepted set*
+    /// for `event.list {entity}`, so a dropped or duplicated entry becomes an
+    /// entity the log holds rows for and the reader refuses to list — turning
+    /// the fix for a silent empty answer into a silent refusal of a real one.
+    #[test]
+    fn entity_all_lists_every_variant_exactly_once_and_round_trips() {
+        let mut seen: Vec<&str> = Entity::ALL.iter().map(|e| e.as_str()).collect();
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "Entity::ALL contains a duplicate");
+        assert_eq!(before, 2, "Entity::ALL must list every variant");
+        for e in Entity::ALL {
+            assert_eq!(Entity::parse(e.as_str()), Some(e), "round trip failed for {e:?}");
+            assert!(Entity::accepted().contains(e.as_str()), "accepted() must name {e:?}");
+        }
+        assert_eq!(Entity::parse("tasks"), None, "a near-miss must not parse");
+        assert_eq!(Entity::parse(""), None);
     }
 
     /// `Priority::ALL` is hand-written, exactly like `Status::ALL`, and carries

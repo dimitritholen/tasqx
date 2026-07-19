@@ -51,4 +51,4 @@ pub use engine::Engine;
 pub use error::{ApiError, ErrorCode};
 pub use notify::{Notification, Notifier};
 pub use scheduler::ReminderScheduler;
-pub use types::{Priority, Status, Task};
+pub use types::{Entity, Priority, Status, Task};

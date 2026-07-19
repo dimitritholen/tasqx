@@ -399,6 +399,51 @@ fn event_list_scoped_by_ref() {
     assert_eq!(count(&proj_events), 3);
 }
 
+/// `entity` is a **closed, compile-time** vocabulary — `Entity::ALL` — so a
+/// value outside it is a caller error, not a query that legitimately found
+/// nothing. It used to go straight into `WHERE entity = ?1`, so `entity: "tsak"`
+/// returned `{count: 0, events: []}` at `ok: true`: an empty audit log is
+/// exactly what a caller checking "did anything happen?" would read as an
+/// answer, and it is indistinguishable from a store where nothing happened.
+///
+/// Same rule as `status:` in the filter grammar, and the same reason it does
+/// *not* extend to `ref` — a task id is an open runtime set, and `ref` already
+/// resolves it and returns `not_found`.
+#[test]
+fn event_list_refuses_an_entity_outside_the_closed_set() {
+    let e = engine();
+    e.task_add(&json!({ "title": "t" })).unwrap();
+
+    // `""` is deliberately NOT in this list. `util::opt_str` maps an empty
+    // string to `None` for every optional string param in the engine, so
+    // `entity: ""` means "not given" and lists the whole log — a project-wide
+    // convention, and changing it here would be a different decision affecting
+    // every other param. Recorded so the omission reads as a choice.
+    for bogus in ["tsak", "Task", "tasks", "annotation"] {
+        let err = e
+            .event_list(&json!({ "entity": bogus }))
+            .expect_err("an unknown entity must be refused, not answered with an empty log");
+        assert_eq!(err.code, ErrorCode::BadRequest, "for entity {bogus:?}");
+        assert!(err.message.contains(bogus), "must name the value: {err:?}");
+        // Derived from the enum the writers use, so a third entity kind joins
+        // this message the day `insert_event` can write it.
+        for ent in tasqx_core::Entity::ALL {
+            assert!(
+                err.message.contains(ent.as_str()),
+                "must list {:?} as accepted; got {:?}",
+                ent.as_str(),
+                err.message
+            );
+        }
+    }
+
+    // Every entity the writers can actually produce still lists cleanly.
+    for ent in tasqx_core::Entity::ALL {
+        e.event_list(&json!({ "entity": ent.as_str() }))
+            .unwrap_or_else(|err| panic!("entity {:?} must be accepted: {err:?}", ent.as_str()));
+    }
+}
+
 // ---- report.summary aggregation ---------------------------------------------
 
 #[test]
@@ -1072,6 +1117,56 @@ fn reminder_fire_is_idempotent_through_the_public_api() {
     // A DIFFERENT instant on the same task is a different reminder and fires.
     let other = e.reminder_fire(&json!({ "ref": sid, "at": "2098-12-30T23:00:00Z" })).unwrap();
     assert_eq!(other["fired"], json!(true));
+}
+
+/// **`at` is the one date input in the tool that deliberately does NOT take the
+/// `due:` grammar, and the message has to say so.**
+///
+/// D33 unified every date a human types onto `datetime::parse_when`. `at` is not
+/// one: `scheduler::fire` supplies it as `p.at.to_string()`, the already-resolved
+/// instant of the reminder, and `storage::already_reminded` compares it to the
+/// stored payload by **exact string match**. That makes `at` an identifier for a
+/// specific scheduled reminder, not a moment the caller picks — so a relative
+/// spelling is not a friendlier way to say the same thing, it is a different
+/// instant. `at: "tomorrow"` would resolve to something that matches no pending
+/// reminder, write a `reminded` row that dedupes nothing, and leave the real
+/// reminder free to fire again: a silent double-notify plus a junk audit row.
+///
+/// So the refusal stays, and this test pins the *reason* being in the text. The
+/// old message ("`at` must be RFC3339") implied the caller should have typed the
+/// date differently, which invites exactly the retry that cannot work.
+#[test]
+fn reminder_fire_refuses_a_relative_at_and_says_why_rather_than_blaming_the_spelling() {
+    let e = engine();
+    let sid = e
+        .task_add(&json!({ "title": "ship", "due": "2099-01-01T00:00:00Z", "remind": "-1h" }))
+        .unwrap()["short_id"]
+        .clone();
+
+    // Every one of these is a spelling `due:` accepts, which is the whole point:
+    // the exception is deliberate and must not be quietly closed by a later
+    // "unify the last date input" pass.
+    for loose in ["tomorrow", "friday", "in 3 days", "eom", "2026-07-25"] {
+        let err = e
+            .reminder_fire(&json!({ "ref": sid, "at": loose }))
+            .expect_err(&format!("`at` must stay strict, but {loose:?} was accepted"));
+        assert_eq!(err.code, ErrorCode::BadRequest, "for at:{loose:?}");
+        assert!(err.message.contains(loose), "must name the value; got {:?}", err.message);
+        // The two facts that turn "you typed it wrong" into "this field is not
+        // yours to type": it identifies a scheduled reminder, and it is the
+        // dedupe key. Asserted as substrings so the sentence can be reworded
+        // but not hollowed out.
+        assert!(
+            err.message.contains("dedupe"),
+            "the message must say `at` is the dedupe key, not just the wrong format; got {:?}",
+            err.message
+        );
+        assert!(
+            err.message.contains("scheduler"),
+            "the message must say the scheduler supplies it; got {:?}",
+            err.message
+        );
+    }
 }
 
 #[test]

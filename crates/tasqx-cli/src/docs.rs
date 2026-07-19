@@ -900,9 +900,11 @@ fn page_filters() -> String {
          is an error naming the token, not a term that matches everything. So \
          <code>tasqx list \"priority:H\"</code> fails — <code>priority:</code> is not a \
          predicate — instead of silently listing every task. The same goes for a dangling \
-         <code>or</code> or an unclosed <code>(</code>. Values are the other half of the rule \
-         and behave differently on purpose: <code>status:pendign</code> parses fine and simply \
-         matches no row, because the token shape is grammar while the value is data.",
+         <code>or</code> or an unclosed <code>(</code>. Values follow the same rule when the set \
+         of them is <em>closed</em>: <code>status:</code> and a date bound have a fixed list of \
+         accepted values, so <code>status:pendign</code> is an error naming the value and the \
+         five statuses, not an empty table. A <code>project:</code> or a tag is different on \
+         purpose — those names are made at runtime, so an unknown one simply matches no row.",
     ));
 
     s.push_str(&h3("Where the grammar stops"));

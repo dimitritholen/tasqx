@@ -17,7 +17,7 @@ use rusqlite::{params, Connection, Row, Transaction};
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::types::{effective_status, Priority, Status, Task};
+use crate::types::{effective_status, Entity, Priority, Status, Task};
 use crate::util::now;
 
 /// Busy timeout for contended one-shot writers (DESIGN.md §2: ~3s).
@@ -323,9 +323,14 @@ pub fn clear_config(tx: &Transaction, key: &str) -> Result<bool, ApiError> {
 
 /// Append one event row. THE invariant: this runs inside the same `tx` as the
 /// state change it records, so state and history can never diverge.
+///
+/// `entity` is the typed [`Entity`], not a `&str`, so the two spellings the
+/// column may ever hold are the enum's variants rather than nineteen hand-typed
+/// literals. That is what lets `event.list` state its accepted set from
+/// [`Entity::ALL`] instead of keeping a second list in sync with these writers.
 pub fn insert_event(
     tx: &Transaction,
-    entity: &str,
+    entity: Entity,
     entity_id: &str,
     op: &str,
     payload: &serde_json::Value,
@@ -335,7 +340,7 @@ pub fn insert_event(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             Uuid::now_v7().to_string(),
-            entity,
+            entity.as_str(),
             entity_id,
             op,
             payload.to_string(),

@@ -25,7 +25,7 @@ use crate::storage::{
 };
 use crate::recur;
 use crate::remind;
-use crate::types::{effective_status, Priority, Status, Task};
+use crate::types::{effective_status, Entity, Priority, Status, Task};
 use crate::urgency;
 use crate::util::{
     duration_secs, iso_duration, now, opt_array, opt_bool, opt_i64, opt_str, opt_str_array,
@@ -244,7 +244,7 @@ impl Engine {
         // this transaction actually did, and written inside it, as ever.
         insert_event(
             &tx,
-            "project",
+            Entity::Project,
             &id,
             "create",
             &json!({ "name": name, "description": description, "default": claimed }),
@@ -305,7 +305,7 @@ impl Engine {
         set_config(&tx, DEFAULT_PROJECT_KEY, &name)?;
         // THE invariant: the event row lands in the same transaction as the
         // mutation. The default is state, so moving it is history.
-        insert_event(&tx, "project", &id, "use", &json!({ "name": name, "previous": previous }))?;
+        insert_event(&tx, Entity::Project, &id, "use", &json!({ "name": name, "previous": previous }))?;
         tx.commit()?;
 
         Ok(json!({ "name": name, "default": true, "previous": previous }))
@@ -411,7 +411,7 @@ impl Engine {
         }
         insert_event(
             &tx,
-            "task",
+            Entity::Task,
             &id,
             "add",
             &json!({
@@ -494,7 +494,7 @@ impl Engine {
                 )?;
                 insert_event(
                     &tx,
-                    "task",
+                    Entity::Task,
                     &aid,
                     "stop",
                     &json!({ "reason": "auto_stop", "tracked": iso_duration(elapsed) }),
@@ -506,7 +506,7 @@ impl Engine {
             "UPDATE tasks SET status='active', active_since=?1, rev=?2, modified=?3 WHERE id=?4",
             params![ts, task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, "task", &task.id, "start", &json!({ "interval_started": ts }))?;
+        insert_event(&tx, Entity::Task, &task.id, "start", &json!({ "interval_started": ts }))?;
         tx.commit()?;
 
         Ok(json!({
@@ -537,7 +537,7 @@ impl Engine {
              tracked_seconds=?1, rev=?2, modified=?3 WHERE id=?4",
             params![total, task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, "task", &task.id, "stop", &json!({ "tracked": iso_duration(elapsed) }))?;
+        insert_event(&tx, Entity::Task, &task.id, "stop", &json!({ "tracked": iso_duration(elapsed) }))?;
         tx.commit()?;
 
         Ok(json!({ "status": "pending", "tracked": iso_duration(elapsed) }))
@@ -576,7 +576,7 @@ impl Engine {
              tracked_seconds=?2, rev=?3, modified=?4 WHERE id=?5",
             params![ts, total, task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, "task", &task.id, "done", &json!({ "completed": ts }))?;
+        insert_event(&tx, Entity::Task, &task.id, "done", &json!({ "completed": ts }))?;
 
         // Spawn the next recurring instance in the SAME transaction: if this
         // fails, the whole completion rolls back — no orphan spawn, no event.
@@ -685,7 +685,7 @@ impl Engine {
         }
         insert_event(
             tx,
-            "task",
+            Entity::Task,
             &new_id,
             "add",
             &json!({
@@ -930,7 +930,7 @@ impl Engine {
             "UPDATE tasks SET urgency=?1, rev=?2, modified=?3 WHERE id=?4",
             params![new_urg, new_rev, ts, task.id],
         )?;
-        insert_event(&tx, "task", &task.id, "modify", &Value::Object(set.clone()))?;
+        insert_event(&tx, Entity::Task, &task.id, "modify", &Value::Object(set.clone()))?;
         tx.commit()?;
 
         Ok(json!({ "short_id": task.short_id, "_rev": new_rev }))
@@ -954,7 +954,7 @@ impl Engine {
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, "task", &task.id, "tag.add", &json!({ "tags": tags }))?;
+        insert_event(&tx, Entity::Task, &task.id, "tag.add", &json!({ "tags": tags }))?;
 
         // Re-read the full tag set inside the transaction for the response.
         let all = {
@@ -1174,7 +1174,7 @@ impl Engine {
              tracked_seconds=?1, rev=?2, modified=?3 WHERE id=?4",
             params![total, task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, "task", &task.id, "cancel", &json!({ "from": task.status.as_str() }))?;
+        insert_event(&tx, Entity::Task, &task.id, "cancel", &json!({ "from": task.status.as_str() }))?;
         // Cancelling a blocker resolves it (D11), so dependents may become
         // actionable — surface the same unblock cascade task.done reports.
         let unblocked = Self::compute_unblocked(&tx, &task.id)?;
@@ -1203,7 +1203,7 @@ impl Engine {
             "UPDATE tasks SET status='pending', completed=NULL, rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, "task", &task.id, "reopen", &json!({ "from": task.status.as_str() }))?;
+        insert_event(&tx, Entity::Task, &task.id, "reopen", &json!({ "from": task.status.as_str() }))?;
         tx.commit()?;
 
         Ok(json!({ "short_id": task.short_id, "status": "pending" }))
@@ -1267,7 +1267,7 @@ impl Engine {
             && clear_config(&tx, DEFAULT_PROJECT_KEY)?;
         insert_event(
             &tx,
-            "project",
+            Entity::Project,
             &id,
             "archive",
             &json!({ "name": name, "default_cleared": default_cleared }),
@@ -1296,7 +1296,7 @@ impl Engine {
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, "task", &task.id, "annotation.add", &json!({ "id": id, "body": body }))?;
+        insert_event(&tx, Entity::Task, &task.id, "annotation.add", &json!({ "id": id, "body": body }))?;
         tx.commit()?;
 
         Ok(json!({
@@ -1341,7 +1341,7 @@ impl Engine {
         )?;
         insert_event(
             &tx,
-            "task",
+            Entity::Task,
             &task.id,
             "dependency.add",
             &json!({ "depends_on": target.id }),
@@ -1377,7 +1377,7 @@ impl Engine {
             )?;
             insert_event(
                 &tx,
-                "task",
+                Entity::Task,
                 &task.id,
                 "dependency.remove",
                 &json!({ "depends_on": target.id }),
@@ -1805,7 +1805,7 @@ impl Engine {
                 import_field(id, "depends_on", opt_str_array(tv, "depends_on"))?,
             ));
 
-            insert_event(&tx, "task", id, "import", &json!({ "short_id": short_id }))?;
+            insert_event(&tx, Entity::Task, id, "import", &json!({ "short_id": short_id }))?;
             imported += 1;
         }
 
@@ -1872,7 +1872,22 @@ impl Engine {
             let task = self.resolve_ref_value(r)?;
             ("WHERE entity_id = ?1".to_string(), Some(task.id))
         } else if let Some(ent) = opt_str(p, "entity")? {
-            ("WHERE entity = ?1".to_string(), Some(ent))
+            // `entity` is a CLOSED, compile-time vocabulary — the writers can
+            // only ever spell `Entity::ALL` — so a value outside it is a caller
+            // error, not a query that legitimately found nothing. Passed raw
+            // into `WHERE entity = ?1`, `entity: "tsak"` was `{count: 0}` at
+            // `ok: true`, and an empty audit log reads as an answer.
+            //
+            // `ref` above stays a lookup rather than a vocabulary check because
+            // a task id is an OPEN runtime set — and `resolve_ref_value` already
+            // returns `not_found` for one that names nothing.
+            let ent = Entity::parse(&ent).ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "unknown entity {ent:?} (expected one of: {})",
+                    Entity::accepted()
+                ))
+            })?;
+            ("WHERE entity = ?1".to_string(), Some(ent.as_str().to_string()))
         } else {
             ("".to_string(), None)
         };
@@ -1947,8 +1962,26 @@ impl Engine {
         // Normalize before storing/comparing: the dedupe key is an exact string
         // match, so `…T16:00:00+00:00` and `…T16:00:00Z` must not read as two
         // different reminders.
+        // `at` is the ONE date input in the tool that deliberately does not take
+        // `datetime::parse_when`'s grammar (D33 unified every other one), so the
+        // message has to say WHY rather than imply a spelling mistake. `at` is
+        // not a moment the caller picks: `scheduler::fire` supplies the instant
+        // it already resolved, and `already_reminded` matches it as an exact
+        // string. A relative spelling would resolve to some other instant, write
+        // a `reminded` row that dedupes nothing, and leave the real reminder to
+        // fire again — a silent double-notify. Telling the user to "type
+        // RFC3339" invites exactly the retry that cannot work.
         let at = parse_ts(&at_raw)
-            .ok_or_else(|| ApiError::bad_request(format!("`at` must be RFC3339, got {at_raw:?}")))?
+            .ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "`at` must be the exact RFC3339 instant the scheduler resolved for this \
+                     reminder (e.g. 2026-07-16T00:00:00Z), got {at_raw:?}. It is the dedupe key \
+                     that stops a reminder firing twice, not a date you choose, so relative \
+                     spellings like `due:` accepts are refused here. The daemon passes this \
+                     for you; a caller firing by hand derives it from the task's `due` and \
+                     `remind` (task.get reports both)."
+                ))
+            })?
             .to_string();
 
         let tx = self.begin()?;
@@ -1957,7 +1990,7 @@ impl Engine {
         }
         insert_event(
             &tx,
-            "task",
+            Entity::Task,
             &task.id,
             "reminded",
             &json!({

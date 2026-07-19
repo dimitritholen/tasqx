@@ -44,20 +44,38 @@
 //! unknown `--project` became an error for the same reason: on a *read* path
 //! nothing is lost by refusing, while a silent wrong answer is unfalsifiable.
 //!
-//! Note the deliberate split, unchanged: an unknown *value* still just fails to
-//! match (`status:pendign` matches no row), because values are data and the set
-//! of valid ones is a runtime question. Token shapes are grammar, and closed.
+//! **The split about values, refined.** The original rule was "an unknown value
+//! just fails to match, because values are data and the set of valid ones is a
+//! runtime question". Half of that is true, and the half that is not was doing
+//! real damage. The rule now turns on whether the vocabulary is closed:
 //!
-//! **A date bound is the exception to that split, because a date has a grammar
-//! too.** `due.before:`/`due.after:` take whatever [`crate::datetime::parse_when`]
+//! * A value from a **closed, compile-time** set is refused, naming it and the
+//!   accepted set. `status:` is such a value — [`Status::ALL`] is five variants
+//!   fixed at compile time, no more of a runtime question than the token grammar
+//!   itself — and so is a date bound, which has its own closed grammar.
+//! * A value from an **open, runtime** set (a project name, a tag) still simply
+//!   does not match, because there the set genuinely is a runtime question, and
+//!   the write path already refuses an unknown project (D23) so a filter naming
+//!   one is not hiding an answer the store had.
+//!
+//! `status:pendign` printing `No tasks.` at exit 0 was the last closed
+//! vocabulary in the tool answering a typo with silence: `parse_sort` refuses an
+//! unknown sort key, `Status::parse` refuses on `task.modify` and `store.import`,
+//! `Priority::parse` beside it — so the *same string* was a `bad_request` when
+//! written and a confident empty table when read. Worse than either alone is the
+//! pair: "no tasks are pending" and "you misspelled pending" are different facts
+//! and the tool printed one sentence for both.
+//!
+//! **A date bound belongs on the closed side for the same reason.**
+//! `due.before:`/`due.after:` take whatever [`crate::datetime::parse_when`]
 //! takes — the same parser `due:` writes through — so `due.before:tomorrow`,
 //! `friday`, `2026-07-25`, `in 3 days` and `eom` all work, and an unreadable one
 //! is refused by name. It used to be strict RFC3339 and nothing else, which made
 //! "what is due soon" — the primary query of a task manager — answer `No tasks`
 //! at exit 0 for five of the six spellings the tool prints in its OWN error
-//! message when a date fails to parse. `status:pendign` is data that happens to
-//! match no row; `due.before:tomorow` is not a date at all, and answering it
-//! with the same silence `due IS NULL` earns is the D27 collapse one layer down.
+//! message when a date fails to parse. `due.before:tomorow` is not a date at
+//! all, and answering it with the same silence `due IS NULL` earns is the D27
+//! collapse one layer down — as `status:pendign` was, one predicate over.
 //!
 //! **The bound is resolved once, at parse time, into a [`Timestamp`].** Two
 //! reasons, and only the first is about speed: the filter is evaluated per row,
@@ -109,12 +127,17 @@ DATE       := any date `due:` accepts      # tomorrow, friday, 2026-07-25,
 /// A single leaf predicate.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pred {
-    /// `status:VALUE`. Deliberately still a `String`, not a [`Status`]: this is
-    /// raw user input from the DSL and may be a typo (`status:pendign`). Parsing
-    /// at match time — where an unrecognised name matches nothing — is the
-    /// *value* half of the module's split: token shapes are grammar and are
-    /// rejected at parse time, values are data and simply fail to match.
-    Status(String),
+    /// `status:VALUE`, with VALUE already resolved to the enum. A [`Status`] and
+    /// not a `String` on purpose, for the reason `DueBefore` holds a `Timestamp`:
+    /// while it was a string, `eval_pred` reparsed it per row and answered a typo
+    /// with the same "no" that a genuinely non-matching row earns. Holding the
+    /// variant makes "the caller named a status that does not exist" a state
+    /// `matches` cannot be in — the refusal is structural, not a validation call
+    /// somebody has to remember.
+    Status(Status),
+    /// `project:VALUE`, and deliberately still a `String`. A project name is an
+    /// **open, runtime** vocabulary, so an unknown one legitimately matches no
+    /// row rather than being refused — see the module comment's split.
     Project(String),
     TagInclude(String),
     TagExclude(String),
@@ -233,10 +256,9 @@ fn eval(e: &Expr, ctx: &MatchCtx) -> bool {
 fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
     match p {
         Pred::Always => true,
-        // An unparseable value (`status:bogus`) yields `None`, which never
-        // equals `Some(..)` — so it matches nothing, exactly as the previous
-        // string comparison against a always-valid `ctx.status` did.
-        Pred::Status(s) => Status::parse(s) == Some(ctx.status),
+        // A plain enum comparison: an unreadable value never reaches here,
+        // because `predicate()` refused it at parse time.
+        Pred::Status(s) => *s == ctx.status,
         Pred::Project(pr) => ctx.project == Some(pr.as_str()),
         Pred::TagInclude(t) => ctx.tags.iter().any(|x| x == t),
         Pred::TagExclude(t) => !ctx.tags.iter().any(|x| x == t),
@@ -630,7 +652,21 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
         return Ok(Pred::Project(v.to_string()));
     }
     if let Some(v) = tok.strip_prefix("status:") {
-        return Ok(Pred::Status(v.to_string()));
+        // Note this is reached only AFTER `status:blocked` was claimed above:
+        // `blocked` is a derived flag, not a member of the status set, so it
+        // must not be offered here as a status and must not be refused either.
+        //
+        // The empty value falls in here too and is refused with everything else.
+        // `status:` names no status, and the grammar already treats an empty
+        // value that way one predicate over: a bare `+` or `-` is an unknown
+        // token, not a tag that matches nothing.
+        return Status::parse(v).map(Pred::Status).ok_or_else(|| {
+            format!(
+                "unknown status {v:?} (expected one of: {} — or `status:blocked` \
+                 for the derived blocked flag)",
+                Status::accepted()
+            )
+        });
     }
     if let Some(v) = tok.strip_prefix("due.before:") {
         return Ok(Pred::DueBefore(bound(v, "due.before", now)?));
@@ -908,25 +944,47 @@ mod tests {
         }
     }
 
-    /// `Pred::Status` holds raw DSL text but is now compared by *parsing* it
-    /// against a typed `Status`. The regression that buys: a value the parser
-    /// does not recognise must keep matching nothing. If `Status::parse` were
-    /// ever made lenient (trimming, case-folding, aliasing `canceled`), or if the
-    /// comparison fell back to "unparseable means match anything", then
-    /// `status:bogus` would start selecting rows — and a filter that silently
-    /// widens is far worse than one that returns nothing, because the caller
-    /// gets a plausible-looking answer to a question they did not ask.
+    /// **A closed vocabulary refuses a typo; an open one merely fails to match.**
+    ///
+    /// This test used to pin the opposite rule — `status:pendign` matched no row
+    /// and said nothing — on D27's stated ground that "values are data and the
+    /// set of valid ones is a runtime question". That ground is simply false for
+    /// `status:`. [`Status::ALL`] is five compile-time variants; the set is as
+    /// closed as the token grammar itself, and every *other* closed vocabulary in
+    /// this codebase already refuses an unknown member — `parse_sort` on a sort
+    /// key, `Status::parse` on `task.modify` and `store.import`, `Priority::parse`
+    /// beside it. `status:` answering a typo with silence made it the last one,
+    /// and made the same input a `bad_request` on the write path and a confident
+    /// empty table on the read path.
+    ///
+    /// A project name or a tag stays on the old rule, and that is not an
+    /// inconsistency: those vocabularies genuinely *are* runtime questions, and
+    /// the write path already refuses an unknown project (D23), so a filter
+    /// naming one cannot be answering a question the store could have answered.
+    ///
+    /// The empty value is in this list on purpose. `status:` with nothing after
+    /// it is not a member of the closed set, so it takes the same refusal — which
+    /// also matches how the grammar already treats an empty value for `+` and
+    /// `-`, where a bare `+` is an unknown token rather than a match-nothing tag.
     #[test]
-    fn an_unrecognised_status_value_matches_no_row() {
+    fn an_unrecognised_status_value_is_refused_naming_the_accepted_set() {
         // All whitespace-free: a value containing a space is split by the
         // tokenizer long before status parsing sees it, so those inputs would
         // exercise the tokenizer rather than this rule.
         for bogus in ["bogus", "canceled", "PENDING", "Done", "pending2", ""] {
-            let f = parsed(&format!("status:{bogus}"));
-            for status in Status::ALL {
+            let err = Filter::parse(&format!("status:{bogus}"), anchor())
+                .expect_err(&format!("status:{bogus:?} must be refused, not silently match nothing"));
+            assert!(
+                err.contains(&format!("{bogus:?}")),
+                "the refusal must name the offending value; got {err:?}"
+            );
+            // Driven off `Status::ALL`, so a sixth variant joins the message the
+            // day it exists rather than when someone remembers this string.
+            for s in Status::ALL {
                 assert!(
-                    !f.matches(&ctx_for(status)),
-                    "status:{bogus:?} must match nothing, but matched {status:?}"
+                    err.contains(s.as_str()),
+                    "the refusal must list {:?} as an accepted value; got {err:?}",
+                    s.as_str()
                 );
             }
         }
@@ -1307,11 +1365,20 @@ mod tests {
     /// for the two tag forms while the prose two paragraphs below advertised
     /// `+"needs paint"` — the block and its own surrounding text disagreed, and
     /// the code sided with the text.
+    ///
+    /// The probe value is per-prefix rather than one shared `"two words"`,
+    /// because `status:` draws from a closed vocabulary and now refuses a value
+    /// outside it. The quoting is still what is under test — `status:"pending"`
+    /// only parses if the tokenizer delivered the quoted value whole — and using
+    /// a valid member keeps this guard about the grammar block instead of
+    /// accidentally re-testing the status refusal.
     #[test]
     fn every_value_taking_predicate_is_written_as_taking_a_value() {
         let text = grammar();
-        for prefix in ["+", "-", "project:", "status:"] {
-            let filter = format!("{prefix}\"two words\"");
+        for (prefix, value) in
+            [("+", "two words"), ("-", "two words"), ("project:", "two words"), ("status:", "pending")]
+        {
+            let filter = format!("{prefix}\"{value}\"");
             Filter::parse(&filter, anchor())
                 .unwrap_or_else(|e| panic!("the parser accepts {filter:?}, so: {e}"));
             let line = text

@@ -157,7 +157,7 @@ fn rolled_back_transaction_couples_state_and_event() {
             params![short_id],
         )
         .unwrap();
-        storage::insert_event(&tx, "task", "rollback-id", "add", &json!({})).unwrap();
+        storage::insert_event(&tx, tasqx_core::Entity::Task, "rollback-id", "add", &json!({})).unwrap();
         // Both rows exist inside the tx...
         let n: i64 = tx
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
