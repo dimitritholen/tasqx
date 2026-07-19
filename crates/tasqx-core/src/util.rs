@@ -158,20 +158,47 @@ fn present<'a>(p: &'a Value, key: &str) -> Option<&'a Value> {
 pub fn req_str(p: &Value, key: &str) -> Result<String, ApiError> {
     // An empty string is "missing" rather than a type error: it is the shape
     // `use "$UNSET"` produces, and D23 already fixed that wording in place.
-    opt_str(p, key)?
-        .ok_or_else(|| ApiError::bad_request(format!("missing or empty required field: {key}")))
+    // Stated HERE rather than inherited from `opt_str`, which since D35 hands
+    // back the `""` the caller actually sent.
+    match opt_str(p, key)? {
+        Some(s) if !s.is_empty() => Ok(s),
+        _ => Err(ApiError::bad_request(format!("missing or empty required field: {key}"))),
+    }
 }
 
-/// Extract an optional string field. An empty string reads as absent, which is
-/// what every caller already assumed; a non-string is refused.
+/// Extract an optional string field. A non-string is refused; an empty string
+/// is handed back as the **present** value it is.
+///
+/// D35: this used to answer `None` for `""`, so every optional string param in
+/// the engine could not tell "not supplied" from "supplied as empty" — the same
+/// conflation D32 removed for types, surviving for emptiness. The caller
+/// decides: a closed vocabulary refuses it (D34), a parser refuses it (D13's
+/// "`--due \"\"` is a bad date"), and the one param for which empty is a real
+/// value — `filter`, where D27 ruled no filter means no filtering — keeps it.
 pub fn opt_str(p: &Value, key: &str) -> Result<Option<String>, ApiError> {
     match present(p, key) {
         None => Ok(None),
         Some(v) => match v.as_str() {
-            Some("") => Ok(None),
             Some(s) => Ok(Some(s.to_string())),
             None => Err(wrong_type(key, "a string", v)),
         },
+    }
+}
+
+/// The refusal every caller that has no meaning for an empty string raises:
+/// names the param and the way out, and never pretends the value was absent.
+pub fn empty_string(key: &str) -> ApiError {
+    ApiError::bad_request(format!(
+        "`{key}` was given as an empty string — send a value or omit `{key}`"
+    ))
+}
+
+/// [`opt_str`] for a param whose empty spelling means nothing: `""` is refused
+/// rather than silently reinterpreted as absent (D35).
+pub fn opt_str_nonempty(p: &Value, key: &str) -> Result<Option<String>, ApiError> {
+    match opt_str(p, key)? {
+        Some(s) if s.is_empty() => Err(empty_string(key)),
+        other => Ok(other),
     }
 }
 
@@ -340,6 +367,32 @@ mod tests {
         assert_eq!(opt_str(&good, "s").unwrap(), Some("hi".to_string()));
         assert_eq!(opt_u64(&good, "u").unwrap(), Some(7));
         assert_eq!(opt_str_array(&good, "a").unwrap(), vec!["x".to_string(), "y".to_string()]);
+    }
+
+    /// D35, at the layer itself: an EMPTY string is a PRESENT value, exactly as
+    /// D32 ruled for a wrong-typed one. The layer hands it back; refusing it is
+    /// the caller's decision, and the three answers the tool used to give for
+    /// `""` (the filter DSL refused, `opt_str_array` skipped, `opt_str`
+    /// absented) are now one rule with one recorded exception.
+    #[test]
+    fn an_empty_string_is_present_not_absent() {
+        let empty = json!({ "s": "" });
+        assert_eq!(opt_str(&empty, "s").unwrap(), Some(String::new()));
+        // The caller that has no meaning for it says so, naming the param.
+        let err = opt_str_nonempty(&empty, "s").expect_err("`\"\"` must not pass as a value");
+        assert_eq!(err.code, crate::ErrorCode::BadRequest);
+        assert!(err.message.contains('s'), "must name the param: {}", err.message);
+        // Absent still means absent through both doors — no optional param
+        // became required.
+        assert_eq!(opt_str_nonempty(&json!({}), "s").unwrap(), None);
+        assert_eq!(opt_str_nonempty(&json!({ "s": null }), "s").unwrap(), None);
+        // A required field keeps D23's wording, now stated rather than inherited.
+        assert!(req_str(&empty, "s").unwrap_err().message.contains("missing or empty"));
+        // The element-level form of the same rule, already in force.
+        assert!(opt_str_array(&json!({ "a": ["x", ""] }), "a")
+            .unwrap_err()
+            .message
+            .contains("empty string"));
     }
 
     /// `duration_secs` promises `Option` — it must USE it on overflow rather

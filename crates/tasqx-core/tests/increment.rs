@@ -414,11 +414,11 @@ fn event_list_refuses_an_entity_outside_the_closed_set() {
     let e = engine();
     e.task_add(&json!({ "title": "t" })).unwrap();
 
-    // `""` is deliberately NOT in this list. `util::opt_str` maps an empty
-    // string to `None` for every optional string param in the engine, so
-    // `entity: ""` means "not given" and lists the whole log — a project-wide
-    // convention, and changing it here would be a different decision affecting
-    // every other param. Recorded so the omission reads as a choice.
+    // `""` is not in this list because D35 gave it its own test — see
+    // `event_list_refuses_an_explicitly_empty_entity_instead_of_listing_everything`.
+    // It was the deferred half of this decision: `util::opt_str` collapsed an
+    // empty string to `None` for every optional string param, so `entity: ""`
+    // meant "not given" and listed the whole log.
     for bogus in ["tsak", "Task", "tasks", "annotation"] {
         let err = e
             .event_list(&json!({ "entity": bogus }))
@@ -2724,4 +2724,136 @@ fn the_import_key_gate_leaves_an_unfiltered_round_trip_byte_identical() {
     let b = engine();
     b.store_import(&json!({ "tasks": export_a["tasks"].clone() })).unwrap();
     assert_eq!(export_a, b.store_export(&json!({})).unwrap());
+}
+
+// ---- D35: an explicitly-supplied empty string is a PRESENT value ------------
+
+/// The read half of D35, on a closed vocabulary. `entity: ""` used to reach
+/// `opt_str`, which collapsed it to `None`, so the scoped query became the
+/// UNSCOPED one and the caller who asked for a narrow slice got the whole log
+/// at `ok: true` — while `entity: "tsak"` one character away was correctly
+/// refused. The malformed value got feedback and the empty one did not.
+#[test]
+fn event_list_refuses_an_explicitly_empty_entity_instead_of_listing_everything() {
+    let e = engine();
+    e.task_add(&json!({ "title": "t" })).unwrap();
+    let err = e
+        .event_list(&json!({ "entity": "" }))
+        .expect_err("`entity: \"\"` states a scope; it must not widen to the whole log");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    for ent in tasqx_core::Entity::ALL {
+        assert!(err.message.contains(ent.as_str()), "must name the way out: {}", err.message);
+    }
+}
+
+/// The read half again, on the other closed vocabulary. `group_by: ""` silently
+/// grouped by `project` — the default — while `group_by: "bogus"` was refused.
+#[test]
+fn report_summary_refuses_an_explicitly_empty_group_by_instead_of_defaulting() {
+    let e = engine();
+    let err = e
+        .report_summary(&json!({ "group_by": "" }))
+        .expect_err("`group_by: \"\"` must not silently mean the default axis");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
+        assert!(err.message.contains(axis), "must list the axes: {}", err.message);
+    }
+}
+
+/// The write half, on `task.add`. Each of these silently WROTE A DEFAULT over a
+/// value the caller stated: `project: ""` stored NULL (D18's rule, enforced on
+/// `task.modify` since D18 and never on `add`), `due: ""` stored null, and the
+/// closed vocabularies stored "none". This is D13 on the engine: a shell
+/// variable that expands to nothing must not reach the column.
+#[test]
+fn task_add_refuses_an_explicitly_empty_optional_string() {
+    let e = engine();
+    for field in ["project", "priority", "due", "scheduled", "wait", "estimate", "recurrence", "remind"] {
+        let err = e
+            .task_add(&json!({ "title": "t", field: "" }))
+            .expect_err("an explicitly empty value must be refused, not replaced by a default");
+        assert_eq!(err.code, ErrorCode::BadRequest, "for {field}");
+    }
+    assert_eq!(count(&e.task_list(&json!({})).unwrap()), 0, "no task may have been written");
+}
+
+/// The write half, on `store.import` — the surface D16/D28 hold to every
+/// invariant the API enforces. Each pair here had the malformed value refused
+/// and the empty one silently accepted as a default.
+#[test]
+fn store_import_refuses_an_explicitly_empty_field() {
+    for (field, value) in [
+        ("title", ""),
+        ("status", ""),
+        ("priority", ""),
+        ("project", ""),
+        ("due", ""),
+        ("estimate", ""),
+        ("recurrence", ""),
+        ("remind", ""),
+    ] {
+        let e = engine();
+        let mut task = json!({ "id": "019f6a0f-99df-7000-8000-0000000000a1", "short_id": 1, "title": "t" });
+        task[field] = json!(value);
+        let err = e
+            .store_import(&json!({ "tasks": [task] }))
+            .expect_err("an explicitly empty field must be refused, not written as a default");
+        assert_eq!(err.code, ErrorCode::BadRequest, "for {field}");
+        assert!(err.message.contains(field), "must name the field {field}: {}", err.message);
+        assert_eq!(e.task_list(&json!({})).unwrap()["count"], 0, "nothing written for {field}");
+    }
+}
+
+/// An annotation IS its body, so an empty one is a fabricated row — the same
+/// thing `a_non_object_annotation_entry_is_rejected_rather_than_minting_a_blank_one`
+/// refuses one shape over.
+#[test]
+fn store_import_refuses_an_empty_annotation_body_or_id() {
+    for ann in [json!({ "body": "" }), json!({ "id": "", "body": "note" })] {
+        let e = engine();
+        let err = e
+            .store_import(&json!({ "tasks": [
+                { "id": "019f6a0f-99df-7000-8000-0000000000a2", "short_id": 1, "title": "t",
+                  "annotations": [ann] }
+            ] }))
+            .expect_err("an empty annotation field must be refused, not defaulted");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert_eq!(e.task_list(&json!({})).unwrap()["count"], 0);
+    }
+}
+
+/// D18's rule at the one edge that still had no parser in front of it: a
+/// nullable free-text column. `init x --description "$UNSET"` used to store
+/// NULL, giving "no description" two spellings, one of them the caller's
+/// stated intent thrown away.
+#[test]
+fn project_create_refuses_an_explicitly_empty_description() {
+    let e = engine();
+    let err = e
+        .project_create(&json!({ "name": "work", "description": "" }))
+        .expect_err("`description: \"\"` must not be laundered into NULL");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("description"), "name the field: {}", err.message);
+}
+
+/// The ONE recorded exception, pinned so it is not "fixed" later. D27 decided
+/// that the empty filter matches everything — no filter means no filtering —
+/// and the CLI sends exactly this on every unfiltered read, so `filter: ""` is
+/// a genuine empty value, not an absent one that happens to agree.
+#[test]
+fn an_empty_filter_string_is_a_genuine_empty_filter_not_a_refusal() {
+    let e = engine();
+    e.task_add(&json!({ "title": "one" })).unwrap();
+    e.task_add(&json!({ "title": "two" })).unwrap();
+    assert_eq!(
+        e.task_list(&json!({ "filter": "" })).unwrap(),
+        e.task_list(&json!({})).unwrap(),
+        "the empty filter must still mean no filtering (D27)"
+    );
+    assert_eq!(count(&e.task_list(&json!({ "filter": "" })).unwrap()), 2);
+    assert_eq!(
+        e.store_export(&json!({ "filter": "" })).unwrap()["tasks"],
+        e.store_export(&json!({})).unwrap()["tasks"],
+    );
+    assert_eq!(e.report_summary(&json!({ "filter": "" })).unwrap()["groups"].as_array().unwrap().len(), 1);
 }

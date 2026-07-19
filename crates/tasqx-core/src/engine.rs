@@ -29,6 +29,7 @@ use crate::types::{effective_status, Entity, Priority, Status, Task};
 use crate::urgency;
 use crate::util::{
     duration_secs, iso_duration, now, opt_array, opt_bool, opt_i64, opt_str, opt_str_array,
+    opt_str_nonempty,
     opt_u64, parse_ts, req_array, req_i64, req_object, req_str, seconds_between,
 };
 
@@ -204,7 +205,11 @@ impl Engine {
         if name.trim().is_empty() {
             return Err(ApiError::bad_request("project name cannot be empty"));
         }
-        let description = opt_str(p, "description")?;
+        // D35: the last nullable free-text column with no parser in front of it.
+        // `""` used to be laundered into NULL, so `init x --description "$UNSET"`
+        // gave "no description" two spellings and threw the stated intent away —
+        // D18's finding at the one edge D18 did not reach.
+        let description = opt_str_nonempty(p, "description")?;
 
         let id = Uuid::now_v7().to_string();
         let ts = now();
@@ -326,9 +331,12 @@ impl Engine {
         // D23: an *explicit* project is validated below, inside the transaction.
         // The inherited one needs no check — create/use/archive plus the D23
         // open-time repair keep the key aimed at a live project.
-        let explicit_project = opt_str(p, "project")?;
+        // D35: `project: ""` used to read as "no project given" and INHERIT the
+        // default — the caller who named a project got a different one. D18
+        // refused the same string on `task.modify`; `add` never did.
+        let explicit_project = opt_str_nonempty(p, "project")?;
         let project = explicit_project.clone().or_else(|| self.default_project());
-        let priority = match opt_str(p, "priority")? {
+        let priority = match opt_str_nonempty(p, "priority")? {
             Some(s) => Some(
                 Priority::parse(&s)
                     .ok_or_else(|| ApiError::bad_request(format!("invalid priority: {s}")))?,
@@ -339,14 +347,14 @@ impl Engine {
         let due = opt_when(p, "due", now_ts)?;
         let scheduled = opt_when(p, "scheduled", now_ts)?;
         let wait = opt_when(p, "wait", now_ts)?;
-        let estimate = match opt_str(p, "estimate")? {
+        let estimate = match opt_str_nonempty(p, "estimate")? {
             Some(s) => Some(datetime::parse_duration(&s)?),
             None => None,
         };
         let tags = opt_str_array(p, "tags")?;
         // Recurrence rule (optional). Validate + normalize before storing so a
         // bad rule fails the add cleanly and the stored form is canonical.
-        let recurrence = match opt_str(p, "recurrence")? {
+        let recurrence = match opt_str_nonempty(p, "recurrence")? {
             Some(s) => Some(recur::rule_to_string(&recur::parse_rule(&s)?)),
             None => None,
         };
@@ -354,7 +362,7 @@ impl Engine {
         // recurrence, so a bad spec fails the add cleanly and the stored form is
         // canonical. Accepts a `due`-anchored offset (`-1h`) or any NL date; the
         // absolute branch resolves against this add's `now` (see `crate::remind`).
-        let remind = match opt_str(p, "remind")? {
+        let remind = match opt_str_nonempty(p, "remind")? {
             Some(s) => Some(remind::spec_to_string(&remind::parse_remind(
                 &s,
                 Timestamp::now(),
@@ -977,6 +985,12 @@ impl Engine {
     // ---- task.list -----------------------------------------------------------
 
     pub fn task_list(&self, p: &Value) -> Result<Value, ApiError> {
+        // D35's one recorded exception, and it is a decision, not an oversight:
+        // D27 ruled the empty filter matches everything — no filter means no
+        // filtering — so `""` here is a genuine empty value rather than an
+        // absent one. The CLI sends exactly this on every unfiltered read, so a
+        // blanket refusal would break the tool. Same at `report.*` and
+        // `store.export`, which is why all four spell it identically.
         let filter_str = opt_str(p, "filter")?.unwrap_or_default();
         let filter = Filter::parse(&filter_str, Timestamp::now()).map_err(ApiError::bad_request)?;
 
@@ -1395,10 +1409,14 @@ impl Engine {
     // ---- report.summary ------------------------------------------------------
 
     pub fn report_summary(&self, p: &Value) -> Result<Value, ApiError> {
+        // D35: `unwrap_or_else` fires only on a genuinely ABSENT value now, so
+        // `group_by: ""` reaches the vocabulary check below instead of silently
+        // becoming the default axis — the closed-set rule of D34, which
+        // `group_by: "bogus"` already got and `""` did not.
         let group_by = opt_str(p, "group_by")?.unwrap_or_else(|| SUMMARY_GROUP_BY[0].to_string());
         if !SUMMARY_GROUP_BY.contains(&group_by.as_str()) {
             return Err(ApiError::bad_request(format!(
-                "group_by must be {} (got {group_by})",
+                "group_by must be {} (got {group_by:?})",
                 SUMMARY_GROUP_BY.join("|")
             )));
         }
@@ -1659,14 +1677,17 @@ impl Engine {
                         i64::MAX - 1
                     ))
                 })?;
-            let title = import_field(id, "title", opt_str(tv, "title"))?.unwrap_or_default();
+            // D35 + D16: `task.add` refuses an empty title through `req_str`, so
+            // import does too. `title: ""` used to store a titleless task that
+            // `add` cannot create and every listing renders as a blank row.
+            let title = import_field(id, "title", req_str(tv, "title"))?;
             // Validated, not carried verbatim: an unrecognized status used to be
             // written to the row as-is and then laundered back to `pending` by
             // `map_task_row`, so a `done` task with a mis-cased status resurfaced
             // as open work while still carrying `completed`. Reject like D12 does
             // for a bad reference, and store the canonical spelling so the reader
             // never has to guess.
-            let raw_status = import_field(id, "status", opt_str(tv, "status"))?
+            let raw_status = import_field(id, "status", opt_str_nonempty(tv, "status"))?
                 .unwrap_or_else(|| "pending".to_string());
             let raw_status = raw_status.as_str();
             let status = Status::parse(raw_status)
@@ -1677,7 +1698,7 @@ impl Engine {
                     ))
                 })?
                 .as_str();
-            let priority = match import_field(id, "priority", opt_str(tv, "priority"))? {
+            let priority = match import_field(id, "priority", opt_str_nonempty(tv, "priority"))? {
                 Some(raw) => Some(Priority::parse(&raw).map(Priority::as_str).ok_or_else(|| {
                     ApiError::bad_request(format!(
                         "store.import: task {id} has priority {raw:?} — expected one of {}",
@@ -1686,7 +1707,9 @@ impl Engine {
                 })?),
                 None => None,
             };
-            let project = import_field(id, "project", opt_str(tv, "project"))?;
+            // D35: D18's rule on the import path — `project: ""` used to become
+            // NULL, the ghost-bucket state D18 exists to prevent.
+            let project = import_field(id, "project", opt_str_nonempty(tv, "project"))?;
             // The same gate the CLI, the JSON API and MCP pass, called on the
             // import payload itself rather than restated here: these four fields
             // used to be read raw into the INSERT, so `due whenever` entered a
@@ -1698,7 +1721,7 @@ impl Engine {
             let due = import_field(id, "due", opt_when(tv, "due", now_ts))?;
             let scheduled = import_field(id, "scheduled", opt_when(tv, "scheduled", now_ts))?;
             let wait = import_field(id, "wait", opt_when(tv, "wait", now_ts))?;
-            let estimate = match opt_str(tv, "estimate")? {
+            let estimate = match opt_str_nonempty(tv, "estimate")? {
                 Some(s) => Some(import_field(id, "estimate", datetime::parse_duration(&s))?),
                 None => None,
             };
@@ -1712,7 +1735,7 @@ impl Engine {
             // code comment, never a decision: normalization runs the same
             // functions that WROTE the stored form, so it is idempotent on
             // anything an export produced (D12 stays byte-identical).
-            let recurrence = match opt_str(tv, "recurrence")? {
+            let recurrence = match opt_str_nonempty(tv, "recurrence")? {
                 Some(s) => Some(import_field(id, "recurrence", recur::parse_rule(&s))
                     .map(|r| recur::rule_to_string(&r))?),
                 None => None,
@@ -1720,7 +1743,7 @@ impl Engine {
             // `parse_remind` validates the SHAPE without collapsing it: an
             // offset stays the symbolic `-1h` that re-anchors when `due` moves,
             // and only the absolute branch resolves — exactly as on `add`.
-            let remind = match opt_str(tv, "remind")? {
+            let remind = match opt_str_nonempty(tv, "remind")? {
                 Some(s) => Some(import_field(id, "remind", remind::parse_remind(&s, now_ts))
                     .map(|r| remind::spec_to_string(&r))?),
                 None => None,
@@ -1784,11 +1807,10 @@ impl Engine {
                         a,
                         IMPORT_ANNOTATION_KEYS,
                     )?;
-                    let aid = import_field(id, "annotations[].id", opt_str(a, "id"))?
+                    let aid = import_field(id, "annotations[].id", opt_str_nonempty(a, "id"))?
                         .unwrap_or_else(|| Uuid::now_v7().to_string());
-                    let body = import_field(id, "annotations[].body", opt_str(a, "body"))?
-                        .unwrap_or_default();
-                    let acreated = import_field(id, "annotations[].created", opt_str(a, "created"))?
+                    let body = import_field(id, "annotations[].body", req_str(a, "body"))?;
+                    let acreated = import_field(id, "annotations[].created", opt_str_nonempty(a, "created"))?
                         .unwrap_or_else(now);
                     tx.execute(
                         "INSERT OR REPLACE INTO annotations (id, task_id, body, created) VALUES (?1,?2,?3,?4)",
@@ -2183,7 +2205,11 @@ fn import_keys(ctx: &str, label: &str, v: &Value, accepted: &[&str]) -> Result<(
 /// short-circuits on it; `the_date_gate_leaves_an_export_import_round_trip_byte_identical`
 /// is what holds that true.
 fn opt_when(p: &Value, field: &str, now: Timestamp) -> Result<Option<String>, ApiError> {
-    match opt_str(p, field)? {
+    // D35, and D13 on the engine surface: `due: ""` used to read as "no due date
+    // given", so a shell variable that expanded to nothing wrote null over a
+    // field it meant to set. `opt_str_nonempty` rather than letting
+    // `parse_when` say "empty date expression", so the message names the field.
+    match opt_str_nonempty(p, field)? {
         Some(s) => Ok(Some(datetime::parse_when(&s, now)?)),
         None => Ok(None),
     }
