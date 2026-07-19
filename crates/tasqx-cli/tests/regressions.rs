@@ -245,3 +245,37 @@ fn the_pointer_stays_out_of_json_output() {
     assert_eq!(v["value"], "gruvbox");
     assert!(!s.contains("theme show"), "the hint is human-only: {s}");
 }
+
+/// `tasqx --version` printed `0.1.0` from a binary six bug-fixes behind HEAD.
+///
+/// Found by using the tool: an installed `~/.cargo/bin/tasqx` was two commits
+/// stale, and `--version` reported the same string as a build from HEAD because
+/// nothing bumps `CARGO_PKG_VERSION` between releases. Only the file's mtime
+/// gave it away. `build.rs` now stamps the commit in, so the question is
+/// answerable from the binary alone.
+///
+/// The assertion compares against the real repository rather than against
+/// another constant in this crate — a version string checked against a version
+/// string would prove only that two copies agree. The `-dirty` suffix is
+/// deliberately NOT asserted: cargo re-runs `build.rs` when `.git` moves, not
+/// when an unstaged edit appears, so the suffix can legitimately lag. The
+/// commit id cannot, and it is the half that answers the staleness question.
+#[test]
+fn version_names_the_commit_it_was_built_from() {
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx")).arg("--version").output().expect("run --version");
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+
+    assert!(s.contains(env!("CARGO_PKG_VERSION")), "the crate version must survive: {s}");
+    assert!(s.trim() != format!("tasqx {}", env!("CARGO_PKG_VERSION")), "a bare crate version is the bug: {s}");
+
+    match Command::new("git").args(["rev-parse", "--short=12", "HEAD"]).output() {
+        Ok(g) if g.status.success() => {
+            let sha = String::from_utf8_lossy(&g.stdout).trim().to_string();
+            assert!(s.contains(&sha), "must name the actual HEAD commit {sha}: {s}");
+        }
+        // No git, no checkout: `unknown` is the honest answer and the build
+        // must still have produced a binary rather than failing outright.
+        _ => assert!(s.contains("unknown"), "without git the id must be `unknown`: {s}"),
+    }
+}

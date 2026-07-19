@@ -2389,6 +2389,11 @@ mod tests {
             "TASQX_CONFIG_DIR",
             "TASQX_MCP_TOKEN",
             "TASQX_FORCE_COLOR",
+            // Different in kind from the rest of this list: set by `build.rs`
+            // and read by `env!` at compile time, so it is baked into the
+            // binary and cannot be set by a user at all. A config layer for it
+            // is not "out of scope" but meaningless.
+            "TASQX_BUILD_ID",
         ];
         let sources = [
             include_str!("lib.rs"),

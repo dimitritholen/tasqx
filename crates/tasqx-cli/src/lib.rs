@@ -52,10 +52,19 @@ fn now_ts() -> jiff::Timestamp {
 const CLEARABLE: [&str; 8] =
     ["project", "priority", "due", "scheduled", "wait", "remind", "recurrence", "estimate"];
 
+/// What `--version` prints: the crate version plus the commit it was built from.
+///
+/// The commit is the load-bearing half. `CARGO_PKG_VERSION` is identical across
+/// every build between releases, so it cannot distinguish a freshly installed
+/// binary from a stale one; `TASQX_BUILD_ID` (see `build.rs`) can. `concat!`
+/// rather than `format!` because clap wants a `&'static str` and this is fully
+/// known at compile time.
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("TASQX_BUILD_ID"), ")");
+
 #[derive(Parser)]
 #[command(
     name = "tasqx",
-    version,
+    version = VERSION,
     about = "A fast, terminal-first, AI-native task manager.",
     after_help = "Run `tasqx manual` for the full in-terminal guide, or `tasqx <command> -h` for examples.",
     disable_help_subcommand = true
