@@ -802,20 +802,11 @@ fn page_filters() -> String {
     ));
 
     s.push_str(&h3("The grammar"));
-    s.push_str(&pre_plain(
-        "filter     := or_expr\n\
-         or_expr    := and_expr ( \"or\" and_expr )*\n\
-         and_expr   := term ( \"and\"? term )*        # juxtaposition = implicit AND\n\
-         term       := \"(\" or_expr \")\" | predicate\n\
-         predicate  := \"+\" WORD                     # require tag\n\
-         \x20            | \"-\" WORD                     # exclude tag\n\
-         \x20            | \"@working\"                   # pending|active AND not blocked\n\
-         \x20            | \"@blocked\"                   # has an unfinished dependency\n\
-         \x20            | \"project:\" VALUE\n\
-         \x20            | \"status:\" VALUE\n\
-         \x20            | \"due.before:\" RFC3339\n\
-         \x20            | \"due.after:\"  RFC3339",
-    ));
+    // Rendered from the parser's own const, never transcribed. The transcription
+    // that used to live here drifted: it still said a tag took a bare `WORD`
+    // after quoted tags shipped, while the paragraph directly below it — this
+    // same page — advertised `+"needs paint"`.
+    s.push_str(&pre_plain(tasqx_core::filter::GRAMMAR));
 
     s.push_str(&h3("Predicates"));
     s.push_str(&table(
@@ -831,6 +822,26 @@ fn page_filters() -> String {
             &["<code>due.after:&lt;RFC3339&gt;</code>", "Due strictly after that instant."],
         ],
     ));
+
+    s.push_str(&h3("Values with spaces"));
+    s.push_str(&p(
+        "A space separates predicates, so a project or tag whose name contains one must be \
+         double-quoted — <code>project:\"Home Renovation\"</code>, <code>+\"needs paint\"</code>. \
+         The rule is the shell's: inside quotes, spaces and parentheses are ordinary characters \
+         and <code>and</code>/<code>or</code> are ordinary words, so a project named \
+         <code>a (b)</code> no longer breaks the grouping. Write <code>\\\"</code> for a literal \
+         quote and <code>\\\\</code> for a literal backslash. Quoting changes where a predicate \
+         <em>ends</em>, not what it means: <code>\"project:x\"</code> is still a project match.          Your shell's own quotes are enough — tasqx reads each argument the shell hands it as one          value, so there is nothing to escape twice.",
+    ));
+    s.push_str(&p(
+        "This is one rule for the whole tool, not a filter dialect: <code>tasqx add</code> and \
+         <code>tasqx modify</code> split their inline sugar with the same scanner, so a name you \
+         can create you can also filter for, spelled the same way. The one value that needs the \
+         escaped form on both sides is a name containing a quote — \
+         <code>project:\"My \\\"Big\\\" Project\"</code> — because an argument carrying a literal \
+         quote is read by the scanner rather than taken whole.",
+    ));
+    s.push_str(&snippet("tasqx list project:\"Home Renovation\" +\"needs paint\"", ""));
 
     s.push_str(&h3("Combining"));
     s.push_str(&p(
@@ -2441,6 +2452,22 @@ mod tests {
         for f in DOCUMENTED_CLEAR_FIELDS {
             assert!(doc.contains(f), "clearable field `{f}` is not on the page");
         }
+    }
+
+    /// The Filters page must show the parser's grammar, not a copy of it.
+    ///
+    /// It used to show a copy, and the copy rotted exactly as copies do: it still
+    /// claimed a tag took a bare word after quoted tags shipped, and it named a
+    /// `WORD` symbol it never defined. Rendering the const removes the second
+    /// copy; this asserts nobody quietly reintroduces one.
+    #[test]
+    fn the_filter_grammar_on_the_page_is_the_parsers_own() {
+        let doc = generate();
+        let rendered = crate::html::esc(tasqx_core::filter::GRAMMAR);
+        assert!(
+            doc.contains(&rendered),
+            "the Filters page is not rendering `tasqx_core::filter::GRAMMAR` verbatim"
+        );
     }
 
     // ---- self-containment ---------------------------------------------------

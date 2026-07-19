@@ -1,26 +1,33 @@
 //! Filter DSL (DESIGN.md §5, §12-D8).
 //!
-//! Grammar (recursive-descent; case-insensitive keywords `and`/`or`):
-//!
-//! ```text
-//!   filter     := or_expr
-//!   or_expr    := and_expr ( "or" and_expr )*
-//!   and_expr   := term ( "and"? term )*        # juxtaposition = implicit AND
-//!   term       := "(" or_expr ")" | predicate
-//!   predicate  := "+" WORD                      # require tag
-//!               | "-" WORD                      # exclude tag
-//!               | "@working"                    # status in {pending,active} AND not blocked
-//!               | "@blocked" | "+blocked" | "status:blocked"   # the blocked flag
-//!               | "project:" VALUE
-//!               | "status:" VALUE
-//!               | "due.before:" RFC3339
-//!               | "due.after:"  RFC3339
-//! ```
+//! Recursive-descent; case-insensitive keywords `and`/`or`. The grammar itself
+//! is [`GRAMMAR`], immediately below — a `const`, not a comment, because the
+//! `tasqx docs` guide had its own transcription of it and the two drifted: both
+//! still said a tag took a bare word long after the parser took a quoted value,
+//! and both used a `WORD` symbol neither defined. One copy cannot disagree with
+//! itself, so the page now renders this string verbatim.
 //!
 //! Boolean `or` and parentheses grouping let you write
 //! `(+api or +infra) and due.before:2026-07-17T00:00:00Z`. Implicit AND by
 //! space is preserved. Per §12-D8 the grammar deliberately stops here: no
 //! arithmetic, computed expressions, or subqueries.
+//!
+//! **A value may be double-quoted**, which is the only way to name a project or
+//! tag containing a space: `project:"Home Renovation"`, `+"needs paint"`. The
+//! rule is the shell's, so it is one rule and not a table: inside quotes,
+//! whitespace and `(`/`)` are ordinary characters and `and`/`or` are ordinary
+//! words; `\"` is a literal quote and `\\` a literal backslash. Quotes may cover
+//! part of a token, which keeps the predicate prefix outside them where a reader
+//! expects it. Quoting affects word *splitting* only — `"project:x"` is still
+//! the project predicate, exactly as `"echo"` is still echo in a shell.
+//!
+//! Without this a value with a space was not expressible at all, and — worse —
+//! `project:Home Renovation` had a *meaning*: it silently became `project:Home`
+//! AND a stray token, which before D27 matched everything and after it errored.
+//! The same hole made a project named `a (b)` break the grouping.
+//!
+//! Callers composing a filter from a value they did not write must go through
+//! [`quote`] rather than interpolating; see its docs.
 //!
 //! Evaluation is done in Rust against each candidate row (not compiled to SQL)
 //! so that: (a) `due.before/after` compare as **instants** — RFC3339 strings are
@@ -43,6 +50,37 @@
 
 use crate::types::Status;
 use crate::util::parse_ts;
+
+/// The filter grammar, in one place, rendered verbatim by `tasqx docs`.
+///
+/// `VALUE` is a *sequence* of chunks, not one alternative of the two, because
+/// quoting is lexical — resolved in [`tokenize`] before any production below
+/// sees the text — so a quoted run may cover a whole token or any part of one:
+/// `+"needs paint"`, `project:"Home Renovation"`, `"+api"` and
+/// `project:Home" "Renovation` all work and all mean what they look like. See
+/// the module comment for what quoting does and does not change.
+///
+/// Every value-taking predicate takes a `VALUE`, tags included. There is no
+/// form restricted to bare words, which is what the old `WORD` implied.
+pub const GRAMMAR: &str = "\
+filter     := or_expr
+or_expr    := and_expr ( \"or\" and_expr )*
+and_expr   := term ( \"and\"? term )*        # juxtaposition = implicit AND
+term       := \"(\" or_expr \")\" | predicate
+predicate  := \"+\" VALUE                    # require tag; VALUE not empty
+            | \"-\" VALUE                    # exclude tag; VALUE not empty, not starting with a dash
+            | \"@working\"                   # status in {pending,active} AND not blocked
+            | \"@blocked\" | \"+blocked\" | \"status:blocked\"   # the blocked flag
+            | \"project:\" VALUE
+            | \"status:\" VALUE
+            | \"due.before:\" RFC3339
+            | \"due.after:\"  RFC3339
+
+VALUE      := CHUNK*                       # chunks abut; nothing may come between them
+CHUNK      := WORD | QUOTED
+WORD       := a run of characters, none of them whitespace, a quote or a paren
+QUOTED     := a run between double quotes; backslash escapes a quote or a backslash
+RFC3339    := an instant, offset included  # 2026-07-17T00:00:00Z";
 
 /// A single leaf predicate.
 #[derive(Debug, Clone, PartialEq)]
@@ -104,7 +142,7 @@ impl Filter {
     /// token this grammar does not recognise is an error rather than a term
     /// that quietly matches every row (see the module comment).
     pub fn parse(input: &str) -> Result<Filter, String> {
-        let toks = tokenize(input);
+        let toks = tokenize(input)?;
         if toks.is_empty() {
             return Ok(Filter { root: Expr::Pred(Pred::Always) });
         }
@@ -186,49 +224,255 @@ fn instant_cmp(due: Option<&str>, bound: &str, before: bool) -> bool {
     }
 }
 
+/// Render `value` as a filter literal that parses back to exactly `value`.
+///
+/// This is the ONE escaping helper. Every caller that composes a filter from a
+/// value it did not itself write — a project name, a tag — goes through it
+/// rather than interpolating, because interpolation is correct right up until
+/// the day someone names a project `Home Renovation` and the composed filter
+/// starts answering a different question without saying so.
+///
+/// It quotes unconditionally, including values that would not have needed it.
+/// A "does this need quoting?" branch is one more thing to get wrong for no
+/// gain: the composed filter is machine-read, never shown.
+pub fn quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        // Only these two are special inside quotes, so only these two are escaped.
+        if c == '"' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
+/// Value-taking predicate prefixes, i.e. the ones a quoted VALUE can follow.
+///
+/// Kept beside the grammar it mirrors and pinned to it by
+/// `value_prefixes_match_the_grammar`, because a fifth `key:` predicate added
+/// to `GRAMMAR` alone would silently lose shell quoting on that key only.
+/// `+`/`-` are here for the same reason they are in the grammar: a tag is a
+/// VALUE like any other, it just spells its key as punctuation.
+const VALUE_PREFIXES: [&str; 6] =
+    ["project:", "status:", "due.before:", "due.after:", "+", "-"];
+
+/// Compose one filter string from argv, honouring the boundaries the shell drew.
+///
+/// The read side used to `join(" ")` and let [`tokenize`] re-split. That throws
+/// away the one thing argv knows and a flat string cannot: which spaces the
+/// user quoted. `tasqx list +"needs paint"` reaches us as the single element
+/// `+needs paint` — the shell already ate the quotes — and re-splitting it
+/// asked for the tag `needs` plus a stray token `paint`, which the parser
+/// rightly refused. So the tag `add` could create (C2 taught the write side
+/// this same lesson) was one no `list` could name.
+///
+/// The repair is to put back exactly the quoting the shell removed, per
+/// element, before joining: an element that carries whitespace *and* leads with
+/// a value-taking prefix gets its value re-quoted through [`quote`]. Everything
+/// else passes through untouched, which is what keeps ordinary multi-element
+/// filters multi-token: `list +api status:done` has no whitespace inside any
+/// element, so nothing is quoted and both predicates parse as before. Quoting
+/// every element unconditionally would have been simpler and wrong — it would
+/// turn `(`, `or` and `+api` into literal text and break the grammar outright.
+///
+/// An element that still carries a literal `"` is left for [`tokenize`], which
+/// already understands quotes; re-quoting it would double them. That is the
+/// same split the write side draws in `cli/sugar.rs::tokenize_argv`, and it is
+/// why both spellings converge on one filter.
+///
+/// The trade this accepts, the read-side twin of the one `parse_add` accepts:
+/// an argv element that opens with a value prefix and then continues into an
+/// EXPRESSION — `list "+api or +web"` — is now read as one tag named
+/// `api or +web` instead. It is genuinely ambiguous at argv level, one of the
+/// two readings has to lose, and this one loses cheaply: the same query typed
+/// without the outer quotes (`list +api or +web`, three elements) means the
+/// expression and always did. The spaced *value* has no such alternative
+/// spelling, which is the whole reason quoting was added to the grammar.
+/// An expression that needs parens is unaffected — `"(+api or +web)"` opens
+/// with `(`, not a prefix.
+pub fn from_argv(args: &[String]) -> String {
+    args.iter().map(|a| requote(a)).collect::<Vec<_>>().join(" ")
+}
+
+fn requote(arg: &str) -> String {
+    if arg.contains('"') || !arg.contains(char::is_whitespace) {
+        return arg.to_string();
+    }
+    for p in VALUE_PREFIXES {
+        let Some(value) = arg.strip_prefix(p) else { continue };
+        // The prefix must be followed by content, not by the space itself: a
+        // bare `+ foo` names no tag, and quoting it whole would mint `" foo"`.
+        if value.is_empty() || value.starts_with(char::is_whitespace) {
+            continue;
+        }
+        return format!("{p}{}", quote(value));
+    }
+    // No prefix matched, so the whitespace is not inside a value we can name —
+    // a whole expression passed as one argument (`"(+api or +web)"`), or a bare
+    // word. Passing it through unchanged keeps those forms working.
+    arg.to_string()
+}
+
 // ---- tokenizer --------------------------------------------------------------
 
+/// One token, plus whether any part of it arrived quoted.
+///
+/// The flag is not decoration: a quoted token must never be read as the keyword
+/// `and`/`or` or as a `(`/`)`, otherwise a project named `and` would still be
+/// unfilterable after all this. Quoting suppresses metacharacter meaning, which
+/// is the whole point of quoting.
+struct Tok {
+    text: String,
+    quoted: bool,
+}
+
 /// Split into tokens, breaking out parentheses as their own tokens even when
-/// glued to a word (`(+api` => `(`, `+api`).
-fn tokenize(input: &str) -> Vec<String> {
+/// glued to a word (`(+api` => `(`, `+api`), and honouring double quotes.
+///
+/// Inside `"..."`, whitespace and parentheses are ordinary characters, `\"` is a
+/// literal quote and `\\` a literal backslash. Quotes may cover part of a token
+/// (`project:"Home Renovation"`), which is what keeps the predicate prefixes
+/// (`project:`, `+`, `-`) outside the quoted run where a reader expects them.
+///
+/// Fallible now: an unterminated quote is refused rather than closed at end of
+/// input, for the same reason an unclosed `(` is — silently guessing evaluates
+/// a filter the user did not write.
+fn tokenize(input: &str) -> Result<Vec<Tok>, String> {
+    scan(input, Parens::Break, "filter")
+}
+
+/// Does a bare `(`/`)` end the current token?
+///
+/// Only the read side has grouping. On the write side a paren is ordinary text
+/// in a title (`add "call (mom)"`), so breaking there would be a new bug in
+/// service of sharing code. This is the ONLY axis on which the two sides differ,
+/// and it is lexical bookkeeping, not quoting — the quoting rule below is shared
+/// character for character, which is the whole point of [`split_words`].
+#[derive(PartialEq)]
+enum Parens {
+    Break,
+    Ordinary,
+}
+
+/// A word produced by [`split_words`], plus whether any part of it arrived quoted.
+///
+/// The flag travels with the word because callers need to distinguish a value
+/// the user *delimited* from one that merely happens to be one word: the read
+/// side uses it to stop a quoted `and` being read as the keyword, the write side
+/// to know whether a project name it failed to resolve could have been cut at a
+/// space it never saw.
+pub struct Word {
+    pub text: String,
+    pub quoted: bool,
+}
+
+/// Split `input` into words under the ONE quoting rule of [`GRAMMAR`]'s
+/// `QUOTED`, with `(`/`)` treated as ordinary characters.
+///
+/// This exists so the write side (`cli/sugar.rs`) can obey the rule the read
+/// side documents instead of carrying a second, subtly different tokenizer.
+/// It did carry one, and the two disagreed about the same syntax: a `"` was a
+/// pure delimiter there with no escape at all, so `add '+say"hi'` stored the tag
+/// `sayhi` — a value the user never typed — and `project:"My \"Big\" Project"`
+/// stored the mangled `My \Big\ Project`. A value containing a quote was
+/// therefore unrepresentable on the write side, which made the escape this
+/// grammar documents unmatchable for tags: `filter::quote` could emit it and no
+/// write path could produce a value needing it.
+///
+/// `context` names the surface in the error text, because "unterminated quote in
+/// filter" is a lie when the line being refused was a `tasqx add`.
+pub fn split_words(input: &str, context: &str) -> Result<Vec<Word>, String> {
+    scan(input, Parens::Ordinary, context)
+        .map(|ts| ts.into_iter().map(|t| Word { text: t.text, quoted: t.quoted }).collect())
+}
+
+fn scan(input: &str, parens: Parens, context: &str) -> Result<Vec<Tok>, String> {
+    let unterminated = || {
+        format!(
+            "unterminated '\"' in {context} (a quoted value must be closed; \
+             write \\\" for a literal quote)"
+        )
+    };
     let mut toks = Vec::new();
     let mut cur = String::new();
-    for c in input.chars() {
+    // Tracked apart from `cur.is_empty()` so that `""` is an empty token — which
+    // `predicate` then rejects by name — rather than no token at all.
+    let mut started = false;
+    let mut quoted = false;
+    let mut chars = input.chars();
+    while let Some(c) = chars.next() {
         match c {
-            '(' | ')' => {
-                if !cur.is_empty() {
-                    toks.push(std::mem::take(&mut cur));
+            '"' => {
+                started = true;
+                quoted = true;
+                loop {
+                    match chars.next() {
+                        None => return Err(unterminated()),
+                        Some('"') => break,
+                        Some('\\') => match chars.next() {
+                            Some(e @ ('"' | '\\')) => cur.push(e),
+                            None => return Err(unterminated()),
+                            Some(other) => {
+                                return Err(format!(
+                                    "unknown escape \"\\{other}\" in {context} (inside quotes only \
+                                     \\\" and \\\\ are escapes)"
+                                ));
+                            }
+                        },
+                        Some(x) => cur.push(x),
+                    }
                 }
-                toks.push(c.to_string());
+            }
+            '(' | ')' if parens == Parens::Break => {
+                if started {
+                    toks.push(Tok { text: std::mem::take(&mut cur), quoted });
+                    started = false;
+                    quoted = false;
+                }
+                toks.push(Tok { text: c.to_string(), quoted: false });
             }
             c if c.is_whitespace() => {
-                if !cur.is_empty() {
-                    toks.push(std::mem::take(&mut cur));
+                if started {
+                    toks.push(Tok { text: std::mem::take(&mut cur), quoted });
+                    started = false;
+                    quoted = false;
                 }
             }
-            _ => cur.push(c),
+            _ => {
+                started = true;
+                cur.push(c);
+            }
         }
     }
-    if !cur.is_empty() {
-        toks.push(cur);
+    if started {
+        toks.push(Tok { text: cur, quoted });
     }
-    toks
+    Ok(toks)
 }
 
 // ---- parser -----------------------------------------------------------------
 
 struct Parser {
-    toks: Vec<String>,
+    toks: Vec<Tok>,
     pos: usize,
 }
 
 impl Parser {
     fn peek(&self) -> Option<&str> {
-        self.toks.get(self.pos).map(String::as_str)
+        self.toks.get(self.pos).map(|t| t.text.as_str())
     }
 
     fn is_kw(&self, kw: &str) -> bool {
-        self.peek().map(|t| t.eq_ignore_ascii_case(kw)).unwrap_or(false)
+        self.toks.get(self.pos).is_some_and(|t| !t.quoted && t.text.eq_ignore_ascii_case(kw))
+    }
+
+    /// An *unquoted* token equal to `s` — i.e. `s` used as punctuation. A quoted
+    /// `")"` is a value that happens to look like punctuation and must stay one.
+    fn is_sym(&self, s: &str) -> bool {
+        self.toks.get(self.pos).is_some_and(|t| !t.quoted && t.text == s)
     }
 
     fn parse_or(&mut self) -> Result<Expr, String> {
@@ -247,16 +491,14 @@ impl Parser {
     fn parse_and(&mut self) -> Result<Expr, String> {
         let mut parts = Vec::new();
         loop {
-            match self.peek() {
-                None => break,
-                Some(")") => break,
-                Some(t) if t.eq_ignore_ascii_case("or") => break,
-                Some(t) if t.eq_ignore_ascii_case("and") => {
-                    self.pos += 1; // explicit AND separator, skip
-                    continue;
-                }
-                _ => parts.push(self.parse_term()?),
+            if self.peek().is_none() || self.is_sym(")") || self.is_kw("or") {
+                break;
             }
+            if self.is_kw("and") {
+                self.pos += 1; // explicit AND separator, skip
+                continue;
+            }
+            parts.push(self.parse_term()?);
         }
         if parts.is_empty() {
             // Reached from a dangling operator or an empty group — `+api or`,
@@ -275,10 +517,10 @@ impl Parser {
     }
 
     fn parse_term(&mut self) -> Result<Expr, String> {
-        if self.peek() == Some("(") {
+        if self.is_sym("(") {
             self.pos += 1; // consume '('
             let inner = self.parse_or()?;
-            if self.peek() != Some(")") {
+            if !self.is_sym(")") {
                 // Previously the missing `)` was skipped in silence, which let
                 // `(+api or +infra` parse as though the group were closed.
                 return Err("unclosed '(' in filter".to_string());
@@ -286,7 +528,7 @@ impl Parser {
             self.pos += 1; // consume ')'
             return Ok(inner);
         }
-        let tok = self.toks[self.pos].clone();
+        let tok = self.toks[self.pos].text.clone();
         self.pos += 1;
         Ok(Expr::Pred(predicate(&tok)?))
     }
@@ -310,6 +552,29 @@ fn predicate(tok: &str) -> Result<Pred, String> {
         }
     }
     if let Some(rest) = tok.strip_prefix('-') {
+        // A tag name may not itself begin with `-`, so `--anything` is not an
+        // exclusion — it is a mistyped flag. This rule is load-bearing, not
+        // tidiness. It is what lets the CLI tell a filter token apart from a
+        // flag one token at a time (`cli/argv.rs` hides the single dash of
+        // `-tag` from clap and leaves every `--x` for clap to judge), and it is
+        // the only check at all on the API and MCP paths, where a filter string
+        // arrives with no clap in front of it. Parsed as an exclusion,
+        // `--jsn` meant "exclude the tag `-jsn`", excluded nothing, and
+        // returned EVERY task with exit 0 — a typo silently widening the result
+        // set, the exact failure this module refuses unknown tokens to prevent.
+        //
+        // The message says "flag", not "token", because that is what a user who
+        // hits this actually typed. Note it offers no quoted escape hatch: the
+        // tokenizer resolves quotes before this point, so `-"-x"` arrives here
+        // as `--x` and a tag whose name begins with `-` is genuinely not
+        // excludable. Claiming otherwise would be worse than saying nothing.
+        if rest.starts_with('-') {
+            return Err(format!(
+                "unknown flag {tok:?} (a tag exclusion takes one dash, as -tag; \
+                 filter tokens are +tag, -tag, @working, @blocked, project:, status:, \
+                 due.before: or due.after:)"
+            ));
+        }
         if !rest.is_empty() {
             return Ok(Pred::TagExclude(rest.to_string()));
         }
@@ -341,6 +606,11 @@ mod tests {
     /// Every filter below is a hand-written literal, so a parse failure here
     /// means the test itself is wrong — worth panicking on rather than
     /// threading a Result through assertions about matching.
+    /// The grammar block, as the docs show it — the same string, by construction.
+    fn grammar() -> &'static str {
+        GRAMMAR
+    }
+
     fn parsed(s: &str) -> Filter {
         Filter::parse(s).unwrap_or_else(|e| panic!("test filter {s:?} must parse: {e}"))
     }
@@ -546,6 +816,338 @@ mod tests {
             assert!(
                 !parsed(input).constrains_status(),
                 "{input:?} must not suppress the exclude-cancelled default"
+            );
+        }
+    }
+
+    /// A project or tag whose name contains a space was simply not expressible.
+    /// `project:Home Renovation` tokenized to `project:Home` + a stray
+    /// `Renovation`, and no quoting form worked because there was no quoting at
+    /// all — so every filter naming such a project was silently wrong before
+    /// D27 (the stray was the always-true term) and a hard error after it.
+    ///
+    /// The values here are deliberately hostile: a space needs the quoting, a
+    /// `VALUE_PREFIXES` is a hand-maintained list, so a fifth `key:` predicate
+    /// added to the grammar alone would lose shell quoting on that key with no
+    /// other symptom than a confusing "unknown filter token".
+    #[test]
+    fn value_prefixes_match_the_grammar() {
+        let mut seen = 0;
+        for line in GRAMMAR.lines() {
+            // `key:" VALUE` and `key:"  RFC3339` alike: both take an argument
+            // after the colon, so both can carry a space the shell ate.
+            let Some((lhs, rhs)) = line.split_once(":\"") else { continue };
+            if !rhs.trim_start().starts_with("VALUE") && !rhs.trim_start().starts_with("RFC3339") {
+                continue;
+            }
+            let key = format!("{}:", lhs.rsplit('"').next().unwrap_or_default());
+            seen += 1;
+            assert!(
+                VALUE_PREFIXES.contains(&key.as_str()),
+                "`{key}` takes an argument in GRAMMAR but is not in VALUE_PREFIXES, so a                  shell-quoted value would be re-split at its spaces"
+            );
+        }
+        // Without this the guard passes by matching nothing if GRAMMAR is
+        // reformatted — the failure mode every text-scanning guard has.
+        assert_eq!(seen, 4, "expected four `key:`-shaped predicates in GRAMMAR");
+    }
+
+    /// Documents the rule. The guard that matters is the e2e one in
+    /// `cli/tests/regressions.rs`: this test builds the argv split itself and
+    /// so would agree with a wrong split.
+    #[test]
+    fn from_argv_requotes_only_what_the_shell_unquoted() {
+        let go = |args: &[&str]| from_argv(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        // The shell ate the quotes; we put them back so the value stays whole.
+        assert_eq!(go(&["+needs paint"]), r#"+"needs paint""#);
+        assert_eq!(go(&["project:Home Renovation"]), r#"project:"Home Renovation""#);
+        // No whitespace => nothing to protect; several elements stay several tokens.
+        assert_eq!(go(&["+api", "status:done"]), "+api status:done");
+        // Literal quotes are the tokenizer's job; re-quoting would double them.
+        assert_eq!(go(&[r#"+"needs paint""#]), r#"+"needs paint""#);
+        // A parenthesised expression as one argument opens with `(`, not a
+        // prefix, and is left alone.
+        assert_eq!(go(&["(+api or +web)"]), "(+api or +web)");
+        // But one that opens with a prefix is read as a value — the documented
+        // trade. Typed as separate elements it still means the expression.
+        assert_eq!(go(&["+api or +web"]), r#"+"api or +web""#);
+        assert_eq!(go(&["+api", "or", "+web"]), "+api or +web");
+        // A prefix must be followed by content, not by the space itself.
+        assert_eq!(go(&["+ foo"]), "+ foo");
+    }
+
+    /// Both spellings must reach the same filter — the read-side half of the
+    /// convergence C2 established on the write side. Asserted on the composed
+    /// string *and* on what it selects, so a future `from_argv` that made them
+    /// spell it differently would still have to make them mean the same thing.
+    #[test]
+    fn the_two_shell_spellings_of_a_spaced_value_agree() {
+        for (shell, literal) in [
+            ("+needs paint", r#"+"needs paint""#),
+            ("project:Home Renovation", r#"project:"Home Renovation""#),
+        ] {
+            let a = from_argv(&[shell.to_string()]);
+            let b = from_argv(&[literal.to_string()]);
+            assert_eq!(a, b, "{shell:?} and {literal:?} must compose one filter");
+            let tags = ["needs paint".to_string()];
+            let ctx = MatchCtx {
+                status: Status::Pending,
+                project: Some("Home Renovation"),
+                tags: &tags,
+                due: None,
+                blocked: false,
+            };
+            assert!(Filter::parse(&a).expect("parses").matches(&ctx), "{shell:?} must select");
+        }
+    }
+
+    /// `(` proves quoting also suppresses grouping, and a `"` proves the escape
+    /// exists. Asserted through `matches` rather than on the token list, so this
+    /// guards what a user gets back and not how the tokenizer spells it.
+    #[test]
+    fn a_quoted_value_carries_spaces_parens_and_quotes_through_to_matching() {
+        for name in ["Home Renovation", "a (b)", "say \"hi\"", "back\\slash", "  padded  "] {
+            let f = parsed(&format!("project:{}", quote(name)));
+            let ctx = MatchCtx {
+                status: Status::Pending,
+                project: Some(name),
+                tags: &[],
+                due: None,
+                blocked: false,
+            };
+            assert!(f.matches(&ctx), "project:{name:?} must match its own project");
+            // Load-bearing: without it, a filter that lost everything after the
+            // first space would still "pass" against a project named `Home`.
+            let other = MatchCtx { project: Some("Home"), ..ctx };
+            assert!(!f.matches(&other), "project:{name:?} must not match a mere prefix");
+        }
+    }
+
+    /// The same round trip for a tag, which reaches `predicate` down the `+`/`-`
+    /// arm instead of the `project:` one — a quoting fix applied only where the
+    /// bug was reported would pass the test above and leave this broken.
+    #[test]
+    fn a_quoted_tag_value_round_trips_through_include_and_exclude() {
+        let name = "needs paint";
+        let tags: Vec<String> = vec![name.to_string()];
+        let none: Vec<String> = vec![];
+        assert!(parsed(&format!("+{}", quote(name))).matches(&ctx_tagged(&tags)));
+        assert!(!parsed(&format!("+{}", quote(name))).matches(&ctx_tagged(&none)));
+        assert!(!parsed(&format!("-{}", quote(name))).matches(&ctx_tagged(&tags)));
+        assert!(parsed(&format!("-{}", quote(name))).matches(&ctx_tagged(&none)));
+    }
+
+    /// Quoting suppresses the *word-splitting* metacharacters — whitespace and
+    /// parentheses — exactly as a shell does, which is the rule that makes it
+    /// teachable. A project named `a (b)` otherwise breaks grouping, which is
+    /// the space bug wearing a different hat: the `(` opens a group nobody
+    /// opened and the parse either fails or silently reassociates.
+    #[test]
+    fn quoting_suppresses_grouping_and_keyword_meaning() {
+        let ctx = MatchCtx {
+            status: Status::Done,
+            project: Some("a (b) or c"),
+            tags: &[],
+            due: None,
+            blocked: false,
+        };
+        // The whole value is one predicate: if `(`, `)` or `or` kept their
+        // meaning this is a different — and matching — filter tree.
+        let f = parsed(&format!("project:{} and status:done", quote("a (b) or c")));
+        assert!(f.matches(&ctx));
+        // And the unquoted spelling must NOT quietly do something plausible.
+        assert!(Filter::parse("project:a (b) or c and status:done").is_err());
+    }
+
+    /// An unterminated quote is an error, not a quote silently closed at end of
+    /// input. Same reasoning as the unclosed `(` above it: guessing what the
+    /// user meant evaluates a filter they did not write.
+    #[test]
+    fn an_unterminated_quote_is_refused() {
+        for bad in ["project:\"Home", "project:\"", "+\"a b", "project:\"a\\"] {
+            let err = Filter::parse(bad).unwrap_err();
+            assert!(
+                err.contains("unterminated"),
+                "{bad:?} must be refused as unterminated, got {err:?}"
+            );
+        }
+    }
+
+    /// `quote` is the one escaping helper every composition site uses, so its
+    /// round trip is the property the whole fix rests on. Asserted over values
+    /// chosen to hit each escape rule, and by *parsing back*, not by comparing
+    /// against a second hand-written escaping — that would only prove `quote`
+    /// agrees with itself.
+    #[test]
+    fn quote_round_trips_every_value_through_the_parser() {
+        for v in [
+            "plain", "two words", "a (b)", "quote\"inside", "back\\slash", "\\", "\"", "",
+            "and", "or", "(", ")", "+tag", "project:x", "tab\there",
+        ] {
+            let f = Filter::parse(&format!("project:{}", quote(v)))
+                .unwrap_or_else(|e| panic!("quote({v:?}) must parse back: {e}"));
+            let ctx = MatchCtx {
+                status: Status::Pending,
+                project: Some(v),
+                tags: &[],
+                due: None,
+                blocked: false,
+            };
+            assert!(f.matches(&ctx), "quote({v:?}) did not round trip");
+        }
+    }
+
+    /// C8: the WRITE side must close the same round trip over the same values.
+    ///
+    /// `quote` composes a literal that the read side parses back; this asserts
+    /// the write side's scanner reads that identical literal back to the same
+    /// value, as ONE word — so anything `quote` can emit, `tasqx add` can type.
+    /// Before the two sides shared a scanner, `quote("quote\"inside")` was
+    /// unreadable by sugar (it stored `quoteinside`), which made the escape this
+    /// grammar documents unmatchable for tags.
+    ///
+    /// The same list as the read-side round trip above, deliberately: one value
+    /// added there and not here is exactly how the two would drift apart again.
+    #[test]
+    fn split_words_reads_back_everything_quote_can_emit() {
+        for v in [
+            "plain", "two words", "a (b)", "quote\"inside", "back\\slash", "\\", "\"", "",
+            "and", "or", "(", ")", "+tag", "project:x", "tab\there",
+        ] {
+            let src = format!("project:{}", quote(v));
+            let words = split_words(&src, "task text")
+                .unwrap_or_else(|e| panic!("quote({v:?}) must scan on the write side: {e}"));
+            assert_eq!(words.len(), 1, "quote({v:?}) must stay ONE word: {src}");
+            assert_eq!(words[0].text, format!("project:{v}"), "quote({v:?}) lost its value");
+            assert!(words[0].quoted, "quote({v:?}) is quoted by construction");
+        }
+    }
+
+    /// Parens are the ONE difference between the two callers, and it is lexical:
+    /// the read side groups with them, the write side has a title that may
+    /// contain them (`tasqx add "call (mom)"`). Everything about QUOTED is shared.
+    #[test]
+    fn parens_break_tokens_only_on_the_read_side() {
+        let words = split_words("call (mom)", "task text").expect("scans");
+        let texts: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts, ["call", "(mom)"], "a paren is ordinary text in a title");
+
+        let toks = tokenize("call (mom)").expect("scans");
+        let texts: Vec<&str> = toks.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, ["call", "(", "mom", ")"], "but grouping on the read side");
+    }
+
+    /// An unterminated quote is refused on both sides, and the message names the
+    /// surface it was refused on — "in filter" is a lie about a `tasqx add`.
+    #[test]
+    fn an_unterminated_quote_is_refused_and_names_its_surface() {
+        // `.err()` rather than `expect_err`, which would demand Debug on the
+        // success type purely to serve a test.
+        let e = split_words("+say\"hi", "task text").err().expect("must be refused");
+        assert!(e.contains("unterminated") && e.contains("task text"), "{e}");
+        let e = tokenize("+say\"hi").err().expect("must be refused");
+        assert!(e.contains("unterminated") && e.contains("filter"), "{e}");
+    }
+
+    /// A doubled dash is a mistyped flag, not a tag exclusion.
+    ///
+    /// The dash count is the whole discriminator between filter text and a
+    /// flag: `cli/argv.rs` reads it to decide what to hide from clap, and on
+    /// the API and MCP paths this parser is the only thing that reads it at
+    /// all. Parsed as a tag exclusion, `--json` excluded nothing and so matched
+    /// everything, turning a typo into a silently wider result set. The
+    /// single-dash form must keep working exactly as before.
+    #[test]
+    fn a_doubled_dash_is_rejected_rather_than_matching_everything() {
+        let err = Filter::parse("--json").expect_err("`--json` is a flag, not a tag exclusion");
+        assert!(err.contains("--json"), "the error must name what was typed: {err}");
+        assert!(err.contains("-tag"), "and point at the shape that works: {err}");
+
+        let f = Filter::parse("-needs").expect("one dash is still a tag exclusion");
+        let tagged = vec!["needs".to_string()];
+        fn ctx(tags: &[String]) -> MatchCtx<'_> {
+            MatchCtx { status: Status::Pending, project: None, tags, due: None, blocked: false }
+        }
+        assert!(!f.matches(&ctx(&tagged)), "-needs must exclude the tagged task");
+        assert!(f.matches(&ctx(&[])), "-needs must keep everything else");
+    }
+
+    // ---- the grammar block is documentation, and documentation drifts --------
+
+    /// The grammar's own RHS symbols, minus comments and quoted literals.
+    ///
+    /// Only ALL-CAPS names are collected. Lowercase productions are the shape of
+    /// the parser and change when it does; the names that rotted here were the
+    /// primitives (`WORD`, `CHAR`), which nothing forced anyone to define.
+    fn referenced_symbols(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or("");
+            let rhs = line.split_once(":=").map_or(line, |(_, r)| r);
+            // Drop `"literal"` runs so a terminal is never mistaken for a symbol.
+            let mut outside = String::new();
+            let mut in_quote = false;
+            for c in rhs.chars() {
+                if c == '"' {
+                    in_quote = !in_quote;
+                    outside.push(' ');
+                } else if !in_quote {
+                    outside.push(c);
+                }
+            }
+            for word in outside.split(|c: char| !c.is_ascii_alphanumeric()) {
+                let is_symbol = word.len() >= 2
+                    && word.starts_with(|c: char| c.is_ascii_uppercase())
+                    && word.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+                if is_symbol {
+                    out.push(word.to_string());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn defined_symbols(text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(|l| l.split_once(":=").map(|(lhs, _)| lhs.trim().to_string()))
+            .collect()
+    }
+
+    /// A grammar that uses a name it never defines is not a grammar, it is a
+    /// gesture at one. `WORD` was used in five productions and defined nowhere,
+    /// for as long as the block has existed, so a reader had to guess whether it
+    /// admitted a space, a quote, or a parenthesis — the exact question the block
+    /// is there to answer.
+    #[test]
+    fn the_grammar_defines_every_symbol_it_uses() {
+        let text = grammar();
+        let defined = defined_symbols(text);
+        let missing: Vec<String> =
+            referenced_symbols(text).into_iter().filter(|s| !defined.contains(s)).collect();
+        assert!(missing.is_empty(), "grammar uses undefined symbol(s) {missing:?}:\n{text}");
+    }
+
+    /// Every predicate that takes a value must *say* it takes a value, because
+    /// the parser accepts a quoted one for all of them. The block claimed `WORD`
+    /// for the two tag forms while the prose two paragraphs below advertised
+    /// `+"needs paint"` — the block and its own surrounding text disagreed, and
+    /// the code sided with the text.
+    #[test]
+    fn every_value_taking_predicate_is_written_as_taking_a_value() {
+        let text = grammar();
+        for prefix in ["+", "-", "project:", "status:"] {
+            let filter = format!("{prefix}\"two words\"");
+            Filter::parse(&filter)
+                .unwrap_or_else(|e| panic!("the parser accepts {filter:?}, so: {e}"));
+            let line = text
+                .lines()
+                .find(|l| l.contains(&format!("\"{prefix}\"")))
+                .unwrap_or_else(|| panic!("no grammar line for the {prefix:?} predicate:\n{text}"));
+            assert!(
+                line.contains("VALUE"),
+                "{prefix:?} takes a quoted value but the grammar says otherwise: {line}"
             );
         }
     }

@@ -66,13 +66,14 @@ pub fn duration_secs(iso: &str) -> Option<i64> {
     Some(secs)
 }
 
-/// True when `s` parses to a timestamp strictly in the future.
-pub fn is_future(s: &Option<String>) -> bool {
-    match s {
-        Some(v) => match parse_ts(v) {
-            Some(t) => t > Timestamp::now(),
-            None => false,
-        },
+/// True when `s` parses to a timestamp strictly after `now`.
+///
+/// `now` is a parameter, not `Timestamp::now()`, because the one rule that reads
+/// this — [`crate::types::effective_status`] — is a time-driven state transition
+/// and has to be testable on both sides of its boundary without sleeping.
+pub fn is_future_at(s: Option<&str>, now: Timestamp) -> bool {
+    match s.and_then(parse_ts) {
+        Some(t) => t > now,
         None => false,
     }
 }

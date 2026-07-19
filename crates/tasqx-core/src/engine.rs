@@ -24,10 +24,10 @@ use crate::storage::{
 };
 use crate::recur;
 use crate::remind;
-use crate::types::{Priority, Status, Task};
+use crate::types::{effective_status, Priority, Status, Task};
 use crate::urgency;
 use crate::util::{
-    duration_secs, is_future, iso_duration, now, opt_str, opt_str_array, parse_ts, req_str,
+    duration_secs, iso_duration, now, opt_str, opt_str_array, parse_ts, req_str,
     seconds_between,
 };
 
@@ -316,12 +316,10 @@ impl Engine {
             None => None,
         };
 
-        // add -> pending, or backlog if wait/scheduled is in the future.
-        let status = if is_future(&wait) || is_future(&scheduled) {
-            Status::Backlog
-        } else {
-            Status::Pending
-        };
+        // add -> pending, or backlog if wait/scheduled is in the future. Asking
+        // the shared rule what a *backlog* task would be right now answers both
+        // halves, and keeps this in step with the spawn path and every read.
+        let status = effective_status(Status::Backlog, wait.as_deref(), scheduled.as_deref(), now_ts);
 
         let id = Uuid::now_v7().to_string();
         let ts = now();
@@ -591,11 +589,10 @@ impl Engine {
             new_due = Some(next.to_string());
         }
 
-        let status = if is_future(&new_wait) || is_future(&new_scheduled) {
-            Status::Backlog
-        } else {
-            Status::Pending
-        };
+        // Same rule as `task_add`, on the shifted timestamps, against this
+        // completion's instant rather than a second reading of the clock.
+        let status =
+            effective_status(Status::Backlog, new_wait.as_deref(), new_scheduled.as_deref(), now_ts);
         let urg = urgency::score(template.priority, new_due.as_deref(), ts);
 
         // Carry the reminder onto the new instance (§9). A `due`-anchored offset

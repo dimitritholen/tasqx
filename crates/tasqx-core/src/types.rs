@@ -5,8 +5,11 @@
 //! RFC3339 strings — the simplest representation that is correct and preserves
 //! whatever offset a client sends (see `crate::util::now` for generation).
 
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::util::is_future_at;
 
 /// Task lifecycle states (DESIGN.md §3). Serialized as lowercase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +25,46 @@ pub enum Status {
     Done,
     /// Abandoned; retained for history.
     Cancelled,
+}
+
+/// The single definition of "is this task still being held back by a date?" —
+/// DESIGN's `[*] --> backlog: task.add (waiting/scheduled)` and its promised
+/// counterpart `backlog --> pending: wait/schedule reached` (§ state machine,
+/// and the `ls status:backlog` example that says outright these "will surface
+/// automatically when their date arrives").
+///
+/// A task is parked in `backlog` exactly while its `wait` or `scheduled` instant
+/// is still ahead of `now`; once either has passed it is `pending`. Only that
+/// one edge: any other `stored` status is returned untouched, because `pending`,
+/// `active`, `done` and `cancelled` were all reached because the *user* said so,
+/// and no clock may undo that. (DESIGN has no `pending --> backlog` edge, so
+/// pushing a wait back into the future on an already-released task is a
+/// different question, deliberately left alone here.)
+///
+/// Three callers, one rule. `task.add` and the recurrence spawn used to inline
+/// `if is_future(wait) || is_future(scheduled)` separately — the same expression
+/// typed twice, one edit away from disagreeing — and the reverse edge was
+/// implemented nowhere at all, which is what made a task parked behind a future
+/// `wait` invisible forever: pushing the wait into the past did not release it,
+/// and no verb could set a status. Adding [`crate::storage::map_task_row`] as
+/// the third caller is what closes that, because it is the choke point every
+/// read of a task goes through.
+///
+/// `now` is injected rather than read here: this is the only transition with no
+/// user action behind it, so a test that cannot name the instant could only
+/// probe it by sleeping.
+pub fn effective_status(
+    stored: Status,
+    wait: Option<&str>,
+    scheduled: Option<&str>,
+    now: Timestamp,
+) -> Status {
+    match stored {
+        Status::Backlog if !is_future_at(wait, now) && !is_future_at(scheduled, now) => {
+            Status::Pending
+        }
+        other => other,
+    }
 }
 
 impl Status {
@@ -349,5 +392,76 @@ mod tests {
             ["backlog", "pending", "active", "done"],
             "D24: everything but cancelled — done is terminal but is still real work"
         );
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+
+    const T: &str = "2026-07-19T12:00:00Z";
+
+    fn at(s: &str) -> Timestamp {
+        s.parse().unwrap()
+    }
+
+    /// Both sides of the boundary, and the boundary instant itself. The held
+    /// side and the released side are named as literals rather than derived from
+    /// `T`, so this cannot pass by agreeing with itself.
+    #[test]
+    fn the_boundary_is_the_instant_itself() {
+        // one second before the wait: still held.
+        assert_eq!(
+            effective_status(Status::Backlog, Some(T), None, at("2026-07-19T11:59:59Z")),
+            Status::Backlog
+        );
+        // exactly at it: `wait` is not in the future any more, so it is reached.
+        assert_eq!(
+            effective_status(Status::Backlog, Some(T), None, at(T)),
+            Status::Pending
+        );
+        // one second after: released.
+        assert_eq!(
+            effective_status(Status::Backlog, Some(T), None, at("2026-07-19T12:00:01Z")),
+            Status::Pending
+        );
+    }
+
+    /// `scheduled` holds on its own, and the later of the two decides: a passed
+    /// `wait` must not release a task still scheduled for next week.
+    #[test]
+    fn either_field_can_hold_the_task() {
+        let now = at("2026-07-19T12:00:00Z");
+        assert_eq!(
+            effective_status(Status::Backlog, None, Some("2026-07-26T00:00:00Z"), now),
+            Status::Backlog
+        );
+        assert_eq!(
+            effective_status(
+                Status::Backlog,
+                Some("2020-01-01T00:00:00Z"),
+                Some("2026-07-26T00:00:00Z"),
+                now
+            ),
+            Status::Backlog
+        );
+        // Neither field set at all: nothing is holding it.
+        assert_eq!(effective_status(Status::Backlog, None, None, now), Status::Pending);
+        // Unparseable dates cannot hold a task hostage (they never have).
+        assert_eq!(effective_status(Status::Backlog, Some("whenever"), None, now), Status::Pending);
+    }
+
+    /// No clock may move a status the user chose. A task started, finished or
+    /// abandoned stays where it is even with a wait far in the future — and a
+    /// released task is not pushed back into the backlog either, since DESIGN
+    /// has no such edge.
+    #[test]
+    fn only_backlog_is_subject_to_the_clock() {
+        let now = at("2026-07-19T12:00:00Z");
+        let future = Some("2999-01-01T00:00:00Z");
+        for s in [Status::Pending, Status::Active, Status::Done, Status::Cancelled] {
+            assert_eq!(effective_status(s, future, future, now), s, "{s:?} with a future wait");
+            assert_eq!(effective_status(s, None, None, now), s, "{s:?} with no dates");
+        }
     }
 }

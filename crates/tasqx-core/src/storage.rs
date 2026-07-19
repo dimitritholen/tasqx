@@ -12,11 +12,12 @@
 
 use std::collections::HashSet;
 
+use jiff::Timestamp;
 use rusqlite::{params, Connection, Row, Transaction};
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::types::{Priority, Status, Task};
+use crate::types::{effective_status, Priority, Status, Task};
 use crate::util::now;
 
 /// Busy timeout for contended one-shot writers (DESIGN.md §2: ~3s).
@@ -373,6 +374,36 @@ pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
         Some(s) => (s, None),
         None => (Status::Pending, Some(status)),
     };
+
+    // `backlog --> pending: wait/schedule reached` is applied here, on the way
+    // out of the store, and nowhere else. It is the one transition with no user
+    // action behind it — a clock trips it — so there is no verb to hang it on,
+    // and tasqx must work with no daemon running, which rules out a sweep being
+    // the only mechanism. Deriving it at load makes the release unconditional
+    // and instant: *every* task read in this codebase comes through here, so
+    // `task.list`, `task.get`, the filters, reports, export, the scheduler and
+    // the lifecycle guards all see one answer, and none of them can drift.
+    //
+    // The rejected alternative was writing the new status back during a read.
+    // That buys a `status` column that is always current, at the price of a read
+    // path that mutates: `list` would need a write transaction, would fail on a
+    // read-only store or a read-only filesystem, and would contend with any
+    // concurrent reader — a steep bill for a value we can recompute for free.
+    // It also has to happen on read *anyway* to be correct between writes.
+    //
+    // The cost, stated plainly: for a released task the stored `status` still
+    // reads `backlog` until some verb next writes the row. That column is
+    // therefore a cache, not the truth, for backlog rows specifically — the same
+    // bargain `urgency` already makes (persisted at write, recomputed on every
+    // read because its inputs move on their own). Only raw SQL that filters on
+    // the `status` text can be fooled by it, and both such queries are immune by
+    // construction: `task.start`'s auto-stop sweep selects `active`, which this
+    // rule never produces, and the reminder rebuild selects every open status,
+    // which contains both sides of the edge.
+    let scheduled: Option<String> = row.get(7)?;
+    let wait: Option<String> = row.get(8)?;
+    let status = effective_status(status, wait.as_deref(), scheduled.as_deref(), Timestamp::now());
+
     Ok(Task {
         id: row.get(0)?,
         short_id: row.get(1)?,
@@ -382,8 +413,8 @@ pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
         priority: priority.as_deref().and_then(Priority::parse),
         project: row.get(5)?,
         due: row.get(6)?,
-        scheduled: row.get(7)?,
-        wait: row.get(8)?,
+        scheduled,
+        wait,
         estimate: row.get(9)?,
         recurrence: row.get(10)?,
         urgency: row.get(11)?,

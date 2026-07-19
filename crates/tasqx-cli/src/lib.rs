@@ -12,6 +12,7 @@
 //! segment repeats because `ProjectDirs::from("dev", "tasqx", "tasqx")` passes
 //! `tasqx` as both organization and application).
 
+mod argv;
 mod chart;
 pub mod cmddoc;
 pub mod config;
@@ -30,6 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use serde_json::{json, Value};
 
 use tasqx_core::{daemon, datetime, dispatch, handle_envelope, notify, ApiError, Engine, ErrorCode, McpServer, Scope};
@@ -211,6 +213,13 @@ enum Command {
     #[command(alias = "ls", alias = "l", after_help = crate::cmddoc::after_help("list"))]
     List {
         /// Filter DSL, e.g. "project:work status:pending +api".
+        ///
+        /// Deliberately NOT `allow_hyphen_values`, unlike `--due`/`--remind`.
+        /// `-tag` is core filter grammar and must be typable, but the setting
+        /// buys that by making this positional swallow every later hyphen
+        /// token INCLUDING clap's own flags, which broke `list @working
+        /// --json`. The dash is hidden by the `argv` pre-pass instead, leaving
+        /// clap full authority over every `--flag` in any position.
         filter: Vec<String>,
     },
     /// Start a task timer (maps to task.start).
@@ -303,6 +312,10 @@ enum Command {
     #[command(after_help = crate::cmddoc::after_help("report"))]
     Report {
         /// Optional group_by (project|status|priority) then optional filter DSL.
+        ///
+        /// Hyphen-tolerant because the tail is filter DSL and `-tag` is part of
+        /// it — via the `argv` pre-pass, not `allow_hyphen_values`, which would
+        /// swallow `--html`; see `List::filter`.
         args: Vec<String>,
         /// Emit a single self-contained HTML report (inline CSS + SVG, no
         /// external requests) instead of the terminal table.
@@ -342,6 +355,9 @@ enum Command {
     #[command(after_help = crate::cmddoc::after_help("export"))]
     Export {
         /// Optional filter DSL.
+        ///
+        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        /// `List::filter`.
         filter: Vec<String>,
     },
     /// Import tasks from a file, or `-` for stdin (maps to store.import).
@@ -378,6 +394,9 @@ enum Command {
     #[command(after_help = crate::cmddoc::after_help("watch"))]
     Watch {
         /// Filter DSL (default: the working set).
+        ///
+        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        /// `List::filter`.
         filter: Vec<String>,
     },
     /// Bundled MCP server (DESIGN.md §7, §12-D7).
@@ -506,8 +525,49 @@ enum McpAction {
     },
 }
 
+/// Report a clap parse failure and exit.
+///
+/// `--help` and `--version` arrive here as "errors" and must print normally, so
+/// everything falls through to clap unless it is the one case worth taking
+/// over: an unknown flag on a filter-taking command. Clap calls that an
+/// "unexpected argument" and tips the reader to pass it as a value with `--` —
+/// advice that turns a typo into filter text, which is the silent widening of
+/// the result set this CLI refuses. `filter.rs` already has the right words
+/// (name the flag, say a tag exclusion takes one dash, list the tokens that
+/// work), so they are borrowed rather than copied and left to drift.
+fn exit_on_parse_error(e: &clap::Error, filter_command: bool) -> ! {
+    if filter_command && e.kind() == ErrorKind::UnknownArgument {
+        if let Some(ContextValue::String(offender)) = e.get(ContextKind::InvalidArg) {
+            if let Some(msg) = argv::filter_flag_error(offender) {
+                let err = ApiError::bad_request(msg);
+                eprintln!("error [{}]: {}", code_str(&err), err.message);
+                exit(err.exit_code());
+            }
+        }
+    }
+    e.exit()
+}
+
 pub fn run() {
-    let cli = Cli::parse();
+    // Not `Cli::parse()`: filter tokens like `-needs` must reach the grammar,
+    // and the only way to keep that from disarming clap's flag handling is to
+    // hide the dash before clap looks. See `argv`.
+    let pre = argv::prepass(std::env::args_os());
+    let mut cli = match Cli::try_parse_from(pre.argv) {
+        Ok(cli) => cli,
+        Err(e) => exit_on_parse_error(&e, pre.filter_command),
+    };
+    // Put the dashes back, in ONE place, before any filter value is read.
+    // Every hyphen-tolerant positional in the tree is listed here; the drift
+    // guard `argv::tests::every_filter_positional_is_registered` fails if a new
+    // one appears without being added to the pre-pass side of the same pair.
+    match &mut cli.command {
+        Some(Command::List { filter } | Command::Export { filter } | Command::Watch { filter }) => {
+            argv::unescape(filter)
+        }
+        Some(Command::Report { args, .. }) => argv::unescape(args),
+        _ => {}
+    }
 
     // `api`, `mcp`, and `daemon` are special: they frame their own I/O (response
     // envelopes / JSON-RPC / the socket server) and do not go through the normal
@@ -876,10 +936,53 @@ fn run_init(be: &mut Backend, ctx: &Ctx, name: String, desc: Option<String>) -> 
     Ok((result, text))
 }
 
+/// Say that the project name may have been CUT, when it may have been.
+///
+/// The core answers a missing project with `no project named X (create it with
+/// `tasqx init X`)`, which is right when X is what the user typed. From an
+/// unquoted `project:` sugar token it is not: the token ends at the first space,
+/// so `project:My "Big" Project` asked about `My` and the message then advised
+/// creating a project that already existed under a longer name — confidently
+/// naming a fragment as though the user had typed it.
+///
+/// We cannot tell a typo from a truncation here, so the message stops claiming
+/// to. It says where the name came from and gives the spelling that names a
+/// whole one; the `init` advice is kept, because a typo is still the likelier
+/// case and it is now offered rather than asserted.
+/// Takes the name rather than the whole `ParsedAdd` because `modify` has already
+/// moved its fields into the `set` map by the time the call fails, and both
+/// verbs must answer this identically (§12-D13).
+fn name_the_cut(e: ApiError, cut_name: Option<&str>) -> ApiError {
+    if e.code != ErrorCode::NotFound {
+        return e;
+    }
+    let Some(name) = cut_name else { return e };
+    if !e.message.starts_with("no project named") {
+        return e;
+    }
+    ApiError::new(
+        e.code,
+        format!(
+            "no project named {name:?} — but that is only the part of a `project:` token \
+             before the first space, so a name with spaces must be quoted: \
+             project:\"{name} …\". If {name:?} really is the whole name, create it with \
+             `tasqx init {name:?}`."
+        ),
+        e.data,
+    )
+}
+
+/// The project name IF it might have been cut short by the sugar tokenizer.
+fn cut_project_name(parsed: &sugar::ParsedAdd) -> Option<String> {
+    parsed.project_may_be_truncated.then(|| parsed.project.clone()).flatten()
+}
+
 fn run_add(be: &mut Backend, ctx: &Ctx, title: Vec<String>, flags: sugar::AddFlags) -> CmdOutcome {
     // argv goes in unjoined: the shell's argument boundaries are information the
     // parser needs (see `sugar::parse_add`), and joining destroys them.
-    let parsed = sugar::parse_add(&title, flags);
+    let parsed = sugar::parse_add(&title, flags)?;
+    // Taken before the fields are moved into `params`; see `name_the_cut`.
+    let cut = cut_project_name(&parsed);
 
     // Resolve every natural-language date through the ONE core parser, using the
     // real `now` (deterministic in tests, which call the parser directly).
@@ -915,7 +1018,7 @@ fn run_add(be: &mut Backend, ctx: &Ctx, title: Vec<String>, flags: sugar::AddFla
     if !parsed.tags.is_empty() {
         params["tags"] = Value::Array(parsed.tags.into_iter().map(Value::String).collect());
     }
-    let result = be.call("task.add", &params)?;
+    let result = be.call("task.add", &params).map_err(|e| name_the_cut(e, cut.as_deref()))?;
     let text = render::task_added(ctx, &result, &parsed.title);
     Ok((result, text))
 }
@@ -939,7 +1042,9 @@ fn run_modify(
     clear: &[String],
     expected_rev: Option<i64>,
 ) -> CmdOutcome {
-    let parsed = sugar::parse_add(&rest, flags);
+    let parsed = sugar::parse_add(&rest, flags)?;
+    // Taken before the fields are moved into `set`; see `name_the_cut`.
+    let cut = cut_project_name(&parsed);
     let now = now_ts();
 
     let mut set = serde_json::Map::new();
@@ -1004,7 +1109,7 @@ fn run_modify(
         if let Some(rev) = expected_rev {
             params["expected_rev"] = Value::from(rev);
         }
-        result = be.call("task.modify", &params)?;
+        result = be.call("task.modify", &params).map_err(|e| name_the_cut(e, cut.as_deref()))?;
     }
 
     // Tags: a second call, and deliberately AFTER the modify — if the modify is
@@ -1041,7 +1146,11 @@ fn guard_set_and_clear(
 
 fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
     // Bare `tasqx` (and `tasqx list` with no filter) => the working set.
-    let filter_str = if filter.is_empty() { "@working".to_string() } else { filter.join(" ") };
+    // Otherwise `from_argv`, never `join(" ")`: the shell's argument boundaries
+    // are information the filter parser needs, exactly as on the write path
+    // (see `sugar::parse_add`). Joining loses which spaces the user quoted.
+    let filter_str =
+        if filter.is_empty() { "@working".to_string() } else { tasqx_core::filter::from_argv(filter) };
     let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
     let result = be.call("task.list", &params)?;
     let text = render::task_table(ctx, &result);
@@ -1133,7 +1242,7 @@ fn report_params(args: &[String], all: bool) -> Value {
         "metrics": ["count", "est_total", "overdue", "tracked_total"],
     });
     if !rest.is_empty() {
-        params["filter"] = Value::String(rest.join(" "));
+        params["filter"] = Value::String(tasqx_core::filter::from_argv(rest));
     }
     // Sent only when set: core already defaults `all` to false, and an explicit
     // `false` would be the same thing said twice.
@@ -1154,7 +1263,7 @@ fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>, all: bool) -> CmdO
 fn run_export(be: &mut Backend, filter: &[String]) -> CmdOutcome {
     let mut params = json!({});
     if !filter.is_empty() {
-        params["filter"] = Value::String(filter.join(" "));
+        params["filter"] = Value::String(tasqx_core::filter::from_argv(filter));
     }
     let result = be.call("store.export", &params)?;
     // A filter selects a subset, so edges pointing out of it are trimmed to keep
@@ -1246,7 +1355,16 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) {
         }
         ChartKind::Burndown { project, days } => {
             let days = days.unwrap_or(30);
-            let (members, label) = burndown_members(engine, &project);
+            // Reported, never swallowed: an unresolvable scope used to render as
+            // a cleared burndown, which is a wrong answer wearing the costume of
+            // a right one. Same shape as the `event.list` arm above.
+            let (members, label) = match burndown_members(engine, &project) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("error [{}]: {}", code_str(&e), e.message);
+                    exit(e.exit_code());
+                }
+            };
             chart::render_burndown(ctx, &events, &members, days, &label)
         }
     };
@@ -1280,22 +1398,28 @@ static NOT_CANCELLED: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| 
 fn burndown_members(
     engine: &Engine,
     project: &Option<String>,
-) -> (std::collections::HashSet<String>, String) {
+) -> Result<(std::collections::HashSet<String>, String), ApiError> {
     let (filter, label) = match project {
-        Some(p) => (format!("project:{p} and ({})", *NOT_CANCELLED), p.clone()),
+        // Through `filter::quote`, never interpolated: a project may be named
+        // `Home Renovation` or `a (b)`, and a raw `{p}` composes a filter that
+        // asks a different question (or none at all) without saying so.
+        Some(p) => (
+            format!("project:{} and ({})", tasqx_core::filter::quote(p), *NOT_CANCELLED),
+            p.clone(),
+        ),
         None => (NOT_CANCELLED.to_string(), "all tasks".to_string()),
     };
-    let listed = dispatch(engine, "task.list", &json!({ "filter": filter, "fields": ["id"] }));
+    let listed = dispatch(engine, "task.list", &json!({ "filter": filter, "fields": ["id"] }))?;
     let ids = listed
-        .ok()
-        .and_then(|v| v.get("tasks").and_then(Value::as_array).cloned())
+        .get("tasks")
+        .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
                 .collect::<std::collections::HashSet<String>>()
         })
         .unwrap_or_default();
-    (ids, label)
+    Ok((ids, label))
 }
 
 /// `tasqx report --html`: write the self-contained HTML review.
@@ -2005,7 +2129,10 @@ fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[String], ctx:
         exit(1);
     }
 
-    let filter_str = if filter.is_empty() { "@working".to_string() } else { filter.join(" ") };
+    // `from_argv`, not `join(" ")` — see `run_list`. `watch` re-sends this
+    // string on every event, so a mis-split here would be wrong forever.
+    let filter_str =
+        if filter.is_empty() { "@working".to_string() } else { tasqx_core::filter::from_argv(filter) };
     let tty = std::io::stdout().is_terminal();
 
     // Initial paint.
@@ -2608,7 +2735,7 @@ mod tests {
         let (live, gone, finished) = (id_of("1"), id_of("2"), id_of("3"));
 
         for scope in [None, Some("P".to_string())] {
-            let (members, _) = burndown_members(&e, &scope);
+            let (members, _) = burndown_members(&e, &scope).expect("burndown scope resolved");
             assert!(members.contains(&live), "scope {scope:?} lost the open task");
             assert!(
                 !members.contains(&gone),
@@ -2618,6 +2745,59 @@ mod tests {
             // draw the line coming down. Dropping it would flatten the chart.
             assert!(members.contains(&finished), "scope {scope:?} lost the done task");
         }
+    }
+
+    /// A project whose name contains a space silently produced an EMPTY
+    /// burndown: `format!("project:{p} ...")` tokenized to `project:Home` plus a
+    /// stray `Renovation`, and the resulting parse failure was swallowed by
+    /// `.ok()` + `.unwrap_or_default()`. The chart then rendered "0 left -
+    /// cleared" over a project with open work, and exited 0.
+    ///
+    /// Both halves are asserted because either alone leaves the bug: the count
+    /// proves the composed filter is now correct, the parenthesised and quoted
+    /// names prove it survives the metacharacters that broke it.
+    #[test]
+    fn burndown_scope_survives_project_names_with_metacharacters() {
+        for name in ["Home Renovation", "a (b)", "say \"hi\"", "work and play"] {
+            let e = tasqx_core::Engine::open_in_memory().unwrap();
+            e.project_create(&json!({ "name": name })).unwrap();
+            e.project_create(&json!({ "name": "Other" })).unwrap();
+            for title in ["paint", "sand"] {
+                e.task_add(&json!({ "title": title, "project": name })).unwrap();
+            }
+            // A task in a different project: without it, a filter that collapsed
+            // to "match everything" would pass this test too.
+            e.task_add(&json!({ "title": "unrelated", "project": "Other" })).unwrap();
+
+            let (members, label) =
+                burndown_members(&e, &Some(name.to_string())).expect("scope resolved");
+            assert_eq!(members.len(), 2, "project {name:?} must scope to its own 2 tasks");
+            assert_eq!(label, name, "the chart label is the project name as given");
+        }
+    }
+
+    /// The swallow itself, independent of any one bad name: when the composed
+    /// filter does not parse, the caller must be able to SEE that. While
+    /// `burndown_members` returned a bare tuple there was no way to tell "this
+    /// project has no open work" from "the query failed", and the chart rendered
+    /// the same cleared line for both.
+    ///
+    /// Driven through a project name that the engine accepts but that no filter
+    /// grammar could ever be composed for by naive interpolation, so this stays
+    /// a guard on error PROPAGATION rather than on today's quoting rules.
+    #[test]
+    fn a_burndown_filter_failure_is_reported_rather_than_drawn_as_empty() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        // No such project: task.list still parses the filter fine, so this
+        // asserts the honest empty case stays empty and Ok...
+        let (members, _) = burndown_members(&e, &Some("nope".to_string())).expect("parses");
+        assert!(members.is_empty(), "an unknown project is legitimately empty, not an error");
+
+        // ...while a filter that cannot parse must come back as Err. `"` alone
+        // is unterminable: quoting it is fine, but this bypasses `quote` to
+        // simulate any future composition bug reaching `task.list`.
+        let bad = dispatch(&e, "task.list", &json!({ "filter": "project:\"oops", "fields": ["id"] }));
+        assert!(bad.is_err(), "an unparseable filter must be an error at the API boundary");
     }
 
     /// `NOT_CANCELLED` spells out its statuses by hand, and the test above only

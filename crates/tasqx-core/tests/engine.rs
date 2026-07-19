@@ -357,3 +357,72 @@ fn modify_cancel_closes_active_interval() {
         .unwrap();
     assert!(active_since.is_none());
 }
+
+// ---- B1: backlog -> pending when the wait/scheduled instant passes ----------
+
+/// DESIGN's `backlog --> pending: wait/schedule reached` transition, from the
+/// only angle a user has: what the read surfaces say. A task parked behind a
+/// future `wait` was invisible forever — moving the wait into the past left it
+/// in `backlog`, out of the default view, with no verb able to release it.
+#[test]
+fn a_passed_wait_releases_the_task_to_pending() {
+    let e = engine();
+    let sid = e
+        .task_add(&json!({ "title": "waiter", "wait": "2999-01-01T00:00:00Z" }))
+        .unwrap()["short_id"]
+        .clone();
+
+    e.task_modify(&json!({ "ref": sid, "set": { "wait": "2020-01-01T00:00:00Z" } })).unwrap();
+
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    assert_eq!(got["status"], "pending", "task.get must report the released status");
+
+    let listed = e.task_list(&json!({ "filter": "" })).unwrap();
+    assert_eq!(listed["tasks"][0]["status"], "pending", "task.list must agree with task.get");
+
+    // And it must be startable — the guard reads the same status the user sees.
+    assert_eq!(e.task_start(&json!({ "ref": sid })).unwrap()["status"], "active");
+}
+
+/// A future `scheduled` holds the task in the backlog just like `wait` does,
+/// and neither release happens while the instant is still ahead.
+#[test]
+fn a_future_scheduled_still_holds_the_task_in_backlog() {
+    let e = engine();
+    let sid = e
+        .task_add(&json!({ "title": "soon", "scheduled": "2999-01-01T00:00:00Z" }))
+        .unwrap()["short_id"]
+        .clone();
+    assert_eq!(e.task_get(&json!({ "ref": sid })).unwrap()["status"], "backlog");
+
+    e.task_modify(&json!({ "ref": sid, "set": { "scheduled": "2020-01-01T00:00:00Z" } })).unwrap();
+    assert_eq!(e.task_get(&json!({ "ref": sid })).unwrap()["status"], "pending");
+}
+
+/// The recurrence spawn computes the same rule on the shifted timestamps, so it
+/// must reach the same answer: an instance whose shifted `wait` has already
+/// passed is actionable, not parked.
+#[test]
+fn a_spawned_instance_is_parked_or_released_by_its_shifted_wait() {
+    // `next_after` collapses missed slots, so the spawned `due` always lands
+    // within one day *after* now. The wait rides along at the same offset, so
+    // the offset alone decides the answer — no wall clock in the assertion.
+    for (wait, expect) in
+        [("2020-01-08T12:00:00Z", "pending"), ("2020-01-15T12:00:00Z", "backlog")]
+    {
+        let e = engine();
+        let sid = e
+            .task_add(&json!({
+                "title": "daily",
+                "due": "2020-01-10T12:00:00Z",   // wait is due-2d, then due+5d
+                "wait": wait,
+                "recurrence": "every 1 days",
+            }))
+            .unwrap()["short_id"]
+            .clone();
+        e.task_done(&json!({ "ref": sid })).unwrap();
+
+        let listed = e.task_list(&json!({ "filter": format!("status:{expect}") })).unwrap();
+        assert_eq!(listed["count"], 1, "wait {wait} => {expect}, got {listed}");
+    }
+}

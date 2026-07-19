@@ -199,6 +199,17 @@ Filters narrow any list:
 Combine with boolean `or` and group with parentheses:
   tasqx list \"project:work and (+api or +ui)\"
 
+Double-quote a value containing a space, and the quotes also
+hide parentheses and the and/or keywords, as a shell does.
+Your shell's own quotes are enough; nothing is escaped twice:
+  tasqx list project:\"Home Renovation\" +\"needs paint\"
+
+The same rule splits `add`/`modify` sugar, so what you can
+create you can filter for. Write `\\\"` for a literal quote and
+`\\\\` for a literal backslash — a name holding a quote needs
+that form on both sides:
+  tasqx add \"paint\" project:\"My \\\"Big\\\" Project\"
+
 `due` is compared as an instant, not a calendar day. A bare
 `tasqx` (or `tasqx list`) shows the working set.",
 
