@@ -831,3 +831,208 @@ fn one_quoting_rule_spans_the_write_and_read_sides() {
     let s = ok(&["list", r#"project:"My \"Big\" Project""#]);
     assert!(s.contains("t2"), "the advised spelling must round trip: {s}");
 }
+
+/// `tasqx report <filter> --html` IGNORED its filter entirely.
+///
+/// `run_html_report` never received `args`, and `html::generate` built its own
+/// three queries from scratch — so the two output modes of ONE command answered
+/// two different questions. A filter naming a project that does not exist
+/// produced a byte-identical page to no filter at all, while the terminal path
+/// correctly printed nothing. This runs the real binary because the drop
+/// happened in the `main` dispatch match, which no unit test on
+/// `report_params` can see: the params were right and simply never asked for.
+///
+/// Both argument orders, because the tail is hyphen-tolerant filter DSL routed
+/// through the `argv` pre-pass — `--html` after the filter is the spelling that
+/// pre-pass could most easily swallow.
+#[test]
+fn report_html_honours_its_filter_in_both_argument_orders() {
+    let dir = fresh_config_dir("report-html-filter");
+    let run = |args: &[&str]| bin("report-html-filter", &dir).args(args).output().expect("run tasqx");
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    ok(&["--no-daemon", "init", "Alpha"]);
+    ok(&["--no-daemon", "init", "Beta"]);
+    ok(&["--no-daemon", "add", "alpha work", "project:Alpha"]);
+    ok(&["--no-daemon", "add", "beta work", "project:Beta"]);
+
+    let out_path = |name: &str| dir.join(name).to_string_lossy().to_string();
+    let html = |name: &str, args: &[&str]| -> String {
+        let p = out_path(name);
+        let mut full = vec!["--no-daemon", "report"];
+        full.extend_from_slice(args);
+        full.extend_from_slice(&["--out", &p]);
+        ok(&full);
+        std::fs::read_to_string(&p).expect("the report was written")
+    };
+
+    let all = html("all.html", &["--html"]);
+    assert!(
+        all.contains("alpha work") && all.contains("beta work") && all.contains("Beta"),
+        "the unfiltered page must still show everything"
+    );
+
+    // The empty filter is the sharpest case: a project that does not exist can
+    // only produce an empty page, so any Beta/Alpha content proves the filter
+    // was dropped rather than merely mis-scoped.
+    for (name, args) in [
+        ("none-a.html", vec!["project:Nonexistent", "--html"]),
+        ("none-b.html", vec!["--html", "project:Nonexistent"]),
+    ] {
+        let page = html(name, &args);
+        // Compared as a bool, not `assert_ne!`: both sides are whole HTML
+        // documents and the failure message would be two screenfuls of CSS.
+        assert!(page != all, "{args:?}: the filtered page is byte-identical to the unfiltered one");
+        for leak in ["alpha work", "beta work"] {
+            assert!(!page.contains(leak), "{args:?}: {leak:?} survived a filter that matches nothing");
+        }
+    }
+
+    // And a filter that DOES match must scope rather than empty the page — a fix
+    // that simply dropped all data would pass every assertion above.
+    for args in [vec!["project:Alpha", "--html"], vec!["--html", "project:Alpha"]] {
+        let page = html("alpha.html", &args);
+        assert!(page.contains("alpha work"), "{args:?}: the matching task vanished");
+        assert!(!page.contains("beta work"), "{args:?}: an out-of-scope task survived");
+    }
+}
+
+/// The CLI's `report` asked for a hard-typed list of metrics standing right
+/// next to `engine::SUMMARY_METRICS`, the constant whose entire job is to stop
+/// exactly that. Adding a fifth metric to the engine would have left `tasqx
+/// report` silently requesting four — the API and the MCP schema would offer it
+/// and the CLI would never show it.
+///
+/// Deliberately NOT `assert_eq!(report_params()["metrics"], SUMMARY_METRICS)`:
+/// once the CLI derives its list from the constant, both sides of that
+/// comparison come from one place and it proves nothing. This drives the real
+/// binary end to end and asserts the ENGINE ANSWERED with every metric the
+/// constant publishes — so the CLI's request and the engine's output have to
+/// agree, and neither is the test's own input.
+#[test]
+fn report_requests_every_metric_the_engine_publishes() {
+    let dir = fresh_config_dir("report-metrics");
+    // A task with an estimate and a closed timer, so no metric is structurally
+    // absent for want of data to aggregate.
+    let mk = |args: &[&str]| {
+        let out = bin("report-metrics", &dir).args(args).output().expect("run tasqx");
+        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        out
+    };
+    mk(&["add", "measured", "--estimate", "2h"]);
+    mk(&["start", "1"]);
+    mk(&["stop", "1"]);
+
+    let out = mk(&["--json", "report"]);
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("report --json must emit JSON");
+    let groups = v["groups"].as_array().expect("report must have groups");
+    assert!(!groups.is_empty(), "the fixture task produced no group: {v}");
+
+    for m in tasqx_core::engine::SUMMARY_METRICS {
+        for g in groups {
+            assert!(
+                g.get(m).is_some(),
+                "`tasqx report` did not ask for the published metric {m:?}; group was {g}"
+            );
+        }
+    }
+
+    // The default grouping is the constant's first entry, not a second copy of
+    // the word "project" typed into the CLI.
+    let axis = tasqx_core::engine::SUMMARY_GROUP_BY[0];
+    for g in groups {
+        assert!(g.get(axis).is_some(), "report defaulted to an axis other than {axis:?}: {g}");
+    }
+}
+
+/// `tasqx list --sort` does not exist, so the silent drop this guards reaches
+/// users through the JSON API (`tasqx api`), the daemon, and MCP — every
+/// machine-facing surface. An unknown key came back `ok: true` with rows in an
+/// order nobody asked for.
+#[test]
+fn the_api_refuses_an_unknown_sort_key() {
+    use std::io::Write;
+    let dir = fresh_config_dir("sort-api");
+    let mut child = bin("sort-api", &dir)
+        .arg("api")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tasqx api");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(br#"{"tasqx":"1","id":"s","method":"task.list","params":{"sort":["bogus"]}}"#)
+        .expect("write envelope");
+    let out = child.wait_with_output().expect("wait");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON response");
+
+    assert_eq!(v["ok"], false, "an unknown sort key came back ok: {v}");
+    assert_eq!(v["error"]["code"], "bad_request", "{v}");
+    let msg = v["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("bogus"), "the error must name the offending key: {msg}");
+    assert!(
+        msg.contains(tasqx_core::engine::SORT_KEYS[0]),
+        "the error must list the valid keys: {msg}"
+    );
+}
+
+/// The truncation hedge fired when truncation was IMPOSSIBLE.
+///
+/// `tasqx add task project:Zzz` has nothing after the `project:` token, so the
+/// tokenizer cut nothing off — `Zzz` is exactly what the user typed. Answering
+/// it with "that is only the part before the first space, so a name with spaces
+/// must be quoted" describes a cut that did not happen, and sends the user
+/// hunting for a longer project name that never existed. The hedge is right
+/// only when a following word could have been swallowed.
+///
+/// Driven through the real binary and in BOTH argument orders, because the
+/// distinguishing fact is a token's POSITION in argv, which is precisely what a
+/// hand-built Vec in a unit test would encode rather than test.
+#[test]
+fn the_truncation_hedge_only_fires_when_a_word_could_have_been_cut() {
+    let dir = fresh_config_dir("cut-hedge");
+    let hedge = "must be quoted";
+
+    // Nothing follows the token: no cut was possible, so no hedge.
+    let out = bin("cut-hedge", &dir).args(["add", "task", "project:Zzz"]).output().expect("run");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(err.contains("no project named"), "expected the not-found error, got: {err}");
+    assert!(
+        !err.contains(hedge),
+        "nothing followed `project:Zzz`, so nothing could have been cut: {err}"
+    );
+    assert!(
+        err.contains("tasqx init"),
+        "the create-it advice is the whole point of the message: {err}"
+    );
+
+    // A word DOES follow: the tokenizer may well have eaten it, so hedge.
+    let out = bin("cut-hedge", &dir).args(["add", "project:Zzz", "more"]).output().expect("run");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains(hedge),
+        "`more` could have been the rest of the name, so the hedge must stay: {err}"
+    );
+
+    // Same shape, other order: the trailing word is the title, not a fragment
+    // candidate only when it precedes. `project:` first must still hedge.
+    let out =
+        bin("cut-hedge", &dir).args(["add", "project:Zzz", "big", "job"]).output().expect("run");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(err.contains(hedge), "two following words, still a possible cut: {err}");
+
+    // Quoted whole: no hedge regardless of what follows.
+    let out = bin("cut-hedge", &dir)
+        .args(["add", "project:\"Zzz\"", "more"])
+        .output()
+        .expect("run");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!err.contains(hedge), "a quoted name is whole by construction: {err}");
+}

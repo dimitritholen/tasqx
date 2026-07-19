@@ -337,9 +337,15 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex("tasqx report project"),
             ex("tasqx report --all"),
             ex_norun("tasqx report --html --out review.html", "self-contained HTML"),
+            // The usage line always promised `[filter…]` alongside `--html`; for a
+            // long time only the terminal path kept that promise. Documented as an
+            // example so the scoped form is discoverable, not just legal.
+            ex_norun("tasqx report +urgent --html --out sprint.html", "scoped HTML"),
         ],
         notes: &[
             "group_by ∈ project|status|priority. `--html` defaults to stdout.",
+            "A filter scopes BOTH output modes — the HTML page and the terminal table \
+             answer the same question.",
             "Cancelled tasks are not counted, unless you pass `--all` or your filter names a status.",
         ],
         see_also: &["chart", "list", "why"],

@@ -53,6 +53,21 @@ pub const SUMMARY_GROUP_BY: [&str; 3] = ["project", "status", "priority"];
 /// to prove the name still produces a field.
 pub const SUMMARY_METRICS: [&str; 4] = ["count", "est_total", "overdue", "tracked_total"];
 
+/// The keys `task.list` can sort by. A `-` prefix on any of them sorts
+/// descending; the default when `sort` is omitted is `-urgency`.
+///
+/// Source of truth for the same reason as [`SUMMARY_GROUP_BY`], plus one this
+/// list paid for directly: `compare_by` used to match these names inline and
+/// fall through to "equal" for anything else, so an unknown key was accepted,
+/// ignored, and answered with exit 0 — the caller sorted by a key that was
+/// never applied and had no way to find out. The list was also published
+/// nowhere, so there was no way to look up what a valid key even was. Both
+/// halves are fixed by having one list: `parse_sort` validates against it, its
+/// rejection message is built from it, and the MCP schema and the HTML guide
+/// render their key lists from it.
+pub const SORT_KEYS: [&str; 7] =
+    ["urgency", "short_id", "priority", "due", "created", "modified", "title"];
+
 /// The core engine. Cheap to construct; holds one open store connection.
 pub struct Engine {
     conn: Connection,
@@ -951,7 +966,11 @@ impl Engine {
         // before sorting/rendering so "urgency-hot first" stays honest.
         // Carry each surviving task's tags (already fetched for the filter) so
         // the projection loop below reuses them instead of re-querying.
-        let mut tasks: Vec<(Task, Vec<String>)> = Vec::new();
+        // `blocked` is carried alongside the tags for the same reason: it is
+        // already computed here for the filter, and throwing it away meant
+        // `@blocked` could FILTER on a fact that `fields:["blocked"]` could not
+        // RETURN. A caller wanting it per row had to issue one `task.get` each.
+        let mut tasks: Vec<(Task, Vec<String>, bool)> = Vec::new();
         for mut t in all.drain(..) {
             t.urgency = urgency::score(t.priority, t.due.as_deref(), &t.created);
             let tags = task_tags(&self.conn, &t.id)?;
@@ -964,12 +983,13 @@ impl Engine {
                 blocked,
             };
             if filter.matches(&ctx) {
-                tasks.push((t, tags));
+                tasks.push((t, tags, blocked));
             }
         }
 
-        // Sort (default: hottest urgency first).
-        let sort_keys = parse_sort(p);
+        // Sort (default: hottest urgency first). Validated, so an unknown key
+        // fails here rather than quietly producing some other order.
+        let sort_keys = parse_sort(p)?;
         tasks.sort_by(|a, b| compare_by(&a.0, &b.0, &sort_keys));
 
         // Limit.
@@ -984,8 +1004,13 @@ impl Engine {
             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>());
 
         let mut out = Vec::with_capacity(tasks.len());
-        for (t, tags) in &tasks {
-            let full = task_to_json(t, tags);
+        for (t, tags, blocked) in &tasks {
+            // Set on the object rather than inside `task_to_json`: `blocked` is
+            // a derived fact about the store, not a column, and the two other
+            // callers of that helper (`task.get`, which computes it itself) must
+            // keep saying it exactly once. The shape matches `task.get`'s.
+            let mut full = task_to_json(t, tags);
+            full["blocked"] = json!(blocked);
             match &fields {
                 Some(keys) => {
                     let mut obj = Map::new();
@@ -1630,9 +1655,17 @@ impl Engine {
             // byte-identical round trip. An unparseable spec simply never
             // schedules (the rebuild skips it) rather than failing the import.
             let remind = tv.get("remind").and_then(Value::as_str);
-            let created = tv.get("created").and_then(Value::as_str).map(str::to_string).unwrap_or_else(now);
-            let modified = tv.get("modified").and_then(Value::as_str).map(str::to_string).unwrap_or_else(now);
-            let completed = tv.get("completed").and_then(Value::as_str);
+            // Through the SAME gate as due/scheduled/wait above, not a second
+            // spelling of it. B2 closed those four and left these three, so
+            // `"created":"not-a-date"` still imported with rc=0 and came back out
+            // of the next export verbatim — and `created` feeds `urgency::score`
+            // three lines down, so the garbage silently flattened the ranking
+            // every list is sorted by. The store writes all six as RFC3339, which
+            // `parse_when` short-circuits on, so D12's byte-identical round trip
+            // is untouched.
+            let created = import_field(id, "created", opt_when(tv, "created", now_ts))?.unwrap_or_else(now);
+            let modified = import_field(id, "modified", opt_when(tv, "modified", now_ts))?.unwrap_or_else(now);
+            let completed = import_field(id, "completed", opt_when(tv, "completed", now_ts))?;
             let rev = tv.get("_rev").and_then(Value::as_i64).unwrap_or(1);
             let urgency = urgency::score(
                 priority.and_then(Priority::parse),
@@ -2013,6 +2046,16 @@ fn update_column(
 }
 
 /// Render a task as the canonical full JSON object used by `task.list`.
+///
+/// Not the export shape: `store_export` builds its own §3 object, so fields
+/// added here for a reader's benefit cannot disturb the D12 round trip.
+///
+/// `tracked` is the STORED total and excludes an interval that is still
+/// running, which is why `active_since` sits beside it: together they are the
+/// whole truth and the running part stays derivable by anyone who wants it.
+/// Folding the open interval in here would make `task.get` disagree with
+/// `report.summary`'s `tracked_total` about the same task — trading a missing
+/// number for two numbers that contradict each other.
 pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
     flag_unrecognized_status(t, json!({
         "id": t.id,
@@ -2025,6 +2068,8 @@ pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
         "scheduled": t.scheduled,
         "wait": t.wait,
         "estimate": t.estimate,
+        "tracked": iso_duration(t.tracked_seconds),
+        "active_since": t.active_since,
         "recurrence": t.recurrence,
         "remind": t.remind,
         "urgency": t.urgency,
@@ -2058,27 +2103,38 @@ struct SortKey {
     desc: bool,
 }
 
-fn parse_sort(p: &Value) -> Vec<SortKey> {
-    let mut keys: Vec<SortKey> = p
-        .get("sort")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(|s| {
-                    if let Some(rest) = s.strip_prefix('-') {
-                        SortKey { key: rest.to_string(), desc: true }
-                    } else {
-                        SortKey { key: s.to_string(), desc: false }
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if keys.is_empty() {
-        keys.push(SortKey { key: "urgency".to_string(), desc: true });
+/// Parse the `sort` param into directives, REFUSING any key `compare_by` does
+/// not implement.
+///
+/// It used to accept anything and let `compare_by` fall through to "equal", so
+/// `sort:["bogus"]` returned rows in an order the caller never asked for, with
+/// exit 0 and no way to notice. Same family as D27's unknown filter token and
+/// the invalid `!priority`: on a READ path nothing is lost by refusing, and
+/// refusing is the only thing that turns a wrong answer into a fixable one.
+fn parse_sort(p: &Value) -> Result<Vec<SortKey>, ApiError> {
+    let mut keys: Vec<SortKey> = Vec::new();
+    if let Some(arr) = p.get("sort").and_then(Value::as_array) {
+        for s in arr.iter().filter_map(Value::as_str) {
+            // Strip the direction prefix BEFORE validating, or `-bogus` would
+            // slip past a check that only ever saw the raw token.
+            let (key, desc) = match s.strip_prefix('-') {
+                Some(rest) => (rest, true),
+                None => (s, false),
+            };
+            if !SORT_KEYS.contains(&key) {
+                return Err(ApiError::bad_request(format!(
+                    "unknown sort key \"{key}\" (valid keys: {}; prefix any with `-` for descending)",
+                    SORT_KEYS.join(", ")
+                )));
+            }
+            keys.push(SortKey { key: key.to_string(), desc });
+        }
     }
-    keys
+    if keys.is_empty() {
+        // The documented default, spelled from the same list it validates.
+        keys.push(SortKey { key: SORT_KEYS[0].to_string(), desc: true });
+    }
+    Ok(keys)
 }
 
 fn priority_rank(p: Option<Priority>) -> i32 {
@@ -2101,6 +2157,11 @@ fn compare_by(a: &Task, b: &Task, keys: &[SortKey]) -> std::cmp::Ordering {
             "created" => a.created.cmp(&b.created),
             "modified" => a.modified.cmp(&b.modified),
             "title" => a.title.cmp(&b.title),
+            // Unreachable via the API: `parse_sort` rejects anything not in
+            // SORT_KEYS. It stays as a total match rather than a panic because
+            // this is a read path, and a test drives every published key
+            // through here so a name added to the constant without an arm
+            // added here goes red instead of silently sorting by nothing.
             _ => Ordering::Equal,
         };
         let ord = if k.desc { ord.reverse() } else { ord };

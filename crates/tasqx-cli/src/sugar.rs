@@ -71,6 +71,12 @@ pub struct ParsedAdd {
     /// My (create it with `tasqx init My`)` about a project that existed.
     /// False when the name was quoted or came from `--project`: those are whole
     /// by construction, so a miss there really is a typo.
+    ///
+    /// Also false when NOTHING followed the token. The tokenizer can only cut a
+    /// name short by leaving the rest of it in a LATER token, so `add task
+    /// project:Zzz` — where `project:` is last — had nothing to lose, and
+    /// hedging there described a cut that could not have happened and sent the
+    /// user looking for a longer name that never existed.
     pub project_may_be_truncated: bool,
 }
 
@@ -144,7 +150,14 @@ pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError
     let mut estimate = flags.estimate;
     let mut project_may_be_truncated = false;
 
-    for SugarTok { text: tok, quoted } in tokenize_argv(args)? {
+    // Collected rather than streamed because the truncation hedge is a question
+    // about POSITION: a `project:` token can only have been cut short if some
+    // later token holds the rest of the name, and that is unknowable until the
+    // end of the stream.
+    let toks = tokenize_argv(args)?;
+    let last_tok = toks.len().saturating_sub(1);
+
+    for (i, SugarTok { text: tok, quoted }) in toks.into_iter().enumerate() {
         if let Some(tag) = tok.strip_prefix('+') {
             if !tag.is_empty() && !tags.iter().any(|t| t == tag) {
                 tags.push(tag.to_string());
@@ -152,7 +165,9 @@ pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError
         } else if let Some(p) = tok.strip_prefix("project:").or_else(|| tok.strip_prefix("proj:")) {
             if project.is_none() && !p.is_empty() {
                 project = Some(p.to_string());
-                project_may_be_truncated = !quoted;
+                // Unquoted AND something follows it: only then is there a word
+                // the tokenizer could have taken off the end of this name.
+                project_may_be_truncated = !quoted && i < last_tok;
             }
         } else if let Some(v) = tok.strip_prefix("due:") {
             set_if_empty(&mut due, v);

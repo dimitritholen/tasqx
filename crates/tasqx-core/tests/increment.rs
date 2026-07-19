@@ -2088,3 +2088,200 @@ fn a_legacy_bad_date_still_exports_verbatim_and_is_refused_on_the_way_back_in() 
         err.message
     );
 }
+
+/// B2 closed `due`/`scheduled`/`wait`/`estimate` and stopped there, so
+/// `created`, `modified` and `completed` — written by the same export, read by
+/// the same INSERT — walked straight past the gate. `"created":"not-a-date"`
+/// imported with rc=0 and came back out of the next export verbatim, and
+/// `created` is worse than the rest: `urgency::score` reads it, so the garbage
+/// also silently flattened the ranking every list is sorted by.
+///
+/// The field list is DERIVED from a real export rather than hand-written: any
+/// future timestamp column an export starts emitting joins this guard the day
+/// it appears, instead of the day someone remembers to add it here. That is the
+/// difference between a guard and a list that rots (D30).
+#[test]
+fn store_import_gates_every_timestamp_field_an_export_emits() {
+    let seed = engine();
+    seed.task_add(&json!({ "title": "carries every timestamp", "due": "2099-01-01",
+    // `wait`/`scheduled` in the PAST: they still export as RFC3339 instants,
+    // but leave the task pending rather than backlog, so `done` below is a legal
+    // transition and `completed` actually gets filled.
+                           "scheduled": "2020-01-02", "wait": "2020-01-03" }))
+        .unwrap();
+    seed.task_done(&json!({ "ref": "1" })).unwrap(); // fills `completed`
+    let exported = seed.store_export(&json!({})).unwrap();
+    let task = exported["tasks"][0].as_object().expect("one exported task");
+
+    // "Timestamp-shaped" is decided by the exported VALUE, not by a name list:
+    // anything the store wrote as an RFC3339 instant is a field a reader will
+    // later parse, and therefore a field import must not accept garbage in.
+    let stamped: Vec<String> = task
+        .iter()
+        .filter(|(_, v)| v.as_str().and_then(|s| s.parse::<jiff::Timestamp>().ok()).is_some())
+        .map(|(k, _)| k.clone())
+        .collect();
+    for want in ["created", "modified", "completed", "due", "scheduled", "wait"] {
+        assert!(stamped.contains(&want.to_string()), "export stopped emitting {want}: {stamped:?}");
+    }
+
+    for field in &stamped {
+        let mut bad = task.clone();
+        bad.insert(field.clone(), json!("not-a-date"));
+        let e = engine();
+        let err = e
+            .store_import(&json!({ "tasks": [Value::Object(bad)] }))
+            .expect_err(&format!("store.import accepted {field} = \"not-a-date\""));
+        assert_eq!(err.code, ErrorCode::BadRequest, "{field}: {}", err.message);
+        assert!(
+            err.message.contains(field.as_str()) && err.message.contains("not-a-date"),
+            "the error must name the field and the value: {}",
+            err.message
+        );
+        // One transaction: a refused import leaves the store untouched, so the
+        // garbage cannot survive as a half-written row either.
+        assert_eq!(count(&e.task_list(&json!({})).unwrap()), 0, "{field}: a refused import left a row");
+    }
+}
+
+// ---- E2: tracked time has a read surface ------------------------------------
+
+/// `tracked_seconds` drove `report.summary`'s `tracked_total` and nothing else.
+/// Every read surface a person actually uses — `task.get`, `task.list`, and the
+/// `show` detail rendered from them — omitted it, so the one question a timer
+/// exists to answer ("how long have I spent on this?") could only be answered
+/// by grouping the task into a report of its own.
+///
+/// `tracked` is the STORED total and excludes any interval still running, which
+/// is why `active_since` ships with it: the two together are the whole truth and
+/// the running part stays derivable. Folding the open interval into `tracked`
+/// here would make `show` disagree with `report` about the same task, trading a
+/// missing number for two numbers that contradict each other.
+#[test]
+fn tracked_time_and_active_since_reach_the_read_surfaces() {
+    let e = engine();
+    let a = e.task_add(&json!({ "title": "timed" })).unwrap();
+    let r = json!({ "ref": a["short_id"].clone() });
+
+    // Nothing tracked yet: the field is present and zero, not absent. An absent
+    // key would make "never started" indistinguishable from "this build has no
+    // such field" for a machine reader.
+    let got = e.task_get(&r).unwrap();
+    assert_eq!(got["tracked"], "PT0S", "task.get must publish tracked from the start");
+    assert_eq!(got["active_since"], Value::Null, "an idle task has no open interval");
+
+    // While running: the stored total is still zero, and `active_since` is what
+    // says the clock is moving.
+    e.task_start(&r).unwrap();
+    let running = e.task_get(&r).unwrap();
+    assert!(
+        running["active_since"].as_str().is_some(),
+        "an active task must expose when its interval opened: {running}"
+    );
+
+    // Stopping closes the interval into the stored total.
+    e.task_stop(&r).unwrap();
+    let stopped = e.task_get(&r).unwrap();
+    assert_eq!(stopped["active_since"], Value::Null, "stop must clear the open interval");
+    let tracked = stopped["tracked"].as_str().expect("tracked must be an ISO duration string");
+    assert!(tracked.starts_with("PT"), "tracked must be ISO-8601 like `estimate`: {tracked}");
+
+    // The same fields must be projectable from task.list, which is the surface a
+    // script reads. `fields` returns only what it can find, so a missing key is
+    // a silent empty object rather than an error - hence an explicit check.
+    let listed = e
+        .task_list(&json!({ "fields": ["short_id", "tracked", "active_since"] }))
+        .unwrap();
+    let t0 = &listed["tasks"][0];
+    assert_eq!(t0["tracked"], stopped["tracked"], "task.list must agree with task.get on tracked");
+    assert!(t0.get("active_since").is_some(), "task.list must be able to project active_since");
+}
+
+// ---- E3: the computed `blocked` flag survives into the projection -----------
+
+/// `task.list` computed `blocked` for every row (the filter grammar needs it),
+/// used it, then threw it away — so `@blocked` could FILTER on a fact that
+/// `fields:["blocked"]` could not RETURN. A caller could ask "which of these are
+/// blocked" only by issuing one `task.get` per row.
+///
+/// The export shape is deliberately NOT part of this: `store.export` builds its
+/// own §3 object, and D12 makes an unfiltered export a byte-identical round
+/// trip. That is asserted here rather than assumed.
+#[test]
+fn blocked_is_projectable_from_task_list_without_disturbing_export() {
+    let e = engine();
+    let blocker = e.task_add(&json!({ "title": "blocker" })).unwrap();
+    let dependent = e.task_add(&json!({ "title": "dependent" })).unwrap();
+    e.dependency_add(&json!({
+        "ref": dependent["short_id"].clone(),
+        "depends_on": blocker["short_id"].clone(),
+    }))
+    .unwrap();
+
+    let listed = e.task_list(&json!({ "fields": ["short_id", "blocked"], "sort": ["short_id"] })).unwrap();
+    let tasks = listed["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0]["blocked"], false, "the blocker itself is not blocked: {listed}");
+    assert_eq!(tasks[1]["blocked"], true, "the dependent IS blocked and must say so: {listed}");
+
+    // The filter and the projection must be reading the same fact, not two
+    // implementations of it that can drift apart.
+    let filtered = e.task_list(&json!({ "filter": "@blocked", "fields": ["short_id"] })).unwrap();
+    assert_eq!(count(&filtered), 1);
+    assert_eq!(filtered["tasks"][0]["short_id"], tasks[1]["short_id"]);
+
+    // D12: export -> import -> export is byte-identical, and `blocked` (a
+    // derived fact, not stored state) never enters the document.
+    let first = e.store_export(&json!({})).unwrap();
+    for t in first["tasks"].as_array().unwrap() {
+        assert!(t.get("blocked").is_none(), "export must not carry the derived blocked flag: {t}");
+    }
+    let e2 = engine();
+    e2.store_import(&json!({ "tasks": first["tasks"].clone() })).unwrap();
+    let second = e2.store_export(&json!({})).unwrap();
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&second).unwrap(),
+        "carrying blocked into the list projection changed the export round trip"
+    );
+}
+
+// ---- E7: an unknown sort key is refused, not silently ignored ---------------
+
+/// `compare_by` matched known keys and fell through to `Ordering::Equal` for
+/// everything else, so `sort:["bogus"]` returned rows in whatever order the
+/// remaining keys (or none) produced — a different question answered with exit
+/// 0. Same family as D27's unknown filter token: on a READ path nothing is lost
+/// by refusing, and the caller learns immediately instead of trusting an order
+/// that was never applied.
+#[test]
+fn an_unknown_sort_key_is_rejected_and_every_published_one_works() {
+    let e = engine();
+    e.task_add(&json!({ "title": "a" })).unwrap();
+    e.task_add(&json!({ "title": "b" })).unwrap();
+
+    let err = e
+        .task_list(&json!({ "sort": ["bogus"] }))
+        .expect_err("an unknown sort key must not be silently ignored");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("bogus"), "the error must name the offending key: {}", err.message);
+    for k in tasqx_core::engine::SORT_KEYS {
+        assert!(err.message.contains(k), "the error must list the way out ({k}): {}", err.message);
+    }
+
+    // A descending prefix must not smuggle an unknown key past the check.
+    let err = e.task_list(&json!({ "sort": ["-nope"] })).expect_err("`-nope` must be refused too");
+    assert!(err.message.contains("nope"), "the `-` prefix must be stripped before naming: {}", err.message);
+
+    // Every published key is genuinely sortable — the constant must not grow a
+    // name that `compare_by` does not implement, which would re-open the same
+    // silent drop through the front door.
+    for k in tasqx_core::engine::SORT_KEYS {
+        for spelling in [k.to_string(), format!("-{k}")] {
+            let r = e
+                .task_list(&json!({ "sort": [spelling.clone()] }))
+                .unwrap_or_else(|e| panic!("published sort key {spelling} was rejected: {}", e.message));
+            assert_eq!(count(&r), 2, "sort by {spelling} lost rows");
+        }
+    }
+}

@@ -15,37 +15,67 @@ use crate::chart::{self, today};
 use crate::theme::{Rgb, Theme};
 
 /// Generate the full report document as one self-contained HTML string.
-pub fn generate(engine: &Engine, theme: &Theme) -> Result<String, ApiError> {
+///
+/// `params` is the SAME `report.summary` payload the terminal `tasqx report`
+/// sends — built once by `report_params` and handed here verbatim, not rebuilt.
+/// It used to be built here from scratch, which is why `report <filter> --html`
+/// ignored its filter entirely: the two output modes of one command were two
+/// independent code paths, so a filter honoured on one was invisible to the
+/// other. Threading the filter through a second time would have recreated that
+/// divergence; taking core's own request object removes it, and any future
+/// `report` knob (a new metric, a new group_by) reaches both modes for free.
+///
+/// `group_by` and `filter` are read back OUT of `params` rather than passed
+/// alongside it, so there is exactly one statement of each.
+pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String, ApiError> {
+    let group_by = params
+        .get("group_by")
+        .and_then(Value::as_str)
+        .unwrap_or(tasqx_core::engine::SUMMARY_GROUP_BY[0]);
+    let filter = params.get("filter").and_then(Value::as_str);
+
     // ---- gather data — all pure reads --------------------------------------
-    let summary = dispatch(
-        engine,
-        "report.summary",
-        // No filter on purpose: the scope is core's business (D24), which
-        // excludes cancelled and keeps everything else. The filter that used to
-        // live here was `status:pending`, and `pending` does not include
-        // `active` — so the task you were working on right now disappeared from
-        // the per-project roll-up. Passing a filter here also meant this page
-        // answered a different question than the CLI's `tasqx report`.
-        &json!({
-            "group_by": "project",
-            "metrics": ["count", "est_total", "tracked_total", "overdue"],
-        }),
-    )?;
-    let export = dispatch(engine, "store.export", &json!({}))?;
+    // The summary keeps core's own scope rules on top of the filter (D24:
+    // cancelled excluded unless the filter names a status). No `status:pending`
+    // narrowing here — `pending` does not include `active`, so the task you were
+    // working on right now used to vanish from the roll-up.
+    let summary = dispatch(engine, "report.summary", params)?;
+    let export = dispatch(engine, "store.export", &scoped(json!({}), filter))?;
+    // `@working` is this panel's own question ("unblocked and startable"), so it
+    // is ANDed with the user's scope rather than replacing it. Parenthesised
+    // because the DSL has `or`: `project:a or project:b and @working` would
+    // otherwise bind the wrong half.
+    let actionable_filter = match filter {
+        Some(f) => format!("({f}) and @working"),
+        None => "@working".to_string(),
+    };
     let actionable = dispatch(
         engine,
         "task.list",
-        &json!({ "filter": "@working", "sort": ["-urgency"], "limit": 12 }),
+        &json!({ "filter": actionable_filter, "sort": ["-urgency"], "limit": 12 }),
     )?;
     let events = dispatch(engine, "event.list", &json!({ "limit": 100000 }))?;
 
     let now = jiff::Timestamp::now().to_string();
-    let doc = Report { theme, summary: &summary, export: &export, actionable: &actionable, events: &events, now: &now };
+    let doc = Report { theme, group_by, summary: &summary, export: &export, actionable: &actionable, events: &events, now: &now };
     Ok(doc.render())
+}
+
+/// Add `filter` to a params object, or leave it absent. Absent, not `null`:
+/// core reads a missing key as "no filter" and would reject a null.
+fn scoped(mut params: Value, filter: Option<&str>) -> Value {
+    if let Some(f) = filter {
+        params["filter"] = Value::String(f.to_string());
+    }
+    params
 }
 
 struct Report<'a> {
     theme: &'a Theme,
+    /// Which column `summary`'s groups are keyed by — `report.summary` names the
+    /// key after the axis, so reading `project` out of a `status` roll-up would
+    /// quietly render a table of `(none)`.
+    group_by: &'a str,
     summary: &'a Value,
     export: &'a Value,
     actionable: &'a Value,
@@ -158,7 +188,7 @@ impl<'a> Report<'a> {
 
         body.push_str(&self.completed_section(&completed_recent));
         body.push_str(&self.overdue_section(&overdue_tasks));
-        body.push_str(&self.per_project_section());
+        body.push_str(&self.per_group_section());
         body.push_str(&self.actionable_section());
         body.push_str(&self.tags_section(&top_tags));
 
@@ -234,14 +264,20 @@ impl<'a> Report<'a> {
         )
     }
 
-    fn per_project_section(&self) -> String {
+    fn per_group_section(&self) -> String {
+        // Derived from `group_by`, never hardcoded: `report.summary` names the
+        // group key after the axis it grouped on, so `tasqx report status --html`
+        // returned rows keyed `status` while this read `project` and rendered a
+        // column of `(none)` under a heading that said "By project".
+        let axis = self.group_by;
+        let title = format!("By {axis}");
         let groups = self.summary.get("groups").and_then(Value::as_array).cloned().unwrap_or_default();
         if groups.is_empty() {
-            return section("By project", "No open work grouped by project.", "");
+            return section(&title, &format!("No open work grouped by {axis}."), "");
         }
         let mut rows = String::new();
         for g in &groups {
-            let name = g.get("project").and_then(Value::as_str).unwrap_or("(none)");
+            let name = g.get(axis).and_then(Value::as_str).unwrap_or("(none)");
             let count = g.get("count").and_then(Value::as_i64).unwrap_or(0);
             let est = humanize_iso(g.get("est_total").and_then(Value::as_str).unwrap_or("PT0S"));
             let tracked = humanize_iso(g.get("tracked_total").and_then(Value::as_str).unwrap_or("PT0S"));
@@ -257,7 +293,10 @@ impl<'a> Report<'a> {
             ));
         }
         let table = format!(
-            "<table class=\"grid\"><thead><tr><th>Project</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th></tr></thead><tbody>{rows}</tbody></table>"
+            "<table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th></tr></thead><tbody>{rows}</tbody></table>",
+            // The axis name, title-cased — `esc` because it reaches markup, even
+            // though core has already restricted it to SUMMARY_GROUP_BY.
+            head = esc(&title_case(axis)),
         );
         // "Tasks", not "Open": under D24 this count includes `done`, because
         // completed work is real work and carries nearly all the tracked time.
@@ -265,8 +304,10 @@ impl<'a> Report<'a> {
         // means something narrower (html.rs's own derivation excludes done too),
         // so this column must not borrow that word for a different number.
         section(
-            "By project",
-            "Task count (cancelled excluded), estimate vs. tracked time, and overdue per project.",
+            &title,
+            &format!(
+                "Task count (cancelled excluded), estimate vs. tracked time, and overdue per {axis}."
+            ),
             &table,
         )
     }
@@ -376,6 +417,16 @@ impl<'a> Report<'a> {
 }
 
 // ---- small HTML/format helpers ---------------------------------------------
+
+/// ASCII title-case for a group_by axis (`status` -> `Status`) — a table header,
+/// not prose, so the one-letter rule is all that is needed.
+fn title_case(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
 
 fn section(title: &str, sub: &str, body: &str) -> String {
     format!(
@@ -668,6 +719,7 @@ mod tests {
         let now = "2026-07-15T12:00:00Z".to_string();
         Report {
             theme: &th,
+            group_by: "project",
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -709,11 +761,40 @@ mod tests {
 
         // And the generator must actually ask for that unfiltered summary — the
         // rendered row is where the hardcoded filter used to show up as a 1.
-        let html = generate(&e, &theme::builtin("nord").unwrap()).unwrap();
+        let html = generate(&e, &theme::builtin("nord").unwrap(), &json!({ "group_by": "project", "metrics": ["count"] })).unwrap();
         assert!(
             html.contains("<td class=\"proj\">P</td><td>3</td>"),
             "the By-project row must show 3, not the pending-only 1: {html}"
         );
+    }
+
+    /// Now that the HTML path takes the terminal path's own params, `group_by`
+    /// arrives with them — and `report.summary` names each group's key after the
+    /// axis. A section that kept reading `project` would render a full column of
+    /// `(none)` under a heading saying "By project" for `tasqx report status
+    /// --html`: correct data, silently mislabelled and unreadable. The axis is
+    /// walked from core's own list so a fourth one cannot be added without this
+    /// failing (D30).
+    #[test]
+    fn the_group_section_follows_the_axis_the_caller_asked_for() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "P" })).unwrap();
+        e.task_add(&json!({ "title": "one", "project": "P", "priority": "high" })).unwrap();
+
+        for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
+            let doc = generate(
+                &e,
+                &theme::builtin("nord").unwrap(),
+                &json!({ "group_by": axis, "metrics": ["count"] }),
+            )
+            .unwrap();
+            let head = title_case(axis);
+            assert!(doc.contains(&format!("<th>{head}</th>")), "{axis}: header not relabelled");
+            assert!(
+                !doc.contains("<td class=\"proj\">(none)</td>"),
+                "{axis}: the row key was read from the wrong column"
+            );
+        }
     }
 
     #[test]
@@ -785,6 +866,7 @@ mod tests {
         let now = "2026-07-15T12:00:00Z".to_string();
         let doc = Report {
             theme: &th,
+            group_by: "project",
             summary: &summary,
             export: &export,
             actionable: &actionable,

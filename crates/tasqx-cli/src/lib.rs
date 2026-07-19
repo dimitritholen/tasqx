@@ -548,6 +548,108 @@ fn exit_on_parse_error(e: &clap::Error, filter_command: bool) -> ! {
     e.exit()
 }
 
+/// The commands that do NOT honour `--json`, and the reason each may not.
+///
+/// DESIGN.md's opening promise is that every command speaks human-readable text
+/// *and* `--json`. These are the declared exceptions, and they are all one kind
+/// of exception: each frames its own I/O, so there is no single result value to
+/// hand a machine when it finishes — three speak another protocol outright, one
+/// never terminates, one is prose for a human to read.
+///
+/// This table is load-bearing, not documentation. [`Exit::self_framed`] is the
+/// only way to reach a terminal without consulting `--json`, and it refuses a
+/// name that is not listed here, so a future early `return` cannot invent a
+/// silent carve-out. `tests/json_contract.rs` closes the other direction: it
+/// derives the command list from clap and drives every command that is *not*
+/// listed here through the real binary, asserting it emits JSON.
+pub const JSON_CARVE_OUTS: &[(&str, &str)] = &[
+    ("api", "already speaks the JSON API response envelope; --json would double-wrap it"),
+    ("mcp", "speaks JSON-RPC over stdio to an agent, framed by the protocol"),
+    ("daemon", "a server: stdout is diagnostics, results travel over the socket"),
+    ("watch", "a live stream that re-renders until interrupted; it has no final result"),
+    ("manual", "a human reading surface: themed prose, no machine-relevant facts"),
+];
+
+/// Every subcommand clap knows, derived from the parser rather than listed, so
+/// a new command joins the `--json` contract guard on the day it is added (D30).
+pub fn subcommand_names() -> Vec<String> {
+    use clap::CommandFactory;
+    Cli::command().get_subcommands().map(|c| c.get_name().to_string()).collect()
+}
+
+/// How a command leaves [`execute`].
+///
+/// This exists to make the `--json` bypass unrepresentable. Before it, `run()`
+/// consulted `cli.json` exactly once — on the outcome of the big
+/// `match cli.command` — and half a dozen commands were dispatched by an early
+/// `return` *above* that point, so they accepted the flag and ignored it. The
+/// early returns are not the problem and are not going away: `docs` must run
+/// before `build_ctx` so a broken theme cannot block reading the docs, and
+/// `theme` must run before the engine opens because it needs no store. What was
+/// missing was a type that says "and then you still owe the caller a result".
+///
+/// Every path out of `execute` now yields one of these two, so the compiler —
+/// not a reviewer's memory — is what keeps a new early `return` honest.
+enum Exit {
+    /// A machine-relevant result plus its human rendering. The single terminal
+    /// in [`run`] picks between them by `--json`.
+    Out(CmdOutcome),
+    /// A declared carve-out from [`JSON_CARVE_OUTS`]: this command frames and
+    /// writes its own output, and there is nothing left to render.
+    SelfFramed,
+}
+
+impl Exit {
+    /// The only way to build a non-JSON terminal, and it refuses a name that is
+    /// not on the declared list. A future early `return` therefore cannot invent
+    /// a silent carve-out — it either produces a result or fails here loudly.
+    ///
+    /// Also the place the second half of the contract is kept: accepting a flag
+    /// and ignoring it is the bug this whole change is about, so when `--json`
+    /// reaches a carve-out we say so, and say why. On stderr, because three of
+    /// these five commands have a protocol on stdout that a note would corrupt.
+    ///
+    /// Called BEFORE the command runs, not after: `daemon` and `watch` do not
+    /// return until they are interrupted, and a warning delivered then is a
+    /// warning nobody reads.
+    fn self_framed(name: &'static str, json: bool) -> Exit {
+        let reason = JSON_CARVE_OUTS.iter().find(|(n, _)| *n == name).map(|(_, why)| *why);
+        let reason = reason.unwrap_or_else(|| {
+            panic!(
+                "`{name}` framed its own output but is not a declared --json carve-out; \
+                 add it to JSON_CARVE_OUTS with a reason, or return Exit::Out"
+            )
+        });
+        if json {
+            eprintln!("note: `{name}` does not honour --json — {reason}");
+        }
+        Exit::SelfFramed
+    }
+}
+
+/// Write a finished rendering to stdout, tolerating a reader that stops early.
+///
+/// NOT `print!`: that panics if stdout closes mid-write, and several of the
+/// things that pass through here are large enough for the downstream reader to
+/// close the pipe first — `tasqx docs --stdout | head` is ~87KB, and
+/// `tasqx --json export | head` is unbounded. Closing a pipe early is a normal
+/// shell idiom, not a crash, so BrokenPipe is success and every other write
+/// error is the real error it is.
+///
+/// This lived inside `docs --stdout` alone, which is why it protected exactly
+/// one of the commands that needed it.
+fn emit(text: &str) {
+    let mut out = std::io::stdout();
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => {
+            eprintln!("error: cannot write to stdout: {e}");
+            exit(1);
+        }
+    }
+}
+
 pub fn run() {
     // Not `Cli::parse()`: filter tokens like `-needs` must reach the grammar,
     // and the only way to keep that from disarming clap's flag handling is to
@@ -569,21 +671,50 @@ pub fn run() {
         _ => {}
     }
 
+    // Read before `cli` is moved into `execute`, which consumes it by value.
+    let json = cli.json;
+
+    // THE terminal. Every command reaches exactly this point, whether it was
+    // dispatched early or fell through to the bottom match, which is what makes
+    // "honours --json unless declared otherwise" a property of the code shape
+    // rather than a promise five call sites have to keep independently.
+    match execute(cli) {
+        Exit::SelfFramed => {}
+        Exit::Out(Ok((result, render))) => {
+            if json {
+                emit(&format!("{}\n", serde_json::to_string_pretty(&result).unwrap_or_default()));
+            } else {
+                emit(&render);
+            }
+        }
+        Exit::Out(Err(e)) => {
+            eprintln!("error [{}]: {}", code_str(&e), e.message);
+            exit(e.exit_code());
+        }
+    }
+}
+
+/// Run the parsed command, yielding whatever the terminal in [`run`] should do
+/// with it. Every `return` in here owes an [`Exit`].
+fn execute(cli: Cli) -> Exit {
     // `api`, `mcp`, and `daemon` are special: they frame their own I/O (response
     // envelopes / JSON-RPC / the socket server) and do not go through the normal
     // render path. `daemon` opens its own Engine and blocks.
     match &cli.command {
         Some(Command::Api) => {
+            let exit = Exit::self_framed("api", cli.json);
             run_api();
-            return;
+            return exit;
         }
         Some(Command::Mcp { action }) => {
+            let exit = Exit::self_framed("mcp", cli.json);
             run_mcp(action);
-            return;
+            return exit;
         }
         Some(Command::Daemon { db }) => {
+            let exit = Exit::self_framed("daemon", cli.json);
             run_daemon(cli.socket.as_deref(), db.as_deref());
-            return;
+            return exit;
         }
         _ => {}
     }
@@ -591,8 +722,7 @@ pub fn run() {
     // `docs` is pure static content — no store, no theme, no network. Handle it
     // before anything that could fail for reasons the reader is trying to look up.
     if let Some(Command::Docs { out, no_open, stdout }) = &cli.command {
-        run_docs(out.as_deref(), *no_open, *stdout);
-        return;
+        return Exit::Out(run_docs(out.as_deref(), *no_open, *stdout));
     }
 
     // Build the render context: resolve the active theme (flag > env > config >
@@ -604,26 +734,26 @@ pub fn run() {
 
     // `theme` needs no store; handle it before opening the engine.
     if let Some(Command::Theme { action }) = &cli.command {
-        run_theme(&ctx, action);
-        return;
+        return Exit::Out(run_theme(&ctx, action));
     }
 
     // `manual` needs the themed Ctx but no store and no network; dispatch it
     // here beside `theme`, before the engine is ever opened.
     if let Some(Command::Manual { topic }) = &cli.command {
+        let exit = Exit::self_framed("manual", cli.json);
         run_manual(&ctx, topic.as_deref());
-        return;
+        return exit;
     }
 
     // `watch` is socket-only: it subscribes to a daemon and re-renders on push.
     if let Some(Command::Watch { filter }) = &cli.command {
+        let exit = Exit::self_framed("watch", cli.json);
         run_watch(cli.socket.as_deref(), cli.no_daemon, filter, &ctx);
-        return;
+        return exit;
     }
 
-    // Charts and the HTML report are pure local reads that frame their own
-    // output; they render straight from a direct Engine (safe under WAL even if
-    // a daemon is also running).
+    // Charts and the HTML report are pure local reads; they render straight from
+    // a direct Engine (safe under WAL even if a daemon is also running).
     if matches!(
         &cli.command,
         Some(Command::Chart { .. }) | Some(Command::Report { html: true, .. })
@@ -635,12 +765,17 @@ pub fn run() {
                 exit(1);
             }
         };
-        match cli.command {
+        return Exit::Out(match cli.command {
             Some(Command::Chart { kind }) => run_chart(&engine, &ctx, kind),
-            Some(Command::Report { html: true, out, .. }) => run_html_report(&engine, &ctx, out),
+            // `args` carries the optional group_by AND the filter DSL. It used
+            // to be dropped here with `..`, which is the whole of F1a: clap
+            // parsed the filter, `report_params` knew how to read it, and this
+            // one match arm never asked.
+            Some(Command::Report { html: true, args, out, .. }) => {
+                run_html_report(&engine, &ctx, args, out)
+            }
             _ => unreachable!(),
-        }
-        return;
+        });
     }
 
     // Everything else routes through a reachable daemon (single writer), else
@@ -653,7 +788,7 @@ pub fn run() {
         }
     };
 
-    let outcome = match cli.command {
+    Exit::Out(match cli.command {
         None => run_list(&mut backend, &ctx, &[]),
         Some(Command::Init { name, desc }) => run_init(&mut backend, &ctx, name, desc),
         Some(Command::Add { title, project, priority, due, scheduled, wait, repeat, remind, estimate, tags }) => {
@@ -715,25 +850,7 @@ pub fn run() {
         Some(Command::Daemon { .. }) => unreachable!("handled above"),
         Some(Command::Mcp { .. }) => unreachable!("handled above"),
         Some(Command::Manual { .. }) => unreachable!("handled above"),
-    };
-
-    match outcome {
-        Ok((result, render)) => {
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
-            } else {
-                print!("{render}");
-            }
-        }
-        Err(e) => {
-            let code = serde_json::to_value(e.code)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
-            eprintln!("error [{code}]: {}", e.message);
-            exit(e.exit_code());
-        }
-    }
+    })
 }
 
 /// Resolve the active theme (flag > $TASQX_THEME > config > default) and detect
@@ -1225,7 +1342,7 @@ fn run_projects(be: &mut Backend, ctx: &Ctx, all: bool) -> CmdOutcome {
 fn report_params(args: &[String], all: bool) -> Value {
     // First token, if a known group_by keyword, selects grouping; the rest is
     // the filter. Otherwise everything is the filter (group_by defaults).
-    let mut group_by = "project".to_string();
+    let mut group_by = tasqx_core::engine::SUMMARY_GROUP_BY[0].to_string();
     let mut rest: &[String] = args;
     if let Some(first) = args.first() {
         // The engine's own list, not a third copy. The MCP schema already
@@ -1237,9 +1354,14 @@ fn report_params(args: &[String], all: bool) -> Value {
             rest = &args[1..];
         }
     }
+    // Same reasoning as `group_by` above, and the same constant pattern:
+    // `SUMMARY_METRICS` exists to stop the CLI keeping a private second copy of
+    // this list. It had one anyway, sitting three lines from the import — so a
+    // fifth metric would have reached the JSON API and the MCP schema while
+    // `tasqx report` silently kept asking for four.
     let mut params = json!({
         "group_by": group_by,
-        "metrics": ["count", "est_total", "overdue", "tracked_total"],
+        "metrics": tasqx_core::engine::SUMMARY_METRICS,
     });
     if !rest.is_empty() {
         params["filter"] = Value::String(tasqx_core::filter::from_argv(rest));
@@ -1254,7 +1376,8 @@ fn report_params(args: &[String], all: bool) -> Value {
 
 fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>, all: bool) -> CmdOutcome {
     let params = report_params(&args, all);
-    let group_by = params["group_by"].as_str().unwrap_or("project").to_string();
+    let group_by =
+        params["group_by"].as_str().unwrap_or(tasqx_core::engine::SUMMARY_GROUP_BY[0]).to_string();
     let result = be.call("report.summary", &params)?;
     let text = render::report(ctx, &result, &group_by);
     Ok((result, text))
@@ -1338,37 +1461,62 @@ fn run_why(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
 // ---- charts, HTML report, and theme tools (DESIGN.md §8) --------------------
 
 /// `tasqx chart <kind>`: read the event log and render a native terminal chart.
-fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) {
-    let events = match dispatch(engine, "event.list", &json!({ "limit": 100000 })) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error [{}]: {}", code_str(&e), e.message);
-            exit(e.exit_code());
-        }
-    };
-    let out = match kind {
+/// `tasqx chart throughput|heatmap|burndown`.
+///
+/// Each arm computes its SERIES once and hands the same values to both the
+/// renderer and the JSON. The series is the answer; the sparkline is one way of
+/// looking at it, and a script that wants the numbers should not have to parse
+/// block glyphs back into integers to get them.
+fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
+    let events = dispatch(engine, "event.list", &json!({ "limit": 100000 }))?;
+    let anchor = chart::today();
+    Ok(match kind {
         ChartKind::Throughput { weeks, .. } => {
-            chart::render_throughput(ctx, &events, chart::default_weeks(false, weeks))
+            let weeks = chart::default_weeks(false, weeks);
+            let series = chart::throughput(&events, weeks, anchor);
+            let data = series
+                .iter()
+                .map(|b| {
+                    json!({ "iso_year": b.iso_year, "iso_week": b.iso_week, "label": b.label(),
+                            "added": b.added, "done": b.done, "net": b.net() })
+                })
+                .collect::<Vec<_>>();
+            (
+                json!({ "chart": "throughput", "weeks": weeks, "series": data }),
+                chart::render_throughput(ctx, &series),
+            )
         }
         ChartKind::Heatmap { year, weeks } => {
-            chart::render_heatmap(ctx, &events, chart::default_weeks(year, weeks))
+            let weeks = chart::default_weeks(year, weeks);
+            let days = chart::heatmap(&events, weeks, anchor);
+            let data = days
+                .iter()
+                .map(|d| json!({ "date": d.date.to_string(), "count": d.count }))
+                .collect::<Vec<_>>();
+            (
+                json!({ "chart": "heatmap", "weeks": weeks, "series": data,
+                        "current_streak": chart::current_streak(&days, anchor),
+                        "best_streak": chart::best_streak(&days) }),
+                chart::render_heatmap(ctx, &days, anchor),
+            )
         }
         ChartKind::Burndown { project, days } => {
-            let days = days.unwrap_or(30);
+            let days_n = days.unwrap_or(30);
             // Reported, never swallowed: an unresolvable scope used to render as
             // a cleared burndown, which is a wrong answer wearing the costume of
-            // a right one. Same shape as the `event.list` arm above.
-            let (members, label) = match burndown_members(engine, &project) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("error [{}]: {}", code_str(&e), e.message);
-                    exit(e.exit_code());
-                }
-            };
-            chart::render_burndown(ctx, &events, &members, days, &label)
+            // a right one.
+            let (members, label) = burndown_members(engine, &project)?;
+            let series = chart::burndown(&events, &members, days_n, anchor);
+            let data = series
+                .iter()
+                .map(|p| json!({ "date": p.date.to_string(), "remaining": p.remaining }))
+                .collect::<Vec<_>>();
+            (
+                json!({ "chart": "burndown", "days": days_n, "scope": label, "series": data }),
+                chart::render_burndown(ctx, &series, &label),
+            )
         }
-    };
-    print!("{out}");
+    })
 }
 
 /// Every status a burndown counts as membership — i.e. everything but
@@ -1423,28 +1571,31 @@ fn burndown_members(
 }
 
 /// `tasqx report --html`: write the self-contained HTML review.
-fn run_html_report(engine: &Engine, ctx: &Ctx, out: Option<String>) {
-    let doc = match html::generate(engine, &ctx.theme) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error [{}]: {}", code_str(&e), e.message);
-            exit(e.exit_code());
-        }
-    };
+///
+/// The scope comes from [`report_params`] — the SAME builder the terminal path
+/// uses — so the two output modes of one command cannot answer different
+/// questions again. `all` is hard `false` rather than a parameter because clap
+/// already rejects `--all` alongside `--html`; spelling it here keeps the two
+/// facts in one place instead of accepting a flag we would then ignore.
+fn run_html_report(engine: &Engine, ctx: &Ctx, args: Vec<String>, out: Option<String>) -> CmdOutcome {
+    let params = report_params(&args, false);
+    let doc = html::generate(engine, &ctx.theme, &params)?;
     match out {
         Some(path) => {
             if let Some(parent) = PathBuf::from(&path).parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            match std::fs::write(&path, doc) {
-                Ok(()) => println!("Wrote self-contained HTML report → {path}"),
-                Err(e) => {
-                    eprintln!("error: cannot write {path}: {e}");
-                    exit(1);
-                }
+            match std::fs::write(&path, &doc) {
+                // The machine-relevant fact of this mode is where the file landed
+                // — the one thing a script needs in order to do anything next.
+                Ok(()) => Ok((
+                    json!({ "path": path, "bytes": doc.len() }),
+                    format!("Wrote self-contained HTML report → {path}\n"),
+                )),
+                Err(e) => Err(ApiError::internal(format!("cannot write {path}: {e}"))),
             }
         }
-        None => print!("{doc}"),
+        None => Ok((json!({ "path": Value::Null, "bytes": doc.len(), "html": doc.clone() }), doc)),
     }
 }
 
@@ -1457,25 +1608,18 @@ fn run_html_report(engine: &Engine, ctx: &Ctx, out: Option<String>) {
 /// write degrades to a printed path and exit 0. That is what makes this command
 /// safe to run in CI without a flag — the headless path is the default path with
 /// one fewer step, not a separate mode.
-fn run_docs(out: Option<&str>, no_open: bool, to_stdout: bool) {
+fn run_docs(out: Option<&str>, no_open: bool, to_stdout: bool) -> CmdOutcome {
     let doc = docs::generate();
 
     if to_stdout {
-        // NOT `print!`: that panics if stdout closes mid-write, and at ~87KB the
-        // guide is comfortably large enough for `tasqx docs --stdout | head` to
-        // close the pipe before we finish. A downstream reader that stops early
-        // is a normal shell idiom, not a crash — so treat BrokenPipe as success
-        // and let any other write error be the real error it is.
-        let mut out = std::io::stdout();
-        match out.write_all(doc.as_bytes()).and_then(|()| out.flush()) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-            Err(e) => {
-                eprintln!("error: cannot write the guide to stdout: {e}");
-                exit(1);
-            }
-        }
-        return;
+        // The human rendering is the guide itself; `emit` in the terminal is what
+        // keeps `tasqx docs --stdout | head` from panicking on a closed pipe.
+        // Under `--json` the same bytes travel as a string, so a script gets the
+        // guide without having to distinguish this mode from the others.
+        return Ok((
+            json!({ "path": Value::Null, "opened": false, "bytes": doc.len(), "html": doc }),
+            doc,
+        ));
     }
 
     // An explicit --out means "give me the file"; opening a browser onto a path
@@ -1500,18 +1644,26 @@ fn run_docs(out: Option<&str>, no_open: bool, to_stdout: bool) {
         exit(1);
     }
 
+    // The machine-relevant facts are the same in all three branches — where the
+    // guide is, and whether a viewer was launched — so they are one shape, and
+    // only the sentence differs.
+    let result = |opened: bool| {
+        json!({ "path": path.to_string_lossy(), "opened": opened, "bytes": doc.len() })
+    };
+
     if explicit || no_open {
-        println!("Wrote the tasqx user guide → {}", path.display());
-        return;
+        return Ok((result(false), format!("Wrote the tasqx user guide → {}\n", path.display())));
     }
 
     match open_in_browser(&path) {
-        Ok(()) => println!("Opened the tasqx user guide → {}", path.display()),
+        Ok(()) => {
+            Ok((result(true), format!("Opened the tasqx user guide → {}\n", path.display())))
+        }
         Err(e) => {
             // The whole point: no browser is not an error. Say what happened, say
             // where the file is, and exit 0 so a CI step never goes red over it.
             eprintln!("note: could not open a browser ({e})");
-            println!("The tasqx user guide is at → {}", path.display());
+            Ok((result(false), format!("The tasqx user guide is at → {}\n", path.display())))
         }
     }
 }
@@ -1589,25 +1741,37 @@ fn open_in_browser(path: &std::path::Path) -> Result<(), String> {
     spawn_first(&browser_candidates(path))
 }
 
-/// `tasqx theme list|show`.
-fn run_theme(ctx: &Ctx, action: &ThemeAction) {
+/// `tasqx theme list|show|set`.
+///
+/// Every arm returns the facts alongside the rendering rather than printing:
+/// the theme list, the resolved role→colour map, and the write receipt are all
+/// things a script has a real use for — picking a theme from a menu, driving a
+/// terminal's own palette from tasqx's, confirming where the value landed.
+fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
     match action {
         ThemeAction::List => {
-            println!("{}", ctx.paint("header", "Built-in themes"));
+            let mut text = String::new();
+            text.push_str(&format!("{}\n", ctx.paint("header", "Built-in themes")));
             for name in theme::BUILTINS {
                 let marker = if name == ctx.theme.name { " ← active" } else { "" };
-                println!("  {}{}", name, ctx.paint("muted", marker));
+                text.push_str(&format!("  {}{}\n", name, ctx.paint("muted", marker)));
             }
+            let mut user_block = Value::Null;
             if let Some(dir) = themes_dir() {
                 let user = user_theme_names();
                 if !user.is_empty() {
-                    println!("{}", ctx.paint("header", "User themes"));
-                    println!("  {}", ctx.paint("muted", &dir.to_string_lossy()));
-                    for name in user {
-                        println!("  {name}");
+                    text.push_str(&format!("{}\n", ctx.paint("header", "User themes")));
+                    text.push_str(&format!("  {}\n", ctx.paint("muted", &dir.to_string_lossy())));
+                    for name in &user {
+                        text.push_str(&format!("  {name}\n"));
                     }
+                    user_block = json!({ "dir": dir.to_string_lossy(), "names": user });
                 }
             }
+            Ok((
+                json!({ "active": ctx.theme.name, "builtin": theme::BUILTINS, "user": user_block }),
+                text,
+            ))
         }
         ThemeAction::Show { name } => {
             // Preview the requested theme (or the active one) at current caps.
@@ -1624,10 +1788,7 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
                     // "the default", and through the shared validator so this
                     // cannot drift from `theme set` and `config set` the way an
                     // inline copy already did once.
-                    if let Err(e) = validate_setting("theme.name", &resolved) {
-                        eprintln!("error [{}]: {}", code_str(&e), e.message);
-                        exit(e.exit_code());
-                    }
+                    validate_setting("theme.name", &resolved)?;
                     Ctx::new(theme::load(&resolved, themes_dir().as_deref()), ctx.caps)
                 }
                 None => Ctx::new(ctx.theme.clone(), ctx.caps),
@@ -1636,10 +1797,26 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
             // legacy path so `theme show | cat` never emits mojibake.
             let swatch = if preview.caps.unicode { "████" } else { "####" };
             let bar = if preview.caps.unicode { "█" } else { "#" };
-            println!("{}", preview.paint("header", &format!("Theme: {}", preview.theme.name)));
+            let mut text = String::new();
+            text.push_str(&format!(
+                "{}\n",
+                preview.paint("header", &format!("Theme: {}", preview.theme.name))
+            ));
+            // The resolved role→colour map, built from the SAME `role_names` walk
+            // that prints the swatches, so the two views of one theme cannot come
+            // to differ about which roles it defines.
+            let mut roles = serde_json::Map::new();
             for role in preview.theme.role_names() {
                 let sample = preview.theme.paint(&role, &format!("{swatch} sample text"), &preview.caps);
-                println!("  {:<14} {sample}", role);
+                text.push_str(&format!("  {:<14} {sample}\n", role));
+                let st = preview.theme.role(&role);
+                roles.insert(
+                    role.clone(),
+                    json!({
+                        "fg": st.fg.map(|c| c.hex()),
+                        "bold": st.bold, "dim": st.dim, "underline": st.underline,
+                    }),
+                );
             }
             // Show the urgency ramp as a cold→hot strip.
             let strip: String = (0..=10)
@@ -1648,35 +1825,105 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) {
                     preview.theme.ramp_style(t).paint(bar, &preview.caps)
                 })
                 .collect();
-            println!("  {:<14} {strip}  {}", "urgency.ramp", preview.paint("muted", "cold → hot"));
+            text.push_str(&format!(
+                "  {:<14} {strip}  {}\n",
+                "urgency.ramp",
+                preview.paint("muted", "cold → hot")
+            ));
+            Ok((
+                json!({
+                    "name": preview.theme.name,
+                    "roles": Value::Object(roles),
+                    "ramp": preview.theme.ramp().iter().map(|c| c.hex()).collect::<Vec<_>>(),
+                }),
+                text,
+            ))
         }
-        ThemeAction::Set { name } => {
-            if let Err(e) = validate_setting("theme.name", name) {
-                eprintln!("error [{}]: {}", code_str(&e), e.message);
-                exit(e.exit_code());
-            }
-            let s = config::find("theme.name").expect("theme.name is a registered setting");
-            match config::write_value(s, name) {
-                Ok(path) => {
-                    println!("theme.name = {name}  ({})", path.display());
-                    if let Some(p) = theme_pointer("theme.name") {
-                        println!("{p}");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("error [{}]: {}", code_str(&e), e.message);
-                    exit(e.exit_code());
-                }
-            }
-        }
+        // Delegated, not reimplemented. `theme set X` and `config set theme.name X`
+        // are two spellings of ONE write, and spelling them twice is exactly how
+        // they came to disagree: validation lived in one and not the other, and
+        // then `--json` landed on one and not the other. One function, one shape,
+        // by construction rather than by two developers remembering.
+        ThemeAction::Set { name } => set_setting("theme.name", name),
     }
+}
+
+/// Persist one setting and describe the write. The single implementation behind
+/// `tasqx config set <key> <value>` and `tasqx theme set <name>`.
+fn set_setting(key: &str, value: &str) -> CmdOutcome {
+    let s = config::find(key).ok_or_else(|| unknown_key(key))?;
+    validate_setting(s.key, value)?;
+    let path = config::write_value(s, value)?;
+    let mut text = format!("{} = {}  ({})\n", s.key, value, path.display());
+    if let Some(p) = theme_pointer(s.key) {
+        text.push_str(&format!("{p}\n"));
+    }
+    Ok((json!({ "key": s.key, "value": value, "path": path.to_string_lossy() }), text))
 }
 
 /// The live value of a `Home::Store` setting. Read from `core.capabilities`,
 /// which already reports `default_project`, so this needs no new API method.
-fn store_value(be: &mut Backend, key: &str) -> Option<String> {
-    let caps = be.call("core.capabilities", &json!({})).ok()?;
-    caps.get(key).and_then(Value::as_str).map(str::to_string)
+///
+/// `Result<Option<_>>` and not `Option<_>`: the two answers "this setting is not
+/// set" and "we could not ask the store" are different facts and the caller
+/// must be able to tell them apart. The first version was `.ok()?`, which
+/// flattened a failed `core.capabilities` call — a dead daemon mid-request, say
+/// — into `None`, which every caller then rendered as the empty string. So
+/// `config get default_project` answered a transport failure with a blank line
+/// and exit 0, and a script reading that value could not tell it from an unset
+/// one. A failure is not a value.
+fn store_value(be: &mut Backend, key: &str) -> Result<Option<String>, ApiError> {
+    let caps = be.call("core.capabilities", &json!({}))?;
+    Ok(caps.get(key).and_then(Value::as_str).map(str::to_string))
+}
+
+/// How the settings layer reads a `Home::Store` value, as a closure.
+///
+/// A seam, and a deliberate one: `Backend::Local` cannot fail this call, so
+/// without it the error path below is unreachable from a test and the very bug
+/// it exists to prevent could be reintroduced with the suite staying green.
+type StoreLookup<'a> = &'a mut dyn FnMut(&str) -> Result<Option<String>, ApiError>;
+
+/// One setting's resolved value and the label naming where it came from.
+///
+/// The ONE answer for all three readers — `config get`, `config list` and the
+/// `config edit` snapshot. It was spelled out three times, and the three copies
+/// are exactly how a `Home::Store` setting can go missing from one surface
+/// while the other two keep reporting it (D30: derive it, do not keep three
+/// lists in sync).
+fn setting_value(
+    store: StoreLookup,
+    s: &config::Setting,
+    flag: Option<&str>,
+) -> Result<(String, String), ApiError> {
+    match s.home {
+        config::Home::Store => Ok((store(s.key)?.unwrap_or_default(), "store".to_string())),
+        config::Home::Toml => {
+            let (v, src) = config::resolve(s, flag, file_value(s)?.as_deref());
+            Ok((v, src.label(s)))
+        }
+    }
+}
+
+/// Every registered setting, as the rows the interactive screen shows.
+///
+/// This is the code that decides which settings a user SEES, and it is extracted
+/// so a test can run it. Dropping the `Home::Store` arm — so `default_project`
+/// silently never appeared on screen — used to leave the whole suite green,
+/// because the loop was inline in `run_config_edit`, which needs a real
+/// terminal, and every TUI test built its rows by hand.
+fn settings_rows(
+    store: StoreLookup,
+    themes: &[String],
+    theme_flag: Option<&str>,
+) -> Result<Vec<tui::settings::Row>, ApiError> {
+    let mut rows = Vec::new();
+    for s in config::SETTINGS {
+        let flag = if s.key == "theme.name" { theme_flag } else { None };
+        let (value, source) = setting_value(store, s, flag)?;
+        rows.push(build_row(s, value, source, themes));
+    }
+    Ok(rows)
 }
 
 /// An unknown key must name the valid ones. Without the list the user's only
@@ -1783,25 +2030,11 @@ fn run_config(
         }
         ConfigAction::Get { key } => {
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;
-            let value = match s.home {
-                config::Home::Store => store_value(be, s.key).unwrap_or_default(),
-                config::Home::Toml => {
-                    config::resolve(s, flag_for(s), file_value(s)?.as_deref()).0
-                }
-            };
+            let (value, _) = setting_value(&mut |k| store_value(be, k), s, flag_for(s))?;
             let text = format!("{value}\n");
             Ok((json!({ "key": s.key, "value": value }), text))
         }
-        ConfigAction::Set { key, value } => {
-            let s = config::find(key).ok_or_else(|| unknown_key(key))?;
-            validate_setting(s.key, value)?;
-            let path = config::write_value(s, value)?;
-            let mut text = format!("{} = {}  ({})\n", s.key, value, path.display());
-            if let Some(p) = theme_pointer(s.key) {
-                text.push_str(&format!("{p}\n"));
-            }
-            Ok((json!({ "key": s.key, "value": value, "path": path.to_string_lossy() }), text))
-        }
+        ConfigAction::Set { key, value } => set_setting(key, value),
         ConfigAction::Unset { key } => {
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;
             let existed = config::clear_value(s)?;
@@ -1815,15 +2048,8 @@ fn run_config(
         ConfigAction::List => {
             let mut rows = Vec::new();
             for s in config::SETTINGS {
-                let (value, source) = match s.home {
-                    config::Home::Store => {
-                        (store_value(be, s.key).unwrap_or_default(), "store".to_string())
-                    }
-                    config::Home::Toml => {
-                        let (v, src) = config::resolve(s, flag_for(s), file_value(s)?.as_deref());
-                        (v, src.label(s))
-                    }
-                };
+                let (value, source) =
+                    setting_value(&mut |k| store_value(be, k), s, flag_for(s))?;
                 rows.push(json!({
                     "key": s.key,
                     "value": value,
@@ -1868,18 +2094,7 @@ fn run_config_edit(be: &mut Backend, ctx: &Ctx, theme_flag: Option<&str>) -> Cmd
         }
     }
 
-    let mut rows = Vec::new();
-    for s in config::SETTINGS {
-        let flag = if s.key == "theme.name" { theme_flag } else { None };
-        let (value, source) = match s.home {
-            config::Home::Store => (store_value(be, s.key).unwrap_or_default(), "store".to_string()),
-            config::Home::Toml => {
-                let (v, src) = config::resolve(s, flag, file_value(s)?.as_deref());
-                (v, src.label(s))
-            }
-        };
-        rows.push(build_row(s, value, source, &themes));
-    }
+    let rows = settings_rows(&mut |k| store_value(be, k), &themes, theme_flag)?;
 
     let mut app = tui::settings::App::new(rows);
     let caps = ctx.caps;
@@ -2622,23 +2837,69 @@ mod tests {
     /// `default_project` silently never appeared on the screen — left the suite
     /// green, because every TUI test built its rows by hand and none exercised
     /// the code deciding which settings a user sees.
+    ///
+    /// The first version of this guard reproduced that mistake: it built the
+    /// rows by mapping over `SETTINGS` itself and then asserted the result had
+    /// `SETTINGS.len()` entries. Both sides came from one constant, so it was a
+    /// self-consistency check that could not fail however the real snapshot
+    /// broke. It now calls `settings_rows` — the production function — and the
+    /// expectation comes from the registry, which the function does not consult
+    /// on the test's behalf.
     #[test]
     fn every_registered_setting_becomes_a_row() {
         let themes = vec!["nord".to_string()];
-        let rows: Vec<_> = config::SETTINGS
-            .iter()
-            .map(|s| build_row(s, String::new(), "default".into(), &themes))
-            .collect();
-        assert_eq!(rows.len(), config::SETTINGS.len());
+        // A store that answers, so a dropped `Home::Store` arm shows up as a
+        // MISSING ROW rather than as an error from the lookup.
+        let mut store = |_: &str| Ok(Some("inbox".to_string()));
+        let rows = settings_rows(&mut store, &themes, None).expect("the snapshot must succeed");
 
-        let store_row = rows
-            .iter()
-            .find(|r| r.setting.home == config::Home::Store)
-            .expect("a store-homed setting must still reach the screen, read-only");
-        assert!(store_row.choices.is_empty(), "a store setting offers no picker");
+        let seen: Vec<&str> = rows.iter().map(|r| r.setting.key).collect();
+        for s in config::SETTINGS {
+            assert!(seen.contains(&s.key), "{} never reached the screen: saw {seen:?}", s.key);
+        }
+        assert_eq!(rows.len(), config::SETTINGS.len(), "a setting reached the screen twice");
+
+        // The specific setting the original bug hid, named on purpose: it is
+        // the only `Home::Store` entry, so a test that only counted rows would
+        // pass if the store arm were replaced by anything that still pushed one.
+        let dp = rows.iter().find(|r| r.setting.key == "default_project").expect("default_project");
+        assert_eq!(dp.source, "store", "a store-homed row must say where it lives");
+        assert_eq!(dp.value, "inbox", "and must carry the value the store actually returned");
+        assert!(dp.choices.is_empty(), "a store setting offers no picker");
 
         let theme_row = rows.iter().find(|r| r.setting.key == "theme.name").unwrap();
         assert_eq!(theme_row.choices, themes, "the theme row must carry its candidates");
+    }
+
+    /// `config get`/`list`/`edit` rendered a FAILED `core.capabilities` call as
+    /// the empty string: `store_value` was `.ok()?`, so a dead daemon mid-request
+    /// came back as a blank line and exit 0, indistinguishable from an unset
+    /// setting. A failure is not a value.
+    ///
+    /// Driven through the closure seam because `Backend::Local` cannot fail this
+    /// call at all — without the seam this error path is unreachable from a test.
+    #[test]
+    fn a_failing_store_lookup_is_an_error_not_a_blank_value() {
+        let boom = || ApiError::internal("daemon transport error: broken pipe");
+        let dp = config::find("default_project").expect("the store-homed setting");
+
+        let err = setting_value(&mut |_| Err(boom()), dp, None)
+            .expect_err("a failed lookup must not resolve to a value");
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("broken pipe"), "the cause must survive: {}", err.message);
+
+        // The screen snapshot must refuse for the same reason: showing a blank
+        // `default_project` row invites the user to "fix" a setting that is fine.
+        // `Row` is not Debug, so match rather than `expect_err`.
+        match settings_rows(&mut |_| Err(boom()), &["nord".to_string()], None) {
+            Ok(rows) => panic!("the snapshot painted a failure as {} rows", rows.len()),
+            Err(e) => assert!(e.message.contains("broken pipe"), "{}", e.message),
+        }
+
+        // And the success path still resolves normally, so the guard above is
+        // about the ERROR and not about the function refusing everything.
+        let (v, src) = setting_value(&mut |_| Ok(Some("work".into())), dp, None).expect("ok");
+        assert_eq!((v.as_str(), src.as_str()), ("work", "store"));
     }
 
     // ---- report scope (DESIGN.md §12-D24) -----------------------------------

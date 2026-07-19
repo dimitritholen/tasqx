@@ -629,10 +629,20 @@ fn page_commands() -> String {
 
     // ---- list
     s.push_str(&h3("list"));
-    s.push_str(&p(
+    // The key list is rendered from `engine::SORT_KEYS`, never retyped: this
+    // page is where a reader looks up what `sort` accepts, and a stale list
+    // here sends them to a key the engine now refuses.
+    s.push_str(&p(&format!(
         "Everything after <code>list</code> is the <a href=\"#filters\">filter</a>. No filter means \
-         <code>@working</code>. Results sort by <code>-urgency</code>.",
-    ));
+         <code>@working</code>. Results sort by <code>-urgency</code>. Callers of the JSON API can \
+         pass <code>sort</code>; the valid keys are {}, each optionally prefixed with <code>-</code> \
+         for descending. An unknown key is rejected rather than ignored.",
+        tasqx_core::engine::SORT_KEYS
+            .iter()
+            .map(|k| format!("<code>{k}</code>"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )));
     s.push_str(&snippet(
         "tasqx list \"project:work.tasqx +api\"",
         "  ID    URG  P  TASK                                  PROJECT         DUE                     TAGS\n\

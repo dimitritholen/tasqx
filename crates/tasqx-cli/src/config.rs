@@ -383,16 +383,47 @@ fn read_document(path: &std::path::Path) -> Result<toml_edit::DocumentMut, ApiEr
 /// a rename. A crash mid-write would otherwise leave no config at all — and the
 /// reader degrades silently, so the user would get no error, just their theme
 /// quietly reverting.
+/// A scratch path in the target's own directory, private to this writer.
+///
+/// The first version was `path.with_extension("toml.tmp")` — ONE fixed name for
+/// every writer on the machine. Two `tasqx config set` processes racing (a
+/// script, a shell and an editor, two terminals) would write the same file
+/// interleaved and each then rename it over `config.toml`, so one could publish
+/// the other's half-written document as the user's config. The rename stays the
+/// atomic publish step; the pid and counter only make the SOURCE of that rename
+/// nobody else's business.
+///
+/// Same directory as the target on purpose: a rename is only atomic within one
+/// filesystem, and `$TMPDIR` is routinely on another volume.
+fn scratch_path(path: &std::path::Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // The pid separates processes; the counter separates writes within one
+    // process, which matters for the test suite's parallel threads.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let stem = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let dir = path.parent().map(PathBuf::from).unwrap_or_default();
+    dir.join(format!(".{stem}.{}.{n}.tmp", std::process::id()))
+}
+
 fn write_document(path: &std::path::Path, doc: &toml_edit::DocumentMut) -> Result<PathBuf, ApiError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| ApiError::internal(format!("cannot create {}: {e}", parent.display())))?;
     }
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, doc.to_string())
-        .map_err(|e| ApiError::internal(format!("cannot write {}: {e}", tmp.display())))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| ApiError::internal(format!("cannot replace {}: {e}", path.display())))?;
+    let tmp = scratch_path(path);
+    // Both failure paths remove the scratch file before returning: it is an
+    // implementation detail of a write that did not happen, and leaving it
+    // beside config.toml means every failed `config set` adds one more file the
+    // user has to recognise as debris and delete by hand.
+    if let Err(e) = std::fs::write(&tmp, doc.to_string()) {
+        let _ = std::fs::remove_file(&tmp); // A partial write still leaves a file.
+        return Err(ApiError::internal(format!("cannot write {}: {e}", tmp.display())));
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(ApiError::internal(format!("cannot replace {}: {e}", path.display())));
+    }
     Ok(path.to_path_buf())
 }
 
@@ -901,5 +932,49 @@ name = \"nord\"
         assert_eq!(find("theme.name").unwrap().choices, Choices::Themes);
         assert_eq!(find("notify.enabled").unwrap().choices, Choices::Free);
         assert_eq!(find("default_project").unwrap().choices, Choices::Free);
+    }
+
+    /// Two `config set` processes shared ONE scratch filename
+    /// (`config.toml.tmp`), so the loser's rename could publish the winner's
+    /// half-written document as the user's config — and a failed rename left
+    /// that scratch file sitting beside `config.toml` forever.
+    ///
+    /// Both halves are guarded here: the name must be private to the writer,
+    /// and a failure must leave the directory exactly as it found it.
+    #[test]
+    fn the_scratch_file_is_private_and_never_litters() {
+        let dir = temp_dir("tmp-private");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.toml");
+
+        // Private: no two scratch paths collide, and the name carries the pid
+        // so a CONCURRENT process cannot pick the same one either.
+        let a = scratch_path(&target);
+        let b = scratch_path(&target);
+        assert_ne!(a, b, "two writers must not share one scratch file: {a:?}");
+        let pid = std::process::id().to_string();
+        for p in [&a, &b] {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            assert!(name.contains(&pid), "scratch name must carry the pid: {name}");
+            assert_eq!(p.parent(), target.parent(), "scratch must share the target's directory");
+        }
+
+        // No litter: a rename that cannot succeed must clean up after itself.
+        // A directory standing where config.toml goes makes the rename fail on
+        // every platform without needing permissions games.
+        std::fs::create_dir_all(&target).unwrap();
+        let doc: toml_edit::DocumentMut = "[theme]
+name = \"nord\"
+".parse().unwrap();
+        let err = write_document(&target, &doc).expect_err("rename onto a directory must fail");
+        assert!(err.message.contains("config.toml"), "the error must name the file: {}", err.message);
+
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != "config.toml")
+            .collect();
+        assert!(leftovers.is_empty(), "a failed write left scratch files behind: {leftovers:?}");
     }
 }

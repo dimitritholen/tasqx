@@ -318,6 +318,23 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     if !s(result, "estimate").is_empty() {
         out.push_str(&format!("  estimate   {}\n", s(result, "estimate")));
     }
+    // Conditional, unlike `blocked`: every task has a blocked answer worth
+    // reading, but "tracked PT0S" on the many tasks that were never timed is
+    // noise on the detail of every one of them. Shown from the first tracked
+    // second onward, which is when the number starts meaning something.
+    let tracked = s(result, "tracked");
+    if !tracked.is_empty() && tracked != "PT0S" {
+        out.push_str(&format!("  tracked    {tracked}\n"));
+    }
+    // The open interval is NOT folded into `tracked` (see `task_to_json`), so
+    // an active task must say the clock is still running or its tracked total
+    // reads as the final answer when it is only the total so far.
+    if !s(result, "active_since").is_empty() {
+        out.push_str(&format!(
+            "  running    {}\n",
+            ctx.paint("accent", &format!("since {}", s(result, "active_since")))
+        ));
+    }
     let blocked = result.get("blocked").and_then(Value::as_bool).unwrap_or(false);
     out.push_str(&format!("  blocked    {blocked}\n"));
     if let Some(tags) = result.get("tags").and_then(Value::as_array) {

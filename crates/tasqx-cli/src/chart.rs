@@ -122,8 +122,13 @@ fn velocity(buckets: &[WeekBucket]) -> f64 {
     sum as f64 / tail.len() as f64
 }
 
-pub fn render_throughput(ctx: &Ctx, result: &Value, weeks: usize) -> String {
-    let buckets = throughput(result, weeks, today());
+/// Render a series the caller has already computed.
+///
+/// The series is a PARAMETER, not something this function derives for itself,
+/// so `--json` and the sparkline are two views of one computation rather than
+/// two computations that happen to agree today. (Same rule as `report`'s two
+/// modes sharing one request object.)
+pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
     let max = buckets.iter().map(|b| b.added.max(b.done)).max().unwrap_or(0).max(1);
     let width = 10usize;
 
@@ -132,7 +137,7 @@ pub fn render_throughput(ctx: &Ctx, result: &Value, weeks: usize) -> String {
     out.push_str(&ctx.paint("header", "Weekly throughput"));
     out.push_str(&format!("   {}\n", ctx.paint("muted", legend)));
 
-    for b in &buckets {
+    for b in buckets {
         let added_bar = bar(b.added, max, width, ctx);
         let done_bar = bar(b.done, max, width, ctx);
         let added_s = ctx.paint("accent", &added_bar);
@@ -154,7 +159,7 @@ pub fn render_throughput(ctx: &Ctx, result: &Value, weeks: usize) -> String {
         ));
     }
 
-    let vel = velocity(&buckets);
+    let vel = velocity(buckets);
     let recent_net: i64 = buckets.iter().rev().take(4).map(|b| b.net()).sum();
     let trend = if recent_net < 0 { "WIP trending down" } else if recent_net > 0 { "WIP trending up" } else { "WIP steady" };
     out.push_str(&format!(
@@ -258,9 +263,8 @@ pub fn best_streak(days: &[DayCount]) -> u32 {
     best
 }
 
-pub fn render_heatmap(ctx: &Ctx, result: &Value, weeks: usize) -> String {
-    let anchor = today();
-    let days = heatmap(result, weeks, anchor);
+/// Render a day series the caller has already computed. See `render_throughput`.
+pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date) -> String {
     let weeks_n = days.len() / 7;
 
     let legend = if ctx.caps.unicode {
@@ -275,7 +279,7 @@ pub fn render_heatmap(ctx: &Ctx, result: &Value, weeks: usize) -> String {
     // 7 weekday rows (Mon..Sun) × weeks columns.
     const ROW: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     let mut total = 0u32;
-    for dc in &days {
+    for dc in days {
         total += dc.count;
     }
     for (wd, label) in ROW.iter().enumerate() {
@@ -293,8 +297,8 @@ pub fn render_heatmap(ctx: &Ctx, result: &Value, weeks: usize) -> String {
         out.push('\n');
     }
 
-    let cur = current_streak(&days, anchor);
-    let best = best_streak(&days);
+    let cur = current_streak(days, anchor);
+    let best = best_streak(days);
     out.push_str(&format!(
         "  {}\n",
         ctx.paint(
@@ -414,15 +418,9 @@ pub fn burndown(
 /// Render the burndown series as a labeled sparkline column chart. The data is
 /// the historically-correct remaining-open count per day; the drawing is a
 /// compact column chart (not the §8 dual ideal-vs-actual line — see report).
-pub fn render_burndown(
-    ctx: &Ctx,
-    result: &Value,
-    member_ids: &std::collections::HashSet<String>,
-    days_n: usize,
-    scope_label: &str,
-) -> String {
-    let anchor = today();
-    let series = burndown(result, member_ids, days_n, anchor);
+/// Render a remaining-open series the caller has already computed.
+/// See `render_throughput`.
+pub fn render_burndown(ctx: &Ctx, series: &[RemainingPoint], scope_label: &str) -> String {
     let max = series.iter().map(|p| p.remaining).max().unwrap_or(0).max(1);
 
     let mut out = String::new();
@@ -442,7 +440,7 @@ pub fn render_burndown(
     out.push_str(&format!(
         "  {}  {}\n",
         ctx.paint("muted", "  0"),
-        ctx.paint("muted", &axis_labels(&series, ctx.caps.unicode)),
+        ctx.paint("muted", &axis_labels(series, ctx.caps.unicode)),
     ));
 
     let first = series.first().map(|p| p.remaining).unwrap_or(0);
@@ -456,7 +454,7 @@ pub fn render_burndown(
         format!("flat over {} days", series.len())
     };
     // Simple projection: at the recent net burn rate, days to zero.
-    let proj = project_finish(&series, ctx.mid());
+    let proj = project_finish(series, ctx.mid());
     out.push_str(&format!(
         "  {}\n",
         ctx.paint("muted", &format!("{a} {last} left {m} {trend}{proj}", a = ctx.arrow(), m = ctx.mid()))

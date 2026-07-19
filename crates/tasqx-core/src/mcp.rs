@@ -18,7 +18,7 @@
 use serde_json::{json, Value};
 
 use crate::dispatch::dispatch;
-use crate::engine::{Engine, SUMMARY_GROUP_BY, SUMMARY_METRICS};
+use crate::engine::{Engine, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS};
 use crate::types::Priority;
 
 /// MCP protocol revision this server implements by default (the `initialize`
@@ -131,10 +131,19 @@ fn tool_specs() -> Vec<ToolSpec> {
                         "type": "string",
                         "description": "Filter DSL query, e.g. \"status:pending +api\". Use \"@working\" for the active working set."
                     },
+                    // No `enum` here: a key may carry a `-` prefix, which a
+                    // plain enum of the bare names would forbid. The valid set
+                    // is still stated once, rendered from SORT_KEYS, so an
+                    // agent reads the same list the engine validates against
+                    // instead of guessing and being refused.
                     "sort": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Sort keys, e.g. [\"-urgency\", \"due\"]. Prefix \"-\" for descending."
+                        "description": format!(
+                            "Sort keys, e.g. [\"-urgency\", \"due\"]. Prefix \"-\" for descending. \
+                             Valid keys: {}. An unknown key is rejected, not ignored.",
+                            SORT_KEYS.join(", ")
+                        )
                     },
                     "limit": { "type": "integer", "minimum": 1 }
                 },
