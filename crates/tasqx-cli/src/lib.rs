@@ -3079,7 +3079,7 @@ mod tests {
         // `expect` earns its keep now that parsing is fallible: NOT_CANCELLED is
         // our own constant, so a malformed one is a bug this guard should fail
         // on rather than route around.
-        let f = tasqx_core::filter::Filter::parse(&NOT_CANCELLED)
+        let f = tasqx_core::filter::Filter::parse(&NOT_CANCELLED, jiff::Timestamp::now())
             .expect("NOT_CANCELLED must be a valid filter");
         for status in tasqx_core::types::Status::ALL {
             let ctx = tasqx_core::filter::MatchCtx {

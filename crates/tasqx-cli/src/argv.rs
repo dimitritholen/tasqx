@@ -206,7 +206,9 @@ fn canonical_name(cmd: &clap::Command, tok: &OsString) -> Option<String> {
 /// takes ONE dash. The message comes from `filter.rs` rather than being copied,
 /// so the token list cannot drift from the grammar that enforces it.
 pub fn filter_flag_error(offender: &str) -> Option<String> {
-    tasqx_core::filter::Filter::parse(offender).err()
+    // The instant is irrelevant here — this parses a rejected FLAG to borrow
+    // the grammar's own wording for it, and a flag never reaches a date bound.
+    tasqx_core::filter::Filter::parse(offender, jiff::Timestamp::now()).err()
 }
 
 #[cfg(test)]

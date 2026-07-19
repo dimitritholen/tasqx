@@ -845,8 +845,8 @@ fn page_filters() -> String {
             &["<code>status:pending</code>", "Exact status: <code>backlog</code>, <code>pending</code>, <code>active</code>, <code>done</code>, <code>cancelled</code>."],
             &["<code>@working</code>", "Status pending or active, <em>and</em> not blocked. The default filter."],
             &["<code>@blocked</code>", "At least one dependency that is not yet done. Also spelled <code>+blocked</code> or <code>status:blocked</code>."],
-            &["<code>due.before:&lt;RFC3339&gt;</code>", "Due strictly before that instant."],
-            &["<code>due.after:&lt;RFC3339&gt;</code>", "Due strictly after that instant."],
+            &["<code>due.before:&lt;date&gt;</code>", "Due strictly before that instant. Takes any date <code>due:</code> takes — <code>tomorrow</code>, <code>friday</code>, <code>2026-07-25</code>, <code>eom</code>, <code>\"in 3 days\"</code>, or a full RFC3339 instant."],
+            &["<code>due.after:&lt;date&gt;</code>", "Due strictly after that instant. Same date grammar."],
         ],
     ));
 
@@ -890,7 +890,10 @@ fn page_filters() -> String {
         "<strong>Dates compare as instants, not strings.</strong> <code>due.before:</code> and \
          <code>due.after:</code> parse both sides to timestamps and compare those. \
          <code>2026-07-17T00:00:00Z</code> and <code>2026-07-17T02:00:00+02:00</code> are the same \
-         instant, and the filter knows it — a lexicographic comparison would not.",
+         instant, and the filter knows it — a lexicographic comparison would not. \
+         A relative bound resolves once, when the filter is parsed, so every row in one \
+         query is compared against the same <code>tomorrow</code>. A date the parser cannot \
+         read is refused by name rather than quietly matching nothing.",
     ));
     s.push_str(&warn(
         "<strong>Unknown tokens are rejected.</strong> A token the grammar does not recognise \

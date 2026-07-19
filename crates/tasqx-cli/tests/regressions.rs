@@ -1070,3 +1070,49 @@ fn the_api_refuses_an_unknown_fields_key() {
     assert!(msg.contains("titel"), "the error must name the offending key: {msg}");
     assert!(msg.contains("title"), "the error must list the valid fields: {msg}");
 }
+
+/// J1 — `due.before:`/`due.after:` took ONLY strict RFC3339, so five of the six
+/// date spellings tasqx's own error message advertises matched zero rows.
+///
+/// `tasqx add "x" due:tomorrow` followed by `tasqx list due.before:friday`
+/// printed `No tasks.` at exit 0 with the task sitting in the store — the
+/// primary query of a task manager returning a wrong answer indistinguishable
+/// from a right one. The one spelling that worked
+/// (`2030-01-01T00:00:00Z`) is the one a human is least likely to type.
+///
+/// Only the real binary proves the whole path: the spelling has to survive
+/// argv, sugar, the filter tokenizer and the engine before it reaches a date
+/// parser, and a hand-built filter string in a unit test can be written to skip
+/// three of those four.
+#[test]
+fn a_due_bound_takes_the_dates_the_tool_advertises_and_refuses_the_rest() {
+    let dir = fresh_config_dir("due-bound");
+    let add = bin("due-bound", &dir).args(["add", "ship it", "due:tomorrow"]).output().expect("run add");
+    assert!(add.status.success(), "add failed: {}", String::from_utf8_lossy(&add.stderr));
+
+    // Every spelling the date-error message recommends, in the widest form so
+    // the answer cannot depend on which day the suite runs.
+    for bound in ["in 2 weeks", "eom", "2099-12-31", "2099-12-31T17:00", "+1y"] {
+        let out = bin("due-bound", &dir)
+            .args(["list", &format!("due.before:{bound}")])
+            .output()
+            .expect("run list");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "`due.before:{bound}` must be accepted: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            stdout.contains("ship it"),
+            "`due.before:{bound}` must find a task due tomorrow, got: {stdout}"
+        );
+    }
+
+    // And the other half: an unreadable bound is refused by name rather than
+    // answered with the same empty list a genuine no-match produces.
+    let out = bin("due-bound", &dir).args(["list", "due.before:tomorow"]).output().expect("run list");
+    assert!(!out.status.success(), "a misspelled date bound must not exit 0");
+    let msg = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(msg.contains("tomorow"), "the error must name the offending value: {msg}");
+    assert!(
+        !msg.contains("No tasks"),
+        "a typo must never be answered with an empty result set: {msg}"
+    );
+}

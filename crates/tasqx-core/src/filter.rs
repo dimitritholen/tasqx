@@ -47,7 +47,30 @@
 //! Note the deliberate split, unchanged: an unknown *value* still just fails to
 //! match (`status:pendign` matches no row), because values are data and the set
 //! of valid ones is a runtime question. Token shapes are grammar, and closed.
+//!
+//! **A date bound is the exception to that split, because a date has a grammar
+//! too.** `due.before:`/`due.after:` take whatever [`crate::datetime::parse_when`]
+//! takes — the same parser `due:` writes through — so `due.before:tomorrow`,
+//! `friday`, `2026-07-25`, `in 3 days` and `eom` all work, and an unreadable one
+//! is refused by name. It used to be strict RFC3339 and nothing else, which made
+//! "what is due soon" — the primary query of a task manager — answer `No tasks`
+//! at exit 0 for five of the six spellings the tool prints in its OWN error
+//! message when a date fails to parse. `status:pendign` is data that happens to
+//! match no row; `due.before:tomorow` is not a date at all, and answering it
+//! with the same silence `due IS NULL` earns is the D27 collapse one layer down.
+//!
+//! **The bound is resolved once, at parse time, into a [`Timestamp`].** Two
+//! reasons, and only the first is about speed: the filter is evaluated per row,
+//! so a bound re-read at match time could let `tomorrow` shift across midnight
+//! mid-query and answer two identical rows differently. And once `Pred` holds an
+//! instant rather than a string, "the caller's bound was unreadable" is not a
+//! state `matches` can be in — which is why `parse` takes a `now`. It is a
+//! parameter, never `Timestamp::now()`, for the reason [`crate::datetime`]
+//! states: no hidden clock in logic that has to be testable.
 
+use jiff::Timestamp;
+
+use crate::datetime;
 use crate::types::Status;
 use crate::util::parse_ts;
 
@@ -73,14 +96,15 @@ predicate  := \"+\" VALUE                    # require tag; VALUE not empty
             | \"@blocked\" | \"+blocked\" | \"status:blocked\"   # the blocked flag
             | \"project:\" VALUE
             | \"status:\" VALUE
-            | \"due.before:\" RFC3339
-            | \"due.after:\"  RFC3339
+            | \"due.before:\" DATE
+            | \"due.after:\"  DATE
 
 VALUE      := CHUNK*                       # chunks abut; nothing may come between them
 CHUNK      := WORD | QUOTED
 WORD       := a run of characters, none of them whitespace, a quote or a paren
 QUOTED     := a run between double quotes; backslash escapes a quote or a backslash
-RFC3339    := an instant, offset included  # 2026-07-17T00:00:00Z";
+DATE       := any date `due:` accepts      # tomorrow, friday, 2026-07-25,
+                                           # \"in 3 days\", eom, 2026-07-20T17:00";
 
 /// A single leaf predicate.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,8 +118,14 @@ pub enum Pred {
     Project(String),
     TagInclude(String),
     TagExclude(String),
-    DueBefore(String),
-    DueAfter(String),
+    /// `due.before:VALUE`, with VALUE already resolved against the query's
+    /// `now`. A `Timestamp` and not a `String` on purpose: while it was a
+    /// string, `instant_cmp` had to reparse it per row and spelled "unreadable
+    /// bound" with the same `false` as "this task has no due date". Holding the
+    /// instant makes the first of those unrepresentable — the only way to build
+    /// this variant is through a parse that already succeeded.
+    DueBefore(Timestamp),
+    DueAfter(Timestamp),
     /// `@working`: pending|active AND not blocked.
     Working,
     /// The blocked flag: a task with >=1 dependency not yet `done` (DESIGN §3).
@@ -140,13 +170,19 @@ impl Filter {
     /// An empty string matches everything — that is the caller passing no
     /// filter at all, not a malformed one. Every other input must parse: a
     /// token this grammar does not recognise is an error rather than a term
-    /// that quietly matches every row (see the module comment).
-    pub fn parse(input: &str) -> Result<Filter, String> {
+    /// that quietly matches every row (see the module comment). So is a
+    /// `due.before:`/`due.after:` bound the date grammar cannot read.
+    ///
+    /// `now` is the instant every relative bound in `input` resolves against.
+    /// It is a parameter for the two reasons the module comment gives: the
+    /// bound must resolve once per query rather than once per row, and this
+    /// codebase keeps no hidden clock in logic that has to be testable.
+    pub fn parse(input: &str, now: Timestamp) -> Result<Filter, String> {
         let toks = tokenize(input)?;
         if toks.is_empty() {
             return Ok(Filter { root: Expr::Pred(Pred::Always) });
         }
-        let mut p = Parser { toks, pos: 0 };
+        let mut p = Parser { toks, pos: 0, now };
         let root = p.parse_or()?;
         // `parse_or` stops at the first token it cannot continue on. Anything
         // left is unbalanced — a stray `)` — and dropping it would silently
@@ -206,21 +242,28 @@ fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
         Pred::TagExclude(t) => !ctx.tags.iter().any(|x| x == t),
         Pred::Working => matches!(ctx.status, Status::Pending | Status::Active) && !ctx.blocked,
         Pred::Blocked => ctx.blocked,
-        Pred::DueBefore(bound) => instant_cmp(ctx.due, bound, true),
-        Pred::DueAfter(bound) => instant_cmp(ctx.due, bound, false),
+        Pred::DueBefore(bound) => instant_cmp(ctx.due, *bound, true),
+        Pred::DueAfter(bound) => instant_cmp(ctx.due, *bound, false),
     }
 }
 
-/// Compare a task's `due` against a bound as instants. `before=true` => due <
-/// bound; else due > bound. Any missing/unparseable side => no match.
-fn instant_cmp(due: Option<&str>, bound: &str, before: bool) -> bool {
-    let (Some(d), Some(b)) = (due.and_then(parse_ts), parse_ts(bound)) else {
+/// Compare a task's `due` against an already-resolved bound as instants.
+/// `before=true` => due < bound; else due > bound.
+///
+/// Exactly ONE `false`-without-comparing remains, and it means one thing: the
+/// task has no readable `due`, so no date bound can select it. The bound side
+/// used to share that answer — a caller's typo and a task with no due date were
+/// the same `return false` — which is the collapse D27 rules out for a filter
+/// token, here applied to a bound value. It is gone by construction rather than
+/// by care: `bound` is a `Timestamp`, so there is nothing left to fail.
+fn instant_cmp(due: Option<&str>, bound: Timestamp, before: bool) -> bool {
+    let Some(d) = due.and_then(parse_ts) else {
         return false;
     };
     if before {
-        d < b
+        d < bound
     } else {
-        d > b
+        d > bound
     }
 }
 
@@ -458,6 +501,10 @@ fn scan(input: &str, parens: Parens, context: &str) -> Result<Vec<Tok>, String> 
 struct Parser {
     toks: Vec<Tok>,
     pos: usize,
+    /// The reference instant every relative date bound in this filter resolves
+    /// against. Carried on the parser, not read per predicate, so one query
+    /// cannot resolve `tomorrow` twice and get two answers.
+    now: Timestamp,
 }
 
 impl Parser {
@@ -530,7 +577,7 @@ impl Parser {
         }
         let tok = self.toks[self.pos].text.clone();
         self.pos += 1;
-        Ok(Expr::Pred(predicate(&tok)?))
+        Ok(Expr::Pred(predicate(&tok, self.now)?))
     }
 }
 
@@ -539,7 +586,7 @@ impl Parser {
 /// The error names the token and the shapes that would have worked. A filter
 /// is typed by hand far more often than it is generated, so the message is the
 /// whole user experience of a typo.
-fn predicate(tok: &str) -> Result<Pred, String> {
+fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
     if tok == "@working" {
         return Ok(Pred::Working);
     }
@@ -586,15 +633,36 @@ fn predicate(tok: &str) -> Result<Pred, String> {
         return Ok(Pred::Status(v.to_string()));
     }
     if let Some(v) = tok.strip_prefix("due.before:") {
-        return Ok(Pred::DueBefore(v.to_string()));
+        return Ok(Pred::DueBefore(bound(v, "due.before", now)?));
     }
     if let Some(v) = tok.strip_prefix("due.after:") {
-        return Ok(Pred::DueAfter(v.to_string()));
+        return Ok(Pred::DueAfter(bound(v, "due.after", now)?));
     }
     Err(format!(
         "unknown filter token {tok:?} (expected +tag, -tag, @working, @blocked, \
          project:, status:, due.before: or due.after:)"
     ))
+}
+
+/// Resolve a date bound against `now`, or say why it is not a date.
+///
+/// It delegates to [`datetime::parse_when`] rather than restating what a date
+/// may look like, which is the whole point: the bound accepts exactly what
+/// `due:` accepts because it is the same parser, so the two cannot drift and
+/// the tool cannot advertise a spelling its own filter rejects.
+///
+/// The refusal is D27's rule applied to a value: a bound nobody can read is a
+/// caller error, and a read path loses nothing by refusing it — the user
+/// retypes. Matching nothing instead is a wrong answer shaped exactly like a
+/// right one. `parse_when`'s message already names the offending value and
+/// lists the accepted forms, so it is passed through rather than reworded.
+fn bound(value: &str, prefix: &str, now: Timestamp) -> Result<Timestamp, String> {
+    let resolved = datetime::parse_when(value, now)
+        .map_err(|e| format!("`{prefix}:` needs a date — {}", e.message))?;
+    // `parse_when` promises an RFC3339 `…Z` string, so this cannot fail; it is
+    // an `Option` only because `parse_ts` is total for untrusted input.
+    parse_ts(&resolved)
+        .ok_or_else(|| format!("`{prefix}:{value}` resolved to an unreadable instant {resolved:?}"))
 }
 
 #[cfg(test)]
@@ -611,8 +679,14 @@ mod tests {
         GRAMMAR
     }
 
+    /// A fixed reference instant for tests that do not care about dates, so
+    /// nothing in this module resolves a bound against the wall clock.
+    fn anchor() -> Timestamp {
+        "2026-07-19T12:00:00Z".parse().expect("anchor")
+    }
+
     fn parsed(s: &str) -> Filter {
-        Filter::parse(s).unwrap_or_else(|e| panic!("test filter {s:?} must parse: {e}"))
+        Filter::parse(s, anchor()).unwrap_or_else(|e| panic!("test filter {s:?} must parse: {e}"))
     }
 
     /// `report.summary` only applies its exclude-cancelled default when the
@@ -703,6 +777,98 @@ mod tests {
         assert!(parsed(&format!("due.before:{bound}")).matches(&earlier));
         let later = MatchCtx { due: Some("2026-07-17T00:00:01Z"), ..ctx };
         assert!(parsed(&format!("due.after:{bound}")).matches(&later));
+    }
+
+    /// J1/D27+D28 — a `due.before:`/`due.after:` bound takes the SAME grammar
+    /// `due:` takes, and the five spellings the tool's own error message
+    /// advertises must all select the row `due:tomorrow` wrote.
+    ///
+    /// Before this, the bound was `s.parse::<Timestamp>().ok()` — strict RFC3339
+    /// and nothing else — so `tasqx list due.before:tomorrow` printed "No tasks"
+    /// with a task due tomorrow sitting in the store, exit 0. The accepted
+    /// spelling was the one a human is least likely to type, and every spelling
+    /// the tool *recommends* on a date error was rejected in silence.
+    #[test]
+    fn a_due_bound_accepts_every_spelling_the_tool_advertises() {
+        // A Sunday, so `friday` and `eom` both resolve clear of the due below.
+        let anchor: Timestamp = "2026-07-19T12:00:00Z".parse().expect("anchor");
+        // Tomorrow MORNING, not tomorrow midnight. The bound is strict at the
+        // exact instant (see `due_bounds_are_strict_at_the_exact_instant`, an
+        // off-by-one this project has already paid for), and a bare date or
+        // `tomorrow` resolves to 00:00 — so a task due at exactly 00:00 sits on
+        // the boundary and is legitimately outside both sides of it. Putting the
+        // fixture on that instant would test the boundary rule, not this one.
+        let ctx = MatchCtx {
+            status: Status::Pending,
+            project: None,
+            tags: &[],
+            due: Some("2026-07-20T09:00:00Z"),
+            blocked: false,
+        };
+        // Composed through `quote`, because a date is a VALUE like any other and
+        // a multi-word one (`in 3 days`) is expressible only under D30's quoting
+        // rule — unquoted it is three tokens, and the second is not a filter
+        // term at all. That is the grammar working, not a gap: `due:` gets the
+        // same protection from the shell's own quotes.
+        for spelling in ["friday", "2026-07-25", "in 3 days", "eom", "2026-07-20T17:00"] {
+            let f = Filter::parse(&format!("due.before:{}", quote(spelling)), anchor)
+                .unwrap_or_else(|e| panic!("due.before:{spelling:?} must parse: {e}"));
+            assert!(f.matches(&ctx), "due.before:{spelling:?} must select a task due tomorrow");
+        }
+        // The same grammar on the other side of the comparison — `tomorrow`
+        // included, so no spelling in the advertised set goes unexercised.
+        for spelling in ["today", "yesterday", "2026-07-19", "tomorrow"] {
+            let f = Filter::parse(&format!("due.after:{spelling}"), anchor)
+                .unwrap_or_else(|e| panic!("due.after:{spelling:?} must parse: {e}"));
+            assert!(f.matches(&ctx), "due.after:{spelling:?} must select a task due tomorrow");
+        }
+    }
+
+    /// The other half, and the reason (a) alone would not be a fix: a bound the
+    /// date grammar cannot read is a caller error, and `instant_cmp` used to
+    /// spell it with the same `false` it uses for "this task has no due date".
+    /// One of those is a legitimate no-match; the other is a typo silently
+    /// answering "nothing is due" — unfalsifiable, exit 0. D27's rule for a
+    /// filter TOKEN applies unchanged to a bound VALUE: on a read path nothing
+    /// is lost by refusing, and the message must name the offending value.
+    #[test]
+    fn an_unparseable_due_bound_is_refused_and_named() {
+        let anchor: Timestamp = "2026-07-19T12:00:00Z".parse().expect("anchor");
+        for (input, offender) in [
+            ("due.before:tomorow", "tomorow"),
+            ("due.after:notadate", "notadate"),
+            ("due.before:2026-13-45", "2026-13-45"),
+            ("+api and due.before:fridya", "fridya"),
+        ] {
+            let err = Filter::parse(input, anchor)
+                .expect_err("an unreadable date bound must be refused, not matched against");
+            assert!(err.contains(offender), "the error must name {offender:?}: {err}");
+        }
+    }
+
+    /// A relative bound must resolve ONCE for the whole query. It is evaluated
+    /// per row, so a bound re-resolved at match time would let `tomorrow` shift
+    /// mid-evaluation across a midnight boundary — two rows with the same `due`
+    /// answering differently in one list. Resolving at parse time is what makes
+    /// that unrepresentable, and this pins it: the parsed filter holds an
+    /// instant, so a later `now` cannot move it.
+    #[test]
+    fn a_relative_bound_is_resolved_once_at_parse_time() {
+        let monday: Timestamp = "2026-07-20T12:00:00Z".parse().expect("anchor");
+        let f = Filter::parse("due.before:tomorrow", monday).expect("parses");
+        let just_inside = MatchCtx {
+            status: Status::Pending,
+            project: None,
+            tags: &[],
+            due: Some("2026-07-21T00:00:00Z"),
+            blocked: false,
+        };
+        // `tomorrow` at Monday noon is 2026-07-21T00:00:00Z, and the bound is
+        // strict — so the row exactly on it is out and one second earlier is in,
+        // no matter how much later `matches` runs.
+        assert!(!f.matches(&just_inside), "the bound must stay at the instant parse resolved");
+        let earlier = MatchCtx { due: Some("2026-07-20T23:59:59Z"), ..just_inside };
+        assert!(f.matches(&earlier));
     }
 
     /// `-tag` was the one predicate whose *evaluation* nothing exercised. The
@@ -834,10 +1000,17 @@ mod tests {
     fn value_prefixes_match_the_grammar() {
         let mut seen = 0;
         for line in GRAMMAR.lines() {
-            // `key:" VALUE` and `key:"  RFC3339` alike: both take an argument
+            // `key:" VALUE` and `key:"  DATE` alike: both take an argument
             // after the colon, so both can carry a space the shell ate.
+            //
+            // The argument is recognised by SHAPE — a nonterminal starts with a
+            // capital — rather than by listing the nonterminal names. Listing
+            // them was itself the hand-maintained-parallel-list shape this guard
+            // exists to police: renaming `RFC3339` to `DATE` made the scan stop
+            // seeing two of the four predicates, and only the `seen == 4` floor
+            // below caught it.
             let Some((lhs, rhs)) = line.split_once(":\"") else { continue };
-            if !rhs.trim_start().starts_with("VALUE") && !rhs.trim_start().starts_with("RFC3339") {
+            if !rhs.trim_start().starts_with(|c: char| c.is_ascii_uppercase()) {
                 continue;
             }
             let key = format!("{}:", lhs.rsplit('"').next().unwrap_or_default());
@@ -897,7 +1070,7 @@ mod tests {
                 due: None,
                 blocked: false,
             };
-            assert!(Filter::parse(&a).expect("parses").matches(&ctx), "{shell:?} must select");
+            assert!(Filter::parse(&a, anchor()).expect("parses").matches(&ctx), "{shell:?} must select");
         }
     }
 
@@ -956,7 +1129,7 @@ mod tests {
         let f = parsed(&format!("project:{} and status:done", quote("a (b) or c")));
         assert!(f.matches(&ctx));
         // And the unquoted spelling must NOT quietly do something plausible.
-        assert!(Filter::parse("project:a (b) or c and status:done").is_err());
+        assert!(Filter::parse("project:a (b) or c and status:done", anchor()).is_err());
     }
 
     /// An unterminated quote is an error, not a quote silently closed at end of
@@ -965,7 +1138,7 @@ mod tests {
     #[test]
     fn an_unterminated_quote_is_refused() {
         for bad in ["project:\"Home", "project:\"", "+\"a b", "project:\"a\\"] {
-            let err = Filter::parse(bad).unwrap_err();
+            let err = Filter::parse(bad, anchor()).unwrap_err();
             assert!(
                 err.contains("unterminated"),
                 "{bad:?} must be refused as unterminated, got {err:?}"
@@ -984,7 +1157,7 @@ mod tests {
             "plain", "two words", "a (b)", "quote\"inside", "back\\slash", "\\", "\"", "",
             "and", "or", "(", ")", "+tag", "project:x", "tab\there",
         ] {
-            let f = Filter::parse(&format!("project:{}", quote(v)))
+            let f = Filter::parse(&format!("project:{}", quote(v)), anchor())
                 .unwrap_or_else(|e| panic!("quote({v:?}) must parse back: {e}"));
             let ctx = MatchCtx {
                 status: Status::Pending,
@@ -1059,11 +1232,11 @@ mod tests {
     /// single-dash form must keep working exactly as before.
     #[test]
     fn a_doubled_dash_is_rejected_rather_than_matching_everything() {
-        let err = Filter::parse("--json").expect_err("`--json` is a flag, not a tag exclusion");
+        let err = Filter::parse("--json", anchor()).expect_err("`--json` is a flag, not a tag exclusion");
         assert!(err.contains("--json"), "the error must name what was typed: {err}");
         assert!(err.contains("-tag"), "and point at the shape that works: {err}");
 
-        let f = Filter::parse("-needs").expect("one dash is still a tag exclusion");
+        let f = Filter::parse("-needs", anchor()).expect("one dash is still a tag exclusion");
         let tagged = vec!["needs".to_string()];
         fn ctx(tags: &[String]) -> MatchCtx<'_> {
             MatchCtx { status: Status::Pending, project: None, tags, due: None, blocked: false }
@@ -1139,7 +1312,7 @@ mod tests {
         let text = grammar();
         for prefix in ["+", "-", "project:", "status:"] {
             let filter = format!("{prefix}\"two words\"");
-            Filter::parse(&filter)
+            Filter::parse(&filter, anchor())
                 .unwrap_or_else(|e| panic!("the parser accepts {filter:?}, so: {e}"));
             let line = text
                 .lines()
