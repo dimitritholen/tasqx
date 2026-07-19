@@ -15,6 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
+use crate::datetime;
 use crate::error::ApiError;
 use crate::filter::{Filter, MatchCtx};
 use crate::storage::{
@@ -288,10 +289,14 @@ impl Engine {
             ),
             None => None,
         };
-        let due = opt_str(p, "due");
-        let scheduled = opt_str(p, "scheduled");
-        let wait = opt_str(p, "wait");
-        let estimate = opt_str(p, "estimate");
+        let now_ts = Timestamp::now();
+        let due = opt_when(p, "due", now_ts)?;
+        let scheduled = opt_when(p, "scheduled", now_ts)?;
+        let wait = opt_when(p, "wait", now_ts)?;
+        let estimate = match opt_str(p, "estimate") {
+            Some(s) => Some(datetime::parse_duration(&s)?),
+            None => None,
+        };
         let tags = opt_str_array(p, "tags");
         // Recurrence rule (optional). Validate + normalize before storing so a
         // bad rule fails the add cleanly and the stored form is canonical.
@@ -782,12 +787,15 @@ impl Engine {
                     assignments.push(("project", nullable_string(v, "project")?));
                 }
                 "due" => {
-                    due = v.as_str().map(str::to_string);
-                    assignments.push(("due", nullable_string(v, "due")?));
+                    let norm = nullable_when(v, "due", Timestamp::now())?;
+                    due = norm.as_str().map(str::to_string);
+                    assignments.push(("due", norm));
                 }
-                "scheduled" => assignments.push(("scheduled", nullable_string(v, "scheduled")?)),
-                "wait" => assignments.push(("wait", nullable_string(v, "wait")?)),
-                "estimate" => assignments.push(("estimate", nullable_string(v, "estimate")?)),
+                "scheduled" => {
+                    assignments.push(("scheduled", nullable_when(v, "scheduled", Timestamp::now())?))
+                }
+                "wait" => assignments.push(("wait", nullable_when(v, "wait", Timestamp::now())?)),
+                "estimate" => assignments.push(("estimate", nullable_duration(v, "estimate")?)),
                 "recurrence" => {
                     // Set a rule (validated + normalized) or clear it with null
                     // — the sanctioned "stop recurring" path (DESIGN §10, D2).
@@ -1513,11 +1521,17 @@ impl Engine {
         let kept: Vec<String> =
             all.iter().filter(|d| present.contains(d.as_str())).cloned().collect();
         *dropped += (all.len() - kept.len()) as i64;
-        Ok(json!({
+        Ok(flag_unrecognized_status(t, json!({
             "id": t.id,
             "short_id": t.short_id,
             "title": t.title,
-            "status": t.status.as_str(),
+            // Verbatim, not canonicalized: export is the escape hatch out of a
+            // store the reader could not fully understand, so it must hand back
+            // what is actually in the file. Re-importing it then fails naming
+            // this value (the import gate), which is what tells the user which
+            // line to edit — a rescue that quietly rewrote it would leave them
+            // with no evidence and a store that still disagrees with itself.
+            "status": t.status_text(),
             "priority": t.priority.map(|x| x.as_str()),
             "project": t.project,
             "tags": tags,
@@ -1534,7 +1548,7 @@ impl Engine {
             "modified": t.modified,
             "completed": t.completed,
             "_rev": t.rev,
-        }))
+        })))
     }
 
     // ---- store.import --------------------------------------------------------
@@ -1556,14 +1570,63 @@ impl Engine {
             let short_id = tv.get("short_id").and_then(Value::as_i64).ok_or_else(|| {
                 ApiError::bad_request("each imported task requires an integer `short_id`")
             })?;
+            // D17's rule where the value ENTERS: `short_id` is untrusted i64 and
+            // the mint floor below is `short_id + 1`, which panicked in debug and
+            // wrapped in release at `i64::MAX` — leaving a floor of `i64::MIN`, so
+            // the next `add` re-minted a live short_id and broke D4. The counter
+            // starts at 1 and only advances, so anything outside 1..i64::MAX is a
+            // value no minter could have produced.
+            let short_id_floor = short_id
+                .checked_add(1)
+                .filter(|_| short_id >= 1)
+                .ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "store.import: task {id} has short_id {short_id} — expected an integer \
+                         from 1 to {}",
+                        i64::MAX - 1
+                    ))
+                })?;
             let title = tv.get("title").and_then(Value::as_str).unwrap_or("");
-            let status = tv.get("status").and_then(Value::as_str).unwrap_or("pending");
-            let priority = tv.get("priority").and_then(Value::as_str);
+            // Validated, not carried verbatim: an unrecognized status used to be
+            // written to the row as-is and then laundered back to `pending` by
+            // `map_task_row`, so a `done` task with a mis-cased status resurfaced
+            // as open work while still carrying `completed`. Reject like D12 does
+            // for a bad reference, and store the canonical spelling so the reader
+            // never has to guess.
+            let raw_status = tv.get("status").and_then(Value::as_str).unwrap_or("pending");
+            let status = Status::parse(raw_status)
+                .ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "store.import: task {id} has status {raw_status:?} — expected one of {}",
+                        Status::ALL.map(Status::as_str).join(", ")
+                    ))
+                })?
+                .as_str();
+            let priority = match tv.get("priority").and_then(Value::as_str) {
+                Some(raw) => Some(Priority::parse(raw).map(Priority::as_str).ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "store.import: task {id} has priority {raw:?} — expected one of {}",
+                        Priority::ALL.map(Priority::as_str).join(", ")
+                    ))
+                })?),
+                None => None,
+            };
             let project = tv.get("project").and_then(Value::as_str);
-            let due = tv.get("due").and_then(Value::as_str);
-            let scheduled = tv.get("scheduled").and_then(Value::as_str);
-            let wait = tv.get("wait").and_then(Value::as_str);
-            let estimate = tv.get("estimate").and_then(Value::as_str);
+            // The same gate the CLI, the JSON API and MCP pass, called on the
+            // import payload itself rather than restated here: these four fields
+            // used to be read raw into the INSERT, so `due whenever` entered a
+            // store no reader downstream can compare, sort or render. Prefixing
+            // the validator's own message is all the import layer adds — one
+            // failing task out of a thousand-line export is useless without its
+            // id and column.
+            let now_ts = Timestamp::now();
+            let due = import_field(id, "due", opt_when(tv, "due", now_ts))?;
+            let scheduled = import_field(id, "scheduled", opt_when(tv, "scheduled", now_ts))?;
+            let wait = import_field(id, "wait", opt_when(tv, "wait", now_ts))?;
+            let estimate = match opt_str(tv, "estimate") {
+                Some(s) => Some(import_field(id, "estimate", datetime::parse_duration(&s))?),
+                None => None,
+            };
             let recurrence = tv.get("recurrence").and_then(Value::as_str);
             // Carried verbatim, like `recurrence`: the export form is already the
             // canonical spec, and re-normalizing here would risk perturbing a
@@ -1576,7 +1639,7 @@ impl Engine {
             let rev = tv.get("_rev").and_then(Value::as_i64).unwrap_or(1);
             let urgency = urgency::score(
                 priority.and_then(Priority::parse),
-                due,
+                due.as_deref(),
                 &created,
             );
 
@@ -1597,7 +1660,7 @@ impl Engine {
             )?;
 
             // short_id must never later be re-minted (§12-D4).
-            bump_short_id_floor(&tx, short_id + 1)?;
+            bump_short_id_floor(&tx, short_id_floor)?;
 
             // Replace tags.
             tx.execute("DELETE FROM task_tags WHERE task_id = ?1", params![id])?;
@@ -1886,6 +1949,56 @@ fn nullable_string(v: &Value, field: &str) -> Result<Value, ApiError> {
     }
 }
 
+/// Attach the offending task and column to a validator's own error.
+///
+/// `store.import` is the one caller that processes many tasks per request, so
+/// `could not parse date: "whenever"` alone does not say which of them to edit.
+/// This adds only that context — the rule itself stays in the validator, since a
+/// second copy of the grammar here is exactly how import drifted out of step in
+/// the first place.
+fn import_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result<T, ApiError> {
+    r.map_err(|e| ApiError::bad_request(format!("store.import: task {id}, {field}: {}", e.message)))
+}
+
+/// Read an optional date-shaped param, validated and normalized to RFC3339.
+///
+/// The CLI parses dates before it calls, so it can fail without a round-trip and
+/// with its own nicer message — but it is not the only caller. The JSON API, MCP
+/// and `store.import` land straight in the engine, and while validation lived
+/// only in the CLI they stored strings the CLI rejects (`due whenever`), which
+/// every reader downstream then read back as garbage. This is the gate they all
+/// pass — `store.import` via [`import_field`], which only re-labels the error.
+/// It delegates to [`datetime::parse_when`] rather than restating the grammar,
+/// so the rule stays in exactly one place.
+///
+/// Normalizing on the import path is safe for D12's byte-identical round trip
+/// only because an export writes the canonical form and [`datetime::parse_when`]
+/// short-circuits on it; `the_date_gate_leaves_an_export_import_round_trip_byte_identical`
+/// is what holds that true.
+fn opt_when(p: &Value, field: &str, now: Timestamp) -> Result<Option<String>, ApiError> {
+    match opt_str(p, field) {
+        Some(s) => Ok(Some(datetime::parse_when(&s, now)?)),
+        None => Ok(None),
+    }
+}
+
+/// [`opt_when`] for a `set` entry: `null` still clears the column (`--clear`,
+/// D13) and only a present string is parsed.
+fn nullable_when(v: &Value, field: &str, now: Timestamp) -> Result<Value, ApiError> {
+    match nullable_string(v, field)? {
+        Value::String(s) => Ok(Value::String(datetime::parse_when(&s, now)?)),
+        cleared => Ok(cleared),
+    }
+}
+
+/// [`nullable_when`] for `estimate`, which is a duration rather than an instant.
+fn nullable_duration(v: &Value, field: &str) -> Result<Value, ApiError> {
+    match nullable_string(v, field)? {
+        Value::String(s) => Ok(Value::String(datetime::parse_duration(&s)?)),
+        cleared => Ok(cleared),
+    }
+}
+
 /// Apply a single whitelisted column update inside a transaction.
 fn update_column(
     tx: &rusqlite::Transaction,
@@ -1904,11 +2017,11 @@ fn update_column(
 
 /// Render a task as the canonical full JSON object used by `task.list`.
 pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
-    json!({
+    flag_unrecognized_status(t, json!({
         "id": t.id,
         "short_id": t.short_id,
         "title": t.title,
-        "status": t.status.as_str(),
+        "status": t.status_text(),
         "priority": t.priority.map(|x| x.as_str()),
         "project": t.project,
         "due": t.due,
@@ -1923,7 +2036,23 @@ pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
         "modified": t.modified,
         "completed": t.completed,
         "_rev": t.rev,
-    })
+    }))
+}
+
+/// Add `status_unrecognized: true` when — and only when — the row's status is a
+/// value no writer of this engine could have produced.
+///
+/// The key is absent on every well-formed task on purpose: a boolean that is
+/// almost always `false` is noise on every surface that renders it, and its
+/// absence keeps the §3 export shape byte-identical for stores that never hit
+/// the bug. It exists at all because `status` alone carries the anomaly as a
+/// *string*, which a machine consumer would have to recognize by not matching
+/// anything — the same "squint at every reader" the D23 note rejected.
+fn flag_unrecognized_status(t: &Task, mut v: Value) -> Value {
+    if t.status_is_unrecognized() {
+        v["status_unrecognized"] = Value::Bool(true);
+    }
+    v
 }
 
 /// A single sort directive: column key + descending flag.
@@ -1999,6 +2128,7 @@ fn opt_cmp(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorCode;
 
     /// `depends_on_ids` (the export reader) must agree with `is_blocked` /
     /// `depends_on_short_ids` (the display readers, which INNER JOIN `tasks`).
@@ -2073,5 +2203,72 @@ mod tests {
             "PT1H30M",
             "`all` restores the cancelled task's tracked time"
         );
+    }
+
+    /// Date/duration validation used to live only in the CLI, so the JSON API
+    /// (and MCP, and `store.import`, which all land here) stored whatever string
+    /// they were handed: `tasqx add "x" due:whenever` errored while the same
+    /// value through `task.add` succeeded and `tasqx show` printed `due
+    /// whenever`. The gate belongs in the core, where every surface passes.
+    #[test]
+    fn task_add_rejects_unparseable_dates_and_durations() {
+        let e = Engine::open_in_memory().unwrap();
+        for (field, bad) in [
+            ("due", "whenever"),
+            ("scheduled", "whenever"),
+            ("wait", "whenever"),
+            ("estimate", "soonish"),
+        ] {
+            let err = e
+                .task_add(&json!({ "title": "x", field: bad }))
+                .expect_err("the core must reject what the CLI rejects");
+            assert_eq!(err.code, ErrorCode::BadRequest, "{field}");
+            assert!(err.message.contains(bad), "{field}: {} must name the offending value", err.message);
+        }
+    }
+
+    /// The same hole on the modify side: a task that was added clean could still
+    /// be poisoned by a later `task.modify`.
+    #[test]
+    fn task_modify_rejects_unparseable_dates_and_durations() {
+        let e = Engine::open_in_memory().unwrap();
+        let t = e.task_add(&json!({ "title": "x" })).unwrap();
+        for (field, bad) in [
+            ("due", "whenever"),
+            ("scheduled", "whenever"),
+            ("wait", "whenever"),
+            ("estimate", "soonish"),
+        ] {
+            let err = e
+                .task_modify(&json!({ "ref": t["short_id"].clone(), "set": { field: bad } }))
+                .expect_err("the core must reject what the CLI rejects");
+            assert_eq!(err.code, ErrorCode::BadRequest, "{field}");
+            assert!(err.message.contains(bad), "{field}: {} must name the offending value", err.message);
+        }
+    }
+
+    /// The gate must not eat the two shapes D13 depends on: an absent field is
+    /// untouched, an explicit null clears (`--clear`). Also pins that a good
+    /// value still lands normalized, so the gate is a parser and not a filter.
+    #[test]
+    fn date_gate_preserves_absent_and_null_and_normalizes() {
+        let e = Engine::open_in_memory().unwrap();
+        let t = e
+            .task_add(&json!({ "title": "x", "due": "2026-07-20", "estimate": "4h" }))
+            .unwrap();
+        let r#ref = t["short_id"].clone();
+        let get = |e: &Engine| e.task_get(&json!({ "ref": r#ref })).unwrap();
+        assert_eq!(get(&e)["due"], "2026-07-20T00:00:00Z", "a bare ISO date resolves to midnight UTC");
+        assert_eq!(get(&e)["estimate"], "PT4H", "a human duration is stored ISO");
+
+        // Absent: modifying only the title leaves due/estimate alone.
+        e.task_modify(&json!({ "ref": r#ref, "set": { "title": "y" } })).unwrap();
+        assert_eq!(get(&e)["due"], "2026-07-20T00:00:00Z");
+        assert_eq!(get(&e)["estimate"], "PT4H");
+
+        // Explicit null still clears.
+        e.task_modify(&json!({ "ref": r#ref, "set": { "due": null, "estimate": null } })).unwrap();
+        assert!(get(&e)["due"].is_null(), "null must still clear due");
+        assert!(get(&e)["estimate"].is_null(), "null must still clear estimate");
     }
 }

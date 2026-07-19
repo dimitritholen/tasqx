@@ -191,6 +191,17 @@ pub struct Task {
     pub short_id: i64,
     pub title: String,
     pub status: Status,
+    /// The `status` column's text, kept **only** when it is not one of the five
+    /// (`Status::parse` returned `None`). `None` on every well-formed row.
+    ///
+    /// A store can hold such a row — `store.import` accepted an arbitrary status
+    /// string until this cluster closed that hole, so the stores most likely to
+    /// contain one are precisely the stores an upgrade must not lock anyone out
+    /// of. `status` then carries a placeholder so the row keeps flowing through
+    /// filters and sorts, and this field carries the truth: it is what every
+    /// read surface prints and what `store.export` emits, so the original bytes
+    /// survive the one command that can get data out of a store like this.
+    pub status_raw: Option<String>,
     pub priority: Option<Priority>,
     pub project: Option<String>,
     pub due: Option<String>,
@@ -211,6 +222,23 @@ pub struct Task {
     pub created: String,
     pub modified: String,
     pub completed: Option<String>,
+}
+
+impl Task {
+    /// What this task's status should be *shown* and *exported* as: the stored
+    /// text when the reader could not recognize it, the canonical name
+    /// otherwise. Every surface goes through here so no surface can accidentally
+    /// print the placeholder as though it were the fact.
+    pub fn status_text(&self) -> &str {
+        self.status_raw.as_deref().unwrap_or_else(|| self.status.as_str())
+    }
+
+    /// True when [`status_text`](Self::status_text) is a value no writer of this
+    /// engine could have produced. Callers use it to flag the row rather than to
+    /// hide it.
+    pub fn status_is_unrecognized(&self) -> bool {
+        self.status_raw.is_some()
+    }
 }
 
 /// Request envelope (DESIGN.md §4). `params` and `id` are optional on stdio.

@@ -1187,10 +1187,25 @@ fn run_import(be: &mut Backend, file: String) -> CmdOutcome {
     let parsed: Value = serde_json::from_str(&raw)
         .map_err(|e| tasqx_core::ApiError::bad_request(format!("invalid JSON: {e}")))?;
     // Accept either a bare array (export output) or a {"tasks":[...]} object.
+    // Anything else used to fall through to an empty array, so a truncated or
+    // wrong file was answered with `Imported 0 task(s)` and exit 0 — the one
+    // outcome a restore must never be told.
+    let shape = |found: &str| {
+        let src = if file == "-" { "stdin".to_string() } else { file.clone() };
+        tasqx_core::ApiError::bad_request(format!(
+            "cannot import {src}: {found} — expected the `export` shape, \
+             a bare array of tasks or an object with a `tasks` array"
+        ))
+    };
     let tasks = match parsed {
         Value::Array(_) => parsed,
-        Value::Object(ref o) => o.get("tasks").cloned().unwrap_or(Value::Array(vec![])),
-        _ => Value::Array(vec![]),
+        Value::Object(ref o) => {
+            o.get("tasks").cloned().ok_or_else(|| shape("the JSON object has no `tasks` key"))?
+        }
+        Value::String(_) => return Err(shape("the top level is a JSON string")),
+        Value::Number(_) => return Err(shape("the top level is a JSON number")),
+        Value::Bool(_) => return Err(shape("the top level is a JSON boolean")),
+        Value::Null => return Err(shape("the top level is JSON null")),
     };
     let result = be.call("store.import", &json!({ "tasks": tasks }))?;
     let n = result.get("imported").and_then(Value::as_i64).unwrap_or(0);

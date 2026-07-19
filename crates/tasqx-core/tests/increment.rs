@@ -3,7 +3,7 @@
 //! comparison, report.summary, and store export/import round-trip).
 
 use jiff::{SignedDuration, Timestamp};
-use serde_json::json;
+use serde_json::{json, Value};
 use tasqx_core::{Engine, ErrorCode};
 
 fn engine() -> Engine {
@@ -548,6 +548,80 @@ fn export_import_round_trip_equality() {
 
     let export_b = b.store_export(&json!({})).unwrap();
     assert_eq!(export_b["tasks"], tasks_a, "export -> import -> export is identity");
+}
+
+/// An unparseable `status` used to be written to the row verbatim and then
+/// laundered back to `pending` by the row reader — so a `done` task with a
+/// mis-cased status came back as open work while still carrying `completed`.
+/// Import rejects instead, following the D12 precedent for a bad reference.
+#[test]
+fn import_rejects_an_unparseable_status_or_priority() {
+    let a = engine();
+    let t = a.task_add(&json!({ "title": "finished" })).unwrap();
+    a.task_done(&json!({ "ref": t["short_id"].clone() })).unwrap();
+    let good = a.store_export(&json!({})).unwrap()["tasks"].clone();
+    assert_eq!(good[0]["status"], "done", "precondition: exported as done");
+
+    let mut bad = good.clone();
+    bad[0]["status"] = json!("Done");
+    let b = engine();
+    let err = b.store_import(&json!({ "tasks": bad })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("Done"), "the message must name the offending value: {}", err.message);
+    assert_eq!(count(&b.task_list(&json!({ "all": true })).unwrap()), 0, "a rejected import writes nothing");
+
+    let mut bad = good.clone();
+    bad[0]["priority"] = json!("urgent");
+    let c = engine();
+    let err = c.store_import(&json!({ "tasks": bad })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("urgent"), "the message must name the offending value: {}", err.message);
+
+    // The valid payload still imports, and still comes back done.
+    let d = engine();
+    d.store_import(&json!({ "tasks": good.clone() })).unwrap();
+    assert_eq!(d.store_export(&json!({})).unwrap()["tasks"], good);
+}
+
+/// D17's rule at a new edge: `short_id` arrives from untrusted JSON as an i64
+/// and was fed straight into `short_id + 1` to raise the mint floor. At
+/// `i64::MAX` that panicked in debug and — far worse — wrapped in release,
+/// leaving a floor of `i64::MIN` so the next `add` re-minted a short_id the
+/// store already holds, breaking D4. A negative short_id is the same edge from
+/// the other side: no minter can ever produce one, so it can only corrupt.
+#[test]
+fn import_rejects_a_short_id_outside_the_mintable_range() {
+    let task = |sid: Value| {
+        json!({ "tasks": [
+            { "id": "0193aaaa-0000-7000-8000-00000000000a", "short_id": sid,
+              "title": "hostile", "status": "pending" },
+        ] })
+    };
+
+    for sid in [json!(i64::MAX), json!(-1), json!(0)] {
+        let e = engine();
+        let err = e.store_import(&task(sid.clone())).unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest, "short_id {sid}: {}", err.message);
+        assert!(
+            err.message.contains(&sid.to_string()),
+            "the message must name the offending value: {}",
+            err.message
+        );
+        // Nothing written, and — the part that matters — the mint floor is
+        // untouched, so the next task still gets a fresh short_id.
+        assert_eq!(count(&e.task_list(&json!({ "all": true })).unwrap()), 0);
+        let t = e.task_add(&json!({ "title": "after" })).unwrap();
+        assert_eq!(t["short_id"], json!(1), "short_id {sid} corrupted the floor");
+    }
+
+    // The largest short_id a minter could have produced still imports, and the
+    // floor lands above it. The store is then genuinely full, so the next `add`
+    // says so instead of wrapping the counter round to re-mint from `i64::MIN`.
+    let e = engine();
+    e.store_import(&task(json!(i64::MAX - 1))).expect("the boundary value is legal");
+    let err = e.task_add(&json!({ "title": "after" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(err.message.contains("exhausted"), "got: {}", err.message);
 }
 
 // ---- D8: boolean or + parentheses grouping ----------------------------------
@@ -1286,19 +1360,23 @@ fn import_accepts_a_diamond_dependency_graph() {
     assert_eq!(got["depends_on"].as_array().unwrap().len(), 2);
 }
 
-/// A store can still hold an unreadable estimate (import writes columns raw,
-/// and stores predate the parser guard). `report` must survive it: the reader
-/// returns None and the roll-up skips it, rather than aborting the process.
+/// A store can still hold an unreadable estimate: stores predate the parser
+/// guard, and `store.import` used to write these columns raw. `report` must
+/// survive it — the reader returns None and the roll-up skips it, rather than
+/// aborting the process.
+///
+/// Seeded by raw SQL rather than through `store.import`, which is now a strict
+/// door (B2) and no longer able to produce this row. That is the point of the
+/// pairing: writes refuse the value, reads still cope with one already stored.
 #[test]
 fn report_over_an_unreadable_estimate_does_not_panic() {
     let e = engine();
-    e.store_import(&json!({ "tasks": [
-        { "id": "0193aaaa-0000-7000-8000-00000000000a", "short_id": 1, "title": "huge",
-          "status": "pending", "project": "p", "estimate": "P7000000000000000000D" },
-        { "id": "0193aaaa-0000-7000-8000-00000000000b", "short_id": 2, "title": "real",
-          "status": "pending", "project": "p", "estimate": "PT4H" },
-    ] }))
-    .unwrap();
+    e.project_create(&json!({ "name": "p" })).unwrap(); // D23
+    e.task_add(&json!({ "title": "huge", "project": "p", "estimate": "PT4H" })).unwrap();
+    e.task_add(&json!({ "title": "real", "project": "p", "estimate": "PT4H" })).unwrap();
+    e.conn()
+        .execute("UPDATE tasks SET estimate = 'P7000000000000000000D' WHERE title = 'huge'", [])
+        .unwrap();
     let r = e
         .report_summary(&json!({ "metrics": ["count", "est_total"] }))
         .expect("report must not panic over an unreadable estimate");
@@ -1849,4 +1927,164 @@ fn stop_and_reopen_write_a_readable_pending() {
     e.task_done(&json!({ "ref": finished })).unwrap();
     e.task_reopen(&json!({ "ref": finished })).unwrap();
     assert_eq!(e.task_get(&json!({ "ref": finished })).unwrap()["status"], Status::Pending.as_str());
+}
+
+// ---- B1: a status the reader does not recognize must not brick the store -----
+
+/// Seed the one state no current writer can produce: a task row whose `status`
+/// column holds text `Status::parse` rejects. `store.import` used to accept it,
+/// so the stores most likely to hold one are exactly the stores an upgrade must
+/// not lock the user out of.
+fn store_with_an_unrecognized_status() -> (Engine, serde_json::Value) {
+    let e = Engine::open_in_memory().unwrap();
+    e.project_create(&json!({ "name": "work" })).unwrap();
+    let sid = e.task_add(&json!({ "title": "important work" })).unwrap()["short_id"].clone();
+    e.conn().execute("UPDATE tasks SET status = 'Done'", []).unwrap();
+    (e, sid)
+}
+
+/// Every read path stays open. `export` matters most: it is the only way to get
+/// data out of a store the reader dislikes, so making it fail leaves a user who
+/// hit the *old* bug unable to read OR rescue their tasks.
+#[test]
+fn an_unrecognized_status_still_lists_shows_and_exports() {
+    let (e, sid) = store_with_an_unrecognized_status();
+
+    let list = e.task_list(&json!({})).expect("list must survive an unreadable status");
+    assert_eq!(list["tasks"].as_array().unwrap().len(), 1, "the row must not vanish either");
+    let shown = e.task_get(&json!({ "ref": sid })).expect("show must survive it");
+    let exported = e.store_export(&json!({})).expect("export is the escape hatch; it must survive");
+
+    // The stored bytes reach the export verbatim — a rescue that silently
+    // rewrote the value would lose the only evidence of what went wrong.
+    assert_eq!(exported["tasks"][0]["status"], json!("Done"));
+    assert_eq!(list["tasks"][0]["status"], json!("Done"));
+    assert_eq!(shown["status"], json!("Done"));
+}
+
+/// The anomaly is *reported*, not laundered. Calling it `pending` invents open
+/// work out of a row nobody could read, with `completed` still set and nothing
+/// on any surface saying so — the exact bug this cluster set out to fix.
+#[test]
+fn an_unrecognized_status_is_reported_rather_than_passed_off_as_pending() {
+    let (e, sid) = store_with_an_unrecognized_status();
+    for (surface, task) in [
+        ("task.get", e.task_get(&json!({ "ref": sid })).unwrap()),
+        ("task.list", e.task_list(&json!({})).unwrap()["tasks"][0].clone()),
+        ("store.export", e.store_export(&json!({})).unwrap()["tasks"][0].clone()),
+    ] {
+        assert_ne!(task["status"], json!("pending"), "{surface} laundered the anomaly");
+        assert_eq!(
+            task["status_unrecognized"],
+            json!(true),
+            "{surface} must flag the anomaly for machine consumers: {task}"
+        );
+    }
+}
+
+/// The asymmetry is the point: refuse bad data at the door, never become unable
+/// to read data already inside. Re-importing the rescue export therefore fails
+/// loudly and names the value, which is what tells the user what to edit.
+#[test]
+fn the_rescue_export_is_still_refused_on_the_way_back_in() {
+    let (e, _) = store_with_an_unrecognized_status();
+    let exported = e.store_export(&json!({})).unwrap();
+    let err = Engine::open_in_memory()
+        .unwrap()
+        .store_import(&exported)
+        .expect_err("store.import must stay strict");
+    assert!(err.message.contains("Done"), "the error must name the value: {}", err.message);
+}
+
+// ---- B2: store.import must pass the same date/duration gate as everyone else -
+
+/// The one payload shape that used to walk straight past every validator: four
+/// date-shaped fields read raw out of the JSON and handed to the INSERT. The
+/// resulting store said `due whenever`, which no reader downstream can compare,
+/// sort or render — the invisible-field failure this project keeps rebuilding.
+fn payload_with(field: &str, value: &str) -> Value {
+    json!({ "tasks": [{
+        "id": "11111111-1111-4111-8111-111111111111",
+        "short_id": 1,
+        "title": "bad dates",
+        "status": "pending",
+        field: value,
+    }]})
+}
+
+#[test]
+fn store_import_refuses_dates_and_durations_it_cannot_parse() {
+    for (field, value) in
+        [("due", "whenever"), ("scheduled", "nope"), ("wait", "nah"), ("estimate", "soonish")]
+    {
+        let e = engine();
+        let err = e
+            .store_import(&payload_with(field, value))
+            .expect_err(&format!("store.import accepted {field} = {value:?}"));
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        // Both halves matter: the field says which column, the value says which
+        // line of a thousand-task export to edit.
+        assert!(
+            err.message.contains(field) && err.message.contains(value),
+            "the error must name the field and the value: {}",
+            err.message
+        );
+        // A rejected import writes nothing at all (one transaction).
+        assert_eq!(count(&e.task_list(&json!({})).unwrap()), 0, "a refused import left a row");
+    }
+}
+
+/// D12's unfiltered round trip must stay BYTE-identical, so routing these four
+/// fields through a *normalizing* parser has to be a no-op on values an export
+/// wrote. It is only a no-op because the store already holds the canonical form
+/// — asserting it here is what stops a future "friendlier" normalizer (local
+/// time, a trailing `+00:00`, lowercased ISO durations) from silently breaking
+/// the contract while every other test still passes.
+#[test]
+fn the_date_gate_leaves_an_export_import_round_trip_byte_identical() {
+    let a = engine();
+    // Deliberately mixed input forms — bare date, naive datetime, full RFC3339,
+    // human duration — so the stored values are the parser's own output rather
+    // than something that happened to be canonical already.
+    a.task_add(&json!({
+        "title": "every date field",
+        "due": "2099-01-01",
+        "scheduled": "2099-01-02T09:30",
+        "wait": "2099-01-03T00:00:00Z",
+        "estimate": "1h30m",
+    }))
+    .unwrap();
+    a.task_add(&json!({ "title": "no dates at all" })).unwrap();
+
+    let export_a = a.store_export(&json!({})).unwrap();
+    let b = engine();
+    b.store_import(&json!({ "tasks": export_a["tasks"].clone() })).unwrap();
+    let export_b = b.store_export(&json!({})).unwrap();
+
+    assert_eq!(
+        serde_json::to_string(&export_a).unwrap(),
+        serde_json::to_string(&export_b).unwrap(),
+        "the date/duration gate perturbed an unfiltered round trip (D12)"
+    );
+}
+
+/// The B1 asymmetry, applied to dates: a legacy store written before validation
+/// existed must stay readable and exportable, and the export must carry the
+/// offending bytes verbatim so the user can see what to fix. Import is the
+/// strict door — it refuses and names the value. Same story, same shape.
+#[test]
+fn a_legacy_bad_date_still_exports_verbatim_and_is_refused_on_the_way_back_in() {
+    let e = engine();
+    e.task_add(&json!({ "title": "written before the gate existed" })).unwrap();
+    e.conn().execute("UPDATE tasks SET due = 'whenever'", []).unwrap();
+
+    let exported = e.store_export(&json!({})).expect("export is the escape hatch; it must survive");
+    assert_eq!(exported["tasks"][0]["due"], json!("whenever"), "export must not launder it");
+
+    let err = engine().store_import(&exported).expect_err("store.import must stay strict");
+    assert!(
+        err.message.contains("whenever"),
+        "the error must name the value: {}",
+        err.message
+    );
 }

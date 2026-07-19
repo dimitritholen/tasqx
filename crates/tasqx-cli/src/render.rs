@@ -223,7 +223,44 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
     out.push('\n');
     out.push_str(&ctx.paint("muted", &format!("{count} task(s)")));
     out.push('\n');
+
+    // The table has no status column, so a row the store could not read would
+    // otherwise sit in the default view indistinguishable from ordinary open
+    // work — the invisible-field failure this project keeps rebuilding. The
+    // note is conditional: on a healthy store it never appears.
+    let broken: Vec<String> = tasks
+        .iter()
+        .filter(|t| status_is_unrecognized(t))
+        .map(|t| {
+            format!(
+                "#{} ({})",
+                t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
+                s(t, "status")
+            )
+        })
+        .collect();
+    if !broken.is_empty() {
+        // Names the offending values and the way out. It is deliberately not
+        // "run tasqx modify": status is not freely settable (§10 routes every
+        // transition through start/stop/done), and the correct value is the
+        // user's call, not ours — export, edit that one field, import.
+        out.push_str(&ctx.paint(
+            "warn",
+            &format!(
+                "unrecognized status in the store: {} — `tasqx export` still works; \
+                 fix the status there and `tasqx import` it back\n",
+                broken.join(", ")
+            ),
+        ));
+    }
     out
+}
+
+/// True when the core flagged this task's `status` as text it could not
+/// recognize. Reads the explicit boolean rather than re-parsing the string, so
+/// one answer comes from the core and the CLI does not grow a second opinion.
+fn status_is_unrecognized(t: &Value) -> bool {
+    t.get("status_unrecognized").and_then(Value::as_bool).unwrap_or(false)
 }
 
 /// Full task detail (task.get): fields plus tags, deps, annotations, blocked.
@@ -232,7 +269,24 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     let mut out = String::new();
     out.push_str(&ctx.paint("header", &format!("#{sid}  {}", s(result, "title"))));
     out.push('\n');
-    out.push_str(&format!("  status     {}\n", s(result, "status")));
+    // `Done` on its own line reads like a status this build has not heard of
+    // yet, so say what it actually is and what the real ones are. The list of
+    // real ones is derived, never retyped: `Status::ALL` is the canonical list.
+    let status_cell = if status_is_unrecognized(result) {
+        ctx.paint(
+            "warn",
+            &format!(
+                "{}  (unrecognized — not one of {})",
+                s(result, "status"),
+                tasqx_core::types::Status::ALL
+                    .map(tasqx_core::types::Status::as_str)
+                    .join(", ")
+            ),
+        )
+    } else {
+        s(result, "status")
+    };
+    out.push_str(&format!("  status     {status_cell}\n"));
     let prio = result.get("priority").and_then(Value::as_str).unwrap_or("-");
     let prio_role = match prio {
         "H" => "priority.H",
@@ -561,6 +615,52 @@ mod tests {
         let mut bare = base.clone();
         bare["remind"] = json!("");
         assert!(!task_detail(&ctx, &bare).contains("remind"));
+    }
+
+    /// B1: `tasqx list` prints no status column, so a row the store could not
+    /// read would flow through the default view looking like ordinary open work.
+    /// The core flags it; the table has to say so, and name the way out — the
+    /// value cannot be corrected in place, only exported, edited and imported.
+    #[test]
+    fn task_table_reports_a_status_the_store_could_not_read() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "tasks": [{
+                "short_id": 7, "urgency": 5.0, "priority": "M", "title": "important work",
+                "project": "work", "due": "", "tags": [],
+                "status": "Done", "status_unrecognized": true
+            }],
+            "count": 1
+        });
+        let out = task_table(&ctx, &result);
+        assert!(out.contains("Done"), "the offending value must be named: {out:?}");
+        assert!(out.contains("#7"), "the affected task must be identified: {out:?}");
+        assert!(out.contains("export"), "the way out must be named: {out:?}");
+
+        // A clean table stays clean — the note is conditional, not a banner.
+        let mut ok = result.clone();
+        ok["tasks"][0] = json!({
+            "short_id": 7, "urgency": 5.0, "priority": "M", "title": "important work",
+            "project": "work", "due": "", "tags": [], "status": "pending"
+        });
+        assert!(!task_table(&ctx, &ok).contains("export"), "clean table grew a warning");
+    }
+
+    /// The same anomaly on the detail view, which does print status: `Done`
+    /// alone reads like a status the reader simply has not heard of yet.
+    #[test]
+    fn task_detail_marks_a_status_the_store_could_not_read() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = task_detail(
+            &ctx,
+            &json!({
+                "short_id": 7, "title": "important work", "status": "Done",
+                "status_unrecognized": true, "urgency": 1.0
+            }),
+        );
+        assert!(out.contains("Done"), "the stored value must survive to the screen: {out:?}");
+        assert!(out.contains("unrecognized"), "the anomaly must be labelled: {out:?}");
+        assert!(out.contains("pending"), "the five real statuses must be named: {out:?}");
     }
 
     #[test]

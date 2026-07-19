@@ -279,3 +279,45 @@ fn version_names_the_commit_it_was_built_from() {
         _ => assert!(s.contains("unknown"), "without git the id must be `unknown`: {s}"),
     }
 }
+
+/// `tasqx import` on a wrong-shaped JSON file said `Imported 0 task(s)` and
+/// exited 0.
+///
+/// The verb accepts two shapes — a bare array (what `export` writes) and
+/// `{"tasks":[...]}` — and everything else fell through a `_ =>` arm that
+/// substituted an empty array. The engine then imported nothing, successfully.
+/// So the one command whose whole job is moving a store between machines
+/// answered a truncated, renamed, or half-written document with success, and a
+/// restore script had no signal at all that the data never arrived.
+///
+/// Not-JSON and an empty file already reported `invalid JSON` at exit 2; they
+/// are pinned here too because the fix rewrites the arm right next to them.
+#[test]
+fn import_refuses_a_wrong_shaped_document() {
+    let dir = fresh_config_dir("import-shape");
+    let mut scratch = std::env::temp_dir();
+    scratch.push(format!("tasqx-import-shape-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("create scratch dir");
+
+    // (contents, the substring the message must name)
+    let cases = [
+        (r#"{"nope":1}"#, "tasks"),
+        (r#""just a string""#, "string"),
+        ("42", "number"),
+        ("", "invalid JSON"),
+        ("not json", "invalid JSON"),
+    ];
+    for (i, (body, needle)) in cases.iter().enumerate() {
+        let path = scratch.join(format!("case{i}.json"));
+        std::fs::write(&path, body).expect("write case file");
+        let out = bin("import-shape", &dir).arg("import").arg(&path).output().expect("run import");
+
+        assert_eq!(out.status.code(), Some(2), "`{body}` must be a bad_request, not a silent success");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(!stdout.contains("Imported"), "`{body}` must not report an import: {stdout}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.starts_with("error [bad_request]: "), "must use the shared error format: {err}");
+        assert!(err.contains(needle), "`{body}` must be explained by naming `{needle}`: {err}");
+    }
+}

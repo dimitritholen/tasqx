@@ -268,7 +268,17 @@ fn add_column_if_missing(
 pub fn alloc_short_id(tx: &Transaction) -> Result<i64, ApiError> {
     let cur: i64 =
         tx.query_row("SELECT value FROM meta WHERE key = 'next_short_id'", [], |r| r.get(0))?;
-    tx.execute("UPDATE meta SET value = ?1 WHERE key = 'next_short_id'", params![cur + 1])?;
+    // Checked, not `cur + 1`: an import can legally carry a short_id up to
+    // `i64::MAX - 1` (engine::store_import), which leaves the counter one mint
+    // from the end. Wrapping there would hand the *next* task `i64::MIN` and
+    // then re-mint every id from there — the D4 violation this counter exists
+    // to prevent — so exhaustion has to be an error, not a silent restart.
+    let next = cur.checked_add(1).ok_or_else(|| {
+        ApiError::conflict(format!(
+            "the short_id space is exhausted at {cur}; export, then import into a fresh store"
+        ))
+    })?;
+    tx.execute("UPDATE meta SET value = ?1 WHERE key = 'next_short_id'", params![next])?;
     Ok(cur)
 }
 
@@ -339,11 +349,36 @@ pub fn insert_event(
 pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
     let status: String = row.get(3)?;
     let priority: Option<String> = row.get(4)?;
+    // Tolerant, and loud about it. Every *writer* now validates (`store.import`
+    // was the last hole), so an unrecognized status can only come from a store
+    // written before that — which is exactly the store this must not brick.
+    // Failing the read here made `list`, `show` AND `export` exit 1 on a store
+    // whose only fault was having hit the earlier bug, and `export` is the sole
+    // way to get the data back out, so the "safe" error was a one-way door.
+    //
+    // The two rejected alternatives, for the record. Repair-on-open (D23) works
+    // when the correct value is *knowable* — a `default_project` naming no live
+    // row can only be deleted — but nothing here knows whether `"Done"` meant
+    // `done`; guessing would overwrite the user's bytes with no undo. Silently
+    // coercing to `pending` is the original bug: open work invented from a row
+    // we could not read, `completed` still set, nothing saying so.
+    //
+    // So: `status` gets a placeholder purely so the row keeps moving through
+    // filters and sorts, and `status_raw` carries the fact. `Pending` is the
+    // placeholder because it is the one value that keeps the row inside the
+    // default `@working` view — an anomaly the user cannot see is the failure
+    // shape this project keeps repeating, so the row must land where they are
+    // already looking, wearing a label.
+    let (status, status_raw) = match Status::parse(&status) {
+        Some(s) => (s, None),
+        None => (Status::Pending, Some(status)),
+    };
     Ok(Task {
         id: row.get(0)?,
         short_id: row.get(1)?,
         title: row.get(2)?,
-        status: Status::parse(&status).unwrap_or(Status::Pending),
+        status,
+        status_raw,
         priority: priority.as_deref().and_then(Priority::parse),
         project: row.get(5)?,
         due: row.get(6)?,
