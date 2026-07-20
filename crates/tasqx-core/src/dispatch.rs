@@ -271,13 +271,34 @@ mod tests {
             bodies.insert(name.clone(), flat[*start..end].to_string());
         }
 
+        let passes_p = |body: &str, helper: &str| {
+            let needle = format!("{helper}(");
+            body.match_indices(&needle).any(|(i, _)| {
+                let args = &body[i + needle.len()..];
+                args.find(')')
+                    .map(|end| args[..end].split(',').any(|arg| arg == "p"))
+                    .unwrap_or(false)
+            })
+        };
+
         let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (name, body) in &bodies {
-            let mut keys = direct(body);
-            // Whole-`p` helper calls carry their own keys into the caller.
-            for (helper, hbody) in &bodies {
-                if helper != name && body.contains(&format!("{helper}(p)")) {
-                    keys.extend(direct(hbody));
+        for name in bodies.keys() {
+            let mut keys = BTreeSet::new();
+            let mut pending = vec![name.as_str()];
+            let mut seen = BTreeSet::new();
+            // Whole-`p` helper calls carry their keys into the caller. Follow
+            // the chain transitively because connection-aware helpers pass
+            // both a connection and `p` (for example `resolve_ref_on(&tx, p)`).
+            while let Some(current) = pending.pop() {
+                if !seen.insert(current) {
+                    continue;
+                }
+                let body = &bodies[current];
+                keys.extend(direct(body));
+                for helper in bodies.keys() {
+                    if helper != current && passes_p(body, helper) {
+                        pending.push(helper);
+                    }
                 }
             }
             out.insert(name.clone(), keys);

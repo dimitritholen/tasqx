@@ -143,9 +143,7 @@ impl Engine {
     /// their IMMEDIATE transaction so validation and the eventual write share
     /// one serialized snapshot.
     fn resolve_ref_on(&self, conn: &Connection, p: &Value) -> Result<Task, ApiError> {
-        let r = p
-            .get("ref")
-            .ok_or_else(|| ApiError::bad_request("missing required field: ref"))?;
+        let r = ref_param(p)?;
         self.resolve_ref_value_on(conn, r)
     }
 
@@ -464,6 +462,7 @@ impl Engine {
     // ---- task.start ----------------------------------------------------------
 
     pub fn task_start(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
         let keep = opt_bool(p, "keep")?.unwrap_or(false);
         let tx = self.begin()?;
         let task = self.resolve_ref_on(&tx, p)?;
@@ -785,6 +784,9 @@ impl Engine {
     // ---- task.modify ---------------------------------------------------------
 
     pub fn task_modify(&self, p: &Value) -> Result<Value, ApiError> {
+        // Preserve the public validation order without loading store state:
+        // callers have always seen a missing `ref` before errors in `set`.
+        let _ = ref_param(p)?;
         let set = req_object(p, "set")
             .map_err(|e| ApiError::bad_request(format!("{} (modify requires a `set` object)", e.message)))?;
         if set.is_empty() {
@@ -984,6 +986,7 @@ impl Engine {
     // ---- tag.add -------------------------------------------------------------
 
     pub fn tag_add(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
         let tags = opt_str_array(p, "tags")?;
         if tags.is_empty() {
             return Err(ApiError::bad_request("tag.add requires a non-empty `tags` array"));
@@ -1336,6 +1339,7 @@ impl Engine {
     // ---- annotation.add ------------------------------------------------------
 
     pub fn annotation_add(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
         let body = req_str(p, "body")?;
 
         let id = Uuid::now_v7().to_string();
@@ -1362,6 +1366,7 @@ impl Engine {
     // ---- dependency.add ------------------------------------------------------
 
     pub fn dependency_add(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
         let dep = p
             .get("depends_on")
             .ok_or_else(|| ApiError::bad_request("missing required field: depends_on"))?;
@@ -1412,6 +1417,7 @@ impl Engine {
     // ---- dependency.remove ---------------------------------------------------
 
     pub fn dependency_remove(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
         let dep = p
             .get("depends_on")
             .ok_or_else(|| ApiError::bad_request("missing required field: depends_on"))?;
@@ -2217,6 +2223,7 @@ impl Engine {
     /// Returns `{fired, short_id, at}`; `fired: false` means it was already
     /// delivered and the caller must not notify.
     pub fn reminder_fire(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
         let at_raw = req_str(p, "at")?;
         // Normalize before storing/comparing: the dedupe key is an exact string
         // match, so `…T16:00:00+00:00` and `…T16:00:00Z` must not read as two
@@ -2280,6 +2287,11 @@ impl Engine {
 }
 
 // ---- free helpers -----------------------------------------------------------
+
+fn ref_param(p: &Value) -> Result<&Value, ApiError> {
+    p.get("ref")
+        .ok_or_else(|| ApiError::bad_request("missing required field: ref"))
+}
 
 /// D23: assert `name` is a project this store can show — it exists and is not
 /// archived. The one reader for every edge that files a task into an explicitly
