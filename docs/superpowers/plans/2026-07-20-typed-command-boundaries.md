@@ -31,4 +31,4 @@
 - [x] Run focused core contract, concurrency, CLI parse/help, and JSON suites.
 - [x] Run full workspace tests, Clippy, and diff checks.
 - [x] Update Medium #5 and design status with evidence.
-- [ ] Commit, fast-forward merge into `main`, verify merged state, and delete the branch.
+- [x] Commit, fast-forward merge into `main`, verify merged state, and delete the branch.
