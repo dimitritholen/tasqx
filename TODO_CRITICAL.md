@@ -115,7 +115,7 @@ Propagate the result rather than hiding it behind `unwrap_or_default`. Where a r
 - [x] Issue #1: Mutations serialize after reading
 - [x] Issue #2: Store configuration errors are swallowed
 
-**Total:** 2/2 implemented and verified; pending human acceptance of the branch.
+**Total:** 2/2 completed and verified.
 
 ### Verification evidence (2026-07-20)
 
@@ -123,4 +123,4 @@ Propagate the result rather than hiding it behind `unwrap_or_default`. Where a r
 - `cargo test --workspace --all-targets --no-fail-fast`: passed with zero failed targets.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed with zero warnings.
 - `git diff --check`: passed.
-- `cargo fmt --all -- --check`: still fails on the repository's pre-existing whole-tree formatting drift; unrelated files were intentionally not reformatted in this correctness branch.
+- `cargo fmt --all -- --check`: now passes after the separately reviewed formatting-policy task; the original correctness branch remained behavior-focused.
