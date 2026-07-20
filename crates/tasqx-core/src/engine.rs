@@ -982,7 +982,6 @@ impl Engine {
     // ---- tag.add -------------------------------------------------------------
 
     pub fn tag_add(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
         let tags = opt_str_array(p, "tags")?;
         if tags.is_empty() {
             return Err(ApiError::bad_request("tag.add requires a non-empty `tags` array"));
@@ -990,6 +989,7 @@ impl Engine {
 
         let ts = now();
         let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
         for tag in &tags {
             ensure_tag_link(&tx, &task.id, tag)?;
         }
@@ -1334,12 +1334,12 @@ impl Engine {
     // ---- annotation.add ------------------------------------------------------
 
     pub fn annotation_add(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
         let body = req_str(p, "body")?;
 
         let id = Uuid::now_v7().to_string();
         let ts = now();
         let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
         tx.execute(
             "INSERT INTO annotations (id, task_id, body, created) VALUES (?1, ?2, ?3, ?4)",
             params![id, task.id, body, ts],
@@ -1360,18 +1360,18 @@ impl Engine {
     // ---- dependency.add ------------------------------------------------------
 
     pub fn dependency_add(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
         let dep = p
             .get("depends_on")
             .ok_or_else(|| ApiError::bad_request("missing required field: depends_on"))?;
-        let target = self.resolve_ref_value(dep)?;
+        let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
+        let target = self.resolve_ref_value_on(&tx, dep)?;
 
         if task.id == target.id {
             return Err(ApiError::conflict("a task cannot depend on itself"));
         }
 
         let ts = now();
-        let tx = self.begin()?;
         // Cycle check runs inside the IMMEDIATE tx (write lock held) so the
         // acyclicity read and the INSERT observe one consistent snapshot: a
         // concurrent writer can't slip an edge in between the check and the
@@ -1410,14 +1410,13 @@ impl Engine {
     // ---- dependency.remove ---------------------------------------------------
 
     pub fn dependency_remove(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
         let dep = p
             .get("depends_on")
             .ok_or_else(|| ApiError::bad_request("missing required field: depends_on"))?;
-        let target = self.resolve_ref_value(dep)?;
-
-        let ts = now();
         let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
+        let target = self.resolve_ref_value_on(&tx, dep)?;
+        let ts = now();
         let removed = tx.execute(
             "DELETE FROM dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
             params![task.id, target.id],
@@ -2216,7 +2215,6 @@ impl Engine {
     /// Returns `{fired, short_id, at}`; `fired: false` means it was already
     /// delivered and the caller must not notify.
     pub fn reminder_fire(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
         let at_raw = req_str(p, "at")?;
         // Normalize before storing/comparing: the dedupe key is an exact string
         // match, so `…T16:00:00+00:00` and `…T16:00:00Z` must not read as two
@@ -2244,6 +2242,7 @@ impl Engine {
             .to_string();
 
         let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
         if storage::already_reminded(&tx, &task.id, &at)? {
             return Ok(json!({ "fired": false, "short_id": task.short_id, "at": at }));
         }

@@ -186,3 +186,27 @@ fn racing_recurring_completions_spawn_once() {
     assert_eq!(op_count(&events, "done"), 1, "the template completes once");
     assert_eq!(op_count(&events, "add"), 2, "one seed and one spawned add event");
 }
+
+#[test]
+fn annotation_and_tag_advance_two_revisions() {
+    let store = Store::new("annotation-tag");
+    store.engine().task_add(&json!({ "title": "original" })).expect("seed task");
+
+    let results = race_two(
+        &store,
+        |engine| engine.annotation_add(&json!({ "ref": 1, "body": "keep this note" })),
+        |engine| engine.tag_add(&json!({ "ref": 1, "tags": ["keep-this-tag"] })),
+    );
+    assert!(results.0.is_ok(), "annotation succeeds: {:?}", results.0.err().map(|e| e.message));
+    assert!(results.1.is_ok(), "tag succeeds: {:?}", results.1.err().map(|e| e.message));
+
+    let check = store.engine();
+    let task = check.task_get(&json!({ "ref": 1 })).expect("read final task");
+    assert_eq!(task["annotations"].as_array().expect("annotations").len(), 1);
+    assert_eq!(task["annotations"][0]["body"], "keep this note");
+    assert_eq!(task["tags"], json!(["keep-this-tag"]));
+    assert_eq!(task["_rev"], 3, "two effective mutations advance two revisions");
+    let events = check.event_list(&json!({ "entity": "task", "limit": 20 })).expect("events");
+    assert_eq!(op_count(&events, "annotation.add"), 1);
+    assert_eq!(op_count(&events, "tag.add"), 1);
+}
