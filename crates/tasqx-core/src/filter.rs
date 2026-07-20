@@ -77,6 +77,14 @@
 //! all, and answering it with the same silence `due IS NULL` earns is the D27
 //! collapse one layer down — as `status:pendign` was, one predicate over.
 //!
+//! `completed.before:`/`completed.after:` are that same pair on the completion
+//! instant, taking the same parser and refusing on the same terms. They exist
+//! because the field did: every closed task stores when it closed, `task.get`
+//! returns it, DESIGN.md presents `completed.after:-7d` as the query behind the
+//! weekly report — and the parser answered it `unknown filter token`. "What did
+//! I finish this week" is the only question the field is for, and it was the
+//! one question the filter could not be asked.
+//!
 //! **The bound is resolved once, at parse time, into a [`Timestamp`].** Two
 //! reasons, and only the first is about speed: the filter is evaluated per row,
 //! so a bound re-read at match time could let `tomorrow` shift across midnight
@@ -134,6 +142,8 @@ predicate  := \"+\" VALUE                    # require tag; VALUE not empty
             | \"status:\" VALUE
             | \"due.before:\" DATE
             | \"due.after:\"  DATE
+            | \"completed.before:\" DATE       # when the task was finished
+            | \"completed.after:\"  DATE
 
 VALUE      := CHUNK*                       # chunks abut; nothing may come between them
 CHUNK      := WORD | QUOTED
@@ -167,6 +177,16 @@ pub enum Pred {
     /// this variant is through a parse that already succeeded.
     DueBefore(Timestamp),
     DueAfter(Timestamp),
+    /// `completed.before:VALUE` / `completed.after:VALUE`, resolved exactly as
+    /// the `due` pair is and holding a `Timestamp` for the same reason (D33).
+    ///
+    /// DESIGN.md advertised `completed.after:-7d` as the query behind the
+    /// weekly report while the parser answered `unknown filter token` — the
+    /// completion instant was stored on every closed task and returned by the
+    /// API, and there was no way to ask about it. Answering "what did I finish
+    /// this week" is the field's only purpose.
+    CompletedBefore(Timestamp),
+    CompletedAfter(Timestamp),
     /// `@working`: pending|active AND not blocked.
     Working,
     /// The blocked flag: a task with >=1 dependency not yet `done` (DESIGN §3).
@@ -195,6 +215,11 @@ pub struct MatchCtx<'a> {
     pub project: Option<&'a str>,
     pub tags: &'a [String],
     pub due: Option<&'a str>,
+    /// The completion instant, `None` on anything not closed. `None` is a real
+    /// answer here, not a missing one: a task that was never completed cannot
+    /// satisfy any bound on when it was, which is the rule `due` already has
+    /// for a task with no due date.
+    pub completed: Option<&'a str>,
     pub blocked: bool,
 }
 
@@ -284,20 +309,29 @@ fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
         Pred::Blocked => ctx.blocked,
         Pred::DueBefore(bound) => instant_cmp(ctx.due, *bound, true),
         Pred::DueAfter(bound) => instant_cmp(ctx.due, *bound, false),
+        // The same comparator on a different column — deliberately not a second
+        // one, so the two date fields cannot answer a boundary differently.
+        Pred::CompletedBefore(bound) => instant_cmp(ctx.completed, *bound, true),
+        Pred::CompletedAfter(bound) => instant_cmp(ctx.completed, *bound, false),
     }
 }
 
-/// Compare a task's `due` against an already-resolved bound as instants.
-/// `before=true` => due < bound; else due > bound.
+/// Compare one of a task's date fields against an already-resolved bound as
+/// instants. `before=true` => field < bound; else field > bound.
+///
+/// Shared by the `due.` and `completed.` pairs rather than duplicated per
+/// field, so a boundary case cannot be answered two ways.
 ///
 /// Exactly ONE `false`-without-comparing remains, and it means one thing: the
-/// task has no readable `due`, so no date bound can select it. The bound side
+/// task has no readable value in that field, so no date bound can select it —
+/// an uncompleted task is outside every `completed.` bound, which is the same
+/// rule an undated task has always had for `due.`. The bound side
 /// used to share that answer — a caller's typo and a task with no due date were
 /// the same `return false` — which is the collapse D27 rules out for a filter
 /// token, here applied to a bound value. It is gone by construction rather than
 /// by care: `bound` is a `Timestamp`, so there is nothing left to fail.
-fn instant_cmp(due: Option<&str>, bound: Timestamp, before: bool) -> bool {
-    let Some(d) = due.and_then(parse_ts) else {
+fn instant_cmp(field: Option<&str>, bound: Timestamp, before: bool) -> bool {
+    let Some(d) = field.and_then(parse_ts) else {
         return false;
     };
     if before {
@@ -339,8 +373,22 @@ pub fn quote(value: &str) -> String {
 /// to `GRAMMAR` alone would silently lose shell quoting on that key only.
 /// `+`/`-` are here for the same reason they are in the grammar: a tag is a
 /// VALUE like any other, it just spells its key as punctuation.
-const VALUE_PREFIXES: [&str; 6] =
-    ["project:", "status:", "due.before:", "due.after:", "+", "-"];
+const VALUE_PREFIXES: [&str; 8] = [
+    "project:", "status:", "due.before:", "due.after:", "completed.before:", "completed.after:",
+    "+", "-",
+];
+
+/// The token shapes an error message offers when it refuses one.
+///
+/// One string, two call sites. It was two hand-typed copies of the same
+/// sentence, which is the parallel-list shape D30 rules against: adding
+/// `completed.before:`/`completed.after:` meant editing both, and a filter that
+/// accepts a token its own error message does not mention teaches the user that
+/// the token does not exist. `token_shapes_name_every_value_prefix` pins it to
+/// `VALUE_PREFIXES` so a seventh `key:` predicate cannot be advertised by the
+/// grammar and omitted from the refusal.
+const TOKEN_SHAPES: &str = "+tag, -tag, @working, @blocked, project:, status:, \
+                            due.before:, due.after:, completed.before: or completed.after:";
 
 /// Compose one filter string from argv by joining the elements with a space.
 ///
@@ -681,8 +729,7 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
         if rest.starts_with('-') {
             return Err(format!(
                 "unknown flag {tok:?} (a tag exclusion takes one dash, as -tag; \
-                 filter tokens are +tag, -tag, @working, @blocked, project:, status:, \
-                 due.before: or due.after:)"
+                 filter tokens are {TOKEN_SHAPES})"
             ));
         }
         if !rest.is_empty() {
@@ -715,10 +762,16 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
     if let Some(v) = tok.strip_prefix("due.after:") {
         return Ok(Pred::DueAfter(bound(v, "due.after", now)?));
     }
-    Err(format!(
-        "unknown filter token {tok:?} (expected +tag, -tag, @working, @blocked, \
-         project:, status:, due.before: or due.after:)"
-    ))
+    // The completion pair, tested AFTER `due.` so neither prefix can shadow the
+    // other. Same `bound` parser, same D33 refusal on an unreadable value: this
+    // is the `due.` shape one field over, not a second date grammar.
+    if let Some(v) = tok.strip_prefix("completed.before:") {
+        return Ok(Pred::CompletedBefore(bound(v, "completed.before", now)?));
+    }
+    if let Some(v) = tok.strip_prefix("completed.after:") {
+        return Ok(Pred::CompletedAfter(bound(v, "completed.after", now)?));
+    }
+    Err(format!("unknown filter token {tok:?} (expected {TOKEN_SHAPES})"))
 }
 
 /// Resolve a date bound against `now`, or say why it is not a date.
@@ -792,11 +845,11 @@ mod tests {
     }
 
     fn ctx_for(status: Status) -> MatchCtx<'static> {
-        MatchCtx { status, project: None, tags: &[], due: None, blocked: false }
+        MatchCtx { status, project: None, tags: &[], due: None, completed: None, blocked: false }
     }
 
     fn ctx_tagged(tags: &[String]) -> MatchCtx<'_> {
-        MatchCtx { status: Status::Pending, project: None, tags, due: None, blocked: false }
+        MatchCtx { status: Status::Pending, project: None, tags, due: None, completed: None, blocked: false }
     }
 
     /// Grouping has to actually GROUP. Nothing in this suite ever *evaluated* a
@@ -820,6 +873,7 @@ mod tests {
             project: Some("home"),
             tags: &[],
             due: None,
+            completed: None,
             blocked: false,
         };
         assert!(
@@ -845,6 +899,7 @@ mod tests {
             project: None,
             tags: &[],
             due: Some(bound),
+            completed: None,
             blocked: false,
         };
         assert!(!parsed(&format!("due.before:{bound}")).matches(&ctx), "before is strict");
@@ -880,6 +935,7 @@ mod tests {
             project: None,
             tags: &[],
             due: Some("2026-07-20T09:00:00Z"),
+            completed: None,
             blocked: false,
         };
         // Composed through `quote`, because a date is a VALUE like any other and
@@ -938,6 +994,7 @@ mod tests {
             project: None,
             tags: &[],
             due: Some("2026-07-21T00:00:00Z"),
+            completed: None,
             blocked: false,
         };
         // `tomorrow` at Monday noon is 2026-07-21T00:00:00Z, and the bound is
@@ -1121,7 +1178,27 @@ mod tests {
         }
         // Without this the guard passes by matching nothing if GRAMMAR is
         // reformatted — the failure mode every text-scanning guard has.
-        assert_eq!(seen, 4, "expected four `key:`-shaped predicates in GRAMMAR");
+        assert_eq!(seen, 6, "expected six `key:`-shaped predicates in GRAMMAR");
+    }
+
+    /// The refusal message must offer every token the grammar accepts.
+    ///
+    /// `TOKEN_SHAPES` was two hand-typed copies of one sentence, and a filter
+    /// that accepts a token its own error does not list teaches the user the
+    /// token does not exist — the read-side twin of the drift D30 rules against.
+    /// Pinned to `VALUE_PREFIXES` rather than to a second list, so the check has
+    /// nothing of its own to fall out of date.
+    #[test]
+    fn token_shapes_name_every_value_prefix() {
+        for p in VALUE_PREFIXES {
+            // `+`/`-` spell themselves as `+tag`/`-tag` in prose, since a bare
+            // `+` is not something a user types.
+            let needle = if p == "+" || p == "-" { format!("{p}tag") } else { p.to_string() };
+            assert!(
+                TOKEN_SHAPES.contains(&needle),
+                "`{p}` is an accepted filter prefix but no refusal message offers it: {TOKEN_SHAPES}"
+            );
+        }
     }
 
     /// `from_argv` joins and nothing else. Documents the revert, so a future
@@ -1161,6 +1238,7 @@ mod tests {
             project: Some("Home Renovation"),
             tags: &tags,
             due: None,
+            completed: None,
             blocked: false,
         };
         for (stripped, literal) in [
@@ -1213,6 +1291,7 @@ mod tests {
                 project: Some(name),
                 tags: &[],
                 due: None,
+                completed: None,
                 blocked: false,
             };
             assert!(f.matches(&ctx), "project:{name:?} must match its own project");
@@ -1249,6 +1328,7 @@ mod tests {
             project: Some("a (b) or c"),
             tags: &[],
             due: None,
+            completed: None,
             blocked: false,
         };
         // The whole value is one predicate: if `(`, `)` or `or` kept their
@@ -1291,6 +1371,7 @@ mod tests {
                 project: Some(v),
                 tags: &[],
                 due: None,
+                completed: None,
                 blocked: false,
             };
             assert!(f.matches(&ctx), "quote({v:?}) did not round trip");
@@ -1366,7 +1447,7 @@ mod tests {
         let f = Filter::parse("-needs", anchor()).expect("one dash is still a tag exclusion");
         let tagged = vec!["needs".to_string()];
         fn ctx(tags: &[String]) -> MatchCtx<'_> {
-            MatchCtx { status: Status::Pending, project: None, tags, due: None, blocked: false }
+            MatchCtx { status: Status::Pending, project: None, tags, due: None, completed: None, blocked: false }
         }
         assert!(!f.matches(&ctx(&tagged)), "-needs must exclude the tagged task");
         assert!(f.matches(&ctx(&[])), "-needs must keep everything else");

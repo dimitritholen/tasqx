@@ -1304,3 +1304,409 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains('\u{1}'), "sentinel leaked to stdout");
     assert!(!String::from_utf8_lossy(&out.stderr).contains('\u{1}'), "sentinel leaked to stderr");
 }
+
+/// P1a — `cancel` and `done` must AGREE about the dependents they released.
+///
+/// D11 makes cancelling a blocker release its dependents precisely so the graph
+/// stays honest, and the human surface said nothing: `cancel` printed
+/// `#1 -> cancelled` while `--json cancel 1` on the same fixture returned
+/// `"unblocked":[2]`. The tool computed the cascade, stored it, answered the API
+/// with it, and dropped it on the only surface a person reads — the invisible
+/// field, again.
+///
+/// `done` and `cancel` are asserted TOGETHER because they return the same
+/// cascade from the same helper (`compute_unblocked`). One of them rendering it
+/// is not the property worth guarding; both of them rendering it the same way
+/// is, since a reader who learns "now actionable" from `done` will read its
+/// absence under `cancel` as "nothing was released".
+#[test]
+fn both_done_and_cancel_name_the_dependents_they_released() {
+    for verb in ["done", "cancel"] {
+        let tag = format!("unblocked-{verb}");
+        let dir = fresh_config_dir(&tag);
+        let run = |args: &[&str]| bin(&tag, &dir).args(args).output().expect("run tasqx");
+
+        assert!(run(&["init", "P"]).status.success(), "init");
+        assert!(run(&["add", "Blocker"]).status.success(), "add blocker");
+        assert!(run(&["add", "Dependent"]).status.success(), "add dependent");
+        assert!(run(&["dep", "2", "1"]).status.success(), "dep");
+
+        let out = run(&[verb, "1"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "`{verb} 1` failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            stdout.contains("#2"),
+            "`{verb}` released #2 — the API says so — and must name it: {stdout}"
+        );
+        assert!(
+            stdout.contains("now actionable"),
+            "`{verb}` must label the release the same way its twin does: {stdout}"
+        );
+    }
+}
+
+/// P1a, the other half: a verb that released NOTHING must not claim it did.
+///
+/// A guard that only checks the list appears passes just as well against a
+/// renderer that prints "now actionable:" unconditionally, which would be a
+/// worse bug than the silence it replaced.
+#[test]
+fn neither_verb_announces_a_release_that_did_not_happen() {
+    for verb in ["done", "cancel"] {
+        let tag = format!("norelease-{verb}");
+        let dir = fresh_config_dir(&tag);
+        let run = |args: &[&str]| bin(&tag, &dir).args(args).output().expect("run tasqx");
+
+        assert!(run(&["init", "P"]).status.success(), "init");
+        assert!(run(&["add", "Lonely"]).status.success(), "add");
+
+        let out = run(&[verb, "1"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "`{verb} 1` failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            !stdout.contains("now actionable"),
+            "`{verb}` released nothing and must say nothing: {stdout}"
+        );
+    }
+}
+
+/// P1b — the completion timestamp is stored, returned by the API, and was
+/// rendered by exactly one surface.
+///
+/// `done` printed `completed <ts>`; `show` did not, though `--json show` carried
+/// `"completed"`. So the moment a task was finished was readable for exactly as
+/// long as the `done` line stayed on screen, and the detail view — the surface
+/// whose entire job is showing a task's fields — omitted it.
+///
+/// Both surfaces are asserted, for the reason the cluster above exists: the
+/// property is that they agree, not that one of them works.
+#[test]
+fn the_completion_timestamp_reaches_every_human_surface() {
+    let dir = fresh_config_dir("completed-shown");
+    let run = |args: &[&str]| bin("completed-shown", &dir).args(args).output().expect("run tasqx");
+
+    assert!(run(&["init", "P"]).status.success(), "init");
+    assert!(run(&["add", "Alpha"]).status.success(), "add");
+
+    let done = run(&["done", "1"]);
+    assert!(done.status.success(), "done: {}", String::from_utf8_lossy(&done.stderr));
+    let done_out = String::from_utf8_lossy(&done.stdout);
+    assert!(done_out.contains("completed"), "`done` must name the moment: {done_out}");
+
+    // The timestamp the API carries, so the assertion below compares the two
+    // surfaces against one value rather than against each other's formatting.
+    let json = run(&["--json", "show", "1"]);
+    let raw = String::from_utf8_lossy(&json.stdout);
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("--json show parses");
+    let ts = v.get("completed").and_then(|c| c.as_str()).expect("the API carries `completed`").to_string();
+
+    let show = run(&["show", "1"]);
+    let show_out = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        show_out.contains(&ts),
+        "`show` must render the `completed` value the API returns ({ts}): {show_out}"
+    );
+
+    // A task that was never completed has no such moment, and a detail view
+    // that prints an empty `completed` line for every pending task is the
+    // mirror-image bug.
+    assert!(run(&["add", "Beta"]).status.success(), "add beta");
+    let pending = String::from_utf8_lossy(&run(&["show", "2"]).stdout).to_string();
+    assert!(
+        !pending.contains("completed"),
+        "a pending task has no completion moment and must not show one: {pending}"
+    );
+}
+
+/// P1b, second half — DESIGN.md advertises `completed.after:-7d` as a working
+/// query and the filter refused it as an unknown token.
+///
+/// Code and spec disagreed, and the spec is the reachable reading: the field
+/// exists on every row, the API returns it, and `due.before:`/`due.after:`
+/// already fix the shape a date-bounded field takes (D33). So the filter grew
+/// the pair rather than the manual losing the example.
+///
+/// Driven through the REAL BINARY because every bug in this area lived between
+/// argv and the parser.
+#[test]
+fn a_completed_bound_selects_by_when_a_task_was_finished() {
+    let dir = fresh_config_dir("completed-bound");
+    let run = |args: &[&str]| bin("completed-bound", &dir).args(args).output().expect("run tasqx");
+
+    assert!(run(&["init", "P"]).status.success(), "init");
+    assert!(run(&["add", "Finished"]).status.success(), "add");
+    assert!(run(&["add", "Open"]).status.success(), "add");
+    assert!(run(&["done", "1"]).status.success(), "done");
+
+    // The spelling DESIGN.md advertises, and its `before` twin. `-7d` is in the
+    // past and `+7d` in the future, so a task completed just now falls after
+    // the first and before the second regardless of when the suite runs.
+    for bound in ["completed.after:-7d", "completed.before:+7d"] {
+        let out = run(&["list", bound, "status:done"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "`{bound}` must be accepted: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(stdout.contains("Finished"), "`{bound}` must select the completed task: {stdout}");
+        // The task that was never completed has no completion instant, so no
+        // bound on that field can select it — the same rule `due.before:` has
+        // for a task with no due date.
+        assert!(!stdout.contains("Open"), "`{bound}` must not select an uncompleted task: {stdout}");
+    }
+
+    // The other direction of each bound excludes it, which is what proves the
+    // comparison runs rather than the predicate matching everything.
+    for bound in ["completed.before:-7d", "completed.after:+7d"] {
+        let out = run(&["list", bound]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "`{bound}` must be accepted: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(!stdout.contains("Finished"), "`{bound}` must exclude it: {stdout}");
+    }
+
+    // D33: an unreadable bound is refused by name, not answered with the empty
+    // list a genuine no-match produces.
+    let out = run(&["list", "completed.after:yesterdya"]);
+    assert!(!out.status.success(), "a misspelled completed bound must not exit 0");
+    let msg = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(msg.contains("yesterdya"), "the error must name the offending value: {msg}");
+}
+
+/// A hand-edited `config.toml` naming a theme that does not exist was ignored
+/// in silence, and then `config get`/`config list` REPORTED THE IGNORED NAME as
+/// though it were in effect. So the one command whose job is answering "what is
+/// my theme" answered with a value the renderer had already thrown away, while
+/// `theme show` rendered the default. Two surfaces, one question, two answers.
+///
+/// The rule this pins (the third case in the theme-validation family):
+/// `--theme`/`$TASQX_THEME` WARN because refusing would discard a captured task;
+/// `theme set`/`config set` REJECT because they persist; a hand-edited FILE also
+/// persists, but refusing to start would lock the user out of the very tool that
+/// fixes it — so it warns, and every reader reports the EFFECTIVE value.
+///
+/// Both `config` surfaces are asserted, in both output modes, because a value
+/// this wrong being right in the table and wrong in the JSON is exactly the
+/// half-fix this project keeps shipping.
+#[test]
+fn an_unknown_theme_in_the_config_file_is_reported_as_the_theme_actually_used() {
+    let dir = fresh_config_dir("file-bogus");
+    std::fs::write(dir.join("config.toml"), "[theme]\nname = \"hand-edited-bogus\"\n")
+        .expect("write config");
+    let run = |args: &[&str]| bin("file-bogus", &dir).args(args).output().expect("run tasqx");
+
+    let get = run(&["config", "get", "theme.name"]);
+    assert_eq!(
+        String::from_utf8_lossy(&get.stdout).trim(),
+        "nord",
+        "`config get` must report the theme in effect, not the one the file asked for"
+    );
+    let err = String::from_utf8_lossy(&get.stderr);
+    assert!(err.contains("hand-edited-bogus"), "the warning must name the ignored value: {err}");
+    assert!(err.contains("config.toml"), "and the layer it came from: {err}");
+    assert_eq!(err.matches("unknown theme").count(), 1, "warned twice for one value: {err}");
+
+    // The JSON twin: a script reading this must not get the discarded name.
+    let get_json = run(&["--json", "config", "get", "theme.name"]);
+    let v: serde_json::Value =
+        serde_json::from_slice(&get_json.stdout).expect("config get --json is JSON");
+    assert_eq!(v["value"], "nord", "--json reported the ignored name: {v}");
+
+    // `config list` reports a SOURCE too, and a source of "config.toml" beside
+    // an effective value of "nord" would be a second, subtler lie.
+    let list = run(&["--json", "config", "list"]);
+    let v: serde_json::Value =
+        serde_json::from_slice(&list.stdout).expect("config list --json is JSON");
+    let row = v["settings"]
+        .as_array()
+        .expect("settings array")
+        .iter()
+        .find(|r| r["key"] == "theme.name")
+        .expect("theme.name row")
+        .clone();
+    assert_eq!(row["value"], "nord", "`config list` reported the ignored name: {row}");
+    assert_eq!(row["source"], "default", "the ignored layer must not be credited: {row}");
+
+    // And the surface that disagreed in the first place still renders nord, so
+    // the two now agree by having been made to compute the same thing.
+    let show = run(&["theme", "show"]);
+    assert!(
+        String::from_utf8_lossy(&show.stdout).contains("Theme: nord"),
+        "theme show: {}",
+        String::from_utf8_lossy(&show.stdout)
+    );
+}
+
+/// The sibling that must NOT change: a config file naming a real theme reports
+/// that theme, from that layer, and says nothing on stderr. Without this, a
+/// "fix" that always answered `nord` and always warned would pass every
+/// assertion above.
+#[test]
+fn a_known_theme_in_the_config_file_is_reported_from_the_file_and_warns_about_nothing() {
+    let dir = fresh_config_dir("file-known");
+    std::fs::write(dir.join("config.toml"), "[theme]\nname = \"gruvbox\"\n").expect("write config");
+    let run = |args: &[&str]| bin("file-known", &dir).args(args).output().expect("run tasqx");
+
+    let get = run(&["config", "get", "theme.name"]);
+    assert_eq!(String::from_utf8_lossy(&get.stdout).trim(), "gruvbox");
+    let err = String::from_utf8_lossy(&get.stderr);
+    assert!(!err.contains("unknown theme"), "a real theme must warn about nothing: {err}");
+
+    let list = run(&["--json", "config", "list"]);
+    let v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("JSON");
+    let row = v["settings"].as_array().unwrap().iter().find(|r| r["key"] == "theme.name").unwrap();
+    assert_eq!(row["value"], "gruvbox");
+    assert_eq!(row["source"], "config.toml", "the file really did win here");
+}
+
+/// P3a: the terminal table padded and truncated by CHAR COUNT, so a CJK or
+/// emoji title shifted every column to its right and `tasqx list` stopped being
+/// a table.
+///
+/// This drives the REAL BINARY rather than the renderer, because the finding is
+/// about bytes reaching a terminal: the titles travel through argv, through the
+/// store, through JSON and back out through the render path, and a unit test
+/// that hands the renderer a `Value` skips every one of those. Width is measured
+/// with `unicode_width` directly rather than through the CLI's own helper, so a
+/// wrong width function cannot make its own output look right.
+#[test]
+fn the_task_table_stays_aligned_when_a_title_is_not_ascii() {
+    use unicode_width::UnicodeWidthStr;
+
+    let dir = fresh_config_dir("wide-table");
+    let run = |args: &[&str]| bin("wide-table", &dir).args(args).output().expect("run tasqx");
+    run(&["init", "work"]);
+
+    // One entry per way a char count and a cell count can disagree: two-cell
+    // ideographs, a zero-cell combining mark, a five-char/two-cell emoji ZWJ
+    // sequence, and a two-char/two-cell skin-tone cluster. Plus a CJK title long
+    // enough that it MUST be truncated, which is where a char-counting truncate
+    // overflowed the column by 33 cells.
+    let titles = [
+        "plain ascii",
+        "\u{6f22}\u{5b57}\u{30c6}\u{30b9}\u{30c8}",
+        "e\u{301}accent",
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f466} family",
+        "\u{1f44d}\u{1f3fd} thumb",
+        &"\u{4e2d}\u{6587}".repeat(30),
+    ];
+    for t in titles {
+        let out = run(&["add", t]);
+        assert!(out.status.success(), "add {t:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    let out = run(&["list"]);
+    let stdout = String::from_utf8(out.stdout).expect("UTF-8");
+    let rows: Vec<&str> = stdout.lines().skip(2).take(titles.len()).collect();
+    assert_eq!(rows.len(), titles.len(), "expected one row per task:\n{stdout}");
+
+    // Every task carries the same project, due and tags, so the rows differ
+    // ONLY in the title — equal display width is exactly "the title column held
+    // its 36 cells". The header is included: a table whose rows agree with each
+    // other but not with their own column labels is still misaligned.
+    let want = rows[0].width();
+    for (row, title) in rows.iter().zip(titles) {
+        assert_eq!(
+            row.width(),
+            want,
+            "row for {title:?} is {} cells, not {want}:\n{stdout}",
+            row.width()
+        );
+    }
+    let header = stdout.lines().next().expect("header");
+    let project_col = header.find("PROJECT").expect("PROJECT header");
+    let project_col = header[..project_col].width();
+    for (row, title) in rows.iter().zip(titles) {
+        let at = row.find("work").unwrap_or_else(|| panic!("no project cell for {title:?}"));
+        assert_eq!(
+            row[..at].width(),
+            project_col,
+            "the PROJECT column moved for {title:?}:\n{stdout}"
+        );
+    }
+}
+
+/// P3b: `tasqx why` printed `age  -0.00`. The age term is `(-age_days).max(0.0)`
+/// and a task created inside the second the clock is read has `age_days == 0.0`,
+/// so the negation keeps a sign bit that `{:.2}` faithfully prints — telling the
+/// reader a term subtracted urgency when it contributed none.
+///
+/// The unit test in `render` is the one that can SCHEDULE the value; this is the
+/// end-to-end backstop over the whole path, on the input that produced it in the
+/// original report — a task created a moment ago.
+#[test]
+fn why_prints_no_negative_zero_component() {
+    let dir = fresh_config_dir("why-negzero");
+    let run = |args: &[&str]| bin("why-negzero", &dir).args(args).output().expect("run tasqx");
+    run(&["init", "work"]);
+    run(&["add", "fresh"]);
+
+    let out = run(&["why", "1"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("age"), "no age component to check:\n{stdout}");
+    assert!(!stdout.contains("-0"), "a component rendered as negative zero:\n{stdout}");
+}
+
+/// P3c: an out-of-range date was refused with `jiff`'s internals — "parameter
+/// 'Unix timestamp seconds' is not in the required range of …" — naming neither
+/// the value typed nor anything that would have worked.
+///
+/// Both spellings of the same request are driven: the `due:` sugar the CLI
+/// parses itself and the `--due` flag, because they reach `parse_when` from two
+/// different places in `lib.rs` and a fix wired into one would leave the other
+/// leaking. And `scheduled`, because it is a third call site of the same
+/// function on the same command.
+#[test]
+fn an_out_of_range_date_is_refused_in_this_tools_words() {
+    let dir = fresh_config_dir("date-range");
+    let run = |args: &[&str]| bin("date-range", &dir).args(args).output().expect("run tasqx");
+    run(&["init", "work"]);
+
+    for args in [
+        vec!["add", "probe", "due:9999-12-31"],
+        vec!["add", "probe", "--due", "9999-12-31T23:59"],
+        vec!["add", "probe", "--scheduled", "9999-12-31"],
+    ] {
+        let out = run(&args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{args:?} should be bad_request: {err}");
+        assert!(err.contains("9999-12-31"), "{args:?}: value not named: {err}");
+        assert!(err.contains("9999-12-30"), "{args:?}: no usable bound named: {err}");
+        for leak in ["Unix timestamp", "parameter", "overflowed", "-377705023201"] {
+            assert!(!err.contains(leak), "{args:?}: jiff internals leaked ({leak:?}): {err}");
+        }
+    }
+
+    // The near side of the boundary still works — a guard that only proved the
+    // refusal would be satisfied by a parser that refused every date.
+    let ok = run(&["add", "probe", "due:9999-12-30"]);
+    assert!(ok.status.success(), "a storable date was refused: {}", String::from_utf8_lossy(&ok.stderr));
+}
+
+/// The same char-vs-cell rule on `tasqx config list`, whose VALUE column carries
+/// a project name the user chose. This one is padded but never truncated: the
+/// value is the data the reader came to read, so overflowing the cell is a cost
+/// worth paying and silently cutting it is not.
+#[test]
+fn the_config_table_stays_aligned_when_a_value_is_not_ascii() {
+    use unicode_width::UnicodeWidthStr;
+
+    let dir = fresh_config_dir("wide-config");
+    let run = |args: &[&str]| bin("wide-config", &dir).args(args).output().expect("run tasqx");
+    // `default_project` is free text the user picks, and it lands in this table.
+    run(&["init", "\u{6f22}\u{5b57}"]);
+
+    let out = run(&["config", "list"]);
+    let stdout = String::from_utf8(out.stdout).expect("UTF-8");
+    let header = stdout.lines().next().expect("header");
+    let source_col = header[..header.find("SOURCE").expect("SOURCE header")].width();
+    for row in stdout.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+        // SOURCE is the last field on the row, and `rfind` takes its LAST
+        // occurrence — which matters, because `default` is also a substring of
+        // the `default_project` key sitting in column one.
+        let Some(last) = row.split_whitespace().last() else { continue };
+        let at = row.rfind(last).expect("the field came from this row");
+        assert_eq!(
+            row[..at].width(),
+            source_col,
+            "the SOURCE column moved on this row:\n{stdout}"
+        );
+    }
+    assert!(stdout.contains("\u{6f22}\u{5b57}"), "the value must still be shown whole:\n{stdout}");
+}

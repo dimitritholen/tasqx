@@ -67,6 +67,15 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("TASQX_BUILD
 #[command(
     name = "tasqx",
     version = VERSION,
+    // `-V` on a subcommand LISTED TASKS before this. Nothing was wrong at any
+    // one layer: version was declared on the root only, so `-V` was not a flag
+    // `list` knew, and the argv pre-pass then read it — correctly, by the dash
+    // grammar — as the tag exclusion `-V`. But `-h` IS propagated by clap, so
+    // the tool's two shortest conventions disagreed with each other.
+    // Propagating declares `-V` everywhere, and `no_declared_short_flag_is_ever_escaped`
+    // then exempts it from the pre-pass automatically, because that guard reads
+    // clap's own arg table rather than a list of letters (D30).
+    propagate_version = true,
     about = "A fast, terminal-first, AI-native task manager.",
     after_help = "Run `tasqx manual` for the full in-terminal guide, or `tasqx <command> -h` for examples.",
     disable_help_subcommand = true
@@ -867,21 +876,59 @@ fn execute(cli: Cli) -> Exit {
 /// So the fallback stays and the silence goes. Before this, a typo'd `--theme`
 /// or a stale `$TASQX_THEME` rendered nord with no hint, which reads as the
 /// flag being ignored rather than the name being wrong.
+///
+/// **A hand-edited `config.toml` is the third case, and it warns too.** It
+/// persists like `config set`, but refusing to start would lock the user out of
+/// the one tool that can fix the file — the D28 inversion, one config layer
+/// over. It was left silent on the theory that `tasqx config` would report it;
+/// `tasqx config` was in fact reporting the ignored name as though it were in
+/// effect, so nothing in the tool said the name had been dropped. Warning on
+/// every command is the point rather than the cost: a persisted bad name is
+/// wrong on every run, and stderr keeps stdout scriptable.
+///
 /// The message, or `None` when there is nothing to say.
 ///
 /// Split from the printing so it is testable at all: the emitting version can
 /// only be observed through process-global stderr, and a first version of this
 /// was pinned by a test that checked `validate_setting` and that `build_ctx`
 /// did not panic — so disabling the warning outright left the suite green.
-fn unknown_theme_warning(name: &str, source: &str) -> Option<String> {
-    validate_setting("theme.name", name).err().map(|_| {
+/// `key` is the setting being resolved, NOT a constant. Hard-coding
+/// `"theme.name"` here meant every OTHER setting was validated as a theme name,
+/// so `notify.enabled = true` failed that check and was silently replaced by its
+/// default — the caller's value dropped, and `config get` reporting `default`.
+/// `validate_setting` answers `Ok` for a key with no closed value set, so
+/// passing the real key is also what keeps this correct as settings are added.
+fn unknown_theme_warning(key: &str, name: &str, source: &str) -> Option<String> {
+    validate_setting(key, name).err().map(|_| {
         format!("warning: unknown theme {name:?} from {source}; using the default (try `tasqx theme list`)")
     })
 }
 
-fn warn_unknown_theme(name: &str, source: &str) {
-    if let Some(msg) = unknown_theme_warning(name, source) {
-        eprintln!("{msg}");
+/// One setting's value **as it will actually be used**, the layer that supplied
+/// it, and the complaint if a layer's value had to be discarded.
+///
+/// This is the one place the difference between "what a layer said" and "what
+/// the tool will do" is resolved, and every reader goes through it — `build_ctx`
+/// on the render path, and `config get`/`config list`/`config edit` through
+/// `setting_value`. Before it, `config::resolve` was the answer for both, and it
+/// only knows precedence: a `config.toml` naming a theme that does not exist was
+/// dropped by `theme::load` on the way to the renderer while `config get`
+/// happily reported the dropped name. One question, two surfaces, two answers —
+/// and the one the user could read was the wrong one.
+///
+/// The fallback is `s.default` with `Source::Default` on purpose: that IS where
+/// the value comes from once the named layer is discarded, and crediting
+/// `config.toml` for a value it did not supply would be the same lie one field
+/// over.
+fn effective_setting(
+    s: &config::Setting,
+    flag: Option<&str>,
+    file: Option<&str>,
+) -> (String, config::Source, Option<String>) {
+    let (value, source) = config::resolve(s, flag, file);
+    match unknown_theme_warning(s.key, &value, &source.label(s)) {
+        None => (value, source, None),
+        Some(msg) => (s.default.to_string(), config::Source::Default, Some(msg)),
     }
 }
 
@@ -889,12 +936,17 @@ fn build_ctx(flag: Option<&str>) -> Ctx {
     // One chain for every setting (config::resolve), rather than a per-setting
     // fold. The env layer is read inside the resolver so a caller cannot forget it.
     let s = config::find("theme.name").expect("theme.name is a registered setting");
-    let (name, source) = config::resolve(s, flag, config::toml_value(s).as_deref());
-    // Only the layers the user typed for THIS run. A stale name in config.toml
-    // is `tasqx config`'s business to report, and warning about it on every
-    // single command would be noise.
-    if matches!(source, config::Source::Flag | config::Source::Env) {
-        warn_unknown_theme(&name, &source.label(s));
+    let (name, _, warning) = effective_setting(s, flag, config::toml_value(s).as_deref());
+    // Every layer, not just the ones typed for THIS run. The older rule warned
+    // for `--theme`/`$TASQX_THEME` only and left a hand-edited `config.toml` to
+    // `tasqx config` — but `config` was reporting the file's value as though it
+    // were in effect, so nothing anywhere said the name had been dropped. A
+    // persisted unknown theme is the loudest case, not the quietest: it is wrong
+    // on every run until someone is told. Warning here rather than in
+    // `setting_value` keeps it to exactly one line per invocation, since
+    // `build_ctx` runs before every command including `config` itself.
+    if let Some(msg) = warning {
+        eprintln!("{msg}");
     }
     let dir = themes_dir();
     let theme = theme::load(&name, dir.as_deref());
@@ -1932,7 +1984,11 @@ fn setting_value(
     match s.home {
         config::Home::Store => Ok((store(s.key)?.unwrap_or_default(), "store".to_string())),
         config::Home::Toml => {
-            let (v, src) = config::resolve(s, flag, file_value(s)?.as_deref());
+            // The EFFECTIVE value, never the one a layer asked for and the tool
+            // discarded. The warning is dropped here rather than printed:
+            // `build_ctx` has already resolved the same setting from the same
+            // layers this run and said it once.
+            let (v, src, _) = effective_setting(s, flag, file_value(s)?.as_deref());
             Ok((v, src.label(s)))
         }
     }
@@ -2289,7 +2345,16 @@ fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
         let val = r["value"].as_str().unwrap_or("");
         let src = r["source"].as_str().unwrap_or("");
         let shown = if val.is_empty() { "(unset)" } else { val };
-        out.push_str(&format!("{:<18} {:<22} {}\n", key, shown, ctx.paint("muted", src)));
+        // `render::pad` measures terminal CELLS, not chars, so a value carrying
+        // CJK or an emoji — an editor path, a project name — no longer shoves
+        // the SOURCE column sideways. Padded, never truncated: the value is the
+        // data the reader came for, and this table is where they read it.
+        out.push_str(&format!(
+            "{} {} {}\n",
+            render::pad(key, 18),
+            render::pad(shown, 22),
+            ctx.paint("muted", src)
+        ));
     }
     out
 }
@@ -2743,15 +2808,48 @@ mod tests {
         assert!(validate_setting("theme.name", "geen-thema-xyz").is_err(), "fixture must be unknown");
         assert!(validate_setting("theme.name", "nord").is_ok(), "a built-in must stay valid");
         // The warning itself, not a proxy for it.
-        let msg = unknown_theme_warning("geen-thema-xyz", "--theme").expect("must warn");
+        let msg = unknown_theme_warning("theme.name", "geen-thema-xyz", "--theme").expect("must warn");
         assert!(msg.contains("geen-thema-xyz"), "{msg}");
         assert!(msg.contains("--theme"), "must name the layer it came from: {msg}");
         assert!(msg.contains("theme list"), "must point somewhere useful: {msg}");
-        assert!(unknown_theme_warning("nord", "--theme").is_none(), "a real theme is silent");
+        assert!(unknown_theme_warning("theme.name", "nord", "--theme").is_none(), "a real theme is silent");
 
         // And the command still runs: rendering must never refuse over a theme.
         let ctx = build_ctx(Some("geen-thema-xyz"));
         assert_eq!(ctx.theme.name, theme::DEFAULT_THEME, "an unknown name falls back, it does not panic");
+    }
+
+    /// The theme validator must not be applied to settings that are not themes.
+    ///
+    /// `effective_setting` runs for EVERY registered setting, and a first
+    /// version handed each one to a validator that hard-coded `theme.name`. So
+    /// `notify.enabled = true` in config.toml was validated as a theme name,
+    /// failed, and was discarded in favour of the default — the user's value
+    /// silently dropped and reported as `default` by `config get`/`config list`.
+    /// That is the silent-drop class (D27/D32/D35) reappearing inside the fix
+    /// for a silent drop, which is exactly why this asserts over the whole
+    /// registry rather than over `theme.name` alone.
+    #[test]
+    fn only_the_theme_setting_is_validated_as_a_theme() {
+        for s in config::SETTINGS {
+            if s.key == "theme.name" {
+                continue;
+            }
+            // A value this setting can legitimately hold must survive the
+            // effective-value resolution untouched, whatever it looks like.
+            let held = match s.kind {
+                config::Kind::Bool => "true",
+                _ => "a-value-that-is-not-a-theme",
+            };
+            let (value, source, warning) = effective_setting(s, None, Some(held));
+            assert_eq!(value, held, "{}: a file value must survive, not be replaced", s.key);
+            assert!(warning.is_none(), "{}: must not warn about themes: {warning:?}", s.key);
+            assert!(
+                !matches!(source, config::Source::Default),
+                "{}: the file supplied it, so the file must be credited",
+                s.key
+            );
+        }
     }
 
     /// The CLI kept its own copy of the group_by allowlist while the MCP schema
@@ -3120,6 +3218,7 @@ mod tests {
                 project: None,
                 tags: &[],
                 due: None,
+                completed: None,
                 blocked: false,
             };
             assert_eq!(

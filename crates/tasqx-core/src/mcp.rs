@@ -18,7 +18,7 @@
 use serde_json::{json, Value};
 
 use crate::dispatch::dispatch;
-use crate::engine::{Engine, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS};
+use crate::engine::{Engine, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS, TASK_FIELDS};
 use crate::types::Priority;
 
 /// MCP protocol revision this server implements by default (the `initialize`
@@ -103,6 +103,16 @@ fn enum_of(values: impl IntoIterator<Item = &'static str>) -> Value {
     Value::Array(values.into_iter().map(|v| json!(v)).collect())
 }
 
+/// The one sentence describing what a date field takes, for every date field.
+///
+/// `due`, `scheduled` and `wait` all resolve through `datetime::parse_when`
+/// (D33), so three separate descriptions would be three chances to advertise
+/// three different grammars for one parser — and the first version did exactly
+/// that, claiming RFC3339 only, which is the narrowest of the spellings the tool
+/// prints in its own parse error.
+const WHEN_GRAMMAR: &str = "Date/time in the tool's date grammar: \"tomorrow\", \
+    \"friday\", \"2026-07-20\", \"in 3 days\", \"eom\", or \"2026-07-20T17:00\".";
+
 /// Schema fragment for a `ref` argument (short_id int OR full UUID string).
 fn ref_schema() -> Value {
     json!({
@@ -129,7 +139,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "filter": {
                         "type": "string",
-                        "description": "Filter DSL query, e.g. \"status:pending +api\". Use \"@working\" for the active working set."
+                        "description": "Filter DSL query, e.g. \"status:pending +api\". Use \"@working\" for the active working set. Omit it (or send \"\") for every task: no filter means no filtering."
                     },
                     // No `enum` here: a key may carry a `-` prefix, which a
                     // plain enum of the bare names would forbid. The valid set
@@ -145,9 +155,17 @@ fn tool_specs() -> Vec<ToolSpec> {
                             SORT_KEYS.join(", ")
                         )
                     },
-                    "limit": { "type": "integer", "minimum": 1 }
-                },
-                "required": ["filter"]
+                    // `minimum: 0`, not 1: `opt_u64` accepts 0 and the engine's
+                    // own refusal for a negative limit says "send 0 or more".
+                    // A schema that contradicts the sentence the engine prints
+                    // denies an agent a call that works.
+                    "limit": { "type": "integer", "minimum": 0 },
+                    "fields": {
+                        "type": "array",
+                        "items": { "type": "string", "enum": enum_of(TASK_FIELDS.iter().map(String::as_str)) },
+                        "description": "Restrict each row to these fields. An unknown name is rejected, not ignored."
+                    }
+                }
             }),
         },
         ToolSpec {
@@ -171,9 +189,14 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "group_by": {
                         "type": "string",
-                        "enum": enum_of(SUMMARY_GROUP_BY)
+                        "enum": enum_of(SUMMARY_GROUP_BY),
+                        "description": format!("Grouping axis. Optional; defaults to {}.", SUMMARY_GROUP_BY[0])
                     },
                     "filter": { "type": "string", "description": "Optional filter DSL to scope the report." },
+                    "all": {
+                        "type": "boolean",
+                        "description": "Include every status. By default a report with no status term in its filter covers open work only (D24)."
+                    },
                     "metrics": {
                         "type": "array",
                         "items": {
@@ -181,8 +204,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                             "enum": enum_of(SUMMARY_METRICS)
                         }
                     }
-                },
-                "required": ["group_by"]
+                }
             }),
         },
         ToolSpec {
@@ -213,9 +235,23 @@ fn tool_specs() -> Vec<ToolSpec> {
                         "enum": enum_of(Priority::ALL.map(Priority::as_str)),
                         "description": "Priority: H (high), M (medium), or L (low)."
                     },
-                    "due": { "type": "string", "description": "Due date/time, RFC3339, e.g. \"2026-07-20T17:00:00+02:00\"." },
+                    // Every date field names the SAME grammar, because they all
+                    // run through `datetime::parse_when` (D33). Advertising
+                    // RFC3339 alone was a schema narrower than the engine: an
+                    // agent would never send `tomorrow`, which works.
+                    "due": { "type": "string", "description": WHEN_GRAMMAR },
+                    "scheduled": { "type": "string", "description": WHEN_GRAMMAR },
+                    "wait": { "type": "string", "description": WHEN_GRAMMAR },
                     "tags": { "type": "array", "items": { "type": "string" } },
-                    "estimate": { "type": "string", "description": "ISO-8601 duration, e.g. \"PT4H\"." }
+                    "estimate": { "type": "string", "description": "Duration: \"4h\", \"90m\", \"1h30m\", \"2d\", \"1w\", or ISO-8601 \"PT4H\"." },
+                    "recurrence": {
+                        "type": "string",
+                        "description": "Recurrence rule (D2 subset): \"daily\", \"every 3 days\", \"weekly on mon,wed\", \"monthly on day 15\", \"monthly on the last friday\"."
+                    },
+                    "remind": {
+                        "type": "string",
+                        "description": "Reminder: a signed offset from `due` (\"-1h\", \"-30m\", \"-2d\", \"+15m\") or an absolute date in the `due` grammar."
+                    }
                 },
                 "required": ["title"]
             }),
@@ -257,7 +293,13 @@ fn tool_specs() -> Vec<ToolSpec> {
             description: "Start the timer on a task (moves it to active).",
             schema: json!({
                 "type": "object",
-                "properties": { "ref": ref_schema() },
+                "properties": {
+                    "ref": ref_schema(),
+                    "keep": {
+                        "type": "boolean",
+                        "description": "Keep other active tasks running (opt out of single-active)."
+                    }
+                },
                 "required": ["ref"]
             }),
         },
@@ -663,30 +705,140 @@ mod tests {
         }
     }
 
-    /// A schema property the engine will now REFUSE is worse than a missing
-    /// one: the agent reads the schema, sends the argument, and gets a
-    /// `bad_request` for doing exactly what it was told. D33 made unknown keys
-    /// an error, so the schemas — the only thing an agent sees before choosing
-    /// an argument — must be a subset of the accepted set, checked against the
-    /// same table the gate enforces rather than by eye.
+    /// The `required` list an agent reads must be the set the method really
+    /// requires — in BOTH directions.
+    ///
+    /// The failure this guards, found by probing rather than by reading:
+    /// `tasqx_list_tasks` declared `required: ["filter"]` and `tasqx_summary`
+    /// declared `required: ["group_by"]`, while `task.list` and
+    /// `report.summary` both answer a call with no arguments at all. So the
+    /// schema forbade a call the engine honours, and an agent that wanted "every
+    /// task" was forced to invent a filter — the two-surfaces-disagree shape
+    /// pointing the other way from D33's, and just as invisible, because a call
+    /// a client never makes cannot fail.
+    ///
+    /// Derived, not restated (D30): the arbiter is the engine's own answer to an
+    /// empty params object, so a param that becomes required tomorrow turns this
+    /// red the day it does. The message check is what stops a schema requiring
+    /// the wrong key on a method that requires some other one.
     #[test]
-    fn every_schema_property_is_a_param_the_method_accepts() {
+    fn every_schema_required_list_matches_what_the_method_actually_requires() {
+        let e = engine();
+        for spec in tool_specs() {
+            let required: Vec<String> = spec.schema["required"]
+                .as_array()
+                .map(|a| a.iter().map(|v| v.as_str().expect("a name").to_string()).collect())
+                .unwrap_or_default();
+            let empty = dispatch(&e, spec.method, &json!({}));
+            match (required.is_empty(), empty) {
+                (true, Ok(_)) => {}
+                (false, Err(err)) => assert!(
+                    required.iter().any(|k| err.message.contains(k)),
+                    "tool `{}` declares required {required:?}, but {} refuses an empty call over \
+                     something else entirely: {}",
+                    spec.name,
+                    spec.method,
+                    err.message
+                ),
+                (true, Err(err)) => panic!(
+                    "tool `{}` declares nothing required, but {} refuses a call with no arguments \
+                     ({}) — an agent following the schema is refused for obeying it",
+                    spec.name, spec.method, err.message
+                ),
+                (false, Ok(_)) => panic!(
+                    "tool `{}` declares required {required:?}, but {} accepts a call with no \
+                     arguments at all — the schema forbids a call the engine honours, so an agent \
+                     invents a value the engine never needed",
+                    spec.name, spec.method
+                ),
+            }
+        }
+    }
+
+    /// A numeric bound in a schema must be the engine's own floor, probed at the
+    /// boundary from both sides.
+    ///
+    /// The failure this guards: `tasqx_list_tasks.limit` advertised
+    /// `minimum: 1` while `opt_u64` accepts 0 — and the engine's own refusal
+    /// message for a negative limit says "send 0 or more", so the schema
+    /// contradicted the sentence the engine prints. `limit: 0` is a legitimate
+    /// "just the count" call an agent could never make.
+    ///
+    /// A `minimum` on a tool that also has required arguments cannot be probed
+    /// by this one-key call, so it FAILS rather than being skipped: a silent
+    /// skip is how a guard goes vacuous, and the floor below would not catch it
+    /// while any other bound remained probeable.
+    #[test]
+    fn every_numeric_minimum_in_a_schema_is_the_engine_s_own_floor() {
+        let e = engine();
+        let mut probed = 0;
+        for spec in tool_specs() {
+            let requires = spec.schema["required"].as_array().is_some_and(|a| !a.is_empty());
+            for (name, node) in spec.schema["properties"].as_object().expect("an object schema") {
+                let Some(min) = node.get("minimum").and_then(Value::as_i64) else { continue };
+                assert!(
+                    !requires,
+                    "tool `{}` bounds `{name}` at {min} but also has required arguments, so this \
+                     guard cannot probe the boundary with a one-key call",
+                    spec.name
+                );
+                probed += 1;
+                assert!(
+                    dispatch(&e, spec.method, &json!({ name.as_str(): min })).is_ok(),
+                    "schema says `{}`.{name} accepts {min}; the engine refuses it",
+                    spec.name
+                );
+                let below = min - 1;
+                assert!(
+                    dispatch(&e, spec.method, &json!({ name.as_str(): below })).is_err(),
+                    "schema forbids `{}`.{name} below {min}, but the engine accepts {below} — an \
+                     agent is denied a call that works",
+                    spec.name
+                );
+            }
+        }
+        assert!(probed > 0, "no numeric bound was probed; this guard has gone vacuous");
+    }
+
+    /// A tool's properties must be EXACTLY the params its method accepts.
+    ///
+    /// A property the engine refuses is the loud half: the agent reads the
+    /// schema, sends the argument, and gets a `bad_request` for doing what it
+    /// was told. The silent half is the one this used to allow — a param the
+    /// engine accepts and the schema omits is an option no agent ever tries, so
+    /// nothing fails and the capability simply does not exist for AI callers.
+    /// `tasqx_add_task` hid `scheduled`, `wait`, `recurrence` and `remind`
+    /// that way, `tasqx_list_tasks` hid `fields`, `tasqx_summary` hid `all` and
+    /// `tasqx_start_timer` hid `keep`; the subset-only version of this test was
+    /// green throughout.
+    ///
+    /// Equality, therefore, and against `PARAMS` — the same table the dispatch
+    /// gate enforces and that its own drift guard pins to the code that reads
+    /// the keys. Exposing a method now means exposing all of it, or recording
+    /// why not (D30: derive it, do not keep two lists in sync).
+    #[test]
+    fn every_tool_advertises_exactly_the_params_its_method_accepts() {
         for spec in tool_specs() {
             let (_, accepted, _) = crate::dispatch::PARAMS
                 .iter()
                 .find(|(m, _, _)| *m == spec.method)
                 .unwrap_or_else(|| panic!("tool `{}` names an unlisted method", spec.name));
-            let props = spec.schema["properties"].as_object().expect("an object schema");
-            for key in props.keys() {
-                assert!(
-                    accepted.contains(&key.as_str()),
-                    "tool `{}` advertises `{key}`, which {} does not accept (accepted: {}) — \
-                     an agent following the schema would be refused",
-                    spec.name,
-                    spec.method,
-                    accepted.join(", ")
-                );
-            }
+            let mut advertised: Vec<&str> = spec.schema["properties"]
+                .as_object()
+                .expect("an object schema")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            advertised.sort_unstable();
+            let mut expected: Vec<&str> = accepted.to_vec();
+            expected.sort_unstable();
+            assert_eq!(
+                advertised, expected,
+                "tool `{}` and {} disagree about the argument set: a property the method refuses \
+                 fails every call that uses it, and a param the schema omits is a capability no \
+                 agent will ever discover",
+                spec.name, spec.method
+            );
         }
     }
 }

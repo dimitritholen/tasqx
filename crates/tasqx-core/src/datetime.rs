@@ -53,12 +53,12 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
     let norm = raw.replacen(' ', "T", 1);
     for cand in [norm.clone(), format!("{norm}:00")] {
         if let Ok(dt) = cand.parse::<DateTime>() {
-            return finish(dt, now);
+            return finish(dt, raw);
         }
     }
     // 3. A bare ISO date → that day at 00:00 UTC.
     if let Ok(d) = raw.parse::<Date>() {
-        return finish(DateTime::from_parts(d, midnight()), now);
+        return finish(DateTime::from_parts(d, midnight()), raw);
     }
 
     // 4. Keyword / relative grammar. Work lowercased and tokenized.
@@ -95,50 +95,86 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
     // a date; the second is a bad request, not "today at midnight".
     let bare_time = tokens.is_empty();
     if bare_time && time.is_none() {
-        return Err(ApiError::bad_request(format!(
-            "could not parse date: {raw:?} (try e.g. tomorrow, friday, \
-             2026-07-20, \"in 3 days\", eom, or 2026-07-20T17:00)"
-        )));
+        return Err(unparseable(raw));
     }
 
-    let date = if bare_time {
-        today
-    } else {
-        resolve_date(&tokens, today).ok_or_else(|| {
-            ApiError::bad_request(format!(
-                "could not parse date: {raw:?} (try e.g. tomorrow, friday, \
-                 2026-07-20, \"in 3 days\", eom, or 2026-07-20T17:00)"
-            ))
-        })?
-    };
+    let date =
+        if bare_time { today } else { resolve_date(&tokens, today).ok_or_else(|| unparseable(raw))? };
 
     let t = time.unwrap_or_else(midnight);
-    let out = finish(DateTime::from_parts(date, t), now)?;
+    let out = finish(DateTime::from_parts(date, t), raw)?;
 
     // A bare time already past today rolls forward to tomorrow.
     if bare_time {
         let dt = DateTime::from_parts(date, t);
-        let ts = dt
-            .to_zoned(TimeZone::UTC)
-            .map_err(|e| ApiError::bad_request(format!("invalid time: {e}")))?
-            .timestamp();
+        // The same conversion `finish` makes, through the same helper, so the
+        // same failure cannot acquire a second wording here.
+        let ts = to_instant(dt, raw)?;
         if ts <= now {
-            let tomorrow = date
-                .tomorrow()
-                .map_err(|e| ApiError::bad_request(format!("date overflow: {e}")))?;
-            return finish(DateTime::from_parts(tomorrow, t), now);
+            let tomorrow = date.tomorrow().map_err(|_| out_of_range(raw))?;
+            return finish(DateTime::from_parts(tomorrow, t), raw);
         }
     }
 
     Ok(out)
 }
 
+/// The one refusal for a date expression this grammar cannot read. It is a
+/// function because it is reachable from two places, and two copies of a message
+/// carrying an examples list are two things to keep in step.
+fn unparseable(raw: &str) -> ApiError {
+    ApiError::bad_request(format!(
+        "could not parse date: {raw:?} (try e.g. tomorrow, friday, \
+         2026-07-20, \"in 3 days\", eom, or 2026-07-20T17:00)"
+    ))
+}
+
+/// The refusal for a date this grammar read PERFECTLY WELL and cannot store.
+///
+/// It used to be `jiff`'s own words — "parameter 'Unix timestamp seconds' is not
+/// in the required range of -377705023201..=253402207200" — which named neither
+/// the value the user typed nor anything they could type instead. Every other
+/// rejection in this tool names the offending value and the way out, so this one
+/// does too, in the shape [`unparseable`] uses.
+///
+/// The bounds are DERIVED from `jiff`'s own limits rather than typed in, so the
+/// number in the message cannot drift away from the number being enforced when
+/// the crate moves. They print as civil UTC datetimes because that is the
+/// spelling the user typed in, not the epoch seconds the library counts in.
+fn out_of_range(raw: &str) -> ApiError {
+    let lo = Timestamp::MIN.to_zoned(TimeZone::UTC).datetime();
+    // Truncated to the second: `…T22:00:00.999999999` is noise in a hint, and
+    // dropping the fraction moves the stated ceiling DOWN, so everything the
+    // message says is storable really is. (The floor carries no fraction, and
+    // truncating it would move it the wrong way, so it is left alone.)
+    let hi = to_the_second(Timestamp::MAX.to_zoned(TimeZone::UTC).datetime());
+    ApiError::bad_request(format!(
+        "date out of range: {raw:?} (tasqx stores instants from {lo} to {hi} UTC; \
+         try e.g. 2026-07-20 or 2026-07-20T17:00)"
+    ))
+}
+
+/// `dt` with its sub-second part dropped.
+fn to_the_second(dt: DateTime) -> DateTime {
+    let t = Time::new(dt.hour(), dt.minute(), dt.second(), 0)
+        .expect("the components came from a Time that already validated");
+    DateTime::from_parts(dt.date(), t)
+}
+
+/// The one civil-UTC-to-instant conversion, so its one failure has one message.
+///
+/// The error is not inspected because there is nothing else it could be: the
+/// zone is fixed UTC, which has no gaps and no ambiguous times for a `to_zoned`
+/// to trip over, leaving "outside the representable instant range" as the sole
+/// cause. Reading the library's error text to find that out would be the same
+/// leak this function exists to close, pointed the other way.
+fn to_instant(dt: DateTime, raw: &str) -> Result<Timestamp, ApiError> {
+    Ok(dt.to_zoned(TimeZone::UTC).map_err(|_| out_of_range(raw))?.timestamp())
+}
+
 /// Convert a naive UTC datetime to an RFC3339 string.
-fn finish(dt: DateTime, _now: Timestamp) -> Result<String, ApiError> {
-    let z = dt
-        .to_zoned(TimeZone::UTC)
-        .map_err(|e| ApiError::bad_request(format!("invalid datetime: {e}")))?;
-    Ok(z.timestamp().to_string())
+fn finish(dt: DateTime, raw: &str) -> Result<String, ApiError> {
+    Ok(to_instant(dt, raw)?.to_string())
 }
 
 fn midnight() -> Time {
@@ -440,6 +476,38 @@ mod tests {
         // A bare sign is still a bad request, not a panic.
         assert!(parse_when("-", now()).is_err());
         assert!(parse_when("-d", now()).is_err());
+    }
+
+    /// A date past the end of the representable range was refused with `jiff`'s
+    /// own words: "converting datetime with time zone offset `+00` to timestamp
+    /// overflowed: parameter 'Unix timestamp seconds' is not in the required
+    /// range of -377705023201..=253402207200". That names neither the value the
+    /// user typed nor anything they could type instead — it is a library's
+    /// internals reaching a terminal, and every other rejection in this tool
+    /// names the offending value and the way out.
+    ///
+    /// All three absolute branches are checked because all three reach `finish`
+    /// by different routes — a bare ISO date, a naive datetime with `T`, and the
+    /// space-separated spelling of the same — so a fix wired into one of them
+    /// leaves the other two leaking.
+    #[test]
+    fn a_date_past_the_representable_range_is_refused_in_this_tools_words() {
+        for raw in ["9999-12-31", "9999-12-31T23:59", "9999-12-31 23:00", "9999-12-31T22:00:01"] {
+            let err = parse_when(raw, now()).expect_err("must be refused");
+            let msg = err.message;
+            assert!(msg.contains(raw), "the offending value is not named: {msg}");
+            for leak in ["Unix timestamp", "parameter", "overflowed", "time zone offset", "-377705023201"] {
+                assert!(!msg.contains(leak), "jiff internals leaked ({leak:?}): {msg}");
+            }
+            // The way out: a bound the user can aim below, in the same spelling
+            // they typed. `9999` alone would be ambiguous, so the assertion is on
+            // the full instant.
+            assert!(msg.contains("9999-12-30"), "the last usable instant is not named: {msg}");
+        }
+        // The near side of the same boundary still WORKS — a guard that only
+        // proved the refusal would be satisfied by refusing every date.
+        assert_eq!(p("9999-12-30"), "9999-12-30T00:00:00Z");
+        assert_eq!(p("9999-12-30 22:00"), "9999-12-30T22:00:00Z");
     }
 
     #[test]

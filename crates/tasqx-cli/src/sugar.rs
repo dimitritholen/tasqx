@@ -239,7 +239,35 @@ fn tokenize_argv(args: &[String]) -> Result<Vec<SugarTok>, ApiError> {
             // sense that matters here — nothing about it was guessed.
             out.push(SugarTok { text: arg.clone(), quoted: true });
         } else {
-            out.extend(tokenize(arg)?);
+            let toks = tokenize(arg)?;
+            // D36's STORAGE half — "accepted values are stored as given; the
+            // trim decides validity, not storage" — which held on the JSON door
+            // and not here. An element carrying no sugar IS the title text the
+            // user typed, so it is handed over whole instead of as words that
+            // the title branch later rejoins with a single space. Rejoining did
+            // not merely trim the ends: it rewrote the MIDDLE of the title
+            // (`a    b` became `a b`, a literal tab became a space), so
+            // `tasqx add "  x  "` and `task.add {"title":"  x  "}` wrote
+            // different bytes for one intent — the CLI-vs-API divergence this
+            // project keeps paying for.
+            //
+            // Deliberately narrow. The moment ANY token in the element is sugar
+            // the classic one-big-quoted-string capture form is in play
+            // (`add "Ship it due:friday +api"`), and there the words are all
+            // that can honestly be reconstructed — the sugar tokens are being
+            // removed from the middle, so the original spacing no longer
+            // describes the title that remains.
+            //
+            // An element that tokenizes to NOTHING (whitespace only) must keep
+            // falling through: dropping it is what makes `tasqx add "   "`
+            // reach `req_str` empty and be refused, which D36 requires.
+            let is_pure_title =
+                !arg.contains('"') && !toks.is_empty() && !toks.iter().any(|t| is_sugar_token(&t.text));
+            if is_pure_title {
+                out.push(SugarTok { text: arg.clone(), quoted: false });
+            } else {
+                out.extend(toks);
+            }
         }
     }
     Ok(out)
@@ -265,6 +293,19 @@ struct SugarTok {
 ///
 /// The `+` must be followed by actual content, not by the space itself: a bare
 /// `+ foo` names no tag, and honouring it whole would mint the tag `" foo"`.
+/// Does this token reach a sugar branch of [`parse_add`]'s loop rather than the
+/// title branch?
+///
+/// Derived from the same two facts the loop itself dispatches on — the
+/// [`VALUE_KEYS`] table and the two colon-less prefixes — so a new sugar key
+/// joins this answer by being added to the table, not by someone remembering a
+/// second list. That is D30's rule ("when a fix can be spelled 'derive it' or
+/// 'keep a list in sync', derive it") at the one place where getting it wrong
+/// would silently hand a sugar-bearing element to the title verbatim.
+fn is_sugar_token(t: &str) -> bool {
+    t.starts_with('+') || t.starts_with('!') || VALUE_KEYS.iter().any(|k| t.starts_with(k))
+}
+
 fn is_spaced_tag(arg: &str) -> bool {
     arg.strip_prefix('+').is_some_and(|t| !t.starts_with(char::is_whitespace) && !t.is_empty())
 }

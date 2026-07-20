@@ -212,8 +212,14 @@ spelling above rather than answered with the wrong rows. The
 same rule is what lets you pass a whole expression as one
 argument: `tasqx list \"+api or +web\"` is the expression.
 
-The same rule splits `add`/`modify` sugar, so what you can
-create you can filter for. Write `\\\"` for a literal quote and
+`add`/`modify` sugar is split by the same scanner, but the
+write side ALSO honours the argument boundary your shell drew,
+so it accepts one spelling the filter does not: `tasqx add
+\"paint\" project:Home Renovation` files the task, while
+`tasqx list project:Home Renovation` is refused. Reading is
+where a guess would return wrong rows silently, so only the
+read side refuses. Use the quoted spelling and both sides
+agree. Write `\\\"` for a literal quote and
 `\\\\` for a literal backslash — a name holding a quote needs
 that form on both sides:
   tasqx add \"paint\" project:\"My \\\"Big\\\" Project\"

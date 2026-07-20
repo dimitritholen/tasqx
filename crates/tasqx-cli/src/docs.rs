@@ -866,13 +866,22 @@ fn page_filters() -> String {
          and <code>and</code>/<code>or</code> are ordinary words, so a project named \
          <code>a (b)</code> no longer breaks the grouping. Write <code>\\\"</code> for a literal \
          quote and <code>\\\\</code> for a literal backslash. Quoting changes where a predicate \
-         <em>ends</em>, not what it means: <code>\"project:x\"</code> is still a project match.          Your shell's own quotes are enough — tasqx reads each argument the shell hands it as one          value, so there is nothing to escape twice.",
+         <em>ends</em>, not what it means: <code>\"project:x\"</code> is still a project match. The quotes must \
+         REACH tasqx: on a read path the argument boundary is not enough, because the reader \
+         does not guess that a space belongs inside a value rather than between two predicates. \
+         Protect them from your shell — <code>'project:\"Home Renovation\"'</code>.",
     ));
     s.push_str(&p(
-        "This is one rule for the whole tool, not a filter dialect: <code>tasqx add</code> and \
-         <code>tasqx modify</code> split their inline sugar with the same scanner, so a name you \
-         can create you can also filter for, spelled the same way. The one value that needs the \
-         escaped form on both sides is a name containing a quote — \
+        "One scanner, not a filter dialect: <code>tasqx add</code> and <code>tasqx modify</code> \
+         split their inline sugar with the same code the filter uses. The two sides are not \
+         symmetric, though, and the difference is deliberate. The <em>write</em> side also honours \
+         the argument boundary your shell drew, so <code>tasqx add \"paint\" project:Home \
+         Renovation</code> files the task; the <em>read</em> side refuses the same words, because \
+         there <code>project:Home Renovation</code> is equally a spaced name and a project match \
+         plus a stray token, and guessing would answer with the wrong rows at exit 0. A refused \
+         read costs a retype; a wrong one is unfalsifiable. So the spelling that works on both \
+         sides is the quoted one, and it is the one to learn. The value that needs the escaped \
+         form on both sides is a name containing a quote — \
          <code>project:\"My \\\"Big\\\" Project\"</code> — because an argument carrying a literal \
          quote is read by the scanner rather than taken whole.",
     ));

@@ -1636,6 +1636,8 @@ dependencies = [
  "tasqx-core",
  "toml",
  "toml_edit 0.22.27",
+ "unicode-truncate",
+ "unicode-width",
 ]
 
 [[package]]

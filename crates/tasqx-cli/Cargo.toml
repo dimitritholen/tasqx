@@ -27,3 +27,21 @@ toml_edit = "0.22"
 # `ratatui::crossterm`, so raw mode and the alt screen cannot drift out of sync
 # with the backend that draws into them.
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
+# A terminal table is a grid of CELLS, not of chars: a CJK ideograph and most
+# emoji occupy two cells, a combining mark occupies none, and an emoji ZWJ
+# sequence is several chars occupying two. `format!("{s:<36}")` counts chars, so
+# any of those shifted every column to its right. These two crates are NOT new
+# to the dependency graph — `ratatui-core` already builds both, so this only
+# names dependencies cargo was compiling anyway. `unicode-width` answers "how
+# many cells"; `unicode-truncate` cuts on a grapheme boundary so a cluster is
+# never sliced in half (its own algorithm, rather than a fourth hand-rolled copy
+# of the grapheme walk this project would then have to maintain).
+unicode-truncate = "2.0.1"
+unicode-width = "0.2.2"
+
+[dev-dependencies]
+# The end-to-end alignment guard measures the REAL binary's output in cells.
+# `render::width` is private and, more to the point, reusing it would make the
+# guard agree with the implementation by construction — a table misaligned by a
+# wrong width function would look aligned to a test that asked the same function.
+unicode-width = "0.2.2"

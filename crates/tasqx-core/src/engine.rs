@@ -810,6 +810,21 @@ impl Engine {
                     // This arm used to accept any string, so `set:{title:""}`
                     // wrote a store that exported fine and then failed its own
                     // import — D12's round trip breakable from the API.
+                    // D13: `title` is deliberately NOT clearable — "a task with
+                    // no title is not a task" — which the CLI enforces by
+                    // leaving `title` out of `CLEARABLE`, so `--clear title`
+                    // dies at parse time. `set:{title:null}` is this API's
+                    // spelling of that same request, and it used to fall
+                    // through to the generic wrong-type message ("send a string
+                    // or omit `title`"), which describes a type mistake rather
+                    // than the rule actually being enforced. A caller trying to
+                    // erase a title was told nothing about erasing being the
+                    // refused part. One request, one answer, on both surfaces.
+                    if v.is_null() {
+                        return Err(ApiError::bad_request(
+                            "title cannot be cleared — a task with no title is not a task; send a new title, or cancel the task if it is not real work",
+                        ));
+                    }
                     let s = req_str_value("title", Some(v))?;
                     assignments.push(("title", Value::String(s)));
                 }
@@ -1031,6 +1046,7 @@ impl Engine {
                 project: t.project.as_deref(),
                 tags: &tags,
                 due: t.due.as_deref(),
+                completed: t.completed.as_deref(),
                 blocked,
             };
             if filter.matches(&ctx) {
@@ -1495,6 +1511,7 @@ impl Engine {
                 project: t.project.as_deref(),
                 tags: &tags,
                 due: t.due.as_deref(),
+                completed: t.completed.as_deref(),
                 blocked,
             };
             if !filter.matches(&ctx) {
@@ -1580,6 +1597,7 @@ impl Engine {
                 project: t.project.as_deref(),
                 tags: &tags,
                 due: t.due.as_deref(),
+                completed: t.completed.as_deref(),
                 blocked,
             };
             if !filter.matches(&ctx) {
@@ -1871,7 +1889,13 @@ impl Engine {
             let due = import_field(id, "due", opt_when(tv, "due", now_ts))?;
             let scheduled = import_field(id, "scheduled", opt_when(tv, "scheduled", now_ts))?;
             let wait = import_field(id, "wait", opt_when(tv, "wait", now_ts))?;
-            let estimate = match opt_str_nonempty(tv, "estimate")? {
+            // The EXTRACTION is wrapped as well as the parse. These three read
+            // their value outside `import_field`, so `estimate:""` was refused
+            // by a message that never said which of a thousand exported tasks
+            // held it, while `estimate:"3 fortnights"` — the same field, one
+            // error path over — named it. Both doors now go through the wrapper
+            // that exists for exactly this reason.
+            let estimate = match import_field(id, "estimate", opt_str_nonempty(tv, "estimate"))? {
                 Some(s) => Some(import_field(id, "estimate", datetime::parse_duration(&s))?),
                 None => None,
             };
@@ -1885,7 +1909,7 @@ impl Engine {
             // code comment, never a decision: normalization runs the same
             // functions that WROTE the stored form, so it is idempotent on
             // anything an export produced (D12 stays byte-identical).
-            let recurrence = match opt_str_nonempty(tv, "recurrence")? {
+            let recurrence = match import_field(id, "recurrence", opt_str_nonempty(tv, "recurrence"))? {
                 Some(s) => Some(import_field(id, "recurrence", recur::parse_rule(&s))
                     .map(|r| recur::rule_to_string(&r))?),
                 None => None,
@@ -1893,7 +1917,7 @@ impl Engine {
             // `parse_remind` validates the SHAPE without collapsing it: an
             // offset stays the symbolic `-1h` that re-anchors when `due` moves,
             // and only the absolute branch resolves — exactly as on `add`.
-            let remind = match opt_str_nonempty(tv, "remind")? {
+            let remind = match import_field(id, "remind", opt_str_nonempty(tv, "remind"))? {
                 Some(s) => Some(import_field(id, "remind", remind::parse_remind(&s, now_ts))
                     .map(|r| remind::spec_to_string(&r))?),
                 None => None,

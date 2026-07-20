@@ -167,3 +167,68 @@ fn manual_unknown_topic_exits_2() {
     assert_eq!(out.status.code(), Some(2), "unknown manual arg must be bad_request");
     assert!(String::from_utf8_lossy(&out.stderr).contains("definitely-not-a-topic"));
 }
+
+/// `-V` must mean the same thing everywhere `-h` does.
+///
+/// `tasqx list -V` LISTED TASKS: clap declared `version` on the root only, so
+/// `-V` was not a flag `list` knew, and the argv pre-pass — correctly, by its
+/// own dash grammar — read it as the tag exclusion `-V`. Nothing was wrong at
+/// any single layer; the two shortest conventions in the tool simply disagreed,
+/// because `-h` is propagated to every subcommand by clap and `-V` was not.
+///
+/// Driven through the real binary and over EVERY subcommand rather than one,
+/// because the pre-pass treats filter-taking commands differently from the rest
+/// and a single example would only ever prove one of the two paths. The
+/// The expected payload is lifted from `tasqx --version`'s own output — build
+/// id included — so this cannot pass by printing some other version-shaped
+/// string. Only the program-name prefix differs: clap names a subcommand's
+/// version line `tasqx-<sub>`, which is its convention and is left alone.
+#[test]
+fn the_version_short_flag_works_on_every_subcommand_the_way_help_does() {
+    let root = bin().arg("--version").output().expect("run --version");
+    let root_out = String::from_utf8_lossy(&root.stdout).into_owned();
+    let payload = root_out.strip_prefix("tasqx").expect("root --version: {root_out:?}");
+    assert!(payload.contains('.'), "no version number in {root_out:?}");
+
+    let names = tasqx_cli::subcommand_names();
+    assert!(names.len() > 10, "the subcommand list came back empty-ish: {names:?}");
+
+    for name in names {
+        let out = bin().args([&name, "-V"]).output().expect("run -V");
+        let got = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(
+            got,
+            format!("tasqx-{name}{payload}"),
+            "`tasqx {name} -V` did not print the version"
+        );
+        // The twin that already worked, asserted beside it so a fix that
+        // propagates `-V` by breaking `-h` cannot pass.
+        let h = bin().args([&name, "-h"]).output().expect("run -h");
+        assert!(h.status.success(), "`tasqx {name} -h` must still print help");
+        assert!(
+            String::from_utf8_lossy(&h.stdout).contains("Usage:"),
+            "`tasqx {name} -h` printed no usage"
+        );
+    }
+}
+
+/// The other half of the dash grammar, which propagating `-V` must not cost:
+/// a MULTI-character single-dash token is still a tag exclusion even when its
+/// first letter now names a declared short flag. `-h` already proved this for
+/// `-hotfix`; `-V` gets the same guard on the real binary rather than on a
+/// hand-built argv, since the split is the thing under test.
+#[test]
+fn a_multi_character_dash_token_beginning_with_v_is_still_a_tag_exclusion() {
+    let db = fresh_db("dash-v");
+    let run = |args: &[&str]| -> std::process::Output {
+        bin().env("TASQX_DB", &db).env("TASQX_CONFIG_DIR", "").args(args).output().expect("run")
+    };
+    run(&["add", "geverfd", "+Verf"]);
+    run(&["add", "gezaagd"]);
+
+    let out = run(&["list", "-Verf"]);
+    assert!(out.status.success(), "`list -Verf` failed: {}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("gezaagd"), "the untagged task must survive the exclusion: {s}");
+    assert!(!s.contains("geverfd"), "`-Verf` must exclude the tagged task, not print a version: {s}");
+}

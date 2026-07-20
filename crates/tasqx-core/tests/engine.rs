@@ -607,3 +607,87 @@ fn the_import_document_tolerates_a_future_key_but_still_needs_tasks() {
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(err.message.contains("tasks"), "{}", err.message);
 }
+
+/// P1c — every per-task import error must name the task it came from.
+///
+/// `import_field`'s doc comment states why it exists: import processes many
+/// tasks per request, so an error that does not name one does not say which of
+/// a thousand exported rows to edit. Three fields — `estimate`, `recurrence`
+/// and `remind` — called their extractor OUTSIDE the wrapper, so the PARSE
+/// error for those fields kept the prefix while the EMPTY-STRING error for the
+/// same field lost it. One field, two error paths, two different answers about
+/// which task is broken.
+///
+/// The field list is DERIVED from `IMPORT_TASK_KEYS` (D30) rather than typed
+/// here. A hand-written list is the shape that let three fields skip the
+/// wrapper unnoticed in the first place, and it would let the fourth do the
+/// same: a new key added to the export gate arrives in this test automatically.
+///
+/// The assertion is conditional by design — a key whose empty string is
+/// legitimately ACCEPTED (or ignored, like the derived ones the gate lists so
+/// it can tell "ignored" from "unknown") simply produces no error to inspect,
+/// and no exemption list is needed to say so. What is guarded is the
+/// implication: IF the field refuses, it names the task. The floor below stops
+/// the guard from passing vacuously if a refactor made every field silent.
+#[test]
+fn every_import_field_error_names_its_task() {
+    // `id` is the one recorded exception, and structurally so rather than by
+    // taste: it is the value the prefix is BUILT from, so an error about `id`
+    // itself has no task name to carry. It says so in its own words instead.
+    const NAMES_NO_TASK: &str = "id";
+
+    let mut refused = 0;
+    for key in tasqx_core::engine::IMPORT_TASK_KEYS {
+        if *key == NAMES_NO_TASK {
+            continue;
+        }
+        let e = engine();
+        // A minimal VALID task, with the field under test overwritten by the
+        // empty string — the input D35 ruled is a value the caller sent, and
+        // the one whose refusal was skipping the wrapper.
+        let mut task = json!({ "id": "t1", "short_id": 1, "title": "A" });
+        task[*key] = json!("");
+        let r = dispatch(&e, "store.import", &json!({ "tasks": [task] }));
+        let Err(err) = r else { continue };
+        refused += 1;
+        assert!(
+            err.message.contains("task t1"),
+            "`{key}` refused an empty string without naming the task to edit: {}",
+            err.message
+        );
+    }
+    // Every text-scanning or table-driven guard's failure mode is matching
+    // nothing. At the time of writing thirteen keys refuse; the floor is set
+    // below that so adding a permissive key is not a test failure, while
+    // gutting the refusals is.
+    assert!(refused >= 10, "expected most import fields to refuse an empty string, got {refused}");
+}
+
+/// P1c, the half that pins the fix rather than the symptom: for the three
+/// fields that had two error paths, BOTH must carry the prefix.
+///
+/// The empty-string path was the broken one and the parse path was fine, so a
+/// test of either alone agrees with the bug. This is the twin rule: one field,
+/// two ways to be wrong, both asserted.
+#[test]
+fn a_bad_value_and_an_empty_value_name_the_task_alike() {
+    for (key, unparseable) in [("estimate", "3 fortnights"), ("recurrence", "every blue moon"), ("remind", "sometime")] {
+        for value in ["", unparseable] {
+            let e = engine();
+            let mut task = json!({ "id": "t1", "short_id": 1, "title": "A" });
+            task[key] = json!(value);
+            let err = dispatch(&e, "store.import", &json!({ "tasks": [task] }))
+                .expect_err(&format!("`{key}` = {value:?} must be refused"));
+            assert!(
+                err.message.contains("task t1"),
+                "`{key}` = {value:?} must name the task: {}",
+                err.message
+            );
+            assert!(
+                err.message.contains(key),
+                "`{key}` = {value:?} must name the field: {}",
+                err.message
+            );
+        }
+    }
+}

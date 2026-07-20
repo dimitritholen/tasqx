@@ -113,23 +113,35 @@ pub fn stopped(ctx: &Ctx, result: &Value) -> String {
     format!("{}  ·  tracked {tracked}\n", ctx.paint("timer.active", "Stopped"))
 }
 
+/// The dependents a closing verb just released, or nothing if it released none.
+///
+/// Shared by `done` and `status_line` because BOTH `task.done` and
+/// `task.cancel` return this list from the same helper (`compute_unblocked`),
+/// and only `done` used to render it. D11 makes cancelling a blocker release
+/// its dependents precisely so the graph stays honest, so a `cancel` that
+/// printed `#1 -> cancelled` and nothing else hid the very effect the decision
+/// exists to produce — and hid it from a reader who had already learned from
+/// `done` that a release gets announced, so silence read as "nothing changed".
+///
+/// One helper rather than a second copy: the two verbs answering differently is
+/// the failure, so they cannot have two renderers to drift between. Empty in,
+/// empty out — a verb that released nothing must not claim a heading either.
+fn unblocked_line(ctx: &Ctx, result: &Value) -> String {
+    let refs: Vec<String> = result
+        .get("unblocked")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_i64).map(|n| format!("#{n}")).collect())
+        .unwrap_or_default();
+    if refs.is_empty() {
+        return String::new();
+    }
+    format!("  {} {}\n", ctx.paint("accent", "now actionable:"), refs.join(" "))
+}
+
 pub fn done(ctx: &Ctx, result: &Value) -> String {
     let completed = s(result, "completed");
     let mut out = format!("{}  ·  completed {completed}\n", ctx.paint("timer.active", "Done"));
-    if let Some(unblocked) = result.get("unblocked").and_then(Value::as_array) {
-        if !unblocked.is_empty() {
-            let refs: Vec<String> = unblocked
-                .iter()
-                .filter_map(Value::as_i64)
-                .map(|n| format!("#{n}"))
-                .collect();
-            out.push_str(&format!(
-                "  {} {}\n",
-                ctx.paint("accent", "now actionable:"),
-                refs.join(" ")
-            ));
-        }
-    }
+    out.push_str(&unblocked_line(ctx, result));
     // A recurring task spawns its next instance on completion (DESIGN §10, D2).
     if let Some(sp) = result.get("spawned") {
         let sid = sp.get("short_id").and_then(Value::as_i64).unwrap_or(0);
@@ -166,7 +178,7 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         "{:>4}  {:>5}  {:<1}  {:<36}  {:<14}  {:<22}  {}",
         "ID", "URG", "P", "TASK", "PROJECT", "DUE", "TAGS"
     );
-    let rule_len = header.len().min(120);
+    let rule_len = width(&header).min(120);
     let mut out = String::new();
     out.push_str(&ctx.paint("header", &header));
     out.push('\n');
@@ -178,8 +190,8 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         let sid = t.get("short_id").and_then(Value::as_i64).unwrap_or(0);
         let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
         let prio = t.get("priority").and_then(Value::as_str).unwrap_or("-");
-        let title = truncate(&s(t, "title"), 36, ctx.caps.unicode);
-        let project = truncate(&s(t, "project"), 14, ctx.caps.unicode);
+        let title = fit(&s(t, "title"), 36, ctx.caps.unicode);
+        let project = fit(&s(t, "project"), 14, ctx.caps.unicode);
         let due_raw = s(t, "due");
         let is_overdue = t
             .get("due")
@@ -188,7 +200,7 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
             .map(|d| d < now)
             .unwrap_or(false)
             && status_is_open(&s(t, "status"));
-        let due = truncate(&due_raw, 22, ctx.caps.unicode);
+        let due = fit(&due_raw, 22, ctx.caps.unicode);
         let tags = t
             .get("tags")
             .and_then(Value::as_array)
@@ -205,16 +217,14 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
             _ => "muted",
         };
         let prio_p = ctx.paint(prio_role, &format!("{prio:<1}"));
-        let project_p = ctx.paint("project", &format!("{project:<14}"));
+        let project_p = ctx.paint("project", &project);
         let tags_p = if tags.is_empty() { String::new() } else { ctx.paint("tag", &tags) };
-        let due_p = if is_overdue {
-            ctx.paint("overdue", &format!("{due:<22}"))
-        } else {
-            format!("{due:<22}")
-        };
+        // Painted or bare, the cell is the SAME already-fitted string, so the
+        // overdue branch cannot drift out of width from the ordinary one.
+        let due_p = if is_overdue { ctx.paint("overdue", &due) } else { due };
 
         out.push_str(&format!(
-            "{sid:>4}  {urg_p}  {prio_p}  {title:<36}  {project_p}  {due_p}  {tags_p}\n"
+            "{sid:>4}  {urg_p}  {prio_p}  {title}  {project_p}  {due_p}  {tags_p}\n"
         ));
     }
 
@@ -250,6 +260,37 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
                 "unrecognized status in the store: {} — `tasqx export` still works; \
                  fix the status there and `tasqx import` it back\n",
                 broken.join(", ")
+            ),
+        ));
+    }
+
+    // The same failure shape one field over, and the worse one: a blank title
+    // renders as an EMPTY cell, so the row is not merely unlabelled in the
+    // default view — it is invisible in it. D36 closed every door that could
+    // write one, but a store predating D36 can already hold one, and then its
+    // `tasqx export` is a document that fails its own `tasqx import`, which
+    // costs the user the escape hatch D28 relies on.
+    //
+    // Detection rather than repair, deliberately: D28 allows repair-on-open
+    // only where the correct value is KNOWABLE (D23's stale `default_project`
+    // could only be cleared), and nothing here knows what the title was meant
+    // to say. Guessing would overwrite the user's bytes with no undo.
+    //
+    // `modify` is named as the way out, unlike the status note above, because a
+    // title IS freely settable — there is no reason to route the user through
+    // export/edit/import for a field one command can fix.
+    let blank: Vec<String> = tasks
+        .iter()
+        .filter(|t| s(t, "title").trim().is_empty())
+        .map(|t| format!("#{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)))
+        .collect();
+    if !blank.is_empty() {
+        out.push_str(&ctx.paint(
+            "warn",
+            &format!(
+                "blank title in the store: {} — written before this rule existed, and an export \
+                 holding one will not import; fix with `tasqx modify <ref> \"<a real title>\"`\n",
+                blank.join(", ")
             ),
         ));
     }
@@ -317,6 +358,15 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     }
     if !s(result, "estimate").is_empty() {
         out.push_str(&format!("  estimate   {}\n", s(result, "estimate")));
+    }
+    // Conditional for the reason `tracked` is: only a closed task HAS a
+    // completion moment, and an empty `completed` row on every pending task is
+    // noise. It was stored, returned by `task.get` and rendered by `done` — the
+    // one surface that scrolls away — so the detail view, whose whole job is
+    // showing a task's fields, was the only place the moment could be looked up
+    // later and the only place it did not appear.
+    if !s(result, "completed").is_empty() {
+        out.push_str(&format!("  completed  {}\n", s(result, "completed")));
     }
     // Conditional, unlike `blocked`: every task has a blocked answer worth
     // reading, but "tracked PT0S" on the many tasks that were never timed is
@@ -398,7 +448,7 @@ pub fn modified(
         } else {
             san(v.as_str().unwrap_or(""))
         };
-        out.push_str(&format!("  {:<11} <- {shown}\n", k));
+        out.push_str(&format!("  {} <- {shown}\n", pad(k, 11)));
     }
     if !tags.is_empty() {
         let all: Vec<String> = result
@@ -406,14 +456,24 @@ pub fn modified(
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).map(|t| format!("+{}", san(t))).collect())
             .unwrap_or_else(|| tags.iter().map(|t| format!("+{}", san(t))).collect());
-        out.push_str(&format!("  {:<11} <- {}\n", "tags", ctx.paint("tag", &all.join(" "))));
+        out.push_str(&format!("  {} <- {}\n", pad("tags", 11), ctx.paint("tag", &all.join(" "))));
     }
     out
 }
 
+/// The one-line result of a verb that only changes status — and the cascade it
+/// caused, when it caused one.
+///
+/// `unblocked` is appended rather than branched on by verb: the key is present
+/// only when the method returns it (today `task.cancel`), so the shared
+/// renderer stays correct for the verbs that release nothing without needing a
+/// list of which ones those are.
 pub fn status_line(ctx: &Ctx, result: &Value) -> String {
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    format!("{}  ->  {}\n", ctx.paint("accent", &format!("#{sid}")), s(result, "status"))
+    let mut out =
+        format!("{}  ->  {}\n", ctx.paint("accent", &format!("#{sid}")), s(result, "status"));
+    out.push_str(&unblocked_line(ctx, result));
+    out
 }
 
 pub fn annotated(ctx: &Ctx, result: &Value) -> String {
@@ -478,7 +538,7 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
         out.push_str(&format!(
             "{:<7}  {}  {:<9}  {desc}\n",
             if is_default { "*" } else { "" },
-            ctx.paint("project", &format!("{name:<24}")),
+            ctx.paint("project", &pad(&name, 24)),
             if archived { "yes" } else { "no" }
         ));
     }
@@ -511,7 +571,7 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
         };
         out.push_str(&format!(
             "{}  {count:>5}  {est:>10}  {overdue_p}  {tracked:>10}\n",
-            ctx.paint("project", &format!("{key:<20}"))
+            ctx.paint("project", &pad(&key, 20))
         ));
     }
     out
@@ -542,37 +602,111 @@ pub fn why(ctx: &Ctx, result: &Value) -> String {
     let prio = result.get("priority").and_then(Value::as_str).and_then(Priority::parse);
     let due = result.get("due").and_then(Value::as_str);
     let created = result.get("created").and_then(Value::as_str).unwrap_or("");
-    let parts = urgency::breakdown(prio, due, created);
+    why_rows(ctx, sid, &urgency::breakdown(prio, due, created))
+}
+
+/// Render a breakdown the caller has already computed.
+///
+/// `parts` is a PARAMETER for the same reason `chart::render_throughput`'s
+/// series is: `urgency::breakdown` reads the wall clock internally, so a test
+/// that could only reach this code through [`why`] would not get to choose the
+/// value under test — and the value that broke this display (`-0.0`, from
+/// `(-age).max(0.0)` when `created` lands in the very second the clock is read)
+/// is one a test cannot schedule.
+fn why_rows(ctx: &Ctx, sid: i64, parts: &[(&'static str, f64)]) -> String {
     let total: f64 = parts.iter().map(|(_, v)| v).sum();
     let total = (total * 10.0).round() / 10.0;
 
     let mut out = String::new();
-    out.push_str(&ctx.paint("header", &format!("Why #{sid} has urgency {total:.1}")));
+    out.push_str(&ctx.paint("header", &format!("Why #{sid} has urgency {}", signed(total, 1))));
     out.push('\n');
     for (name, val) in parts {
-        out.push_str(&format!("  {name:<14} {val:>6.2}\n"));
+        out.push_str(&format!("  {name:<14} {:>6}\n", signed(*val, 2)));
     }
-    out.push_str(&format!("  {:<14} {total:>6.1}\n", "= total"));
+    out.push_str(&format!("  {:<14} {:>6}\n", "= total", signed(total, 1)));
     out
 }
 
-/// Truncate to `max` chars with a trailing ellipsis. The ellipsis degrades to
-/// ASCII `...` when the terminal can't render Unicode (piped/dumb/legacy), so the
-/// script-safe path never leaks a stray `…` — matching the rest of the glyph
-/// gating (hrule/arrow/mid/chart bars).
-fn truncate(s: &str, max: usize, unicode: bool) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else if unicode {
-        let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
-        t.push('…');
-        t
-    } else {
-        // "..." is 3 chars; reserve room for it so the cell width still holds.
-        let mut t: String = s.chars().take(max.saturating_sub(3)).collect();
-        t.push_str("...");
-        t
+/// `v` to `places` decimals, without a minus sign the printed number does not
+/// earn.
+///
+/// IEEE 754 has two zeros, and `-0.0` compares EQUAL to `0.0` while keeping its
+/// sign bit, so `{:.2}` renders it `-0.00` — which tells the reader a term
+/// subtracted urgency when it contributed none. The age term reaches that value
+/// honestly: it is `(-age_days).max(0.0)`, and a task created inside the second
+/// the clock is read has `age_days == 0.0`.
+///
+/// The sign is judged AFTER rounding rather than on the value, because the two
+/// disagree: `-0.004` is a genuinely negative number that still prints as a row
+/// of zeros, so a `v == 0.0` test (which `-0.0` passes) would keep leaking a
+/// minus for it. And it is a sign STRIP rather than `.abs()`, because a term
+/// that rounds to something non-zero must keep its sign — D1's formula is free
+/// to grow a negative one, and a display that quietly dropped the minus would
+/// report that change wrong.
+fn signed(v: f64, places: usize) -> String {
+    let out = format!("{v:.places$}");
+    match out.strip_prefix('-') {
+        Some(rest) if rest.chars().all(|c| c == '0' || c == '.') => rest.to_string(),
+        _ => out,
     }
+}
+
+/// How many terminal CELLS this text occupies — the only unit a column can be
+/// measured in.
+///
+/// A column is a grid position, and a grid is made of cells, not of `char`s.
+/// The two disagree in every direction: a CJK ideograph is one char in two
+/// cells, a combining mark is a char in none, and an emoji ZWJ sequence is five
+/// chars forming one two-cell cluster. Every padded column in this module goes
+/// through here (or through [`pad`]/[`fit`], which do) so there is one answer to
+/// "how wide is this" rather than one per call site.
+pub fn width(s: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(s)
+}
+
+/// Pad `s` out to at least `max` cells. Never truncates.
+///
+/// This is the treatment for a column whose content is DATA the reader came for
+/// — a project name, a config value. Overflowing such a cell pushes the columns
+/// to its right, which is ugly; silently cutting the value would be worse, so
+/// this half of the pair only ever adds spaces.
+pub fn pad(s: &str, max: usize) -> String {
+    let mut out = s.to_string();
+    // `push_str` on a run of spaces rather than `format!("{s:<max$}")`, because
+    // that macro pads by char count — the exact bug this function exists to end.
+    out.push_str(&" ".repeat(max.saturating_sub(width(s))));
+    out
+}
+
+/// Truncate `s` to `max` cells with a trailing ellipsis, then pad out to exactly
+/// `max` — a fixed-size box whatever text lands in it.
+///
+/// This is the treatment for a column with a stated budget the table's layout
+/// depends on (`TASK` is 36 cells wide and the header says so). The ellipsis
+/// degrades to ASCII `...` when the terminal can't render Unicode
+/// (piped/dumb/legacy), so the script-safe path never leaks a stray `…` —
+/// matching the rest of the glyph gating (hrule/arrow/mid/chart bars).
+///
+/// The cut is made by `unicode_truncate`, which walks GRAPHEME CLUSTERS: half a
+/// ZWJ sequence is not a shorter emoji but a different one — or a dangling
+/// joiner the terminal draws as tofu — and it would still overflow the column,
+/// so a cluster is never sliced. The trailing `pad` is not redundant with the
+/// truncation: cutting a 36-cell budget just before a double-width glyph leaves
+/// 35 cells, and the spaces make up the difference.
+fn fit(s: &str, max: usize, unicode: bool) -> String {
+    pad(&truncate(s, max, unicode), max)
+}
+
+fn truncate(s: &str, max: usize, unicode: bool) -> String {
+    if width(s) <= max {
+        return s.to_string();
+    }
+    // `…` is one cell, `...` is three; reserve the room either way so the
+    // ellipsis lands INSIDE the budget instead of blowing it by its own width.
+    let ellipsis = if unicode { "…" } else { "..." };
+    let (head, _) =
+        unicode_truncate::UnicodeTruncateStr::unicode_truncate(s, max.saturating_sub(width(ellipsis)));
+    format!("{head}{ellipsis}")
 }
 
 #[cfg(test)]
@@ -680,6 +814,47 @@ mod tests {
         assert!(out.contains("pending"), "the five real statuses must be named: {out:?}");
     }
 
+    /// P4d: a store written before D36 can hold a BLANK title — every door
+    /// refuses one now, but the old ones did not. Such a row renders as an empty
+    /// TASK cell, so it is invisible in the one view the user is looking at,
+    /// and its export is a document that fails its own import (D36 refuses the
+    /// blank title on the way back in). That makes `export` useless as the
+    /// escape hatch D28 leans on, and the user cannot even tell which row is at
+    /// fault.
+    ///
+    /// Detection, not repair: D28 already ruled that repair-on-open needs the
+    /// correct value to be KNOWABLE, and nothing here knows what the title was
+    /// meant to say. So the table names the row and the one command that fixes
+    /// it. Unlike the status case, `modify` really is the way out — a title is
+    /// freely settable, so there is no need to send the user through export.
+    #[test]
+    fn task_table_reports_a_blank_title_the_store_should_not_hold() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        for blank in ["", "   ", "	"] {
+            let result = json!({
+                "tasks": [{
+                    "short_id": 4, "urgency": 5.0, "priority": "M", "title": blank,
+                    "project": "work", "due": "", "tags": [], "status": "pending"
+                }],
+                "count": 1
+            });
+            let out = task_table(&ctx, &result);
+            assert!(out.contains("#4"), "the affected task must be identified for {blank:?}: {out:?}");
+            assert!(out.contains("blank title"), "the anomaly must be labelled for {blank:?}: {out:?}");
+            assert!(out.contains("modify"), "the way out must be named for {blank:?}: {out:?}");
+        }
+
+        // Conditional, not a banner: an ordinary table stays clean.
+        let ok = json!({
+            "tasks": [{
+                "short_id": 4, "urgency": 5.0, "priority": "M", "title": "real work",
+                "project": "work", "due": "", "tags": [], "status": "pending"
+            }],
+            "count": 1
+        });
+        assert!(!task_table(&ctx, &ok).contains("blank title"), "clean table grew a warning");
+    }
+
     #[test]
     fn task_table_neutralizes_escape_in_title() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
@@ -778,6 +953,186 @@ mod tests {
             "homeless",
         );
         assert!(!none.contains("project"), "printed an empty project row: {none:?}");
+    }
+
+    /// Text whose char count and terminal-cell count disagree, one entry per
+    /// way they can disagree. Every table guard below runs the whole list, so a
+    /// fix that measures CJK correctly but splits an emoji cluster still fails.
+    ///
+    /// `chars != cells` in four different directions:
+    ///  * a CJK ideograph is 1 char, 2 cells;
+    ///  * a combining mark is a char with 0 cells;
+    ///  * an emoji ZWJ sequence is 5 chars and one 2-cell cluster;
+    ///  * a skin-tone modifier is 2 chars and one 2-cell cluster.
+    const AWKWARD: &[&str] = &[
+        "plain ascii",
+        "漢字テスト",
+        "e\u{301}accent",       // e + COMBINING ACUTE
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f466} fam", // family ZWJ sequence
+        "\u{1f44d}\u{1f3fd} ok", // thumbs up + skin tone modifier
+        "中文",
+    ];
+
+    fn cells(s: &str) -> usize {
+        unicode_width::UnicodeWidthStr::width(s)
+    }
+
+    /// A terminal column is a grid of CELLS. `format!("{s:<36}")` pads by CHAR
+    /// COUNT, so one CJK title or one emoji shifted every column to its right
+    /// and the table stopped being a table.
+    ///
+    /// The assertion is on the whole ROW rather than on a helper: the rows here
+    /// differ ONLY in the title, and every other cell is identical, so equal
+    /// display width across rows is exactly "the title column holds its budget".
+    /// That is true no matter how the padding is implemented, which is the point
+    /// — it cannot be satisfied by a helper that is correct while a call site
+    /// still formats with `{:<36}`.
+    #[test]
+    fn task_table_title_column_holds_its_width_in_cells() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let tasks: Vec<Value> = AWKWARD
+            .iter()
+            .enumerate()
+            .map(|(i, title)| {
+                json!({ "short_id": i + 1, "urgency": 5.0, "priority": "M", "title": title,
+                        "project": "work", "due": "2026-07-20T17:00:00Z", "tags": ["t"],
+                        "status": "pending" })
+            })
+            .collect();
+        let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
+        let rows: Vec<&str> = out.lines().skip(2).take(AWKWARD.len()).collect();
+        assert_eq!(rows.len(), AWKWARD.len(), "expected one row per title: {out:?}");
+        let want = cells(rows[0]);
+        for (row, title) in rows.iter().zip(AWKWARD) {
+            assert_eq!(cells(row), want, "row for {title:?} is {} cells, not {want}: {row:?}", cells(row));
+        }
+    }
+
+    /// The same rule on the OTHER columns of the same table: `project` is
+    /// padded to 14 and `due` to 22, and a fix that only widened `title` would
+    /// leave both of them shifting the columns to their right.
+    #[test]
+    fn task_table_project_and_due_columns_hold_their_width_in_cells() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        for field in ["project", "due"] {
+            let tasks: Vec<Value> = AWKWARD
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let mut t = json!({ "short_id": i + 1, "urgency": 5.0, "priority": "M",
+                                        "title": "same", "project": "work", "due": "",
+                                        "tags": ["t"], "status": "pending" });
+                    t[field] = json!(v);
+                    t
+                })
+                .collect();
+            let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
+            let rows: Vec<&str> = out.lines().skip(2).take(AWKWARD.len()).collect();
+            let want = cells(rows[0]);
+            for (row, v) in rows.iter().zip(AWKWARD) {
+                assert_eq!(cells(row), want, "{field}={v:?} broke alignment: {row:?}");
+            }
+        }
+    }
+
+    /// `projects` and `report` pad a user-authored string into a column too, so
+    /// the rule is theirs as well — fixing only `list` would leave two tables
+    /// with the old bug and no test able to see it.
+    #[test]
+    fn project_and_report_tables_hold_their_widths_in_cells() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+
+        let projects: Vec<Value> = AWKWARD
+            .iter()
+            .map(|n| json!({ "name": n, "archived": false, "default": false, "description": "d" }))
+            .collect();
+        let out = project_table(&ctx, &json!({ "count": projects.len(), "projects": projects }));
+        let rows: Vec<&str> = out.lines().skip(1).collect();
+        let want = cells(rows[0]);
+        for (row, n) in rows.iter().zip(AWKWARD) {
+            assert_eq!(cells(row), want, "project {n:?} broke alignment: {row:?}");
+        }
+
+        let groups: Vec<Value> = AWKWARD
+            .iter()
+            .map(|k| json!({ "project": k, "count": 1, "est_total": "PT1H", "overdue": 0,
+                             "tracked_total": "PT2H" }))
+            .collect();
+        let out = report(&ctx, &json!({ "groups": groups }), "project");
+        let rows: Vec<&str> = out.lines().skip(1).collect();
+        let want = cells(rows[0]);
+        for (row, k) in rows.iter().zip(AWKWARD) {
+            assert_eq!(cells(row), want, "report group {k:?} broke alignment: {row:?}");
+        }
+    }
+
+    /// Truncation has to cut on a GRAPHEME boundary and budget in cells. Half a
+    /// ZWJ sequence is not a shorter emoji — it is a different one, or a lone
+    /// joiner the terminal draws as tofu, and it still overflows the column.
+    #[test]
+    fn truncation_budgets_cells_and_never_splits_a_cluster() {
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f466}";
+        for unicode in [true, false] {
+            // Long enough to force a cut, with the cut landing inside a cluster.
+            let s = format!("ab{family}{family}cd");
+            let got = fit(&s, 7, unicode);
+            assert_eq!(cells(&got), 7, "cell budget blown (unicode={unicode}): {got:?}");
+            assert!(
+                !got.ends_with('\u{200d}'),
+                "cut left a dangling joiner (unicode={unicode}): {got:?}"
+            );
+            // A CJK string: 5 ideographs are 10 cells, so 6 cells must fit at
+            // most 2 of them plus the ellipsis — a char-counting truncate keeps 5.
+            let cjk = fit("漢字テスト", 6, unicode);
+            assert_eq!(cells(&cjk), 6, "CJK cell budget blown (unicode={unicode}): {cjk:?}");
+        }
+        // A string already inside its budget is padded, not cut.
+        assert_eq!(fit("中文", 6, true), "中文  ", "short cell should be padded to 6 cells");
+        assert_eq!(cells(&fit("中文", 6, true)), 6);
+    }
+
+    /// `tasqx why` printed `age             -0.00`.
+    ///
+    /// The age term is `(-age_days).max(0.0)`, and when `created` falls in the
+    /// very second the clock is read, `age_days` is `0.0`, so the negation is
+    /// `-0.0` — a value that compares EQUAL to zero while keeping its sign bit,
+    /// which `{:.2}` then faithfully renders with a minus in front. A reader
+    /// cannot act on "minus zero": it says a term subtracted urgency when it
+    /// contributed none.
+    ///
+    /// Both spellings are covered because they are separate format calls with
+    /// separate precisions — the component rows at 2 decimals and the total
+    /// (which appears TWICE, in the heading and in the `= total` row) at 1. A
+    /// fix applied to one of them leaves the other printing `-0`.
+    #[test]
+    fn why_never_renders_a_component_or_a_total_as_negative_zero() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = why_rows(&ctx, 1, &[("priority", 0.0), ("due_proximity", 0.0), ("age", -0.0)]);
+        assert!(!out.contains("-0"), "a component rendered as negative zero: {out:?}");
+        assert!(out.contains("0.00"), "the zero itself must still be shown: {out:?}");
+
+        // Every part negative-zero makes the SUM negative zero too, which is the
+        // heading and the total row — the twin the component fix does not reach.
+        let all_neg = why_rows(&ctx, 1, &[("priority", -0.0), ("age", -0.0)]);
+        assert!(!all_neg.contains("-0"), "the total rendered as negative zero: {all_neg:?}");
+
+        // The rule is about a sign that survived ROUNDING, not about the value
+        // being exactly zero: -0.004 is genuinely negative and still prints as a
+        // row of zeros, so `v == 0.0` would not have caught it.
+        let tiny = why_rows(&ctx, 1, &[("age", -0.004)]);
+        assert!(!tiny.contains("-0"), "a rounded-to-zero negative kept its sign: {tiny:?}");
+    }
+
+    /// The twin of the above, and the reason it is not spelled `.abs()`: a term
+    /// that really is negative must keep its minus. Nothing in today's formula
+    /// produces one, but the formula is D1's to change and a display that
+    /// silently drops signs would report the change wrong.
+    #[test]
+    fn why_keeps_the_sign_of_a_value_that_is_actually_negative() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = why_rows(&ctx, 1, &[("penalty", -1.5), ("priority", 6.0)]);
+        assert!(out.contains("-1.50"), "a real negative lost its sign: {out:?}");
+        assert!(out.contains("4.5"), "the total must still net out: {out:?}");
     }
 
     #[test]
