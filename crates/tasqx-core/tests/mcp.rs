@@ -262,15 +262,12 @@ fn initialize_negotiates_supported_protocol_version() {
     assert_eq!(unknown["result"]["protocolVersion"], "2025-06-18");
 }
 
-// ---- token / scope round-trip ------------------------------------------------
+// ---- operator-selected scope -------------------------------------------------
 
 #[test]
-fn token_encodes_and_recovers_scope() {
-    let read = Scope::Read.mint_token();
-    let write = Scope::Write.mint_token();
-    assert_eq!(Scope::from_token(&read), Some(Scope::Read));
-    assert_eq!(Scope::from_token(&write), Some(Scope::Write));
-    assert_eq!(Scope::from_token("garbage"), None);
+fn scope_is_a_capability_choice_not_a_credential() {
+    assert_eq!(Scope::Read.as_str(), "read");
+    assert_eq!(Scope::Write.as_str(), "write");
     assert!(!Scope::Read.allows_write());
     assert!(Scope::Write.allows_write());
 }

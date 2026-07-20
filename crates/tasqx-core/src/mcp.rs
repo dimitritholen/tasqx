@@ -34,9 +34,9 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024
 /// Server identity reported in `initialize` → `serverInfo.name`.
 pub const SERVER_NAME: &str = "tasqx";
 
-/// The capability scope a server instance runs under. This is the entire
-/// auth model (D7): a token just selects a scope, and `Read` rejects the write
-/// tools — no AI-specific enforcement path, just the plugin capability fence.
+/// The capability scope an operator selects for one local stdio server process.
+/// This is process configuration, not authentication: `Read` rejects write
+/// tools and `Write` permits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// Read-only: the four `tasqx_list_*`/`get`/`summary` tools. Write tools
@@ -59,24 +59,6 @@ impl Scope {
         matches!(self, Scope::Write)
     }
 
-    /// Mint an opaque scoped token. Format: `tasqx_mcp_<scope>_<uuid>`. The
-    /// scope is the only thing it encodes (D7 keeps this deliberately simple).
-    pub fn mint_token(self) -> String {
-        format!("tasqx_mcp_{}_{}", self.as_str(), uuid::Uuid::now_v7())
-    }
-
-    /// Recover the scope from a token minted by [`mint_token`]. Returns `None`
-    /// for anything that is not a well-formed tasqx MCP token.
-    pub fn from_token(token: &str) -> Option<Scope> {
-        let rest = token.strip_prefix("tasqx_mcp_")?;
-        if rest.starts_with("read_") {
-            Some(Scope::Read)
-        } else if rest.starts_with("write_") {
-            Some(Scope::Write)
-        } else {
-            None
-        }
-    }
 }
 
 /// One exposed MCP tool: its name, the core method it maps onto 1:1, whether it

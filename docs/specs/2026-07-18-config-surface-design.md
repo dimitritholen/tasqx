@@ -39,7 +39,7 @@ Verified against the code, the actual state per setting:
 
 `theme::resolve_name` (`theme.rs:667`) is the only place the full chain exists, and it is a clean four-level fold. Every other setting re-implements a shorter chain by hand at its own call site: `resolve_socket` (`lib.rs:740`), `db_path` (`lib.rs:1701`).
 
-`TASQX_DATA_DIR` **does not exist.** The complete set of `TASQX_*` variables the code reads is `TASQX_DB`, `TASQX_SOCK`, `TASQX_CONFIG_DIR`, `TASQX_THEME`, `TASQX_MCP_TOKEN`, `TASQX_FORCE_COLOR`. D9's promise of a wholesale data-dir override is unbuilt, and nothing notices.
+`TASQX_DATA_DIR` **does not exist.** At the time of this design, the code also read `TASQX_MCP_TOKEN`; D7 later removed that misleading token surface in favor of an explicit stdio `--scope`. The current set is `TASQX_DB`, `TASQX_SOCK`, `TASQX_CONFIG_DIR`, `TASQX_THEME`, `TASQX_FORCE_COLOR`. D9's promise of a wholesale data-dir override is unbuilt, and nothing notices.
 
 So there is no generic "resolve setting X across four layers" machinery. That is the main thing this phase has to invent, and it is the same shape as two pieces this repo already has: `cmddoc::COMMAND_REF` (one registry, three rendered surfaces, drift-guarded) and `Status::ALL` (one enum, every set derived from it).
 

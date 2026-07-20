@@ -2072,42 +2072,18 @@ fn run_api() {
 /// The `tasqx mcp` subcommand family (DESIGN.md §7, D7).
 fn run_mcp(action: &McpAction) {
     match action {
-        McpAction::Token { scope } => {
-            let sc = if scope == "read" { Scope::Read } else { Scope::Write };
-            // The token IS the deliverable; print it to stdout only.
-            println!("{}", sc.mint_token());
+        McpAction::Serve { scope } => {
+            let scope = if scope == "read" { Scope::Read } else { Scope::Write };
+            run_mcp_serve(scope);
         }
-        McpAction::Serve { token } => run_mcp_serve(token.as_deref()),
     }
 }
 
-/// Run the MCP stdio server. Scope precedence: `--token`, then $TASQX_MCP_TOKEN,
-/// else a least-privilege default of read-only. Write access is an explicit
-/// opt-in: mint a write token with `tasqx mcp token --scope write`. This fails
-/// closed — an unwired server never silently exposes destructive tools to an
-/// LLM. Diagnostics go to stderr ONLY; stdout carries nothing but
+/// Run the MCP stdio server under the operator-selected capability scope.
+/// `Scope` configures this local child process; it is not an authentication
+/// credential. Diagnostics go to stderr only, while stdout carries nothing but
 /// newline-delimited JSON-RPC responses.
-fn run_mcp_serve(token: Option<&str>) {
-    let tok = token.map(str::to_string).or_else(|| {
-        std::env::var("TASQX_MCP_TOKEN").ok().filter(|s| !s.is_empty())
-    });
-    let scope = match tok.as_deref() {
-        Some(t) => match Scope::from_token(t) {
-            Some(s) => s,
-            None => {
-                eprintln!("tasqx mcp: unrecognized token; refusing to start");
-                exit(2);
-            }
-        },
-        None => {
-            eprintln!(
-                "tasqx mcp: no token provided; defaulting to READ-ONLY scope. \
-                 For write access, pass a token from `tasqx mcp token --scope write`."
-            );
-            Scope::Read
-        }
-    };
-
+fn run_mcp_serve(scope: Scope) {
     let engine = match open_engine() {
         Ok(e) => e,
         Err(msg) => {
@@ -2205,6 +2181,34 @@ mod tests {
             assert!(
                 !source.contains(forbidden),
                 "command declarations must not depend on `{forbidden}`"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_serve_takes_an_explicit_scope_with_a_read_only_default() {
+        for (args, expected) in [
+            (vec!["tasqx", "mcp", "serve"], "read"),
+            (vec!["tasqx", "mcp", "serve", "--scope", "read"], "read"),
+            (vec!["tasqx", "mcp", "serve", "--scope", "write"], "write"),
+        ] {
+            let cli = Cli::try_parse_from(args).expect("explicit MCP scope should parse");
+            match cli.command.expect("mcp command") {
+                Command::Mcp { action: McpAction::Serve { scope } } => {
+                    assert_eq!(scope, expected);
+                }
+                _ => panic!("expected mcp serve"),
+            }
+        }
+    }
+
+    #[test]
+    fn removed_mcp_token_forms_are_rejected_even_when_the_value_looks_plausible() {
+        assert!(Cli::try_parse_from(["tasqx", "mcp", "token", "--scope", "read"]).is_err());
+        for token in ["tasqx_mcp_write_", "tasqx_mcp_write_anything", "random"] {
+            assert!(
+                Cli::try_parse_from(["tasqx", "mcp", "serve", "--token", token]).is_err(),
+                "removed token form unexpectedly accepted {token:?}"
             );
         }
     }

@@ -61,11 +61,11 @@ Every command prints readable text and takes `--json`. Exit codes mean something
 ## For agents
 
 ```console
-tasqx mcp token --scope read     # or --scope write
-tasqx mcp serve
+tasqx mcp serve                  # read-only by default
+tasqx mcp serve --scope write    # explicit write access
 ```
 
-A read-only session never sees the write tools in its tool list, so an agent can't call what it isn't allowed to call. There's no bulk-delete tool on purpose. Cancelling goes through the same reversible, logged path everything else does, so an agent can't quietly destroy a week of work.
+A read-only session never sees the write tools in its tool list, so an agent can't call what it isn't allowed to call. Scope configures this local stdio child process; it is not an authentication credential. There's no bulk-delete tool on purpose. Cancelling goes through the same reversible, logged path everything else does, so an agent can't quietly destroy a week of work.
 
 You can also talk to the API directly:
 

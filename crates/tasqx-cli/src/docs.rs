@@ -1311,23 +1311,22 @@ fn page_mcp() -> String {
 
     s.push_str(&h3("It fails closed"));
     s.push_str(&p(
-        "Scope precedence: <code>--token</code>, then <code>$TASQX_MCP_TOKEN</code>, then a \
-         least-privilege default of <strong>read-only</strong>. An unwired server never silently \
-         exposes destructive tools to a model. Write access is an explicit, deliberate act:",
+        "The least-privilege default is <strong>read-only</strong>. Write access is an explicit \
+         operator choice for this local stdio process. Scope is configuration, not an \
+         authentication credential:",
     ));
     s.push_str(&snippet(
-        "tasqx mcp token --scope read\ntasqx mcp token --scope write",
-        "tasqx_mcp_read_019f6a1f-a6ab-7b10-bc00-2eae37c94a40\ntasqx_mcp_write_019f6a1f-a6c5-7881-b751-163b313d22f4",
+        "tasqx mcp serve\ntasqx mcp serve --scope write",
+        "tasqx mcp: serving over stdio (scope=read)\ntasqx mcp: serving over stdio (scope=write)",
     ));
     s.push_str(&snippet(
-        "tasqx mcp serve   # no token",
-        "tasqx mcp: no token provided; defaulting to READ-ONLY scope. For write access, pass a token from `tasqx mcp token --scope write`.\n\
-         tasqx mcp: serving over stdio (scope=read)",
+        "tasqx mcp serve   # scope omitted",
+        "tasqx mcp: serving over stdio (scope=read)",
     ));
 
     s.push_str(&h3("The tools"));
     s.push_str(&p(
-        "Four read tools always; seven write tools only with a write token. Each carries MCP \
+        "Four read tools always; seven write tools only with write scope. Each carries MCP \
          annotations (<code>readOnlyHint</code>, <code>destructiveHint</code>) so a client can reason \
          about them before calling.",
     ));
@@ -1369,23 +1368,23 @@ fn page_mcp() -> String {
 
     s.push_str(&h3("Wiring it into a client"));
     s.push_str(&p(
-        "Most MCP clients take a command and an environment. Mint a token once, then hand the \
-         server the scope you actually want it to have:",
+        "Most MCP clients take a command and arguments. Pass the scope you want the child \
+         process to have:",
     ));
     s.push_str(&pre_plain(
         "{\n\
          \x20 \"mcpServers\": {\n\
          \x20   \"tasqx\": {\n\
          \x20     \"command\": \"tasqx\",\n\
-         \x20     \"args\": [\"mcp\", \"serve\"],\n\
-         \x20     \"env\": { \"TASQX_MCP_TOKEN\": \"tasqx_mcp_write_...\" }\n\
+         \x20     \"args\": [\"mcp\", \"serve\", \"--scope\", \"write\"]\n\
          \x20   }\n\
          \x20 }\n\
          }",
     ));
     s.push_str(&note(
-        "Start an agent on a read token. Give it write only once you have watched what it does \
-         with read — the default is read-only precisely so that choice is yours to make on purpose.",
+        "Start an agent with the default read scope. Give it write only once you have watched what \
+         it does with read. A future network transport needs real authentication; this scope flag \
+         is not a credential.",
     ));
 
     s.push_str(&page_close("mcp"));
@@ -2527,7 +2526,6 @@ mod tests {
             "TASQX_DB",
             "TASQX_SOCK",
             "TASQX_CONFIG_DIR",
-            "TASQX_MCP_TOKEN",
             "TASQX_FORCE_COLOR",
             // Different in kind from the rest of this list: set by `build.rs`
             // and read by `env!` at compile time, so it is baked into the

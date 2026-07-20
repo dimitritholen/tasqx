@@ -466,14 +466,8 @@ pub(super) enum ConfigAction {
 pub(super) enum McpAction {
     /// Run the MCP stdio server: newline-delimited JSON-RPC 2.0 on stdin/stdout.
     Serve {
-        /// Scoped token from `tasqx mcp token`. Falls back to $TASQX_MCP_TOKEN.
-        #[arg(long)]
-        token: Option<String>,
-    },
-    /// Mint and print a scoped token for `serve --token`.
-    Token {
-        /// Capability scope the token grants.
-        #[arg(long, value_parser = ["read", "write"])]
+        /// Operator-selected capability scope for this stdio process.
+        #[arg(long, default_value = "read", value_parser = ["read", "write"])]
         scope: String,
     },
 }

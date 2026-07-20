@@ -259,12 +259,12 @@ command directly against the store instead.",
 Every surface is a client of the one JSON API.
 
   tasqx mcp serve            stdio JSON-RPC for AI agents;
-                             scoped and fails closed (read-only
-                             until a write token is presented)
-  tasqx mcp token --scope    mint read or write tokens
+                             read-only by default
+  tasqx mcp serve --scope write
+                             explicitly expose write tools
   tasqx api                  one JSON envelope in → one out
 
-Read/write scope fails closed: no token means read-only.",
+Scope configures this local process; it is not authentication.",
 
         Topic::JsonApi => "\
 Everything speaks one envelope:
