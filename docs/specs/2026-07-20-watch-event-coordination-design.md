@@ -1,7 +1,7 @@
 # Watch event coordination — design
 
 **Date:** 2026-07-20  
-**Status:** approved in advance 2026-07-20  
+**Status:** implemented and verified 2026-07-20
 **Scope:** Medium #2 only: retain daemon events observed during requests, correlate responses by ID, and prove watch refreshes from the retained event. Daemon health, connection admission, and query performance remain separate branches.
 
 ## Problem
@@ -39,4 +39,3 @@ A scripted local-socket test forces this exact sequence:
 6. a second list request returns a snapshot containing the second change.
 
 The test is deterministic and uses the real `Conn` framing rather than sleeps. Existing daemon integration, CLI, workspace, and Clippy suites must remain green.
-

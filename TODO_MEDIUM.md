@@ -55,11 +55,11 @@ The `pending` queue stores responses, not events, so the comment that no reply i
 
 ### Acceptance Criteria
 
-- [ ] Events observed during a request are retained or represented by a “dirty since snapshot” signal.
-- [ ] TTY watch performs another refresh when any event arrived during its prior refresh.
-- [ ] Non-TTY watch still emits each intended event/coalescing policy explicitly.
-- [ ] A deterministic interleaving test covers event -> list snapshot -> second event -> first list response and proves the final screen/state includes the second change.
-- [ ] Response IDs are correlated rather than accepting the first response frame blindly.
+- [x] Events observed during a request are retained in a dedicated pending-event inbox.
+- [x] TTY watch performs another refresh when any event arrived during its prior refresh.
+- [x] Non-TTY watch still emits every retained event individually; no implicit coalescing was added.
+- [x] A deterministic scripted-socket test covers event -> unrelated response -> requested stale response -> retained event -> fresh response and proves the final state includes the second change.
+- [x] Response IDs are correlated rather than accepting the first response frame blindly.
 
 ### Recommended Approach
 
@@ -176,9 +176,16 @@ Use issue #1 as the extraction driver: introduce a small transaction-scoped muta
 ## Progress Tracking
 
 - [ ] Issue #1: Remove full-scan N+1 query behavior
-- [ ] Issue #2: Preserve events during watch requests
+- [x] Issue #2: Preserve events during watch requests
 - [ ] Issue #3: Surface daemon background failures
 - [ ] Issue #4: Bound daemon connection resources
 - [ ] Issue #5: Establish cohesive typed transaction/command boundaries
 
-**Total:** 0/5 completed
+**Total:** 1/5 completed
+
+### Issue #2 verification (2026-07-20)
+
+- `daemon::tests::request_correlates_responses_and_retains_events_for_the_next_refresh` proves response correlation, retained event delivery, and the final refreshed state.
+- `cargo test --workspace --all-targets --no-fail-fast`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `git diff --check`: passed.
