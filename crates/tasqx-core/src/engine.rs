@@ -243,7 +243,7 @@ impl Engine {
         // inherits, and nothing after that silently steals it. `project.use` is
         // the one explicit way to move it. Read inside the tx, which already
         // holds the write lock, so the check and the claim see one snapshot.
-        let existing = get_config(&tx, DEFAULT_PROJECT_KEY);
+        let existing = get_config(&tx, DEFAULT_PROJECT_KEY)?;
         let claimed = existing.is_none();
         if claimed {
             set_config(&tx, DEFAULT_PROJECT_KEY, &name)?;
@@ -318,7 +318,7 @@ impl Engine {
             )));
         }
 
-        let previous = get_config(&tx, DEFAULT_PROJECT_KEY);
+        let previous = get_config(&tx, DEFAULT_PROJECT_KEY)?;
         set_config(&tx, DEFAULT_PROJECT_KEY, &name)?;
         // THE invariant: the event row lands in the same transaction as the
         // mutation. The default is state, so moving it is history.
@@ -330,7 +330,7 @@ impl Engine {
 
     /// The current default project — the project a bare `task.add` inherits.
     /// Set by the first `project.create` and moved only by `project.use` (D21).
-    pub fn default_project(&self) -> Option<String> {
+    pub fn default_project(&self) -> Result<Option<String>, ApiError> {
         get_config(&self.conn, DEFAULT_PROJECT_KEY)
     }
 
@@ -340,14 +340,12 @@ impl Engine {
         let title = req_str(p, "title")?;
         // Gap fix A1: with no explicit project, inherit the default set by
         // `project.create` (init). An explicit project always wins.
-        // D23: an *explicit* project is validated below, inside the transaction.
-        // The inherited one needs no check — create/use/archive plus the D23
-        // open-time repair keep the key aimed at a live project.
+        // D23: the selected project is validated below, inside the transaction.
+        // This covers explicit input and the inherited default alike.
         // D35: `project: ""` used to read as "no project given" and INHERIT the
         // default — the caller who named a project got a different one. D18
         // refused the same string on `task.modify`; `add` never did.
         let explicit_project = opt_str_nonempty(p, "project")?;
-        let project = explicit_project.clone().or_else(|| self.default_project());
         let priority = match opt_str_nonempty(p, "priority")? {
             Some(s) => Some(
                 Priority::parse(&s)
@@ -392,10 +390,14 @@ impl Engine {
         let urg = urgency::score(priority, due.as_deref(), &ts);
 
         let tx = self.begin()?;
-        // D23: inside the IMMEDIATE tx, so a racing `project.archive` serializes
-        // against us and we can never file a task into a project archived
-        // mid-flight — the same reason `project.use` reads in its own tx.
-        if let Some(name) = &explicit_project {
+        // Resolve both explicit and inherited routing inside the IMMEDIATE
+        // transaction. Otherwise an archive can clear/retire the default after
+        // this command reads it but before this write obtains its lock.
+        let project = match &explicit_project {
+            Some(name) => Some(name.clone()),
+            None => get_config(&tx, DEFAULT_PROJECT_KEY)?,
+        };
+        if let Some(name) = &project {
             require_live_project(&tx, name)?;
         }
         let short_id = alloc_short_id(&tx)?;
@@ -1272,7 +1274,7 @@ impl Engine {
         // lists projects must say which one it is. Read once, outside the row
         // loop — this is the same fact `core.capabilities.default_project`
         // reports, from the same key, so the two can never disagree.
-        let default = self.default_project();
+        let default = self.default_project()?;
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map([], |r| {
             let name = r.get::<_, String>(1)?;
@@ -1315,7 +1317,7 @@ impl Engine {
         // longer lists, which is exactly the invisible state this change kills.
         // Clearing returns the store to the state a fresh one is in (no default,
         // bare `add` is projectless), and `use` is the way back.
-        let default_cleared = get_config(&tx, DEFAULT_PROJECT_KEY).as_deref() == Some(name.as_str())
+        let default_cleared = get_config(&tx, DEFAULT_PROJECT_KEY)?.as_deref() == Some(name.as_str())
             && clear_config(&tx, DEFAULT_PROJECT_KEY)?;
         insert_event(
             &tx,
@@ -1643,7 +1645,7 @@ impl Engine {
             // Store state, so the document carries it (D21: it lives in the
             // store's `config` table, never in config.toml). `null` when there
             // is none, which is a fact and not an omission.
-            "default_project": self.default_project(),
+            "default_project": self.default_project()?,
         }))
     }
 
@@ -2076,7 +2078,7 @@ impl Engine {
         // store that has none; otherwise the standing one wins. It is validated
         // either way, so the same document is not coherent in one store and
         // incoherent in another.
-        let standing = get_config(&tx, DEFAULT_PROJECT_KEY);
+        let standing = get_config(&tx, DEFAULT_PROJECT_KEY)?;
         if let Some(name) = &want_default {
             let row: Option<i64> = tx
                 .query_row("SELECT archived FROM projects WHERE name = ?1", params![name], |r| {
@@ -2267,13 +2269,13 @@ impl Engine {
     // ---- core.capabilities ---------------------------------------------------
 
     /// Capabilities, including the current default project (gap fix A1).
-    pub fn capabilities(&self) -> Value {
+    pub fn capabilities(&self) -> Result<Value, ApiError> {
         let mut v = crate::dispatch::capabilities();
-        v["default_project"] = match self.default_project() {
+        v["default_project"] = match self.default_project()? {
             Some(name) => Value::String(name),
             None => Value::Null,
         };
-        v
+        Ok(v)
     }
 }
 

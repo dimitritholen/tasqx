@@ -136,7 +136,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "store.import" => engine.store_import(params),
         "event.list" => engine.event_list(params),
         "reminder.fire" => engine.reminder_fire(params),
-        "core.capabilities" => Ok(engine.capabilities()),
+        "core.capabilities" => engine.capabilities(),
         other => Err(ApiError::bad_request(format!("unknown method: {other}"))),
     }
 }

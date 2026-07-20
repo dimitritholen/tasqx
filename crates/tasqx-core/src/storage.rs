@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 
 use jiff::Timestamp;
-use rusqlite::{params, Connection, Row, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use uuid::Uuid;
 
 use crate::error::ApiError;
@@ -295,11 +295,16 @@ pub fn bump_short_id_floor(tx: &Transaction, n: i64) -> Result<(), ApiError> {
 }
 
 /// Read a string setting from the `config` table (None if unset).
-pub fn get_config(conn: &Connection, key: &str) -> Option<String> {
-    conn.query_row("SELECT value FROM config WHERE key = ?1", params![key], |r| {
-        r.get::<_, String>(0)
-    })
-    .ok()
+///
+/// Only an absent row is absence. A damaged schema, I/O failure, or unexpected
+/// value is a store error and must stop the caller rather than silently steering
+/// a write as though the setting had never existed.
+pub fn get_config(conn: &Connection, key: &str) -> Result<Option<String>, ApiError> {
+    Ok(conn
+        .query_row("SELECT value FROM config WHERE key = ?1", params![key], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?)
 }
 
 /// Upsert a string setting inside `tx`.

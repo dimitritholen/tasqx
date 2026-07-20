@@ -26,7 +26,7 @@ fn init_sets_default_project_and_task_add_inherits() {
     let e = engine();
     let created = e.project_create(&json!({ "name": "work.x" })).unwrap();
     assert_eq!(created["default"], true);
-    assert_eq!(e.default_project().as_deref(), Some("work.x"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work.x"));
 
     // A bare add inherits the default.
     let added = e.task_add(&json!({ "title": "inherits" })).unwrap();
@@ -40,7 +40,7 @@ fn init_sets_default_project_and_task_add_inherits() {
     assert_eq!(g2["project"], "other");
 
     // Exposed via capabilities.
-    let caps = e.capabilities();
+    let caps = e.capabilities().unwrap();
     assert_eq!(caps["default_project"], "work.x");
 }
 
@@ -1634,7 +1634,7 @@ fn project_create_claims_the_default_only_when_none_is_set() {
     // First project ever: claims the default (the helpful bit).
     let first = e.project_create(&json!({ "name": "work" })).unwrap();
     assert_eq!(first["default"], true, "the first project must claim the default");
-    assert_eq!(e.default_project().as_deref(), Some("work"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work"));
 
     // Second project: does NOT steal it, and says so in its own result.
     assert_eq!(first["current_default"], "work");
@@ -1644,7 +1644,7 @@ fn project_create_claims_the_default_only_when_none_is_set() {
         second["current_default"], "work",
         "must report what the default still is, not just that it did not move"
     );
-    assert_eq!(e.default_project().as_deref(), Some("work"), "default was stolen");
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work"), "default was stolen");
 
     // The behavior that actually matters: a bare add still lands in `work`.
     let added = e.task_add(&json!({ "title": "a task" })).unwrap();
@@ -1662,7 +1662,7 @@ fn project_use_switches_the_default_and_reports_the_previous_one() {
     assert_eq!(r["name"], "prive.klussen");
     assert_eq!(r["default"], true);
     assert_eq!(r["previous"], "work", "the switch must name what it replaced");
-    assert_eq!(e.default_project().as_deref(), Some("prive.klussen"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("prive.klussen"));
 
     let added = e.task_add(&json!({ "title": "klus" })).unwrap();
     assert_eq!(added["project"], "prive.klussen");
@@ -1706,7 +1706,7 @@ fn project_use_rejects_an_unknown_project() {
     assert_eq!(err.code, ErrorCode::NotFound, "same code project.archive gives");
     assert!(err.message.contains("nope"), "the error must name it: {}", err.message);
     // The rejected write changed nothing.
-    assert_eq!(e.default_project().as_deref(), Some("work"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work"));
 
     // "" is still a bad_request: req_str rejects it before any lookup, so
     // `use "$UNSET_VAR"` can never write a ghost default (D13/D18).
@@ -1718,7 +1718,7 @@ fn project_use_rejects_an_unknown_project() {
     // accept was the one-way door D21 exists to remove, at a narrower edge.
     let blank = e.project_use(&json!({ "name": "   " })).unwrap_err();
     assert_eq!(blank.code, ErrorCode::NotFound);
-    assert_eq!(e.default_project().as_deref(), Some("work"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work"));
 }
 
 /// D22: archived means out of rotation, so it cannot be pointed at.
@@ -1733,7 +1733,7 @@ fn project_use_rejects_an_archived_project() {
     assert_eq!(err.code, ErrorCode::Conflict);
     assert!(err.message.contains("archived"), "must explain why: {}", err.message);
     assert!(err.message.contains("old"));
-    assert_eq!(e.default_project().as_deref(), Some("work"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work"));
 }
 
 /// D22, the other half: archiving the *current* default un-points it, and says
@@ -1743,17 +1743,17 @@ fn archiving_the_default_project_clears_the_default_and_reports_it() {
     let e = engine();
     e.project_create(&json!({ "name": "work" })).unwrap();
     e.project_create(&json!({ "name": "side" })).unwrap();
-    assert_eq!(e.default_project().as_deref(), Some("work"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work"));
 
     // Archiving a NON-default project leaves the default alone and says nothing.
     let quiet = e.project_archive(&json!({ "name": "side" })).unwrap();
     assert_eq!(quiet["default_cleared"], false);
-    assert_eq!(e.default_project().as_deref(), Some("work"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work"));
 
     // Archiving the default clears it, visibly.
     let loud = e.project_archive(&json!({ "name": "work" })).unwrap();
     assert_eq!(loud["default_cleared"], true, "silently keeping a retired default is the bug");
-    assert_eq!(e.default_project(), None);
+    assert_eq!(e.default_project().unwrap(), None);
 
     // A bare add is now projectless - the same state a fresh store is in.
     let added = e.task_add(&json!({ "title": "homeless" })).unwrap();
@@ -1761,7 +1761,7 @@ fn archiving_the_default_project_clears_the_default_and_reports_it() {
 
     // No default => the next create claims it, exactly like a fresh store.
     e.project_create(&json!({ "name": "work2" })).unwrap();
-    assert_eq!(e.default_project().as_deref(), Some("work2"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work2"));
 }
 
 /// The invisible-field trap: the default drives where a bare add lands, so every
@@ -1827,9 +1827,9 @@ fn project_use_is_dispatchable_and_advertised() {
 
     let r = tasqx_core::dispatch(&e, "project.use", &json!({ "name": "other" })).unwrap();
     assert_eq!(r["name"], "other");
-    assert_eq!(e.default_project().as_deref(), Some("other"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("other"));
 
-    let caps = e.capabilities();
+    let caps = e.capabilities().unwrap();
     let methods: Vec<&str> =
         caps["methods"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
     assert!(methods.contains(&"project.use"), "project.use must be advertised: {methods:?}");
@@ -1878,12 +1878,12 @@ fn a_default_left_pointing_at_an_archived_project_by_old_code_is_repaired_on_ope
     // Reopening is the upgrade: the repair runs on the way in.
     let e = Engine::open(&path).unwrap();
     assert_eq!(
-        e.default_project(),
+        e.default_project().unwrap(),
         None,
         "a default aimed at an archived project must not survive the open"
     );
     assert_eq!(
-        e.capabilities()["default_project"],
+        e.capabilities().unwrap()["default_project"],
         json!(null),
         "capabilities must agree with the project list, not report a ghost"
     );
@@ -1902,7 +1902,7 @@ fn a_default_left_pointing_at_an_archived_project_by_old_code_is_repaired_on_ope
 
     // And the store is not stranded: the next create claims the default again.
     e.project_create(&json!({ "name": "fresh" })).unwrap();
-    assert_eq!(e.default_project().as_deref(), Some("fresh"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("fresh"));
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1922,7 +1922,7 @@ fn a_default_naming_a_missing_project_is_repaired_on_open() {
             .unwrap();
     }
     let e = Engine::open(&path).unwrap();
-    assert_eq!(e.default_project(), None);
+    assert_eq!(e.default_project().unwrap(), None);
     assert_eq!(e.task_add(&json!({ "title": "x" })).unwrap()["project"], json!(null));
     let _ = std::fs::remove_file(&path);
 }
@@ -1939,7 +1939,7 @@ fn a_live_default_survives_the_open_repair() {
         e.project_use(&json!({ "name": "prive" })).unwrap();
     }
     let e = Engine::open(&path).unwrap();
-    assert_eq!(e.default_project().as_deref(), Some("prive"));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("prive"));
     assert_eq!(e.task_add(&json!({ "title": "x" })).unwrap()["project"], "prive");
     let _ = std::fs::remove_file(&path);
 }
@@ -1953,7 +1953,7 @@ fn project_create_rejects_a_whitespace_only_name() {
     let err = e.project_create(&json!({ "name": "   " })).unwrap_err();
     assert_eq!(err.code, ErrorCode::BadRequest, "D18's rule at the create edge");
     // Nothing was written: no row, and no default claimed.
-    assert_eq!(e.default_project(), None, "a rejected create must not claim the default");
+    assert_eq!(e.default_project().unwrap(), None, "a rejected create must not claim the default");
     assert_eq!(count(&e.project_list(&json!({ "include_archived": true })).unwrap()), 0);
     // "" is rejected by req_str, as it always was.
     assert_eq!(e.project_create(&json!({ "name": "" })).unwrap_err().code, ErrorCode::BadRequest);
@@ -3054,7 +3054,7 @@ fn a_lookup_door_still_accepts_a_name_no_write_door_would_mint() {
 
     // Selectable by the exact name it has.
     e.project_use(&json!({ "name": "   " })).unwrap();
-    assert_eq!(e.default_project().as_deref(), Some("   "), "the legacy project is reachable");
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("   "), "the legacy project is reachable");
     // And retirable, so there is a way out of it.
     e.project_archive(&json!({ "name": "   " })).unwrap();
 
@@ -3066,4 +3066,28 @@ fn a_lookup_door_still_accepts_a_name_no_write_door_would_mint() {
         ErrorCode::NotFound,
         "D23: emptiness is checked where names are born, not at the lookup"
     );
+}
+
+#[test]
+fn config_read_failure_aborts_task_add() {
+    let e = engine();
+    e.conn()
+        .execute_batch("DROP TABLE config")
+        .expect("damage config schema");
+
+    let err = e
+        .task_add(&json!({ "title": "must not be written" }))
+        .expect_err("a store read failure must not be treated as an absent default");
+    assert_eq!(err.code, ErrorCode::Internal);
+
+    let tasks: i64 = e
+        .conn()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+        .expect("task count");
+    let events: i64 = e
+        .conn()
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .expect("event count");
+    assert_eq!(tasks, 0, "the failed read must abort the task write");
+    assert_eq!(events, 0, "the failed read must abort its event too");
 }

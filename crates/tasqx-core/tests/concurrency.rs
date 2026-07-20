@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -11,6 +11,9 @@ use tasqx_core::{ApiError, Engine, ErrorCode};
 static SEQ: AtomicU64 = AtomicU64::new(0);
 static RACE_LOCK: Mutex<()> = Mutex::new(());
 static BUSY_SENDER: Mutex<Option<mpsc::Sender<()>>> = Mutex::new(None);
+static ADD_BUSY_SENDER: Mutex<Option<mpsc::Sender<()>>> = Mutex::new(None);
+static ARCHIVE_BUSY_SENDER: Mutex<Option<mpsc::Sender<()>>> = Mutex::new(None);
+static ADD_MAY_PROCEED: AtomicBool = AtomicBool::new(true);
 
 struct Store {
     path: PathBuf,
@@ -53,6 +56,29 @@ fn busy_signal(count: i32) -> bool {
     true
 }
 
+fn signal_once(sender: &Mutex<Option<mpsc::Sender<()>>>, count: i32) {
+    if count == 0 {
+        let sender = sender.lock().expect("busy sender lock").clone();
+        if let Some(sender) = sender {
+            let _ = sender.send(());
+        }
+    }
+}
+
+fn add_busy_signal(count: i32) -> bool {
+    signal_once(&ADD_BUSY_SENDER, count);
+    while !ADD_MAY_PROCEED.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    true
+}
+
+fn archive_busy_signal(count: i32) -> bool {
+    signal_once(&ARCHIVE_BUSY_SENDER, count);
+    thread::yield_now();
+    true
+}
+
 fn modify(engine: Engine, title: &'static str) -> Result<Value, ApiError> {
     engine.task_modify(&json!({
         "ref": 1,
@@ -75,11 +101,19 @@ where
     // Engine::open performs migrations, which are writes of their own.
     let first = store.engine();
     let second = store.engine();
-    first.conn().busy_handler(Some(busy_signal)).expect("first busy handler");
-    second.conn().busy_handler(Some(busy_signal)).expect("second busy handler");
+    first
+        .conn()
+        .busy_handler(Some(busy_signal))
+        .expect("first busy handler");
+    second
+        .conn()
+        .busy_handler(Some(busy_signal))
+        .expect("second busy handler");
 
     let blocker = store.connection();
-    blocker.execute_batch("BEGIN IMMEDIATE").expect("hold write reservation");
+    blocker
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("hold write reservation");
 
     let (busy_tx, busy_rx) = mpsc::channel();
     *BUSY_SENDER.lock().expect("set busy sender") = Some(busy_tx);
@@ -92,9 +126,14 @@ where
             .recv_timeout(Duration::from_secs(5))
             .unwrap_or_else(|_| panic!("{worker} worker never reached BEGIN IMMEDIATE"));
     }
-    blocker.execute_batch("COMMIT").expect("release write reservation");
+    blocker
+        .execute_batch("COMMIT")
+        .expect("release write reservation");
 
-    let results = (a.join().expect("first worker"), b.join().expect("second worker"));
+    let results = (
+        a.join().expect("first worker"),
+        b.join().expect("second worker"),
+    );
     BUSY_SENDER.lock().expect("clear busy sender").take();
     results
 }
@@ -112,7 +151,8 @@ fn op_count(events: &Value, op: &str) -> usize {
 fn two_guarded_modifies_from_one_revision_have_one_winner() {
     let store = Store::new("guarded-modify");
     let seed = store.engine();
-    seed.task_add(&json!({ "title": "original" })).expect("seed task");
+    seed.task_add(&json!({ "title": "original" }))
+        .expect("seed task");
     drop(seed);
 
     let raced = race_two(
@@ -122,38 +162,69 @@ fn two_guarded_modifies_from_one_revision_have_one_winner() {
     );
     let results = [raced.0, raced.1];
 
-    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "exactly one guarded edit wins");
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "exactly one guarded edit wins"
+    );
     let errors: Vec<&ApiError> = results.iter().filter_map(|r| r.as_ref().err()).collect();
     assert_eq!(errors.len(), 1, "exactly one guarded edit conflicts");
     assert_eq!(errors[0].code, ErrorCode::Conflict);
 
     let check = store.engine();
-    let task = check.task_get(&json!({ "ref": 1 })).expect("read final task");
+    let task = check
+        .task_get(&json!({ "ref": 1 }))
+        .expect("read final task");
     assert_eq!(task["_rev"], 2, "one effective edit advances one revision");
-    let events = check.event_list(&json!({ "entity": "task", "limit": 20 })).expect("events");
-    assert_eq!(op_count(&events, "modify"), 1, "one effective edit appends one modify event");
+    let events = check
+        .event_list(&json!({ "entity": "task", "limit": 20 }))
+        .expect("events");
+    assert_eq!(
+        op_count(&events, "modify"),
+        1,
+        "one effective edit appends one modify event"
+    );
 }
 
 #[test]
 fn racing_starts_create_one_interval() {
     let store = Store::new("start");
-    store.engine().task_add(&json!({ "title": "timer" })).expect("seed task");
+    store
+        .engine()
+        .task_add(&json!({ "title": "timer" }))
+        .expect("seed task");
 
     let results = race_two(
         &store,
         |engine| engine.task_start(&json!({ "ref": 1 })),
         |engine| engine.task_start(&json!({ "ref": 1 })),
     );
-    assert!(results.0.is_ok(), "first start: {:?}", results.0.err().map(|e| e.message));
-    assert!(results.1.is_ok(), "second start is idempotent: {:?}", results.1.err().map(|e| e.message));
+    assert!(
+        results.0.is_ok(),
+        "first start: {:?}",
+        results.0.err().map(|e| e.message)
+    );
+    assert!(
+        results.1.is_ok(),
+        "second start is idempotent: {:?}",
+        results.1.err().map(|e| e.message)
+    );
 
     let check = store.engine();
-    let task = check.task_get(&json!({ "ref": 1 })).expect("read final task");
+    let task = check
+        .task_get(&json!({ "ref": 1 }))
+        .expect("read final task");
     assert_eq!(task["status"], "active");
     assert_eq!(task["_rev"], 2, "one effective start advances one revision");
-    let events = check.event_list(&json!({ "entity": "task", "limit": 20 })).expect("events");
+    let events = check
+        .event_list(&json!({ "entity": "task", "limit": 20 }))
+        .expect("events");
     assert_eq!(op_count(&events, "start"), 1, "only one interval starts");
-    assert_eq!(op_count(&events, "stop"), 0, "the second call must not stop the first interval");
+    assert_eq!(
+        op_count(&events, "stop"),
+        0,
+        "the second call must not stop the first interval"
+    );
 }
 
 #[test]
@@ -174,39 +245,146 @@ fn racing_recurring_completions_spawn_once() {
         |engine| engine.task_done(&json!({ "ref": 1 })),
     );
     let results = [raced.0, raced.1];
-    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "one completion wins");
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "one completion wins"
+    );
     let errors: Vec<&ApiError> = results.iter().filter_map(|r| r.as_ref().err()).collect();
     assert_eq!(errors.len(), 1, "the second completion conflicts");
     assert_eq!(errors[0].code, ErrorCode::Conflict);
 
     let check = store.engine();
-    let tasks = check.task_list(&json!({ "filter": "" })).expect("list tasks");
-    assert_eq!(tasks["count"], 2, "the template spawns exactly one successor");
-    let events = check.event_list(&json!({ "entity": "task", "limit": 20 })).expect("events");
+    let tasks = check
+        .task_list(&json!({ "filter": "" }))
+        .expect("list tasks");
+    assert_eq!(
+        tasks["count"], 2,
+        "the template spawns exactly one successor"
+    );
+    let events = check
+        .event_list(&json!({ "entity": "task", "limit": 20 }))
+        .expect("events");
     assert_eq!(op_count(&events, "done"), 1, "the template completes once");
-    assert_eq!(op_count(&events, "add"), 2, "one seed and one spawned add event");
+    assert_eq!(
+        op_count(&events, "add"),
+        2,
+        "one seed and one spawned add event"
+    );
 }
 
 #[test]
 fn annotation_and_tag_advance_two_revisions() {
     let store = Store::new("annotation-tag");
-    store.engine().task_add(&json!({ "title": "original" })).expect("seed task");
+    store
+        .engine()
+        .task_add(&json!({ "title": "original" }))
+        .expect("seed task");
 
     let results = race_two(
         &store,
         |engine| engine.annotation_add(&json!({ "ref": 1, "body": "keep this note" })),
         |engine| engine.tag_add(&json!({ "ref": 1, "tags": ["keep-this-tag"] })),
     );
-    assert!(results.0.is_ok(), "annotation succeeds: {:?}", results.0.err().map(|e| e.message));
-    assert!(results.1.is_ok(), "tag succeeds: {:?}", results.1.err().map(|e| e.message));
+    assert!(
+        results.0.is_ok(),
+        "annotation succeeds: {:?}",
+        results.0.err().map(|e| e.message)
+    );
+    assert!(
+        results.1.is_ok(),
+        "tag succeeds: {:?}",
+        results.1.err().map(|e| e.message)
+    );
 
     let check = store.engine();
-    let task = check.task_get(&json!({ "ref": 1 })).expect("read final task");
-    assert_eq!(task["annotations"].as_array().expect("annotations").len(), 1);
+    let task = check
+        .task_get(&json!({ "ref": 1 }))
+        .expect("read final task");
+    assert_eq!(
+        task["annotations"].as_array().expect("annotations").len(),
+        1
+    );
     assert_eq!(task["annotations"][0]["body"], "keep this note");
     assert_eq!(task["tags"], json!(["keep-this-tag"]));
-    assert_eq!(task["_rev"], 3, "two effective mutations advance two revisions");
-    let events = check.event_list(&json!({ "entity": "task", "limit": 20 })).expect("events");
+    assert_eq!(
+        task["_rev"], 3,
+        "two effective mutations advance two revisions"
+    );
+    let events = check
+        .event_list(&json!({ "entity": "task", "limit": 20 }))
+        .expect("events");
     assert_eq!(op_count(&events, "annotation.add"), 1);
     assert_eq!(op_count(&events, "tag.add"), 1);
+}
+
+#[test]
+fn inherited_add_observes_a_racing_default_archive() {
+    let _serial = RACE_LOCK.lock().expect("race test lock");
+    let store = Store::new("add-archive");
+    store
+        .engine()
+        .project_create(&json!({ "name": "work" }))
+        .expect("seed default project");
+
+    let add_engine = store.engine();
+    let archive_engine = store.engine();
+    add_engine
+        .conn()
+        .busy_handler(Some(add_busy_signal))
+        .expect("add busy handler");
+    archive_engine
+        .conn()
+        .busy_handler(Some(archive_busy_signal))
+        .expect("archive busy handler");
+
+    let blocker = store.connection();
+    blocker
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("hold write reservation");
+
+    let (add_tx, add_rx) = mpsc::channel();
+    let (archive_tx, archive_rx) = mpsc::channel();
+    *ADD_BUSY_SENDER.lock().expect("set add busy sender") = Some(add_tx);
+    *ARCHIVE_BUSY_SENDER.lock().expect("set archive busy sender") = Some(archive_tx);
+    ADD_MAY_PROCEED.store(false, Ordering::Release);
+
+    let add = thread::spawn(move || add_engine.task_add(&json!({ "title": "after archive" })));
+    let archive = thread::spawn(move || archive_engine.project_archive(&json!({ "name": "work" })));
+
+    add_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("add never reached its write transaction");
+    archive_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("archive never reached its write transaction");
+    blocker
+        .execute_batch("COMMIT")
+        .expect("release write reservation");
+
+    let archived = archive
+        .join()
+        .expect("archive worker")
+        .expect("archive succeeds");
+    ADD_MAY_PROCEED.store(true, Ordering::Release);
+    let added = add.join().expect("add worker").expect("add succeeds");
+    ADD_BUSY_SENDER.lock().expect("clear add sender").take();
+    ARCHIVE_BUSY_SENDER
+        .lock()
+        .expect("clear archive sender")
+        .take();
+
+    assert_eq!(archived["default_cleared"], true);
+    assert_eq!(
+        added["project"],
+        Value::Null,
+        "the add must use the post-archive default"
+    );
+
+    let check = store.engine();
+    assert_eq!(check.default_project().expect("read default"), None);
+    let task = check
+        .task_get(&json!({ "ref": 1 }))
+        .expect("read added task");
+    assert_eq!(task["project"], Value::Null);
 }
