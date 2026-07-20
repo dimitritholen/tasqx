@@ -16,6 +16,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -66,10 +76,6 @@ jobs:
   # fixed at the source — no `#[allow]` was added to reach zero, so the gate
   # measures the code rather than the suppressions.
   #
-  # rustfmt is deliberately still NOT here. The compact one-line struct literals
-  # throughout this tree are a house style `cargo fmt` would rewrite wholesale;
-  # that is a separate decision from lint cleanliness and should not ride in on
-  # its back.
   lint:
     name: clippy
     runs-on: ubuntu-latest
