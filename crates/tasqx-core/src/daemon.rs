@@ -229,6 +229,25 @@ struct Shared {
     /// Highest `events.rowid` already broadcast. Guards against double-sends
     /// when the immediate (post-commit) and poll paths race.
     watermark: Arc<Mutex<i64>>,
+    /// Fatal component failures are supervised by the serve loop. Tests that
+    /// exercise scheduler logic without a server leave this unset.
+    fatal: Option<mpsc::Sender<BackgroundFailure>>,
+}
+
+#[derive(Debug)]
+struct BackgroundFailure {
+    component: &'static str,
+    message: String,
+}
+
+fn report_fatal(sh: &Shared, component: &'static str, error: &ApiError) {
+    if let Some(tx) = &sh.fatal {
+        let _ = tx.send(BackgroundFailure { component, message: error.message.clone() });
+    }
+}
+
+fn accept_failure(error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("listener accept failed: {error}"))
 }
 
 /// One `events` row joined to its task, as [`pump`] reads it before turning it
@@ -248,11 +267,11 @@ struct EventRow {
     rev: Option<i64>,
 }
 
-fn max_event_rowid(engine: &Engine) -> i64 {
+fn max_event_rowid(engine: &Engine) -> Result<i64, ApiError> {
     engine
         .conn()
         .query_row("SELECT COALESCE(MAX(rowid), 0) FROM events", [], |r| r.get(0))
-        .unwrap_or(0)
+        .map_err(ApiError::from)
 }
 
 /// Broadcast every `events` row newer than the watermark as a `task.changed`
@@ -260,19 +279,17 @@ fn max_event_rowid(engine: &Engine) -> i64 {
 /// the whole call so concurrent pumps can't emit the same row twice; the
 /// engine lock is taken only briefly to read the new rows (never during the
 /// broadcast).
-fn pump(sh: &Shared) {
+fn pump(sh: &Shared) -> Result<(), ApiError> {
     let mut wm = lock_recover(&sh.watermark);
     let last = *wm;
     let rows: Vec<EventRow> = {
         let g = lock_recover(&sh.engine);
         let conn = g.conn();
-        let Ok(mut stmt) = conn.prepare(
+        let mut stmt = conn.prepare(
             "SELECT e.rowid, e.entity, e.entity_id, e.op, t.short_id, t.rev \
              FROM events e LEFT JOIN tasks t ON t.id = e.entity_id \
              WHERE e.rowid > ?1 ORDER BY e.rowid",
-        ) else {
-            return;
-        };
+        )?;
         let mapped = stmt.query_map([last], |r| {
             Ok(EventRow {
                 rowid: r.get(0)?,
@@ -282,9 +299,8 @@ fn pump(sh: &Shared) {
                 short_id: r.get(4)?,
                 rev: r.get(5)?,
             })
-        });
-        let Ok(iter) = mapped else { return };
-        iter.filter_map(Result::ok).collect()
+        })?;
+        mapped.collect::<Result<Vec<_>, _>>()?
     };
     for row in rows {
         let mut data = Map::new();
@@ -307,6 +323,7 @@ fn pump(sh: &Shared) {
             *wm = row.rowid;
         }
     }
+    Ok(())
 }
 
 // ---- server -----------------------------------------------------------------
@@ -336,11 +353,14 @@ pub fn serve_with_notifier(
     // stay blocking, which the thread-per-connection model wants.
     listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
 
-    let start = max_event_rowid(&engine);
+    let start = max_event_rowid(&engine)
+        .map_err(|e| io::Error::other(format!("event watermark initialization failed: {}", e.message)))?;
+    let (fatal_tx, fatal_rx) = mpsc::channel();
     let shared = Shared {
         engine: Arc::new(Mutex::new(engine)),
         hub: Hub::new(),
         watermark: Arc::new(Mutex::new(start)),
+        fatal: Some(fatal_tx),
     };
 
     // Background poller: surfaces external one-shot writes on the same DB.
@@ -349,7 +369,10 @@ pub fn serve_with_notifier(
         let sd = shutdown.clone();
         thread::spawn(move || {
             while !sd.load(Ordering::Relaxed) {
-                pump(&sh);
+                if let Err(e) = pump(&sh) {
+                    report_fatal(&sh, "event poller", &e);
+                    return;
+                }
                 // Sleep in small steps so shutdown stays responsive.
                 for _ in 0..(POLL_MS / 50).max(1) {
                     if sd.load(Ordering::Relaxed) {
@@ -369,7 +392,16 @@ pub fn serve_with_notifier(
         thread::spawn(move || reminder_loop(sh, notifier, sd));
     }
 
-    while !shutdown.load(Ordering::Relaxed) {
+    let result = loop {
+        if shutdown.load(Ordering::Relaxed) {
+            break Ok(());
+        }
+        if let Ok(failure) = fatal_rx.try_recv() {
+            break Err(io::Error::other(format!(
+                "{} failed: {}",
+                failure.component, failure.message
+            )));
+        }
         match listener.accept() {
             Ok(stream) => {
                 let sh = shared.clone();
@@ -378,12 +410,15 @@ pub fn serve_with_notifier(
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(20));
             }
-            Err(_) => thread::sleep(Duration::from_millis(20)),
+            Err(e) => break Err(accept_failure(e)),
         }
-    }
+    };
 
+    // An error return is also a shutdown signal for the supervised threads;
+    // otherwise the serve call would fail while its poller/scheduler leaked.
+    shutdown.store(true, Ordering::Relaxed);
     cleanup(socket);
-    Ok(())
+    result
 }
 
 // ---- reminder scheduler (DESIGN.md §9) --------------------------------------
@@ -409,16 +444,24 @@ fn reminder_loop(sh: Shared, notifier: Arc<dyn Notifier>, shutdown: Arc<AtomicBo
     // -1 can't be a real rowid, so the first tick always rebuilds.
     let mut seen_rowid: i64 = -1;
     let mut sched = ReminderScheduler::new();
+    let mut fire_errors = ErrorTransition::default();
 
     while !shutdown.load(Ordering::Relaxed) {
-        seen_rowid = reminder_tick(
+        match reminder_tick(
             &sh,
             &mut sched,
             seen_rowid,
             jiff::Timestamp::now(),
             &*notifier,
             &scheduler::fire_one,
-        );
+            &mut fire_errors,
+        ) {
+            Ok(next) => seen_rowid = next,
+            Err(e) => {
+                report_fatal(&sh, "reminder scheduler", &e);
+                return;
+            }
+        }
 
         // Sleep in small steps so shutdown stays responsive.
         for _ in 0..(REMINDER_TICK_MS / 50).max(1) {
@@ -435,6 +478,31 @@ fn reminder_loop(sh: Shared, notifier: Arc<dyn Notifier>, shutdown: Arc<AtomicBo
 /// pin the recovery behaviour of the error path, which is otherwise reachable
 /// only through disk/lock faults that cannot be provoked from a test.
 type FireFn = dyn Fn(&Engine, &scheduler::Pending) -> Result<bool, ApiError> + Send + Sync;
+
+#[derive(Default)]
+struct ErrorTransition {
+    current: Option<String>,
+}
+
+impl ErrorTransition {
+    fn enter(&mut self, message: String) -> bool {
+        if self.current.as_deref() == Some(message.as_str()) {
+            return false;
+        }
+        self.current = Some(message);
+        true
+    }
+
+    fn report(&mut self, message: String) {
+        if self.enter(message.clone()) {
+            eprintln!("tasqx daemon: {message}");
+        }
+    }
+
+    fn recovered(&mut self) {
+        self.current = None;
+    }
+}
 
 /// One tick of [`reminder_loop`]: rebuild if the log moved, fire what is ripe.
 /// Returns the watermark to carry into the next tick. `now` is injected, so a
@@ -456,30 +524,22 @@ fn reminder_tick(
     now: jiff::Timestamp,
     notifier: &dyn Notifier,
     fire: &FireFn,
-) -> i64 {
+    fire_errors: &mut ErrorTransition,
+) -> Result<i64, ApiError> {
     let mut seen = seen_rowid;
 
     // 1. Rebuild if the event log moved (start, or any task change).
     let cur = {
         let g = lock_recover(&sh.engine);
-        max_event_rowid(&g)
+        max_event_rowid(&g)?
     };
     if cur != seen {
         let rebuilt = {
             let g = lock_recover(&sh.engine);
             ReminderScheduler::rebuild(&g)
-        };
-        match rebuilt {
-            Ok(s) => {
-                *sched = s;
-                seen = cur;
-            }
-            Err(e) => {
-                // Keep the previous heap and retry next tick: a transient
-                // read failure must not silently stop all reminders.
-                eprintln!("tasqx daemon: reminder rebuild failed: {}", e.message);
-            }
-        }
+        }?;
+        *sched = rebuilt;
+        seen = cur;
     }
 
     // 2. Fire everything ripe. The engine lock is held only for the event
@@ -493,17 +553,20 @@ fn reminder_tick(
             fire(&g, p)
         };
         match fired {
-            // Deduped (already reminded) => do NOT notify.
-            Ok(false) => {}
-            Ok(true) => {
-                fired_any = true;
-                notifier.notify(&scheduler::notification_for(p));
+            // Deduped (already reminded) => do NOT notify, but it still proves
+            // the previously failing store operation recovered.
+            Ok(fired) => {
+                fire_errors.recovered();
+                if fired {
+                    fired_any = true;
+                    notifier.notify(&scheduler::notification_for(p));
+                }
             }
             Err(e) => {
-                eprintln!(
-                    "tasqx daemon: could not record reminder for #{}: {}",
+                fire_errors.report(format!(
+                    "could not record reminder for #{}: {}",
                     p.short_id, e.message
-                );
+                ));
                 // `pop_ripe` already took this entry off the heap and the failed
                 // write left no event behind, so the watermark would otherwise
                 // still match and the next tick would skip the rebuild — dropping
@@ -517,9 +580,9 @@ fn reminder_tick(
     // Push the `reminded` rows to subscribers immediately rather than waiting
     // for the poller — this is the headless verification surface (§9).
     if fired_any {
-        pump(sh);
+        pump(sh)?;
     }
-    seen
+    Ok(seen)
 }
 
 /// One connection: a reader loop (this thread) + a writer thread draining a
@@ -582,7 +645,10 @@ fn handle_conn(stream: Stream, sh: Shared) {
                 // they emit no events, so pumping only re-locks watermark+engine
                 // and runs the JOIN for nothing.
                 if !is_read_method(trimmed) {
-                    pump(&sh);
+                    if let Err(e) = pump(&sh) {
+                        report_fatal(&sh, "event pump", &e);
+                        break;
+                    }
                 }
             }
             Err(_) => break,
@@ -870,6 +936,7 @@ mod tests {
             engine: Arc::new(Mutex::new(engine)),
             hub: Hub::new(),
             watermark: Arc::new(Mutex::new(0)),
+            fatal: None,
         }
     }
 
@@ -896,6 +963,39 @@ mod tests {
             .task_add(&json!({ "title": title, "due": due, "remind": remind }))
             .unwrap();
         r.get("short_id").and_then(Value::as_i64).unwrap()
+    }
+
+    #[test]
+    fn pump_decode_failure_does_not_advance_the_watermark() {
+        let engine = Engine::open_in_memory().unwrap();
+        engine.task_add(&json!({ "title": "bad event join" })).unwrap();
+        engine
+            .conn()
+            .execute("UPDATE tasks SET rev = 'not-an-integer'", [])
+            .unwrap();
+        let sh = shared(engine);
+
+        let err = pump(&sh).expect_err("the malformed joined row must be surfaced");
+        assert!(err.message.contains("storage error"), "{err:?}");
+        assert_eq!(*lock_recover(&sh.watermark), 0, "no failed batch may advance the watermark");
+    }
+
+    #[test]
+    fn repeated_transient_failures_log_only_on_state_transitions() {
+        let mut state = ErrorTransition::default();
+        assert!(state.enter("disk busy".to_string()));
+        assert!(!state.enter("disk busy".to_string()), "the same failure must be rate-limited");
+        assert!(state.enter("disk I/O".to_string()), "a changed failure is observable");
+        state.recovered();
+        assert!(state.enter("disk I/O".to_string()), "re-entering after recovery is observable");
+    }
+
+    #[test]
+    fn non_would_block_accept_errors_are_contextual_fatal_errors() {
+        let source = io::Error::new(io::ErrorKind::ConnectionAborted, "listener broke");
+        let fatal = accept_failure(source);
+        assert_eq!(fatal.kind(), io::ErrorKind::ConnectionAborted);
+        assert!(fatal.to_string().contains("listener accept failed"));
     }
 
     #[test]
@@ -980,6 +1080,7 @@ mod tests {
         let id = add(&sh, "ship it", "2026-07-20T17:00:00Z", "-1h"); // ripens 16:00Z
         let notifier = Collecting::default();
         let mut sched = ReminderScheduler::new();
+        let mut fire_errors = ErrorTransition::default();
         let now = ts("2026-07-20T16:00:00Z");
 
         // Tick 1: the write fails the way a disk error / busy-timeout would —
@@ -991,12 +1092,30 @@ mod tests {
             }
             scheduler::fire_one(e, p)
         };
-        let seen = reminder_tick(&sh, &mut sched, -1, now, &notifier, &flaky);
+        let seen = reminder_tick(
+            &sh,
+            &mut sched,
+            -1,
+            now,
+            &notifier,
+            &flaky,
+            &mut fire_errors,
+        )
+        .unwrap();
         assert!(notifier.fired().is_empty(), "a failed write must not notify");
         assert_eq!(seen, -1, "a failed fire must force the next tick to rebuild");
 
         // Tick 2: nothing external happened. The reminder must still come back.
-        let seen = reminder_tick(&sh, &mut sched, seen, now, &notifier, &flaky);
+        let seen = reminder_tick(
+            &sh,
+            &mut sched,
+            seen,
+            now,
+            &notifier,
+            &flaky,
+            &mut fire_errors,
+        )
+        .unwrap();
         assert_eq!(notifier.fired(), vec![id], "the reminder must fire after a retry");
         assert_ne!(seen, -1, "a clean tick re-establishes the watermark");
     }
@@ -1012,6 +1131,7 @@ mod tests {
         add(&sh, "ship it", "2026-07-20T17:00:00Z", "-1h"); // ripens 16:00Z
         let notifier = Collecting::default();
         let mut sched = ReminderScheduler::new();
+        let mut fire_errors = ErrorTransition::default();
         let now = ts("2026-07-20T16:00:00Z");
 
         // Fires for real, then — still inside the tick, exactly as a concurrent
@@ -1030,17 +1150,35 @@ mod tests {
             }
             out
         };
-        let seen = reminder_tick(&sh, &mut sched, -1, now, &notifier, &racing);
+        let seen = reminder_tick(
+            &sh,
+            &mut sched,
+            -1,
+            now,
+            &notifier,
+            &racing,
+            &mut fire_errors,
+        )
+        .unwrap();
 
         // The tick must NOT claim to have seen the racing write.
         let cur = {
             let g = lock_recover(&sh.engine);
-            max_event_rowid(&g)
+            max_event_rowid(&g).unwrap()
         };
         assert_ne!(seen, cur, "must not adopt a rowid the heap was never built from");
 
         // Next tick: "pay rent" (ripe at 15:00Z) must be picked up and fire.
-        reminder_tick(&sh, &mut sched, seen, now, &notifier, &scheduler::fire_one);
+        reminder_tick(
+            &sh,
+            &mut sched,
+            seen,
+            now,
+            &notifier,
+            &scheduler::fire_one,
+            &mut fire_errors,
+        )
+        .unwrap();
         let fired = notifier.fired();
         assert!(
             fired.contains(&2),

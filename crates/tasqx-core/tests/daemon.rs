@@ -372,3 +372,46 @@ fn connect_to_absent_daemon_is_none_and_fast() {
     assert!(got.is_none(), "connecting to a nonexistent socket must yield None");
     assert!(t0.elapsed() < Duration::from_secs(2), "fallback must be fast, took {:?}", t0.elapsed());
 }
+
+#[test]
+fn background_store_failure_stops_the_daemon_with_context() {
+    let (db, sock) = unique_target();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let server_shutdown = shutdown.clone();
+    let server_db = db.clone();
+    let server_sock = sock.clone();
+    let (result_tx, result_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let engine = Engine::open(&server_db).expect("open server engine");
+        let result = daemon::serve(engine, &server_sock, server_shutdown);
+        let _ = result_tx.send(result);
+    });
+
+    for _ in 0..200 {
+        if daemon::try_connect(&sock).is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(daemon::try_connect(&sock).is_some(), "daemon never became connectable");
+
+    let breaker = Engine::open(&db).expect("open breaker connection");
+    breaker.conn().execute_batch("DROP TABLE events").expect("damage event schema");
+    drop(breaker);
+
+    let observed = result_rx.recv_timeout(Duration::from_secs(3));
+    shutdown.store(true, Ordering::Relaxed);
+    if observed.is_err() {
+        let _ = result_rx.recv_timeout(Duration::from_secs(2));
+    }
+    server.join().expect("server thread");
+    let err = observed
+        .expect("daemon stayed alive after its event poller failed")
+        .expect_err("daemon reported a clean shutdown after its event poller failed");
+    let message = err.to_string();
+    assert!(
+        message.contains("event poller") || message.contains("reminder scheduler"),
+        "failure must identify the background component: {err}"
+    );
+    let _ = std::fs::remove_file(&db);
+}
