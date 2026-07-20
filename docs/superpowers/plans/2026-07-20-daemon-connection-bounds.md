@@ -23,4 +23,4 @@
 - [x] Run focused daemon unit/integration and stress tests.
 - [x] Run full workspace tests, Clippy, and diff checks.
 - [x] Update Medium #4 and the design status with evidence.
-- [ ] Commit, fast-forward merge into `main`, verify merged state, and delete the branch.
+- [x] Commit, fast-forward merge into `main`, verify merged state, and delete the branch.
