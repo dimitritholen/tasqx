@@ -23,7 +23,8 @@ fn count(engine: &Engine, sql: &str) -> i64 {
 fn storage_round_trip() {
     let e = engine();
     // D23: an explicit project must name a live project row.
-    e.project_create(&json!({ "name": "work" })).expect("init work");
+    e.project_create(&json!({ "name": "work" }))
+        .expect("init work");
     let added = e
         .task_add(&json!({ "title": "hello world", "priority": "H", "project": "work" }))
         .expect("add");
@@ -83,7 +84,10 @@ fn start_autostops_previous_active() {
     e.task_start(&json!({ "ref": b })).unwrap();
 
     // Exactly one active task, and it is b.
-    assert_eq!(count(&e, "SELECT COUNT(*) FROM tasks WHERE status='active'"), 1);
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM tasks WHERE status='active'"),
+        1
+    );
     let a_status: String = e
         .conn()
         .query_row(
@@ -157,7 +161,14 @@ fn rolled_back_transaction_couples_state_and_event() {
             params![short_id],
         )
         .unwrap();
-        storage::insert_event(&tx, tasqx_core::Entity::Task, "rollback-id", "add", &json!({})).unwrap();
+        storage::insert_event(
+            &tx,
+            tasqx_core::Entity::Task,
+            "rollback-id",
+            "add",
+            &json!({}),
+        )
+        .unwrap();
         // Both rows exist inside the tx...
         let n: i64 = tx
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
@@ -291,7 +302,11 @@ fn engine_mutation_rolls_back_state_and_event_together() {
     assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), events_before);
     let counter: i64 = e
         .conn()
-        .query_row("SELECT value FROM meta WHERE key = 'next_short_id'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'next_short_id'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(counter, 1);
 }
@@ -344,9 +359,13 @@ fn modify_cancel_closes_active_interval() {
     let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
     e.task_start(&json!({ "ref": sid })).unwrap();
 
-    e.task_modify(&json!({ "ref": sid, "set": { "status": "cancelled" } })).unwrap();
+    e.task_modify(&json!({ "ref": sid, "set": { "status": "cancelled" } }))
+        .unwrap();
 
-    assert_eq!(count(&e, "SELECT COUNT(*) FROM tasks WHERE status='active'"), 0);
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM tasks WHERE status='active'"),
+        0
+    );
     let active_since: Option<String> = e
         .conn()
         .query_row(
@@ -372,16 +391,26 @@ fn a_passed_wait_releases_the_task_to_pending() {
         .unwrap()["short_id"]
         .clone();
 
-    e.task_modify(&json!({ "ref": sid, "set": { "wait": "2020-01-01T00:00:00Z" } })).unwrap();
+    e.task_modify(&json!({ "ref": sid, "set": { "wait": "2020-01-01T00:00:00Z" } }))
+        .unwrap();
 
     let got = e.task_get(&json!({ "ref": sid })).unwrap();
-    assert_eq!(got["status"], "pending", "task.get must report the released status");
+    assert_eq!(
+        got["status"], "pending",
+        "task.get must report the released status"
+    );
 
     let listed = e.task_list(&json!({ "filter": "" })).unwrap();
-    assert_eq!(listed["tasks"][0]["status"], "pending", "task.list must agree with task.get");
+    assert_eq!(
+        listed["tasks"][0]["status"], "pending",
+        "task.list must agree with task.get"
+    );
 
     // And it must be startable — the guard reads the same status the user sees.
-    assert_eq!(e.task_start(&json!({ "ref": sid })).unwrap()["status"], "active");
+    assert_eq!(
+        e.task_start(&json!({ "ref": sid })).unwrap()["status"],
+        "active"
+    );
 }
 
 /// A future `scheduled` holds the task in the backlog just like `wait` does,
@@ -393,10 +422,17 @@ fn a_future_scheduled_still_holds_the_task_in_backlog() {
         .task_add(&json!({ "title": "soon", "scheduled": "2999-01-01T00:00:00Z" }))
         .unwrap()["short_id"]
         .clone();
-    assert_eq!(e.task_get(&json!({ "ref": sid })).unwrap()["status"], "backlog");
+    assert_eq!(
+        e.task_get(&json!({ "ref": sid })).unwrap()["status"],
+        "backlog"
+    );
 
-    e.task_modify(&json!({ "ref": sid, "set": { "scheduled": "2020-01-01T00:00:00Z" } })).unwrap();
-    assert_eq!(e.task_get(&json!({ "ref": sid })).unwrap()["status"], "pending");
+    e.task_modify(&json!({ "ref": sid, "set": { "scheduled": "2020-01-01T00:00:00Z" } }))
+        .unwrap();
+    assert_eq!(
+        e.task_get(&json!({ "ref": sid })).unwrap()["status"],
+        "pending"
+    );
 }
 
 /// The recurrence spawn computes the same rule on the shifted timestamps, so it
@@ -407,9 +443,10 @@ fn a_spawned_instance_is_parked_or_released_by_its_shifted_wait() {
     // `next_after` collapses missed slots, so the spawned `due` always lands
     // within one day *after* now. The wait rides along at the same offset, so
     // the offset alone decides the answer — no wall clock in the assertion.
-    for (wait, expect) in
-        [("2020-01-08T12:00:00Z", "pending"), ("2020-01-15T12:00:00Z", "backlog")]
-    {
+    for (wait, expect) in [
+        ("2020-01-08T12:00:00Z", "pending"),
+        ("2020-01-15T12:00:00Z", "backlog"),
+    ] {
         let e = engine();
         let sid = e
             .task_add(&json!({
@@ -422,7 +459,9 @@ fn a_spawned_instance_is_parked_or_released_by_its_shifted_wait() {
             .clone();
         e.task_done(&json!({ "ref": sid })).unwrap();
 
-        let listed = e.task_list(&json!({ "filter": format!("status:{expect}") })).unwrap();
+        let listed = e
+            .task_list(&json!({ "filter": format!("status:{expect}") }))
+            .unwrap();
         assert_eq!(listed["count"], 1, "wait {wait} => {expect}, got {listed}");
     }
 }
@@ -438,13 +477,18 @@ fn a_spawned_instance_is_parked_or_released_by_its_shifted_wait() {
 fn a_stringified_expected_rev_conflicts_rather_than_overwriting() {
     let e = engine();
     let sid = e.task_add(&json!({ "title": "original" })).unwrap()["short_id"].clone();
-    e.task_modify(&json!({ "ref": sid, "set": { "title": "bump" } })).unwrap();
+    e.task_modify(&json!({ "ref": sid, "set": { "title": "bump" } }))
+        .unwrap();
 
     let err = e
         .task_modify(&json!({ "ref": sid, "set": { "title": "LOST UPDATE" }, "expected_rev": "1" }))
         .expect_err("a stringified expected_rev must not silently skip the guard");
     assert_eq!(err.code, ErrorCode::BadRequest, "got {err:?}");
-    assert!(err.message.contains("expected_rev"), "message must name the param: {}", err.message);
+    assert!(
+        err.message.contains("expected_rev"),
+        "message must name the param: {}",
+        err.message
+    );
 
     // The write must not have landed.
     let got = e.task_get(&json!({ "ref": sid })).unwrap();
@@ -458,7 +502,8 @@ fn a_stringified_expected_rev_conflicts_rather_than_overwriting() {
 fn an_integer_expected_rev_still_guards_and_still_passes() {
     let e = engine();
     let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
-    e.task_modify(&json!({ "ref": sid, "set": { "title": "two" } })).unwrap();
+    e.task_modify(&json!({ "ref": sid, "set": { "title": "two" } }))
+        .unwrap();
 
     let stale = e
         .task_modify(&json!({ "ref": sid, "set": { "title": "x" }, "expected_rev": 1 }))
@@ -492,14 +537,26 @@ fn a_wrong_typed_param_is_a_bad_request_naming_it() {
         // A non-string group_by used to fall back to the first summary key.
         ("report.summary", json!({ "group_by": 3 }), "group_by"),
         // "true" is not true: these three all silently meant `false`.
-        ("project.list", json!({ "include_archived": "true" }), "include_archived"),
+        (
+            "project.list",
+            json!({ "include_archived": "true" }),
+            "include_archived",
+        ),
         ("task.start", json!({ "ref": sid, "keep": "yes" }), "keep"),
         ("report.summary", json!({ "all": 1 }), "all"),
         // opt_str_array dropped a non-array, a non-string entry and an empty
         // string — and its two callers disagreed about which of those mattered.
         ("task.add", json!({ "title": "x", "tags": "home" }), "tags"),
-        ("task.add", json!({ "title": "x", "tags": ["ok", 7] }), "tags"),
-        ("task.add", json!({ "title": "x", "tags": ["ok", ""] }), "tags"),
+        (
+            "task.add",
+            json!({ "title": "x", "tags": ["ok", 7] }),
+            "tags",
+        ),
+        (
+            "task.add",
+            json!({ "title": "x", "tags": ["ok", ""] }),
+            "tags",
+        ),
         ("tag.add", json!({ "ref": sid, "tags": "home" }), "tags"),
         ("tag.add", json!({ "ref": sid, "tags": [7] }), "tags"),
         // A non-string ref, and a non-object `set`.
@@ -511,7 +568,11 @@ fn a_wrong_typed_param_is_a_bad_request_naming_it() {
         let err = dispatch(&e, method, &params)
             .err()
             .unwrap_or_else(|| panic!("{method} {params} must be refused, not silently defaulted"));
-        assert_eq!(err.code, ErrorCode::BadRequest, "{method} {params} => {err:?}");
+        assert_eq!(
+            err.code,
+            ErrorCode::BadRequest,
+            "{method} {params} => {err:?}"
+        );
         assert!(
             err.message.contains(key),
             "{method} {params}: message must name `{key}`, got {}",
@@ -558,24 +619,67 @@ fn an_unknown_params_key_is_refused_and_names_itself() {
     let sid = e.task_add(&json!({ "title": "a" })).unwrap()["short_id"].clone();
 
     let cases = [
-        ("task.add", json!({ "title": "b", "prioritee": "H" }), "prioritee", "priority"),
+        (
+            "task.add",
+            json!({ "title": "b", "prioritee": "H" }),
+            "prioritee",
+            "priority",
+        ),
         ("task.list", json!({ "limitt": 2 }), "limitt", "limit"),
         ("event.list", json!({ "bogus": 1 }), "bogus", "limit"),
-        ("task.modify", json!({ "ref": sid, "set": { "title": "x" }, "expect_rev": 1 }), "expect_rev", "expected_rev"),
-        ("report.summary", json!({ "groupby": "status" }), "groupby", "group_by"),
-        ("project.create", json!({ "name": "x", "desc": "y" }), "desc", "description"),
+        (
+            "task.modify",
+            json!({ "ref": sid, "set": { "title": "x" }, "expect_rev": 1 }),
+            "expect_rev",
+            "expected_rev",
+        ),
+        (
+            "report.summary",
+            json!({ "groupby": "status" }),
+            "groupby",
+            "group_by",
+        ),
+        (
+            "project.create",
+            json!({ "name": "x", "desc": "y" }),
+            "desc",
+            "description",
+        ),
         ("store.export", json!({ "filtr": "" }), "filtr", "filter"),
-        ("tag.add", json!({ "ref": sid, "tag": ["x"] }), "tag", "tags"),
-        ("task.start", json!({ "ref": sid, "kep": true }), "kep", "keep"),
-        ("core.capabilities", json!({ "anything": 1 }), "anything", "no params"),
+        (
+            "tag.add",
+            json!({ "ref": sid, "tag": ["x"] }),
+            "tag",
+            "tags",
+        ),
+        (
+            "task.start",
+            json!({ "ref": sid, "kep": true }),
+            "kep",
+            "keep",
+        ),
+        (
+            "core.capabilities",
+            json!({ "anything": 1 }),
+            "anything",
+            "no params",
+        ),
     ];
 
     for (method, params, bad, hint) in cases {
         let err = dispatch(&e, method, &params).err().unwrap_or_else(|| {
             panic!("{method} {params}: an unknown key must be refused, not ignored")
         });
-        assert_eq!(err.code, ErrorCode::BadRequest, "{method} {params} => {err:?}");
-        assert!(err.message.contains(bad), "message must name `{bad}`: {}", err.message);
+        assert_eq!(
+            err.code,
+            ErrorCode::BadRequest,
+            "{method} {params} => {err:?}"
+        );
+        assert!(
+            err.message.contains(bad),
+            "message must name `{bad}`: {}",
+            err.message
+        );
         assert!(
             err.message.contains(hint),
             "message must list the accepted set (expected `{hint}` in it): {}",
@@ -660,7 +764,10 @@ fn every_import_field_error_names_its_task() {
     // nothing. At the time of writing thirteen keys refuse; the floor is set
     // below that so adding a permissive key is not a test failure, while
     // gutting the refusals is.
-    assert!(refused >= 10, "expected most import fields to refuse an empty string, got {refused}");
+    assert!(
+        refused >= 10,
+        "expected most import fields to refuse an empty string, got {refused}"
+    );
 }
 
 /// P1c, the half that pins the fix rather than the symptom: for the three
@@ -671,7 +778,11 @@ fn every_import_field_error_names_its_task() {
 /// two ways to be wrong, both asserted.
 #[test]
 fn a_bad_value_and_an_empty_value_name_the_task_alike() {
-    for (key, unparseable) in [("estimate", "3 fortnights"), ("recurrence", "every blue moon"), ("remind", "sometime")] {
+    for (key, unparseable) in [
+        ("estimate", "3 fortnights"),
+        ("recurrence", "every blue moon"),
+        ("remind", "sometime"),
+    ] {
         for value in ["", unparseable] {
             let e = engine();
             let mut task = json!({ "id": "t1", "short_id": 1, "title": "A" });

@@ -232,6 +232,4 @@ impl Engine {
         // "did not clear" from "this build does not report it".
         Ok(json!({ "name": name, "archived": true, "default_cleared": default_cleared }))
     }
-
 }
-

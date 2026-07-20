@@ -35,21 +35,21 @@ use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 
 use interprocess::local_socket::prelude::*;
+#[cfg(unix)]
+use interprocess::local_socket::GenericFilePath;
+#[cfg(windows)]
+use interprocess::local_socket::GenericNamespaced;
 use interprocess::local_socket::{
     Listener, ListenerNonblockingMode, ListenerOptions, RecvHalf, SendHalf, Stream,
 };
-#[cfg(windows)]
-use interprocess::local_socket::GenericNamespaced;
-#[cfg(unix)]
-use interprocess::local_socket::GenericFilePath;
 
 use crate::dispatch::handle_envelope;
 use crate::engine::Engine;
@@ -106,7 +106,11 @@ struct Admission {
 
 impl Admission {
     fn new(limit: usize) -> Self {
-        Self { active: AtomicUsize::new(0), limit, rejected: AtomicU64::new(0) }
+        Self {
+            active: AtomicUsize::new(0),
+            limit,
+            rejected: AtomicU64::new(0),
+        }
     }
 
     fn try_acquire(self: &Arc<Self>) -> Option<ClientPermit> {
@@ -115,7 +119,9 @@ impl Admission {
                 (active < self.limit).then_some(active + 1)
             })
             .ok()
-            .map(|_| ClientPermit { admission: self.clone() })
+            .map(|_| ClientPermit {
+                admission: self.clone(),
+            })
     }
 
     fn note_rejection(&self) {
@@ -242,7 +248,8 @@ fn bind(socket: &str) -> io::Result<Listener> {
         }
         let name = socket.to_fs_name::<GenericFilePath>()?;
         let listener = ListenerOptions::new().name(name).create_sync()?;
-        if let Err(error) = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)) {
+        if let Err(error) = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
+        {
             let _ = std::fs::remove_file(socket);
             return Err(error);
         }
@@ -305,7 +312,10 @@ struct Hub {
 
 impl Hub {
     fn new() -> Self {
-        Hub { subs: Arc::new(Mutex::new(Vec::new())), next: Arc::new(AtomicU64::new(1)) }
+        Hub {
+            subs: Arc::new(Mutex::new(Vec::new())),
+            next: Arc::new(AtomicU64::new(1)),
+        }
     }
     fn register(&self, tx: mpsc::SyncSender<String>) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
@@ -351,7 +361,10 @@ struct BackgroundFailure {
 
 fn report_fatal(sh: &Shared, component: &'static str, error: &ApiError) {
     if let Some(tx) = &sh.fatal {
-        let _ = tx.send(BackgroundFailure { component, message: error.message.clone() });
+        let _ = tx.send(BackgroundFailure {
+            component,
+            message: error.message.clone(),
+        });
     }
 }
 
@@ -379,7 +392,9 @@ struct EventRow {
 fn max_event_rowid(engine: &Engine) -> Result<i64, ApiError> {
     engine
         .conn()
-        .query_row("SELECT COALESCE(MAX(rowid), 0) FROM events", [], |r| r.get(0))
+        .query_row("SELECT COALESCE(MAX(rowid), 0) FROM events", [], |r| {
+            r.get(0)
+        })
         .map_err(ApiError::from)
 }
 
@@ -462,8 +477,12 @@ pub fn serve_with_notifier(
     // stay blocking, which the thread-per-connection model wants.
     listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
 
-    let start = max_event_rowid(&engine)
-        .map_err(|e| io::Error::other(format!("event watermark initialization failed: {}", e.message)))?;
+    let start = max_event_rowid(&engine).map_err(|e| {
+        io::Error::other(format!(
+            "event watermark initialization failed: {}",
+            e.message
+        ))
+    })?;
     let (fatal_tx, fatal_rx) = mpsc::channel();
     let shared = Shared {
         engine: Arc::new(Mutex::new(engine)),
@@ -744,7 +763,9 @@ fn cancel_io(raw_handle: usize) {
 
 fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
     #[cfg(unix)]
-    if stream.set_recv_timeout(Some(CLIENT_IO_POLL_TIMEOUT)).is_err()
+    if stream
+        .set_recv_timeout(Some(CLIENT_IO_POLL_TIMEOUT))
+        .is_err()
         || stream.set_send_timeout(Some(CLIENT_SEND_TIMEOUT)).is_err()
     {
         return;
@@ -825,11 +846,12 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
                 }
             }
             Err(e)
-                if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) =>
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) =>
             {
-                if sh.shutdown.load(Ordering::Relaxed)
-                    || io_state.idle(Instant::now())
-                {
+                if sh.shutdown.load(Ordering::Relaxed) || io_state.idle(Instant::now()) {
                     break;
                 }
             }
@@ -897,7 +919,10 @@ fn read_frame_capped<R: BufRead>(
             if bytes.len() + i + 1 > max {
                 reader.consume(i + 1);
                 bytes.clear();
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "request frame exceeds limit"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "request frame exceeds limit",
+                ));
             }
             bytes.extend_from_slice(&available[..=i]);
             reader.consume(i + 1);
@@ -910,7 +935,10 @@ fn read_frame_capped<R: BufRead>(
             let n = available.len();
             reader.consume(n);
             bytes.clear();
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "request frame exceeds limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request frame exceeds limit",
+            ));
         }
         let n = available.len();
         bytes.extend_from_slice(available);
@@ -1092,7 +1120,10 @@ impl Conn {
             .iter()
             .position(|response| response.get("id") == Some(&request_id))
         {
-            return Ok(self.pending_responses.remove(i).expect("position came from this queue"));
+            return Ok(self
+                .pending_responses
+                .remove(i)
+                .expect("position came from this queue"));
         }
 
         loop {
@@ -1147,7 +1178,10 @@ mod tests {
             format!("tasqx-client-{label}-{}-{n}", std::process::id())
         } else {
             std::env::temp_dir()
-                .join(format!("tasqx-client-{label}-{}-{n}.sock", std::process::id()))
+                .join(format!(
+                    "tasqx-client-{label}-{}-{n}.sock",
+                    std::process::id()
+                ))
                 .to_string_lossy()
                 .into_owned()
         }
@@ -1162,7 +1196,10 @@ mod tests {
         let admission = Arc::new(Admission::new(2));
         let first = admission.try_acquire().expect("first slot");
         let second = admission.try_acquire().expect("second slot");
-        assert!(admission.try_acquire().is_none(), "the third client must be refused");
+        assert!(
+            admission.try_acquire().is_none(),
+            "the third client must be refused"
+        );
         assert_eq!(admission.active(), 2);
 
         drop(first);
@@ -1175,7 +1212,10 @@ mod tests {
     #[test]
     fn idle_deadline_expires_at_the_boundary() {
         let started = std::time::Instant::now();
-        assert!(!idle_expired(started, started + CLIENT_IDLE_TIMEOUT - Duration::from_millis(1)));
+        assert!(!idle_expired(
+            started,
+            started + CLIENT_IDLE_TIMEOUT - Duration::from_millis(1)
+        ));
         assert!(idle_expired(started, started + CLIENT_IDLE_TIMEOUT));
     }
 
@@ -1217,7 +1257,9 @@ mod tests {
     #[test]
     fn pump_decode_failure_does_not_advance_the_watermark() {
         let engine = Engine::open_in_memory().unwrap();
-        engine.task_add(&json!({ "title": "bad event join" })).unwrap();
+        engine
+            .task_add(&json!({ "title": "bad event join" }))
+            .unwrap();
         engine
             .conn()
             .execute("UPDATE tasks SET rev = 'not-an-integer'", [])
@@ -1226,17 +1268,30 @@ mod tests {
 
         let err = pump(&sh).expect_err("the malformed joined row must be surfaced");
         assert!(err.message.contains("storage error"), "{err:?}");
-        assert_eq!(*lock_recover(&sh.watermark), 0, "no failed batch may advance the watermark");
+        assert_eq!(
+            *lock_recover(&sh.watermark),
+            0,
+            "no failed batch may advance the watermark"
+        );
     }
 
     #[test]
     fn repeated_transient_failures_log_only_on_state_transitions() {
         let mut state = ErrorTransition::default();
         assert!(state.enter("disk busy".to_string()));
-        assert!(!state.enter("disk busy".to_string()), "the same failure must be rate-limited");
-        assert!(state.enter("disk I/O".to_string()), "a changed failure is observable");
+        assert!(
+            !state.enter("disk busy".to_string()),
+            "the same failure must be rate-limited"
+        );
+        assert!(
+            state.enter("disk I/O".to_string()),
+            "a changed failure is observable"
+        );
         state.recovered();
-        assert!(state.enter("disk I/O".to_string()), "re-entering after recovery is observable");
+        assert!(
+            state.enter("disk I/O".to_string()),
+            "re-entering after recovery is observable"
+        );
     }
 
     #[test]
@@ -1300,10 +1355,16 @@ mod tests {
 
         let mut conn = try_connect(&socket).expect("connect scripted client");
         let stale = conn.request("task.list", &json!({})).expect("first list");
-        assert_eq!(stale["id"], 1, "request must ignore a response for another ID");
+        assert_eq!(
+            stale["id"], 1,
+            "request must ignore a response for another ID"
+        );
         assert_eq!(stale["result"]["tasks"], json!(["first"]));
 
-        let retained = conn.next_frame().expect("retained frame").expect("event frame");
+        let retained = conn
+            .next_frame()
+            .expect("retained frame")
+            .expect("event frame");
         assert!(matches!(retained, Frame::Event(ref event) if event["data"]["short_id"] == 2));
 
         let fresh = conn.request("task.list", &json!({})).expect("second list");
@@ -1351,8 +1412,14 @@ mod tests {
             &mut fire_errors,
         )
         .unwrap();
-        assert!(notifier.fired().is_empty(), "a failed write must not notify");
-        assert_eq!(seen, -1, "a failed fire must force the next tick to rebuild");
+        assert!(
+            notifier.fired().is_empty(),
+            "a failed write must not notify"
+        );
+        assert_eq!(
+            seen, -1,
+            "a failed fire must force the next tick to rebuild"
+        );
 
         // Tick 2: nothing external happened. The reminder must still come back.
         let seen = reminder_tick(
@@ -1365,7 +1432,11 @@ mod tests {
             &mut fire_errors,
         )
         .unwrap();
-        assert_eq!(notifier.fired(), vec![id], "the reminder must fire after a retry");
+        assert_eq!(
+            notifier.fired(),
+            vec![id],
+            "the reminder must fire after a retry"
+        );
         assert_ne!(seen, -1, "a clean tick re-establishes the watermark");
     }
 
@@ -1415,7 +1486,10 @@ mod tests {
             let g = lock_recover(&sh.engine);
             max_event_rowid(&g).unwrap()
         };
-        assert_ne!(seen, cur, "must not adopt a rowid the heap was never built from");
+        assert_ne!(
+            seen, cur,
+            "must not adopt a rowid the heap was never built from"
+        );
 
         // Next tick: "pay rent" (ripe at 15:00Z) must be picked up and fire.
         reminder_tick(

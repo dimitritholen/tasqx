@@ -44,7 +44,22 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("project.list", &["include_archived"], false),
     ("project.use", &["name"], false),
     ("project.archive", &["name"], false),
-    ("task.add", &["title", "project", "priority", "due", "scheduled", "wait", "estimate", "tags", "recurrence", "remind"], false),
+    (
+        "task.add",
+        &[
+            "title",
+            "project",
+            "priority",
+            "due",
+            "scheduled",
+            "wait",
+            "estimate",
+            "tags",
+            "recurrence",
+            "remind",
+        ],
+        false,
+    ),
     ("task.list", &["filter", "sort", "limit", "fields"], false),
     ("task.get", &["ref"], false),
     ("task.start", &["ref", "keep"], false),
@@ -57,9 +72,17 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("annotation.add", &["ref", "body"], false),
     ("dependency.add", &["ref", "depends_on"], false),
     ("dependency.remove", &["ref", "depends_on"], false),
-    ("report.summary", &["group_by", "filter", "metrics", "all"], false),
+    (
+        "report.summary",
+        &["group_by", "filter", "metrics", "all"],
+        false,
+    ),
     ("store.export", &["filter"], false),
-    ("store.import", &["tasks", "projects", "default_project"], true),
+    (
+        "store.import",
+        &["tasks", "projects", "default_project"],
+        true,
+    ),
     ("event.list", &["limit", "ref", "entity"], false),
     ("reminder.fire", &["ref", "at"], false),
     ("core.capabilities", &[], false),
@@ -89,19 +112,32 @@ fn check_params(method: &str, params: &Value) -> Result<(), ApiError> {
     if *document {
         return Ok(());
     }
-    let unknown: Vec<&str> =
-        obj.keys().filter(|k| !accepted.contains(&k.as_str())).map(String::as_str).collect();
+    let unknown: Vec<&str> = obj
+        .keys()
+        .filter(|k| !accepted.contains(&k.as_str()))
+        .map(String::as_str)
+        .collect();
     if unknown.is_empty() {
         return Ok(());
     }
     // Naming the accepted set is the whole point: the caller mistyped a name,
     // so the fix is one glance away only if the right names are in the error.
-    let accepted_list =
-        if accepted.is_empty() { "no params".to_string() } else { accepted.join(", ") };
+    let accepted_list = if accepted.is_empty() {
+        "no params".to_string()
+    } else {
+        accepted.join(", ")
+    };
     let (label, names) = if unknown.len() == 1 {
         ("unknown params key", format!("`{}`", unknown[0]))
     } else {
-        ("unknown params keys", unknown.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", "))
+        (
+            "unknown params keys",
+            unknown
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
     };
     Err(ApiError::bad_request(format!(
         "{label} {names} for {method} (accepted: {accepted_list}) — check the spelling or drop it; \
@@ -210,7 +246,10 @@ fn error_envelope(id: Value, err: &ApiError) -> Value {
         m.insert("id".into(), id);
     }
     m.insert("ok".into(), Value::Bool(false));
-    m.insert("error".into(), serde_json::to_value(ErrorBody::from(err)).unwrap_or(Value::Null));
+    m.insert(
+        "error".into(),
+        serde_json::to_value(ErrorBody::from(err)).unwrap_or(Value::Null),
+    );
     Value::Object(m)
 }
 
@@ -253,7 +292,10 @@ mod tests {
         let mut bounds: Vec<(String, usize)> = Vec::new();
         for (i, _) in flat.match_indices("fn ").chain(flat.match_indices("fn")) {
             let rest = &flat[i + 2..];
-            let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
             if !name.is_empty() && rest[name.len()..].starts_with('(') {
                 bounds.push((name, i));
             }
@@ -321,11 +363,19 @@ mod tests {
         let mut out = BTreeMap::new();
         for line in include_str!("dispatch.rs").lines() {
             let t = line.trim();
-            let Some((lhs, rhs)) = t.split_once("=>") else { continue };
-            let Some(method) = lhs.trim().strip_prefix('"').and_then(|s| s.strip_suffix("\"")) else {
+            let Some((lhs, rhs)) = t.split_once("=>") else {
                 continue;
             };
-            let Some(i) = rhs.find("engine.") else { continue };
+            let Some(method) = lhs
+                .trim()
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix("\""))
+            else {
+                continue;
+            };
+            let Some(i) = rhs.find("engine.") else {
+                continue;
+            };
             let name: String = rhs[i + "engine.".len()..]
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -344,15 +394,19 @@ mod tests {
     fn the_accepted_key_table_matches_the_keys_the_engine_actually_reads() {
         let per_fn = keys_read_per_fn();
         let handlers = method_to_handler();
-        assert_eq!(handlers.len(), PARAMS.len(), "every dispatch arm must have a PARAMS row");
+        assert_eq!(
+            handlers.len(),
+            PARAMS.len(),
+            "every dispatch arm must have a PARAMS row"
+        );
 
         for (method, accepted, _) in PARAMS {
             let handler = handlers
                 .get(*method)
                 .unwrap_or_else(|| panic!("`{method}` is in PARAMS but not in the dispatch match"));
-            let read = per_fn
-                .get(handler)
-                .unwrap_or_else(|| panic!("dispatch names `engine.{handler}`, which engine.rs lacks"));
+            let read = per_fn.get(handler).unwrap_or_else(|| {
+                panic!("dispatch names `engine.{handler}`, which engine.rs lacks")
+            });
             let declared: BTreeSet<String> = accepted.iter().map(|s| s.to_string()).collect();
             assert_eq!(
                 &declared, read,
@@ -369,7 +423,8 @@ mod tests {
     fn an_empty_or_absent_params_object_passes_the_gate() {
         for (method, _, _) in PARAMS {
             check_params(method, &json!({})).unwrap_or_else(|e| panic!("{method}: {}", e.message));
-            check_params(method, &Value::Null).unwrap_or_else(|e| panic!("{method}: {}", e.message));
+            check_params(method, &Value::Null)
+                .unwrap_or_else(|e| panic!("{method}: {}", e.message));
         }
         // A non-object params is a caller sending something the engine cannot
         // read a single field from — the whole request ignored, not one key.

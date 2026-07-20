@@ -42,7 +42,10 @@ impl Notification {
         if self.body.is_empty() {
             format!("tasqx reminder: [#{}] {}", self.short_id, self.title)
         } else {
-            format!("tasqx reminder: [#{}] {} ({})", self.short_id, self.title, self.body)
+            format!(
+                "tasqx reminder: [#{}] {} ({})",
+                self.short_id, self.title, self.body
+            )
         }
     }
 }
@@ -84,7 +87,11 @@ impl Notifier for OsNotifier {
         };
         // `show()` can fail on a headless box, a dead session bus, or an
         // unregistered AppUserModelID. All of those degrade to the logged line.
-        if let Err(e) = notify_rust::Notification::new().summary(&summary).body(&body).show() {
+        if let Err(e) = notify_rust::Notification::new()
+            .summary(&summary)
+            .body(&body)
+            .show()
+        {
             eprintln!("tasqx reminder: OS notification unavailable ({e}); logged only");
         }
     }
@@ -140,7 +147,11 @@ mod tests {
 
     #[test]
     fn log_line_omits_empty_body() {
-        let n = Notification { short_id: 3, title: "No due date".into(), body: String::new() };
+        let n = Notification {
+            short_id: 3,
+            title: "No due date".into(),
+            body: String::new(),
+        };
         assert_eq!(n.log_line(), "tasqx reminder: [#3] No due date");
     }
 
@@ -148,7 +159,11 @@ mod tests {
     fn notifier_is_object_safe_and_delivers() {
         let c = Collecting(Mutex::new(Vec::new()));
         let dynamic: &dyn Notifier = &c;
-        dynamic.notify(&Notification { short_id: 1, title: "t".into(), body: String::new() });
+        dynamic.notify(&Notification {
+            short_id: 1,
+            title: "t".into(),
+            body: String::new(),
+        });
         assert_eq!(c.0.lock().unwrap().len(), 1);
     }
 
@@ -160,7 +175,11 @@ mod tests {
     fn default_notifier_is_log_only_when_not_opted_in() {
         let n = default_notifier(false);
         // Never panics and never needs a transport — the CI-safe guarantee.
-        n.notify(&Notification { short_id: 1, title: "quiet".into(), body: String::new() });
+        n.notify(&Notification {
+            short_id: 1,
+            title: "quiet".into(),
+            body: String::new(),
+        });
     }
 
     /// Without the feature, the opt-in can't resurrect a backend that isn't in
@@ -169,6 +188,10 @@ mod tests {
     #[test]
     fn opting_in_is_inert_without_the_feature() {
         let n = default_notifier(true);
-        n.notify(&Notification { short_id: 2, title: "still fine".into(), body: String::new() });
+        n.notify(&Notification {
+            short_id: 2,
+            title: "still fine".into(),
+            body: String::new(),
+        });
     }
 }

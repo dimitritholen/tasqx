@@ -54,7 +54,9 @@ pub struct Pending {
 /// instant, which the tests rely on.
 impl Ord for Pending {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.at.cmp(&other.at).then(self.short_id.cmp(&other.short_id))
+        self.at
+            .cmp(&other.at)
+            .then(self.short_id.cmp(&other.short_id))
     }
 }
 
@@ -74,7 +76,9 @@ pub struct ReminderScheduler {
 impl ReminderScheduler {
     /// An empty scheduler (nothing scheduled).
     pub fn new() -> Self {
-        ReminderScheduler { heap: BinaryHeap::new() }
+        ReminderScheduler {
+            heap: BinaryHeap::new(),
+        }
     }
 
     /// Rebuild the heap from the store: every live task carrying a `remind`,
@@ -120,7 +124,13 @@ impl ReminderScheduler {
             if fired.contains(&(task_id.clone(), at.to_string())) {
                 continue; // already delivered — never fire twice (across restarts).
             }
-            heap.push(Reverse(Pending { task_id, short_id, title, due, at }));
+            heap.push(Reverse(Pending {
+                task_id,
+                short_id,
+                title,
+                due,
+                at,
+            }));
         }
         Ok(ReminderScheduler { heap })
     }
@@ -164,7 +174,10 @@ impl ReminderScheduler {
 /// future one-shot path go through the identical seam.
 pub fn fire_one(engine: &Engine, p: &Pending) -> Result<bool, ApiError> {
     let res = engine.reminder_fire(&json!({ "ref": p.short_id, "at": p.at.to_string() }))?;
-    Ok(res.get("fired").and_then(serde_json::Value::as_bool).unwrap_or(false))
+    Ok(res
+        .get("fired")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false))
 }
 
 /// Build the user-facing notification for a ripe reminder.
@@ -218,7 +231,11 @@ mod tests {
         assert_eq!(s.peek_at().unwrap(), ts("2026-07-20T16:00:00Z"));
         let ripe = s.pop_ripe(ts("2026-09-01T00:00:00Z"));
         let titles: Vec<&str> = ripe.iter().map(|p| p.title.as_str()).collect();
-        assert_eq!(titles, vec!["early", "middle", "late"], "chronological order");
+        assert_eq!(
+            titles,
+            vec!["early", "middle", "late"],
+            "chronological order"
+        );
     }
 
     #[test]
@@ -244,7 +261,12 @@ mod tests {
         // Relative remind with no due -> nothing to anchor to.
         add(&e, "no due", None, "-1h");
         // Absolute remind, but the task gets completed -> nothing to remind about.
-        let done = add(&e, "finished", Some("2026-07-20T17:00:00Z"), "2026-07-19T08:00:00Z");
+        let done = add(
+            &e,
+            "finished",
+            Some("2026-07-20T17:00:00Z"),
+            "2026-07-19T08:00:00Z",
+        );
         e.task_done(&json!({ "ref": done })).unwrap();
         assert_eq!(ReminderScheduler::rebuild(&e).unwrap().len(), 0);
     }
@@ -274,7 +296,11 @@ mod tests {
         assert_eq!(r["status"], "backlog", "fixture must actually be backlog");
 
         let s = ReminderScheduler::rebuild(&e).unwrap();
-        assert_eq!(s.len(), 1, "a backlog task's reminder must still be scheduled");
+        assert_eq!(
+            s.len(),
+            1,
+            "a backlog task's reminder must still be scheduled"
+        );
         assert_eq!(s.peek_at().unwrap(), ts("2026-07-19T08:00:00Z"));
     }
 
@@ -332,7 +358,10 @@ mod tests {
         // still unfired-looking by timestamp alone — only the `reminded` event
         // keeps it off the heap.
         let s2 = ReminderScheduler::rebuild(&e).unwrap();
-        assert!(s2.is_empty(), "a restart must not re-schedule a fired reminder");
+        assert!(
+            s2.is_empty(),
+            "a restart must not re-schedule a fired reminder"
+        );
     }
 
     #[test]
@@ -358,12 +387,16 @@ mod tests {
 
         // Push `due` out a day: the offset is symbolic, so the reminder follows
         // it to a genuinely new instant — which is a new reminder, not a re-fire.
-        e.task_modify(&json!({ "ref": id, "set": { "due": "2026-07-21T17:00:00Z" } })).unwrap();
+        e.task_modify(&json!({ "ref": id, "set": { "due": "2026-07-21T17:00:00Z" } }))
+            .unwrap();
         let mut s2 = ReminderScheduler::rebuild(&e).unwrap();
         assert_eq!(s2.len(), 1, "the moved reminder is scheduled again");
         assert_eq!(s2.peek_at().unwrap(), ts("2026-07-21T16:00:00Z"));
         let ripe2 = s2.pop_ripe(ts("2026-07-21T16:00:00Z"));
-        assert!(fire_one(&e, &ripe2[0]).unwrap(), "a new instant fires on its own merit");
+        assert!(
+            fire_one(&e, &ripe2[0]).unwrap(),
+            "a new instant fires on its own merit"
+        );
     }
 
     #[test]

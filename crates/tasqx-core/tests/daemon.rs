@@ -33,7 +33,10 @@ fn unique_target() -> (String, String) {
         // A bare, safe name → mapped to \\.\pipe\<name> by the transport.
         stem
     } else {
-        std::env::temp_dir().join(format!("{stem}.sock")).to_string_lossy().into_owned()
+        std::env::temp_dir()
+            .join(format!("{stem}.sock"))
+            .to_string_lossy()
+            .into_owned()
     };
     (db.to_string_lossy().into_owned(), sock)
 }
@@ -51,7 +54,12 @@ impl Notifier for Collecting {
 
 impl Collecting {
     fn titles(&self) -> Vec<String> {
-        self.0.lock().unwrap().iter().map(|n| n.title.clone()).collect()
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|n| n.title.clone())
+            .collect()
     }
 }
 
@@ -62,7 +70,11 @@ fn start_daemon(db: &str, sock: &str) -> Arc<AtomicBool> {
 }
 
 /// [`start_daemon`], with the reminder notifier injected.
-fn start_daemon_with_notifier(db: &str, sock: &str, notifier: Arc<dyn Notifier>) -> Arc<AtomicBool> {
+fn start_daemon_with_notifier(
+    db: &str,
+    sock: &str,
+    notifier: Arc<dyn Notifier>,
+) -> Arc<AtomicBool> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let sd = shutdown.clone();
     let db = db.to_string();
@@ -83,7 +95,11 @@ fn start_daemon_with_notifier(db: &str, sock: &str, notifier: Arc<dyn Notifier>)
 }
 
 fn ok(env: &Value) -> &Value {
-    assert_eq!(env.get("ok"), Some(&Value::Bool(true)), "expected ok envelope, got {env}");
+    assert_eq!(
+        env.get("ok"),
+        Some(&Value::Bool(true)),
+        "expected ok envelope, got {env}"
+    );
     env.get("result").expect("result field")
 }
 
@@ -95,16 +111,24 @@ fn transport_round_trip_initialize_add_list() {
 
     // capabilities == the "initialize" handshake for this transport.
     let caps = c.request("core.capabilities", &json!({})).unwrap();
-    assert_eq!(caps.get("id"), Some(&json!(1)), "response correlates request id");
+    assert_eq!(
+        caps.get("id"),
+        Some(&json!(1)),
+        "response correlates request id"
+    );
     let r = ok(&caps);
     assert_eq!(r.get("api"), Some(&json!("1")));
 
-    let added = c.request("task.add", &json!({ "title": "ship the daemon" })).unwrap();
+    let added = c
+        .request("task.add", &json!({ "title": "ship the daemon" }))
+        .unwrap();
     assert_eq!(added.get("id"), Some(&json!(2)));
     let short_id = ok(&added).get("short_id").and_then(Value::as_i64).unwrap();
     assert!(short_id >= 1);
 
-    let listed = c.request("task.list", &json!({ "filter": "status:pending" })).unwrap();
+    let listed = c
+        .request("task.list", &json!({ "filter": "status:pending" }))
+        .unwrap();
     assert_eq!(listed.get("id"), Some(&json!(3)));
     let tasks = ok(&listed).get("tasks").and_then(Value::as_array).unwrap();
     assert_eq!(tasks.len(), 1);
@@ -128,14 +152,23 @@ fn excess_clients_are_refused_without_disrupting_admitted_clients() {
     }
 
     for _ in 0..8 {
-        let mut rejected = daemon::try_connect(&sock).expect("overload is an accepted-then-refused stream");
-        let error = rejected.request("core.capabilities", &json!({})).unwrap_err();
+        let mut rejected =
+            daemon::try_connect(&sock).expect("overload is an accepted-then-refused stream");
+        let error = rejected
+            .request("core.capabilities", &json!({}))
+            .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
-        assert!(error.to_string().contains("client limit"), "observable overload: {error}");
+        assert!(
+            error.to_string().contains("client limit"),
+            "observable overload: {error}"
+        );
     }
 
     let response = clients[0].request("core.capabilities", &json!({})).unwrap();
-    assert_eq!(response["ok"], true, "an existing client must remain usable under overload");
+    assert_eq!(
+        response["ok"], true,
+        "an existing client must remain usable under overload"
+    );
 
     drop(clients);
     shutdown.store(true, Ordering::Relaxed);
@@ -172,24 +205,44 @@ fn two_clients_concurrent_no_deadlock_and_ids_match() {
                     .unwrap();
                 // The response id must equal the request id this client sent.
                 let sent_add_id = 2 * i + 1; // ids: 1,3,5,... (add), 2,4,6,... (list)
-                assert_eq!(add.get("id"), Some(&json!(sent_add_id)), "add id correlates");
+                assert_eq!(
+                    add.get("id"),
+                    Some(&json!(sent_add_id)),
+                    "add id correlates"
+                );
                 assert_eq!(add.get("ok"), Some(&Value::Bool(true)));
 
-                let list = c.request("task.list", &json!({ "filter": "status:pending" })).unwrap();
+                let list = c
+                    .request("task.list", &json!({ "filter": "status:pending" }))
+                    .unwrap();
                 let sent_list_id = 2 * i + 2;
-                assert_eq!(list.get("id"), Some(&json!(sent_list_id)), "list id correlates");
+                assert_eq!(
+                    list.get("id"),
+                    Some(&json!(sent_list_id)),
+                    "list id correlates"
+                );
                 assert_eq!(list.get("ok"), Some(&Value::Bool(true)));
             }
         }));
     }
     for h in handles {
-        h.join().expect("client thread panicked (deadlock/corruption?)");
+        h.join()
+            .expect("client thread panicked (deadlock/corruption?)");
     }
 
     // Both clients committed 25 adds each → 50 pending tasks, no lost writes.
     let mut c = daemon::try_connect(&sock).expect("connect");
-    let listed = c.request("task.list", &json!({ "filter": "status:pending", "limit": 1000 })).unwrap();
-    let n = ok(&listed).get("tasks").and_then(Value::as_array).unwrap().len();
+    let listed = c
+        .request(
+            "task.list",
+            &json!({ "filter": "status:pending", "limit": 1000 }),
+        )
+        .unwrap();
+    let n = ok(&listed)
+        .get("tasks")
+        .and_then(Value::as_array)
+        .unwrap()
+        .len();
     assert_eq!(n, 50, "all concurrent writes landed exactly once");
 
     shutdown.store(true, Ordering::Relaxed);
@@ -217,14 +270,26 @@ fn subscriber_receives_push_after_in_daemon_mutation() {
 
     // A second connection applies a mutation *through the daemon*.
     let mut writer = daemon::try_connect(&sock).expect("connect writer");
-    let added = writer.request("task.add", &json!({ "title": "live update me" })).unwrap();
+    let added = writer
+        .request("task.add", &json!({ "title": "live update me" }))
+        .unwrap();
     let short_id = ok(&added).get("short_id").and_then(Value::as_i64).unwrap();
 
-    let evt = rx.recv_timeout(Duration::from_secs(5)).expect("no task.changed push arrived");
+    let evt = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("no task.changed push arrived");
     assert_eq!(evt.get("event"), Some(&json!("task.changed")));
     let data = evt.get("data").unwrap();
-    assert_eq!(data.get("op"), Some(&json!("add")), "push carries the event op");
-    assert_eq!(data.get("short_id"), Some(&json!(short_id)), "push carries the changed short_id");
+    assert_eq!(
+        data.get("op"),
+        Some(&json!("add")),
+        "push carries the event op"
+    );
+    assert_eq!(
+        data.get("short_id"),
+        Some(&json!(short_id)),
+        "push carries the changed short_id"
+    );
 
     shutdown.store(true, Ordering::Relaxed);
     let _ = std::fs::remove_file(&db);
@@ -251,13 +316,23 @@ fn subscriber_receives_push_from_external_write() {
     // A SEPARATE Engine on the same DB file writes directly — no daemon
     // involved. The poller must detect the new event row and push it.
     let external = Engine::open(&db).expect("second engine on same db");
-    let res = dispatch(&external, "task.add", &json!({ "title": "written out-of-band" })).unwrap();
+    let res = dispatch(
+        &external,
+        "task.add",
+        &json!({ "title": "written out-of-band" }),
+    )
+    .unwrap();
     let short_id = res.get("short_id").and_then(Value::as_i64).unwrap();
     drop(external);
 
-    let evt = rx.recv_timeout(Duration::from_secs(5)).expect("external write not detected");
+    let evt = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("external write not detected");
     assert_eq!(evt.get("event"), Some(&json!("task.changed")));
-    assert_eq!(evt.get("data").and_then(|d| d.get("short_id")), Some(&json!(short_id)));
+    assert_eq!(
+        evt.get("data").and_then(|d| d.get("short_id")),
+        Some(&json!(short_id))
+    );
 
     shutdown.store(true, Ordering::Relaxed);
     let _ = std::fs::remove_file(&db);
@@ -287,7 +362,10 @@ fn wait_for_op(rx: &mpsc::Receiver<Value>, op: &str) -> Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
-        assert!(!left.is_zero(), "no {op:?} push arrived within the deadline");
+        assert!(
+            !left.is_zero(),
+            "no {op:?} push arrived within the deadline"
+        );
         match rx.recv_timeout(left) {
             Ok(v) => {
                 if v["data"]["op"] == json!(op) {
@@ -315,16 +393,25 @@ fn subscriber_receives_a_reminded_push_when_a_reminder_ripens() {
     let mut writer = daemon::try_connect(&sock).expect("connect writer");
     // An absolute reminder in the past => ripe immediately, deterministically.
     let added = writer
-        .request("task.add", &json!({ "title": "ripe now", "remind": "2020-01-01T00:00:00Z" }))
+        .request(
+            "task.add",
+            &json!({ "title": "ripe now", "remind": "2020-01-01T00:00:00Z" }),
+        )
         .unwrap();
     let short_id = ok(&added).get("short_id").and_then(Value::as_i64).unwrap();
 
     let evt = wait_for_op(&rx, "reminded");
     assert_eq!(evt.get("event"), Some(&json!("task.changed")));
-    assert_eq!(evt["data"]["short_id"], json!(short_id), "the push names the reminded task");
+    assert_eq!(
+        evt["data"]["short_id"],
+        json!(short_id),
+        "the push names the reminded task"
+    );
 
     // The event log is the durable record behind that push.
-    let evts = writer.request("event.list", &json!({ "ref": short_id, "limit": 100 })).unwrap();
+    let evts = writer
+        .request("event.list", &json!({ "ref": short_id, "limit": 100 }))
+        .unwrap();
     let reminded: Vec<&Value> = ok(&evts)["events"]
         .as_array()
         .unwrap()
@@ -364,7 +451,10 @@ fn a_restarted_daemon_does_not_refire_an_already_reminded_reminder() {
     let rx = subscribe_events(&sock);
     let mut writer = daemon::try_connect(&sock).expect("connect writer");
     let added = writer
-        .request("task.add", &json!({ "title": "fire once", "remind": "2020-01-01T00:00:00Z" }))
+        .request(
+            "task.add",
+            &json!({ "title": "fire once", "remind": "2020-01-01T00:00:00Z" }),
+        )
         .unwrap();
     let short_id = ok(&added).get("short_id").and_then(Value::as_i64).unwrap();
     wait_for_op(&rx, "reminded");
@@ -380,20 +470,28 @@ fn a_restarted_daemon_does_not_refire_an_already_reminded_reminder() {
 
     // The barrier: a new ripe reminder the restarted daemon must deliver.
     writer2
-        .request("task.add", &json!({ "title": "barrier", "remind": "2020-01-02T00:00:00Z" }))
+        .request(
+            "task.add",
+            &json!({ "title": "barrier", "remind": "2020-01-02T00:00:00Z" }),
+        )
         .unwrap();
     wait_for_op(&rx2, "reminded");
 
     // The restarted daemon has now demonstrably run a full scheduling pass.
     // The first task must still carry exactly one `reminded` event.
-    let evts = writer2.request("event.list", &json!({ "ref": short_id, "limit": 100 })).unwrap();
+    let evts = writer2
+        .request("event.list", &json!({ "ref": short_id, "limit": 100 }))
+        .unwrap();
     let n = ok(&evts)["events"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|v| v["op"] == json!("reminded"))
         .count();
-    assert_eq!(n, 1, "a restart must not re-fire an already-reminded reminder");
+    assert_eq!(
+        n, 1,
+        "a restart must not re-fire an already-reminded reminder"
+    );
     assert_eq!(
         second_collector.titles(),
         vec!["barrier".to_string()],
@@ -410,8 +508,15 @@ fn connect_to_absent_daemon_is_none_and_fast() {
     let (_db, sock) = unique_target();
     let t0 = std::time::Instant::now();
     let got = daemon::try_connect(&sock);
-    assert!(got.is_none(), "connecting to a nonexistent socket must yield None");
-    assert!(t0.elapsed() < Duration::from_secs(2), "fallback must be fast, took {:?}", t0.elapsed());
+    assert!(
+        got.is_none(),
+        "connecting to a nonexistent socket must yield None"
+    );
+    assert!(
+        t0.elapsed() < Duration::from_secs(2),
+        "fallback must be fast, took {:?}",
+        t0.elapsed()
+    );
 }
 
 #[test]
@@ -434,10 +539,16 @@ fn background_store_failure_stops_the_daemon_with_context() {
         }
         thread::sleep(Duration::from_millis(10));
     }
-    assert!(daemon::try_connect(&sock).is_some(), "daemon never became connectable");
+    assert!(
+        daemon::try_connect(&sock).is_some(),
+        "daemon never became connectable"
+    );
 
     let breaker = Engine::open(&db).expect("open breaker connection");
-    breaker.conn().execute_batch("DROP TABLE events").expect("damage event schema");
+    breaker
+        .conn()
+        .execute_batch("DROP TABLE events")
+        .expect("damage event schema");
     drop(breaker);
 
     let observed = result_rx.recv_timeout(Duration::from_secs(3));

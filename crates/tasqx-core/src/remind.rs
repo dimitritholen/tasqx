@@ -62,7 +62,9 @@ pub fn parse_spec(stored: &str) -> Option<Remind> {
     if s.starts_with('-') || s.starts_with('+') {
         return parse_offset(s).map(Remind::Offset);
     }
-    s.parse::<Timestamp>().ok().map(|t| Remind::At(t.to_string()))
+    s.parse::<Timestamp>()
+        .ok()
+        .map(|t| Remind::At(t.to_string()))
 }
 
 /// The canonical string form (what actually lands in the `remind` column).
@@ -158,7 +160,10 @@ mod tests {
     #[test]
     fn unsigned_input_is_an_absolute_date_via_datetime() {
         // Delegates to the one NL date parser, anchored at `now`.
-        assert_eq!(p("2026-07-20T17:00"), Remind::At("2026-07-20T17:00:00Z".into()));
+        assert_eq!(
+            p("2026-07-20T17:00"),
+            Remind::At("2026-07-20T17:00:00Z".into())
+        );
         assert_eq!(p("tomorrow"), Remind::At("2026-07-16T00:00:00Z".into()));
         assert_eq!(p("friday 9am"), Remind::At("2026-07-17T09:00:00Z".into()));
     }
@@ -184,22 +189,42 @@ mod tests {
             assert_eq!(parse_spec(&canon), Some(p(input)), "round trip: {input}");
         }
         let abs = spec_to_string(&p("2026-07-20T17:00"));
-        assert_eq!(parse_spec(&abs), Some(Remind::At("2026-07-20T17:00:00Z".into())));
+        assert_eq!(
+            parse_spec(&abs),
+            Some(Remind::At("2026-07-20T17:00:00Z".into()))
+        );
     }
 
     #[test]
     fn resolve_offsets_against_due_without_a_clock() {
         let due = Some("2026-07-20T17:00:00Z");
-        assert_eq!(resolve("-1h", due).unwrap().to_string(), "2026-07-20T16:00:00Z");
-        assert_eq!(resolve("-30m", due).unwrap().to_string(), "2026-07-20T16:30:00Z");
-        assert_eq!(resolve("-2d", due).unwrap().to_string(), "2026-07-18T17:00:00Z");
-        assert_eq!(resolve("+15m", due).unwrap().to_string(), "2026-07-20T17:15:00Z");
+        assert_eq!(
+            resolve("-1h", due).unwrap().to_string(),
+            "2026-07-20T16:00:00Z"
+        );
+        assert_eq!(
+            resolve("-30m", due).unwrap().to_string(),
+            "2026-07-20T16:30:00Z"
+        );
+        assert_eq!(
+            resolve("-2d", due).unwrap().to_string(),
+            "2026-07-18T17:00:00Z"
+        );
+        assert_eq!(
+            resolve("+15m", due).unwrap().to_string(),
+            "2026-07-20T17:15:00Z"
+        );
     }
 
     #[test]
     fn resolve_absolute_ignores_due() {
         let at = "2026-07-19T08:00:00Z";
-        assert_eq!(resolve(at, Some("2026-07-20T17:00:00Z")).unwrap().to_string(), at);
+        assert_eq!(
+            resolve(at, Some("2026-07-20T17:00:00Z"))
+                .unwrap()
+                .to_string(),
+            at
+        );
         // An absolute reminder needs no anchor at all.
         assert_eq!(resolve(at, None).unwrap().to_string(), at);
     }
@@ -228,4 +253,3 @@ mod tests {
         assert!(parse_remind("99999999y", now()).is_err());
     }
 }
-

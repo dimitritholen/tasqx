@@ -38,7 +38,10 @@ fn bin(dir: &Path, db: &Path) -> Command {
 
 /// Run and return (exit code, stdout, stderr).
 fn run(dir: &Path, db: &Path, args: &[&str]) -> (i32, String, String) {
-    let out = bin(dir, db).args(args).output().unwrap_or_else(|e| panic!("run {args:?}: {e}"));
+    let out = bin(dir, db)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("run {args:?}: {e}"));
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -64,10 +67,18 @@ fn api(dir: &Path, db: &Path, method: &str, params: Value) -> Value {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn api");
-    child.stdin.as_mut().expect("stdin").write_all(req.as_bytes()).expect("write req");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(req.as_bytes())
+        .expect("write req");
     let out = child.wait_with_output().expect("api output");
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-        panic!("api {method} did not answer JSON ({e}): {}", String::from_utf8_lossy(&out.stdout))
+        panic!(
+            "api {method} did not answer JSON ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
     })
 }
 
@@ -91,7 +102,8 @@ fn seed(dir: &Path, db: &Path) {
 
 /// Everything about projects that a reader can see, as one comparable value.
 fn project_state(dir: &Path, db: &Path) -> Value {
-    let live: Value = serde_json::from_str(&ok(dir, db, &["projects", "--json"])).expect("projects");
+    let live: Value =
+        serde_json::from_str(&ok(dir, db, &["projects", "--json"])).expect("projects");
     let all = api(dir, db, "project.list", json!({ "include_archived": true }));
     let caps = api(dir, db, "core.capabilities", json!({}));
     json!({
@@ -133,9 +145,15 @@ fn the_export_verb_carries_projects_the_default_and_archived_state() {
     // so a bare `add` lands where it did, and the archived project stays out of
     // rotation rather than coming back as ordinary work.
     let added = ok(&dir, &b, &["add", "fresh capture"]);
-    assert!(added.contains("prive.klussen"), "a bare add must inherit the restored default: {added}");
+    assert!(
+        added.contains("prive.klussen"),
+        "a bare add must inherit the restored default: {added}"
+    );
     let (code, _, se) = run(&dir, &b, &["use", "legacy"]);
-    assert_eq!(code, 5, "the archived project must still be archived after import: {se}");
+    assert_eq!(
+        code, 5,
+        "the archived project must still be archived after import: {se}"
+    );
 }
 
 /// N3a again, through the `store.export` / `store.import` METHODS. The verbs and
@@ -150,7 +168,10 @@ fn the_store_export_method_carries_projects_the_default_and_archived_state() {
     let ex = api(&dir, &a, "store.export", json!({}));
     assert_eq!(ex["ok"], json!(true), "{ex}");
     let result = &ex["result"];
-    assert!(result.get("projects").is_some(), "store.export must emit `projects`: {result}");
+    assert!(
+        result.get("projects").is_some(),
+        "store.export must emit `projects`: {result}"
+    );
     assert_eq!(
         result["default_project"],
         json!("prive.klussen"),
@@ -164,7 +185,10 @@ fn the_store_export_method_carries_projects_the_default_and_archived_state() {
     // D12's byte-identical round trip, now over the WHOLE document rather than
     // its task half — the half that used to be all there was.
     let re = api(&dir, &b, "store.export", json!({}));
-    assert_eq!(re["result"], *result, "export -> import -> export must be identity");
+    assert_eq!(
+        re["result"], *result,
+        "export -> import -> export must be identity"
+    );
 }
 
 /// N3b: a payload that DEFINES its projects and then names one it did not define
@@ -186,14 +210,28 @@ fn an_import_refuses_a_task_whose_project_the_document_does_not_define() {
     });
 
     let r = api(&dir, &db, "store.import", payload.clone());
-    assert_eq!(r["ok"], json!(false), "an undefined project must be refused: {r}");
+    assert_eq!(
+        r["ok"],
+        json!(false),
+        "an undefined project must be refused: {r}"
+    );
     let msg = r["error"]["message"].as_str().unwrap_or_default();
-    assert!(msg.contains("wrok"), "the error must name the offending project: {msg}");
-    assert!(msg.contains("019f6a0f-99df-7000-8000-0000000000aa"), "and the task to edit: {msg}");
+    assert!(
+        msg.contains("wrok"),
+        "the error must name the offending project: {msg}"
+    );
+    assert!(
+        msg.contains("019f6a0f-99df-7000-8000-0000000000aa"),
+        "and the task to edit: {msg}"
+    );
 
     // Nothing at all was written: one transaction, so a refusal is total.
     let list: Value = serde_json::from_str(&ok(&dir, &db, &["list", "--json"])).expect("list");
-    assert_eq!(list["count"], json!(0), "a refused import must write nothing: {list}");
+    assert_eq!(
+        list["count"],
+        json!(0),
+        "a refused import must write nothing: {list}"
+    );
 
     // The same document through the `import` VERB, which used to forward only
     // the `tasks` array and would therefore have dropped the very section that
@@ -224,10 +262,19 @@ fn a_document_with_no_projects_section_still_imports_and_mints_what_it_names() {
     let out = ok(&dir, &db, &["import", path.to_str().expect("utf8 path")]);
     assert!(out.contains("1 task"), "{out}");
 
-    let live: Value = serde_json::from_str(&ok(&dir, &db, &["projects", "--json"])).expect("projects");
-    let names: Vec<&str> =
-        live["projects"].as_array().expect("array").iter().filter_map(|p| p["name"].as_str()).collect();
-    assert_eq!(names, ["archief"], "an inferred project must become a real row: {live}");
+    let live: Value =
+        serde_json::from_str(&ok(&dir, &db, &["projects", "--json"])).expect("projects");
+    let names: Vec<&str> = live["projects"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["archief"],
+        "an inferred project must become a real row: {live}"
+    );
 
     // The store is coherent afterwards: the same name the import accepted is now
     // a name `add` accepts, which is the whole point of minting it.
@@ -238,7 +285,11 @@ fn a_document_with_no_projects_section_still_imports_and_mints_what_it_names() {
     let (_, b) = store("legacy", "b");
     let r = api(&dir, &b, "store.import", json!({ "tasks": legacy }));
     assert_eq!(r["ok"], json!(true), "{r}");
-    assert_eq!(r["result"]["projects_created"], json!(["archief"]), "minting must be reported: {r}");
+    assert_eq!(
+        r["result"]["projects_created"],
+        json!(["archief"]),
+        "minting must be reported: {r}"
+    );
 }
 
 /// D21's rule — nothing silently steals the default — applied to import, which
@@ -269,5 +320,9 @@ fn an_import_never_steals_a_default_the_destination_already_has() {
     // A store with no default takes the document's, since there is nothing to steal.
     let (_, c) = store("default", "c");
     let imp = api(&dir, &c, "store.import", ex["result"].clone());
-    assert_eq!(imp["result"]["default_project"], json!("prive.klussen"), "{imp}");
+    assert_eq!(
+        imp["result"]["default_project"],
+        json!("prive.klussen"),
+        "{imp}"
+    );
 }

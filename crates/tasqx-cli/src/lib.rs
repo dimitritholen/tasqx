@@ -14,8 +14,8 @@
 
 mod argv;
 mod chart;
-mod command;
 pub mod cmddoc;
+mod command;
 pub mod config;
 mod docs;
 mod html;
@@ -31,11 +31,14 @@ use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use clap::Parser;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
+use clap::Parser;
 use serde_json::{json, Value};
 
-use tasqx_core::{daemon, datetime, dispatch, handle_envelope, notify, ApiError, Engine, ErrorCode, McpServer, Scope};
+use tasqx_core::{
+    daemon, datetime, dispatch, handle_envelope, notify, ApiError, Engine, ErrorCode, McpServer,
+    Scope,
+};
 
 use command::{ChartKind, Cli, Command, ConfigAction, McpAction, ThemeAction};
 use theme::{Caps, Ctx};
@@ -53,8 +56,16 @@ fn now_ts() -> jiff::Timestamp {
 /// round-trip a `bad_request`. `status` is absent for the same reason it is not
 /// a general modify field: lifecycle moves through start/stop/done/cancel so
 /// their invariants hold (D6).
-const CLEARABLE: [&str; 8] =
-    ["project", "priority", "due", "scheduled", "wait", "remind", "recurrence", "estimate"];
+const CLEARABLE: [&str; 8] = [
+    "project",
+    "priority",
+    "due",
+    "scheduled",
+    "wait",
+    "remind",
+    "recurrence",
+    "estimate",
+];
 
 /// What `--version` prints: the crate version plus the commit it was built from.
 ///
@@ -64,7 +75,6 @@ const CLEARABLE: [&str; 8] =
 /// rather than `format!` because clap wants a `&'static str` and this is fully
 /// known at compile time.
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("TASQX_BUILD_ID"), ")");
-
 
 /// Report a clap parse failure and exit.
 ///
@@ -104,18 +114,36 @@ fn exit_on_parse_error(e: &clap::Error, filter_command: bool) -> ! {
 /// derives the command list from clap and drives every command that is *not*
 /// listed here through the real binary, asserting it emits JSON.
 pub const JSON_CARVE_OUTS: &[(&str, &str)] = &[
-    ("api", "already speaks the JSON API response envelope; --json would double-wrap it"),
-    ("mcp", "speaks JSON-RPC over stdio to an agent, framed by the protocol"),
-    ("daemon", "a server: stdout is diagnostics, results travel over the socket"),
-    ("watch", "a live stream that re-renders until interrupted; it has no final result"),
-    ("manual", "a human reading surface: themed prose, no machine-relevant facts"),
+    (
+        "api",
+        "already speaks the JSON API response envelope; --json would double-wrap it",
+    ),
+    (
+        "mcp",
+        "speaks JSON-RPC over stdio to an agent, framed by the protocol",
+    ),
+    (
+        "daemon",
+        "a server: stdout is diagnostics, results travel over the socket",
+    ),
+    (
+        "watch",
+        "a live stream that re-renders until interrupted; it has no final result",
+    ),
+    (
+        "manual",
+        "a human reading surface: themed prose, no machine-relevant facts",
+    ),
 ];
 
 /// Every subcommand clap knows, derived from the parser rather than listed, so
 /// a new command joins the `--json` contract guard on the day it is added (D30).
 pub fn subcommand_names() -> Vec<String> {
     use clap::CommandFactory;
-    Cli::command().get_subcommands().map(|c| c.get_name().to_string()).collect()
+    Cli::command()
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .collect()
 }
 
 /// How a command leaves [`execute`].
@@ -154,7 +182,10 @@ impl Exit {
     /// return until they are interrupted, and a warning delivered then is a
     /// warning nobody reads.
     fn self_framed(name: &'static str, json: bool) -> Exit {
-        let reason = JSON_CARVE_OUTS.iter().find(|(n, _)| *n == name).map(|(_, why)| *why);
+        let reason = JSON_CARVE_OUTS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, why)| *why);
         let reason = reason.unwrap_or_else(|| {
             panic!(
                 "`{name}` framed its own output but is not a declared --json carve-out; \
@@ -223,7 +254,10 @@ pub fn run() {
         Exit::SelfFramed => {}
         Exit::Out(Ok((result, render))) => {
             if json {
-                emit(&format!("{}\n", serde_json::to_string_pretty(&result).unwrap_or_default()));
+                emit(&format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                ));
             } else {
                 emit(&render);
             }
@@ -262,7 +296,12 @@ fn execute(cli: Cli) -> Exit {
 
     // `docs` is pure static content — no store, no theme, no network. Handle it
     // before anything that could fail for reasons the reader is trying to look up.
-    if let Some(Command::Docs { out, no_open, stdout }) = &cli.command {
+    if let Some(Command::Docs {
+        out,
+        no_open,
+        stdout,
+    }) = &cli.command
+    {
         return Exit::Out(run_docs(out.as_deref(), *no_open, *stdout));
     }
 
@@ -312,9 +351,12 @@ fn execute(cli: Cli) -> Exit {
             // to be dropped here with `..`, which is the whole of F1a: clap
             // parsed the filter, `report_params` knew how to read it, and this
             // one match arm never asked.
-            Some(Command::Report { html: true, args, out, .. }) => {
-                run_html_report(&engine, &ctx, args, out)
-            }
+            Some(Command::Report {
+                html: true,
+                args,
+                out,
+                ..
+            }) => run_html_report(&engine, &ctx, args, out),
             _ => unreachable!(),
         });
     }
@@ -332,14 +374,33 @@ fn execute(cli: Cli) -> Exit {
     Exit::Out(match cli.command {
         None => run_list(&mut backend, &ctx, &[]),
         Some(Command::Init { name, desc }) => run_init(&mut backend, &ctx, name, desc),
-        Some(Command::Add { title, project, priority, due, scheduled, wait, repeat, remind, estimate, tags }) => {
-            run_add(
-                &mut backend,
-                &ctx,
-                title,
-                sugar::AddFlags { project, priority, tags, due, scheduled, wait, repeat, remind, estimate },
-            )
-        }
+        Some(Command::Add {
+            title,
+            project,
+            priority,
+            due,
+            scheduled,
+            wait,
+            repeat,
+            remind,
+            estimate,
+            tags,
+        }) => run_add(
+            &mut backend,
+            &ctx,
+            title,
+            sugar::AddFlags {
+                project,
+                priority,
+                tags,
+                due,
+                scheduled,
+                wait,
+                repeat,
+                remind,
+                estimate,
+            },
+        ),
         Some(Command::Modify {
             r#ref,
             rest,
@@ -359,7 +420,17 @@ fn execute(cli: Cli) -> Exit {
             &ctx,
             r#ref,
             rest,
-            sugar::AddFlags { project, priority, tags, due, scheduled, wait, repeat, remind, estimate },
+            sugar::AddFlags {
+                project,
+                priority,
+                tags,
+                due,
+                scheduled,
+                wait,
+                repeat,
+                remind,
+                estimate,
+            },
             &clear,
             expected_rev,
         ),
@@ -371,8 +442,12 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Cancel { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.cancel", r#ref),
         Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),
         Some(Command::Annotate { r#ref, text }) => run_annotate(&mut backend, &ctx, r#ref, text),
-        Some(Command::Dep { r#ref, depends_on }) => run_dep(&mut backend, &ctx, "dependency.add", r#ref, depends_on),
-        Some(Command::Undep { r#ref, depends_on }) => run_dep(&mut backend, &ctx, "dependency.remove", r#ref, depends_on),
+        Some(Command::Dep { r#ref, depends_on }) => {
+            run_dep(&mut backend, &ctx, "dependency.add", r#ref, depends_on)
+        }
+        Some(Command::Undep { r#ref, depends_on }) => {
+            run_dep(&mut backend, &ctx, "dependency.remove", r#ref, depends_on)
+        }
         Some(Command::Use { name }) => run_use(&mut backend, &ctx, name),
         Some(Command::Projects { all }) => run_projects(&mut backend, &ctx, all),
         Some(Command::Report { args, all, .. }) => run_report(&mut backend, &ctx, args, all),
@@ -493,7 +568,9 @@ fn build_ctx(flag: Option<&str>) -> Ctx {
 /// disagree about which themes exist, and only the interactive one can act on
 /// the answer.
 fn user_theme_names() -> Vec<String> {
-    let Some(dir) = themes_dir() else { return Vec::new() };
+    let Some(dir) = themes_dir() else {
+        return Vec::new();
+    };
     let mut user: Vec<String> = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
@@ -608,7 +685,11 @@ fn default_socket() -> String {
             if let Some(rt) = dirs.runtime_dir() {
                 return rt.join("tasqx.sock").to_string_lossy().into_owned();
             }
-            return dirs.data_dir().join("tasqx.sock").to_string_lossy().into_owned();
+            return dirs
+                .data_dir()
+                .join("tasqx.sock")
+                .to_string_lossy()
+                .into_owned();
         }
         "/tmp/tasqx.sock".to_string()
     }
@@ -675,7 +756,10 @@ fn name_the_cut(e: ApiError, cut_name: Option<&str>) -> ApiError {
 
 /// The project name IF it might have been cut short by the sugar tokenizer.
 fn cut_project_name(parsed: &sugar::ParsedAdd) -> Option<String> {
-    parsed.project_may_be_truncated.then(|| parsed.project.clone()).flatten()
+    parsed
+        .project_may_be_truncated
+        .then(|| parsed.project.clone())
+        .flatten()
 }
 
 fn run_add(be: &mut Backend, ctx: &Ctx, title: Vec<String>, flags: sugar::AddFlags) -> CmdOutcome {
@@ -719,7 +803,9 @@ fn run_add(be: &mut Backend, ctx: &Ctx, title: Vec<String>, flags: sugar::AddFla
     if !parsed.tags.is_empty() {
         params["tags"] = Value::Array(parsed.tags.into_iter().map(Value::String).collect());
     }
-    let result = be.call("task.add", &params).map_err(|e| name_the_cut(e, cut.as_deref()))?;
+    let result = be
+        .call("task.add", &params)
+        .map_err(|e| name_the_cut(e, cut.as_deref()))?;
     let text = render::task_added(ctx, &result, &parsed.title);
     Ok((result, text))
 }
@@ -776,7 +862,10 @@ fn run_modify(
     }
     if let Some(s) = parsed.scheduled {
         guard_set_and_clear(&set, "scheduled", &s)?;
-        set.insert("scheduled".into(), Value::String(datetime::parse_when(&s, now)?));
+        set.insert(
+            "scheduled".into(),
+            Value::String(datetime::parse_when(&s, now)?),
+        );
     }
     if let Some(w) = parsed.wait {
         guard_set_and_clear(&set, "wait", &w)?;
@@ -794,7 +883,10 @@ fn run_modify(
     }
     if let Some(e) = parsed.estimate {
         guard_set_and_clear(&set, "estimate", &e)?;
-        set.insert("estimate".into(), Value::String(datetime::parse_duration(&e)?));
+        set.insert(
+            "estimate".into(),
+            Value::String(datetime::parse_duration(&e)?),
+        );
     }
 
     if set.is_empty() && parsed.tags.is_empty() {
@@ -810,7 +902,9 @@ fn run_modify(
         if let Some(rev) = expected_rev {
             params["expected_rev"] = Value::from(rev);
         }
-        result = be.call("task.modify", &params).map_err(|e| name_the_cut(e, cut.as_deref()))?;
+        result = be
+            .call("task.modify", &params)
+            .map_err(|e| name_the_cut(e, cut.as_deref()))?;
     }
 
     // Tags: a second call, and deliberately AFTER the modify — if the modify is
@@ -850,8 +944,11 @@ fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
     // Otherwise `from_argv`, never `join(" ")`: the shell's argument boundaries
     // are information the filter parser needs, exactly as on the write path
     // (see `sugar::parse_add`). Joining loses which spaces the user quoted.
-    let filter_str =
-        if filter.is_empty() { "@working".to_string() } else { tasqx_core::filter::from_argv(filter) };
+    let filter_str = if filter.is_empty() {
+        "@working".to_string()
+    } else {
+        tasqx_core::filter::from_argv(filter)
+    };
     let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
     let result = be.call("task.list", &params)?;
     let text = render::task_table(ctx, &result);
@@ -899,7 +996,13 @@ fn run_annotate(be: &mut Backend, ctx: &Ctx, r#ref: String, text: Vec<String>) -
     Ok((result, out))
 }
 
-fn run_dep(be: &mut Backend, ctx: &Ctx, method: &str, r#ref: String, depends_on: String) -> CmdOutcome {
+fn run_dep(
+    be: &mut Backend,
+    ctx: &Ctx,
+    method: &str,
+    r#ref: String,
+    depends_on: String,
+) -> CmdOutcome {
     let result = be.call(method, &json!({ "ref": r#ref, "depends_on": depends_on }))?;
     let text = render::dep_result(ctx, &result, method == "dependency.add", &depends_on);
     Ok((result, text))
@@ -960,8 +1063,10 @@ fn report_params(args: &[String], all: bool) -> Value {
 
 fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>, all: bool) -> CmdOutcome {
     let params = report_params(&args, all);
-    let group_by =
-        params["group_by"].as_str().unwrap_or(tasqx_core::engine::SUMMARY_GROUP_BY[0]).to_string();
+    let group_by = params["group_by"]
+        .as_str()
+        .unwrap_or(tasqx_core::engine::SUMMARY_GROUP_BY[0])
+        .to_string();
     let result = be.call("report.summary", &params)?;
     let text = render::report(ctx, &result, &group_by);
     Ok((result, text))
@@ -976,7 +1081,10 @@ fn run_export(be: &mut Backend, filter: &[String]) -> CmdOutcome {
     // A filter selects a subset, so edges pointing out of it are trimmed to keep
     // the document self-contained. Warn on stderr, never stdout: stdout IS the
     // JSON and a note there would corrupt every pipe.
-    let dropped = result.get("dropped_dependencies").and_then(Value::as_i64).unwrap_or(0);
+    let dropped = result
+        .get("dropped_dependencies")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     if dropped > 0 {
         eprintln!(
             "note: dropped {dropped} dependency edge(s) pointing outside the exported set; \
@@ -992,7 +1100,10 @@ fn run_export(be: &mut Backend, filter: &[String]) -> CmdOutcome {
     // `import` has always accepted an object with a `tasks` key as well as a
     // bare array, so files written by this build and by every earlier one both
     // still restore; only the direction that can carry MORE has changed.
-    let text = format!("{}\n", serde_json::to_string_pretty(&result).unwrap_or_default());
+    let text = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
     Ok((result, text))
 }
 
@@ -1014,7 +1125,11 @@ fn run_import(be: &mut Backend, file: String) -> CmdOutcome {
     // wrong file was answered with `Imported 0 task(s)` and exit 0 — the one
     // outcome a restore must never be told.
     let shape = |found: &str| {
-        let src = if file == "-" { "stdin".to_string() } else { file.clone() };
+        let src = if file == "-" {
+            "stdin".to_string()
+        } else {
+            file.clone()
+        };
         tasqx_core::ApiError::bad_request(format!(
             "cannot import {src}: {found} — expected the `export` shape, \
              a bare array of tasks or an object with a `tasks` array"
@@ -1042,7 +1157,10 @@ fn run_import(be: &mut Backend, file: String) -> CmdOutcome {
     };
     let result = be.call("store.import", &params)?;
     let n = result.get("imported").and_then(Value::as_i64).unwrap_or(0);
-    let p = result.get("projects_imported").and_then(Value::as_i64).unwrap_or(0);
+    let p = result
+        .get("projects_imported")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     // A project row the caller did not send is a write they did not ask for, so
     // it is named on the human surface too, not only in the JSON (D37).
     let minted: Vec<&str> = result
@@ -1054,7 +1172,11 @@ fn run_import(be: &mut Backend, file: String) -> CmdOutcome {
     if !minted.is_empty() {
         text.push_str(&format!(
             "note: the document carried no `projects` section, so {} created from the tasks: {}\n",
-            if minted.len() == 1 { "1 project was" } else { "projects were" },
+            if minted.len() == 1 {
+                "1 project was"
+            } else {
+                "projects were"
+            },
             minted.join(", ")
         ));
     }
@@ -1169,12 +1291,20 @@ fn burndown_members(
         // `Home Renovation` or `a (b)`, and a raw `{p}` composes a filter that
         // asks a different question (or none at all) without saying so.
         Some(p) => (
-            format!("project:{} and ({})", tasqx_core::filter::quote(p), *NOT_CANCELLED),
+            format!(
+                "project:{} and ({})",
+                tasqx_core::filter::quote(p),
+                *NOT_CANCELLED
+            ),
             p.clone(),
         ),
         None => (NOT_CANCELLED.to_string(), "all tasks".to_string()),
     };
-    let listed = dispatch(engine, "task.list", &json!({ "filter": filter, "fields": ["id"] }))?;
+    let listed = dispatch(
+        engine,
+        "task.list",
+        &json!({ "filter": filter, "fields": ["id"] }),
+    )?;
     let ids = listed
         .get("tasks")
         .and_then(Value::as_array)
@@ -1194,7 +1324,12 @@ fn burndown_members(
 /// questions again. `all` is hard `false` rather than a parameter because clap
 /// already rejects `--all` alongside `--html`; spelling it here keeps the two
 /// facts in one place instead of accepting a flag we would then ignore.
-fn run_html_report(engine: &Engine, ctx: &Ctx, args: Vec<String>, out: Option<String>) -> CmdOutcome {
+fn run_html_report(
+    engine: &Engine,
+    ctx: &Ctx,
+    args: Vec<String>,
+    out: Option<String>,
+) -> CmdOutcome {
     let params = report_params(&args, false);
     let doc = html::generate(engine, &ctx.theme, &params)?;
     match out {
@@ -1212,7 +1347,10 @@ fn run_html_report(engine: &Engine, ctx: &Ctx, args: Vec<String>, out: Option<St
                 Err(e) => Err(ApiError::internal(format!("cannot write {path}: {e}"))),
             }
         }
-        None => Ok((json!({ "path": Value::Null, "bytes": doc.len(), "html": doc.clone() }), doc)),
+        None => Ok((
+            json!({ "path": Value::Null, "bytes": doc.len(), "html": doc.clone() }),
+            doc,
+        )),
     }
 }
 
@@ -1264,23 +1402,28 @@ fn run_docs(out: Option<&str>, no_open: bool, to_stdout: bool) -> CmdOutcome {
     // The machine-relevant facts are the same in all three branches — where the
     // guide is, and whether a viewer was launched — so they are one shape, and
     // only the sentence differs.
-    let result = |opened: bool| {
-        json!({ "path": path.to_string_lossy(), "opened": opened, "bytes": doc.len() })
-    };
+    let result = |opened: bool| json!({ "path": path.to_string_lossy(), "opened": opened, "bytes": doc.len() });
 
     if explicit || no_open {
-        return Ok((result(false), format!("Wrote the tasqx user guide → {}\n", path.display())));
+        return Ok((
+            result(false),
+            format!("Wrote the tasqx user guide → {}\n", path.display()),
+        ));
     }
 
     match open_in_browser(&path) {
-        Ok(()) => {
-            Ok((result(true), format!("Opened the tasqx user guide → {}\n", path.display())))
-        }
+        Ok(()) => Ok((
+            result(true),
+            format!("Opened the tasqx user guide → {}\n", path.display()),
+        )),
         Err(e) => {
             // The whole point: no browser is not an error. Say what happened, say
             // where the file is, and exit 0 so a CI step never goes red over it.
             eprintln!("note: could not open a browser ({e})");
-            Ok((result(false), format!("The tasqx user guide is at → {}\n", path.display())))
+            Ok((
+                result(false),
+                format!("The tasqx user guide is at → {}\n", path.display()),
+            ))
         }
     }
 }
@@ -1306,7 +1449,10 @@ fn browser_candidates(path: &std::path::Path) -> Vec<(String, Vec<String>)> {
     {
         // `start` is a cmd builtin, not an exe. The empty "" is the window title —
         // without it, cmd reads a quoted path AS the title and opens nothing.
-        vec![("cmd".to_string(), vec!["/C".into(), "start".into(), String::new(), p])]
+        vec![(
+            "cmd".to_string(),
+            vec!["/C".into(), "start".into(), String::new(), p],
+        )]
     }
 
     #[cfg(target_os = "macos")]
@@ -1370,7 +1516,11 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
             let mut text = String::new();
             text.push_str(&format!("{}\n", ctx.paint("header", "Built-in themes")));
             for name in theme::BUILTINS {
-                let marker = if name == ctx.theme.name { " ← active" } else { "" };
+                let marker = if name == ctx.theme.name {
+                    " ← active"
+                } else {
+                    ""
+                };
                 text.push_str(&format!("  {}{}\n", name, ctx.paint("muted", marker)));
             }
             let mut user_block = Value::Null;
@@ -1378,7 +1528,10 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                 let user = user_theme_names();
                 if !user.is_empty() {
                     text.push_str(&format!("{}\n", ctx.paint("header", "User themes")));
-                    text.push_str(&format!("  {}\n", ctx.paint("muted", &dir.to_string_lossy())));
+                    text.push_str(&format!(
+                        "  {}\n",
+                        ctx.paint("muted", &dir.to_string_lossy())
+                    ));
                     for name in &user {
                         text.push_str(&format!("  {name}\n"));
                     }
@@ -1412,7 +1565,11 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
             };
             // Block glyphs are Unicode; degrade the swatch to ASCII on the plain/
             // legacy path so `theme show | cat` never emits mojibake.
-            let swatch = if preview.caps.unicode { "████" } else { "####" };
+            let swatch = if preview.caps.unicode {
+                "████"
+            } else {
+                "####"
+            };
             let bar = if preview.caps.unicode { "█" } else { "#" };
             let mut text = String::new();
             text.push_str(&format!(
@@ -1424,7 +1581,10 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
             // to differ about which roles it defines.
             let mut roles = serde_json::Map::new();
             for role in preview.theme.role_names() {
-                let sample = preview.theme.paint(&role, &format!("{swatch} sample text"), &preview.caps);
+                let sample =
+                    preview
+                        .theme
+                        .paint(&role, &format!("{swatch} sample text"), &preview.caps);
                 text.push_str(&format!("  {:<14} {sample}\n", role));
                 let st = preview.theme.role(&role);
                 roles.insert(
@@ -1475,7 +1635,10 @@ fn set_setting(key: &str, value: &str) -> CmdOutcome {
     if let Some(p) = theme_pointer(s.key) {
         text.push_str(&format!("{p}\n"));
     }
-    Ok((json!({ "key": s.key, "value": value, "path": path.to_string_lossy() }), text))
+    Ok((
+        json!({ "key": s.key, "value": value, "path": path.to_string_lossy() }),
+        text,
+    ))
 }
 
 /// The live value of a `Home::Store` setting. Read from `core.capabilities`,
@@ -1540,7 +1703,11 @@ fn settings_rows(
 ) -> Result<Vec<tui::settings::Row>, ApiError> {
     let mut rows = Vec::new();
     for s in config::SETTINGS {
-        let flag = if s.key == "theme.name" { theme_flag } else { None };
+        let flag = if s.key == "theme.name" {
+            theme_flag
+        } else {
+            None
+        };
         let (value, source) = setting_value(store, s, flag)?;
         rows.push(build_row(s, value, source, themes));
     }
@@ -1551,7 +1718,10 @@ fn settings_rows(
 /// recourse is to guess, and the registry already knows the answer.
 fn unknown_key(key: &str) -> ApiError {
     let valid: Vec<&str> = config::SETTINGS.iter().map(|s| s.key).collect();
-    ApiError::bad_request(format!("unknown setting {key:?} (valid: {})", valid.join(", ")))
+    ApiError::bad_request(format!(
+        "unknown setting {key:?} (valid: {})",
+        valid.join(", ")
+    ))
 }
 
 /// `tasqx config list|get|path`.
@@ -1669,8 +1839,7 @@ fn run_config(
         ConfigAction::List => {
             let mut rows = Vec::new();
             for s in config::SETTINGS {
-                let (value, source) =
-                    setting_value(&mut |k| store_value(be, k), s, flag_for(s))?;
+                let (value, source) = setting_value(&mut |k| store_value(be, k), s, flag_for(s))?;
                 rows.push(json!({
                     "key": s.key,
                     "value": value,
@@ -1726,10 +1895,12 @@ fn run_config_edit(be: &mut Backend, ctx: &Ctx, theme_flag: Option<&str>) -> Cmd
     // record of what the session changed — an interactive screen that leaves no
     // trace is impossible to audit afterwards.
     let text = saved_summary(&saved);
-    let changed: Vec<Value> = saved.iter().map(|(k, v)| json!({ "key": k, "value": v })).collect();
+    let changed: Vec<Value> = saved
+        .iter()
+        .map(|(k, v)| json!({ "key": k, "value": v }))
+        .collect();
     Ok((json!({ "changed": changed }), text))
 }
-
 
 /// The scrollback record `config edit` leaves behind after the alt screen is
 /// gone — an interactive screen that leaves no trace is impossible to audit
@@ -1791,7 +1962,9 @@ fn frame_theme_name(app: &tui::settings::App, theme_flag: Option<&str>) -> Strin
     if let Some(f) = theme_flag.map(str::trim).filter(|f| !f.is_empty()) {
         return f.to_string();
     }
-    app.preview_theme().unwrap_or(theme::DEFAULT_THEME).to_string()
+    app.preview_theme()
+        .unwrap_or(theme::DEFAULT_THEME)
+        .to_string()
 }
 
 /// Apply one `Save` action: validate, write, re-resolve, record.
@@ -1819,7 +1992,11 @@ fn apply_save(
             // flag still outranks the file we just wrote, and the screen has to
             // say so instead of reporting a change the user's next command will
             // not show.
-            let flag = if s.key == "theme.name" { theme_flag } else { None };
+            let flag = if s.key == "theme.name" {
+                theme_flag
+            } else {
+                None
+            };
             let (v, src) = config::resolve(s, flag, config::toml_value(s).as_deref());
             app.refresh(key, v, src.label(s));
             saved.retain(|(k, _)| k != key);
@@ -1850,7 +2027,9 @@ fn settings_loop(
         term.draw(|f| tui::settings::render(app, &active, &caps, f))?;
 
         // Resize and paste events just redraw; only keys are decisions.
-        let Event::Key(key) = event::read()? else { continue };
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
         match app.on_key(key) {
             Some(tui::settings::Action::Quit) => return Ok(saved),
             Some(tui::settings::Action::Save { key, value }) => {
@@ -1870,7 +2049,10 @@ fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "{}\n",
-        ctx.paint("header", &format!("{:<18} {:<22} {}", "SETTING", "VALUE", "SOURCE"))
+        ctx.paint(
+            "header",
+            &format!("{:<18} {:<22} {}", "SETTING", "VALUE", "SOURCE")
+        )
     ));
     for r in rows {
         let key = r["key"].as_str().unwrap_or("");
@@ -1976,8 +2158,11 @@ fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[String], ctx:
 
     // `from_argv`, not `join(" ")` — see `run_list`. `watch` re-sends this
     // string on every event, so a mis-split here would be wrong forever.
-    let filter_str =
-        if filter.is_empty() { "@working".to_string() } else { tasqx_core::filter::from_argv(filter) };
+    let filter_str = if filter.is_empty() {
+        "@working".to_string()
+    } else {
+        tasqx_core::filter::from_argv(filter)
+    };
     let tty = std::io::stdout().is_terminal();
 
     // Initial paint.
@@ -2023,7 +2208,9 @@ fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[String], ctx:
 /// themes + degradation behave exactly as in the one-shot list view.
 fn watch_render(conn: &mut daemon::Conn, filter: &str, ctx: &Ctx, tty: bool) -> Result<(), String> {
     let params = json!({ "filter": filter, "sort": ["-urgency"] });
-    let env = conn.request("task.list", &params).map_err(|e| format!("task.list: {e}"))?;
+    let env = conn
+        .request("task.list", &params)
+        .map_err(|e| format!("task.list: {e}"))?;
     if env.get("ok") != Some(&Value::Bool(true)) {
         return Err(format!(
             "daemon error: {}",
@@ -2073,7 +2260,11 @@ fn run_api() {
 fn run_mcp(action: &McpAction) {
     match action {
         McpAction::Serve { scope } => {
-            let scope = if scope == "read" { Scope::Read } else { Scope::Write };
+            let scope = if scope == "read" {
+                Scope::Read
+            } else {
+                Scope::Write
+            };
             run_mcp_serve(scope);
         }
     }
@@ -2194,7 +2385,9 @@ mod tests {
         ] {
             let cli = Cli::try_parse_from(args).expect("explicit MCP scope should parse");
             match cli.command.expect("mcp command") {
-                Command::Mcp { action: McpAction::Serve { scope } } => {
+                Command::Mcp {
+                    action: McpAction::Serve { scope },
+                } => {
                     assert_eq!(scope, expected);
                 }
                 _ => panic!("expected mcp serve"),
@@ -2214,7 +2407,10 @@ mod tests {
     }
 
     fn add_of(argv: &[&str]) -> Command {
-        Cli::try_parse_from(argv).expect("argv should parse").command.expect("a subcommand")
+        Cli::try_parse_from(argv)
+            .expect("argv should parse")
+            .command
+            .expect("a subcommand")
     }
 
     // ---- the theme pointer (D26 follow-up) ----------------------------------
@@ -2301,7 +2497,10 @@ mod tests {
         if started {
             out.push(cur);
         }
-        if let Some(i) = out.iter().position(|t| t.starts_with('<') || t.starts_with('>')) {
+        if let Some(i) = out
+            .iter()
+            .position(|t| t.starts_with('<') || t.starts_with('>'))
+        {
             out.truncate(i);
         }
         out
@@ -2345,10 +2544,11 @@ mod tests {
         // that checked nothing would otherwise pass silently.
         // 52 examples (27 Safe + 25 NoRun), two of which are two-command
         // pipelines and so contribute two segments each.
-        assert!(checked >= 54, "expected every example, only checked {checked}");
+        assert!(
+            checked >= 54,
+            "expected every example, only checked {checked}"
+        );
     }
-
-
 
     /// `theme set` rejects an unknown name because it PERSISTS one; `--theme`
     /// and `$TASQX_THEME` apply to a single run, so they must still render —
@@ -2358,18 +2558,38 @@ mod tests {
     /// rather than the name being wrong.
     #[test]
     fn an_unknown_theme_from_a_flag_warns_without_refusing() {
-        assert!(validate_setting("theme.name", "geen-thema-xyz").is_err(), "fixture must be unknown");
-        assert!(validate_setting("theme.name", "nord").is_ok(), "a built-in must stay valid");
+        assert!(
+            validate_setting("theme.name", "geen-thema-xyz").is_err(),
+            "fixture must be unknown"
+        );
+        assert!(
+            validate_setting("theme.name", "nord").is_ok(),
+            "a built-in must stay valid"
+        );
         // The warning itself, not a proxy for it.
-        let msg = unknown_theme_warning("theme.name", "geen-thema-xyz", "--theme").expect("must warn");
+        let msg =
+            unknown_theme_warning("theme.name", "geen-thema-xyz", "--theme").expect("must warn");
         assert!(msg.contains("geen-thema-xyz"), "{msg}");
-        assert!(msg.contains("--theme"), "must name the layer it came from: {msg}");
-        assert!(msg.contains("theme list"), "must point somewhere useful: {msg}");
-        assert!(unknown_theme_warning("theme.name", "nord", "--theme").is_none(), "a real theme is silent");
+        assert!(
+            msg.contains("--theme"),
+            "must name the layer it came from: {msg}"
+        );
+        assert!(
+            msg.contains("theme list"),
+            "must point somewhere useful: {msg}"
+        );
+        assert!(
+            unknown_theme_warning("theme.name", "nord", "--theme").is_none(),
+            "a real theme is silent"
+        );
 
         // And the command still runs: rendering must never refuse over a theme.
         let ctx = build_ctx(Some("geen-thema-xyz"));
-        assert_eq!(ctx.theme.name, theme::DEFAULT_THEME, "an unknown name falls back, it does not panic");
+        assert_eq!(
+            ctx.theme.name,
+            theme::DEFAULT_THEME,
+            "an unknown name falls back, it does not panic"
+        );
     }
 
     /// The theme validator must not be applied to settings that are not themes.
@@ -2395,8 +2615,16 @@ mod tests {
                 _ => "a-value-that-is-not-a-theme",
             };
             let (value, source, warning) = effective_setting(s, None, Some(held));
-            assert_eq!(value, held, "{}: a file value must survive, not be replaced", s.key);
-            assert!(warning.is_none(), "{}: must not warn about themes: {warning:?}", s.key);
+            assert_eq!(
+                value, held,
+                "{}: a file value must survive, not be replaced",
+                s.key
+            );
+            assert!(
+                warning.is_none(),
+                "{}: must not warn about themes: {warning:?}",
+                s.key
+            );
             assert!(
                 !matches!(source, config::Source::Default),
                 "{}: the file supplied it, so the file must be credited",
@@ -2413,8 +2641,14 @@ mod tests {
     fn the_cli_group_by_keywords_come_from_the_engine() {
         for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
             let p = report_params(&[axis.to_string()], false);
-            assert_eq!(p["group_by"], axis, "{axis} must be read as a grouping, not a filter");
-            assert!(p.get("filter").is_none(), "{axis} must not also land in the filter");
+            assert_eq!(
+                p["group_by"], axis,
+                "{axis} must be read as a grouping, not a filter"
+            );
+            assert!(
+                p.get("filter").is_none(),
+                "{axis} must not also land in the filter"
+            );
         }
         // A word that is not an axis stays a filter token. `+api` is a *valid*
         // one, so this still holds now that unknown tokens are rejected (D27):
@@ -2449,8 +2683,16 @@ mod tests {
             Ok(())
         });
 
-        assert_eq!(seen, vec![("theme.name".to_string(), "mono".to_string())], "the writer must be called");
-        assert_eq!(saved, vec![("theme.name".to_string(), "mono".to_string())], "and the change recorded");
+        assert_eq!(
+            seen,
+            vec![("theme.name".to_string(), "mono".to_string())],
+            "the writer must be called"
+        );
+        assert_eq!(
+            saved,
+            vec![("theme.name".to_string(), "mono".to_string())],
+            "and the change recorded"
+        );
     }
 
     /// A failed write must surface on the screen and must NOT be recorded as a
@@ -2459,14 +2701,18 @@ mod tests {
     #[test]
     fn a_failed_write_is_reported_and_not_recorded() {
         let s = config::find("theme.name").unwrap();
-        let mut app = tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &[])]);
+        let mut app =
+            tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &[])]);
         let mut saved = Vec::new();
 
         apply_save(&mut app, "theme.name", "mono", None, &mut saved, |_, _| {
             Err(ApiError::bad_request("disk on fire"))
         });
 
-        assert!(saved.is_empty(), "a failed write must not count as a change");
+        assert!(
+            saved.is_empty(),
+            "a failed write must not count as a change"
+        );
     }
 
     /// An unknown value must never reach the writer, on this path as much as on
@@ -2475,14 +2721,22 @@ mod tests {
     #[test]
     fn an_invalid_value_never_reaches_the_writer() {
         let s = config::find("theme.name").unwrap();
-        let mut app = tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &[])]);
+        let mut app =
+            tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &[])]);
         let mut saved = Vec::new();
         let mut called = false;
 
-        apply_save(&mut app, "theme.name", "not-a-theme", None, &mut saved, |_, _| {
-            called = true;
-            Ok(())
-        });
+        apply_save(
+            &mut app,
+            "theme.name",
+            "not-a-theme",
+            None,
+            &mut saved,
+            |_, _| {
+                called = true;
+                Ok(())
+            },
+        );
 
         assert!(!called, "validation must run before the writer");
         assert!(saved.is_empty());
@@ -2499,7 +2753,11 @@ mod tests {
         let mut app =
             tui::settings::App::new(vec![build_row(s, "nord".into(), "default".into(), &themes)]);
 
-        assert_eq!(frame_theme_name(&app, None), "nord", "browsing shows the saved value");
+        assert_eq!(
+            frame_theme_name(&app, None),
+            "nord",
+            "browsing shows the saved value"
+        );
 
         // Open the picker and move: the frame theme must follow the cursor
         // BEFORE anything is committed.
@@ -2508,13 +2766,23 @@ mod tests {
         app.on_key(press(KeyCode::Enter));
         app.on_key(press(KeyCode::Down));
         let previewed = frame_theme_name(&app, None);
-        assert_ne!(previewed, "nord", "moving the picker must change the frame theme");
-        assert!(themes.contains(&previewed), "and it must be a real candidate: {previewed}");
+        assert_ne!(
+            previewed, "nord",
+            "moving the picker must change the frame theme"
+        );
+        assert!(
+            themes.contains(&previewed),
+            "and it must be a real candidate: {previewed}"
+        );
 
         // An explicit --theme outranks the preview: the screen must not paint
         // itself in a theme the surrounding terminal is not using.
         assert_eq!(frame_theme_name(&app, Some("mono")), "mono");
-        assert_eq!(frame_theme_name(&app, Some("   ")), previewed, "a blank flag is not a flag");
+        assert_eq!(
+            frame_theme_name(&app, Some("   ")),
+            previewed,
+            "a blank flag is not a flag"
+        );
     }
 
     /// Dropping `Home::Store` settings from the snapshot loop — so
@@ -2539,20 +2807,40 @@ mod tests {
 
         let seen: Vec<&str> = rows.iter().map(|r| r.setting.key).collect();
         for s in config::SETTINGS {
-            assert!(seen.contains(&s.key), "{} never reached the screen: saw {seen:?}", s.key);
+            assert!(
+                seen.contains(&s.key),
+                "{} never reached the screen: saw {seen:?}",
+                s.key
+            );
         }
-        assert_eq!(rows.len(), config::SETTINGS.len(), "a setting reached the screen twice");
+        assert_eq!(
+            rows.len(),
+            config::SETTINGS.len(),
+            "a setting reached the screen twice"
+        );
 
         // The specific setting the original bug hid, named on purpose: it is
         // the only `Home::Store` entry, so a test that only counted rows would
         // pass if the store arm were replaced by anything that still pushed one.
-        let dp = rows.iter().find(|r| r.setting.key == "default_project").expect("default_project");
-        assert_eq!(dp.source, "store", "a store-homed row must say where it lives");
-        assert_eq!(dp.value, "inbox", "and must carry the value the store actually returned");
+        let dp = rows
+            .iter()
+            .find(|r| r.setting.key == "default_project")
+            .expect("default_project");
+        assert_eq!(
+            dp.source, "store",
+            "a store-homed row must say where it lives"
+        );
+        assert_eq!(
+            dp.value, "inbox",
+            "and must carry the value the store actually returned"
+        );
         assert!(dp.choices.is_empty(), "a store setting offers no picker");
 
         let theme_row = rows.iter().find(|r| r.setting.key == "theme.name").unwrap();
-        assert_eq!(theme_row.choices, themes, "the theme row must carry its candidates");
+        assert_eq!(
+            theme_row.choices, themes,
+            "the theme row must carry its candidates"
+        );
     }
 
     /// `config get`/`list`/`edit` rendered a FAILED `core.capabilities` call as
@@ -2570,7 +2858,11 @@ mod tests {
         let err = setting_value(&mut |_| Err(boom()), dp, None)
             .expect_err("a failed lookup must not resolve to a value");
         assert_eq!(err.code, ErrorCode::Internal);
-        assert!(err.message.contains("broken pipe"), "the cause must survive: {}", err.message);
+        assert!(
+            err.message.contains("broken pipe"),
+            "the cause must survive: {}",
+            err.message
+        );
 
         // The screen snapshot must refuse for the same reason: showing a blank
         // `default_project` row invites the user to "fix" a setting that is fine.
@@ -2647,16 +2939,30 @@ mod tests {
             let e = tasqx_core::Engine::open_in_memory().unwrap();
             e.project_create(&json!({ "name": "P" })).unwrap(); // D23
             for title in ["live", "abandoned"] {
-                e.task_add(&json!({ "title": title, "project": "P" })).unwrap();
+                e.task_add(&json!({ "title": title, "project": "P" }))
+                    .unwrap();
             }
             e.task_cancel(&json!({ "ref": "2" })).unwrap();
             let mut be = Backend::Local(e);
             let (result, _) = run_report(&mut be, &ctx, vec![], all).expect("report ran");
-            result["groups"].as_array().unwrap().iter().map(|g| g["count"].as_i64().unwrap()).sum()
+            result["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["count"].as_i64().unwrap())
+                .sum()
         };
 
-        assert_eq!(count(false), 1, "the default must leave the cancelled task out");
-        assert_eq!(count(true), 2, "--all must reach the engine and bring it back");
+        assert_eq!(
+            count(false),
+            1,
+            "the default must leave the cancelled task out"
+        );
+        assert_eq!(
+            count(true),
+            2,
+            "--all must reach the engine and bring it back"
+        );
     }
 
     /// `chart burndown` draws "remaining open work", so a cancelled task must
@@ -2670,25 +2976,35 @@ mod tests {
         let e = tasqx_core::Engine::open_in_memory().unwrap();
         e.project_create(&json!({ "name": "P" })).unwrap(); // D23
         for title in ["live", "gone", "finished"] {
-            e.task_add(&json!({ "title": title, "project": "P" })).unwrap();
+            e.task_add(&json!({ "title": title, "project": "P" }))
+                .unwrap();
         }
         e.task_cancel(&json!({ "ref": "2" })).unwrap();
         e.task_done(&json!({ "ref": "3" })).unwrap();
         let id_of = |short: &str| -> String {
-            e.task_get(&json!({ "ref": short })).unwrap()["id"].as_str().unwrap().to_string()
+            e.task_get(&json!({ "ref": short })).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
         };
         let (live, gone, finished) = (id_of("1"), id_of("2"), id_of("3"));
 
         for scope in [None, Some("P".to_string())] {
             let (members, _) = burndown_members(&e, &scope).expect("burndown scope resolved");
-            assert!(members.contains(&live), "scope {scope:?} lost the open task");
+            assert!(
+                members.contains(&live),
+                "scope {scope:?} lost the open task"
+            );
             assert!(
                 !members.contains(&gone),
                 "scope {scope:?} still counts a cancelled task as remaining work"
             );
             // `done` stays in scope: the burndown needs the completion event to
             // draw the line coming down. Dropping it would flatten the chart.
-            assert!(members.contains(&finished), "scope {scope:?} lost the done task");
+            assert!(
+                members.contains(&finished),
+                "scope {scope:?} lost the done task"
+            );
         }
     }
 
@@ -2708,15 +3024,21 @@ mod tests {
             e.project_create(&json!({ "name": name })).unwrap();
             e.project_create(&json!({ "name": "Other" })).unwrap();
             for title in ["paint", "sand"] {
-                e.task_add(&json!({ "title": title, "project": name })).unwrap();
+                e.task_add(&json!({ "title": title, "project": name }))
+                    .unwrap();
             }
             // A task in a different project: without it, a filter that collapsed
             // to "match everything" would pass this test too.
-            e.task_add(&json!({ "title": "unrelated", "project": "Other" })).unwrap();
+            e.task_add(&json!({ "title": "unrelated", "project": "Other" }))
+                .unwrap();
 
             let (members, label) =
                 burndown_members(&e, &Some(name.to_string())).expect("scope resolved");
-            assert_eq!(members.len(), 2, "project {name:?} must scope to its own 2 tasks");
+            assert_eq!(
+                members.len(),
+                2,
+                "project {name:?} must scope to its own 2 tasks"
+            );
             assert_eq!(label, name, "the chart label is the project name as given");
         }
     }
@@ -2736,13 +3058,23 @@ mod tests {
         // No such project: task.list still parses the filter fine, so this
         // asserts the honest empty case stays empty and Ok...
         let (members, _) = burndown_members(&e, &Some("nope".to_string())).expect("parses");
-        assert!(members.is_empty(), "an unknown project is legitimately empty, not an error");
+        assert!(
+            members.is_empty(),
+            "an unknown project is legitimately empty, not an error"
+        );
 
         // ...while a filter that cannot parse must come back as Err. `"` alone
         // is unterminable: quoting it is fine, but this bypasses `quote` to
         // simulate any future composition bug reaching `task.list`.
-        let bad = dispatch(&e, "task.list", &json!({ "filter": "project:\"oops", "fields": ["id"] }));
-        assert!(bad.is_err(), "an unparseable filter must be an error at the API boundary");
+        let bad = dispatch(
+            &e,
+            "task.list",
+            &json!({ "filter": "project:\"oops", "fields": ["id"] }),
+        );
+        assert!(
+            bad.is_err(),
+            "an unparseable filter must be an error at the API boundary"
+        );
     }
 
     /// `NOT_CANCELLED` spells out its statuses by hand, and the test above only
@@ -2793,7 +3125,10 @@ mod tests {
             (vec!["tasqx", "add", "Ship it", "--remind", "-30m"], "-30m"),
             (vec!["tasqx", "add", "Ship it", "--remind", "-2d"], "-2d"),
             // An absolute value must keep working through the same flag.
-            (vec!["tasqx", "add", "Ship it", "--remind", "friday 9am"], "friday 9am"),
+            (
+                vec!["tasqx", "add", "Ship it", "--remind", "friday 9am"],
+                "friday 9am",
+            ),
         ] {
             match add_of(&argv) {
                 Command::Add { remind, .. } => {
@@ -2830,8 +3165,20 @@ mod tests {
                 None,
                 Some("-30m"),
             ),
-            (vec!["tasqx", "modify", "42", "--due", "-1d"], Some("-1d"), None, None, None),
-            (vec!["tasqx", "modify", "42", "--due", "-2w"], Some("-2w"), None, None, None),
+            (
+                vec!["tasqx", "modify", "42", "--due", "-1d"],
+                Some("-1d"),
+                None,
+                None,
+                None,
+            ),
+            (
+                vec!["tasqx", "modify", "42", "--due", "-2w"],
+                Some("-2w"),
+                None,
+                None,
+                None,
+            ),
             (
                 vec!["tasqx", "modify", "42", "--scheduled", "-1d"],
                 None,
@@ -2839,7 +3186,13 @@ mod tests {
                 None,
                 None,
             ),
-            (vec!["tasqx", "modify", "42", "--wait", "-3d"], None, None, Some("-3d"), None),
+            (
+                vec!["tasqx", "modify", "42", "--wait", "-3d"],
+                None,
+                None,
+                Some("-3d"),
+                None,
+            ),
             // Combined, and still with a non-hyphen value in the mix.
             (
                 vec!["tasqx", "modify", "42", "--due", "-1d", "--remind", "-1h"],
@@ -2857,9 +3210,19 @@ mod tests {
             ),
         ] {
             match add_of(&argv) {
-                Command::Modify { due, scheduled, wait, remind, .. } => {
+                Command::Modify {
+                    due,
+                    scheduled,
+                    wait,
+                    remind,
+                    ..
+                } => {
                     assert_eq!(due.as_deref(), want_due, "due — argv: {argv:?}");
-                    assert_eq!(scheduled.as_deref(), want_sched, "scheduled — argv: {argv:?}");
+                    assert_eq!(
+                        scheduled.as_deref(),
+                        want_sched,
+                        "scheduled — argv: {argv:?}"
+                    );
                     assert_eq!(wait.as_deref(), want_wait, "wait — argv: {argv:?}");
                     assert_eq!(remind.as_deref(), want_remind, "remind — argv: {argv:?}");
                 }
@@ -2872,7 +3235,15 @@ mod tests {
     /// guarded there, only `--remind`.
     #[test]
     fn add_date_flags_accept_leading_hyphen_values() {
-        match add_of(&["tasqx", "add", "Late thing", "--due", "-1d", "--scheduled", "-2d"]) {
+        match add_of(&[
+            "tasqx",
+            "add",
+            "Late thing",
+            "--due",
+            "-1d",
+            "--scheduled",
+            "-2d",
+        ]) {
             Command::Add { due, scheduled, .. } => {
                 assert_eq!(due.as_deref(), Some("-1d"));
                 assert_eq!(scheduled.as_deref(), Some("-2d"));
@@ -2885,7 +3256,9 @@ mod tests {
     fn modify_aliases_all_resolve() {
         for verb in ["modify", "mod", "m", "edit"] {
             match add_of(&["tasqx", verb, "42", "--priority", "H"]) {
-                Command::Modify { r#ref, priority, .. } => {
+                Command::Modify {
+                    r#ref, priority, ..
+                } => {
                     assert_eq!(r#ref, "42");
                     assert_eq!(priority.as_deref(), Some("H"), "verb: {verb}");
                 }
@@ -2912,10 +3285,20 @@ mod tests {
     #[test]
     fn modify_collects_clear_fields_and_sugar() {
         match add_of(&[
-            "tasqx", "modify", "42", "New", "title", "due:friday", "--clear", "remind", "--clear",
+            "tasqx",
+            "modify",
+            "42",
+            "New",
+            "title",
+            "due:friday",
+            "--clear",
+            "remind",
+            "--clear",
             "recurrence",
         ]) {
-            Command::Modify { r#ref, rest, clear, .. } => {
+            Command::Modify {
+                r#ref, rest, clear, ..
+            } => {
                 assert_eq!(r#ref, "42");
                 assert_eq!(rest, vec!["New", "title", "due:friday"]);
                 assert_eq!(clear, vec!["remind".to_string(), "recurrence".to_string()]);
@@ -2943,7 +3326,15 @@ mod tests {
 
     #[test]
     fn modify_takes_expected_rev_for_optimistic_concurrency() {
-        match add_of(&["tasqx", "modify", "42", "--priority", "L", "--expected-rev", "7"]) {
+        match add_of(&[
+            "tasqx",
+            "modify",
+            "42",
+            "--priority",
+            "L",
+            "--expected-rev",
+            "7",
+        ]) {
             Command::Modify { expected_rev, .. } => assert_eq!(expected_rev, Some(7)),
             _ => panic!("expected a modify command"),
         }
@@ -2977,8 +3368,11 @@ mod tests {
     fn a_later_launcher_still_wins_after_an_earlier_miss() {
         // A real, harmless program is the last candidate; the first cannot exist.
         let real = if cfg!(windows) { "cmd" } else { "true" };
-        let args: Vec<String> =
-            if cfg!(windows) { vec!["/C".into(), "exit".into()] } else { vec![] };
+        let args: Vec<String> = if cfg!(windows) {
+            vec!["/C".into(), "exit".into()]
+        } else {
+            vec![]
+        };
         let candidates = vec![
             ("tasqx-no-such-launcher-9f3a1c".to_string(), vec![]),
             (real.to_string(), args),
@@ -2996,7 +3390,10 @@ mod tests {
     fn browser_candidates_exist_and_carry_the_path() {
         let path = std::path::PathBuf::from("/tmp/tasqx-guide.html");
         let cands = browser_candidates(&path);
-        assert!(!cands.is_empty(), "this platform has no browser launcher at all");
+        assert!(
+            !cands.is_empty(),
+            "this platform has no browser launcher at all"
+        );
         for (bin, args) in &cands {
             assert!(!bin.is_empty(), "empty launcher name");
             assert!(
@@ -3010,9 +3407,16 @@ mod tests {
     #[test]
     fn docs_flags_parse() {
         match add_of(&["tasqx", "docs", "--out", "guide.html"]) {
-            Command::Docs { out, no_open, stdout } => {
+            Command::Docs {
+                out,
+                no_open,
+                stdout,
+            } => {
                 assert_eq!(out.as_deref(), Some("guide.html"));
-                assert!(!no_open, "--out implies no-open at the behaviour level, not the flag");
+                assert!(
+                    !no_open,
+                    "--out implies no-open at the behaviour level, not the flag"
+                );
                 assert!(!stdout);
             }
             _ => panic!("expected a docs command"),
@@ -3027,7 +3431,11 @@ mod tests {
         }
         // Bare `docs` is the browser path.
         match add_of(&["tasqx", "docs"]) {
-            Command::Docs { out, no_open, stdout } => {
+            Command::Docs {
+                out,
+                no_open,
+                stdout,
+            } => {
                 assert!(out.is_none() && !no_open && !stdout);
             }
             _ => panic!("expected a docs command"),
@@ -3057,17 +3465,24 @@ mod tests {
         let mut be = Backend::Local(e);
         let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
 
-        let (result, text) = run_config(&mut be, &ctx, &ConfigAction::List, None).expect("list ran");
+        let (result, text) =
+            run_config(&mut be, &ctx, &ConfigAction::List, None).expect("list ran");
 
         let rows = result["settings"].as_array().expect("a settings array");
         let keys: Vec<&str> = rows.iter().map(|r| r["key"].as_str().unwrap()).collect();
         assert!(keys.contains(&"theme.name"), "{keys:?}");
-        assert!(keys.contains(&"default_project"), "the store home must appear too: {keys:?}");
+        assert!(
+            keys.contains(&"default_project"),
+            "the store home must appear too: {keys:?}"
+        );
 
         let dp = rows.iter().find(|r| r["key"] == "default_project").unwrap();
         assert_eq!(dp["value"], "work", "the store value must be the live one");
         assert_eq!(dp["home"], "store");
-        assert!(text.contains("default_project"), "the human table must show it too");
+        assert!(
+            text.contains("default_project"),
+            "the human table must show it too"
+        );
     }
 
     /// `config get` on a key nobody registered must say so and list the valid
@@ -3079,12 +3494,22 @@ mod tests {
         let mut be = Backend::Local(e);
         let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
 
-        let err = run_config(&mut be, &ctx, &ConfigAction::Get { key: "theme.nmae".into() }, None)
-            .expect_err("an unknown key must not succeed");
+        let err = run_config(
+            &mut be,
+            &ctx,
+            &ConfigAction::Get {
+                key: "theme.nmae".into(),
+            },
+            None,
+        )
+        .expect_err("an unknown key must not succeed");
         assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
-        assert!(err.message.contains("theme.name"), "must list valid keys: {}", err.message);
+        assert!(
+            err.message.contains("theme.name"),
+            "must list valid keys: {}",
+            err.message
+        );
     }
-
 
     /// `--theme` is the highest-precedence layer in D9, and `config` — the one
     /// command whose stated job is naming the layer that won — could not see it.
@@ -3102,11 +3527,16 @@ mod tests {
         let (result, _) = run_config(
             &mut be,
             &ctx,
-            &ConfigAction::Get { key: "theme.name".into() },
+            &ConfigAction::Get {
+                key: "theme.name".into(),
+            },
             Some("mono"),
         )
         .expect("get ran");
-        assert_eq!(result["value"], "mono", "the flag must win over file and default");
+        assert_eq!(
+            result["value"], "mono",
+            "the flag must win over file and default"
+        );
 
         let (listed, _) =
             run_config(&mut be, &ctx, &ConfigAction::List, Some("mono")).expect("list ran");
@@ -3118,7 +3548,10 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(row["value"], "mono");
-        assert_eq!(row["source"], "--theme", "the SOURCE column must name the flag");
+        assert_eq!(
+            row["source"], "--theme",
+            "the SOURCE column must name the flag"
+        );
     }
 
     /// `theme set bogus` was rejected while `config set theme.name bogus` wrote
@@ -3134,12 +3567,19 @@ mod tests {
         let err = run_config(
             &mut be,
             &ctx,
-            &ConfigAction::Set { key: "theme.name".into(), value: "not-a-theme".into() },
+            &ConfigAction::Set {
+                key: "theme.name".into(),
+                value: "not-a-theme".into(),
+            },
             None,
         )
         .expect_err("an unknown theme must not be persisted");
         assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
-        assert!(err.message.contains("theme list"), "must point at the lister: {}", err.message);
+        assert!(
+            err.message.contains("theme list"),
+            "must point at the lister: {}",
+            err.message
+        );
     }
 
     /// D21 put default_project in the store on purpose. `config set` must
@@ -3154,11 +3594,18 @@ mod tests {
         let err = run_config(
             &mut be,
             &ctx,
-            &ConfigAction::Set { key: "default_project".into(), value: "work".into() },
+            &ConfigAction::Set {
+                key: "default_project".into(),
+                value: "work".into(),
+            },
             None,
         )
         .expect_err("a store-owned key must not be writable through config set");
         assert_eq!(err.code, tasqx_core::ErrorCode::BadRequest);
-        assert!(err.message.contains("tasqx use"), "must name the verb: {}", err.message);
+        assert!(
+            err.message.contains("tasqx use"),
+            "must name the verb: {}",
+            err.message
+        );
     }
 }

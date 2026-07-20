@@ -77,16 +77,27 @@ pub fn prepass<I: IntoIterator<Item = OsString>>(raw: I) -> Prepass {
     cmd.build();
 
     let Some(i) = subcommand_index(&cmd, &argv) else {
-        return Prepass { argv, filter_command: false };
+        return Prepass {
+            argv,
+            filter_command: false,
+        };
     };
     let Some(name) = canonical_name(&cmd, &argv[i]) else {
-        return Prepass { argv, filter_command: false };
+        return Prepass {
+            argv,
+            filter_command: false,
+        };
     };
     if !FILTER_COMMANDS.contains(&name.as_str()) {
-        return Prepass { argv, filter_command: false };
+        return Prepass {
+            argv,
+            filter_command: false,
+        };
     }
 
-    let sub = cmd.find_subcommand(&name).expect("canonical_name resolved it from this tree");
+    let sub = cmd
+        .find_subcommand(&name)
+        .expect("canonical_name resolved it from this tree");
     // Escape only the tokens that will reach the filter tail. A token clap
     // consumes as a FLAG VALUE must be left alone: `unescape` runs on the tail
     // and nothing else, so an escaped value keeps its sentinel all the way to
@@ -132,7 +143,10 @@ pub fn prepass<I: IntoIterator<Item = OsString>>(raw: I) -> Prepass {
         }
         j += 1;
     }
-    Prepass { argv, filter_command: true }
+    Prepass {
+        argv,
+        filter_command: true,
+    }
 }
 
 /// Will clap take the NEXT token as this long flag's value?
@@ -143,7 +157,9 @@ pub fn prepass<I: IntoIterator<Item = OsString>>(raw: I) -> Prepass {
 /// it as valueless keeps a following `-tag` typable.
 fn long_value_follows(cmd: &clap::Command, long: &str) -> bool {
     cmd.get_arguments()
-        .find(|a| a.get_long() == Some(long) || a.get_all_aliases().is_some_and(|v| v.contains(&long)))
+        .find(|a| {
+            a.get_long() == Some(long) || a.get_all_aliases().is_some_and(|v| v.contains(&long))
+        })
         .is_some_and(|a| takes_value(a) && !a.is_require_equals_set())
 }
 
@@ -168,8 +184,12 @@ pub fn unescape(tokens: &mut [String]) {
 /// reaching for a flag actually types is handed back to clap.
 fn declared_short(cmd: &clap::Command, tok: &str) -> Option<char> {
     let mut chars = tok.strip_prefix('-')?.chars();
-    let (c, None) = (chars.next()?, chars.next()) else { return None };
-    cmd.get_arguments().any(|a| a.get_short() == Some(c)).then_some(c)
+    let (c, None) = (chars.next()?, chars.next()) else {
+        return None;
+    };
+    cmd.get_arguments()
+        .any(|a| a.get_short() == Some(c))
+        .then_some(c)
 }
 
 /// `-x…`: a tag exclusion. `--x` is a flag (real or mistyped) and stays clap's
@@ -183,7 +203,9 @@ fn subcommand_index(cmd: &clap::Command, argv: &[OsString]) -> Option<usize> {
     let mut i = 1;
     while i < argv.len() {
         // A non-UTF-8 token cannot be a flag we know; let clap have it.
-        let Some(tok) = argv[i].to_str() else { return Some(i) };
+        let Some(tok) = argv[i].to_str() else {
+            return Some(i);
+        };
         if tok == "--" {
             return (i + 1 < argv.len()).then_some(i + 1);
         }
@@ -209,12 +231,16 @@ fn takes_value(arg: &clap::Arg) -> bool {
 
 fn long_takes_value(cmd: &clap::Command, long: &str) -> bool {
     cmd.get_arguments()
-        .find(|a| a.get_long() == Some(long) || a.get_all_aliases().is_some_and(|v| v.contains(&long)))
+        .find(|a| {
+            a.get_long() == Some(long) || a.get_all_aliases().is_some_and(|v| v.contains(&long))
+        })
         .is_some_and(takes_value)
 }
 
 fn short_takes_value(cmd: &clap::Command, short: char) -> bool {
-    cmd.get_arguments().find(|a| a.get_short() == Some(short)).is_some_and(takes_value)
+    cmd.get_arguments()
+        .find(|a| a.get_short() == Some(short))
+        .is_some_and(takes_value)
 }
 
 /// Resolve a token to a canonical subcommand name, following aliases.
@@ -261,9 +287,15 @@ mod tests {
                 );
             }
         }
-        assert!(FILTER_COMMANDS.contains(&"report"), "report's `args` tail is filter DSL too");
+        assert!(
+            FILTER_COMMANDS.contains(&"report"),
+            "report's `args` tail is filter DSL too"
+        );
         for name in FILTER_COMMANDS {
-            assert!(canonical_name(&cmd, &OsString::from(name)).is_some(), "no such subcommand: {name}");
+            assert!(
+                canonical_name(&cmd, &OsString::from(name)).is_some(),
+                "no such subcommand: {name}"
+            );
         }
     }
 
@@ -279,13 +311,29 @@ mod tests {
                 .map(|s| s.to_string_lossy().replace(ESCAPED_DASH, "<esc>"))
                 .collect()
         };
-        assert_eq!(go(&["tasqx", "list", "-needs", "--json"]), ["tasqx", "list", "<esc>needs", "--json"]);
-        assert_eq!(go(&["tasqx", "ls", "-needs"]), ["tasqx", "ls", "<esc>needs"], "aliases follow list");
-        assert_eq!(go(&["tasqx", "--theme", "nord", "list", "-a"]), ["tasqx", "--theme", "nord", "list", "<esc>a"]);
+        assert_eq!(
+            go(&["tasqx", "list", "-needs", "--json"]),
+            ["tasqx", "list", "<esc>needs", "--json"]
+        );
+        assert_eq!(
+            go(&["tasqx", "ls", "-needs"]),
+            ["tasqx", "ls", "<esc>needs"],
+            "aliases follow list"
+        );
+        assert_eq!(
+            go(&["tasqx", "--theme", "nord", "list", "-a"]),
+            ["tasqx", "--theme", "nord", "list", "<esc>a"]
+        );
         // `--x` stays clap's to judge, and a non-filter command is untouched:
         // `add --remind -1h` must keep reaching `allow_hyphen_values`.
-        assert_eq!(go(&["tasqx", "list", "--bogus"]), ["tasqx", "list", "--bogus"]);
-        assert_eq!(go(&["tasqx", "add", "x", "--remind", "-1h"]), ["tasqx", "add", "x", "--remind", "-1h"]);
+        assert_eq!(
+            go(&["tasqx", "list", "--bogus"]),
+            ["tasqx", "list", "--bogus"]
+        );
+        assert_eq!(
+            go(&["tasqx", "add", "x", "--remind", "-1h"]),
+            ["tasqx", "add", "x", "--remind", "-1h"]
+        );
         assert_eq!(go(&["tasqx", "import", "-"]), ["tasqx", "import", "-"]);
     }
 
@@ -305,13 +353,20 @@ mod tests {
         let mut seen = 0;
         for name in FILTER_COMMANDS {
             let sub = cmd.find_subcommand(name).expect("registered");
-            let shorts: Vec<char> = sub.get_arguments().filter_map(clap::Arg::get_short).collect();
+            let shorts: Vec<char> = sub
+                .get_arguments()
+                .filter_map(clap::Arg::get_short)
+                .collect();
             // A filter command with no short flag at all would let this pass by
             // matching nothing — `-h` alone makes that unreachable in practice,
             // and the floor below makes it unreachable in fact.
             for c in shorts {
                 seen += 1;
-                let argv = [OsString::from("tasqx"), OsString::from(name), OsString::from(format!("-{c}"))];
+                let argv = [
+                    OsString::from("tasqx"),
+                    OsString::from(name),
+                    OsString::from(format!("-{c}")),
+                ];
                 let out = prepass(argv);
                 assert_eq!(
                     out.argv[2].to_string_lossy(),
@@ -320,7 +375,10 @@ mod tests {
                 );
             }
         }
-        assert!(seen >= FILTER_COMMANDS.len(), "every filter command declares at least `-h`");
+        assert!(
+            seen >= FILTER_COMMANDS.len(),
+            "every filter command declares at least `-h`"
+        );
     }
 
     /// The other half of N1b: exempting clap's shorts must not re-break `-tag`.
@@ -336,9 +394,19 @@ mod tests {
                 .collect()
         };
         // `h` is `--help`'s short; `-hotfix` is a tag named `hotfix`.
-        assert_eq!(go(&["tasqx", "list", "-hotfix"]), ["tasqx", "list", "<esc>hotfix"]);
-        assert_eq!(go(&["tasqx", "list", "-h"]), ["tasqx", "list", "-h"], "clap's own flag reaches clap");
-        assert_eq!(go(&["tasqx", "list", "-needs", "-h"]), ["tasqx", "list", "<esc>needs", "-h"]);
+        assert_eq!(
+            go(&["tasqx", "list", "-hotfix"]),
+            ["tasqx", "list", "<esc>hotfix"]
+        );
+        assert_eq!(
+            go(&["tasqx", "list", "-h"]),
+            ["tasqx", "list", "-h"],
+            "clap's own flag reaches clap"
+        );
+        assert_eq!(
+            go(&["tasqx", "list", "-needs", "-h"]),
+            ["tasqx", "list", "<esc>needs", "-h"]
+        );
     }
 
     /// C7: a sentinel that lands in a flag VALUE is never restored, because
@@ -361,12 +429,20 @@ mod tests {
                 .filter(|a| takes_value(a))
                 .filter_map(|a| a.get_long().map(str::to_string))
                 .collect();
-            assert!(!longs.is_empty(), "`{name}` declares no value-taking flag; the guard would be vacuous");
+            assert!(
+                !longs.is_empty(),
+                "`{name}` declares no value-taking flag; the guard would be vacuous"
+            );
             for long in longs {
                 let flag = format!("--{long}");
                 // BOTH orders: the flag before the filter tail and after it.
                 for argv in [
-                    vec!["tasqx".to_string(), name.to_string(), flag.clone(), "-nord".to_string()],
+                    vec![
+                        "tasqx".to_string(),
+                        name.to_string(),
+                        flag.clone(),
+                        "-nord".to_string(),
+                    ],
                     vec![
                         "tasqx".to_string(),
                         name.to_string(),
@@ -377,7 +453,10 @@ mod tests {
                 ] {
                     let out = prepass(argv.iter().map(|s| OsString::from(s.as_str())));
                     let last = out.argv.last().unwrap().to_string_lossy().into_owned();
-                    assert_eq!(last, "-nord", "`{name} {flag} -nord` escaped the VALUE, which nothing unescapes");
+                    assert_eq!(
+                        last, "-nord",
+                        "`{name} {flag} -nord` escaped the VALUE, which nothing unescapes"
+                    );
                 }
             }
         }

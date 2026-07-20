@@ -88,11 +88,18 @@ pub fn throughput(result: &Value, weeks: usize, anchor: Date) -> Vec<WeekBucket>
     keys.reverse(); // oldest first
     let mut buckets: Vec<WeekBucket> = keys
         .iter()
-        .map(|(y, w)| WeekBucket { iso_year: *y, iso_week: *w, added: 0, done: 0 })
+        .map(|(y, w)| WeekBucket {
+            iso_year: *y,
+            iso_week: *w,
+            added: 0,
+            done: 0,
+        })
         .collect();
 
     for ev in events_of(result) {
-        let (Some(ts), op) = (ts_of(ev), op_of(ev)) else { continue };
+        let (Some(ts), op) = (ts_of(ev), op_of(ev)) else {
+            continue;
+        };
         if op != "add" && op != "done" {
             continue;
         }
@@ -129,10 +136,19 @@ fn velocity(buckets: &[WeekBucket]) -> f64 {
 /// two computations that happen to agree today. (Same rule as `report`'s two
 /// modes sharing one request object.)
 pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
-    let max = buckets.iter().map(|b| b.added.max(b.done)).max().unwrap_or(0).max(1);
+    let max = buckets
+        .iter()
+        .map(|b| b.added.max(b.done))
+        .max()
+        .unwrap_or(0)
+        .max(1);
     let width = 10usize;
 
-    let legend = if ctx.caps.unicode { "added ▁▂▃  done ▁▂▃" } else { "added [#]  done [#]" };
+    let legend = if ctx.caps.unicode {
+        "added ▁▂▃  done ▁▂▃"
+    } else {
+        "added [#]  done [#]"
+    };
     let mut out = String::new();
     out.push_str(&ctx.paint("header", "Weekly throughput"));
     out.push_str(&format!("   {}\n", ctx.paint("muted", legend)));
@@ -161,12 +177,22 @@ pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
 
     let vel = velocity(buckets);
     let recent_net: i64 = buckets.iter().rev().take(4).map(|b| b.net()).sum();
-    let trend = if recent_net < 0 { "WIP trending down" } else if recent_net > 0 { "WIP trending up" } else { "WIP steady" };
+    let trend = if recent_net < 0 {
+        "WIP trending down"
+    } else if recent_net > 0 {
+        "WIP trending up"
+    } else {
+        "WIP steady"
+    };
     out.push_str(&format!(
         "  {}\n",
         ctx.paint(
             "muted",
-            &format!("{a} 4-wk velocity {vel:.1} done/wk {m} {trend}", a = ctx.arrow(), m = ctx.mid())
+            &format!(
+                "{a} 4-wk velocity {vel:.1} done/wk {m} {trend}",
+                a = ctx.arrow(),
+                m = ctx.mid()
+            )
         )
     ));
     out
@@ -224,7 +250,10 @@ pub fn heatmap(result: &Value, weeks: usize, anchor: Date) -> Vec<DayCount> {
     let mut out = Vec::with_capacity(total_days);
     let mut d = start;
     for _ in 0..total_days {
-        out.push(DayCount { date: d, count: *tally.get(&d).unwrap_or(&0) });
+        out.push(DayCount {
+            date: d,
+            count: *tally.get(&d).unwrap_or(&0),
+        });
         d = d.saturating_add(1i64.days());
     }
     out
@@ -273,7 +302,10 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date) -> String {
         ". 0  : 1-2  + 3-4  # 5+"
     };
     let mut out = String::new();
-    out.push_str(&ctx.paint("header", &format!("Completions {} last {weeks_n} weeks", ctx.mid())));
+    out.push_str(&ctx.paint(
+        "header",
+        &format!("Completions {} last {weeks_n} weeks", ctx.mid()),
+    ));
     out.push_str(&format!("   {}\n", ctx.paint("muted", legend)));
 
     // 7 weekday rows (Mon..Sun) × weeks columns.
@@ -370,8 +402,13 @@ pub fn burndown(
         if !member_ids.contains(id) {
             continue;
         }
-        let Some(date) = ts_of(ev).and_then(ev_date) else { continue };
-        let entry = lives.entry(id.to_string()).or_insert(Life { open: None, close: None });
+        let Some(date) = ts_of(ev).and_then(ev_date) else {
+            continue;
+        };
+        let entry = lives.entry(id.to_string()).or_insert(Life {
+            open: None,
+            close: None,
+        });
         match op_of(ev) {
             "add" | "import" => {
                 entry.open = Some(match entry.open {
@@ -391,7 +428,10 @@ pub fn burndown(
 
     // Ensure every member with no add event still counts (opened pre-window).
     for id in member_ids {
-        lives.entry(id.clone()).or_insert(Life { open: None, close: None });
+        lives.entry(id.clone()).or_insert(Life {
+            open: None,
+            close: None,
+        });
     }
 
     let start = anchor.saturating_sub(((days_n - 1) as i64).days());
@@ -424,7 +464,10 @@ pub fn render_burndown(ctx: &Ctx, series: &[RemainingPoint], scope_label: &str) 
     let max = series.iter().map(|p| p.remaining).max().unwrap_or(0).max(1);
 
     let mut out = String::new();
-    out.push_str(&ctx.paint("header", &format!("Remaining open {} {scope_label}", ctx.mid())));
+    out.push_str(&ctx.paint(
+        "header",
+        &format!("Remaining open {} {scope_label}", ctx.mid()),
+    ));
     out.push('\n');
 
     // Sparkline row of vertical blocks, colored hot→cold by fill.
@@ -433,10 +476,16 @@ pub fn render_burndown(ctx: &Ctx, series: &[RemainingPoint], scope_label: &str) 
         .map(|p| {
             let t = p.remaining as f64 / max as f64;
             let g = spark_glyph(t, ctx.caps.unicode);
-            ctx.theme.ramp_style(1.0 - t).paint(&g.to_string(), &ctx.caps)
+            ctx.theme
+                .ramp_style(1.0 - t)
+                .paint(&g.to_string(), &ctx.caps)
         })
         .collect();
-    out.push_str(&format!("  {}  {}\n", ctx.paint("muted", &format!("{max:>3}")), spark));
+    out.push_str(&format!(
+        "  {}  {}\n",
+        ctx.paint("muted", &format!("{max:>3}")),
+        spark
+    ));
     out.push_str(&format!(
         "  {}  {}\n",
         ctx.paint("muted", "  0"),
@@ -457,7 +506,14 @@ pub fn render_burndown(ctx: &Ctx, series: &[RemainingPoint], scope_label: &str) 
     let proj = project_finish(series, ctx.mid());
     out.push_str(&format!(
         "  {}\n",
-        ctx.paint("muted", &format!("{a} {last} left {m} {trend}{proj}", a = ctx.arrow(), m = ctx.mid()))
+        ctx.paint(
+            "muted",
+            &format!(
+                "{a} {last} left {m} {trend}{proj}",
+                a = ctx.arrow(),
+                m = ctx.mid()
+            )
+        )
     ));
     out
 }
@@ -483,7 +539,12 @@ fn axis_labels(series: &[RemainingPoint], unicode: bool) -> String {
     }
     let first = series.first().unwrap().date;
     let last = series.last().unwrap().date;
-    let fs = format!("{:04}-{:02}-{:02}", first.year(), first.month(), first.day());
+    let fs = format!(
+        "{:04}-{:02}-{:02}",
+        first.year(),
+        first.month(),
+        first.day()
+    );
     let ls = format!("{:04}-{:02}-{:02}", last.year(), last.month(), last.day());
     let arrow = if unicode { "→" } else { "->" };
     let width = series.len();
@@ -638,16 +699,27 @@ mod tests {
         // color escape is emitted (documented contract; NO_COLOR governs color).
         let no_color = Ctx::new(
             theme::default_theme(),
-            Caps { depth: ColorDepth::None, ansi: true, unicode: true },
+            Caps {
+                depth: ColorDepth::None,
+                ansi: true,
+                unicode: true,
+            },
         );
         assert_eq!(bar(3, 6, 6, &no_color), "███", "glyphs kept under NO_COLOR");
         let c = cell(6, &no_color);
         assert!(c.contains('█'), "heatmap glyph kept: {c:?}");
-        assert!(!c.contains("38;2") && !c.contains("38;5"), "color dropped: {c:?}");
+        assert!(
+            !c.contains("38;2") && !c.contains("38;5"),
+            "color dropped: {c:?}"
+        );
 
         // Piped/dumb/legacy (unicode off): ASCII bars, zero escapes.
         let plain = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        assert_eq!(bar(3, 6, 6, &plain), "###", "ASCII bars when Unicode unavailable");
+        assert_eq!(
+            bar(3, 6, 6, &plain),
+            "###",
+            "ASCII bars when Unicode unavailable"
+        );
         assert_eq!(cell(6, &plain), "#");
         assert!(!bar(3, 6, 6, &plain).contains('\x1b'));
         assert_eq!(spark_glyph(1.0, true), '█');

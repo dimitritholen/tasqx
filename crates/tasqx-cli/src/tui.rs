@@ -46,7 +46,11 @@ use crate::theme::{Caps, ColorDepth};
 /// redirected means nobody is driving this.
 pub fn is_interactive(caps: &Caps) -> bool {
     use std::io::IsTerminal;
-    is_interactive_with(caps, std::io::stdout().is_terminal(), std::io::stdin().is_terminal())
+    is_interactive_with(
+        caps,
+        std::io::stdout().is_terminal(),
+        std::io::stdin().is_terminal(),
+    )
 }
 
 /// The rule itself, with the stream facts injected.
@@ -195,9 +199,11 @@ pub fn with_terminal<T>(
     // Arming happens only once the alt screen is actually entered, so a failure
     // here cannot leave a guard that emits a leave-alt-screen for a screen we
     // never entered — that sequence on a normal screen eats scrollback.
-    if let Err(e) =
-        ratatui::crossterm::execute!(io::stdout(), EnterAlternateScreen, ratatui::crossterm::cursor::Hide)
-    {
+    if let Err(e) = ratatui::crossterm::execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        ratatui::crossterm::cursor::Hide
+    ) {
         let _ = disable_raw_mode();
         return Err(e);
     }
@@ -217,7 +223,11 @@ mod tests {
     use crate::theme::{ColorDepth, Rgb, Style};
 
     fn caps(depth: ColorDepth, ansi: bool) -> Caps {
-        Caps { depth, ansi, unicode: true }
+        Caps {
+            depth,
+            ansi,
+            unicode: true,
+        }
     }
 
     /// `IN_RAW_MODE` is a process-global, so the two tests that drive it have to
@@ -233,7 +243,10 @@ mod tests {
     #[test]
     fn a_plain_capability_level_refuses_the_alt_screen() {
         let real = |c: &Caps| is_interactive_with(c, true, true);
-        assert!(!real(&Caps::PLAIN), "piped/dumb must never open the alt screen");
+        assert!(
+            !real(&Caps::PLAIN),
+            "piped/dumb must never open the alt screen"
+        );
         let truecolor = caps(ColorDepth::Truecolor, true);
         let ansi16 = caps(ColorDepth::Ansi16, true);
         // NO_COLOR is still a terminal: emphasis-only, but interactive.
@@ -255,10 +268,19 @@ mod tests {
     #[test]
     fn a_redirected_stream_refuses_even_when_colour_is_forced() {
         let forced = caps(ColorDepth::Truecolor, true);
-        assert!(!is_interactive_with(&forced, false, true), "piped stdout must refuse");
-        assert!(!is_interactive_with(&forced, true, false), "redirected stdin must refuse");
+        assert!(
+            !is_interactive_with(&forced, false, true),
+            "piped stdout must refuse"
+        );
+        assert!(
+            !is_interactive_with(&forced, true, false),
+            "redirected stdin must refuse"
+        );
         assert!(!is_interactive_with(&forced, false, false));
-        assert!(is_interactive_with(&forced, true, true), "a real terminal still works");
+        assert!(
+            is_interactive_with(&forced, true, true),
+            "a real terminal still works"
+        );
     }
 
     /// The bytes that give the user their shell back. Pinned literally because
@@ -269,7 +291,10 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         write_restore(&mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.contains("\x1b[?1049l"), "must leave the alternate screen: {s:?}");
+        assert!(
+            s.contains("\x1b[?1049l"),
+            "must leave the alternate screen: {s:?}"
+        );
         assert!(s.contains("\x1b[?25h"), "must show the cursor again: {s:?}");
     }
 
@@ -282,10 +307,19 @@ mod tests {
         let mut first: Vec<u8> = Vec::new();
         let mut second: Vec<u8> = Vec::new();
 
-        assert!(restore_once(&flag, &mut first), "the first claim does the work");
-        assert!(!restore_once(&flag, &mut second), "the second claim is a no-op");
+        assert!(
+            restore_once(&flag, &mut first),
+            "the first claim does the work"
+        );
+        assert!(
+            !restore_once(&flag, &mut second),
+            "the second claim is a no-op"
+        );
         assert!(!first.is_empty());
-        assert!(second.is_empty(), "a second restore must emit nothing: {second:?}");
+        assert!(
+            second.is_empty(),
+            "a second restore must emit nothing: {second:?}"
+        );
     }
 
     /// A guard that never armed must not emit anything. Restoring a terminal
@@ -333,13 +367,19 @@ mod tests {
             panic!("render blew up");
         }));
 
-        assert!(result.is_err(), "the panic must still propagate, not be swallowed");
+        assert!(
+            result.is_err(),
+            "the panic must still propagate, not be swallowed"
+        );
         let out = String::from_utf8(sink.lock().unwrap().clone()).unwrap();
         assert!(
             out.contains("\x1b[?1049l") && out.contains("\x1b[?25h"),
             "the terminal was not restored while unwinding: {out:?}"
         );
-        assert!(!IN_RAW_MODE.load(Ordering::SeqCst), "the flag must be cleared by the restore");
+        assert!(
+            !IN_RAW_MODE.load(Ordering::SeqCst),
+            "the flag must be cleared by the restore"
+        );
     }
 
     /// The TUI must render through the theme at the terminal's real depth, not
@@ -361,11 +401,17 @@ mod tests {
         assert_eq!(i256.fg, Some(Color::Indexed(rgb.to_xterm256())));
         let i16 = rt_style(s, &caps(ColorDepth::Ansi16, true));
         assert_eq!(i16.fg, Some(Color::Indexed(rgb.to_ansi16())));
-        assert!(rgb.to_ansi16() < 16, "an ANSI16 index must stay in the basic range");
+        assert!(
+            rgb.to_ansi16() < 16,
+            "an ANSI16 index must stay in the basic range"
+        );
 
         // NO_COLOR drops color and keeps emphasis, exactly as `Style::paint` does.
         let none = rt_style(s, &caps(ColorDepth::None, true));
         assert_eq!(none.fg, None, "NO_COLOR must not colour the TUI");
-        assert!(none.add_modifier.contains(Modifier::BOLD), "emphasis survives NO_COLOR");
+        assert!(
+            none.add_modifier.contains(Modifier::BOLD),
+            "emphasis survives NO_COLOR"
+        );
     }
 }

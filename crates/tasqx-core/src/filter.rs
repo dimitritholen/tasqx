@@ -246,7 +246,9 @@ impl Filter {
     pub fn parse(input: &str, now: Timestamp) -> Result<Filter, String> {
         let toks = tokenize(input)?;
         if toks.is_empty() {
-            return Ok(Filter { root: Expr::Pred(Pred::Always) });
+            return Ok(Filter {
+                root: Expr::Pred(Pred::Always),
+            });
         }
         let mut p = Parser { toks, pos: 0, now };
         let root = p.parse_or()?;
@@ -374,8 +376,14 @@ pub fn quote(value: &str) -> String {
 /// `+`/`-` are here for the same reason they are in the grammar: a tag is a
 /// VALUE like any other, it just spells its key as punctuation.
 const VALUE_PREFIXES: [&str; 8] = [
-    "project:", "status:", "due.before:", "due.after:", "completed.before:", "completed.after:",
-    "+", "-",
+    "project:",
+    "status:",
+    "due.before:",
+    "due.after:",
+    "completed.before:",
+    "completed.after:",
+    "+",
+    "-",
 ];
 
 /// The token shapes an error message offers when it refuses one.
@@ -495,8 +503,14 @@ pub struct Word {
 /// `context` names the surface in the error text, because "unterminated quote in
 /// filter" is a lie when the line being refused was a `tasqx add`.
 pub fn split_words(input: &str, context: &str) -> Result<Vec<Word>, String> {
-    scan(input, Parens::Ordinary, context)
-        .map(|ts| ts.into_iter().map(|t| Word { text: t.text, quoted: t.quoted }).collect())
+    scan(input, Parens::Ordinary, context).map(|ts| {
+        ts.into_iter()
+            .map(|t| Word {
+                text: t.text,
+                quoted: t.quoted,
+            })
+            .collect()
+    })
 }
 
 fn scan(input: &str, parens: Parens, context: &str) -> Result<Vec<Tok>, String> {
@@ -538,15 +552,24 @@ fn scan(input: &str, parens: Parens, context: &str) -> Result<Vec<Tok>, String> 
             }
             '(' | ')' if parens == Parens::Break => {
                 if started {
-                    toks.push(Tok { text: std::mem::take(&mut cur), quoted });
+                    toks.push(Tok {
+                        text: std::mem::take(&mut cur),
+                        quoted,
+                    });
                     started = false;
                     quoted = false;
                 }
-                toks.push(Tok { text: c.to_string(), quoted: false });
+                toks.push(Tok {
+                    text: c.to_string(),
+                    quoted: false,
+                });
             }
             c if c.is_whitespace() => {
                 if started {
-                    toks.push(Tok { text: std::mem::take(&mut cur), quoted });
+                    toks.push(Tok {
+                        text: std::mem::take(&mut cur),
+                        quoted,
+                    });
                     started = false;
                     quoted = false;
                 }
@@ -580,13 +603,17 @@ impl Parser {
     }
 
     fn is_kw(&self, kw: &str) -> bool {
-        self.toks.get(self.pos).is_some_and(|t| !t.quoted && t.text.eq_ignore_ascii_case(kw))
+        self.toks
+            .get(self.pos)
+            .is_some_and(|t| !t.quoted && t.text.eq_ignore_ascii_case(kw))
     }
 
     /// An *unquoted* token equal to `s` — i.e. `s` used as punctuation. A quoted
     /// `")"` is a value that happens to look like punctuation and must stay one.
     fn is_sym(&self, s: &str) -> bool {
-        self.toks.get(self.pos).is_some_and(|t| !t.quoted && t.text == s)
+        self.toks
+            .get(self.pos)
+            .is_some_and(|t| !t.quoted && t.text == s)
     }
 
     fn parse_or(&mut self) -> Result<Expr, String> {
@@ -646,10 +673,12 @@ impl Parser {
         let prev = self.pos.checked_sub(1).and_then(|p| self.toks.get(p));
         let hint = spacing_hint(prev, &self.toks[self.pos]);
         self.pos += 1;
-        Ok(Expr::Pred(predicate(&tok, self.now).map_err(|e| match hint {
-            Some(h) => format!("{e} — {h}"),
-            None => e,
-        })?))
+        Ok(Expr::Pred(predicate(&tok, self.now).map_err(
+            |e| match hint {
+                Some(h) => format!("{e} — {h}"),
+                None => e,
+            },
+        )?))
     }
 }
 
@@ -684,7 +713,9 @@ fn spacing_hint(prev: Option<&Tok>, tok: &Tok) -> Option<String> {
     if VALUE_PREFIXES.iter().any(|p| tok.text.starts_with(p)) || tok.text.starts_with('@') {
         return None;
     }
-    let p = VALUE_PREFIXES.iter().find(|p| prev.text.strip_prefix(**p).is_some_and(|v| !v.is_empty()))?;
+    let p = VALUE_PREFIXES
+        .iter()
+        .find(|p| prev.text.strip_prefix(**p).is_some_and(|v| !v.is_empty()))?;
     let value = prev.text.strip_prefix(*p).expect("just matched");
     Some(format!(
         "did you mean {p}{}? quote a value that contains a space, so the shell hands it over whole",
@@ -771,7 +802,9 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
     if let Some(v) = tok.strip_prefix("completed.after:") {
         return Ok(Pred::CompletedAfter(bound(v, "completed.after", now)?));
     }
-    Err(format!("unknown filter token {tok:?} (expected {TOKEN_SHAPES})"))
+    Err(format!(
+        "unknown filter token {tok:?} (expected {TOKEN_SHAPES})"
+    ))
 }
 
 /// Resolve a date bound against `now`, or say why it is not a date.
@@ -845,11 +878,25 @@ mod tests {
     }
 
     fn ctx_for(status: Status) -> MatchCtx<'static> {
-        MatchCtx { status, project: None, tags: &[], due: None, completed: None, blocked: false }
+        MatchCtx {
+            status,
+            project: None,
+            tags: &[],
+            due: None,
+            completed: None,
+            blocked: false,
+        }
     }
 
     fn ctx_tagged(tags: &[String]) -> MatchCtx<'_> {
-        MatchCtx { status: Status::Pending, project: None, tags, due: None, completed: None, blocked: false }
+        MatchCtx {
+            status: Status::Pending,
+            project: None,
+            tags,
+            due: None,
+            completed: None,
+            blocked: false,
+        }
     }
 
     /// Grouping has to actually GROUP. Nothing in this suite ever *evaluated* a
@@ -902,12 +949,24 @@ mod tests {
             completed: None,
             blocked: false,
         };
-        assert!(!parsed(&format!("due.before:{bound}")).matches(&ctx), "before is strict");
-        assert!(!parsed(&format!("due.after:{bound}")).matches(&ctx), "after is strict");
+        assert!(
+            !parsed(&format!("due.before:{bound}")).matches(&ctx),
+            "before is strict"
+        );
+        assert!(
+            !parsed(&format!("due.after:{bound}")).matches(&ctx),
+            "after is strict"
+        );
         // One second either side still resolves the way the names promise.
-        let earlier = MatchCtx { due: Some("2026-07-16T23:59:59Z"), ..ctx };
+        let earlier = MatchCtx {
+            due: Some("2026-07-16T23:59:59Z"),
+            ..ctx
+        };
         assert!(parsed(&format!("due.before:{bound}")).matches(&earlier));
-        let later = MatchCtx { due: Some("2026-07-17T00:00:01Z"), ..ctx };
+        let later = MatchCtx {
+            due: Some("2026-07-17T00:00:01Z"),
+            ..ctx
+        };
         assert!(parsed(&format!("due.after:{bound}")).matches(&later));
     }
 
@@ -943,17 +1002,29 @@ mod tests {
         // rule — unquoted it is three tokens, and the second is not a filter
         // term at all. That is the grammar working, not a gap: `due:` gets the
         // same protection from the shell's own quotes.
-        for spelling in ["friday", "2026-07-25", "in 3 days", "eom", "2026-07-20T17:00"] {
+        for spelling in [
+            "friday",
+            "2026-07-25",
+            "in 3 days",
+            "eom",
+            "2026-07-20T17:00",
+        ] {
             let f = Filter::parse(&format!("due.before:{}", quote(spelling)), anchor)
                 .unwrap_or_else(|e| panic!("due.before:{spelling:?} must parse: {e}"));
-            assert!(f.matches(&ctx), "due.before:{spelling:?} must select a task due tomorrow");
+            assert!(
+                f.matches(&ctx),
+                "due.before:{spelling:?} must select a task due tomorrow"
+            );
         }
         // The same grammar on the other side of the comparison — `tomorrow`
         // included, so no spelling in the advertised set goes unexercised.
         for spelling in ["today", "yesterday", "2026-07-19", "tomorrow"] {
             let f = Filter::parse(&format!("due.after:{spelling}"), anchor)
                 .unwrap_or_else(|e| panic!("due.after:{spelling:?} must parse: {e}"));
-            assert!(f.matches(&ctx), "due.after:{spelling:?} must select a task due tomorrow");
+            assert!(
+                f.matches(&ctx),
+                "due.after:{spelling:?} must select a task due tomorrow"
+            );
         }
     }
 
@@ -975,7 +1046,10 @@ mod tests {
         ] {
             let err = Filter::parse(input, anchor)
                 .expect_err("an unreadable date bound must be refused, not matched against");
-            assert!(err.contains(offender), "the error must name {offender:?}: {err}");
+            assert!(
+                err.contains(offender),
+                "the error must name {offender:?}: {err}"
+            );
         }
     }
 
@@ -1000,8 +1074,14 @@ mod tests {
         // `tomorrow` at Monday noon is 2026-07-21T00:00:00Z, and the bound is
         // strict — so the row exactly on it is out and one second earlier is in,
         // no matter how much later `matches` runs.
-        assert!(!f.matches(&just_inside), "the bound must stay at the instant parse resolved");
-        let earlier = MatchCtx { due: Some("2026-07-20T23:59:59Z"), ..just_inside };
+        assert!(
+            !f.matches(&just_inside),
+            "the bound must stay at the instant parse resolved"
+        );
+        let earlier = MatchCtx {
+            due: Some("2026-07-20T23:59:59Z"),
+            ..just_inside
+        };
         assert!(f.matches(&earlier));
     }
 
@@ -1025,11 +1105,20 @@ mod tests {
         let no_tags: Vec<String> = vec![];
 
         let f = parsed("-infra");
-        assert!(!f.matches(&ctx_tagged(&has_infra)), "-infra must hide a task tagged infra");
+        assert!(
+            !f.matches(&ctx_tagged(&has_infra)),
+            "-infra must hide a task tagged infra"
+        );
         // Load-bearing: a task carrying some *other* tag is what separates a
         // correct exclusion from one whose comparison has been inverted.
-        assert!(f.matches(&ctx_tagged(&other_tag)), "-infra must keep a task tagged only docs");
-        assert!(f.matches(&ctx_tagged(&no_tags)), "-infra must keep an untagged task");
+        assert!(
+            f.matches(&ctx_tagged(&other_tag)),
+            "-infra must keep a task tagged only docs"
+        );
+        assert!(
+            f.matches(&ctx_tagged(&no_tags)),
+            "-infra must keep an untagged task"
+        );
 
         // The include/exclude pair must stay exact opposites on the same rows.
         let inc = parsed("+infra");
@@ -1070,8 +1159,9 @@ mod tests {
         // tokenizer long before status parsing sees it, so those inputs would
         // exercise the tokenizer rather than this rule.
         for bogus in ["bogus", "canceled", "PENDING", "Done", "pending2", ""] {
-            let err = Filter::parse(&format!("status:{bogus}"), anchor())
-                .expect_err(&format!("status:{bogus:?} must be refused, not silently match nothing"));
+            let err = Filter::parse(&format!("status:{bogus}"), anchor()).expect_err(&format!(
+                "status:{bogus:?} must be refused, not silently match nothing"
+            ));
             assert!(
                 err.contains(&format!("{bogus:?}")),
                 "the refusal must name the offending value; got {err:?}"
@@ -1118,8 +1208,14 @@ mod tests {
             let want = matches!(status, Status::Pending | Status::Active);
             assert_eq!(f.matches(&ctx_for(status)), want, "@working vs {status:?}");
 
-            let blocked = MatchCtx { blocked: true, ..ctx_for(status) };
-            assert!(!f.matches(&blocked), "@working must exclude blocked {status:?}");
+            let blocked = MatchCtx {
+                blocked: true,
+                ..ctx_for(status)
+            };
+            assert!(
+                !f.matches(&blocked),
+                "@working must exclude blocked {status:?}"
+            );
         }
     }
 
@@ -1165,8 +1261,13 @@ mod tests {
             // exists to police: renaming `RFC3339` to `DATE` made the scan stop
             // seeing two of the four predicates, and only the `seen == 4` floor
             // below caught it.
-            let Some((lhs, rhs)) = line.split_once(":\"") else { continue };
-            if !rhs.trim_start().starts_with(|c: char| c.is_ascii_uppercase()) {
+            let Some((lhs, rhs)) = line.split_once(":\"") else {
+                continue;
+            };
+            if !rhs
+                .trim_start()
+                .starts_with(|c: char| c.is_ascii_uppercase())
+            {
                 continue;
             }
             let key = format!("{}:", lhs.rsplit('"').next().unwrap_or_default());
@@ -1193,7 +1294,11 @@ mod tests {
         for p in VALUE_PREFIXES {
             // `+`/`-` spell themselves as `+tag`/`-tag` in prose, since a bare
             // `+` is not something a user types.
-            let needle = if p == "+" || p == "-" { format!("{p}tag") } else { p.to_string() };
+            let needle = if p == "+" || p == "-" {
+                format!("{p}tag")
+            } else {
+                p.to_string()
+            };
             assert!(
                 TOKEN_SHAPES.contains(&needle),
                 "`{p}` is an accepted filter prefix but no refusal message offers it: {TOKEN_SHAPES}"
@@ -1246,11 +1351,16 @@ mod tests {
             ("project:Home Renovation", r#"project:"Home Renovation""#),
         ] {
             assert!(
-                Filter::parse(literal, anchor()).expect("the literal form parses").matches(&ctx),
+                Filter::parse(literal, anchor())
+                    .expect("the literal form parses")
+                    .matches(&ctx),
                 "{literal:?} must select"
             );
             let err = Filter::parse(stripped, anchor()).expect_err("{stripped:?} must be refused");
-            assert!(err.contains(literal), "{stripped:?} must name the spelling that works: {err}");
+            assert!(
+                err.contains(literal),
+                "{stripped:?} must name the spelling that works: {err}"
+            );
             assert!(err.contains("quote"), "{stripped:?} must say why: {err}");
         }
     }
@@ -1275,7 +1385,10 @@ mod tests {
         // that must not.
         for input in [r#"project:"Home Renovation" Renovation"#, "Renovation"] {
             let err = Filter::parse(input, anchor()).expect_err("still refused");
-            assert!(!err.contains("did you mean"), "{input:?} must not be hinted at: {err}");
+            assert!(
+                !err.contains("did you mean"),
+                "{input:?} must not be hinted at: {err}"
+            );
         }
     }
 
@@ -1284,7 +1397,13 @@ mod tests {
     /// guards what a user gets back and not how the tokenizer spells it.
     #[test]
     fn a_quoted_value_carries_spaces_parens_and_quotes_through_to_matching() {
-        for name in ["Home Renovation", "a (b)", "say \"hi\"", "back\\slash", "  padded  "] {
+        for name in [
+            "Home Renovation",
+            "a (b)",
+            "say \"hi\"",
+            "back\\slash",
+            "  padded  ",
+        ] {
             let f = parsed(&format!("project:{}", quote(name)));
             let ctx = MatchCtx {
                 status: Status::Pending,
@@ -1294,11 +1413,20 @@ mod tests {
                 completed: None,
                 blocked: false,
             };
-            assert!(f.matches(&ctx), "project:{name:?} must match its own project");
+            assert!(
+                f.matches(&ctx),
+                "project:{name:?} must match its own project"
+            );
             // Load-bearing: without it, a filter that lost everything after the
             // first space would still "pass" against a project named `Home`.
-            let other = MatchCtx { project: Some("Home"), ..ctx };
-            assert!(!f.matches(&other), "project:{name:?} must not match a mere prefix");
+            let other = MatchCtx {
+                project: Some("Home"),
+                ..ctx
+            };
+            assert!(
+                !f.matches(&other),
+                "project:{name:?} must not match a mere prefix"
+            );
         }
     }
 
@@ -1361,8 +1489,21 @@ mod tests {
     #[test]
     fn quote_round_trips_every_value_through_the_parser() {
         for v in [
-            "plain", "two words", "a (b)", "quote\"inside", "back\\slash", "\\", "\"", "",
-            "and", "or", "(", ")", "+tag", "project:x", "tab\there",
+            "plain",
+            "two words",
+            "a (b)",
+            "quote\"inside",
+            "back\\slash",
+            "\\",
+            "\"",
+            "",
+            "and",
+            "or",
+            "(",
+            ")",
+            "+tag",
+            "project:x",
+            "tab\there",
         ] {
             let f = Filter::parse(&format!("project:{}", quote(v)), anchor())
                 .unwrap_or_else(|e| panic!("quote({v:?}) must parse back: {e}"));
@@ -1392,14 +1533,31 @@ mod tests {
     #[test]
     fn split_words_reads_back_everything_quote_can_emit() {
         for v in [
-            "plain", "two words", "a (b)", "quote\"inside", "back\\slash", "\\", "\"", "",
-            "and", "or", "(", ")", "+tag", "project:x", "tab\there",
+            "plain",
+            "two words",
+            "a (b)",
+            "quote\"inside",
+            "back\\slash",
+            "\\",
+            "\"",
+            "",
+            "and",
+            "or",
+            "(",
+            ")",
+            "+tag",
+            "project:x",
+            "tab\there",
         ] {
             let src = format!("project:{}", quote(v));
             let words = split_words(&src, "task text")
                 .unwrap_or_else(|e| panic!("quote({v:?}) must scan on the write side: {e}"));
             assert_eq!(words.len(), 1, "quote({v:?}) must stay ONE word: {src}");
-            assert_eq!(words[0].text, format!("project:{v}"), "quote({v:?}) lost its value");
+            assert_eq!(
+                words[0].text,
+                format!("project:{v}"),
+                "quote({v:?}) lost its value"
+            );
             assert!(words[0].quoted, "quote({v:?}) is quoted by construction");
         }
     }
@@ -1411,11 +1569,19 @@ mod tests {
     fn parens_break_tokens_only_on_the_read_side() {
         let words = split_words("call (mom)", "task text").expect("scans");
         let texts: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
-        assert_eq!(texts, ["call", "(mom)"], "a paren is ordinary text in a title");
+        assert_eq!(
+            texts,
+            ["call", "(mom)"],
+            "a paren is ordinary text in a title"
+        );
 
         let toks = tokenize("call (mom)").expect("scans");
         let texts: Vec<&str> = toks.iter().map(|t| t.text.as_str()).collect();
-        assert_eq!(texts, ["call", "(", "mom", ")"], "but grouping on the read side");
+        assert_eq!(
+            texts,
+            ["call", "(", "mom", ")"],
+            "but grouping on the read side"
+        );
     }
 
     /// An unterminated quote is refused on both sides, and the message names the
@@ -1424,7 +1590,9 @@ mod tests {
     fn an_unterminated_quote_is_refused_and_names_its_surface() {
         // `.err()` rather than `expect_err`, which would demand Debug on the
         // success type purely to serve a test.
-        let e = split_words("+say\"hi", "task text").err().expect("must be refused");
+        let e = split_words("+say\"hi", "task text")
+            .err()
+            .expect("must be refused");
         assert!(e.contains("unterminated") && e.contains("task text"), "{e}");
         let e = tokenize("+say\"hi").err().expect("must be refused");
         assert!(e.contains("unterminated") && e.contains("filter"), "{e}");
@@ -1440,16 +1608,33 @@ mod tests {
     /// single-dash form must keep working exactly as before.
     #[test]
     fn a_doubled_dash_is_rejected_rather_than_matching_everything() {
-        let err = Filter::parse("--json", anchor()).expect_err("`--json` is a flag, not a tag exclusion");
-        assert!(err.contains("--json"), "the error must name what was typed: {err}");
-        assert!(err.contains("-tag"), "and point at the shape that works: {err}");
+        let err =
+            Filter::parse("--json", anchor()).expect_err("`--json` is a flag, not a tag exclusion");
+        assert!(
+            err.contains("--json"),
+            "the error must name what was typed: {err}"
+        );
+        assert!(
+            err.contains("-tag"),
+            "and point at the shape that works: {err}"
+        );
 
         let f = Filter::parse("-needs", anchor()).expect("one dash is still a tag exclusion");
         let tagged = vec!["needs".to_string()];
         fn ctx(tags: &[String]) -> MatchCtx<'_> {
-            MatchCtx { status: Status::Pending, project: None, tags, due: None, completed: None, blocked: false }
+            MatchCtx {
+                status: Status::Pending,
+                project: None,
+                tags,
+                due: None,
+                completed: None,
+                blocked: false,
+            }
         }
-        assert!(!f.matches(&ctx(&tagged)), "-needs must exclude the tagged task");
+        assert!(
+            !f.matches(&ctx(&tagged)),
+            "-needs must exclude the tagged task"
+        );
         assert!(f.matches(&ctx(&[])), "-needs must keep everything else");
     }
 
@@ -1479,7 +1664,9 @@ mod tests {
             for word in outside.split(|c: char| !c.is_ascii_alphanumeric()) {
                 let is_symbol = word.len() >= 2
                     && word.starts_with(|c: char| c.is_ascii_uppercase())
-                    && word.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+                    && word
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
                 if is_symbol {
                     out.push(word.to_string());
                 }
@@ -1505,9 +1692,14 @@ mod tests {
     fn the_grammar_defines_every_symbol_it_uses() {
         let text = grammar();
         let defined = defined_symbols(text);
-        let missing: Vec<String> =
-            referenced_symbols(text).into_iter().filter(|s| !defined.contains(s)).collect();
-        assert!(missing.is_empty(), "grammar uses undefined symbol(s) {missing:?}:\n{text}");
+        let missing: Vec<String> = referenced_symbols(text)
+            .into_iter()
+            .filter(|s| !defined.contains(s))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "grammar uses undefined symbol(s) {missing:?}:\n{text}"
+        );
     }
 
     /// Every predicate that takes a value must *say* it takes a value, because
@@ -1525,9 +1717,12 @@ mod tests {
     #[test]
     fn every_value_taking_predicate_is_written_as_taking_a_value() {
         let text = grammar();
-        for (prefix, value) in
-            [("+", "two words"), ("-", "two words"), ("project:", "two words"), ("status:", "pending")]
-        {
+        for (prefix, value) in [
+            ("+", "two words"),
+            ("-", "two words"),
+            ("project:", "two words"),
+            ("status:", "pending"),
+        ] {
             let filter = format!("{prefix}\"{value}\"");
             Filter::parse(&filter, anchor())
                 .unwrap_or_else(|e| panic!("the parser accepts {filter:?}, so: {e}"));

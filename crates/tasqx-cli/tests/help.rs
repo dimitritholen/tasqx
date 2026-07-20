@@ -2,7 +2,9 @@ use std::process::Command;
 
 use tasqx_cli::cmddoc::{RunKind, COMMAND_REF};
 
-fn bin() -> Command { Command::new(env!("CARGO_BIN_EXE_tasqx")) }
+fn bin() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_tasqx"))
+}
 
 fn help_of(verb: &str) -> String {
     let out = bin().args([verb, "--help"]).output().expect("run --help");
@@ -103,13 +105,25 @@ fn safe_examples_all_exit_zero() {
     let examples = safe_examples();
     // A filter bug that selected nothing would leave this test green while
     // executing zero commands; the floor makes that impossible to miss.
-    assert!(examples.len() >= 27, "expected the full Safe set, got {}", examples.len());
+    assert!(
+        examples.len() >= 27,
+        "expected the full Safe set, got {}",
+        examples.len()
+    );
 
     let mut failures = Vec::new();
     for cmd in examples {
         let args = shell_split(cmd);
-        assert_eq!(args.first().map(String::as_str), Some("tasqx"), "`{cmd}` must start with tasqx");
-        let out = bin().env("TASQX_DB", &db).args(&args[1..]).output().unwrap();
+        assert_eq!(
+            args.first().map(String::as_str),
+            Some("tasqx"),
+            "`{cmd}` must start with tasqx"
+        );
+        let out = bin()
+            .env("TASQX_DB", &db)
+            .args(&args[1..])
+            .output()
+            .unwrap();
         if !out.status.success() {
             failures.push(format!(
                 "`{cmd}` exited {:?}\n    stderr: {}",
@@ -138,14 +152,31 @@ fn safe_examples_all_exit_zero() {
 /// the situation being guarded.
 #[test]
 fn config_edit_refuses_a_piped_stdout_with_a_nonzero_exit() {
-    let out = bin().args(["config", "edit"]).output().expect("run config edit");
+    let out = bin()
+        .args(["config", "edit"])
+        .output()
+        .expect("run config edit");
 
-    assert_eq!(out.status.code(), Some(2), "a refused TUI must exit non-zero (bad_request)");
-    assert!(out.stdout.is_empty(), "nothing may reach a piped stdout: {:?}", out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a refused TUI must exit non-zero (bad_request)"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "nothing may reach a piped stdout: {:?}",
+        out.stdout
+    );
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!err.contains('\x1b'), "escape codes leaked into the refusal: {err:?}");
+    assert!(
+        !err.contains('\x1b'),
+        "escape codes leaked into the refusal: {err:?}"
+    );
     assert!(err.contains("interactive terminal"), "{err}");
-    assert!(err.contains("config set"), "the refusal must name the way that works: {err}");
+    assert!(
+        err.contains("config set"),
+        "the refusal must name the way that works: {err}"
+    );
 }
 
 #[test]
@@ -163,8 +194,15 @@ fn manual_toc_and_sections_work() {
 
 #[test]
 fn manual_unknown_topic_exits_2() {
-    let out = bin().args(["manual", "definitely-not-a-topic"]).output().unwrap();
-    assert_eq!(out.status.code(), Some(2), "unknown manual arg must be bad_request");
+    let out = bin()
+        .args(["manual", "definitely-not-a-topic"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "unknown manual arg must be bad_request"
+    );
     assert!(String::from_utf8_lossy(&out.stderr).contains("definitely-not-a-topic"));
 }
 
@@ -187,11 +225,16 @@ fn manual_unknown_topic_exits_2() {
 fn the_version_short_flag_works_on_every_subcommand_the_way_help_does() {
     let root = bin().arg("--version").output().expect("run --version");
     let root_out = String::from_utf8_lossy(&root.stdout).into_owned();
-    let payload = root_out.strip_prefix("tasqx").expect("root --version: {root_out:?}");
+    let payload = root_out
+        .strip_prefix("tasqx")
+        .expect("root --version: {root_out:?}");
     assert!(payload.contains('.'), "no version number in {root_out:?}");
 
     let names = tasqx_cli::subcommand_names();
-    assert!(names.len() > 10, "the subcommand list came back empty-ish: {names:?}");
+    assert!(
+        names.len() > 10,
+        "the subcommand list came back empty-ish: {names:?}"
+    );
 
     for name in names {
         let out = bin().args([&name, "-V"]).output().expect("run -V");
@@ -204,7 +247,10 @@ fn the_version_short_flag_works_on_every_subcommand_the_way_help_does() {
         // The twin that already worked, asserted beside it so a fix that
         // propagates `-V` by breaking `-h` cannot pass.
         let h = bin().args([&name, "-h"]).output().expect("run -h");
-        assert!(h.status.success(), "`tasqx {name} -h` must still print help");
+        assert!(
+            h.status.success(),
+            "`tasqx {name} -h` must still print help"
+        );
         assert!(
             String::from_utf8_lossy(&h.stdout).contains("Usage:"),
             "`tasqx {name} -h` printed no usage"
@@ -221,14 +267,29 @@ fn the_version_short_flag_works_on_every_subcommand_the_way_help_does() {
 fn a_multi_character_dash_token_beginning_with_v_is_still_a_tag_exclusion() {
     let db = fresh_db("dash-v");
     let run = |args: &[&str]| -> std::process::Output {
-        bin().env("TASQX_DB", &db).env("TASQX_CONFIG_DIR", "").args(args).output().expect("run")
+        bin()
+            .env("TASQX_DB", &db)
+            .env("TASQX_CONFIG_DIR", "")
+            .args(args)
+            .output()
+            .expect("run")
     };
     run(&["add", "geverfd", "+Verf"]);
     run(&["add", "gezaagd"]);
 
     let out = run(&["list", "-Verf"]);
-    assert!(out.status.success(), "`list -Verf` failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "`list -Verf` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("gezaagd"), "the untagged task must survive the exclusion: {s}");
-    assert!(!s.contains("geverfd"), "`-Verf` must exclude the tagged task, not print a version: {s}");
+    assert!(
+        s.contains("gezaagd"),
+        "the untagged task must survive the exclusion: {s}"
+    );
+    assert!(
+        !s.contains("geverfd"),
+        "`-Verf` must exclude the tagged task, not print a version: {s}"
+    );
 }

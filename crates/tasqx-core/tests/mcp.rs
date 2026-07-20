@@ -96,8 +96,14 @@ fn full_protocol_sequence() {
     }
     // Write tools are annotated destructive; reads are read-only.
     let get_add = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
-    assert_eq!(get_add("tasqx_add_task")["annotations"]["destructiveHint"], true);
-    assert_eq!(get_add("tasqx_list_tasks")["annotations"]["readOnlyHint"], true);
+    assert_eq!(
+        get_add("tasqx_add_task")["annotations"]["destructiveHint"],
+        true
+    );
+    assert_eq!(
+        get_add("tasqx_list_tasks")["annotations"]["readOnlyHint"],
+        true
+    );
 
     // 4. tools/call tasqx_add_task
     let added = call(
@@ -108,10 +114,17 @@ fn full_protocol_sequence() {
     );
     assert!(!is_error(&added));
     let added_body = tool_text(&added);
-    let short_id = added_body["short_id"].as_i64().expect("short_id in add result");
+    let short_id = added_body["short_id"]
+        .as_i64()
+        .expect("short_id in add result");
 
     // 5. tools/call tasqx_list_tasks — the added task appears.
-    let listed_tasks = call(&server, 4, "tasqx_list_tasks", json!({ "filter": "status:pending" }));
+    let listed_tasks = call(
+        &server,
+        4,
+        "tasqx_list_tasks",
+        json!({ "filter": "status:pending" }),
+    );
     assert!(!is_error(&listed_tasks));
     let body = tool_text(&listed_tasks);
     let titles: Vec<&str> = body["tasks"]
@@ -126,7 +139,12 @@ fn full_protocol_sequence() {
     );
 
     // 6. tools/call tasqx_complete_task
-    let done = call(&server, 5, "tasqx_complete_task", json!({ "ref": short_id }));
+    let done = call(
+        &server,
+        5,
+        "tasqx_complete_task",
+        json!({ "ref": short_id }),
+    );
     assert!(!is_error(&done));
     let done_body = tool_text(&done);
     assert_eq!(done_body["status"], "done");
@@ -154,16 +172,30 @@ fn read_scope_rejects_writes_and_does_not_mutate() {
     let server = McpServer::new(&engine, Scope::Read);
 
     // A write tool under read scope => isError, no mutation.
-    let attempt = call(&server, 1, "tasqx_add_task", json!({ "title": "should not exist" }));
+    let attempt = call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "should not exist" }),
+    );
     assert!(is_error(&attempt), "write under read scope must be isError");
     let msg = attempt["result"]["content"][0]["text"].as_str().unwrap();
     assert!(msg.contains("read-only") || msg.contains("write scope"));
 
     // A read tool is still allowed, and shows nothing was created.
-    let listed = call(&server, 2, "tasqx_list_tasks", json!({ "filter": "status:pending" }));
+    let listed = call(
+        &server,
+        2,
+        "tasqx_list_tasks",
+        json!({ "filter": "status:pending" }),
+    );
     assert!(!is_error(&listed));
     let body = tool_text(&listed);
-    assert_eq!(body["count"].as_i64().unwrap(), 0, "no task should have been created");
+    assert_eq!(
+        body["count"].as_i64().unwrap(),
+        0,
+        "no task should have been created"
+    );
 }
 
 // ---- ApiError passthrough ----------------------------------------------------
@@ -175,7 +207,10 @@ fn bad_ref_get_task_is_not_found_iserror() {
     let resp = call(&server, 1, "tasqx_get_task", json!({ "ref": 999999 }));
     assert!(is_error(&resp), "bad ref must yield isError");
     let msg = resp["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(msg.contains("not_found"), "message should carry the not_found code: {msg}");
+    assert!(
+        msg.contains("not_found"),
+        "message should carry the not_found code: {msg}"
+    );
 }
 
 // ---- tools/list is scope-filtered --------------------------------------------
@@ -198,7 +233,10 @@ fn read_scope_tools_list_hides_write_tools() {
         );
     }
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert!(!names.contains(&"tasqx_add_task"), "write tool leaked into read-scope list");
+    assert!(
+        !names.contains(&"tasqx_add_task"),
+        "write tool leaked into read-scope list"
+    );
 }
 
 // ---- optimistic concurrency by default ---------------------------------------
@@ -209,7 +247,12 @@ fn modify_pins_expected_rev_by_default() {
     let server = McpServer::new(&engine, Scope::Write);
 
     // Create a task (starts at _rev 1).
-    let added = call(&server, 1, "tasqx_add_task", json!({ "title": "concurrency guard" }));
+    let added = call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "concurrency guard" }),
+    );
     let short_id = tool_text(&added)["short_id"].as_i64().expect("short_id");
 
     // A modify with NO expected_rev supplied still succeeds — the server reads
@@ -233,7 +276,10 @@ fn modify_pins_expected_rev_by_default() {
     );
     assert!(is_error(&stale), "stale expected_rev must conflict");
     let msg = stale["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(msg.contains("conflict"), "message should carry the conflict code: {msg}");
+    assert!(
+        msg.contains("conflict"),
+        "message should carry the conflict code: {msg}"
+    );
 }
 
 // ---- protocol version negotiation --------------------------------------------

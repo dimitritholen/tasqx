@@ -98,8 +98,11 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
         return Err(unparseable(raw));
     }
 
-    let date =
-        if bare_time { today } else { resolve_date(&tokens, today).ok_or_else(|| unparseable(raw))? };
+    let date = if bare_time {
+        today
+    } else {
+        resolve_date(&tokens, today).ok_or_else(|| unparseable(raw))?
+    };
 
     let t = time.unwrap_or_else(midnight);
     let out = finish(DateTime::from_parts(date, t), raw)?;
@@ -169,7 +172,10 @@ fn to_the_second(dt: DateTime) -> DateTime {
 /// cause. Reading the library's error text to find that out would be the same
 /// leak this function exists to close, pointed the other way.
 fn to_instant(dt: DateTime, raw: &str) -> Result<Timestamp, ApiError> {
-    Ok(dt.to_zoned(TimeZone::UTC).map_err(|_| out_of_range(raw))?.timestamp())
+    Ok(dt
+        .to_zoned(TimeZone::UTC)
+        .map_err(|_| out_of_range(raw))?
+        .timestamp())
 }
 
 /// Convert a naive UTC datetime to an RFC3339 string.
@@ -492,17 +498,34 @@ mod tests {
     /// leaves the other two leaking.
     #[test]
     fn a_date_past_the_representable_range_is_refused_in_this_tools_words() {
-        for raw in ["9999-12-31", "9999-12-31T23:59", "9999-12-31 23:00", "9999-12-31T22:00:01"] {
+        for raw in [
+            "9999-12-31",
+            "9999-12-31T23:59",
+            "9999-12-31 23:00",
+            "9999-12-31T22:00:01",
+        ] {
             let err = parse_when(raw, now()).expect_err("must be refused");
             let msg = err.message;
             assert!(msg.contains(raw), "the offending value is not named: {msg}");
-            for leak in ["Unix timestamp", "parameter", "overflowed", "time zone offset", "-377705023201"] {
-                assert!(!msg.contains(leak), "jiff internals leaked ({leak:?}): {msg}");
+            for leak in [
+                "Unix timestamp",
+                "parameter",
+                "overflowed",
+                "time zone offset",
+                "-377705023201",
+            ] {
+                assert!(
+                    !msg.contains(leak),
+                    "jiff internals leaked ({leak:?}): {msg}"
+                );
             }
             // The way out: a bound the user can aim below, in the same spelling
             // they typed. `9999` alone would be ambiguous, so the assertion is on
             // the full instant.
-            assert!(msg.contains("9999-12-30"), "the last usable instant is not named: {msg}");
+            assert!(
+                msg.contains("9999-12-30"),
+                "the last usable instant is not named: {msg}"
+            );
         }
         // The near side of the same boundary still WORKS — a guard that only
         // proved the refusal would be satisfied by refusing every date.
@@ -639,8 +662,19 @@ mod tests {
     /// meant, and a wrong due date you don't see beats an error you do.
     #[test]
     fn filler_stripping_does_not_swallow_junk() {
-        for bad in ["at", "on", "by", "@", "at fridya", "on someday", "friday at bogus"] {
-            assert!(parse_when(bad, now()).is_err(), "{bad:?} must stay an error");
+        for bad in [
+            "at",
+            "on",
+            "by",
+            "@",
+            "at fridya",
+            "on someday",
+            "friday at bogus",
+        ] {
+            assert!(
+                parse_when(bad, now()).is_err(),
+                "{bad:?} must stay an error"
+            );
         }
     }
 
@@ -661,7 +695,10 @@ mod tests {
             "in 99999999 months",
             "in 99999999 years",
         ] {
-            assert!(parse_when(bad, now()).is_err(), "{bad:?} must be a clean error");
+            assert!(
+                parse_when(bad, now()).is_err(),
+                "{bad:?} must be a clean error"
+            );
         }
     }
 
@@ -680,7 +717,10 @@ mod tests {
             "9223372036854775807d",
             "1000000000000000000w1000000000000000000w",
         ] {
-            assert!(parse_duration(bad).is_err(), "{bad:?} must be a clean error");
+            assert!(
+                parse_duration(bad).is_err(),
+                "{bad:?} must be a clean error"
+            );
         }
     }
 

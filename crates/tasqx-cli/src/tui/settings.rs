@@ -42,7 +42,9 @@ pub struct Row {
 pub enum Mode {
     Browse,
     /// An inline picker is open over the selected row's `choices`.
-    Pick { cursor: usize },
+    Pick {
+        cursor: usize,
+    },
 }
 
 /// An intent for the caller to carry out. `App` never writes anything itself.
@@ -50,7 +52,10 @@ pub enum Mode {
 pub enum Action {
     /// Persist `value` for `key` through `config::write_value`, then report the
     /// re-resolved result back via [`App::refresh`].
-    Save { key: &'static str, value: String },
+    Save {
+        key: &'static str,
+        value: String,
+    },
     Quit,
 }
 
@@ -68,8 +73,16 @@ pub struct App {
 
 impl App {
     pub fn new(rows: Vec<Row>) -> Self {
-        let theme_row = rows.iter().position(|r| r.setting.choices == Choices::Themes);
-        App { rows, selected: 0, mode: Mode::Browse, status: String::new(), theme_row }
+        let theme_row = rows
+            .iter()
+            .position(|r| r.setting.choices == Choices::Themes);
+        App {
+            rows,
+            selected: 0,
+            mode: Mode::Browse,
+            status: String::new(),
+            theme_row,
+        }
     }
 
     fn row(&self) -> &Row {
@@ -151,9 +164,16 @@ impl App {
             return None;
         }
         if s.kind == Kind::Bool {
-            let next = if self.row().value == "true" { "false" } else { "true" };
+            let next = if self.row().value == "true" {
+                "false"
+            } else {
+                "true"
+            };
             self.rows[self.selected].value = next.to_string();
-            return Some(Action::Save { key: s.key, value: next.to_string() });
+            return Some(Action::Save {
+                key: s.key,
+                value: next.to_string(),
+            });
         }
         if !self.candidates().is_empty() {
             // Open on the current value so the first thing the user sees is
@@ -179,11 +199,15 @@ impl App {
         let last = self.candidates().len().saturating_sub(1);
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
-                self.mode = Mode::Pick { cursor: cursor.saturating_sub(1) };
+                self.mode = Mode::Pick {
+                    cursor: cursor.saturating_sub(1),
+                };
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.mode = Mode::Pick { cursor: (cursor + 1).min(last) };
+                self.mode = Mode::Pick {
+                    cursor: (cursor + 1).min(last),
+                };
                 None
             }
             // Esc and q close the PICKER, not the app. Quitting outright from a
@@ -198,7 +222,10 @@ impl App {
                 let value = self.candidates().get(cursor)?.clone();
                 self.mode = Mode::Browse;
                 self.rows[self.selected].value = value.clone();
-                Some(Action::Save { key: self.row().setting.key, value })
+                Some(Action::Save {
+                    key: self.row().setting.key,
+                    value,
+                })
             }
             _ => None,
         }
@@ -267,7 +294,10 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         ),
     ]);
     frame.render_widget(
-        Paragraph::new(vec![title, Line::styled(rule.repeat(area.width as usize), sty("muted"))]),
+        Paragraph::new(vec![
+            title,
+            Line::styled(rule.repeat(area.width as usize), sty("muted")),
+        ]),
         head,
     );
 
@@ -275,7 +305,11 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     let mut lines: Vec<Line> = Vec::new();
     for (i, row) in app.rows.iter().enumerate() {
         let selected = i == app.selected;
-        let shown = if row.value.is_empty() { "(unset)" } else { row.value.as_str() };
+        let shown = if row.value.is_empty() {
+            "(unset)"
+        } else {
+            row.value.as_str()
+        };
         // A store-homed row is dimmed so "shown but not editable here" reads
         // before the user presses Enter on it, not only after.
         let value_style = if row.setting.home == Home::Store {
@@ -287,7 +321,11 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         };
         lines.push(Line::from(vec![
             Span::styled(
-                if selected { format!("{marker} ") } else { "  ".to_string() },
+                if selected {
+                    format!("{marker} ")
+                } else {
+                    "  ".to_string()
+                },
                 sty("accent"),
             ),
             Span::styled(format!("{:<18}", row.setting.key), sty("project")),
@@ -304,7 +342,11 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
                     lines.push(Line::from(vec![
                         Span::raw("      "),
                         Span::styled(
-                            if at { format!("{marker} ") } else { "  ".to_string() },
+                            if at {
+                                format!("{marker} ")
+                            } else {
+                                "  ".to_string()
+                            },
                             sty("warn"),
                         ),
                         Span::styled(cand.clone(), if at { sty("warn") } else { sty("muted") }),
@@ -342,7 +384,11 @@ mod tests {
     use crate::theme::{self, ColorDepth};
 
     fn caps() -> Caps {
-        Caps { depth: ColorDepth::Truecolor, ansi: true, unicode: true }
+        Caps {
+            depth: ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        }
     }
 
     /// Rows built the way the real command builds them: straight out of the
@@ -386,11 +432,18 @@ mod tests {
     }
 
     fn line_at(buf: &Buffer, y: u16) -> String {
-        (0..buf.area().width).map(|x| buf[(x, y)].symbol()).collect::<String>().trim_end().to_string()
+        (0..buf.area().width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
     }
 
     fn all_text(buf: &Buffer) -> String {
-        (0..buf.area().height).map(|y| line_at(buf, y)).collect::<Vec<_>>().join("\n")
+        (0..buf.area().height)
+            .map(|y| line_at(buf, y))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn row_of(buf: &Buffer, needle: &str) -> u16 {
@@ -414,7 +467,11 @@ mod tests {
         for _ in 0..10 {
             a.on_key(press(KeyCode::Down));
         }
-        assert_eq!(a.selected, a.rows.len() - 1, "down past the end must stay on the last row");
+        assert_eq!(
+            a.selected,
+            a.rows.len() - 1,
+            "down past the end must stay on the last row"
+        );
     }
 
     /// Windows crossterm emits Press AND Release for every keystroke. Without
@@ -439,15 +496,38 @@ mod tests {
     #[test]
     fn enter_on_a_bool_toggles_and_asks_for_exactly_that_value_to_be_saved() {
         let mut a = app();
-        a.selected = a.rows.iter().position(|r| r.setting.kind == Kind::Bool).unwrap();
+        a.selected = a
+            .rows
+            .iter()
+            .position(|r| r.setting.kind == Kind::Bool)
+            .unwrap();
         assert_eq!(a.rows[a.selected].value, "false");
 
-        let act = a.on_key(press(KeyCode::Enter)).expect("enter must produce a save");
-        assert_eq!(act, Action::Save { key: "notify.enabled", value: "true".into() });
-        assert_eq!(a.rows[a.selected].value, "true", "the screen must show what it saved");
+        let act = a
+            .on_key(press(KeyCode::Enter))
+            .expect("enter must produce a save");
+        assert_eq!(
+            act,
+            Action::Save {
+                key: "notify.enabled",
+                value: "true".into()
+            }
+        );
+        assert_eq!(
+            a.rows[a.selected].value, "true",
+            "the screen must show what it saved"
+        );
 
-        let act = a.on_key(press(KeyCode::Enter)).expect("a second enter toggles back");
-        assert_eq!(act, Action::Save { key: "notify.enabled", value: "false".into() });
+        let act = a
+            .on_key(press(KeyCode::Enter))
+            .expect("a second enter toggles back");
+        assert_eq!(
+            act,
+            Action::Save {
+                key: "notify.enabled",
+                value: "false".into()
+            }
+        );
     }
 
     /// The store-homed row is visible but not editable, and pressing Enter must
@@ -457,10 +537,17 @@ mod tests {
     #[test]
     fn enter_on_the_store_homed_row_explains_instead_of_writing() {
         let mut a = app();
-        a.selected = a.rows.iter().position(|r| r.setting.home == Home::Store).unwrap();
+        a.selected = a
+            .rows
+            .iter()
+            .position(|r| r.setting.home == Home::Store)
+            .unwrap();
 
         let act = a.on_key(press(KeyCode::Enter));
-        assert!(act.is_none(), "a store-homed setting must never produce a Save: {act:?}");
+        assert!(
+            act.is_none(),
+            "a store-homed setting must never produce a Save: {act:?}"
+        );
         let s = config::find("default_project").unwrap();
         assert_eq!(a.status, config::store_home_message(s));
         assert!(a.status.contains("tasqx use"), "{}", a.status);
@@ -474,9 +561,15 @@ mod tests {
     fn the_picker_opens_on_the_current_value_and_commits_the_one_under_the_cursor() {
         let mut a = app();
         a.rows[0].value = "dracula".to_string();
-        let expected = theme::BUILTINS.iter().position(|t| *t == "dracula").unwrap();
+        let expected = theme::BUILTINS
+            .iter()
+            .position(|t| *t == "dracula")
+            .unwrap();
 
-        assert!(a.on_key(press(KeyCode::Enter)).is_none(), "opening a picker saves nothing");
+        assert!(
+            a.on_key(press(KeyCode::Enter)).is_none(),
+            "opening a picker saves nothing"
+        );
         assert_eq!(a.mode, Mode::Pick { cursor: expected });
 
         a.on_key(press(KeyCode::Down));
@@ -487,7 +580,10 @@ mod tests {
         let act = a.on_key(press(KeyCode::Enter)).expect("enter commits");
         assert_eq!(
             act,
-            Action::Save { key: "theme.name", value: theme::BUILTINS[at].to_string() }
+            Action::Save {
+                key: "theme.name",
+                value: theme::BUILTINS[at].to_string()
+            }
         );
         assert_eq!(a.mode, Mode::Browse, "committing closes the picker");
     }
@@ -504,12 +600,26 @@ mod tests {
 
         a.on_key(press(KeyCode::Enter));
         a.on_key(press(KeyCode::Down));
-        assert_eq!(a.preview_theme(), Some(theme::BUILTINS[1]), "preview must follow the cursor");
-        assert_eq!(a.rows[0].value, "nord", "previewing must not change the stored value");
+        assert_eq!(
+            a.preview_theme(),
+            Some(theme::BUILTINS[1]),
+            "preview must follow the cursor"
+        );
+        assert_eq!(
+            a.rows[0].value, "nord",
+            "previewing must not change the stored value"
+        );
 
-        assert!(a.on_key(press(KeyCode::Esc)).is_none(), "esc in a picker must not quit the app");
+        assert!(
+            a.on_key(press(KeyCode::Esc)).is_none(),
+            "esc in a picker must not quit the app"
+        );
         assert_eq!(a.mode, Mode::Browse);
-        assert_eq!(a.preview_theme(), Some("nord"), "cancelling must restore the preview");
+        assert_eq!(
+            a.preview_theme(),
+            Some("nord"),
+            "cancelling must restore the preview"
+        );
     }
 
     /// Esc/q quit from Browse but only close the picker from Pick. A `q` that
@@ -519,11 +629,18 @@ mod tests {
     fn quit_keys_mean_different_things_inside_and_outside_the_picker() {
         for code in [KeyCode::Esc, KeyCode::Char('q')] {
             let mut a = app();
-            assert_eq!(a.on_key(press(code)), Some(Action::Quit), "{code:?} must quit from browse");
+            assert_eq!(
+                a.on_key(press(code)),
+                Some(Action::Quit),
+                "{code:?} must quit from browse"
+            );
 
             let mut b = app();
             b.on_key(press(KeyCode::Enter));
-            assert!(b.on_key(press(code)).is_none(), "{code:?} must not quit from a picker");
+            assert!(
+                b.on_key(press(code)).is_none(),
+                "{code:?} must not quit from a picker"
+            );
             assert_eq!(b.mode, Mode::Browse);
         }
     }
@@ -540,7 +657,11 @@ mod tests {
         let mut b = app();
         b.on_key(press(KeyCode::Enter));
         assert_eq!(b.mode, Mode::Pick { cursor: 0 });
-        assert_eq!(b.on_key(ctrl_c), Some(Action::Quit), "ctrl-c must escape the picker too");
+        assert_eq!(
+            b.on_key(ctrl_c),
+            Some(Action::Quit),
+            "ctrl-c must escape the picker too"
+        );
     }
 
     /// A write that lands in `config.toml` while `$TASQX_THEME` still outranks
@@ -555,7 +676,11 @@ mod tests {
         assert_eq!(a.rows[0].value, "mono");
 
         a.refresh("theme.name", "gruvbox".into(), "$TASQX_THEME".into());
-        assert!(a.status.contains("still wins"), "shadowing not reported: {}", a.status);
+        assert!(
+            a.status.contains("still wins"),
+            "shadowing not reported: {}",
+            a.status
+        );
         assert!(a.status.contains("$TASQX_THEME"), "{}", a.status);
     }
 
@@ -582,13 +707,26 @@ mod tests {
         let buf = draw(&app());
         let text = all_text(&buf);
         for s in config::SETTINGS {
-            assert!(text.contains(s.key), "{} missing from the screen:\n{text}", s.key);
+            assert!(
+                text.contains(s.key),
+                "{} missing from the screen:\n{text}",
+                s.key
+            );
         }
         assert!(text.contains("nord"), "{text}");
         assert!(text.contains("false"), "{text}");
-        assert!(text.contains("(unset)"), "an empty value must read as unset:\n{text}");
-        assert!(text.contains("store"), "the store-homed row must name its home:\n{text}");
-        assert!(text.contains("esc quit"), "the key hints must be on screen:\n{text}");
+        assert!(
+            text.contains("(unset)"),
+            "an empty value must read as unset:\n{text}"
+        );
+        assert!(
+            text.contains("store"),
+            "the store-homed row must name its home:\n{text}"
+        );
+        assert!(
+            text.contains("esc quit"),
+            "the key hints must be on screen:\n{text}"
+        );
     }
 
     /// The selection marker is the only thing telling the user which row Enter
@@ -620,9 +758,15 @@ mod tests {
         let owner = row_of(&buf, "theme.name");
         for name in theme::BUILTINS {
             assert!(text.contains(name), "candidate {name} missing:\n{text}");
-            assert!(row_of(&buf, name) > owner || name == "nord", "{name} drawn above its row");
+            assert!(
+                row_of(&buf, name) > owner || name == "nord",
+                "{name} drawn above its row"
+            );
         }
-        assert!(text.contains("esc cancel"), "the picker must offer its own hints:\n{text}");
+        assert!(
+            text.contains("esc cancel"),
+            "the picker must offer its own hints:\n{text}"
+        );
     }
 
     /// The live preview, asserted on real cells rather than on `preview_theme`
@@ -645,16 +789,27 @@ mod tests {
         let gruvbox_fg = on_gruvbox[(0, y)].fg;
         assert_eq!(
             nord_fg,
-            rt_style(theme::load("nord", None).role("header"), &caps()).fg.unwrap(),
+            rt_style(theme::load("nord", None).role("header"), &caps())
+                .fg
+                .unwrap(),
             "the screen is not painted in the previewed theme"
         );
         assert_eq!(
             gruvbox_fg,
-            rt_style(theme::load("gruvbox", None).role("header"), &caps()).fg.unwrap(),
+            rt_style(theme::load("gruvbox", None).role("header"), &caps())
+                .fg
+                .unwrap(),
         );
-        assert_ne!(nord_fg, gruvbox_fg, "moving the picker changed nothing on screen");
+        assert_ne!(
+            nord_fg, gruvbox_fg,
+            "moving the picker changed nothing on screen"
+        );
         // The header also names the theme being previewed, in words.
-        assert!(all_text(&on_gruvbox).contains("theme: gruvbox"), "{}", all_text(&on_gruvbox));
+        assert!(
+            all_text(&on_gruvbox).contains("theme: gruvbox"),
+            "{}",
+            all_text(&on_gruvbox)
+        );
     }
 
     /// The footer messages are longer than a terminal is wide. `store_home_message`
@@ -664,9 +819,17 @@ mod tests {
     #[test]
     fn a_footer_message_wider_than_the_screen_is_wrapped_not_truncated() {
         let mut a = app();
-        a.selected = a.rows.iter().position(|r| r.setting.home == Home::Store).unwrap();
+        a.selected = a
+            .rows
+            .iter()
+            .position(|r| r.setting.home == Home::Store)
+            .unwrap();
         a.on_key(press(KeyCode::Enter));
-        assert!(a.status.len() > 80, "this guard assumes an over-wide message: {}", a.status);
+        assert!(
+            a.status.len() > 80,
+            "this guard assumes an over-wide message: {}",
+            a.status
+        );
 
         let th = theme::load("nord", None);
         // 60 columns: narrow enough that no part of the message fits by luck.
@@ -677,9 +840,15 @@ mod tests {
         // Newlines are where the wrap happened; every word must survive.
         let flat = all_text(term.backend().buffer()).replace('\n', " ");
         for word in a.status.split_whitespace() {
-            assert!(flat.contains(word), "{word:?} was cut off the footer:\n{flat}");
+            assert!(
+                flat.contains(word),
+                "{word:?} was cut off the footer:\n{flat}"
+            );
         }
-        assert!(flat.contains("esc quit"), "wrapping pushed the key hints off screen:\n{flat}");
+        assert!(
+            flat.contains("esc quit"),
+            "wrapping pushed the key hints off screen:\n{flat}"
+        );
     }
 
     /// On a terminal with no Unicode the marker and the rule must degrade to
@@ -689,12 +858,23 @@ mod tests {
     #[test]
     fn a_non_unicode_terminal_gets_ascii_markers() {
         let a = app();
-        let ascii = Caps { depth: ColorDepth::Ansi16, ansi: true, unicode: false };
+        let ascii = Caps {
+            depth: ColorDepth::Ansi16,
+            ansi: true,
+            unicode: false,
+        };
         let mut term = Terminal::new(TestBackend::new(70, 16)).unwrap();
-        term.draw(|f| render(&a, &theme::load("nord", None), &ascii, f)).unwrap();
+        term.draw(|f| render(&a, &theme::load("nord", None), &ascii, f))
+            .unwrap();
         let text = all_text(term.backend().buffer());
 
-        assert!(!text.contains('▸') && !text.contains('─'), "Unicode leaked into ASCII mode:\n{text}");
-        assert!(text.contains("> theme.name"), "no ASCII marker on the selected row:\n{text}");
+        assert!(
+            !text.contains('▸') && !text.contains('─'),
+            "Unicode leaked into ASCII mode:\n{text}"
+        );
+        assert!(
+            text.contains("> theme.name"),
+            "no ASCII marker on the selected row:\n{text}"
+        );
     }
 }

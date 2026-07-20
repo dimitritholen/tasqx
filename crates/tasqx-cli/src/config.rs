@@ -51,8 +51,14 @@ impl Source {
         match self {
             Source::Default => "default".to_string(),
             Source::File => "config.toml".to_string(),
-            Source::Env => s.env.map(|e| format!("${e}")).unwrap_or_else(|| "env".into()),
-            Source::Flag => s.flag.map(|f| f.to_string()).unwrap_or_else(|| "flag".into()),
+            Source::Env => s
+                .env
+                .map(|e| format!("${e}"))
+                .unwrap_or_else(|| "env".into()),
+            Source::Flag => s
+                .flag
+                .map(|f| f.to_string())
+                .unwrap_or_else(|| "flag".into()),
         }
     }
 }
@@ -93,7 +99,9 @@ pub struct Setting {
 impl Setting {
     /// The `[section]` and key halves of a dotted name.
     pub fn parts(&self) -> (&'static str, &'static str) {
-        self.key.split_once('.').expect("every SETTINGS key is section.name")
+        self.key
+            .split_once('.')
+            .expect("every SETTINGS key is section.name")
     }
 }
 
@@ -106,7 +114,8 @@ pub const SETTINGS: &[Setting] = &[
         env: Some("TASQX_THEME"),
         flag: Some("--theme"),
         choices: Choices::Themes,
-        summary: "Terminal theme: a built-in (nord, gruvbox, dracula, solarized, mono) or a user file.",
+        summary:
+            "Terminal theme: a built-in (nord, gruvbox, dracula, solarized, mono) or a user file.",
     },
     Setting {
         key: "notify.enabled",
@@ -126,7 +135,8 @@ pub const SETTINGS: &[Setting] = &[
         env: None,
         flag: None,
         choices: Choices::Free,
-        summary: "Project a bare `tasqx add` files into. Lives in the store; set it with `tasqx use`.",
+        summary:
+            "Project a bare `tasqx add` files into. Lives in the store; set it with `tasqx use`.",
     },
 ];
 
@@ -233,7 +243,10 @@ pub fn read_table_strict(dir: &std::path::Path) -> Result<Option<toml::Table>, A
             ApiError::bad_request(format!("{} is not valid TOML: {e}", path.display()))
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ApiError::bad_request(format!("cannot read {}: {e}", path.display()))),
+        Err(e) => Err(ApiError::bad_request(format!(
+            "cannot read {}: {e}",
+            path.display()
+        ))),
     }
 }
 
@@ -305,7 +318,9 @@ pub struct FileValue {
 /// command, and nothing about a bad config line may stand between a user and a
 /// captured task.
 pub fn toml_value_strict(s: &Setting) -> Result<FileValue, ApiError> {
-    let Some(dir) = config_dir() else { return Ok(FileValue::default()) };
+    let Some(dir) = config_dir() else {
+        return Ok(FileValue::default());
+    };
     toml_value_strict_in(&dir, s)
 }
 
@@ -317,14 +332,19 @@ pub fn toml_value_strict(s: &Setting) -> Result<FileValue, ApiError> {
 /// wrong-type detection below could only be tested through the ambient
 /// `$TASQX_CONFIG_DIR`, and two tests setting it at once would flake.
 pub fn toml_value_strict_in(dir: &std::path::Path, s: &Setting) -> Result<FileValue, ApiError> {
-    let Some(table) = read_table_strict(dir)? else { return Ok(FileValue::default()) };
+    let Some(table) = read_table_strict(dir)? else {
+        return Ok(FileValue::default());
+    };
     let (section, name) = s.parts();
     let Some(v) = table.get(section).and_then(|t| t.get(name)).cloned() else {
         return Ok(FileValue::default());
     };
     let found = v.type_str();
     match coerce(s.kind, v) {
-        Some(value) => Ok(FileValue { value: Some(value), mismatch: None }),
+        Some(value) => Ok(FileValue {
+            value: Some(value),
+            mismatch: None,
+        }),
         None => Ok(FileValue {
             value: None,
             mismatch: Some(Mismatch {
@@ -375,7 +395,10 @@ fn read_document(path: &std::path::Path) -> Result<toml_edit::DocumentMut, ApiEr
             ))
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml_edit::DocumentMut::new()),
-        Err(e) => Err(ApiError::bad_request(format!("cannot read {}: {e}", path.display()))),
+        Err(e) => Err(ApiError::bad_request(format!(
+            "cannot read {}: {e}",
+            path.display()
+        ))),
     }
 }
 
@@ -401,12 +424,18 @@ fn scratch_path(path: &std::path::Path) -> PathBuf {
     // process, which matters for the test suite's parallel threads.
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    let stem = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = path
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let dir = path.parent().map(PathBuf::from).unwrap_or_default();
     dir.join(format!(".{stem}.{}.{n}.tmp", std::process::id()))
 }
 
-fn write_document(path: &std::path::Path, doc: &toml_edit::DocumentMut) -> Result<PathBuf, ApiError> {
+fn write_document(
+    path: &std::path::Path,
+    doc: &toml_edit::DocumentMut,
+) -> Result<PathBuf, ApiError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| ApiError::internal(format!("cannot create {}: {e}", parent.display())))?;
@@ -418,11 +447,17 @@ fn write_document(path: &std::path::Path, doc: &toml_edit::DocumentMut) -> Resul
     // user has to recognise as debris and delete by hand.
     if let Err(e) = std::fs::write(&tmp, doc.to_string()) {
         let _ = std::fs::remove_file(&tmp); // A partial write still leaves a file.
-        return Err(ApiError::internal(format!("cannot write {}: {e}", tmp.display())));
+        return Err(ApiError::internal(format!(
+            "cannot write {}: {e}",
+            tmp.display()
+        )));
     }
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(ApiError::internal(format!("cannot replace {}: {e}", path.display())));
+        return Err(ApiError::internal(format!(
+            "cannot replace {}: {e}",
+            path.display()
+        )));
     }
     Ok(path.to_path_buf())
 }
@@ -444,7 +479,11 @@ pub fn store_home_message(s: &Setting) -> String {
 
 /// Set one setting in a `config.toml` under an explicit directory, creating the
 /// section if needed.
-pub fn write_value_in(dir: &std::path::Path, s: &Setting, value: &str) -> Result<PathBuf, ApiError> {
+pub fn write_value_in(
+    dir: &std::path::Path,
+    s: &Setting,
+    value: &str,
+) -> Result<PathBuf, ApiError> {
     if s.home != Home::Toml {
         return Err(ApiError::bad_request(store_home_message(s)));
     }
@@ -538,8 +577,14 @@ mod tests {
     #[test]
     fn resolve_follows_the_d9_chain_and_names_its_source() {
         let s = find("theme.name").expect("theme.name is a known setting");
-        assert_eq!(resolve(s, Some("mono"), Some("gruvbox")), ("mono".into(), Source::Flag));
-        assert_eq!(resolve(s, None, Some("gruvbox")), ("gruvbox".into(), Source::File));
+        assert_eq!(
+            resolve(s, Some("mono"), Some("gruvbox")),
+            ("mono".into(), Source::Flag)
+        );
+        assert_eq!(
+            resolve(s, None, Some("gruvbox")),
+            ("gruvbox".into(), Source::File)
+        );
         assert_eq!(resolve(s, None, None), ("nord".into(), Source::Default));
     }
 
@@ -549,7 +594,10 @@ mod tests {
     #[test]
     fn a_blank_value_at_any_layer_is_treated_as_absent() {
         let s = find("theme.name").unwrap();
-        assert_eq!(resolve(s, Some("   "), Some("gruvbox")), ("gruvbox".into(), Source::File));
+        assert_eq!(
+            resolve(s, Some("   "), Some("gruvbox")),
+            ("gruvbox".into(), Source::File)
+        );
         assert_eq!(resolve(s, None, Some("")), ("nord".into(), Source::Default));
     }
 
@@ -605,13 +653,27 @@ enabled = true
         )
         .unwrap();
 
-        assert_eq!(toml_value_in(&dir, find("theme.name").unwrap()).as_deref(), Some("gruvbox"));
-        assert_eq!(toml_value_in(&dir, find("notify.enabled").unwrap()).as_deref(), Some("true"));
+        assert_eq!(
+            toml_value_in(&dir, find("theme.name").unwrap()).as_deref(),
+            Some("gruvbox")
+        );
+        assert_eq!(
+            toml_value_in(&dir, find("notify.enabled").unwrap()).as_deref(),
+            Some("true")
+        );
 
-        std::fs::write(dir.join("config.toml"), "[theme]
+        std::fs::write(
+            dir.join("config.toml"),
+            "[theme]
 name = \"mono\"
-").unwrap();
-        assert_eq!(toml_value_in(&dir, find("notify.enabled").unwrap()), None, "absent key is None");
+",
+        )
+        .unwrap();
+        assert_eq!(
+            toml_value_in(&dir, find("notify.enabled").unwrap()),
+            None,
+            "absent key is None"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -638,14 +700,26 @@ enabled = true
         write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
 
-        assert!(after.contains("# chosen for the projector"), "comment lost:
-{after}");
-        assert!(after.contains("name = \"mono\""), "value not written:
-{after}");
-        assert!(after.find("[theme]") < after.find("[notify]"), "sections reordered:
-{after}");
-        assert!(after.contains("enabled = true"), "other section damaged:
-{after}");
+        assert!(
+            after.contains("# chosen for the projector"),
+            "comment lost:
+{after}"
+        );
+        assert!(
+            after.contains("name = \"mono\""),
+            "value not written:
+{after}"
+        );
+        assert!(
+            after.find("[theme]") < after.find("[notify]"),
+            "sections reordered:
+{after}"
+        );
+        assert!(
+            after.contains("enabled = true"),
+            "other section damaged:
+{after}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -675,8 +749,12 @@ enabled = true
         let dir = temp_dir("bad");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
-        std::fs::write(&path, "[theme
-name = broken").unwrap();
+        std::fs::write(
+            &path,
+            "[theme
+name = broken",
+        )
+        .unwrap();
 
         let err = write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap_err();
         assert!(err.message.contains("config.toml"), "{}", err.message);
@@ -701,9 +779,19 @@ name = broken",
         write_value_in(&dir, s, "gruvbox").unwrap();
         assert_eq!(toml_value_in(&dir, s).as_deref(), Some("gruvbox"));
 
-        assert!(clear_value_in(&dir, s).unwrap(), "the key was present, so removal is reported");
-        assert_eq!(toml_value_in(&dir, s), None, "unset means the file no longer names it");
-        assert!(!clear_value_in(&dir, s).unwrap(), "a second unset removes nothing");
+        assert!(
+            clear_value_in(&dir, s).unwrap(),
+            "the key was present, so removal is reported"
+        );
+        assert_eq!(
+            toml_value_in(&dir, s),
+            None,
+            "unset means the file no longer names it"
+        );
+        assert!(
+            !clear_value_in(&dir, s).unwrap(),
+            "a second unset removes nothing"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -723,9 +811,15 @@ name = broken",
         let theme = find("theme.name").unwrap();
 
         for bad in ["\"true\"", "\" true \"", "1"] {
-            std::fs::write(dir.join("config.toml"), format!("[notify]
+            std::fs::write(
+                dir.join("config.toml"),
+                format!(
+                    "[notify]
 enabled = {bad}
-")).unwrap();
+"
+                ),
+            )
+            .unwrap();
             assert_eq!(
                 toml_value_in(&dir, notify),
                 None,
@@ -733,15 +827,23 @@ enabled = {bad}
             );
         }
         // The right type still reads.
-        std::fs::write(dir.join("config.toml"), "[notify]
+        std::fs::write(
+            dir.join("config.toml"),
+            "[notify]
 enabled = true
-").unwrap();
+",
+        )
+        .unwrap();
         assert_eq!(toml_value_in(&dir, notify).as_deref(), Some("true"));
 
         // Symmetric: a bare boolean where a string is declared is not a string.
-        std::fs::write(dir.join("config.toml"), "[theme]
+        std::fs::write(
+            dir.join("config.toml"),
+            "[theme]
 name = true
-").unwrap();
+",
+        )
+        .unwrap();
         assert_eq!(toml_value_in(&dir, theme), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -761,17 +863,26 @@ name = true
         let theme = find("theme.name").unwrap();
         std::fs::write(dir.join("config.toml"), "[theme]\nname = 42\n").unwrap();
 
-        assert_eq!(toml_value_in(&dir, theme), None, "the silent reader still degrades");
+        assert_eq!(
+            toml_value_in(&dir, theme),
+            None,
+            "the silent reader still degrades"
+        );
 
         let read = toml_value_strict_in(&dir, theme).expect("a wrong type is not a parse error");
         assert_eq!(read.value, None, "the caller still gets the fallback");
-        let m = read.mismatch.expect("the strict reader must report the mismatch");
+        let m = read
+            .mismatch
+            .expect("the strict reader must report the mismatch");
         assert_eq!(m.key, "theme.name");
         assert_eq!(m.declared, "string");
         assert_eq!(m.found, "integer");
         let msg = m.to_string();
         assert!(msg.contains("theme.name"), "{msg}");
-        assert!(msg.contains("config.toml"), "the message must locate the file: {msg}");
+        assert!(
+            msg.contains("config.toml"),
+            "the message must locate the file: {msg}"
+        );
 
         // Symmetric for the other Kind, so the report is not string-specific.
         std::fs::write(dir.join("config.toml"), "[notify]\nenabled = \"true\"\n").unwrap();
@@ -793,13 +904,19 @@ name = true
         std::fs::write(dir.join("config.toml"), "[theme]\nname = \"gruvbox\"\n").unwrap();
         let ok = toml_value_strict_in(&dir, theme).unwrap();
         assert_eq!(ok.value.as_deref(), Some("gruvbox"));
-        assert!(ok.mismatch.is_none(), "a value of the declared type is not a problem");
+        assert!(
+            ok.mismatch.is_none(),
+            "a value of the declared type is not a problem"
+        );
 
         // An absent key is a fresh install, not a mistake.
         std::fs::write(dir.join("config.toml"), "[notify]\nenabled = true\n").unwrap();
         let absent = toml_value_strict_in(&dir, theme).unwrap();
         assert_eq!(absent.value, None);
-        assert!(absent.mismatch.is_none(), "a key the file omits must not warn");
+        assert!(
+            absent.mismatch.is_none(),
+            "a key the file omits must not warn"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -813,10 +930,17 @@ name = true
     fn the_strict_reader_reports_a_malformed_file_where_the_silent_one_hides_it() {
         let dir = temp_dir("strict");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.toml"), "[theme
-name = broken").unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[theme
+name = broken",
+        )
+        .unwrap();
 
-        assert!(read_table_in(&dir).is_none(), "the silent reader still degrades");
+        assert!(
+            read_table_in(&dir).is_none(),
+            "the silent reader still degrades"
+        );
         let err = read_table_strict(&dir).expect_err("the strict reader must report it");
         assert!(err.message.contains("not valid TOML"), "{}", err.message);
         assert!(err.message.contains("config.toml"), "{}", err.message);
@@ -824,7 +948,9 @@ name = broken").unwrap();
         // A missing file is not an error: that is a fresh install.
         let empty = temp_dir("strict-empty");
         std::fs::create_dir_all(&empty).unwrap();
-        assert!(read_table_strict(&empty).expect("no file is fine").is_none());
+        assert!(read_table_strict(&empty)
+            .expect("no file is fine")
+            .is_none());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&empty);
     }
@@ -851,12 +977,21 @@ name = \"gruvbox\"  # inline note
         write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
         let after = std::fs::read_to_string(dir.join("config.toml")).unwrap();
 
-        assert!(after.contains("# block note"), "block comment lost:
-{after}");
-        assert!(after.contains("# inline note"), "INLINE comment lost:
-{after}");
-        assert!(after.contains("name = \"mono\""), "value not written:
-{after}");
+        assert!(
+            after.contains("# block note"),
+            "block comment lost:
+{after}"
+        );
+        assert!(
+            after.contains("# inline note"),
+            "INLINE comment lost:
+{after}"
+        );
+        assert!(
+            after.contains("name = \"mono\""),
+            "value not written:
+{after}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -870,9 +1005,13 @@ name = \"gruvbox\"  # inline note
     fn writing_leaves_no_temp_file_behind_and_replaces_atomically() {
         let dir = temp_dir("atomic");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.toml"), "[theme]
+        std::fs::write(
+            dir.join("config.toml"),
+            "[theme]
 name = \"nord\"
-").unwrap();
+",
+        )
+        .unwrap();
 
         write_value_in(&dir, find("theme.name").unwrap(), "mono").unwrap();
 
@@ -882,9 +1021,14 @@ name = \"nord\"
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n != "config.toml")
             .collect();
-        assert!(leftovers.is_empty(), "temp file not cleaned up: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp file not cleaned up: {leftovers:?}"
+        );
         // The rename target is the real file, not a sibling.
-        assert!(std::fs::read_to_string(dir.join("config.toml")).unwrap().contains("mono"));
+        assert!(std::fs::read_to_string(dir.join("config.toml"))
+            .unwrap()
+            .contains("mono"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -897,7 +1041,11 @@ name = \"nord\"
     #[test]
     fn the_shipped_defaults_are_pinned_by_literal() {
         assert_eq!(find("theme.name").unwrap().default, "nord");
-        assert_eq!(find("notify.enabled").unwrap().default, "false", "toasts are opt-in");
+        assert_eq!(
+            find("notify.enabled").unwrap().default,
+            "false",
+            "toasts are opt-in"
+        );
         assert_eq!(find("default_project").unwrap().default, "");
     }
 
@@ -913,9 +1061,19 @@ name = \"nord\"
         let s = find("default_project").unwrap();
 
         let from_writer = write_value_in(&dir, s, "work").unwrap_err().message;
-        assert_eq!(from_writer, store_home_message(s), "two wordings for one refusal");
-        assert!(from_writer.contains("tasqx use"), "must name the command that works: {from_writer}");
-        assert!(from_writer.contains("default_project"), "must name the key: {from_writer}");
+        assert_eq!(
+            from_writer,
+            store_home_message(s),
+            "two wordings for one refusal"
+        );
+        assert!(
+            from_writer.contains("tasqx use"),
+            "must name the command that works: {from_writer}"
+        );
+        assert!(
+            from_writer.contains("default_project"),
+            "must name the key: {from_writer}"
+        );
         // The refusal happens before any filesystem work: a rejected write must
         // not leave a config directory behind.
         assert!(!dir.exists(), "a refused write created {}", dir.display());
@@ -955,8 +1113,15 @@ name = \"nord\"
         let pid = std::process::id().to_string();
         for p in [&a, &b] {
             let name = p.file_name().unwrap().to_string_lossy().to_string();
-            assert!(name.contains(&pid), "scratch name must carry the pid: {name}");
-            assert_eq!(p.parent(), target.parent(), "scratch must share the target's directory");
+            assert!(
+                name.contains(&pid),
+                "scratch name must carry the pid: {name}"
+            );
+            assert_eq!(
+                p.parent(),
+                target.parent(),
+                "scratch must share the target's directory"
+            );
         }
 
         // No litter: a rename that cannot succeed must clean up after itself.
@@ -965,9 +1130,15 @@ name = \"nord\"
         std::fs::create_dir_all(&target).unwrap();
         let doc: toml_edit::DocumentMut = "[theme]
 name = \"nord\"
-".parse().unwrap();
+"
+        .parse()
+        .unwrap();
         let err = write_document(&target, &doc).expect_err("rename onto a directory must fail");
-        assert!(err.message.contains("config.toml"), "the error must name the file: {}", err.message);
+        assert!(
+            err.message.contains("config.toml"),
+            "the error must name the file: {}",
+            err.message
+        );
 
         let leftovers: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
@@ -975,6 +1146,9 @@ name = \"nord\"
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n != "config.toml")
             .collect();
-        assert!(leftovers.is_empty(), "a failed write left scratch files behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "a failed write left scratch files behind: {leftovers:?}"
+        );
     }
 }

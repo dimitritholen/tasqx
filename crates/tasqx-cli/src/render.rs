@@ -16,7 +16,9 @@ use crate::theme::Ctx;
 /// This is the terminal-path analogue of `html::esc`. C0 controls (except tab),
 /// DEL, and C1 controls are dropped; ordinary printable text is untouched.
 pub fn san(s: &str) -> String {
-    s.chars().filter(|&c| c == '\t' || !c.is_control()).collect()
+    s.chars()
+        .filter(|&c| c == '\t' || !c.is_control())
+        .collect()
 }
 
 /// Is this task still open, given the `status` string as it arrived in a JSON
@@ -47,15 +49,24 @@ fn s(v: &Value, key: &str) -> String {
 /// store has none, so this line was a lie on every `init` but the first.
 pub fn project_created(ctx: &Ctx, result: &Value) -> String {
     let name = s(result, "name");
-    let became_default = result.get("default").and_then(Value::as_bool).unwrap_or(false);
+    let became_default = result
+        .get("default")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let trailer = if became_default {
         "  ·  now your default project".to_string()
     } else {
         // Name the verb that would do it: the user's complaint was being left
         // with no way to steer this and no hint that one existed.
-        format!("  ·  default is still {}  (tasqx use {name})", default_label(ctx, result))
+        format!(
+            "  ·  default is still {}  (tasqx use {name})",
+            default_label(ctx, result)
+        )
     };
-    format!("{} created{trailer}\n", ctx.paint("accent", &format!("Project {name}")))
+    format!(
+        "{} created{trailer}\n",
+        ctx.paint("accent", &format!("Project {name}"))
+    )
 }
 
 /// The name of the default at the time of a `project.create` that did not claim
@@ -71,7 +82,10 @@ fn default_label(ctx: &Ctx, result: &Value) -> String {
 /// it is the answer, the old one because a silent switch is the bug.
 pub fn default_switched(ctx: &Ctx, result: &Value) -> String {
     let name = s(result, "name");
-    let previous = result.get("previous").and_then(Value::as_str).filter(|p| !p.is_empty());
+    let previous = result
+        .get("previous")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty());
     let trailer = match previous {
         Some(p) => format!("  ·  was {}", ctx.paint("project", &san(p))),
         None => String::new(),
@@ -89,7 +103,11 @@ pub fn task_added(ctx: &Ctx, result: &Value, title: &str) -> String {
     // D21: name where it landed. With no explicit `project:`, the task inherits
     // the default, and this is the only place the user finds out which project
     // that was — "silently lands in prive.klussen" is this text not existing.
-    let proj = match result.get("project").and_then(Value::as_str).filter(|p| !p.is_empty()) {
+    let proj = match result
+        .get("project")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty())
+    {
         Some(p) => format!("  ·  {}", ctx.paint("project", &san(p))),
         None => String::new(),
     };
@@ -110,7 +128,10 @@ pub fn started(ctx: &Ctx, result: &Value) -> String {
 
 pub fn stopped(ctx: &Ctx, result: &Value) -> String {
     let tracked = s(result, "tracked");
-    format!("{}  ·  tracked {tracked}\n", ctx.paint("timer.active", "Stopped"))
+    format!(
+        "{}  ·  tracked {tracked}\n",
+        ctx.paint("timer.active", "Stopped")
+    )
 }
 
 /// The dependents a closing verb just released, or nothing if it released none.
@@ -130,17 +151,29 @@ fn unblocked_line(ctx: &Ctx, result: &Value) -> String {
     let refs: Vec<String> = result
         .get("unblocked")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_i64).map(|n| format!("#{n}")).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_i64)
+                .map(|n| format!("#{n}"))
+                .collect()
+        })
         .unwrap_or_default();
     if refs.is_empty() {
         return String::new();
     }
-    format!("  {} {}\n", ctx.paint("accent", "now actionable:"), refs.join(" "))
+    format!(
+        "  {} {}\n",
+        ctx.paint("accent", "now actionable:"),
+        refs.join(" ")
+    )
 }
 
 pub fn done(ctx: &Ctx, result: &Value) -> String {
     let completed = s(result, "completed");
-    let mut out = format!("{}  ·  completed {completed}\n", ctx.paint("timer.active", "Done"));
+    let mut out = format!(
+        "{}  ·  completed {completed}\n",
+        ctx.paint("timer.active", "Done")
+    );
     out.push_str(&unblocked_line(ctx, result));
     // A recurring task spawns its next instance on completion (DESIGN §10, D2).
     if let Some(sp) = result.get("spawned") {
@@ -150,10 +183,21 @@ pub fn done(ctx: &Ctx, result: &Value) -> String {
             .and_then(Value::as_str)
             .or_else(|| sp.get("scheduled").and_then(Value::as_str))
             .unwrap_or("");
-        let tail = if when.is_empty() { String::new() } else { format!(" due {when}") };
+        let tail = if when.is_empty() {
+            String::new()
+        } else {
+            format!(" due {when}")
+        };
         out.push_str(&format!(
             "  {} #{sid}{tail}\n",
-            ctx.paint("accent", if ctx.caps.unicode { "\u{21b3} next:" } else { "-> next:" })
+            ctx.paint(
+                "accent",
+                if ctx.caps.unicode {
+                    "\u{21b3} next:"
+                } else {
+                    "-> next:"
+                }
+            )
         ));
     }
     out
@@ -162,7 +206,10 @@ pub fn done(ctx: &Ctx, result: &Value) -> String {
 /// Render a `task.list` result as an aligned, themed table.
 pub fn task_table(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
-    let tasks = result.get("tasks").and_then(Value::as_array).unwrap_or(&empty);
+    let tasks = result
+        .get("tasks")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     if tasks.is_empty() {
         return "No tasks.\n".to_string();
     }
@@ -204,12 +251,21 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         let tags = t
             .get("tags")
             .and_then(Value::as_array)
-            .map(|a| san(&a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")))
+            .map(|a| {
+                san(&a
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            })
             .unwrap_or_default();
 
         // Painted cells (paint after width-formatting so ANSI never skews columns).
         let urg_cell = format!("{urg:>5.1}");
-        let urg_p = ctx.theme.ramp_style(urg / max_urg).paint(&urg_cell, &ctx.caps);
+        let urg_p = ctx
+            .theme
+            .ramp_style(urg / max_urg)
+            .paint(&urg_cell, &ctx.caps);
         let prio_role = match prio {
             "H" => "priority.H",
             "M" => "priority.M",
@@ -218,17 +274,28 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         };
         let prio_p = ctx.paint(prio_role, &format!("{prio:<1}"));
         let project_p = ctx.paint("project", &project);
-        let tags_p = if tags.is_empty() { String::new() } else { ctx.paint("tag", &tags) };
+        let tags_p = if tags.is_empty() {
+            String::new()
+        } else {
+            ctx.paint("tag", &tags)
+        };
         // Painted or bare, the cell is the SAME already-fitted string, so the
         // overdue branch cannot drift out of width from the ordinary one.
-        let due_p = if is_overdue { ctx.paint("overdue", &due) } else { due };
+        let due_p = if is_overdue {
+            ctx.paint("overdue", &due)
+        } else {
+            due
+        };
 
         out.push_str(&format!(
             "{sid:>4}  {urg_p}  {prio_p}  {title}  {project_p}  {due_p}  {tags_p}\n"
         ));
     }
 
-    let count = result.get("count").and_then(Value::as_i64).unwrap_or(tasks.len() as i64);
+    let count = result
+        .get("count")
+        .and_then(Value::as_i64)
+        .unwrap_or(tasks.len() as i64);
     out.push_str(&ctx.hrule(rule_len));
     out.push('\n');
     out.push_str(&ctx.paint("muted", &format!("{count} task(s)")));
@@ -282,7 +349,12 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
     let blank: Vec<String> = tasks
         .iter()
         .filter(|t| s(t, "title").trim().is_empty())
-        .map(|t| format!("#{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)))
+        .map(|t| {
+            format!(
+                "#{}",
+                t.get("short_id").and_then(Value::as_i64).unwrap_or(0)
+            )
+        })
         .collect();
     if !blank.is_empty() {
         out.push_str(&ctx.paint(
@@ -301,7 +373,9 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
 /// recognize. Reads the explicit boolean rather than re-parsing the string, so
 /// one answer comes from the core and the CLI does not grow a second opinion.
 fn status_is_unrecognized(t: &Value) -> bool {
-    t.get("status_unrecognized").and_then(Value::as_bool).unwrap_or(false)
+    t.get("status_unrecognized")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Full task detail (task.get): fields plus tags, deps, annotations, blocked.
@@ -328,7 +402,10 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
         s(result, "status")
     };
     out.push_str(&format!("  status     {status_cell}\n"));
-    let prio = result.get("priority").and_then(Value::as_str).unwrap_or("-");
+    let prio = result
+        .get("priority")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
     let prio_role = match prio {
         "H" => "priority.H",
         "M" => "priority.M",
@@ -337,7 +414,10 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     };
     out.push_str(&format!("  priority   {}\n", ctx.paint(prio_role, prio)));
     if !s(result, "project").is_empty() {
-        out.push_str(&format!("  project    {}\n", ctx.paint("project", &s(result, "project"))));
+        out.push_str(&format!(
+            "  project    {}\n",
+            ctx.paint("project", &s(result, "project"))
+        ));
     }
     let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
     out.push_str(&format!("  urgency    {urg:.1}\n"));
@@ -345,7 +425,10 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
         out.push_str(&format!("  due        {}\n", s(result, "due")));
     }
     if !s(result, "remind").is_empty() {
-        out.push_str(&format!("  remind     {}\n", ctx.paint("accent", &s(result, "remind"))));
+        out.push_str(&format!(
+            "  remind     {}\n",
+            ctx.paint("accent", &s(result, "remind"))
+        ));
     }
     if !s(result, "scheduled").is_empty() {
         out.push_str(&format!("  scheduled  {}\n", s(result, "scheduled")));
@@ -354,7 +437,10 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
         out.push_str(&format!("  wait       {}\n", s(result, "wait")));
     }
     if !s(result, "recurrence").is_empty() {
-        out.push_str(&format!("  repeats    {}\n", ctx.paint("accent", &s(result, "recurrence"))));
+        out.push_str(&format!(
+            "  repeats    {}\n",
+            ctx.paint("accent", &s(result, "recurrence"))
+        ));
     }
     if !s(result, "estimate").is_empty() {
         out.push_str(&format!("  estimate   {}\n", s(result, "estimate")));
@@ -385,18 +471,27 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
             ctx.paint("accent", &format!("since {}", s(result, "active_since")))
         ));
     }
-    let blocked = result.get("blocked").and_then(Value::as_bool).unwrap_or(false);
+    let blocked = result
+        .get("blocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     out.push_str(&format!("  blocked    {blocked}\n"));
     if let Some(tags) = result.get("tags").and_then(Value::as_array) {
         if !tags.is_empty() {
             let names: Vec<&str> = tags.iter().filter_map(Value::as_str).collect();
-            out.push_str(&format!("  tags       {}\n", ctx.paint("tag", &san(&names.join(" ")))));
+            out.push_str(&format!(
+                "  tags       {}\n",
+                ctx.paint("tag", &san(&names.join(" ")))
+            ));
         }
     }
     if let Some(deps) = result.get("depends_on").and_then(Value::as_array) {
         if !deps.is_empty() {
-            let refs: Vec<String> =
-                deps.iter().filter_map(Value::as_i64).map(|n| format!("#{n}")).collect();
+            let refs: Vec<String> = deps
+                .iter()
+                .filter_map(Value::as_i64)
+                .map(|n| format!("#{n}"))
+                .collect();
             out.push_str(&format!("  depends_on {}\n", refs.join(" ")));
         }
     }
@@ -454,9 +549,18 @@ pub fn modified(
         let all: Vec<String> = result
             .get("tags")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(|t| format!("+{}", san(t))).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|t| format!("+{}", san(t)))
+                    .collect()
+            })
             .unwrap_or_else(|| tags.iter().map(|t| format!("+{}", san(t))).collect());
-        out.push_str(&format!("  {} <- {}\n", pad("tags", 11), ctx.paint("tag", &all.join(" "))));
+        out.push_str(&format!(
+            "  {} <- {}\n",
+            pad("tags", 11),
+            ctx.paint("tag", &all.join(" "))
+        ));
     }
     out
 }
@@ -470,18 +574,26 @@ pub fn modified(
 /// list of which ones those are.
 pub fn status_line(ctx: &Ctx, result: &Value) -> String {
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let mut out =
-        format!("{}  ->  {}\n", ctx.paint("accent", &format!("#{sid}")), s(result, "status"));
+    let mut out = format!(
+        "{}  ->  {}\n",
+        ctx.paint("accent", &format!("#{sid}")),
+        s(result, "status")
+    );
     out.push_str(&unblocked_line(ctx, result));
     out
 }
 
 pub fn annotated(ctx: &Ctx, result: &Value) -> String {
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let body = san(
-        result.get("annotation").and_then(|a| a.get("body")).and_then(Value::as_str).unwrap_or(""),
-    );
-    format!("{}: {body}\n", ctx.paint("accent", &format!("Annotated #{sid}")))
+    let body = san(result
+        .get("annotation")
+        .and_then(|a| a.get("body"))
+        .and_then(Value::as_str)
+        .unwrap_or(""));
+    format!(
+        "{}: {body}\n",
+        ctx.paint("accent", &format!("Annotated #{sid}"))
+    )
 }
 
 /// `tasqx dep` / `undep`.
@@ -496,10 +608,22 @@ pub fn dep_result(ctx: &Ctx, result: &Value, added: bool, target: &str) -> Strin
     let deps: Vec<String> = result
         .get("depends_on")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_i64).map(|n| format!("#{n}")).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_i64)
+                .map(|n| format!("#{n}"))
+                .collect()
+        })
         .unwrap_or_default();
-    let blocked = result.get("blocked").and_then(Value::as_bool).unwrap_or(false);
-    let list = if deps.is_empty() { "(none)".to_string() } else { deps.join(" ") };
+    let blocked = result
+        .get("blocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let list = if deps.is_empty() {
+        "(none)".to_string()
+    } else {
+        deps.join(" ")
+    };
     let target = san(target.trim_start_matches('#'));
 
     if added {
@@ -517,7 +641,10 @@ pub fn dep_result(ctx: &Ctx, result: &Value, added: bool, target: &str) -> Strin
 
 pub fn project_table(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
-    let projects = result.get("projects").and_then(Value::as_array).unwrap_or(&empty);
+    let projects = result
+        .get("projects")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     if projects.is_empty() {
         return "No projects.\n".to_string();
     }
@@ -527,7 +654,10 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
     // behavior while being shown nowhere.
     out.push_str(&ctx.paint(
         "header",
-        &format!("{:<7}  {:<24}  {:<9}  {}", "DEFAULT", "PROJECT", "ARCHIVED", "DESCRIPTION"),
+        &format!(
+            "{:<7}  {:<24}  {:<9}  {}",
+            "DEFAULT", "PROJECT", "ARCHIVED", "DESCRIPTION"
+        ),
     ));
     out.push('\n');
     for p in projects {
@@ -547,14 +677,24 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
 
 pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     let empty = Vec::new();
-    let groups = result.get("groups").and_then(Value::as_array).unwrap_or(&empty);
+    let groups = result
+        .get("groups")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     if groups.is_empty() {
         return "No matching tasks.\n".to_string();
     }
     let mut out = String::new();
     out.push_str(&ctx.paint(
         "header",
-        &format!("{:<20}  {:>5}  {:>10}  {:>7}  {:>10}", group_by.to_uppercase(), "COUNT", "EST", "OVERDUE", "TRACKED"),
+        &format!(
+            "{:<20}  {:>5}  {:>10}  {:>7}  {:>10}",
+            group_by.to_uppercase(),
+            "COUNT",
+            "EST",
+            "OVERDUE",
+            "TRACKED"
+        ),
     ));
     out.push('\n');
     for g in groups {
@@ -562,7 +702,10 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
         let count = g.get("count").and_then(Value::as_i64).unwrap_or(0);
         let est = g.get("est_total").and_then(Value::as_str).unwrap_or("-");
         let overdue = g.get("overdue").and_then(Value::as_i64).unwrap_or(0);
-        let tracked = g.get("tracked_total").and_then(Value::as_str).unwrap_or("-");
+        let tracked = g
+            .get("tracked_total")
+            .and_then(Value::as_str)
+            .unwrap_or("-");
         let overdue_cell = format!("{overdue:>7}");
         let overdue_p = if overdue > 0 {
             ctx.paint("warn", &overdue_cell)
@@ -579,7 +722,10 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
 
 pub fn next_task(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
-    let tasks = result.get("tasks").and_then(Value::as_array).unwrap_or(&empty);
+    let tasks = result
+        .get("tasks")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     match tasks.first() {
         None => "Nothing actionable — you're clear.\n".to_string(),
         Some(t) => {
@@ -599,7 +745,10 @@ pub fn next_task(ctx: &Ctx, result: &Value) -> String {
 pub fn why(ctx: &Ctx, result: &Value) -> String {
     use tasqx_core::{urgency, Priority};
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let prio = result.get("priority").and_then(Value::as_str).and_then(Priority::parse);
+    let prio = result
+        .get("priority")
+        .and_then(Value::as_str)
+        .and_then(Priority::parse);
     let due = result.get("due").and_then(Value::as_str);
     let created = result.get("created").and_then(Value::as_str).unwrap_or("");
     why_rows(ctx, sid, &urgency::breakdown(prio, due, created))
@@ -618,7 +767,10 @@ fn why_rows(ctx: &Ctx, sid: i64, parts: &[(&'static str, f64)]) -> String {
     let total = (total * 10.0).round() / 10.0;
 
     let mut out = String::new();
-    out.push_str(&ctx.paint("header", &format!("Why #{sid} has urgency {}", signed(total, 1))));
+    out.push_str(&ctx.paint(
+        "header",
+        &format!("Why #{sid} has urgency {}", signed(total, 1)),
+    ));
     out.push('\n');
     for (name, val) in parts {
         out.push_str(&format!("  {name:<14} {:>6}\n", signed(*val, 2)));
@@ -704,8 +856,10 @@ fn truncate(s: &str, max: usize, unicode: bool) -> String {
     // `…` is one cell, `...` is three; reserve the room either way so the
     // ellipsis lands INSIDE the budget instead of blowing it by its own width.
     let ellipsis = if unicode { "…" } else { "..." };
-    let (head, _) =
-        unicode_truncate::UnicodeTruncateStr::unicode_truncate(s, max.saturating_sub(width(ellipsis)));
+    let (head, _) = unicode_truncate::UnicodeTruncateStr::unicode_truncate(
+        s,
+        max.saturating_sub(width(ellipsis)),
+    );
     format!("{head}{ellipsis}")
 }
 
@@ -726,7 +880,10 @@ mod tests {
     #[test]
     fn an_unknown_wire_status_is_treated_as_open() {
         for unknown in ["", "snoozed", "DONE", "canceled", "archived"] {
-            assert!(status_is_open(unknown), "{unknown:?} should fall back to open");
+            assert!(
+                status_is_open(unknown),
+                "{unknown:?} should fall back to open"
+            );
         }
         // ...while the statuses core actually defines still answer for themselves.
         for s in tasqx_core::types::Status::ALL {
@@ -784,8 +941,14 @@ mod tests {
             "count": 1
         });
         let out = task_table(&ctx, &result);
-        assert!(out.contains("Done"), "the offending value must be named: {out:?}");
-        assert!(out.contains("#7"), "the affected task must be identified: {out:?}");
+        assert!(
+            out.contains("Done"),
+            "the offending value must be named: {out:?}"
+        );
+        assert!(
+            out.contains("#7"),
+            "the affected task must be identified: {out:?}"
+        );
         assert!(out.contains("export"), "the way out must be named: {out:?}");
 
         // A clean table stays clean — the note is conditional, not a banner.
@@ -794,7 +957,10 @@ mod tests {
             "short_id": 7, "urgency": 5.0, "priority": "M", "title": "important work",
             "project": "work", "due": "", "tags": [], "status": "pending"
         });
-        assert!(!task_table(&ctx, &ok).contains("export"), "clean table grew a warning");
+        assert!(
+            !task_table(&ctx, &ok).contains("export"),
+            "clean table grew a warning"
+        );
     }
 
     /// The same anomaly on the detail view, which does print status: `Done`
@@ -809,9 +975,18 @@ mod tests {
                 "status_unrecognized": true, "urgency": 1.0
             }),
         );
-        assert!(out.contains("Done"), "the stored value must survive to the screen: {out:?}");
-        assert!(out.contains("unrecognized"), "the anomaly must be labelled: {out:?}");
-        assert!(out.contains("pending"), "the five real statuses must be named: {out:?}");
+        assert!(
+            out.contains("Done"),
+            "the stored value must survive to the screen: {out:?}"
+        );
+        assert!(
+            out.contains("unrecognized"),
+            "the anomaly must be labelled: {out:?}"
+        );
+        assert!(
+            out.contains("pending"),
+            "the five real statuses must be named: {out:?}"
+        );
     }
 
     /// P4d: a store written before D36 can hold a BLANK title — every door
@@ -839,9 +1014,18 @@ mod tests {
                 "count": 1
             });
             let out = task_table(&ctx, &result);
-            assert!(out.contains("#4"), "the affected task must be identified for {blank:?}: {out:?}");
-            assert!(out.contains("blank title"), "the anomaly must be labelled for {blank:?}: {out:?}");
-            assert!(out.contains("modify"), "the way out must be named for {blank:?}: {out:?}");
+            assert!(
+                out.contains("#4"),
+                "the affected task must be identified for {blank:?}: {out:?}"
+            );
+            assert!(
+                out.contains("blank title"),
+                "the anomaly must be labelled for {blank:?}: {out:?}"
+            );
+            assert!(
+                out.contains("modify"),
+                "the way out must be named for {blank:?}: {out:?}"
+            );
         }
 
         // Conditional, not a banner: an ordinary table stays clean.
@@ -852,7 +1036,10 @@ mod tests {
             }],
             "count": 1
         });
-        assert!(!task_table(&ctx, &ok).contains("blank title"), "clean table grew a warning");
+        assert!(
+            !task_table(&ctx, &ok).contains("blank title"),
+            "clean table grew a warning"
+        );
     }
 
     #[test]
@@ -867,7 +1054,10 @@ mod tests {
             "count": 1
         });
         let out = task_table(&ctx, &result);
-        assert!(!out.contains('\x1b'), "raw escape reached the terminal: {out:?}");
+        assert!(
+            !out.contains('\x1b'),
+            "raw escape reached the terminal: {out:?}"
+        );
     }
 
     /// D21: the copy must be TRUE. This line printed unconditionally, so it was
@@ -894,21 +1084,33 @@ mod tests {
         );
         // And it must point at the verb that would do it, so the user is not
         // left guessing (this is the whole complaint).
-        assert!(not_claimed.contains("use"), "must name the way to switch: {not_claimed:?}");
+        assert!(
+            not_claimed.contains("use"),
+            "must name the way to switch: {not_claimed:?}"
+        );
     }
 
     /// The default is state; a switch must show both sides of it.
     #[test]
     fn default_switched_names_the_new_default_and_the_old_one() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let out = default_switched(&ctx, &json!({ "name": "work", "previous": "prive.klussen" }));
+        let out = default_switched(
+            &ctx,
+            &json!({ "name": "work", "previous": "prive.klussen" }),
+        );
         assert!(out.contains("work"), "missing the new default: {out:?}");
-        assert!(out.contains("prive.klussen"), "missing the previous default: {out:?}");
+        assert!(
+            out.contains("prive.klussen"),
+            "missing the previous default: {out:?}"
+        );
 
         // First-ever switch has no previous — no dangling "was" clause.
         let fresh = default_switched(&ctx, &json!({ "name": "work", "previous": null }));
         assert!(fresh.contains("work"));
-        assert!(!fresh.contains("was"), "invented a previous default: {fresh:?}");
+        assert!(
+            !fresh.contains("was"),
+            "invented a previous default: {fresh:?}"
+        );
     }
 
     /// The invisible-field trap: `projects` is the read surface for the default,
@@ -926,11 +1128,23 @@ mod tests {
                 ]
             }),
         );
-        assert!(out.contains("DEFAULT"), "no default column on the projects table: {out:?}");
+        assert!(
+            out.contains("DEFAULT"),
+            "no default column on the projects table: {out:?}"
+        );
         let work_line = out.lines().find(|l| l.contains("work")).expect("work row");
-        let other_line = out.lines().find(|l| l.contains("prive.klussen")).expect("other row");
-        assert!(work_line.contains('*'), "the default row is unmarked: {work_line:?}");
-        assert!(!other_line.contains('*'), "a non-default row is marked: {other_line:?}");
+        let other_line = out
+            .lines()
+            .find(|l| l.contains("prive.klussen"))
+            .expect("other row");
+        assert!(
+            work_line.contains('*'),
+            "the default row is unmarked: {work_line:?}"
+        );
+        assert!(
+            !other_line.contains('*'),
+            "a non-default row is marked: {other_line:?}"
+        );
     }
 
     /// A bare `add` inherits the default, so the confirmation has to say where
@@ -944,7 +1158,10 @@ mod tests {
             &json!({ "short_id": 3, "status": "pending", "urgency": 5.0, "project": "work" }),
             "a task",
         );
-        assert!(out.contains("work"), "the landing project is invisible: {out:?}");
+        assert!(
+            out.contains("work"),
+            "the landing project is invisible: {out:?}"
+        );
 
         // Projectless stays quiet rather than printing an empty field.
         let none = task_added(
@@ -952,7 +1169,10 @@ mod tests {
             &json!({ "short_id": 4, "status": "pending", "urgency": 5.0, "project": null }),
             "homeless",
         );
-        assert!(!none.contains("project"), "printed an empty project row: {none:?}");
+        assert!(
+            !none.contains("project"),
+            "printed an empty project row: {none:?}"
+        );
     }
 
     /// Text whose char count and terminal-cell count disagree, one entry per
@@ -967,9 +1187,9 @@ mod tests {
     const AWKWARD: &[&str] = &[
         "plain ascii",
         "漢字テスト",
-        "e\u{301}accent",       // e + COMBINING ACUTE
+        "e\u{301}accent",                                  // e + COMBINING ACUTE
         "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f466} fam", // family ZWJ sequence
-        "\u{1f44d}\u{1f3fd} ok", // thumbs up + skin tone modifier
+        "\u{1f44d}\u{1f3fd} ok",                           // thumbs up + skin tone modifier
         "中文",
     ];
 
@@ -1001,10 +1221,19 @@ mod tests {
             .collect();
         let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
         let rows: Vec<&str> = out.lines().skip(2).take(AWKWARD.len()).collect();
-        assert_eq!(rows.len(), AWKWARD.len(), "expected one row per title: {out:?}");
+        assert_eq!(
+            rows.len(),
+            AWKWARD.len(),
+            "expected one row per title: {out:?}"
+        );
         let want = cells(rows[0]);
         for (row, title) in rows.iter().zip(AWKWARD) {
-            assert_eq!(cells(row), want, "row for {title:?} is {} cells, not {want}: {row:?}", cells(row));
+            assert_eq!(
+                cells(row),
+                want,
+                "row for {title:?} is {} cells, not {want}: {row:?}",
+                cells(row)
+            );
         }
     }
 
@@ -1046,7 +1275,10 @@ mod tests {
             .iter()
             .map(|n| json!({ "name": n, "archived": false, "default": false, "description": "d" }))
             .collect();
-        let out = project_table(&ctx, &json!({ "count": projects.len(), "projects": projects }));
+        let out = project_table(
+            &ctx,
+            &json!({ "count": projects.len(), "projects": projects }),
+        );
         let rows: Vec<&str> = out.lines().skip(1).collect();
         let want = cells(rows[0]);
         for (row, n) in rows.iter().zip(AWKWARD) {
@@ -1055,14 +1287,20 @@ mod tests {
 
         let groups: Vec<Value> = AWKWARD
             .iter()
-            .map(|k| json!({ "project": k, "count": 1, "est_total": "PT1H", "overdue": 0,
-                             "tracked_total": "PT2H" }))
+            .map(|k| {
+                json!({ "project": k, "count": 1, "est_total": "PT1H", "overdue": 0,
+                             "tracked_total": "PT2H" })
+            })
             .collect();
         let out = report(&ctx, &json!({ "groups": groups }), "project");
         let rows: Vec<&str> = out.lines().skip(1).collect();
         let want = cells(rows[0]);
         for (row, k) in rows.iter().zip(AWKWARD) {
-            assert_eq!(cells(row), want, "report group {k:?} broke alignment: {row:?}");
+            assert_eq!(
+                cells(row),
+                want,
+                "report group {k:?} broke alignment: {row:?}"
+            );
         }
     }
 
@@ -1076,7 +1314,11 @@ mod tests {
             // Long enough to force a cut, with the cut landing inside a cluster.
             let s = format!("ab{family}{family}cd");
             let got = fit(&s, 7, unicode);
-            assert_eq!(cells(&got), 7, "cell budget blown (unicode={unicode}): {got:?}");
+            assert_eq!(
+                cells(&got),
+                7,
+                "cell budget blown (unicode={unicode}): {got:?}"
+            );
             assert!(
                 !got.ends_with('\u{200d}'),
                 "cut left a dangling joiner (unicode={unicode}): {got:?}"
@@ -1084,10 +1326,18 @@ mod tests {
             // A CJK string: 5 ideographs are 10 cells, so 6 cells must fit at
             // most 2 of them plus the ellipsis — a char-counting truncate keeps 5.
             let cjk = fit("漢字テスト", 6, unicode);
-            assert_eq!(cells(&cjk), 6, "CJK cell budget blown (unicode={unicode}): {cjk:?}");
+            assert_eq!(
+                cells(&cjk),
+                6,
+                "CJK cell budget blown (unicode={unicode}): {cjk:?}"
+            );
         }
         // A string already inside its budget is padded, not cut.
-        assert_eq!(fit("中文", 6, true), "中文  ", "short cell should be padded to 6 cells");
+        assert_eq!(
+            fit("中文", 6, true),
+            "中文  ",
+            "short cell should be padded to 6 cells"
+        );
         assert_eq!(cells(&fit("中文", 6, true)), 6);
     }
 
@@ -1107,20 +1357,36 @@ mod tests {
     #[test]
     fn why_never_renders_a_component_or_a_total_as_negative_zero() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let out = why_rows(&ctx, 1, &[("priority", 0.0), ("due_proximity", 0.0), ("age", -0.0)]);
-        assert!(!out.contains("-0"), "a component rendered as negative zero: {out:?}");
-        assert!(out.contains("0.00"), "the zero itself must still be shown: {out:?}");
+        let out = why_rows(
+            &ctx,
+            1,
+            &[("priority", 0.0), ("due_proximity", 0.0), ("age", -0.0)],
+        );
+        assert!(
+            !out.contains("-0"),
+            "a component rendered as negative zero: {out:?}"
+        );
+        assert!(
+            out.contains("0.00"),
+            "the zero itself must still be shown: {out:?}"
+        );
 
         // Every part negative-zero makes the SUM negative zero too, which is the
         // heading and the total row — the twin the component fix does not reach.
         let all_neg = why_rows(&ctx, 1, &[("priority", -0.0), ("age", -0.0)]);
-        assert!(!all_neg.contains("-0"), "the total rendered as negative zero: {all_neg:?}");
+        assert!(
+            !all_neg.contains("-0"),
+            "the total rendered as negative zero: {all_neg:?}"
+        );
 
         // The rule is about a sign that survived ROUNDING, not about the value
         // being exactly zero: -0.004 is genuinely negative and still prints as a
         // row of zeros, so `v == 0.0` would not have caught it.
         let tiny = why_rows(&ctx, 1, &[("age", -0.004)]);
-        assert!(!tiny.contains("-0"), "a rounded-to-zero negative kept its sign: {tiny:?}");
+        assert!(
+            !tiny.contains("-0"),
+            "a rounded-to-zero negative kept its sign: {tiny:?}"
+        );
     }
 
     /// The twin of the above, and the reason it is not spelled `.abs()`: a term
@@ -1131,7 +1397,10 @@ mod tests {
     fn why_keeps_the_sign_of_a_value_that_is_actually_negative() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let out = why_rows(&ctx, 1, &[("penalty", -1.5), ("priority", 6.0)]);
-        assert!(out.contains("-1.50"), "a real negative lost its sign: {out:?}");
+        assert!(
+            out.contains("-1.50"),
+            "a real negative lost its sign: {out:?}"
+        );
         assert!(out.contains("4.5"), "the total must still net out: {out:?}");
     }
 

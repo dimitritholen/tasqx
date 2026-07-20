@@ -157,7 +157,11 @@ pub fn rule_to_string(r: &Recur) -> String {
         }
         Recur::MonthlyOnDay(d) => format!("monthly on day {d}"),
         Recur::MonthlyNthWeekday(n, w) => {
-            let nth = if *n == -1 { "last".to_string() } else { nth_label(*n) };
+            let nth = if *n == -1 {
+                "last".to_string()
+            } else {
+                nth_label(*n)
+            };
             format!("monthly on the {nth} {}", weekday_name(*w))
         }
     }
@@ -346,7 +350,10 @@ mod tests {
             parse_rule("weekly on mon,wed,fri").unwrap(),
             Recur::WeeklyOn(vec![Weekday::Monday, Weekday::Wednesday, Weekday::Friday])
         );
-        assert_eq!(parse_rule("monthly on day 15").unwrap(), Recur::MonthlyOnDay(15));
+        assert_eq!(
+            parse_rule("monthly on day 15").unwrap(),
+            Recur::MonthlyOnDay(15)
+        );
         assert_eq!(
             parse_rule("monthly on the 2nd tuesday").unwrap(),
             Recur::MonthlyNthWeekday(2, Weekday::Tuesday)

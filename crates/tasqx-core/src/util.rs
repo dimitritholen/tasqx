@@ -182,11 +182,17 @@ pub fn req_str_value(key: &str, v: Option<&Value>) -> Result<String, ApiError> {
     // Stated HERE rather than inherited from `opt_str`, which since D35 hands
     // back the `""` the caller actually sent.
     let s = match v {
-        None => return Err(ApiError::bad_request(format!("missing or empty required field: {key}"))),
+        None => {
+            return Err(ApiError::bad_request(format!(
+                "missing or empty required field: {key}"
+            )))
+        }
         Some(v) => v.as_str().ok_or_else(|| wrong_type(key, "a string", v))?,
     };
     if s.is_empty() {
-        return Err(ApiError::bad_request(format!("missing or empty required field: {key}")));
+        return Err(ApiError::bad_request(format!(
+            "missing or empty required field: {key}"
+        )));
     }
     // D23 ruled this for a project name — `init " "` minted a row that printed
     // blank and could never be re-selected. A blank title is that same failure
@@ -213,7 +219,9 @@ pub fn req_str_value(key: &str, v: Option<&Value>) -> Result<String, ApiError> {
 pub fn req_str_lookup(p: &Value, key: &str) -> Result<String, ApiError> {
     match opt_str(p, key)? {
         Some(s) if !s.is_empty() => Ok(s),
-        _ => Err(ApiError::bad_request(format!("missing or empty required field: {key}"))),
+        _ => Err(ApiError::bad_request(format!(
+            "missing or empty required field: {key}"
+        ))),
     }
 }
 
@@ -257,14 +265,16 @@ pub fn opt_str_nonempty(p: &Value, key: &str) -> Result<Option<String>, ApiError
 pub fn opt_i64(p: &Value, key: &str) -> Result<Option<i64>, ApiError> {
     match present(p, key) {
         None => Ok(None),
-        Some(v) => v.as_i64().map(Some).ok_or_else(|| wrong_type(key, "an integer", v)),
+        Some(v) => v
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| wrong_type(key, "an integer", v)),
     }
 }
 
 /// Extract a required integer field.
 pub fn req_i64(p: &Value, key: &str) -> Result<i64, ApiError> {
-    opt_i64(p, key)?
-        .ok_or_else(|| ApiError::bad_request(format!("missing required field: {key}")))
+    opt_i64(p, key)?.ok_or_else(|| ApiError::bad_request(format!("missing required field: {key}")))
 }
 
 /// Extract an optional non-negative integer field. A negative or fractional
@@ -288,7 +298,10 @@ pub fn opt_u64(p: &Value, key: &str) -> Result<Option<u64>, ApiError> {
 pub fn opt_bool(p: &Value, key: &str) -> Result<Option<bool>, ApiError> {
     match present(p, key) {
         None => Ok(None),
-        Some(v) => v.as_bool().map(Some).ok_or_else(|| wrong_type(key, "a boolean", v)),
+        Some(v) => v
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| wrong_type(key, "a boolean", v)),
     }
 }
 
@@ -296,7 +309,10 @@ pub fn opt_bool(p: &Value, key: &str) -> Result<Option<bool>, ApiError> {
 pub fn opt_array<'a>(p: &'a Value, key: &str) -> Result<Option<&'a Vec<Value>>, ApiError> {
     match present(p, key) {
         None => Ok(None),
-        Some(v) => v.as_array().map(Some).ok_or_else(|| wrong_type(key, "an array", v)),
+        Some(v) => v
+            .as_array()
+            .map(Some)
+            .ok_or_else(|| wrong_type(key, "an array", v)),
     }
 }
 
@@ -312,7 +328,9 @@ pub fn req_object<'a>(
     key: &str,
 ) -> Result<&'a serde_json::Map<String, Value>, ApiError> {
     match present(p, key) {
-        None => Err(ApiError::bad_request(format!("missing required field: {key} (an object)"))),
+        None => Err(ApiError::bad_request(format!(
+            "missing required field: {key} (an object)"
+        ))),
         Some(v) => v.as_object().ok_or_else(|| wrong_type(key, "an object", v)),
     }
 }
@@ -323,7 +341,9 @@ pub fn req_object<'a>(
 /// same strictness: `tag.add` used to reject a non-array while `task.add` took
 /// one and stored no tags at all, so the same mistake had two answers.
 pub fn opt_str_array(p: &Value, key: &str) -> Result<Vec<String>, ApiError> {
-    let Some(arr) = opt_array(p, key)? else { return Ok(Vec::new()) };
+    let Some(arr) = opt_array(p, key)? else {
+        return Ok(Vec::new());
+    };
     let mut out = Vec::with_capacity(arr.len());
     for v in arr {
         let Some(s) = v.as_str() else {
@@ -371,7 +391,9 @@ mod tests {
         let mut holes = Vec::new();
         for (i, _) in flat.match_indices(".get(\"") {
             let rest = &flat[i + ".get(".len()..];
-            let Some(close) = rest.find(')') else { continue };
+            let Some(close) = rest.find(')') else {
+                continue;
+            };
             let (key, after) = (&rest[..close], &rest[close + 1..]);
             if after.starts_with(".and_then(") || after.starts_with(".as_") {
                 holes.push(format!(".get({key}){}", &after[..after.len().min(24)]));
@@ -400,10 +422,17 @@ mod tests {
             ("f", opt_i64(&bad, "f").err()),
         ] {
             let e = err.unwrap_or_else(|| panic!("`{key}` of the wrong type must be refused"));
-            assert!(e.message.contains(key), "message must name `{key}`: {}", e.message);
+            assert!(
+                e.message.contains(key),
+                "message must name `{key}`: {}",
+                e.message
+            );
         }
 
-        for absent in [json!({}), json!({ "n": null, "b": null, "s": null, "a": null })] {
+        for absent in [
+            json!({}),
+            json!({ "n": null, "b": null, "s": null, "a": null }),
+        ] {
             assert_eq!(opt_i64(&absent, "n").unwrap(), None);
             assert_eq!(opt_bool(&absent, "b").unwrap(), None);
             assert_eq!(opt_str(&absent, "s").unwrap(), None);
@@ -417,7 +446,10 @@ mod tests {
         assert_eq!(opt_bool(&good, "b").unwrap(), Some(true));
         assert_eq!(opt_str(&good, "s").unwrap(), Some("hi".to_string()));
         assert_eq!(opt_u64(&good, "u").unwrap(), Some(7));
-        assert_eq!(opt_str_array(&good, "a").unwrap(), vec!["x".to_string(), "y".to_string()]);
+        assert_eq!(
+            opt_str_array(&good, "a").unwrap(),
+            vec!["x".to_string(), "y".to_string()]
+        );
     }
 
     /// D35, at the layer itself: an EMPTY string is a PRESENT value, exactly as
@@ -432,13 +464,20 @@ mod tests {
         // The caller that has no meaning for it says so, naming the param.
         let err = opt_str_nonempty(&empty, "s").expect_err("`\"\"` must not pass as a value");
         assert_eq!(err.code, crate::ErrorCode::BadRequest);
-        assert!(err.message.contains('s'), "must name the param: {}", err.message);
+        assert!(
+            err.message.contains('s'),
+            "must name the param: {}",
+            err.message
+        );
         // Absent still means absent through both doors — no optional param
         // became required.
         assert_eq!(opt_str_nonempty(&json!({}), "s").unwrap(), None);
         assert_eq!(opt_str_nonempty(&json!({ "s": null }), "s").unwrap(), None);
         // A required field keeps D23's wording, now stated rather than inherited.
-        assert!(req_str(&empty, "s").unwrap_err().message.contains("missing or empty"));
+        assert!(req_str(&empty, "s")
+            .unwrap_err()
+            .message
+            .contains("missing or empty"));
         // The element-level form of the same rule, already in force.
         assert!(opt_str_array(&json!({ "a": ["x", ""] }), "a")
             .unwrap_err()
@@ -460,7 +499,11 @@ mod tests {
             "P9223372036854775807W",
             "P4000000000000000000DT9223372036854775807S",
         ] {
-            assert_eq!(duration_secs(bad), None, "{bad:?} must be None, not a panic");
+            assert_eq!(
+                duration_secs(bad),
+                None,
+                "{bad:?} must be None, not a panic"
+            );
         }
     }
 

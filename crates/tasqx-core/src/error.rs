@@ -49,7 +49,11 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn new(code: ErrorCode, message: impl Into<String>, data: Option<Value>) -> Self {
-        ApiError { code, message: message.into(), data }
+        ApiError {
+            code,
+            message: message.into(),
+            data,
+        }
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {
@@ -84,7 +88,11 @@ pub struct ErrorBody {
 
 impl From<&ApiError> for ErrorBody {
     fn from(e: &ApiError) -> Self {
-        ErrorBody { code: e.code, message: e.message.clone(), data: e.data.clone() }
+        ErrorBody {
+            code: e.code,
+            message: e.message.clone(),
+            data: e.data.clone(),
+        }
     }
 }
 

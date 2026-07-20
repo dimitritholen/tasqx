@@ -57,7 +57,15 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
     let events = dispatch(engine, "event.list", &json!({ "limit": 100000 }))?;
 
     let now = jiff::Timestamp::now().to_string();
-    let doc = Report { theme, group_by, summary: &summary, export: &export, actionable: &actionable, events: &events, now: &now };
+    let doc = Report {
+        theme,
+        group_by,
+        summary: &summary,
+        export: &export,
+        actionable: &actionable,
+        events: &events,
+        now: &now,
+    };
     Ok(doc.render())
 }
 
@@ -85,7 +93,12 @@ struct Report<'a> {
 
 impl<'a> Report<'a> {
     fn render(&self) -> String {
-        let tasks = self.export.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+        let tasks = self
+            .export
+            .get("tasks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
 
         // Derived counts.
         let now_ts = jiff::Timestamp::now();
@@ -114,14 +127,22 @@ impl<'a> Report<'a> {
             // `status == "done"` here would be a second spelling of the same
             // question inside one loop, and invisible to any Status-derived guard.
             if tasqx_core::types::Status::parse(status) == Some(tasqx_core::types::Status::Done) {
-                if let Some(c) = t.get("completed").and_then(Value::as_str).and_then(parse_ts) {
+                if let Some(c) = t
+                    .get("completed")
+                    .and_then(Value::as_str)
+                    .and_then(parse_ts)
+                {
                     if c >= cutoff {
                         completed_recent.push(t);
                     }
                 }
             }
         }
-        completed_recent.sort_by_key(|t| t.get("completed").and_then(Value::as_str).map(str::to_string));
+        completed_recent.sort_by_key(|t| {
+            t.get("completed")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
         completed_recent.reverse();
 
         // Velocity: done events in the last 7 days.
@@ -224,7 +245,11 @@ impl<'a> Report<'a> {
 
     fn completed_section(&self, tasks: &[&Value]) -> String {
         if tasks.is_empty() {
-            return section("Completed this week", "Nothing closed in the last 7 days — a quiet week.", "");
+            return section(
+                "Completed this week",
+                "Nothing closed in the last 7 days — a quiet week.",
+                "",
+            );
         }
         let mut rows = String::new();
         for t in tasks {
@@ -244,7 +269,11 @@ impl<'a> Report<'a> {
 
     fn overdue_section(&self, tasks: &[&Value]) -> String {
         if tasks.is_empty() {
-            return section("Carried over & overdue", "Nothing overdue. You're current.", "");
+            return section(
+                "Carried over & overdue",
+                "Nothing overdue. You're current.",
+                "",
+            );
         }
         let mut rows = String::new();
         for t in tasks {
@@ -271,7 +300,12 @@ impl<'a> Report<'a> {
         // column of `(none)` under a heading that said "By project".
         let axis = self.group_by;
         let title = format!("By {axis}");
-        let groups = self.summary.get("groups").and_then(Value::as_array).cloned().unwrap_or_default();
+        let groups = self
+            .summary
+            .get("groups")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         if groups.is_empty() {
             return section(&title, &format!("No open work grouped by {axis}."), "");
         }
@@ -280,7 +314,11 @@ impl<'a> Report<'a> {
             let name = g.get(axis).and_then(Value::as_str).unwrap_or("(none)");
             let count = g.get("count").and_then(Value::as_i64).unwrap_or(0);
             let est = humanize_iso(g.get("est_total").and_then(Value::as_str).unwrap_or("PT0S"));
-            let tracked = humanize_iso(g.get("tracked_total").and_then(Value::as_str).unwrap_or("PT0S"));
+            let tracked = humanize_iso(
+                g.get("tracked_total")
+                    .and_then(Value::as_str)
+                    .unwrap_or("PT0S"),
+            );
             let overdue = g.get("overdue").and_then(Value::as_i64).unwrap_or(0);
             let od = if overdue > 0 {
                 format!("<td class=\"warn\">{overdue}</td>")
@@ -313,9 +351,18 @@ impl<'a> Report<'a> {
     }
 
     fn actionable_section(&self) -> String {
-        let tasks = self.actionable.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+        let tasks = self
+            .actionable
+            .get("tasks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         if tasks.is_empty() {
-            return section("Now actionable", "Nothing unblocked and pending — you're clear.", "");
+            return section(
+                "Now actionable",
+                "Nothing unblocked and pending — you're clear.",
+                "",
+            );
         }
         let mut rows = String::new();
         for t in &tasks {
@@ -346,7 +393,11 @@ impl<'a> Report<'a> {
                 name = esc(name),
             ));
         }
-        section("Top tags", "Where your open work clusters.", &format!("<div class=\"tags\">{chips}</div>"))
+        section(
+            "Top tags",
+            "Where your open work clusters.",
+            &format!("<div class=\"tags\">{chips}</div>"),
+        )
     }
 
     /// CSS with a palette derived from the active theme, for both color schemes.
@@ -438,15 +489,27 @@ fn section(title: &str, sub: &str, body: &str) -> String {
 }
 
 fn stat(n: &str, label: &str) -> String {
-    format!("<div class=\"stat\"><div class=\"n\">{}</div><div class=\"l\">{}</div></div>", esc(n), esc(label))
+    format!(
+        "<div class=\"stat\"><div class=\"n\">{}</div><div class=\"l\">{}</div></div>",
+        esc(n),
+        esc(label)
+    )
 }
 fn stat_flag(n: &str, label: &str, flag: bool) -> String {
     let cls = if flag { "stat flag" } else { "stat" };
-    format!("<div class=\"{cls}\"><div class=\"n\">{}</div><div class=\"l\">{}</div></div>", esc(n), esc(label))
+    format!(
+        "<div class=\"{cls}\"><div class=\"n\">{}</div><div class=\"l\">{}</div></div>",
+        esc(n),
+        esc(label)
+    )
 }
 
 fn proj_chip(t: &Value) -> String {
-    match t.get("project").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+    match t
+        .get("project")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
         Some(p) => format!(" <span class=\"chip\">{}</span>", esc(p)),
         None => String::new(),
     }
@@ -494,7 +557,11 @@ fn pretty_ts(s: &str) -> String {
             let ti = z.time();
             format!(
                 "{:04}-{:02}-{:02} {:02}:{:02} UTC",
-                d.year(), d.month(), d.day(), ti.hour(), ti.minute()
+                d.year(),
+                d.month(),
+                d.day(),
+                ti.hour(),
+                ti.minute()
             )
         }
         Err(_) => s.to_string(),
@@ -532,7 +599,9 @@ fn ramp_stops(theme: &Theme, id: &str) -> String {
     let anchors = theme.ramp();
     if anchors.is_empty() {
         // mono: a single accent-derived stop so the gradient is still valid.
-        let a = theme.palette_color("fg").unwrap_or(Rgb::new(0x88, 0x88, 0x88));
+        let a = theme
+            .palette_color("fg")
+            .unwrap_or(Rgb::new(0x88, 0x88, 0x88));
         return format!(
             "<linearGradient id=\"{id}\" x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\">\
              <stop offset=\"0%\" stop-color=\"{c}\"/><stop offset=\"100%\" stop-color=\"{c}\"/></linearGradient>",
@@ -543,9 +612,14 @@ fn ramp_stops(theme: &Theme, id: &str) -> String {
     let mut stops = String::new();
     for (i, c) in anchors.iter().enumerate() {
         let off = (i as f64 / (n - 1).max(1) as f64) * 100.0;
-        stops.push_str(&format!("<stop offset=\"{off:.0}%\" stop-color=\"{}\"/>", c.hex()));
+        stops.push_str(&format!(
+            "<stop offset=\"{off:.0}%\" stop-color=\"{}\"/>",
+            c.hex()
+        ));
     }
-    format!("<linearGradient id=\"{id}\" x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\">{stops}</linearGradient>")
+    format!(
+        "<linearGradient id=\"{id}\" x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\">{stops}</linearGradient>"
+    )
 }
 
 fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
@@ -556,10 +630,23 @@ fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
     let pad_t = 12.0;
     let plot_w = w - pad_l - 12.0;
     let plot_h = h - pad_b - pad_t;
-    let max = buckets.iter().map(|b| b.added.max(b.done)).max().unwrap_or(1).max(1) as f64;
+    let max = buckets
+        .iter()
+        .map(|b| b.added.max(b.done))
+        .max()
+        .unwrap_or(1)
+        .max(1) as f64;
 
-    let accent = theme.palette_color("accent").unwrap_or(Rgb::new(0x88, 0xc0, 0xd0)).hex();
-    let done_c = theme.ramp().first().copied().unwrap_or(Rgb::new(0xa3, 0xbe, 0x8c)).hex();
+    let accent = theme
+        .palette_color("accent")
+        .unwrap_or(Rgb::new(0x88, 0xc0, 0xd0))
+        .hex();
+    let done_c = theme
+        .ramp()
+        .first()
+        .copied()
+        .unwrap_or(Rgb::new(0xa3, 0xbe, 0x8c))
+        .hex();
 
     let n = buckets.len().max(1);
     let slot = plot_w / n as f64;
@@ -583,7 +670,8 @@ fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
         ));
         labels.push_str(&format!(
             "<text x=\"{cx:.1}\" y=\"{ly:.1}\" text-anchor=\"middle\" class=\"axl\">{lbl}</text>",
-            ly = h - 8.0, lbl = esc(&b.label()),
+            ly = h - 8.0,
+            lbl = esc(&b.label()),
         ));
     }
 
@@ -591,7 +679,11 @@ fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
         "<line x1=\"{pad_l}\" y1=\"{y0:.1}\" x2=\"{pad_l}\" y2=\"{y1:.1}\" class=\"axis\"/>\
          <line x1=\"{pad_l}\" y1=\"{y1:.1}\" x2=\"{xr:.1}\" y2=\"{y1:.1}\" class=\"axis\"/>\
          <text x=\"{tx:.1}\" y=\"{ty:.1}\" text-anchor=\"end\" class=\"axl\">{max:.0}</text>",
-        y0 = pad_t, y1 = pad_t + plot_h, xr = pad_l + plot_w, tx = pad_l - 6.0, ty = pad_t + 8.0,
+        y0 = pad_t,
+        y1 = pad_t + plot_h,
+        xr = pad_l + plot_w,
+        tx = pad_l - 6.0,
+        ty = pad_t + 8.0,
     );
 
     let legend = format!(
@@ -599,7 +691,10 @@ fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
          <text x=\"{lxx:.0}\" y=\"15\" class=\"axl\">added</text>\
          <rect x=\"{lx2:.0}\" y=\"6\" width=\"10\" height=\"10\" rx=\"2\" fill=\"{done_c}\"/>\
          <text x=\"{lx2x:.0}\" y=\"15\" class=\"axl\">done</text>",
-        lx = w - 150.0, lxx = w - 136.0, lx2 = w - 78.0, lx2x = w - 64.0,
+        lx = w - 150.0,
+        lxx = w - 136.0,
+        lx2 = w - 78.0,
+        lx2x = w - 64.0,
     );
 
     svg_wrap(w, h, &format!("{axis}{bars}{labels}{legend}"), theme, "tp")
@@ -628,14 +723,23 @@ fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
     }
     area.push_str(&format!(" L {:.1} {:.1} Z", x_at(n - 1), pad_t + plot_h));
 
-    let stroke = theme.ramp().last().copied().unwrap_or(Rgb::new(0xbf, 0x61, 0x6a)).hex();
+    let stroke = theme
+        .ramp()
+        .last()
+        .copied()
+        .unwrap_or(Rgb::new(0xbf, 0x61, 0x6a))
+        .hex();
     let axis = format!(
         "<line x1=\"{pad_l}\" y1=\"{y0:.1}\" x2=\"{pad_l}\" y2=\"{y1:.1}\" class=\"axis\"/>\
          <line x1=\"{pad_l}\" y1=\"{y1:.1}\" x2=\"{xr:.1}\" y2=\"{y1:.1}\" class=\"axis\"/>\
          <text x=\"{tx:.1}\" y=\"{ty:.1}\" text-anchor=\"end\" class=\"axl\">{max:.0}</text>\
          <text x=\"{tx:.1}\" y=\"{by:.1}\" text-anchor=\"end\" class=\"axl\">0</text>",
-        y0 = pad_t, y1 = pad_t + plot_h, xr = pad_l + plot_w,
-        tx = pad_l - 6.0, ty = pad_t + 8.0, by = pad_t + plot_h,
+        y0 = pad_t,
+        y1 = pad_t + plot_h,
+        xr = pad_l + plot_w,
+        tx = pad_l - 6.0,
+        ty = pad_t + 8.0,
+        by = pad_t + plot_h,
     );
 
     let first = series.first().map(|p| p.date);
@@ -647,7 +751,8 @@ fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
         (Some(f), Some(l)) => format!(
             "<text x=\"{pad_l}\" y=\"{ly:.1}\" class=\"axl\">{fs}</text>\
              <text x=\"{xr:.1}\" y=\"{ly:.1}\" text-anchor=\"end\" class=\"axl\">{ls}</text>",
-            ly = h - 8.0, xr = pad_l + plot_w,
+            ly = h - 8.0,
+            xr = pad_l + plot_w,
             fs = ymd(f),
             ls = ymd(l),
         ),
@@ -741,7 +846,8 @@ mod tests {
         let e = tasqx_core::Engine::open_in_memory().unwrap();
         e.project_create(&json!({ "name": "P" })).unwrap(); // D23
         for title in ["waiting", "in-flight", "finished", "abandoned"] {
-            e.task_add(&json!({ "title": title, "project": "P" })).unwrap();
+            e.task_add(&json!({ "title": title, "project": "P" }))
+                .unwrap();
         }
         e.task_start(&json!({ "ref": "2" })).unwrap();
         e.task_done(&json!({ "ref": "3" })).unwrap();
@@ -757,11 +863,19 @@ mod tests {
         assert_eq!(g["project"], "P");
         // pending + active + done. The active task is the regression; the
         // cancelled one must stay out (D24).
-        assert_eq!(g["count"], 3, "active must be counted, cancelled must not: {summary:?}");
+        assert_eq!(
+            g["count"], 3,
+            "active must be counted, cancelled must not: {summary:?}"
+        );
 
         // And the generator must actually ask for that unfiltered summary — the
         // rendered row is where the hardcoded filter used to show up as a 1.
-        let html = generate(&e, &theme::builtin("nord").unwrap(), &json!({ "group_by": "project", "metrics": ["count"] })).unwrap();
+        let html = generate(
+            &e,
+            &theme::builtin("nord").unwrap(),
+            &json!({ "group_by": "project", "metrics": ["count"] }),
+        )
+        .unwrap();
         assert!(
             html.contains("<td class=\"proj\">P</td><td>3</td>"),
             "the By-project row must show 3, not the pending-only 1: {html}"
@@ -779,7 +893,8 @@ mod tests {
     fn the_group_section_follows_the_axis_the_caller_asked_for() {
         let e = tasqx_core::Engine::open_in_memory().unwrap();
         e.project_create(&json!({ "name": "P" })).unwrap();
-        e.task_add(&json!({ "title": "one", "project": "P", "priority": "high" })).unwrap();
+        e.task_add(&json!({ "title": "one", "project": "P", "priority": "high" }))
+            .unwrap();
 
         for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
             let doc = generate(
@@ -789,7 +904,10 @@ mod tests {
             )
             .unwrap();
             let head = title_case(axis);
-            assert!(doc.contains(&format!("<th>{head}</th>")), "{axis}: header not relabelled");
+            assert!(
+                doc.contains(&format!("<th>{head}</th>")),
+                "{axis}: header not relabelled"
+            );
             assert!(
                 !doc.contains("<td class=\"proj\">(none)</td>"),
                 "{axis}: the row key was read from the wrong column"
@@ -822,7 +940,10 @@ mod tests {
             "dark scheme media query"
         );
         // Palette tokens present for both schemes (light default + dark override).
-        assert!(doc.matches("--bg:").count() >= 2, "--bg defined for both schemes");
+        assert!(
+            doc.matches("--bg:").count() >= 2,
+            "--bg defined for both schemes"
+        );
         assert!(doc.contains("--accent:"), "accent token present");
     }
 
@@ -874,7 +995,10 @@ mod tests {
             now: &now,
         }
         .render();
-        assert!(!doc.contains('\u{1b}'), "report --html writes to stdout — no ESC may survive");
+        assert!(
+            !doc.contains('\u{1b}'),
+            "report --html writes to stdout — no ESC may survive"
+        );
     }
 
     #[test]

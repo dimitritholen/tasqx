@@ -51,15 +51,25 @@ fn theme_show_rejects_an_unknown_name() {
         .output()
         .expect("run theme show");
 
-    assert_eq!(out.status.code(), Some(2), "an unknown theme must be bad_request, like `theme set`");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unknown theme must be bad_request, like `theme set`"
+    );
     assert!(
         out.stdout.is_empty(),
         "a rejected name must not print a theme the user did not ask for: {}",
         String::from_utf8_lossy(&out.stdout)
     );
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("geen-thema-xyz"), "the message must name the typo: {err}");
-    assert!(err.contains("tasqx theme list"), "and the way to find the real names: {err}");
+    assert!(
+        err.contains("geen-thema-xyz"),
+        "the message must name the typo: {err}"
+    );
+    assert!(
+        err.contains("tasqx theme list"),
+        "and the way to find the real names: {err}"
+    );
 }
 
 /// The valid case must keep working — a guard that rejects everything would
@@ -75,7 +85,10 @@ fn theme_show_still_renders_a_known_name() {
     assert!(out.status.success(), "a real theme must still render");
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("Theme: gruvbox"), "{s}");
-    assert!(s.contains("urgency.ramp"), "the full role list must still print: {s}");
+    assert!(
+        s.contains("urgency.ramp"),
+        "the full role list must still print: {s}"
+    );
 }
 
 /// `theme show` with no argument shows the ACTIVE theme and must not be
@@ -85,7 +98,10 @@ fn theme_show_still_renders_a_known_name() {
 #[test]
 fn theme_show_without_a_name_still_works() {
     let dir = fresh_config_dir("show-bare");
-    let out = bin("show-bare", &dir).args(["theme", "show"]).output().expect("run theme show");
+    let out = bin("show-bare", &dir)
+        .args(["theme", "show"])
+        .output()
+        .expect("run theme show");
 
     assert!(out.status.success(), "the bare form must keep working");
     assert!(String::from_utf8_lossy(&out.stdout).contains("Theme: nord"));
@@ -113,16 +129,25 @@ fn config_get_warns_about_a_wrong_typed_value() {
         .output()
         .expect("run config get");
 
-    assert!(out.status.success(), "a wrong-typed value must not fail the command");
+    assert!(
+        out.status.success(),
+        "a wrong-typed value must not fail the command"
+    );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
         "nord",
         "stdout stays the usable default, so `$(tasqx config get ...)` still works"
     );
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("theme.name"), "the warning must name the key: {err}");
+    assert!(
+        err.contains("theme.name"),
+        "the warning must name the key: {err}"
+    );
     assert!(err.contains("string"), "and the declared type: {err}");
-    assert!(err.contains("integer"), "and what was actually found: {err}");
+    assert!(
+        err.contains("integer"),
+        "and what was actually found: {err}"
+    );
 }
 
 /// `config list` must survive the same file. Reporting the mismatch as an error
@@ -133,13 +158,25 @@ fn config_list_still_reports_every_setting_despite_a_bad_line() {
     let dir = fresh_config_dir("wrong-type-list");
     std::fs::write(dir.join("config.toml"), "[theme]\nname = 42\n").unwrap();
 
-    let out = bin("wrong-type-list", &dir).args(["config", "list"]).output().expect("run config list");
+    let out = bin("wrong-type-list", &dir)
+        .args(["config", "list"])
+        .output()
+        .expect("run config list");
 
-    assert!(out.status.success(), "one bad line must not abort the whole listing");
+    assert!(
+        out.status.success(),
+        "one bad line must not abort the whole listing"
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("theme.name"), "{s}");
-    assert!(s.contains("notify.enabled"), "the other keys are still readable: {s}");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("expected string"), "and still warned about");
+    assert!(
+        s.contains("notify.enabled"),
+        "the other keys are still readable: {s}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("expected string"),
+        "and still warned about"
+    );
 }
 
 /// The same value read by every OTHER command must stay silent.
@@ -152,7 +189,10 @@ fn a_wrong_typed_value_stays_silent_outside_config() {
     let dir = fresh_config_dir("wrong-type-quiet");
     std::fs::write(dir.join("config.toml"), "[theme]\nname = 42\n").unwrap();
 
-    let out = bin("wrong-type-quiet", &dir).args(["theme", "list"]).output().expect("run theme list");
+    let out = bin("wrong-type-quiet", &dir)
+        .args(["theme", "list"])
+        .output()
+        .expect("run theme list");
 
     assert!(out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
@@ -195,11 +235,20 @@ fn config_get_is_silent_about_a_well_typed_value() {
 fn saving_a_theme_points_at_theme_show() {
     let dir = fresh_config_dir("pointer");
 
-    let set = bin("pointer", &dir).args(["theme", "set", "gruvbox"]).output().expect("run theme set");
+    let set = bin("pointer", &dir)
+        .args(["theme", "set", "gruvbox"])
+        .output()
+        .expect("run theme set");
     assert!(set.status.success());
     let s = String::from_utf8_lossy(&set.stdout);
-    assert!(s.contains("theme.name = gruvbox"), "the confirmation must still name the write: {s}");
-    assert!(s.contains("tasqx theme show"), "`theme set` must point at the preview: {s}");
+    assert!(
+        s.contains("theme.name = gruvbox"),
+        "the confirmation must still name the write: {s}"
+    );
+    assert!(
+        s.contains("tasqx theme show"),
+        "`theme set` must point at the preview: {s}"
+    );
 
     let cfg = bin("pointer", &dir)
         .args(["config", "set", "theme.name", "dracula"])
@@ -208,7 +257,10 @@ fn saving_a_theme_points_at_theme_show() {
     assert!(cfg.status.success());
     let c = String::from_utf8_lossy(&cfg.stdout);
     assert!(c.contains("theme.name = dracula"), "{c}");
-    assert!(c.contains("tasqx theme show"), "`config set theme.name` must point at it too: {c}");
+    assert!(
+        c.contains("tasqx theme show"),
+        "`config set theme.name` must point at it too: {c}"
+    );
 }
 
 /// The pointer is for themes only. A non-theme setting that grew a "see it with
@@ -225,7 +277,10 @@ fn saving_a_non_theme_setting_says_nothing_about_theme_show() {
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("notify.enabled = true"), "{s}");
-    assert!(!s.contains("theme show"), "notify.enabled has nothing to do with themes: {s}");
+    assert!(
+        !s.contains("theme show"),
+        "notify.enabled has nothing to do with themes: {s}"
+    );
 }
 
 /// `--json` consumers must not receive the pointer. It is guidance for a human
@@ -262,21 +317,39 @@ fn the_pointer_stays_out_of_json_output() {
 /// commit id cannot, and it is the half that answers the staleness question.
 #[test]
 fn version_names_the_commit_it_was_built_from() {
-    let out = Command::new(env!("CARGO_BIN_EXE_tasqx")).arg("--version").output().expect("run --version");
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .arg("--version")
+        .output()
+        .expect("run --version");
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
 
-    assert!(s.contains(env!("CARGO_PKG_VERSION")), "the crate version must survive: {s}");
-    assert!(s.trim() != format!("tasqx {}", env!("CARGO_PKG_VERSION")), "a bare crate version is the bug: {s}");
+    assert!(
+        s.contains(env!("CARGO_PKG_VERSION")),
+        "the crate version must survive: {s}"
+    );
+    assert!(
+        s.trim() != format!("tasqx {}", env!("CARGO_PKG_VERSION")),
+        "a bare crate version is the bug: {s}"
+    );
 
-    match Command::new("git").args(["rev-parse", "--short=12", "HEAD"]).output() {
+    match Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+    {
         Ok(g) if g.status.success() => {
             let sha = String::from_utf8_lossy(&g.stdout).trim().to_string();
-            assert!(s.contains(&sha), "must name the actual HEAD commit {sha}: {s}");
+            assert!(
+                s.contains(&sha),
+                "must name the actual HEAD commit {sha}: {s}"
+            );
         }
         // No git, no checkout: `unknown` is the honest answer and the build
         // must still have produced a binary rather than failing outright.
-        _ => assert!(s.contains("unknown"), "without git the id must be `unknown`: {s}"),
+        _ => assert!(
+            s.contains("unknown"),
+            "without git the id must be `unknown`: {s}"
+        ),
     }
 }
 
@@ -311,14 +384,31 @@ fn import_refuses_a_wrong_shaped_document() {
     for (i, (body, needle)) in cases.iter().enumerate() {
         let path = scratch.join(format!("case{i}.json"));
         std::fs::write(&path, body).expect("write case file");
-        let out = bin("import-shape", &dir).arg("import").arg(&path).output().expect("run import");
+        let out = bin("import-shape", &dir)
+            .arg("import")
+            .arg(&path)
+            .output()
+            .expect("run import");
 
-        assert_eq!(out.status.code(), Some(2), "`{body}` must be a bad_request, not a silent success");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`{body}` must be a bad_request, not a silent success"
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(!stdout.contains("Imported"), "`{body}` must not report an import: {stdout}");
+        assert!(
+            !stdout.contains("Imported"),
+            "`{body}` must not report an import: {stdout}"
+        );
         let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.starts_with("error [bad_request]: "), "must use the shared error format: {err}");
-        assert!(err.contains(needle), "`{body}` must be explained by naming `{needle}`: {err}");
+        assert!(
+            err.starts_with("error [bad_request]: "),
+            "must use the shared error format: {err}"
+        );
+        assert!(
+            err.contains(needle),
+            "`{body}` must be explained by naming `{needle}`: {err}"
+        );
     }
 }
 
@@ -337,29 +427,54 @@ fn a_wait_that_has_passed_brings_the_task_back_into_list() {
         .args(["add", "waiter", "wait:2999-01-01"])
         .output()
         .expect("run add");
-    assert!(add.status.success(), "add failed: {}", String::from_utf8_lossy(&add.stderr));
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
     assert!(
         String::from_utf8_lossy(&add.stdout).contains("backlog"),
         "a future wait must still park the task in the backlog"
     );
 
-    let listed = bin("wait-release", &dir).arg("list").output().expect("run list");
+    let listed = bin("wait-release", &dir)
+        .arg("list")
+        .output()
+        .expect("run list");
     assert!(
         String::from_utf8_lossy(&listed.stdout).contains("No tasks"),
         "while the wait is ahead the task stays out of the default view"
     );
 
-    let modified =
-        bin("wait-release", &dir).args(["modify", "1", "wait:2020-01-01"]).output().expect("run modify");
-    assert!(modified.status.success(), "modify failed: {}", String::from_utf8_lossy(&modified.stderr));
+    let modified = bin("wait-release", &dir)
+        .args(["modify", "1", "wait:2020-01-01"])
+        .output()
+        .expect("run modify");
+    assert!(
+        modified.status.success(),
+        "modify failed: {}",
+        String::from_utf8_lossy(&modified.stderr)
+    );
 
-    let listed = bin("wait-release", &dir).arg("list").output().expect("run list");
+    let listed = bin("wait-release", &dir)
+        .arg("list")
+        .output()
+        .expect("run list");
     let stdout = String::from_utf8_lossy(&listed.stdout);
-    assert!(stdout.contains("waiter"), "a passed wait must return the task to `list`: {stdout}");
+    assert!(
+        stdout.contains("waiter"),
+        "a passed wait must return the task to `list`: {stdout}"
+    );
 
-    let shown = bin("wait-release", &dir).args(["show", "1"]).output().expect("run show");
+    let shown = bin("wait-release", &dir)
+        .args(["show", "1"])
+        .output()
+        .expect("run show");
     let shown = String::from_utf8_lossy(&shown.stdout);
-    assert!(shown.contains("pending"), "`show` must agree with `list`: {shown}");
+    assert!(
+        shown.contains("pending"),
+        "`show` must agree with `list`: {shown}"
+    );
 }
 
 /// C2 — `+"a tag"` was split at the space on the WRITE path, and the leftover
@@ -378,7 +493,11 @@ fn a_shell_quoted_tag_survives_add_and_modify_whole() {
     let dir = fresh_config_dir("spaced-tag");
     let json = |tag: &str, args: &[&str]| -> String {
         let out = bin(tag, &dir).args(args).output().expect("run tasqx");
-        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).to_string()
     };
 
@@ -398,7 +517,10 @@ fn a_shell_quoted_tag_survives_add_and_modify_whole() {
     // parser, so it carried the identical bug — and there it ate the title whole.
     json("spaced-tag", &["modify", "1", "+big job"]);
     let shown = json("spaced-tag", &["--json", "show", "1"]);
-    assert!(shown.contains(r#""big job""#), "modify must keep the tag whole too: {shown}");
+    assert!(
+        shown.contains(r#""big job""#),
+        "modify must keep the tag whole too: {shown}"
+    );
     assert!(
         shown.contains(r#""title": "painting job""#),
         "a sugar-only modify must not touch the title: {shown}"
@@ -408,8 +530,14 @@ fn a_shell_quoted_tag_survives_add_and_modify_whole() {
     // the shell-stripped form — the same equivalence C1 relies on when reading.
     json("spaced-tag", &["add", "second", r#"+"needs paint""#]);
     let shown = json("spaced-tag", &["--json", "show", "2"]);
-    assert!(shown.contains(r#""needs paint""#), "literal quotes must parse the same: {shown}");
-    assert!(shown.contains(r#""title": "second""#), "and leave the title alone: {shown}");
+    assert!(
+        shown.contains(r#""needs paint""#),
+        "literal quotes must parse the same: {shown}"
+    );
+    assert!(
+        shown.contains(r#""title": "second""#),
+        "and leave the title alone: {shown}"
+    );
 }
 
 /// C3 — `-tag` exclusion, core filter grammar, was never typable from a shell.
@@ -431,10 +559,19 @@ fn a_shell_quoted_tag_survives_add_and_modify_whole() {
 #[test]
 fn a_leading_hyphen_tag_exclusion_reaches_the_filter_parser() {
     let dir = fresh_config_dir("hyphen-filter");
-    let run = |args: &[&str]| bin("hyphen-filter", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("hyphen-filter", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
     let ok = |args: &[&str]| -> String {
         let out = run(args);
-        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).to_string()
     };
 
@@ -443,32 +580,59 @@ fn a_leading_hyphen_tag_exclusion_reaches_the_filter_parser() {
 
     // `list`: the excluded task is gone, the other one stays.
     let listed = ok(&["list", "-needs"]);
-    assert!(!listed.contains("paint the shed"), "-needs must exclude the tagged task: {listed}");
-    assert!(listed.contains("other thing"), "-needs must not exclude everything else: {listed}");
+    assert!(
+        !listed.contains("paint the shed"),
+        "-needs must exclude the tagged task: {listed}"
+    );
+    assert!(
+        listed.contains("other thing"),
+        "-needs must not exclude everything else: {listed}"
+    );
 
     // Every other filter-taking argument carries the same grammar and so must
     // accept the same token — `report` takes group_by first, `export` and
     // `watch` take a bare filter.
     let exported = ok(&["export", "-needs"]);
-    assert!(!exported.contains("paint the shed"), "export must honour -tag too: {exported}");
-    assert!(exported.contains("other thing"), "export must still return the rest: {exported}");
-    assert!(run(&["report", "project", "-needs"]).status.success(), "report must accept -tag");
+    assert!(
+        !exported.contains("paint the shed"),
+        "export must honour -tag too: {exported}"
+    );
+    assert!(
+        exported.contains("other thing"),
+        "export must still return the rest: {exported}"
+    );
+    assert!(
+        run(&["report", "project", "-needs"]).status.success(),
+        "report must accept -tag"
+    );
 
     // Making `-tag` typable must not cost the flags: `--json` before the
     // filter still switches the output format instead of reaching the parser
     // as filter text. (After the filter is C3r's job.)
     let json = ok(&["list", "--json", "+home"]);
-    assert!(json.trim_start().starts_with('{'), "--json must stay a flag, not become filter text: {json}");
+    assert!(
+        json.trim_start().starts_with('{'),
+        "--json must stay a flag, not become filter text: {json}"
+    );
 
     // And an unknown flag must still be rejected, not silently treated as a
     // filter token — `--bogus` briefly parsed as "exclude the tag `-bogus`",
     // excluded nothing, and listed EVERY task with exit 0. The message must
     // name what was typed, since that is the whole recovery.
     let bogus = run(&["list", "--bogus"]);
-    assert!(!bogus.status.success(), "an unknown flag must stay an error, not become filter text");
+    assert!(
+        !bogus.status.success(),
+        "an unknown flag must stay an error, not become filter text"
+    );
     let err = String::from_utf8_lossy(&bogus.stderr);
-    assert!(err.contains("--bogus"), "the error must name the offending flag: {err}");
-    assert!(err.contains("-tag"), "and point at the shape that does work: {err}");
+    assert!(
+        err.contains("--bogus"),
+        "the error must name the offending flag: {err}"
+    );
+    assert!(
+        err.contains("-tag"),
+        "and point at the shape that does work: {err}"
+    );
 }
 
 /// C3r — the fix for C3 broke the ordinary case: a flag typed AFTER the filter.
@@ -490,10 +654,19 @@ fn a_leading_hyphen_tag_exclusion_reaches_the_filter_parser() {
 #[test]
 fn a_flag_after_a_filter_positional_is_still_a_flag() {
     let dir = fresh_config_dir("hyphen-filter-order");
-    let run = |args: &[&str]| bin("hyphen-filter-order", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("hyphen-filter-order", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
     let ok = |args: &[&str]| -> String {
         let out = run(args);
-        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).to_string()
     };
 
@@ -508,39 +681,78 @@ fn a_flag_after_a_filter_positional_is_still_a_flag() {
         vec!["list", "-needs", "--json"],
     ] {
         let out = ok(&args);
-        assert!(out.trim_start().starts_with('{'), "{args:?} must emit JSON, not a table: {out}");
+        assert!(
+            out.trim_start().starts_with('{'),
+            "{args:?} must emit JSON, not a table: {out}"
+        );
     }
-    for args in [vec!["report", "project", "--html"], vec!["report", "project", "+home", "--html"]] {
+    for args in [
+        vec!["report", "project", "--html"],
+        vec!["report", "project", "+home", "--html"],
+    ] {
         let out = ok(&args);
-        assert!(out.contains("<html"), "{args:?} must emit HTML, not a table: {out}");
+        assert!(
+            out.contains("<html"),
+            "{args:?} must emit HTML, not a table: {out}"
+        );
     }
 
     // (a) a leading-hyphen FILTER token still reaches the grammar, in every
     // position — including after a flag, and including the quoted form the
     // shell hands over as one token with a space in it.
     let after_flag = ok(&["list", "--json", "-needs"]);
-    assert!(!after_flag.contains("paint the shed"), "-needs after a flag must still exclude: {after_flag}");
-    assert!(after_flag.contains("other thing"), "-needs must not exclude everything: {after_flag}");
+    assert!(
+        !after_flag.contains("paint the shed"),
+        "-needs after a flag must still exclude: {after_flag}"
+    );
+    assert!(
+        after_flag.contains("other thing"),
+        "-needs must not exclude everything: {after_flag}"
+    );
     let before_flag = ok(&["list", "-needs", "--json"]);
-    assert!(!before_flag.contains("paint the shed"), "-needs before a flag must still exclude: {before_flag}");
+    assert!(
+        !before_flag.contains("paint the shed"),
+        "-needs before a flag must still exclude: {before_flag}"
+    );
     let mixed = ok(&["list", "+home", "-needs"]);
-    assert!(!mixed.contains("paint the shed"), "-needs beside another token must exclude: {mixed}");
+    assert!(
+        !mixed.contains("paint the shed"),
+        "-needs beside another token must exclude: {mixed}"
+    );
     // The quoted form, as a shell hands it over: one token, inner quotes intact
     // (`tasqx list '-"needs paint"'`). It survives the join-and-retokenize trip.
     ok(&["add", "fence job", "+needs paint"]);
     let quoted = ok(&["list", "-\"needs paint\""]);
-    assert!(!quoted.contains("fence job"), "a quoted tag exclusion must exclude: {quoted}");
-    assert!(quoted.contains("other thing"), "and must not exclude everything: {quoted}");
+    assert!(
+        !quoted.contains("fence job"),
+        "a quoted tag exclusion must exclude: {quoted}"
+    );
+    assert!(
+        quoted.contains("other thing"),
+        "and must not exclude everything: {quoted}"
+    );
 
     // (b) an unknown flag stays an ERROR wherever it appears — never silent
     // filter text that widens the result set, and never a bare clap usage dump:
     // the message names what was typed and the shape that would have worked.
-    for args in [vec!["list", "--nosuchflag"], vec!["list", "+home", "--nosuchflag"]] {
+    for args in [
+        vec!["list", "--nosuchflag"],
+        vec!["list", "+home", "--nosuchflag"],
+    ] {
         let out = run(&args);
-        assert!(!out.status.success(), "{args:?}: an unknown flag must stay an error");
+        assert!(
+            !out.status.success(),
+            "{args:?}: an unknown flag must stay an error"
+        );
         let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("--nosuchflag"), "{args:?}: name the offending flag: {err}");
-        assert!(err.contains("-tag"), "{args:?}: point at the shape that works: {err}");
+        assert!(
+            err.contains("--nosuchflag"),
+            "{args:?}: name the offending flag: {err}"
+        );
+        assert!(
+            err.contains("-tag"),
+            "{args:?}: point at the shape that works: {err}"
+        );
     }
 }
 
@@ -568,11 +780,18 @@ fn a_flag_after_a_filter_positional_is_still_a_flag() {
 fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
     let dir = fresh_config_dir("read-quoting");
     let run = |args: &[&str]| -> std::process::Output {
-        bin("read-quoting", &dir).args(args).output().expect("run tasqx")
+        bin("read-quoting", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
     };
     let ok = |args: &[&str]| -> String {
         let out = run(args);
-        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).to_string()
     };
 
@@ -582,12 +801,21 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
 
     // `list`: the literal-quote form is what the tool teaches and must work.
     let s = ok(&["list", r#"+"needs paint""#]);
-    assert!(s.contains("painted"), "the literal form must select the spaced tag: {s}");
-    assert!(!s.contains("unrelated"), "and must not widen to every task: {s}");
+    assert!(
+        s.contains("painted"),
+        "the literal form must select the spaced tag: {s}"
+    );
+    assert!(
+        !s.contains("unrelated"),
+        "and must not widen to every task: {s}"
+    );
     // A value key with a space behaves the same; `Home Renovation` is the
     // project `add` accepted whole one command earlier.
     let s = ok(&["list", r#"project:"Home Renovation""#]);
-    assert!(s.contains("painted") && s.contains("unrelated"), "the literal form names the project: {s}");
+    assert!(
+        s.contains("painted") && s.contains("unrelated"),
+        "the literal form names the project: {s}"
+    );
 
     // N1a: the shell-STRIPPED form is no longer guessed back into one value.
     // The re-quoting heuristic that did so could not tell a spaced value from a
@@ -599,34 +827,59 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
         ("project:Home Renovation", r#"project:"Home Renovation""#),
     ] {
         let out = run(&["list", form]);
-        assert_eq!(out.status.code(), Some(2), "{form:?} must be refused, not answered: {out:?}");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{form:?} must be refused, not answered: {out:?}"
+        );
         let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains(hint), "{form:?} must teach the literal spelling, got: {err}");
+        assert!(
+            err.contains(hint),
+            "{form:?} must teach the literal spelling, got: {err}"
+        );
         assert!(err.contains("quote"), "{form:?} must say why: {err}");
     }
     // And the reading the heuristic used to lose now works, which is the point:
     // an element that opens with a prefix and continues into an EXPRESSION was
     // read as one tag literally named `api or +nosuch`, and answered "No tasks."
     let s = ok(&["list", "+api or +nosuch"]);
-    assert!(s.contains("unrelated") && !s.contains("painted"), "an expression in one argv element: {s}");
+    assert!(
+        s.contains("unrelated") && !s.contains("painted"),
+        "an expression in one argv element: {s}"
+    );
 
     // Several argv elements must still be several tokens: this filter matches
     // nothing precisely because both predicates are read and ANDed.
     let s = ok(&["list", "+api", "status:done"]);
-    assert!(s.contains("No tasks."), "a multi-element filter must stay multi-token: {s}");
+    assert!(
+        s.contains("No tasks."),
+        "a multi-element filter must stay multi-token: {s}"
+    );
     let s = ok(&["list", "+api", "status:pending"]);
-    assert!(s.contains("unrelated") && !s.contains("painted"), "and still select: {s}");
+    assert!(
+        s.contains("unrelated") && !s.contains("painted"),
+        "and still select: {s}"
+    );
 
     // `export`, `report` and `watch` each carried their own join.
     let s = ok(&["export", r#"+"needs paint""#]);
-    assert!(s.contains("painted") && !s.contains("unrelated"), "export takes a filter too: {s}");
+    assert!(
+        s.contains("painted") && !s.contains("unrelated"),
+        "export takes a filter too: {s}"
+    );
     let s = ok(&["report", "project", r#"+"needs paint""#]);
-    assert!(s.contains("Home Renovation"), "report's tail after group_by is a filter: {s}");
+    assert!(
+        s.contains("Home Renovation"),
+        "report's tail after group_by is a filter: {s}"
+    );
     // `watch` blocks on a daemon, so only its argument handling is reachable:
     // the filter must at least not be rejected as unparseable before connecting.
     let out = run(&["watch", r#"+"needs paint""#, "--json"]);
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(!err.contains("unknown filter token"), "watch must not mis-split its filter: {err}");
+    assert!(
+        !err.contains("unknown filter token"),
+        "watch must not mis-split its filter: {err}"
+    );
 }
 
 /// C6: `tasqx add "urgent thing" '!urgent'` exited 0 with priority `null` and a
@@ -645,31 +898,57 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
 fn an_invalid_priority_sugar_token_is_refused_not_dropped() {
     let dir = fresh_config_dir("bad-prio");
     let run = |args: &[&str]| -> std::process::Output {
-        bin("bad-prio", &dir).args(args).output().expect("run tasqx")
+        bin("bad-prio", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
     };
 
     let out = run(&["add", "urgent thing", "!urgent"]);
-    assert_eq!(out.status.code(), Some(2), "an invalid priority must be bad_request, like --priority");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an invalid priority must be bad_request, like --priority"
+    );
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("urgent"), "the error must name the offending value: {err}");
-    assert!(err.contains("!high") && err.contains("!low"), "and list the way out: {err}");
+    assert!(
+        err.contains("urgent"),
+        "the error must name the offending value: {err}"
+    );
+    assert!(
+        err.contains("!high") && err.contains("!low"),
+        "and list the way out: {err}"
+    );
 
     // Refused at the door means nothing was written — not a task named after
     // the typo, and not one silently missing the priority that was asked for.
     let s = String::from_utf8_lossy(&run(&["list"]).stdout).to_string();
-    assert!(s.contains("No tasks."), "a refused add must store nothing: {s}");
+    assert!(
+        s.contains("No tasks."),
+        "a refused add must store nothing: {s}"
+    );
 
     // `modify` shares the parser, so it must share the answer (D13).
     assert!(run(&["add", "real task"]).status.success());
     let out = run(&["modify", "1", "!urgent"]);
-    assert_eq!(out.status.code(), Some(2), "modify must refuse the same token");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "modify must refuse the same token"
+    );
 
     // The valid spellings, both short and long, still work on both verbs.
     assert!(run(&["add", "high one", "!h"]).status.success());
     assert!(run(&["modify", "1", "!medium"]).status.success());
     let s = String::from_utf8_lossy(&run(&["list", "--json"]).stdout).to_string();
-    assert!(s.contains("\"priority\": \"H\""), "!h must still set H: {s}");
-    assert!(s.contains("\"priority\": \"M\""), "!medium must still set M: {s}");
+    assert!(
+        s.contains("\"priority\": \"H\""),
+        "!h must still set H: {s}"
+    );
+    assert!(
+        s.contains("\"priority\": \"M\""),
+        "!medium must still set M: {s}"
+    );
 }
 
 /// C7: the argv pre-pass sentinel leaked into flag VALUES.
@@ -695,7 +974,11 @@ fn the_argv_sentinel_never_reaches_a_flag_value() {
     // a test harness is not a tty: without it `--theme` is never read and the
     // leak this test exists for is invisible.
     let run = |args: &[&str]| {
-        bin("sentinel-leak", &dir).env("TASQX_FORCE_COLOR", "1").args(args).output().expect("run tasqx")
+        bin("sentinel-leak", &dir)
+            .env("TASQX_FORCE_COLOR", "1")
+            .args(args)
+            .output()
+            .expect("run tasqx")
     };
 
     assert!(run(&["add", "paint the shed", "+needs"]).status.success());
@@ -730,7 +1013,10 @@ fn the_argv_sentinel_never_reaches_a_flag_value() {
     // leading-dash theme name is a name the resolver should reject BY NAME.
     let out = run(&["list", "--theme=-nord"]);
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("-nord"), "the warning must name the value the user typed: {err}");
+    assert!(
+        err.contains("-nord"),
+        "the warning must name the value the user typed: {err}"
+    );
 }
 
 /// C8: the write-side sugar tokenizer and the read-side filter grammar
@@ -763,11 +1049,18 @@ fn the_argv_sentinel_never_reaches_a_flag_value() {
 fn one_quoting_rule_spans_the_write_and_read_sides() {
     let dir = fresh_config_dir("one-quoting-rule");
     let run = |args: &[&str]| -> std::process::Output {
-        bin("one-quoting-rule", &dir).args(args).output().expect("run tasqx")
+        bin("one-quoting-rule", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
     };
     let ok = |args: &[&str]| -> String {
         let out = run(args);
-        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).to_string()
     };
 
@@ -791,13 +1084,23 @@ fn one_quoting_rule_spans_the_write_and_read_sides() {
         2,
         "sugar must store the project verbatim, both orders: {s}"
     );
-    assert_eq!(s.matches(r#""say\"hi""#).count(), 2, "and the tag verbatim: {s}");
+    assert_eq!(
+        s.matches(r#""say\"hi""#).count(),
+        2,
+        "and the tag verbatim: {s}"
+    );
 
     // The round trip closes: the read side names what the write side created.
     let s = ok(&["list", project_lit]);
-    assert!(s.contains("before") && s.contains("after"), "filter must name the project: {s}");
+    assert!(
+        s.contains("before") && s.contains("after"),
+        "filter must name the project: {s}"
+    );
     let s = ok(&["list", tag_lit]);
-    assert!(s.contains("before") && s.contains("after"), "filter must name the tag: {s}");
+    assert!(
+        s.contains("before") && s.contains("after"),
+        "filter must name the tag: {s}"
+    );
 
     // The two spellings converge, as they already do on the read side: a value
     // whose only special character is a space needs no quotes once the shell
@@ -811,26 +1114,49 @@ fn one_quoting_rule_spans_the_write_and_read_sides() {
     ok(&["add", "stripped", "project:Home Renovation"]);
     ok(&["add", "literal", r#"project:"Home Renovation""#]);
     let s = ok(&["list", r#"project:"Home Renovation""#]);
-    assert!(s.contains("stripped") && s.contains("literal"), "both write spellings converge: {s}");
+    assert!(
+        s.contains("stripped") && s.contains("literal"),
+        "both write spellings converge: {s}"
+    );
 
     // A lone quote is now a refusal, not a silent swallow. `+say"hi` opens a
     // quoted run that never closes; guessing where it ended is how the tag
     // `sayhi` — a value the user never typed — used to get stored.
     let out = run(&["add", "wall", r#"+say"hi"#]);
-    assert_eq!(out.status.code(), Some(2), "an unterminated quote must be a bad_request");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unterminated quote must be a bad_request"
+    );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("unterminated"), "and must say so: {err}");
-    assert!(err.contains('\\'), "and name the escape that is the way out: {err}");
+    assert!(
+        err.contains('\\'),
+        "and name the escape that is the way out: {err}"
+    );
     let s = ok(&["list", "--json"]);
-    assert!(!s.contains("sayhi"), "nothing may be stored from a refused line: {s}");
+    assert!(
+        !s.contains("sayhi"),
+        "nothing may be stored from a refused line: {s}"
+    );
 
     // A whole-element value is NOT truncated — the shell drew that boundary —
     // so an unknown name there stays the plain typo message it should be.
     let out = run(&["add", "t", "project:No Such Project"]);
-    assert_eq!(out.status.code(), Some(4), "an unknown project is still not_found");
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "an unknown project is still not_found"
+    );
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("No Such Project"), "the whole name is named: {err}");
-    assert!(!err.contains("before the first space"), "nothing was cut, so say nothing: {err}");
+    assert!(
+        err.contains("No Such Project"),
+        "the whole name is named: {err}"
+    );
+    assert!(
+        !err.contains("before the first space"),
+        "nothing was cut, so say nothing: {err}"
+    );
 
     // But a `project:` token that really WAS cut at a space must not present the
     // fragment as though the user typed it. `project:My "Big" Project` splits
@@ -850,7 +1176,10 @@ fn one_quoting_rule_spans_the_write_and_read_sides() {
     // And the spelling it advises must actually work.
     ok(&["add", "t2", r#"project:"My \"Big\" Project""#]);
     let s = ok(&["list", r#"project:"My \"Big\" Project""#]);
-    assert!(s.contains("t2"), "the advised spelling must round trip: {s}");
+    assert!(
+        s.contains("t2"),
+        "the advised spelling must round trip: {s}"
+    );
 }
 
 /// `tasqx report <filter> --html` IGNORED its filter entirely.
@@ -869,10 +1198,19 @@ fn one_quoting_rule_spans_the_write_and_read_sides() {
 #[test]
 fn report_html_honours_its_filter_in_both_argument_orders() {
     let dir = fresh_config_dir("report-html-filter");
-    let run = |args: &[&str]| bin("report-html-filter", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("report-html-filter", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
     let ok = |args: &[&str]| -> String {
         let out = run(args);
-        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).to_string()
     };
 
@@ -907,18 +1245,33 @@ fn report_html_honours_its_filter_in_both_argument_orders() {
         let page = html(name, &args);
         // Compared as a bool, not `assert_ne!`: both sides are whole HTML
         // documents and the failure message would be two screenfuls of CSS.
-        assert!(page != all, "{args:?}: the filtered page is byte-identical to the unfiltered one");
+        assert!(
+            page != all,
+            "{args:?}: the filtered page is byte-identical to the unfiltered one"
+        );
         for leak in ["alpha work", "beta work"] {
-            assert!(!page.contains(leak), "{args:?}: {leak:?} survived a filter that matches nothing");
+            assert!(
+                !page.contains(leak),
+                "{args:?}: {leak:?} survived a filter that matches nothing"
+            );
         }
     }
 
     // And a filter that DOES match must scope rather than empty the page — a fix
     // that simply dropped all data would pass every assertion above.
-    for args in [vec!["project:Alpha", "--html"], vec!["--html", "project:Alpha"]] {
+    for args in [
+        vec!["project:Alpha", "--html"],
+        vec!["--html", "project:Alpha"],
+    ] {
         let page = html("alpha.html", &args);
-        assert!(page.contains("alpha work"), "{args:?}: the matching task vanished");
-        assert!(!page.contains("beta work"), "{args:?}: an out-of-scope task survived");
+        assert!(
+            page.contains("alpha work"),
+            "{args:?}: the matching task vanished"
+        );
+        assert!(
+            !page.contains("beta work"),
+            "{args:?}: an out-of-scope task survived"
+        );
     }
 }
 
@@ -940,8 +1293,15 @@ fn report_requests_every_metric_the_engine_publishes() {
     // A task with an estimate and a closed timer, so no metric is structurally
     // absent for want of data to aggregate.
     let mk = |args: &[&str]| {
-        let out = bin("report-metrics", &dir).args(args).output().expect("run tasqx");
-        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        let out = bin("report-metrics", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx");
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         out
     };
     mk(&["add", "measured", "--estimate", "2h"]);
@@ -952,7 +1312,10 @@ fn report_requests_every_metric_the_engine_publishes() {
     let v: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("report --json must emit JSON");
     let groups = v["groups"].as_array().expect("report must have groups");
-    assert!(!groups.is_empty(), "the fixture task produced no group: {v}");
+    assert!(
+        !groups.is_empty(),
+        "the fixture task produced no group: {v}"
+    );
 
     for m in tasqx_core::engine::SUMMARY_METRICS {
         for g in groups {
@@ -967,7 +1330,10 @@ fn report_requests_every_metric_the_engine_publishes() {
     // the word "project" typed into the CLI.
     let axis = tasqx_core::engine::SUMMARY_GROUP_BY[0];
     for g in groups {
-        assert!(g.get(axis).is_some(), "report defaulted to an axis other than {axis:?}: {g}");
+        assert!(
+            g.get(axis).is_some(),
+            "report defaulted to an axis other than {axis:?}: {g}"
+        );
     }
 }
 
@@ -997,7 +1363,10 @@ fn the_api_refuses_an_unknown_sort_key() {
     assert_eq!(v["ok"], false, "an unknown sort key came back ok: {v}");
     assert_eq!(v["error"]["code"], "bad_request", "{v}");
     let msg = v["error"]["message"].as_str().unwrap_or_default();
-    assert!(msg.contains("bogus"), "the error must name the offending key: {msg}");
+    assert!(
+        msg.contains("bogus"),
+        "the error must name the offending key: {msg}"
+    );
     assert!(
         msg.contains(tasqx_core::engine::SORT_KEYS[0]),
         "the error must list the valid keys: {msg}"
@@ -1022,9 +1391,15 @@ fn the_truncation_hedge_only_fires_when_a_word_could_have_been_cut() {
     let hedge = "must be quoted";
 
     // Nothing follows the token: no cut was possible, so no hedge.
-    let out = bin("cut-hedge", &dir).args(["add", "task", "project:Zzz"]).output().expect("run");
+    let out = bin("cut-hedge", &dir)
+        .args(["add", "task", "project:Zzz"])
+        .output()
+        .expect("run");
     let err = String::from_utf8_lossy(&out.stderr).to_string();
-    assert!(err.contains("no project named"), "expected the not-found error, got: {err}");
+    assert!(
+        err.contains("no project named"),
+        "expected the not-found error, got: {err}"
+    );
     assert!(
         !err.contains(hedge),
         "nothing followed `project:Zzz`, so nothing could have been cut: {err}"
@@ -1035,7 +1410,10 @@ fn the_truncation_hedge_only_fires_when_a_word_could_have_been_cut() {
     );
 
     // A word DOES follow: the tokenizer may well have eaten it, so hedge.
-    let out = bin("cut-hedge", &dir).args(["add", "project:Zzz", "more"]).output().expect("run");
+    let out = bin("cut-hedge", &dir)
+        .args(["add", "project:Zzz", "more"])
+        .output()
+        .expect("run");
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
         err.contains(hedge),
@@ -1044,10 +1422,15 @@ fn the_truncation_hedge_only_fires_when_a_word_could_have_been_cut() {
 
     // Same shape, other order: the trailing word is the title, not a fragment
     // candidate only when it precedes. `project:` first must still hedge.
-    let out =
-        bin("cut-hedge", &dir).args(["add", "project:Zzz", "big", "job"]).output().expect("run");
+    let out = bin("cut-hedge", &dir)
+        .args(["add", "project:Zzz", "big", "job"])
+        .output()
+        .expect("run");
     let err = String::from_utf8_lossy(&out.stderr).to_string();
-    assert!(err.contains(hedge), "two following words, still a possible cut: {err}");
+    assert!(
+        err.contains(hedge),
+        "two following words, still a possible cut: {err}"
+    );
 
     // Quoted whole: no hedge regardless of what follows.
     let out = bin("cut-hedge", &dir)
@@ -1055,7 +1438,10 @@ fn the_truncation_hedge_only_fires_when_a_word_could_have_been_cut() {
         .output()
         .expect("run");
     let err = String::from_utf8_lossy(&out.stderr).to_string();
-    assert!(!err.contains(hedge), "a quoted name is whole by construction: {err}");
+    assert!(
+        !err.contains(hedge),
+        "a quoted name is whole by construction: {err}"
+    );
 }
 
 /// The same refusal, through the real binary and the JSON envelope.
@@ -1088,8 +1474,14 @@ fn the_api_refuses_an_unknown_fields_key() {
     assert_eq!(v["ok"], false, "an unknown field came back ok: {v}");
     assert_eq!(v["error"]["code"], "bad_request", "{v}");
     let msg = v["error"]["message"].as_str().unwrap_or_default();
-    assert!(msg.contains("titel"), "the error must name the offending key: {msg}");
-    assert!(msg.contains("title"), "the error must list the valid fields: {msg}");
+    assert!(
+        msg.contains("titel"),
+        "the error must name the offending key: {msg}"
+    );
+    assert!(
+        msg.contains("title"),
+        "the error must list the valid fields: {msg}"
+    );
 }
 
 /// J1 — `due.before:`/`due.after:` took ONLY strict RFC3339, so five of the six
@@ -1108,20 +1500,37 @@ fn the_api_refuses_an_unknown_fields_key() {
 #[test]
 fn a_due_bound_takes_the_dates_the_tool_advertises_and_refuses_the_rest() {
     let dir = fresh_config_dir("due-bound");
-    let add = bin("due-bound", &dir).args(["add", "ship it", "due:tomorrow"]).output().expect("run add");
-    assert!(add.status.success(), "add failed: {}", String::from_utf8_lossy(&add.stderr));
+    let add = bin("due-bound", &dir)
+        .args(["add", "ship it", "due:tomorrow"])
+        .output()
+        .expect("run add");
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
 
     // Every spelling the date-error message recommends, in the widest form so
     // the answer cannot depend on which day the suite runs.
     // A spelling containing a space takes the literal-quote form, which is what
     // the tool teaches everywhere since N1a removed the argv re-quoting guess.
-    for bound in [r#""in 2 weeks""#, "eom", "2099-12-31", "2099-12-31T17:00", "+1y"] {
+    for bound in [
+        r#""in 2 weeks""#,
+        "eom",
+        "2099-12-31",
+        "2099-12-31T17:00",
+        "+1y",
+    ] {
         let out = bin("due-bound", &dir)
             .args(["list", &format!("due.before:{bound}")])
             .output()
             .expect("run list");
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "`due.before:{bound}` must be accepted: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "`due.before:{bound}` must be accepted: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert!(
             stdout.contains("ship it"),
             "`due.before:{bound}` must find a task due tomorrow, got: {stdout}"
@@ -1130,10 +1539,23 @@ fn a_due_bound_takes_the_dates_the_tool_advertises_and_refuses_the_rest() {
 
     // And the other half: an unreadable bound is refused by name rather than
     // answered with the same empty list a genuine no-match produces.
-    let out = bin("due-bound", &dir).args(["list", "due.before:tomorow"]).output().expect("run list");
-    assert!(!out.status.success(), "a misspelled date bound must not exit 0");
-    let msg = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    assert!(msg.contains("tomorow"), "the error must name the offending value: {msg}");
+    let out = bin("due-bound", &dir)
+        .args(["list", "due.before:tomorow"])
+        .output()
+        .expect("run list");
+    assert!(
+        !out.status.success(),
+        "a misspelled date bound must not exit 0"
+    );
+    let msg = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        msg.contains("tomorow"),
+        "the error must name the offending value: {msg}"
+    );
     assert!(
         !msg.contains("No tasks"),
         "a typo must never be answered with an empty result set: {msg}"
@@ -1170,11 +1592,18 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
     use std::io::Write;
     let dir = fresh_config_dir("spelling-invariant");
     let run = |args: &[&str]| -> std::process::Output {
-        bin("spelling-invariant", &dir).args(args).output().expect("run tasqx")
+        bin("spelling-invariant", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
     };
     let ok = |args: &[&str]| {
         let out = run(args);
-        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
 
     // The store. Titles are the identity this test compares on, so they are
@@ -1184,7 +1613,13 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
     ok(&["add", "alpha", "--project", "Work", "+api", "due:tomorrow"]);
     ok(&["add", "bravo", "--project", "Work", "+api", "+web"]);
     ok(&["add", "charlie", "--project", "Work", "+web"]);
-    ok(&["add", "delta", "--project", "Home Renovation", r#"+"needs paint""#]);
+    ok(&[
+        "add",
+        "delta",
+        "--project",
+        "Home Renovation",
+        r#"+"needs paint""#,
+    ]);
     ok(&["add", "echo", "--project", "Work", "+api"]);
     ok(&["done", "5"]);
 
@@ -1192,7 +1627,8 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
     // comparison is about membership and not about ordering — which is a
     // separate contract with its own tests.
     let titles = |stdout: &[u8]| -> Vec<String> {
-        let v: serde_json::Value = serde_json::from_slice(stdout).expect("list --json emits one object");
+        let v: serde_json::Value =
+            serde_json::from_slice(stdout).expect("list --json emits one object");
         let mut t: Vec<String> = v["tasks"]
             .as_array()
             .expect("a tasks array")
@@ -1215,7 +1651,12 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
             "tasqx": "1", "id": "n1c", "method": "task.list",
             "params": {"filter": filter},
         });
-        child.stdin.take().expect("stdin").write_all(env.to_string().as_bytes()).expect("write envelope");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(env.to_string().as_bytes())
+            .expect("write envelope");
         let out = child.wait_with_output().expect("wait");
         serde_json::from_slice(&out.stdout).expect("one JSON response")
     };
@@ -1261,7 +1702,10 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
 
         // (iii) the JSON API.
         let api = via_api(&joined);
-        assert_eq!(api["ok"], true, "{joined:?} must be accepted by the API too: {api}");
+        assert_eq!(
+            api["ok"], true,
+            "{joined:?} must be accepted by the API too: {api}"
+        );
         let mut api: Vec<String> = api["result"]["tasks"]
             .as_array()
             .expect("a tasks array")
@@ -1270,12 +1714,21 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
             .collect();
         api.sort();
 
-        assert_eq!(one, many, "{words:?}: one argv element and several must select the same rows");
-        assert_eq!(one, api, "{joined:?}: the CLI and the API must select the same rows");
+        assert_eq!(
+            one, many,
+            "{words:?}: one argv element and several must select the same rows"
+        );
+        assert_eq!(
+            one, api,
+            "{joined:?}: the CLI and the API must select the same rows"
+        );
         // A filter that selects nothing everywhere would satisfy the three
         // equalities while proving nothing, which is how a broken tokenizer
         // could hide here.
-        assert!(!one.is_empty(), "{words:?} must select at least one row, got nothing");
+        assert!(
+            !one.is_empty(),
+            "{words:?} must select at least one row, got nothing"
+        );
     }
 
     // The case that must FAIL, in every spelling, for the same reason: N1a
@@ -1288,21 +1741,40 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
         let mut argv = vec!["list"];
         argv.extend_from_slice(words);
         for out in [run(&argv), run(&["list", &joined])] {
-            assert_eq!(out.status.code(), Some(2), "{joined:?} must be refused, not answered");
+            assert_eq!(
+                out.status.code(),
+                Some(2),
+                "{joined:?} must be refused, not answered"
+            );
             let err = String::from_utf8_lossy(&out.stderr);
-            assert!(err.contains("did you mean"), "{joined:?} must teach the fix: {err}");
+            assert!(
+                err.contains("did you mean"),
+                "{joined:?} must teach the fix: {err}"
+            );
         }
         let api = via_api(&joined);
-        assert_eq!(api["ok"], false, "{joined:?} must be refused on the API too: {api}");
+        assert_eq!(
+            api["ok"], false,
+            "{joined:?} must be refused on the API too: {api}"
+        );
         let msg = api["error"]["message"].as_str().unwrap_or_default();
-        assert!(msg.contains("did you mean"), "{joined:?}: the API gets the same hint: {msg}");
+        assert!(
+            msg.contains("did you mean"),
+            "{joined:?}: the API gets the same hint: {msg}"
+        );
     }
 
     // No output on any of those paths may carry the pre-pass sentinel, which is
     // the failure mode the dash escape has already leaked three times.
     let out = run(&["list", "--json", "-api"]);
-    assert!(!String::from_utf8_lossy(&out.stdout).contains('\u{1}'), "sentinel leaked to stdout");
-    assert!(!String::from_utf8_lossy(&out.stderr).contains('\u{1}'), "sentinel leaked to stderr");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains('\u{1}'),
+        "sentinel leaked to stdout"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains('\u{1}'),
+        "sentinel leaked to stderr"
+    );
 }
 
 /// P1a — `cancel` and `done` must AGREE about the dependents they released.
@@ -1333,7 +1805,11 @@ fn both_done_and_cancel_name_the_dependents_they_released() {
 
         let out = run(&[verb, "1"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "`{verb} 1` failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "`{verb} 1` failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert!(
             stdout.contains("#2"),
             "`{verb}` released #2 — the API says so — and must name it: {stdout}"
@@ -1362,7 +1838,11 @@ fn neither_verb_announces_a_release_that_did_not_happen() {
 
         let out = run(&[verb, "1"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "`{verb} 1` failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "`{verb} 1` failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert!(
             !stdout.contains("now actionable"),
             "`{verb}` released nothing and must say nothing: {stdout}"
@@ -1383,22 +1863,38 @@ fn neither_verb_announces_a_release_that_did_not_happen() {
 #[test]
 fn the_completion_timestamp_reaches_every_human_surface() {
     let dir = fresh_config_dir("completed-shown");
-    let run = |args: &[&str]| bin("completed-shown", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("completed-shown", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
 
     assert!(run(&["init", "P"]).status.success(), "init");
     assert!(run(&["add", "Alpha"]).status.success(), "add");
 
     let done = run(&["done", "1"]);
-    assert!(done.status.success(), "done: {}", String::from_utf8_lossy(&done.stderr));
+    assert!(
+        done.status.success(),
+        "done: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
     let done_out = String::from_utf8_lossy(&done.stdout);
-    assert!(done_out.contains("completed"), "`done` must name the moment: {done_out}");
+    assert!(
+        done_out.contains("completed"),
+        "`done` must name the moment: {done_out}"
+    );
 
     // The timestamp the API carries, so the assertion below compares the two
     // surfaces against one value rather than against each other's formatting.
     let json = run(&["--json", "show", "1"]);
     let raw = String::from_utf8_lossy(&json.stdout);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("--json show parses");
-    let ts = v.get("completed").and_then(|c| c.as_str()).expect("the API carries `completed`").to_string();
+    let ts = v
+        .get("completed")
+        .and_then(|c| c.as_str())
+        .expect("the API carries `completed`")
+        .to_string();
 
     let show = run(&["show", "1"]);
     let show_out = String::from_utf8_lossy(&show.stdout);
@@ -1431,7 +1927,12 @@ fn the_completion_timestamp_reaches_every_human_surface() {
 #[test]
 fn a_completed_bound_selects_by_when_a_task_was_finished() {
     let dir = fresh_config_dir("completed-bound");
-    let run = |args: &[&str]| bin("completed-bound", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("completed-bound", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
 
     assert!(run(&["init", "P"]).status.success(), "init");
     assert!(run(&["add", "Finished"]).status.success(), "add");
@@ -1444,12 +1945,22 @@ fn a_completed_bound_selects_by_when_a_task_was_finished() {
     for bound in ["completed.after:-7d", "completed.before:+7d"] {
         let out = run(&["list", bound, "status:done"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "`{bound}` must be accepted: {}", String::from_utf8_lossy(&out.stderr));
-        assert!(stdout.contains("Finished"), "`{bound}` must select the completed task: {stdout}");
+        assert!(
+            out.status.success(),
+            "`{bound}` must be accepted: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains("Finished"),
+            "`{bound}` must select the completed task: {stdout}"
+        );
         // The task that was never completed has no completion instant, so no
         // bound on that field can select it — the same rule `due.before:` has
         // for a task with no due date.
-        assert!(!stdout.contains("Open"), "`{bound}` must not select an uncompleted task: {stdout}");
+        assert!(
+            !stdout.contains("Open"),
+            "`{bound}` must not select an uncompleted task: {stdout}"
+        );
     }
 
     // The other direction of each bound excludes it, which is what proves the
@@ -1457,16 +1968,33 @@ fn a_completed_bound_selects_by_when_a_task_was_finished() {
     for bound in ["completed.before:-7d", "completed.after:+7d"] {
         let out = run(&["list", bound]);
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "`{bound}` must be accepted: {}", String::from_utf8_lossy(&out.stderr));
-        assert!(!stdout.contains("Finished"), "`{bound}` must exclude it: {stdout}");
+        assert!(
+            out.status.success(),
+            "`{bound}` must be accepted: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !stdout.contains("Finished"),
+            "`{bound}` must exclude it: {stdout}"
+        );
     }
 
     // D33: an unreadable bound is refused by name, not answered with the empty
     // list a genuine no-match produces.
     let out = run(&["list", "completed.after:yesterdya"]);
-    assert!(!out.status.success(), "a misspelled completed bound must not exit 0");
-    let msg = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    assert!(msg.contains("yesterdya"), "the error must name the offending value: {msg}");
+    assert!(
+        !out.status.success(),
+        "a misspelled completed bound must not exit 0"
+    );
+    let msg = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        msg.contains("yesterdya"),
+        "the error must name the offending value: {msg}"
+    );
 }
 
 /// A hand-edited `config.toml` naming a theme that does not exist was ignored
@@ -1487,9 +2015,17 @@ fn a_completed_bound_selects_by_when_a_task_was_finished() {
 #[test]
 fn an_unknown_theme_in_the_config_file_is_reported_as_the_theme_actually_used() {
     let dir = fresh_config_dir("file-bogus");
-    std::fs::write(dir.join("config.toml"), "[theme]\nname = \"hand-edited-bogus\"\n")
-        .expect("write config");
-    let run = |args: &[&str]| bin("file-bogus", &dir).args(args).output().expect("run tasqx");
+    std::fs::write(
+        dir.join("config.toml"),
+        "[theme]\nname = \"hand-edited-bogus\"\n",
+    )
+    .expect("write config");
+    let run = |args: &[&str]| {
+        bin("file-bogus", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
 
     let get = run(&["config", "get", "theme.name"]);
     assert_eq!(
@@ -1498,9 +2034,19 @@ fn an_unknown_theme_in_the_config_file_is_reported_as_the_theme_actually_used() 
         "`config get` must report the theme in effect, not the one the file asked for"
     );
     let err = String::from_utf8_lossy(&get.stderr);
-    assert!(err.contains("hand-edited-bogus"), "the warning must name the ignored value: {err}");
-    assert!(err.contains("config.toml"), "and the layer it came from: {err}");
-    assert_eq!(err.matches("unknown theme").count(), 1, "warned twice for one value: {err}");
+    assert!(
+        err.contains("hand-edited-bogus"),
+        "the warning must name the ignored value: {err}"
+    );
+    assert!(
+        err.contains("config.toml"),
+        "and the layer it came from: {err}"
+    );
+    assert_eq!(
+        err.matches("unknown theme").count(),
+        1,
+        "warned twice for one value: {err}"
+    );
 
     // The JSON twin: a script reading this must not get the discarded name.
     let get_json = run(&["--json", "config", "get", "theme.name"]);
@@ -1520,8 +2066,14 @@ fn an_unknown_theme_in_the_config_file_is_reported_as_the_theme_actually_used() 
         .find(|r| r["key"] == "theme.name")
         .expect("theme.name row")
         .clone();
-    assert_eq!(row["value"], "nord", "`config list` reported the ignored name: {row}");
-    assert_eq!(row["source"], "default", "the ignored layer must not be credited: {row}");
+    assert_eq!(
+        row["value"], "nord",
+        "`config list` reported the ignored name: {row}"
+    );
+    assert_eq!(
+        row["source"], "default",
+        "the ignored layer must not be credited: {row}"
+    );
 
     // And the surface that disagreed in the first place still renders nord, so
     // the two now agree by having been made to compute the same thing.
@@ -1541,16 +2093,29 @@ fn an_unknown_theme_in_the_config_file_is_reported_as_the_theme_actually_used() 
 fn a_known_theme_in_the_config_file_is_reported_from_the_file_and_warns_about_nothing() {
     let dir = fresh_config_dir("file-known");
     std::fs::write(dir.join("config.toml"), "[theme]\nname = \"gruvbox\"\n").expect("write config");
-    let run = |args: &[&str]| bin("file-known", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("file-known", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
 
     let get = run(&["config", "get", "theme.name"]);
     assert_eq!(String::from_utf8_lossy(&get.stdout).trim(), "gruvbox");
     let err = String::from_utf8_lossy(&get.stderr);
-    assert!(!err.contains("unknown theme"), "a real theme must warn about nothing: {err}");
+    assert!(
+        !err.contains("unknown theme"),
+        "a real theme must warn about nothing: {err}"
+    );
 
     let list = run(&["--json", "config", "list"]);
     let v: serde_json::Value = serde_json::from_slice(&list.stdout).expect("JSON");
-    let row = v["settings"].as_array().unwrap().iter().find(|r| r["key"] == "theme.name").unwrap();
+    let row = v["settings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == "theme.name")
+        .unwrap();
     assert_eq!(row["value"], "gruvbox");
     assert_eq!(row["source"], "config.toml", "the file really did win here");
 }
@@ -1570,7 +2135,12 @@ fn the_task_table_stays_aligned_when_a_title_is_not_ascii() {
     use unicode_width::UnicodeWidthStr;
 
     let dir = fresh_config_dir("wide-table");
-    let run = |args: &[&str]| bin("wide-table", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("wide-table", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
     run(&["init", "work"]);
 
     // One entry per way a char count and a cell count can disagree: two-cell
@@ -1588,13 +2158,21 @@ fn the_task_table_stays_aligned_when_a_title_is_not_ascii() {
     ];
     for t in titles {
         let out = run(&["add", t]);
-        assert!(out.status.success(), "add {t:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "add {t:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     let out = run(&["list"]);
     let stdout = String::from_utf8(out.stdout).expect("UTF-8");
     let rows: Vec<&str> = stdout.lines().skip(2).take(titles.len()).collect();
-    assert_eq!(rows.len(), titles.len(), "expected one row per task:\n{stdout}");
+    assert_eq!(
+        rows.len(),
+        titles.len(),
+        "expected one row per task:\n{stdout}"
+    );
 
     // Every task carries the same project, due and tags, so the rows differ
     // ONLY in the title — equal display width is exactly "the title column held
@@ -1613,7 +2191,9 @@ fn the_task_table_stays_aligned_when_a_title_is_not_ascii() {
     let project_col = header.find("PROJECT").expect("PROJECT header");
     let project_col = header[..project_col].width();
     for (row, title) in rows.iter().zip(titles) {
-        let at = row.find("work").unwrap_or_else(|| panic!("no project cell for {title:?}"));
+        let at = row
+            .find("work")
+            .unwrap_or_else(|| panic!("no project cell for {title:?}"));
         assert_eq!(
             row[..at].width(),
             project_col,
@@ -1633,14 +2213,25 @@ fn the_task_table_stays_aligned_when_a_title_is_not_ascii() {
 #[test]
 fn why_prints_no_negative_zero_component() {
     let dir = fresh_config_dir("why-negzero");
-    let run = |args: &[&str]| bin("why-negzero", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("why-negzero", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
     run(&["init", "work"]);
     run(&["add", "fresh"]);
 
     let out = run(&["why", "1"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("age"), "no age component to check:\n{stdout}");
-    assert!(!stdout.contains("-0"), "a component rendered as negative zero:\n{stdout}");
+    assert!(
+        stdout.contains("age"),
+        "no age component to check:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("-0"),
+        "a component rendered as negative zero:\n{stdout}"
+    );
 }
 
 /// P3c: an out-of-range date was refused with `jiff`'s internals — "parameter
@@ -1655,7 +2246,12 @@ fn why_prints_no_negative_zero_component() {
 #[test]
 fn an_out_of_range_date_is_refused_in_this_tools_words() {
     let dir = fresh_config_dir("date-range");
-    let run = |args: &[&str]| bin("date-range", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("date-range", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
     run(&["init", "work"]);
 
     for args in [
@@ -1665,18 +2261,35 @@ fn an_out_of_range_date_is_refused_in_this_tools_words() {
     ] {
         let out = run(&args);
         let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "{args:?} should be bad_request: {err}");
-        assert!(err.contains("9999-12-31"), "{args:?}: value not named: {err}");
-        assert!(err.contains("9999-12-30"), "{args:?}: no usable bound named: {err}");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?} should be bad_request: {err}"
+        );
+        assert!(
+            err.contains("9999-12-31"),
+            "{args:?}: value not named: {err}"
+        );
+        assert!(
+            err.contains("9999-12-30"),
+            "{args:?}: no usable bound named: {err}"
+        );
         for leak in ["Unix timestamp", "parameter", "overflowed", "-377705023201"] {
-            assert!(!err.contains(leak), "{args:?}: jiff internals leaked ({leak:?}): {err}");
+            assert!(
+                !err.contains(leak),
+                "{args:?}: jiff internals leaked ({leak:?}): {err}"
+            );
         }
     }
 
     // The near side of the boundary still works — a guard that only proved the
     // refusal would be satisfied by a parser that refused every date.
     let ok = run(&["add", "probe", "due:9999-12-30"]);
-    assert!(ok.status.success(), "a storable date was refused: {}", String::from_utf8_lossy(&ok.stderr));
+    assert!(
+        ok.status.success(),
+        "a storable date was refused: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
 }
 
 /// The same char-vs-cell rule on `tasqx config list`, whose VALUE column carries
@@ -1688,7 +2301,12 @@ fn the_config_table_stays_aligned_when_a_value_is_not_ascii() {
     use unicode_width::UnicodeWidthStr;
 
     let dir = fresh_config_dir("wide-config");
-    let run = |args: &[&str]| bin("wide-config", &dir).args(args).output().expect("run tasqx");
+    let run = |args: &[&str]| {
+        bin("wide-config", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
     // `default_project` is free text the user picks, and it lands in this table.
     run(&["init", "\u{6f22}\u{5b57}"]);
 
@@ -1700,7 +2318,9 @@ fn the_config_table_stays_aligned_when_a_value_is_not_ascii() {
         // SOURCE is the last field on the row, and `rfind` takes its LAST
         // occurrence — which matters, because `default` is also a substring of
         // the `default_project` key sitting in column one.
-        let Some(last) = row.split_whitespace().last() else { continue };
+        let Some(last) = row.split_whitespace().last() else {
+            continue;
+        };
         let at = row.rfind(last).expect("the field came from this row");
         assert_eq!(
             row[..at].width(),
@@ -1708,5 +2328,8 @@ fn the_config_table_stays_aligned_when_a_value_is_not_ascii() {
             "the SOURCE column moved on this row:\n{stdout}"
         );
     }
-    assert!(stdout.contains("\u{6f22}\u{5b57}"), "the value must still be shown whole:\n{stdout}");
+    assert!(
+        stdout.contains("\u{6f22}\u{5b57}"),
+        "the value must still be shown whole:\n{stdout}"
+    );
 }

@@ -711,7 +711,9 @@ impl Engine {
 
     /// Count statements as they execute so the performance contract is
     /// directly regression-tested rather than inferred from the SQL text.
-    pub(super) fn load_task_snapshots_counted(&self) -> Result<(Vec<TaskSnapshot>, usize), ApiError> {
+    pub(super) fn load_task_snapshots_counted(
+        &self,
+    ) -> Result<(Vec<TaskSnapshot>, usize), ApiError> {
         let mut statements = 0usize;
 
         statements += 1;
@@ -1069,5 +1071,4 @@ impl Engine {
         }
         .into())
     }
-
 }

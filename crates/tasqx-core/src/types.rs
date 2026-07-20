@@ -53,7 +53,11 @@ impl Entity {
     /// The accepted set as a message fragment, e.g. `task, project`. Built from
     /// [`Entity::ALL`] so an error message can never fall behind the enum.
     pub fn accepted() -> String {
-        Entity::ALL.iter().map(|e| e.as_str()).collect::<Vec<_>>().join(", ")
+        Entity::ALL
+            .iter()
+            .map(|e| e.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -203,7 +207,11 @@ impl Status {
     /// The accepted set as a message fragment, e.g. `backlog, pending, …`.
     /// Built from [`Status::ALL`] so no error message can list four of five.
     pub fn accepted() -> String {
-        Status::ALL.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        Status::ALL
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     pub fn parse(s: &str) -> Option<Status> {
@@ -325,7 +333,9 @@ impl Task {
     /// otherwise. Every surface goes through here so no surface can accidentally
     /// print the placeholder as though it were the fact.
     pub fn status_text(&self) -> &str {
-        self.status_raw.as_deref().unwrap_or_else(|| self.status.as_str())
+        self.status_raw
+            .as_deref()
+            .unwrap_or_else(|| self.status.as_str())
     }
 
     /// True when [`status_text`](Self::status_text) is a value no writer of this
@@ -374,9 +384,17 @@ mod tests {
     #[test]
     fn as_str_and_parse_round_trip() {
         for s in Status::ALL {
-            assert_eq!(Status::parse(s.as_str()), Some(s), "round trip failed for {s:?}");
+            assert_eq!(
+                Status::parse(s.as_str()),
+                Some(s),
+                "round trip failed for {s:?}"
+            );
         }
-        assert_eq!(Status::parse("canceled"), None, "a near-miss must not parse");
+        assert_eq!(
+            Status::parse("canceled"),
+            None,
+            "a near-miss must not parse"
+        );
         assert_eq!(Status::parse(""), None);
     }
 
@@ -394,8 +412,15 @@ mod tests {
         assert_eq!(seen.len(), before, "Entity::ALL contains a duplicate");
         assert_eq!(before, 2, "Entity::ALL must list every variant");
         for e in Entity::ALL {
-            assert_eq!(Entity::parse(e.as_str()), Some(e), "round trip failed for {e:?}");
-            assert!(Entity::accepted().contains(e.as_str()), "accepted() must name {e:?}");
+            assert_eq!(
+                Entity::parse(e.as_str()),
+                Some(e),
+                "round trip failed for {e:?}"
+            );
+            assert!(
+                Entity::accepted().contains(e.as_str()),
+                "accepted() must name {e:?}"
+            );
         }
         assert_eq!(Entity::parse("tasks"), None, "a near-miss must not parse");
         assert_eq!(Entity::parse(""), None);
@@ -415,7 +440,11 @@ mod tests {
         assert_eq!(seen.len(), before, "Priority::ALL contains a duplicate");
         assert_eq!(before, 3, "Priority::ALL must list every variant");
         for p in Priority::ALL {
-            assert_eq!(Priority::parse(p.as_str()), Some(p), "round trip failed for {p:?}");
+            assert_eq!(
+                Priority::parse(p.as_str()),
+                Some(p),
+                "round trip failed for {p:?}"
+            );
         }
     }
 
@@ -429,8 +458,14 @@ mod tests {
     /// exact literals the queries used before this was derived.
     #[test]
     fn sql_in_list_emits_quoted_names_for_exactly_the_matching_statuses() {
-        assert_eq!(Status::sql_in_list(Status::is_open), "'backlog','pending','active'");
-        assert_eq!(Status::sql_in_list(Status::is_terminal), "'done','cancelled'");
+        assert_eq!(
+            Status::sql_in_list(Status::is_open),
+            "'backlog','pending','active'"
+        );
+        assert_eq!(
+            Status::sql_in_list(Status::is_terminal),
+            "'done','cancelled'"
+        );
         assert_eq!(
             Status::sql_in_list(Status::counts_in_reports),
             "'backlog','pending','active','done'"
@@ -438,11 +473,18 @@ mod tests {
 
         // Shape, independent of any one predicate: every element is a bare
         // lowercase word in single quotes, and the set matches the predicate.
-        for pred in [Status::is_open, Status::is_terminal, Status::counts_in_reports] {
+        for pred in [
+            Status::is_open,
+            Status::is_terminal,
+            Status::counts_in_reports,
+        ] {
             let list = Status::sql_in_list(pred);
             let parts: Vec<&str> = list.split(',').collect();
-            let want: Vec<&str> =
-                Status::ALL.into_iter().filter(|s| pred(*s)).map(Status::as_str).collect();
+            let want: Vec<&str> = Status::ALL
+                .into_iter()
+                .filter(|s| pred(*s))
+                .map(Status::as_str)
+                .collect();
             assert_eq!(parts.len(), want.len(), "wrong element count in {list:?}");
             for (part, name) in parts.iter().zip(&want) {
                 assert_eq!(*part, format!("'{name}'"), "malformed element in {list:?}");
@@ -456,7 +498,11 @@ mod tests {
     #[test]
     fn the_status_sets_partition_as_documented() {
         let names = |f: fn(Status) -> bool| -> Vec<&'static str> {
-            Status::ALL.into_iter().filter(|s| f(*s)).map(Status::as_str).collect()
+            Status::ALL
+                .into_iter()
+                .filter(|s| f(*s))
+                .map(Status::as_str)
+                .collect()
         };
         assert_eq!(names(Status::is_open), ["backlog", "pending", "active"]);
         assert_eq!(names(Status::is_terminal), ["done", "cancelled"]);
@@ -519,9 +565,15 @@ mod release_tests {
             Status::Backlog
         );
         // Neither field set at all: nothing is holding it.
-        assert_eq!(effective_status(Status::Backlog, None, None, now), Status::Pending);
+        assert_eq!(
+            effective_status(Status::Backlog, None, None, now),
+            Status::Pending
+        );
         // Unparseable dates cannot hold a task hostage (they never have).
-        assert_eq!(effective_status(Status::Backlog, Some("whenever"), None, now), Status::Pending);
+        assert_eq!(
+            effective_status(Status::Backlog, Some("whenever"), None, now),
+            Status::Pending
+        );
     }
 
     /// No clock may move a status the user chose. A task started, finished or
@@ -532,9 +584,22 @@ mod release_tests {
     fn only_backlog_is_subject_to_the_clock() {
         let now = at("2026-07-19T12:00:00Z");
         let future = Some("2999-01-01T00:00:00Z");
-        for s in [Status::Pending, Status::Active, Status::Done, Status::Cancelled] {
-            assert_eq!(effective_status(s, future, future, now), s, "{s:?} with a future wait");
-            assert_eq!(effective_status(s, None, None, now), s, "{s:?} with no dates");
+        for s in [
+            Status::Pending,
+            Status::Active,
+            Status::Done,
+            Status::Cancelled,
+        ] {
+            assert_eq!(
+                effective_status(s, future, future, now),
+                s,
+                "{s:?} with a future wait"
+            );
+            assert_eq!(
+                effective_status(s, None, None, now),
+                s,
+                "{s:?} with no dates"
+            );
         }
     }
 }

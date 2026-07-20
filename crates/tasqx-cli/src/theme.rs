@@ -55,7 +55,9 @@ impl Rgb {
     fn lerp(&self, other: &Rgb, t: f64) -> Rgb {
         let t = t.clamp(0.0, 1.0);
         let mix = |a: u8, b: u8| -> u8 {
-            (a as f64 + (b as f64 - a as f64) * t).round().clamp(0.0, 255.0) as u8
+            (a as f64 + (b as f64 - a as f64) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8
         };
         Rgb {
             r: mix(self.r, other.r),
@@ -200,7 +202,11 @@ pub struct Caps {
 
 impl Caps {
     /// Fully plain: no ANSI, ASCII only. The script-safe / piped baseline.
-    pub const PLAIN: Caps = Caps { depth: ColorDepth::None, ansi: false, unicode: false };
+    pub const PLAIN: Caps = Caps {
+        depth: ColorDepth::None,
+        ansi: false,
+        unicode: false,
+    };
 
     /// Detect from the live process environment, enabling Windows VT if needed.
     pub fn detect() -> Caps {
@@ -208,7 +214,9 @@ impl Caps {
         // can be forced through a pipe — standard for tools that feed `less -R`
         // or CI logs. NO_COLOR still wins (checked in `detect_from`).
         let force = std::env::var_os("TASQX_FORCE_COLOR").is_some()
-            || std::env::var("CLICOLOR_FORCE").map(|v| v != "0").unwrap_or(false);
+            || std::env::var("CLICOLOR_FORCE")
+                .map(|v| v != "0")
+                .unwrap_or(false);
         let is_tty = std::io::stdout().is_terminal() || force;
         let env = EnvCaps::from_env();
         // On Windows the console needs VT explicitly enabled for ANSI to work.
@@ -256,7 +264,11 @@ pub fn detect_from(env: &EnvCaps, is_tty: bool, vt_ok: bool) -> Caps {
     // the 16-color legacy branch below — we drop to plain here instead.
     if env.no_color {
         return if vt_ok {
-            Caps { depth: ColorDepth::None, ansi: true, unicode: true }
+            Caps {
+                depth: ColorDepth::None,
+                ansi: true,
+                unicode: true,
+            }
         } else {
             Caps::PLAIN
         };
@@ -264,7 +276,11 @@ pub fn detect_from(env: &EnvCaps, is_tty: bool, vt_ok: bool) -> Caps {
 
     // Windows legacy console with no VT support: fall back to 16-color + ASCII.
     if !vt_ok {
-        return Caps { depth: ColorDepth::Ansi16, ansi: true, unicode: false };
+        return Caps {
+            depth: ColorDepth::Ansi16,
+            ansi: true,
+            unicode: false,
+        };
     }
 
     let ct = env.colorterm.to_ascii_lowercase();
@@ -279,7 +295,11 @@ pub fn detect_from(env: &EnvCaps, is_tty: bool, vt_ok: bool) -> Caps {
     } else {
         ColorDepth::Ansi16
     };
-    Caps { depth, ansi: true, unicode: true }
+    Caps {
+        depth,
+        ansi: true,
+        unicode: true,
+    }
 }
 
 // --- Windows VT enabling -----------------------------------------------------
@@ -345,7 +365,10 @@ pub struct Style {
 
 impl Style {
     pub fn fg(rgb: Rgb) -> Self {
-        Style { fg: Some(rgb), ..Default::default() }
+        Style {
+            fg: Some(rgb),
+            ..Default::default()
+        }
     }
     pub fn bold(mut self) -> Self {
         self.bold = true;
@@ -516,17 +539,33 @@ fn build(
         })
         .collect();
     let ramp: Vec<Rgb> = ramp.iter().filter_map(|h| Rgb::parse_hex(h)).collect();
-    Theme { name: name.to_string(), palette, roles, ramp }
+    Theme {
+        name: name.to_string(),
+        palette,
+        roles,
+        ramp,
+    }
 }
 
 fn spec(fg: &str) -> StyleSpec {
-    StyleSpec { fg: Some(fg.to_string()), ..Default::default() }
+    StyleSpec {
+        fg: Some(fg.to_string()),
+        ..Default::default()
+    }
 }
 fn spec_b(fg: &str) -> StyleSpec {
-    StyleSpec { fg: Some(fg.to_string()), bold: Some(true), ..Default::default() }
+    StyleSpec {
+        fg: Some(fg.to_string()),
+        bold: Some(true),
+        ..Default::default()
+    }
 }
 fn spec_d(fg: &str) -> StyleSpec {
-    StyleSpec { fg: Some(fg.to_string()), dim: Some(true), ..Default::default() }
+    StyleSpec {
+        fg: Some(fg.to_string()),
+        dim: Some(true),
+        ..Default::default()
+    }
 }
 
 /// Return a built-in theme by name, or None.
@@ -549,7 +588,14 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("priority.H", spec_b("danger")),
                 ("priority.M", spec("warn")),
                 ("priority.L", spec_d("muted")),
-                ("overdue", StyleSpec { fg: Some("danger".into()), bold: Some(true), ..Default::default() }),
+                (
+                    "overdue",
+                    StyleSpec {
+                        fg: Some("danger".into()),
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
                 ("timer.active", spec("#a3be8c")),
                 ("muted", spec_d("muted")),
                 ("danger", spec_b("danger")),
@@ -575,7 +621,14 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("priority.H", spec_b("danger")),
                 ("priority.M", spec("warn")),
                 ("priority.L", spec_d("muted")),
-                ("overdue", StyleSpec { fg: Some("danger".into()), bold: Some(true), ..Default::default() }),
+                (
+                    "overdue",
+                    StyleSpec {
+                        fg: Some("danger".into()),
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
                 ("timer.active", spec("#b8bb26")),
                 ("muted", spec_d("muted")),
                 ("danger", spec_b("danger")),
@@ -601,7 +654,14 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("priority.H", spec_b("danger")),
                 ("priority.M", spec("warn")),
                 ("priority.L", spec_d("muted")),
-                ("overdue", StyleSpec { fg: Some("danger".into()), bold: Some(true), ..Default::default() }),
+                (
+                    "overdue",
+                    StyleSpec {
+                        fg: Some("danger".into()),
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
                 ("timer.active", spec("#50fa7b")),
                 ("muted", spec_d("muted")),
                 ("danger", spec_b("danger")),
@@ -627,7 +687,14 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("priority.H", spec_b("danger")),
                 ("priority.M", spec("warn")),
                 ("priority.L", spec_d("muted")),
-                ("overdue", StyleSpec { fg: Some("danger".into()), bold: Some(true), ..Default::default() }),
+                (
+                    "overdue",
+                    StyleSpec {
+                        fg: Some("danger".into()),
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
                 ("timer.active", spec("#859900")),
                 ("muted", spec_d("muted")),
                 ("danger", spec_b("danger")),
@@ -649,18 +716,73 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("muted", "#808080"),
             ],
             &[
-                ("header", StyleSpec { bold: Some(true), ..Default::default() }),
-                ("project", StyleSpec { dim: Some(true), ..Default::default() }),
+                (
+                    "header",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "project",
+                    StyleSpec {
+                        dim: Some(true),
+                        ..Default::default()
+                    },
+                ),
                 ("tag", StyleSpec::default()),
-                ("priority.H", StyleSpec { bold: Some(true), ..Default::default() }),
+                (
+                    "priority.H",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
                 ("priority.M", StyleSpec::default()),
-                ("priority.L", StyleSpec { dim: Some(true), ..Default::default() }),
-                ("overdue", StyleSpec { bold: Some(true), underline: Some(true), ..Default::default() }),
-                ("timer.active", StyleSpec { bold: Some(true), ..Default::default() }),
-                ("muted", StyleSpec { dim: Some(true), ..Default::default() }),
-                ("danger", StyleSpec { bold: Some(true), ..Default::default() }),
+                (
+                    "priority.L",
+                    StyleSpec {
+                        dim: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "overdue",
+                    StyleSpec {
+                        bold: Some(true),
+                        underline: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "timer.active",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "muted",
+                    StyleSpec {
+                        dim: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "danger",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
                 ("warn", StyleSpec::default()),
-                ("accent", StyleSpec { bold: Some(true), ..Default::default() }),
+                (
+                    "accent",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
             ],
             &[],
         ),
@@ -681,11 +803,7 @@ pub const DEFAULT_THEME: &str = "nord";
 
 /// Resolve which theme *name* wins, by DESIGN.md §8 precedence:
 /// `--theme` flag → `$TASQX_THEME` → `[theme] name` in config → default (nord).
-pub fn resolve_name(
-    flag: Option<&str>,
-    env: Option<&str>,
-    config: Option<&str>,
-) -> String {
+pub fn resolve_name(flag: Option<&str>, env: Option<&str>, config: Option<&str>) -> String {
     fn pick(v: Option<&str>) -> Option<&str> {
         v.map(str::trim).filter(|s| !s.is_empty())
     }
@@ -710,10 +828,15 @@ pub struct UserTheme {
 /// role keys (`priority.H`, `urgency.ramp`) arrive nested under `[roles]`; we
 /// flatten them back to literal role names.
 pub fn parse_user_theme(src: &str) -> Result<UserTheme, String> {
-    let val: toml::Table = src.parse().map_err(|e| format!("invalid theme TOML: {e}"))?;
+    let val: toml::Table = src
+        .parse()
+        .map_err(|e| format!("invalid theme TOML: {e}"))?;
     let mut ut = UserTheme {
         name: val.get("name").and_then(|v| v.as_str()).map(str::to_string),
-        extends: val.get("extends").and_then(|v| v.as_str()).map(str::to_string),
+        extends: val
+            .get("extends")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         ..Default::default()
     };
 
@@ -736,11 +859,17 @@ pub fn parse_user_theme(src: &str) -> Result<UserTheme, String> {
 /// separating style tables from the `urgency.ramp` array.
 fn flatten_roles(prefix: &str, table: &toml::Table, ut: &mut UserTheme) {
     for (k, v) in table {
-        let name = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+        let name = if prefix.is_empty() {
+            k.clone()
+        } else {
+            format!("{prefix}.{k}")
+        };
         match v {
             toml::Value::Array(arr) => {
-                let ramp: Vec<String> =
-                    arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+                let ramp: Vec<String> = arr
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect();
                 // Any array role is treated as the (single) urgency ramp.
                 ut.ramp = Some(ramp);
             }
@@ -758,8 +887,10 @@ fn flatten_roles(prefix: &str, table: &toml::Table, ut: &mut UserTheme) {
 
 /// A style table holds only scalar style keys; a namespace table holds sub-tables.
 fn is_style_table(t: &toml::Table) -> bool {
-    t.values().all(|v| v.is_str() || v.as_bool().is_some() || v.is_integer())
-        && t.keys().any(|k| matches!(k.as_str(), "fg" | "bold" | "dim" | "underline"))
+    t.values()
+        .all(|v| v.is_str() || v.as_bool().is_some() || v.is_integer())
+        && t.keys()
+            .any(|k| matches!(k.as_str(), "fg" | "bold" | "dim" | "underline"))
 }
 
 fn style_from_table(t: &toml::Table) -> StyleSpec {
@@ -833,7 +964,10 @@ pub fn load(name: &str, themes_dir: Option<&std::path::Path>) -> Theme {
         let path = dir.join(format!("{name}.toml"));
         if let Ok(src) = std::fs::read_to_string(&path) {
             if let Ok(user) = parse_user_theme(&src) {
-                let base_name = user.extends.clone().unwrap_or_else(|| DEFAULT_THEME.to_string());
+                let base_name = user
+                    .extends
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_THEME.to_string());
                 let base = builtin(&base_name).unwrap_or_else(default_theme);
                 let mut merged = merge(&base, &user);
                 if user.name.is_none() {
@@ -903,7 +1037,11 @@ mod tests {
     // ---- capability degradation --------------------------------------------
 
     fn env(no_color: bool, term: &str, colorterm: &str) -> EnvCaps {
-        EnvCaps { no_color, term: term.into(), colorterm: colorterm.into() }
+        EnvCaps {
+            no_color,
+            term: term.into(),
+            colorterm: colorterm.into(),
+        }
     }
 
     #[test]
@@ -972,7 +1110,11 @@ mod tests {
     // ---- style rendering at each depth -------------------------------------
 
     fn caps(depth: ColorDepth, ansi: bool) -> Caps {
-        Caps { depth, ansi, unicode: true }
+        Caps {
+            depth,
+            ansi,
+            unicode: true,
+        }
     }
 
     #[test]
@@ -1003,7 +1145,10 @@ mod tests {
     fn no_color_emits_zero_color_but_keeps_bold() {
         let s = Style::fg(Rgb::new(0xbf, 0x61, 0x6a)).bold();
         let out = s.paint("x", &caps(ColorDepth::None, true));
-        assert!(!out.contains("38;2;") && !out.contains("38;5;"), "no color: {out:?}");
+        assert!(
+            !out.contains("38;2;") && !out.contains("38;5;"),
+            "no color: {out:?}"
+        );
         assert!(out.contains("\x1b[1m"), "bold kept: {out:?}");
     }
 
@@ -1056,7 +1201,10 @@ mod tests {
             assert_eq!(t.name, name);
             // Every built-in defines the core roles.
             for role in ["header", "overdue", "priority.H", "project", "tag"] {
-                assert!(t.role_names().iter().any(|r| r == role), "{name} missing {role}");
+                assert!(
+                    t.role_names().iter().any(|r| r == role),
+                    "{name} missing {role}"
+                );
             }
         }
     }
@@ -1084,7 +1232,10 @@ priority.H = { fg = "danger", bold = true }
         // Overridden: tag fg is the user hex.
         assert_eq!(merged.role("tag").fg, Some(Rgb::new(0x12, 0x34, 0x56)));
         // Overridden palette anchor flows into priority.H's "danger" reference.
-        assert_eq!(merged.role("priority.H").fg, Some(Rgb::new(0xff, 0x00, 0x00)));
+        assert_eq!(
+            merged.role("priority.H").fg,
+            Some(Rgb::new(0xff, 0x00, 0x00))
+        );
         assert!(merged.role("priority.H").bold);
         // NOT overridden: header falls through to nord's accent (bold).
         assert_eq!(merged.role("header"), base.role("header"));
@@ -1106,7 +1257,10 @@ header = { fg = "#abcdef" }
         let base = builtin("nord").unwrap();
         let merged = merge(&base, &user);
         assert_eq!(merged.role("header").fg, Some(Rgb::new(0xab, 0xcd, 0xef)));
-        assert!(merged.role("header").bold, "base bold survives a color-only override");
+        assert!(
+            merged.role("header").bold,
+            "base bold survives a color-only override"
+        );
         // An explicit `bold = false` still clears it.
         let src2 = r##"
 extends = "nord"
@@ -1115,7 +1269,10 @@ header = { bold = false }
 "##;
         let user2 = parse_user_theme(src2).expect("parse");
         let merged2 = merge(&base, &user2);
-        assert!(!merged2.role("header").bold, "explicit bold=false clears emphasis");
+        assert!(
+            !merged2.role("header").bold,
+            "explicit bold=false clears emphasis"
+        );
         // fg untouched by the emphasis-only override.
         assert_eq!(merged2.role("header").fg, base.role("header").fg);
     }

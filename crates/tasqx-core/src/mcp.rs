@@ -58,7 +58,6 @@ impl Scope {
     pub fn allows_write(self) -> bool {
         matches!(self, Scope::Write)
     }
-
 }
 
 /// One exposed MCP tool: its name, the core method it maps onto 1:1, whether it
@@ -419,7 +418,10 @@ impl<'e> McpServer<'e> {
             );
         }
 
-        let mut args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let mut args = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
 
         // Optimistic concurrency by default (DESIGN §7): for a modify the server
         // reads `_rev` first and pins it as `expected_rev`, so a task a human
@@ -563,7 +565,10 @@ mod tests {
         // an agent would actually pick out of the published schema.
         for axis in &advertised {
             let out = dispatch(&e, "report.summary", &json!({ "group_by": axis }));
-            assert!(out.is_ok(), "schema advertises group_by `{axis}`, engine rejects it: {out:?}");
+            assert!(
+                out.is_ok(),
+                "schema advertises group_by `{axis}`, engine rejects it: {out:?}"
+            );
         }
 
         // Direction 2 — nothing accepted is *hidden*. This is the direction a
@@ -615,9 +620,12 @@ mod tests {
         );
 
         for metric in &advertised {
-            let out =
-                dispatch(&e, "report.summary", &json!({ "group_by": "status", "metrics": [metric] }))
-                    .expect("report.summary");
+            let out = dispatch(
+                &e,
+                "report.summary",
+                &json!({ "group_by": "status", "metrics": [metric] }),
+            )
+            .expect("report.summary");
             let group = &out["groups"][0];
             assert!(
                 group.get(metric).is_some(),
@@ -636,7 +644,11 @@ mod tests {
             &json!({ "group_by": "status", "metrics": ["est_hours"] }),
         )
         .expect_err("`est_hours` is not a real metric; if it became one, the schema must list it");
-        assert!(err.message.contains("est_hours"), "the refusal must name it: {}", err.message);
+        assert!(
+            err.message.contains("est_hours"),
+            "the refusal must name it: {}",
+            err.message
+        );
     }
 
     /// Every priority letter the `tasqx_add_task` schema advertises must be one
@@ -651,11 +663,19 @@ mod tests {
     fn priority_schema_values_round_trip_through_the_engine() {
         let e = engine();
         let advertised = schema_enum("tasqx_add_task", "priority", false);
-        assert_eq!(advertised.len(), Priority::ALL.len(), "schema lost a priority");
+        assert_eq!(
+            advertised.len(),
+            Priority::ALL.len(),
+            "schema lost a priority"
+        );
 
         for p in &advertised {
-            let added = dispatch(&e, "task.add", &json!({ "title": format!("p{p}"), "priority": p }))
-                .unwrap_or_else(|err| panic!("schema advertises priority `{p}`, add failed: {err:?}"));
+            let added = dispatch(
+                &e,
+                "task.add",
+                &json!({ "title": format!("p{p}"), "priority": p }),
+            )
+            .unwrap_or_else(|err| panic!("schema advertises priority `{p}`, add failed: {err:?}"));
             let got = dispatch(&e, "task.get", &json!({ "ref": added["short_id"] })).expect("get");
             assert_eq!(
                 got["priority"].as_str(),
@@ -709,7 +729,11 @@ mod tests {
         for spec in tool_specs() {
             let required: Vec<String> = spec.schema["required"]
                 .as_array()
-                .map(|a| a.iter().map(|v| v.as_str().expect("a name").to_string()).collect())
+                .map(|a| {
+                    a.iter()
+                        .map(|v| v.as_str().expect("a name").to_string())
+                        .collect()
+                })
                 .unwrap_or_default();
             let empty = dispatch(&e, spec.method, &json!({}));
             match (required.is_empty(), empty) {
@@ -755,9 +779,16 @@ mod tests {
         let e = engine();
         let mut probed = 0;
         for spec in tool_specs() {
-            let requires = spec.schema["required"].as_array().is_some_and(|a| !a.is_empty());
-            for (name, node) in spec.schema["properties"].as_object().expect("an object schema") {
-                let Some(min) = node.get("minimum").and_then(Value::as_i64) else { continue };
+            let requires = spec.schema["required"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty());
+            for (name, node) in spec.schema["properties"]
+                .as_object()
+                .expect("an object schema")
+            {
+                let Some(min) = node.get("minimum").and_then(Value::as_i64) else {
+                    continue;
+                };
                 assert!(
                     !requires,
                     "tool `{}` bounds `{name}` at {min} but also has required arguments, so this \
@@ -779,7 +810,10 @@ mod tests {
                 );
             }
         }
-        assert!(probed > 0, "no numeric bound was probed; this guard has gone vacuous");
+        assert!(
+            probed > 0,
+            "no numeric bound was probed; this guard has gone vacuous"
+        );
     }
 
     /// A tool's properties must be EXACTLY the params its method accepts.

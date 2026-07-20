@@ -267,8 +267,11 @@ fn add_column_if_missing(
 /// Allocate the next monotonic `short_id` inside `tx`. Never recycles: the
 /// counter only advances, even if a task is later removed (§12-D4).
 pub fn alloc_short_id(tx: &Transaction) -> Result<i64, ApiError> {
-    let cur: i64 =
-        tx.query_row("SELECT value FROM meta WHERE key = 'next_short_id'", [], |r| r.get(0))?;
+    let cur: i64 = tx.query_row(
+        "SELECT value FROM meta WHERE key = 'next_short_id'",
+        [],
+        |r| r.get(0),
+    )?;
     // Checked, not `cur + 1`: an import can legally carry a short_id up to
     // `i64::MAX - 1` (engine::store_import), which leaves the counter one mint
     // from the end. Wrapping there would hand the *next* task `i64::MIN` and
@@ -279,7 +282,10 @@ pub fn alloc_short_id(tx: &Transaction) -> Result<i64, ApiError> {
             "the short_id space is exhausted at {cur}; export, then import into a fresh store"
         ))
     })?;
-    tx.execute("UPDATE meta SET value = ?1 WHERE key = 'next_short_id'", params![next])?;
+    tx.execute(
+        "UPDATE meta SET value = ?1 WHERE key = 'next_short_id'",
+        params![next],
+    )?;
     Ok(cur)
 }
 
@@ -301,9 +307,11 @@ pub fn bump_short_id_floor(tx: &Transaction, n: i64) -> Result<(), ApiError> {
 /// a write as though the setting had never existed.
 pub fn get_config(conn: &Connection, key: &str) -> Result<Option<String>, ApiError> {
     Ok(conn
-        .query_row("SELECT value FROM config WHERE key = ?1", params![key], |r| {
-            r.get::<_, String>(0)
-        })
+        .query_row(
+            "SELECT value FROM config WHERE key = ?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        )
         .optional()?)
 }
 
@@ -412,7 +420,12 @@ pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
     // which contains both sides of the edge.
     let scheduled: Option<String> = row.get(7)?;
     let wait: Option<String> = row.get(8)?;
-    let status = effective_status(status, wait.as_deref(), scheduled.as_deref(), Timestamp::now());
+    let status = effective_status(
+        status,
+        wait.as_deref(),
+        scheduled.as_deref(),
+        Timestamp::now(),
+    );
 
     Ok(Task {
         id: row.get(0)?,
@@ -465,8 +478,7 @@ pub fn already_reminded(conn: &Connection, task_id: &str, at: &str) -> Result<bo
 /// of [`already_reminded`], so a scheduler rebuild stays O(1) queries instead of
 /// one per task.
 pub fn reminded_keys(conn: &Connection) -> Result<HashSet<(String, String)>, ApiError> {
-    let mut stmt =
-        conn.prepare("SELECT entity_id, payload FROM events WHERE op = 'reminded'")?;
+    let mut stmt = conn.prepare("SELECT entity_id, payload FROM events WHERE op = 'reminded'")?;
     let rows = stmt.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
     })?;
@@ -503,7 +515,11 @@ pub fn task_tags(conn: &Connection, task_id: &str) -> Result<Vec<String>, ApiErr
 /// Returns silently if the link already exists.
 pub fn ensure_tag_link(tx: &Transaction, task_id: &str, tag_name: &str) -> Result<(), ApiError> {
     let existing: Option<String> = tx
-        .query_row("SELECT id FROM tags WHERE name = ?1", params![tag_name], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM tags WHERE name = ?1",
+            params![tag_name],
+            |r| r.get(0),
+        )
         .ok();
     let tag_id = match existing {
         Some(id) => id,
@@ -575,11 +591,11 @@ mod tests {
         assert_eq!(edges, vec![("b".to_string(), "a".to_string())]);
 
         // The constraint is live, not merely declared.
-        let err = conn.execute(
-            "INSERT INTO dependencies VALUES ('b','nope')",
-            [],
+        let err = conn.execute("INSERT INTO dependencies VALUES ('b','nope')", []);
+        assert!(
+            err.is_err(),
+            "a dangling edge must now be rejected by SQLite"
         );
-        assert!(err.is_err(), "a dangling edge must now be rejected by SQLite");
 
         // Idempotent: a second migrate is a no-op, not another rebuild.
         migrate(&conn).unwrap();

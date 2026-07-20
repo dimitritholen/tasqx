@@ -149,6 +149,4 @@ impl Engine {
 
         Ok(json!({ "groups": out, "generated": now() }))
     }
-
 }
-

@@ -43,9 +43,16 @@ pub enum Topic {
 
 impl Topic {
     pub const ALL: [Topic; 10] = [
-        Topic::GettingStarted, Topic::Projects, Topic::Capturing, Topic::Dates,
-        Topic::Filters, Topic::Reminders, Topic::Reports, Topic::Daemon,
-        Topic::Automation, Topic::JsonApi,
+        Topic::GettingStarted,
+        Topic::Projects,
+        Topic::Capturing,
+        Topic::Dates,
+        Topic::Filters,
+        Topic::Reminders,
+        Topic::Reports,
+        Topic::Daemon,
+        Topic::Automation,
+        Topic::JsonApi,
     ];
     pub fn slug(&self) -> &'static str {
         match self {
@@ -91,13 +98,27 @@ pub struct CmdDoc {
 
 // Ergonomic shorthands for the table below.
 use RunKind::{NoRun, Safe};
-const fn ex(cmd: &'static str) -> Example { Example { cmd, note: None, run: Safe } }
+const fn ex(cmd: &'static str) -> Example {
+    Example {
+        cmd,
+        note: None,
+        run: Safe,
+    }
+}
 #[allow(dead_code)]
 const fn exn(cmd: &'static str, note: &'static str) -> Example {
-    Example { cmd, note: Some(note), run: Safe }
+    Example {
+        cmd,
+        note: Some(note),
+        run: Safe,
+    }
 }
 const fn ex_norun(cmd: &'static str, note: &'static str) -> Example {
-    Example { cmd, note: Some(note), run: NoRun }
+    Example {
+        cmd,
+        note: Some(note),
+        run: NoRun,
+    }
 }
 
 pub const COMMAND_REF: &[CmdDoc] = &[
@@ -525,7 +546,9 @@ pub fn find(verb: &str) -> Option<&'static CmdDoc> {
 /// `--help`). Empty string for an unknown verb, so `after_help("nope")`
 /// harmlessly contributes nothing.
 pub fn after_help(verb: &str) -> String {
-    let Some(d) = find(verb) else { return String::new() };
+    let Some(d) = find(verb) else {
+        return String::new();
+    };
     let mut s = String::new();
     s.push_str("EXAMPLES\n");
     for e in d.examples {
@@ -568,8 +591,12 @@ mod tests {
             assert!(!d.usage.trim().is_empty(), "{}: empty usage", d.verb);
             assert!(!d.examples.is_empty(), "{}: no examples", d.verb);
             for e in d.examples {
-                assert!(e.cmd.trim_start().starts_with("tasqx "),
-                    "{}: example {:?} must start with `tasqx `", d.verb, e.cmd);
+                assert!(
+                    e.cmd.trim_start().starts_with("tasqx "),
+                    "{}: example {:?} must start with `tasqx `",
+                    d.verb,
+                    e.cmd
+                );
             }
         }
     }
@@ -577,7 +604,7 @@ mod tests {
     #[test]
     fn find_resolves_verbs_and_aliases() {
         assert_eq!(find("init").unwrap().verb, "init");
-        assert_eq!(find("a").unwrap().verb, "add");     // alias
+        assert_eq!(find("a").unwrap().verb, "add"); // alias
         assert_eq!(find("edit").unwrap().verb, "modify"); // alias
         assert!(find("nope").is_none());
     }
@@ -605,7 +632,11 @@ mod tests {
     #[test]
     fn report_documents_the_all_flag_and_the_cancelled_default() {
         let d = find("report").unwrap();
-        assert!(d.usage.contains("--all"), "usage must offer --all: {}", d.usage);
+        assert!(
+            d.usage.contains("--all"),
+            "usage must offer --all: {}",
+            d.usage
+        );
         let notes = d.notes.join(" ").to_lowercase();
         assert!(
             notes.contains("cancelled"),
@@ -702,7 +733,10 @@ mod tests {
                 }
             }
         }
-        assert!(dangling.is_empty(), "see_also entries naming no real verb: {dangling:?}");
+        assert!(
+            dangling.is_empty(),
+            "see_also entries naming no real verb: {dangling:?}"
+        );
     }
 
     /// `Topic::ALL` drives every topic page in `tasqx manual`. The compiler
@@ -727,20 +761,32 @@ mod tests {
             .map(|d| d.topic.slug())
             .filter(|s| !slugs.contains(s))
             .collect();
-        assert!(missing.is_empty(), "topics used by commands but absent from Topic::ALL: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "topics used by commands but absent from Topic::ALL: {missing:?}"
+        );
     }
 
     #[test]
     fn command_ref_covers_exactly_the_clap_surface() {
         use clap::CommandFactory;
         let mut real: Vec<String> = crate::Cli::command()
-            .get_subcommands().map(|c| c.get_name().to_string()).collect();
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect();
         let mut doc: Vec<String> = verbs().iter().map(|s| s.to_string()).collect();
-        real.sort(); doc.sort();
+        real.sort();
+        doc.sort();
         let missing: Vec<_> = real.iter().filter(|v| !doc.contains(v)).collect();
-        assert!(missing.is_empty(), "verbs with no cmddoc entry: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "verbs with no cmddoc entry: {missing:?}"
+        );
         let invented: Vec<_> = doc.iter().filter(|v| !real.contains(v)).collect();
-        assert!(invented.is_empty(), "cmddoc entries with no clap subcommand: {invented:?}");
+        assert!(
+            invented.is_empty(),
+            "cmddoc entries with no clap subcommand: {invented:?}"
+        );
     }
 
     #[test]
@@ -748,11 +794,14 @@ mod tests {
         use clap::CommandFactory;
         let cmd = crate::Cli::command();
         for d in COMMAND_REF {
-            let sub = cmd.get_subcommands().find(|c| c.get_name() == d.verb)
+            let sub = cmd
+                .get_subcommands()
+                .find(|c| c.get_name() == d.verb)
                 .unwrap_or_else(|| panic!("no clap subcommand: {}", d.verb));
             let mut real: Vec<String> = sub.get_all_aliases().map(|a| a.to_string()).collect();
             let mut ours: Vec<String> = d.aliases.iter().map(|a| a.to_string()).collect();
-            real.sort(); ours.sort();
+            real.sort();
+            ours.sort();
             assert_eq!(real, ours, "alias drift on `{}`", d.verb);
         }
     }

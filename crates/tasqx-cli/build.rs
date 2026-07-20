@@ -22,7 +22,11 @@ fn main() {
             // flagging it would make `-dirty` mean so little it gets ignored.
             let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
                 .is_some_and(|s| !s.is_empty());
-            if dirty { format!("{sha}-dirty") } else { sha }
+            if dirty {
+                format!("{sha}-dirty")
+            } else {
+                sha
+            }
         }
         None => "unknown".to_string(),
     };
@@ -58,10 +62,18 @@ fn rerun_if_present(path: &str) {
 /// from a workspace member without hard-coding how deep it sits.
 fn git(args: &[&str]) -> Option<String> {
     let dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let out = Command::new("git").args(args).current_dir(dir).output().ok()?;
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }

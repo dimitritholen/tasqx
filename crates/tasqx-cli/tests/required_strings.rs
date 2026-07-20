@@ -26,7 +26,9 @@ fn scratch(tag: &str) -> PathBuf {
 /// otherwise have these tests talk to their real store.
 fn bin(dir: &std::path::Path, db: &str) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
-    c.env("TASQX_CONFIG_DIR", dir).env("TASQX_DB", dir.join(db)).arg("--no-daemon");
+    c.env("TASQX_CONFIG_DIR", dir)
+        .env("TASQX_DB", dir.join(db))
+        .arg("--no-daemon");
     c
 }
 
@@ -41,7 +43,12 @@ fn api(dir: &std::path::Path, db: &str, method: &str, params: &str) -> (i32, Str
         .spawn()
         .expect("spawn tasqx api");
     let req = format!(r#"{{"tasqx":"1","method":"{method}","params":{params}}}"#);
-    child.stdin.as_mut().expect("stdin").write_all(req.as_bytes()).expect("write request");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(req.as_bytes())
+        .expect("write request");
     let out = child.wait_with_output().expect("wait for tasqx api");
     let text = format!(
         "{}{}",
@@ -53,8 +60,13 @@ fn api(dir: &std::path::Path, db: &str, method: &str, params: &str) -> (i32, Str
 
 /// The JSON spelling of a blank string, for embedding in a params literal.
 /// Kept beside the human label so a failure message says which one broke.
-const BLANKS: [(&str, &str); 5] =
-    [("empty", r#""""#), ("space", r#"" ""#), ("spaces", r#""   ""#), ("tab", r#""\t""#), ("newline", r#""\n""#)];
+const BLANKS: [(&str, &str); 5] = [
+    ("empty", r#""""#),
+    ("space", r#"" ""#),
+    ("spaces", r#""   ""#),
+    ("tab", r#""\t""#),
+    ("newline", r#""\n""#),
+];
 
 /// Every door that writes a required string refuses every blank spelling, with
 /// the same code, through the same binary. Before the fix `task.modify` was the
@@ -62,14 +74,29 @@ const BLANKS: [(&str, &str); 5] =
 #[test]
 fn every_door_refuses_every_blank_required_string() {
     let dir = scratch("doors");
-    let out = bin(&dir, "d.db").args(["add", "seed"]).output().expect("seed the store");
-    assert!(out.status.success(), "seed failed: {}", String::from_utf8_lossy(&out.stderr));
+    let out = bin(&dir, "d.db")
+        .args(["add", "seed"])
+        .output()
+        .expect("seed the store");
+    assert!(
+        out.status.success(),
+        "seed failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     for (label, blank) in BLANKS {
         for (door, method, params) in [
             ("task.add", "task.add", format!(r#"{{"title":{blank}}}"#)),
-            ("task.modify", "task.modify", format!(r#"{{"ref":1,"set":{{"title":{blank}}}}}"#)),
-            ("project.create", "project.create", format!(r#"{{"name":{blank}}}"#)),
+            (
+                "task.modify",
+                "task.modify",
+                format!(r#"{{"ref":1,"set":{{"title":{blank}}}}}"#),
+            ),
+            (
+                "project.create",
+                "project.create",
+                format!(r#"{{"name":{blank}}}"#),
+            ),
             (
                 "store.import",
                 "store.import",
@@ -82,8 +109,14 @@ fn every_door_refuses_every_blank_required_string() {
             // refusal is `ok:false` at exit 0. Asserting the envelope rather
             // than the exit code is what a JSON caller actually sees.
             let (code, text) = api(&dir, "d.db", method, &params);
-            assert_eq!(code, 0, "{door} / {label}: `api` always exits 0 (D31): {text}");
-            assert!(text.contains(r#""ok":false"#), "{door} must refuse a {label} title/name: {text}");
+            assert_eq!(
+                code, 0,
+                "{door} / {label}: `api` always exits 0 (D31): {text}"
+            );
+            assert!(
+                text.contains(r#""ok":false"#),
+                "{door} must refuse a {label} title/name: {text}"
+            );
             assert!(text.contains("bad_request"), "{door} / {label}: {text}");
         }
     }
@@ -91,8 +124,14 @@ fn every_door_refuses_every_blank_required_string() {
     // Nothing was written by any of it: the seed is still the only task, still
     // at _rev 1, and no project was created.
     let (_, text) = api(&dir, "d.db", "task.get", r#"{"ref":1}"#);
-    assert!(text.contains(r#""title":"seed""#), "a refused modify must not write: {text}");
-    assert!(text.contains(r#""_rev":1"#), "nor bump the revision: {text}");
+    assert!(
+        text.contains(r#""title":"seed""#),
+        "a refused modify must not write: {text}"
+    );
+    assert!(
+        text.contains(r#""_rev":1"#),
+        "nor bump the revision: {text}"
+    );
 }
 
 /// The N2a regression itself, as the session that found it: modify a title to
@@ -101,9 +140,19 @@ fn every_door_refuses_every_blank_required_string() {
 #[test]
 fn a_store_the_tool_wrote_can_always_be_imported_again() {
     let dir = scratch("roundtrip");
-    assert!(bin(&dir, "a.db").args(["add", "alpha"]).output().unwrap().status.success());
+    assert!(bin(&dir, "a.db")
+        .args(["add", "alpha"])
+        .output()
+        .unwrap()
+        .status
+        .success());
 
-    let (_, text) = api(&dir, "a.db", "task.modify", r#"{"ref":1,"set":{"title":""}}"#);
+    let (_, text) = api(
+        &dir,
+        "a.db",
+        "task.modify",
+        r#"{"ref":1,"set":{"title":""}}"#,
+    );
     assert!(
         text.contains(r#""ok":false"#),
         "an empty title must be refused at the modify door: {text}"
@@ -116,14 +165,21 @@ fn a_store_the_tool_wrote_can_always_be_imported_again() {
     let path = dir.join("export.json");
     std::fs::write(&path, &exported.stdout).expect("write export");
 
-    let imported = bin(&dir, "b.db").arg("import").arg(&path).output().expect("import");
+    let imported = bin(&dir, "b.db")
+        .arg("import")
+        .arg(&path)
+        .output()
+        .expect("import");
     assert!(
         imported.status.success(),
         "re-import must succeed: {}",
         String::from_utf8_lossy(&imported.stderr)
     );
     let reexported = bin(&dir, "b.db").arg("export").output().expect("re-export");
-    assert_eq!(reexported.stdout, exported.stdout, "D12: byte-identical round trip");
+    assert_eq!(
+        reexported.stdout, exported.stdout,
+        "D12: byte-identical round trip"
+    );
 }
 
 /// The argv door. `tasqx add "   "` and `tasqx modify 1 "   "` reach the same
@@ -140,27 +196,71 @@ fn a_store_the_tool_wrote_can_always_be_imported_again() {
 #[test]
 fn the_argv_doors_refuse_a_whitespace_only_title() {
     let dir = scratch("argv");
-    assert!(bin(&dir, "a.db").args(["add", "real"]).output().unwrap().status.success());
+    assert!(bin(&dir, "a.db")
+        .args(["add", "real"])
+        .output()
+        .unwrap()
+        .status
+        .success());
 
     for blank in ["   ", "\t", " \t "] {
-        let out = bin(&dir, "a.db").arg("add").arg(blank).output().expect("run add");
+        let out = bin(&dir, "a.db")
+            .arg("add")
+            .arg(blank)
+            .output()
+            .expect("run add");
         let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "`tasqx add {blank:?}` must be refused: {err}");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`tasqx add {blank:?}` must be refused: {err}"
+        );
 
-        let out = bin(&dir, "a.db").args(["modify", "1"]).arg(blank).output().expect("run modify");
+        let out = bin(&dir, "a.db")
+            .args(["modify", "1"])
+            .arg(blank)
+            .output()
+            .expect("run modify");
         let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "`tasqx modify 1 {blank:?}` must be refused: {err}");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`tasqx modify 1 {blank:?}` must be refused: {err}"
+        );
 
-        let out = bin(&dir, "a.db").arg("init").arg(blank).output().expect("run init");
+        let out = bin(&dir, "a.db")
+            .arg("init")
+            .arg(blank)
+            .output()
+            .expect("run init");
         let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "`tasqx init {blank:?}` must be refused: {err}");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`tasqx init {blank:?}` must be refused: {err}"
+        );
     }
 
     // And the ordinary forms still work, so none of the above is a guard that
     // simply rejects everything.
-    assert!(bin(&dir, "a.db").args(["add", "still fine"]).output().unwrap().status.success());
-    assert!(bin(&dir, "a.db").args(["modify", "1", "renamed"]).output().unwrap().status.success());
-    assert!(bin(&dir, "a.db").args(["init", "work"]).output().unwrap().status.success());
+    assert!(bin(&dir, "a.db")
+        .args(["add", "still fine"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(bin(&dir, "a.db")
+        .args(["modify", "1", "renamed"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(bin(&dir, "a.db")
+        .args(["init", "work"])
+        .output()
+        .unwrap()
+        .status
+        .success());
 }
 
 /// D36's *storage* half, which the first round left to chance: "accepted values
@@ -182,19 +282,39 @@ fn the_argv_doors_refuse_a_whitespace_only_title() {
 fn the_argv_door_stores_a_title_byte_for_byte_like_the_json_door() {
     let dir = scratch("verbatim");
 
-    for (tag, title) in [("pad", "  padded title  "), ("inner", "a    b"), ("tab", "tab\there")] {
+    for (tag, title) in [
+        ("pad", "  padded title  "),
+        ("inner", "a    b"),
+        ("tab", "tab\there"),
+    ] {
         // The JSON door is the reference: D36 fixes its behaviour in writing.
         let db = format!("api-{tag}.db");
-        let (code, _) = api(&dir, &db, "task.add", &format!("{{\"title\":{}}}", json_str(title)));
+        let (code, _) = api(
+            &dir,
+            &db,
+            "task.add",
+            &format!("{{\"title\":{}}}", json_str(title)),
+        );
         assert_eq!(code, 0, "api add {title:?} must succeed");
         let via_api = stored_title(&dir, &db);
-        assert_eq!(via_api, title, "the JSON door must store {title:?} as given");
+        assert_eq!(
+            via_api, title,
+            "the JSON door must store {title:?} as given"
+        );
 
         // The argv door, driven as real argv — one element, exactly as a shell
         // hands `tasqx add "  padded title  "` over.
         let db = format!("cli-{tag}.db");
-        let out = bin(&dir, &db).arg("add").arg(title).output().expect("run add");
-        assert!(out.status.success(), "cli add {title:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let out = bin(&dir, &db)
+            .arg("add")
+            .arg(title)
+            .output()
+            .expect("run add");
+        assert!(
+            out.status.success(),
+            "cli add {title:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(
             stored_title(&dir, &db),
             title,
@@ -203,9 +323,22 @@ fn the_argv_door_stores_a_title_byte_for_byte_like_the_json_door() {
 
         // Its twin. One sugar parser, so both verbs or neither.
         let db = format!("mod-{tag}.db");
-        assert!(bin(&dir, &db).args(["add", "seed"]).output().unwrap().status.success());
-        let out = bin(&dir, &db).args(["modify", "1"]).arg(title).output().expect("run modify");
-        assert!(out.status.success(), "cli modify {title:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(bin(&dir, &db)
+            .args(["add", "seed"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let out = bin(&dir, &db)
+            .args(["modify", "1"])
+            .arg(title)
+            .output()
+            .expect("run modify");
+        assert!(
+            out.status.success(),
+            "cli modify {title:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(
             stored_title(&dir, &db),
             title,
@@ -218,11 +351,25 @@ fn the_argv_door_stores_a_title_byte_for_byte_like_the_json_door() {
     // nothing. Without this the test above would pass on a parser that simply
     // stopped tokenizing.
     let db = "sugar.db";
-    let out = bin(&dir, db).args(["add", "Ship it due:friday +api"]).output().expect("run add");
-    assert!(out.status.success(), "sugar: {}", String::from_utf8_lossy(&out.stderr));
+    let out = bin(&dir, db)
+        .args(["add", "Ship it due:friday +api"])
+        .output()
+        .expect("run add");
+    assert!(
+        out.status.success(),
+        "sugar: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(stored_title(&dir, db), "Ship it");
-    let out = bin(&dir, db).args(["add", "two", "words"]).output().expect("run add");
-    assert!(out.status.success(), "join: {}", String::from_utf8_lossy(&out.stderr));
+    let out = bin(&dir, db)
+        .args(["add", "two", "words"])
+        .output()
+        .expect("run add");
+    assert!(
+        out.status.success(),
+        "join: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(stored_title(&dir, db), "two words");
 }
 
@@ -260,27 +407,55 @@ fn json_str(s: &str) -> String {
 fn the_shell_stripped_spelling_writes_but_does_not_read() {
     let dir = scratch("d38");
     let db = "d38.db";
-    assert!(bin(&dir, db).args(["init", "Home Renovation"]).output().unwrap().status.success());
+    assert!(bin(&dir, db)
+        .args(["init", "Home Renovation"])
+        .output()
+        .unwrap()
+        .status
+        .success());
 
     // The WRITE side takes it: the argv boundary says this is one value.
     let out = bin(&dir, db)
         .args(["add", "paint", "project:Home Renovation"])
         .output()
         .expect("run add");
-    assert!(out.status.success(), "the write side must accept the shell-stripped spelling: {}",
-        String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "the write side must accept the shell-stripped spelling: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // The READ side refuses it, and the refusal teaches the working spelling.
-    let out = bin(&dir, db).args(["list", "project:Home Renovation"]).output().expect("run list");
+    let out = bin(&dir, db)
+        .args(["list", "project:Home Renovation"])
+        .output()
+        .expect("run list");
     let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(2), "the read side must refuse rather than guess: {err}");
-    assert!(err.contains(r#"project:"Home Renovation""#), "the refusal must name the quoted form: {err}");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the read side must refuse rather than guess: {err}"
+    );
+    assert!(
+        err.contains(r#"project:"Home Renovation""#),
+        "the refusal must name the quoted form: {err}"
+    );
 
     // And the spelling both sides accept really does select the row, so the
     // guard above is not merely asserting that reads are broken.
-    let out = bin(&dir, db).args(["list", r#"project:"Home Renovation""#]).output().expect("run list");
-    assert!(out.status.success(), "the quoted spelling must read: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("paint"), "the quoted spelling must find the task");
+    let out = bin(&dir, db)
+        .args(["list", r#"project:"Home Renovation""#])
+        .output()
+        .expect("run list");
+    assert!(
+        out.status.success(),
+        "the quoted spelling must read: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("paint"),
+        "the quoted spelling must find the task"
+    );
 }
 
 /// Neither reading surface may go back to claiming plain write/read symmetry.
@@ -315,18 +490,32 @@ fn no_reading_surface_claims_write_read_symmetry() {
 fn a_null_title_is_refused_at_both_doors_and_says_why() {
     let dir = scratch("null");
     let db = "null.db";
-    assert!(bin(&dir, db).args(["add", "seed"]).output().unwrap().status.success());
+    assert!(bin(&dir, db)
+        .args(["add", "seed"])
+        .output()
+        .unwrap()
+        .status
+        .success());
 
     // `task.add`: null is simply an absent required field.
     let (code, text) = api(&dir, db, "task.add", r#"{"title":null}"#);
     assert_eq!(code, 0, "the api transport itself must succeed");
-    assert!(text.contains("bad_request"), "task.add must refuse a null title: {text}");
-    assert!(text.contains("title"), "the refusal must name the field: {text}");
+    assert!(
+        text.contains("bad_request"),
+        "task.add must refuse a null title: {text}"
+    );
+    assert!(
+        text.contains("title"),
+        "the refusal must name the field: {text}"
+    );
 
     // `task.modify`: null is a CLEAR request, and clearing a title is the thing
     // D13 forbids. The message has to say that, not "send a string".
     let (_, text) = api(&dir, db, "task.modify", r#"{"ref":1,"set":{"title":null}}"#);
-    assert!(text.contains("bad_request"), "task.modify must refuse a null title: {text}");
+    assert!(
+        text.contains("bad_request"),
+        "task.modify must refuse a null title: {text}"
+    );
     assert!(
         text.contains("cannot be cleared"),
         "the refusal must name clearing as the refused operation, not the type: {text}"
@@ -334,5 +523,8 @@ fn a_null_title_is_refused_at_both_doors_and_says_why() {
 
     // The title survived: a refused modify writes nothing.
     let (_, text) = api(&dir, db, "task.list", "{}");
-    assert!(text.contains("seed"), "a refused modify must leave the title alone: {text}");
+    assert!(
+        text.contains("seed"),
+        "a refused modify must leave the title alone: {text}"
+    );
 }

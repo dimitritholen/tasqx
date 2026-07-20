@@ -162,7 +162,10 @@ pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError
             if !tag.is_empty() && !tags.iter().any(|t| t == tag) {
                 tags.push(tag.to_string());
             }
-        } else if let Some(p) = tok.strip_prefix("project:").or_else(|| tok.strip_prefix("proj:")) {
+        } else if let Some(p) = tok
+            .strip_prefix("project:")
+            .or_else(|| tok.strip_prefix("proj:"))
+        {
             if project.is_none() && !p.is_empty() {
                 project = Some(p.to_string());
                 // Unquoted AND something follows it: only then is there a word
@@ -171,11 +174,17 @@ pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError
             }
         } else if let Some(v) = tok.strip_prefix("due:") {
             set_if_empty(&mut due, v);
-        } else if let Some(v) = tok.strip_prefix("scheduled:").or_else(|| tok.strip_prefix("sched:")) {
+        } else if let Some(v) = tok
+            .strip_prefix("scheduled:")
+            .or_else(|| tok.strip_prefix("sched:"))
+        {
             set_if_empty(&mut scheduled, v);
         } else if let Some(v) = tok.strip_prefix("wait:") {
             set_if_empty(&mut wait, v);
-        } else if let Some(v) = tok.strip_prefix("repeat:").or_else(|| tok.strip_prefix("recur:")) {
+        } else if let Some(v) = tok
+            .strip_prefix("repeat:")
+            .or_else(|| tok.strip_prefix("recur:"))
+        {
             if recurrence.is_none() && !v.is_empty() {
                 recurrence = Some(v.to_string());
             }
@@ -185,7 +194,10 @@ pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError
             }
         } else if let Some(v) = tok.strip_prefix("remind:") {
             set_if_empty(&mut remind, v);
-        } else if let Some(v) = tok.strip_prefix("est:").or_else(|| tok.strip_prefix("estimate:")) {
+        } else if let Some(v) = tok
+            .strip_prefix("est:")
+            .or_else(|| tok.strip_prefix("estimate:"))
+        {
             set_if_empty(&mut estimate, v);
         } else if let Some(p) = tok.strip_prefix('!') {
             // Validated even when an explicit --priority already won, so a typo
@@ -237,7 +249,10 @@ fn tokenize_argv(args: &[String]) -> Result<Vec<SugarTok>, ApiError> {
         if shell_quoted_value {
             // The shell drew this boundary, so the value is quoted in every
             // sense that matters here — nothing about it was guessed.
-            out.push(SugarTok { text: arg.clone(), quoted: true });
+            out.push(SugarTok {
+                text: arg.clone(),
+                quoted: true,
+            });
         } else {
             let toks = tokenize(arg)?;
             // D36's STORAGE half — "accepted values are stored as given; the
@@ -261,10 +276,14 @@ fn tokenize_argv(args: &[String]) -> Result<Vec<SugarTok>, ApiError> {
             // An element that tokenizes to NOTHING (whitespace only) must keep
             // falling through: dropping it is what makes `tasqx add "   "`
             // reach `req_str` empty and be refused, which D36 requires.
-            let is_pure_title =
-                !arg.contains('"') && !toks.is_empty() && !toks.iter().any(|t| is_sugar_token(&t.text));
+            let is_pure_title = !arg.contains('"')
+                && !toks.is_empty()
+                && !toks.iter().any(|t| is_sugar_token(&t.text));
             if is_pure_title {
-                out.push(SugarTok { text: arg.clone(), quoted: false });
+                out.push(SugarTok {
+                    text: arg.clone(),
+                    quoted: false,
+                });
             } else {
                 out.extend(toks);
             }
@@ -307,7 +326,8 @@ fn is_sugar_token(t: &str) -> bool {
 }
 
 fn is_spaced_tag(arg: &str) -> bool {
-    arg.strip_prefix('+').is_some_and(|t| !t.starts_with(char::is_whitespace) && !t.is_empty())
+    arg.strip_prefix('+')
+        .is_some_and(|t| !t.starts_with(char::is_whitespace) && !t.is_empty())
 }
 
 /// Whitespace-split, but keep double-quoted spans together and strip the quotes,
@@ -326,7 +346,13 @@ fn is_spaced_tag(arg: &str) -> bool {
 /// exactly how `sayhi` got stored under a zero exit code.
 fn tokenize(raw: &str) -> Result<Vec<SugarTok>, ApiError> {
     let words = tasqx_core::filter::split_words(raw, "task text").map_err(ApiError::bad_request)?;
-    Ok(words.into_iter().map(|w| SugarTok { text: w.text, quoted: w.quoted }).collect())
+    Ok(words
+        .into_iter()
+        .map(|w| SugarTok {
+            text: w.text,
+            quoted: w.quoted,
+        })
+        .collect())
 }
 
 /// Names the value and every spelling that would have worked, because `!` has no
@@ -380,19 +406,34 @@ mod tests {
     #[test]
     fn an_unusable_priority_token_is_refused_not_dropped() {
         let e = parse_err(&["urgent thing", "!urgent"], AddFlags::default());
-        assert!(e.message.contains("urgent"), "names the value: {}", e.message);
-        assert!(e.message.contains("!high"), "lists the way out: {}", e.message);
+        assert!(
+            e.message.contains("urgent"),
+            "names the value: {}",
+            e.message
+        );
+        assert!(
+            e.message.contains("!high"),
+            "lists the way out: {}",
+            e.message
+        );
 
         // A lone `!` named no priority either, and vanished just as quietly.
-        assert!(parse_err(&["!"], AddFlags::default()).message.contains("invalid priority"));
+        assert!(parse_err(&["!"], AddFlags::default())
+            .message
+            .contains("invalid priority"));
     }
 
     /// An explicit flag outranks sugar on *value*, never on *validity* — the
     /// alternative excuses a typo whenever a flag happens to be present too.
     #[test]
     fn a_winning_flag_does_not_excuse_an_invalid_sugar_token() {
-        let flags = AddFlags { priority: Some("H".into()), ..AddFlags::default() };
-        assert!(parse_err(&["Task", "!urgent"], flags).message.contains("invalid priority"));
+        let flags = AddFlags {
+            priority: Some("H".into()),
+            ..AddFlags::default()
+        };
+        assert!(parse_err(&["Task", "!urgent"], flags)
+            .message
+            .contains("invalid priority"));
     }
 
     /// Every accepted spelling, pinned so the error's promised way out is real.
@@ -473,7 +514,10 @@ mod tests {
     fn a_shell_quoted_tag_survives_as_one_token() {
         let p = parse_argv(&["painting job", "+needs paint"], AddFlags::default());
         assert_eq!(p.tags, vec!["needs paint".to_string()]);
-        assert_eq!(p.title, "painting job", "the tag's words must not become title words");
+        assert_eq!(
+            p.title, "painting job",
+            "the tag's words must not become title words"
+        );
 
         // Literal quotes take the tokenizer path and must land in the same place,
         // which is what lets a tag round-trip through C1's filter quoting.
@@ -508,7 +552,10 @@ mod tests {
     /// A value key with no spaces is untouched by the whole-element rule.
     #[test]
     fn unspaced_value_elements_are_unaffected() {
-        let p = parse_argv(&["due:friday", "remind:-30m", "est:4h"], AddFlags::default());
+        let p = parse_argv(
+            &["due:friday", "remind:-30m", "est:4h"],
+            AddFlags::default(),
+        );
         assert_eq!(p.due.as_deref(), Some("friday"));
         assert_eq!(p.remind.as_deref(), Some("-30m"));
         assert_eq!(p.estimate.as_deref(), Some("4h"));
@@ -577,7 +624,10 @@ mod tests {
     fn parses_remind_offset_and_strips_it_from_title() {
         // The leading `-` must survive tokenizing — it is what marks the value
         // as a due-anchored offset rather than a date (see core `remind`).
-        let p = parse1(r#"Standup due:"friday 9am" remind:-15m"#, AddFlags::default());
+        let p = parse1(
+            r#"Standup due:"friday 9am" remind:-15m"#,
+            AddFlags::default(),
+        );
         assert_eq!(p.title, "Standup");
         assert_eq!(p.due.as_deref(), Some("friday 9am"));
         assert_eq!(p.remind.as_deref(), Some("-15m"));
@@ -606,7 +656,10 @@ mod tests {
 
     #[test]
     fn explicit_estimate_flag_wins_over_sugar() {
-        let flags = AddFlags { estimate: Some("2h".into()), ..AddFlags::default() };
+        let flags = AddFlags {
+            estimate: Some("2h".into()),
+            ..AddFlags::default()
+        };
         let p = parse1("Task est:4h", flags);
         assert_eq!(p.estimate.as_deref(), Some("2h"));
     }

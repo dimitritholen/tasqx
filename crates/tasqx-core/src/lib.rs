@@ -46,9 +46,9 @@ pub mod urgency;
 pub mod util;
 
 pub use dispatch::{capabilities, dispatch, handle_envelope, API_VERSION, PARAMS};
-pub use mcp::{McpServer, Scope};
 pub use engine::Engine;
 pub use error::{ApiError, ErrorCode};
+pub use mcp::{McpServer, Scope};
 pub use notify::{Notification, Notifier};
 pub use scheduler::ReminderScheduler;
 pub use types::{Entity, Priority, Status, Task};

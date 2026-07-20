@@ -60,15 +60,27 @@ const VERBS: [(&str, &str, &str); 29] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("add", "<code>a</code>, <code>new</code>", "task.add"),
-    ("modify", "<code>mod</code>, <code>m</code>, <code>edit</code>", "task.modify"),
+    (
+        "modify",
+        "<code>mod</code>, <code>m</code>, <code>edit</code>",
+        "task.modify",
+    ),
     ("list", "<code>ls</code>, <code>l</code>", "task.list"),
     ("next", "—", "task.list"),
     ("show", "<code>get</code>", "task.get"),
     ("why", "—", "task.get"),
     ("start", "<code>s</code>", "task.start"),
     ("stop", "<code>st</code>", "task.stop"),
-    ("done", "<code>d</code>, <code>x</code>, <code>complete</code>", "task.done"),
-    ("cancel", "<code>delete</code>, <code>del</code>, <code>rm</code>", "task.cancel"),
+    (
+        "done",
+        "<code>d</code>, <code>x</code>, <code>complete</code>",
+        "task.done",
+    ),
+    (
+        "cancel",
+        "<code>delete</code>, <code>del</code>, <code>rm</code>",
+        "task.cancel",
+    ),
     ("reopen", "—", "task.reopen"),
     ("annotate", "<code>note</code>", "annotation.add"),
     ("dep", "—", "dependency.add"),
@@ -124,21 +136,61 @@ const METHODS: [(&str, &str, &str); 23] = [
         "<code>filter?</code>, <code>sort?</code>, <code>limit?</code>, <code>fields?</code>",
         "<code>{count, tasks}</code>. An omitted <code>filter</code> matches everything.",
     ),
-    ("task.get", "<code>ref</code>", "Full detail incl. annotations, deps, <code>blocked</code>."),
-    ("task.start", "<code>ref</code>, <code>keep?</code>", "The task, timer running."),
-    ("task.stop", "<code>ref</code>", "The task, with tracked time."),
-    ("task.done", "<code>ref</code>", "The task; plus the spawned next instance if recurring."),
+    (
+        "task.get",
+        "<code>ref</code>",
+        "Full detail incl. annotations, deps, <code>blocked</code>.",
+    ),
+    (
+        "task.start",
+        "<code>ref</code>, <code>keep?</code>",
+        "The task, timer running.",
+    ),
+    (
+        "task.stop",
+        "<code>ref</code>",
+        "The task, with tracked time.",
+    ),
+    (
+        "task.done",
+        "<code>ref</code>",
+        "The task; plus the spawned next instance if recurring.",
+    ),
     (
         "task.modify",
         "<code>ref</code>, <code>set</code>, <code>expected_rev?</code>",
         "The task. <code>null</code> in <code>set</code> clears a field.",
     ),
-    ("task.cancel", "<code>ref</code>", "<code>{short_id, status}</code>."),
-    ("task.reopen", "<code>ref</code>", "<code>{short_id, status}</code>."),
-    ("tag.add", "<code>ref</code>, <code>tags</code>", "The task's tags."),
-    ("annotation.add", "<code>ref</code>, <code>body</code>", "The annotation."),
-    ("dependency.add", "<code>ref</code>, <code>depends_on</code>", "Dep state + <code>blocked</code>."),
-    ("dependency.remove", "<code>ref</code>, <code>depends_on</code>", "Dep state + <code>blocked</code>."),
+    (
+        "task.cancel",
+        "<code>ref</code>",
+        "<code>{short_id, status}</code>.",
+    ),
+    (
+        "task.reopen",
+        "<code>ref</code>",
+        "<code>{short_id, status}</code>.",
+    ),
+    (
+        "tag.add",
+        "<code>ref</code>, <code>tags</code>",
+        "The task's tags.",
+    ),
+    (
+        "annotation.add",
+        "<code>ref</code>, <code>body</code>",
+        "The annotation.",
+    ),
+    (
+        "dependency.add",
+        "<code>ref</code>, <code>depends_on</code>",
+        "Dep state + <code>blocked</code>.",
+    ),
+    (
+        "dependency.remove",
+        "<code>ref</code>, <code>depends_on</code>",
+        "Dep state + <code>blocked</code>.",
+    ),
     (
         "report.summary",
         "<code>group_by?</code>, <code>filter?</code>, <code>metrics?</code>, <code>all?</code>",
@@ -160,8 +212,16 @@ const METHODS: [(&str, &str, &str); 23] = [
         "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>",
         "<code>{count, events}</code> — the append-only log.",
     ),
-    ("reminder.fire", "<code>ref</code>, <code>at</code>", "<code>{fired, short_id, at}</code>. Idempotent."),
-    ("core.capabilities", "—", "<code>{api, methods, features, default_project}</code>."),
+    (
+        "reminder.fire",
+        "<code>ref</code>, <code>at</code>",
+        "<code>{fired, short_id, at}</code>. Idempotent.",
+    ),
+    (
+        "core.capabilities",
+        "—",
+        "<code>{api, methods, features, default_project}</code>.",
+    ),
 ];
 
 /// The CLI verbs this guide documents — read straight off the rendered table.
@@ -190,22 +250,42 @@ fn verb_summary(verb: &str) -> &'static str {
 }
 
 /// The fields `modify --clear` accepts. Asserted equal to `main::CLEARABLE`.
-pub const DOCUMENTED_CLEAR_FIELDS: [&str; 8] =
-    ["project", "priority", "due", "scheduled", "wait", "remind", "recurrence", "estimate"];
+pub const DOCUMENTED_CLEAR_FIELDS: [&str; 8] = [
+    "project",
+    "priority",
+    "due",
+    "scheduled",
+    "wait",
+    "remind",
+    "recurrence",
+    "estimate",
+];
 
 /// The guide's pages, in nav order: `(anchor id, nav label, page title)`.
 const PAGES: [(&str, &str, &str); 11] = [
     ("overview", "Overview", "What tasqx is"),
-    ("install", "Install &amp; quickstart", "Install and quickstart"),
+    (
+        "install",
+        "Install &amp; quickstart",
+        "Install and quickstart",
+    ),
     ("commands", "Commands", "Every command"),
     ("filters", "Filter grammar", "The filter grammar"),
-    ("scheduling", "Scheduling &amp; recurrence", "Dates and recurrence"),
+    (
+        "scheduling",
+        "Scheduling &amp; recurrence",
+        "Dates and recurrence",
+    ),
     ("reminders", "Reminders", "Reminders"),
     ("daemon", "Daemon &amp; watch", "The daemon and live watch"),
     ("mcp", "MCP", "The MCP server"),
     ("api", "JSON API", "The JSON API"),
     ("data", "Export &amp; import", "Export and import"),
-    ("themes", "Themes &amp; reports", "Themes, charts and reports"),
+    (
+        "themes",
+        "Themes &amp; reports",
+        "Themes, charts and reports",
+    ),
 ];
 
 /// Render the whole guide as one self-contained HTML string.
@@ -365,7 +445,10 @@ fn page_overview() -> String {
             ]
         })
         .collect();
-    s.push_str(&table_owned(&["Setting", "Home", "Default", "What it does"], &setting_rows));
+    s.push_str(&table_owned(
+        &["Setting", "Home", "Default", "What it does"],
+        &setting_rows,
+    ));
     s.push_str(&p(
         "<code>tasqx config edit</code> opens the same settings on a full-screen editor: up and \
          down move, enter toggles a switch or opens a theme picker, escape leaves. Moving through \
@@ -474,7 +557,9 @@ fn page_install() -> String {
         "#1  (urgency 17.5)  Ship the v1 JSON API freeze",
     ));
 
-    s.push_str(&p("And <code>tasqx why</code> shows its arithmetic, so the ranking is never a mystery:"));
+    s.push_str(&p(
+        "And <code>tasqx why</code> shows its arithmetic, so the ranking is never a mystery:",
+    ));
     s.push_str(&snippet(
         "tasqx why 1",
         "Why #1 has urgency 17.5\n\
@@ -496,12 +581,27 @@ fn page_install() -> String {
     s.push_str(&table(
         &["If you want to…", "Read"],
         &[
-            &["Know every verb and flag", "<a href=\"#commands\">Commands</a>"],
-            &["Ask precise questions of your store", "<a href=\"#filters\">Filter grammar</a>"],
-            &["Say \"friday\" or \"every 3 days\"", "<a href=\"#scheduling\">Scheduling &amp; recurrence</a>"],
-            &["Be told about a task before it is late", "<a href=\"#reminders\">Reminders</a>"],
+            &[
+                "Know every verb and flag",
+                "<a href=\"#commands\">Commands</a>",
+            ],
+            &[
+                "Ask precise questions of your store",
+                "<a href=\"#filters\">Filter grammar</a>",
+            ],
+            &[
+                "Say \"friday\" or \"every 3 days\"",
+                "<a href=\"#scheduling\">Scheduling &amp; recurrence</a>",
+            ],
+            &[
+                "Be told about a task before it is late",
+                "<a href=\"#reminders\">Reminders</a>",
+            ],
             &["Give an AI agent access", "<a href=\"#mcp\">MCP</a>"],
-            &["Script tasqx from another language", "<a href=\"#api\">JSON API</a>"],
+            &[
+                "Script tasqx from another language",
+                "<a href=\"#api\">JSON API</a>",
+            ],
         ],
     ));
 
@@ -568,7 +668,10 @@ fn page_commands() -> String {
             ]
         })
         .collect();
-    s.push_str(&table_owned(&["Verb", "Aliases", "Method", "What it does"], &verb_rows));
+    s.push_str(&table_owned(
+        &["Verb", "Aliases", "Method", "What it does"],
+        &verb_rows,
+    ));
 
     s.push_str(&h3("Referring to a task"));
     s.push_str(&p(
@@ -579,7 +682,9 @@ fn page_commands() -> String {
 
     // ---- add
     s.push_str(&h3("add"));
-    s.push_str(&p("Capture a task. Flags win over inline sugar when both name the same field."));
+    s.push_str(&p(
+        "Capture a task. Flags win over inline sugar when both name the same field.",
+    ));
     s.push_str(&table(
         &["Flag", "Sugar", "Notes"],
         &[
@@ -679,7 +784,9 @@ fn page_commands() -> String {
 
     // ---- show
     s.push_str(&h3("show"));
-    s.push_str(&p("Everything about one task, including annotations and dependency state."));
+    s.push_str(&p(
+        "Everything about one task, including annotations and dependency state.",
+    ));
     s.push_str(&snippet(
         "tasqx show 1",
         "#1  Ship the v1 JSON API freeze\n\
@@ -712,7 +819,9 @@ fn page_commands() -> String {
         "tasqx dep 2 1",
         "#2 now depends on #1   ·   depends on: #1   blocked=true",
     ));
-    s.push_str(&p("Note that #2 has vanished from the working set — it is blocked by #1:"));
+    s.push_str(&p(
+        "Note that #2 has vanished from the working set — it is blocked by #1:",
+    ));
     s.push_str(&snippet(
         "tasqx list",
         "  ID    URG  P  TASK                                  PROJECT         DUE                     TAGS\n\
@@ -790,10 +899,22 @@ fn page_commands() -> String {
     s.push_str(&table(
         &["Invocation", "Behaviour"],
         &[
-            &["<code>tasqx docs</code>", "Write the guide to a temp file and open your default browser."],
-            &["<code>tasqx docs --out &lt;path&gt;</code>", "Write it there. Never opens a browser."],
-            &["<code>tasqx docs --no-open</code>", "Write the temp file, print the path, do not open."],
-            &["<code>tasqx docs --stdout</code>", "Write the HTML to stdout (pipe it anywhere)."],
+            &[
+                "<code>tasqx docs</code>",
+                "Write the guide to a temp file and open your default browser.",
+            ],
+            &[
+                "<code>tasqx docs --out &lt;path&gt;</code>",
+                "Write it there. Never opens a browser.",
+            ],
+            &[
+                "<code>tasqx docs --no-open</code>",
+                "Write the temp file, print the path, do not open.",
+            ],
+            &[
+                "<code>tasqx docs --stdout</code>",
+                "Write the HTML to stdout (pipe it anywhere).",
+            ],
         ],
     ));
     s.push_str(&note(
@@ -885,7 +1006,10 @@ fn page_filters() -> String {
          <code>project:\"My \\\"Big\\\" Project\"</code> — because an argument carrying a literal \
          quote is read by the scanner rather than taken whole.",
     ));
-    s.push_str(&snippet("tasqx list project:\"Home Renovation\" +\"needs paint\"", ""));
+    s.push_str(&snippet(
+        "tasqx list project:\"Home Renovation\" +\"needs paint\"",
+        "",
+    ));
 
     s.push_str(&h3("Combining"));
     s.push_str(&p(
@@ -953,10 +1077,22 @@ fn page_scheduling() -> String {
     s.push_str(&table(
         &["Field", "Means"],
         &[
-            &["<code>due</code>", "The deadline. Drives urgency and is the anchor for relative reminders."],
-            &["<code>scheduled</code>", "When you intend to start. Informational."],
-            &["<code>wait</code>", "Hide this task until then — it stays out of the working set."],
-            &["<code>estimate</code>", "Not a date: an effort duration, totalled by <code>report</code>."],
+            &[
+                "<code>due</code>",
+                "The deadline. Drives urgency and is the anchor for relative reminders.",
+            ],
+            &[
+                "<code>scheduled</code>",
+                "When you intend to start. Informational.",
+            ],
+            &[
+                "<code>wait</code>",
+                "Hide this task until then — it stays out of the working set.",
+            ],
+            &[
+                "<code>estimate</code>",
+                "Not a date: an effort duration, totalled by <code>report</code>.",
+            ],
         ],
     ));
 
@@ -980,9 +1116,18 @@ fn page_scheduling() -> String {
         &["Situation", "Resolution"],
         &[
             &["A date with no time", "00:00:00 — the start of that day."],
-            &["A bare time (<code>9am</code>)", "Today, or tomorrow if that time already passed."],
-            &["A weekday that <em>is</em> today", "The next one — seven days out, not zero."],
-            &["Any naive date/time", "Interpreted as UTC, like everything else in the store."],
+            &[
+                "A bare time (<code>9am</code>)",
+                "Today, or tomorrow if that time already passed.",
+            ],
+            &[
+                "A weekday that <em>is</em> today",
+                "The next one — seven days out, not zero.",
+            ],
+            &[
+                "Any naive date/time",
+                "Interpreted as UTC, like everything else in the store.",
+            ],
         ],
     ));
 
@@ -1033,7 +1178,9 @@ fn page_scheduling() -> String {
             &["<code>monthly on the &lt;Nth&gt; &lt;weekday&gt;</code>", "<code>\"monthly on the 2nd tuesday\"</code>, <code>\"monthly on the last friday\"</code>"],
         ],
     ));
-    s.push_str(&p("This is a deliberate subset — not full RRULE. Anything outside it is a clean error."));
+    s.push_str(&p(
+        "This is a deliberate subset — not full RRULE. Anything outside it is a clean error.",
+    ));
     s.push_str(&snippet(
         "tasqx add \"Water the plants project:home repeat:\\\"every 3 days\\\" due:today\"\ntasqx done 4\ntasqx show 5",
         "Added #4  ·  pending  ·  urgency 12.0  ·  home\n\
@@ -1064,8 +1211,16 @@ fn page_scheduling() -> String {
     s.push_str(&table(
         &["Rule", "From Jan 31", "Why"],
         &[
-            &["<code>monthly on day 31</code>", "Jan 31 → Feb 28 → <strong>Mar 31</strong>", "Re-clamps against the stored target day every step, so month-end recovers."],
-            &["<code>every 1 month</code>", "Jan 31 → Feb 28 → <strong>Mar 28</strong>", "Advances from the previous (already clamped) date, so it drifts and stays there."],
+            &[
+                "<code>monthly on day 31</code>",
+                "Jan 31 → Feb 28 → <strong>Mar 31</strong>",
+                "Re-clamps against the stored target day every step, so month-end recovers.",
+            ],
+            &[
+                "<code>every 1 month</code>",
+                "Jan 31 → Feb 28 → <strong>Mar 28</strong>",
+                "Advances from the previous (already clamped) date, so it drifts and stays there.",
+            ],
         ],
     ));
     s.push_str(&note(
@@ -1189,7 +1344,9 @@ fn page_reminders() -> String {
         "{\"id\":\"r1\",\"ok\":true,\"result\":{\"at\":\"2026-07-16T00:00:00Z\",\"fired\":true,\"short_id\":1},\"tasqx\":\"1\"}\n\
          {\"id\":\"r2\",\"ok\":true,\"result\":{\"at\":\"2026-07-16T00:00:00Z\",\"fired\":false,\"short_id\":1},\"tasqx\":\"1\"}",
     ));
-    s.push_str(&p("And the event is in the log, where the dedupe check reads it:"));
+    s.push_str(&p(
+        "And the event is in the log, where the dedupe check reads it:",
+    ));
     s.push_str(&pre_plain(
         "{\n\
          \x20 \"actor\": \"user\",\n\
@@ -1227,8 +1384,16 @@ fn page_daemon() -> String {
     s.push_str(&table(
         &["Mode", "When", "Why"],
         &[
-            &["One-shot", "The default. Scripts, cron, the HTML report.", "No process to manage. Open the DB, run one command, exit."],
-            &["Daemon", "Long-lived clients: a TUI, a GUI, <code>watch</code>, reminders.", "One writer, warm caches, live push, and something to fire reminders."],
+            &[
+                "One-shot",
+                "The default. Scripts, cron, the HTML report.",
+                "No process to manage. Open the DB, run one command, exit.",
+            ],
+            &[
+                "Daemon",
+                "Long-lived clients: a TUI, a GUI, <code>watch</code>, reminders.",
+                "One writer, warm caches, live push, and something to fire reminders.",
+            ],
         ],
     ));
     s.push_str(&p(
@@ -1244,8 +1409,14 @@ fn page_daemon() -> String {
         &["Platform", "Default"],
         &[
             &["Windows", "The named pipe <code>tasqx-default</code>"],
-            &["Linux", "<code>$XDG_RUNTIME_DIR/tasqx/tasqx.sock</code> (falls back to the data dir)"],
-            &["macOS", "<code>&lt;data dir&gt;/tasqx.sock</code> — macOS has no runtime dir"],
+            &[
+                "Linux",
+                "<code>$XDG_RUNTIME_DIR/tasqx/tasqx.sock</code> (falls back to the data dir)",
+            ],
+            &[
+                "macOS",
+                "<code>&lt;data dir&gt;/tasqx.sock</code> — macOS has no runtime dir",
+            ],
         ],
     ));
 
@@ -1259,7 +1430,9 @@ fn page_daemon() -> String {
         "tasqx daemon --socket tasqx-docsdemo",
         "tasqx daemon: listening on tasqx-docsdemo (Ctrl-C to stop)",
     ));
-    s.push_str(&p("Now route a command through it — note this is the ordinary <code>add</code>, unchanged:"));
+    s.push_str(&p(
+        "Now route a command through it — note this is the ordinary <code>add</code>, unchanged:",
+    ));
     s.push_str(&snippet(
         "tasqx --socket tasqx-docsdemo add \"Wire up the docs page +docs project:work.tasqx due:tomorrow\"",
         "Added #6  ·  pending  ·  urgency 11.5  ·  work.tasqx\n  Wire up the docs page",
@@ -1333,17 +1506,41 @@ fn page_mcp() -> String {
     s.push_str(&table(
         &["Tool", "Scope", "Does"],
         &[
-            &["<code>tasqx_list_tasks</code>", "read", "List tasks by <a href=\"#filters\">filter</a>."],
-            &["<code>tasqx_get_task</code>", "read", "One task's full detail."],
-            &["<code>tasqx_summary</code>", "read", "Aggregate report by project/status/priority."],
+            &[
+                "<code>tasqx_list_tasks</code>",
+                "read",
+                "List tasks by <a href=\"#filters\">filter</a>.",
+            ],
+            &[
+                "<code>tasqx_get_task</code>",
+                "read",
+                "One task's full detail.",
+            ],
+            &[
+                "<code>tasqx_summary</code>",
+                "read",
+                "Aggregate report by project/status/priority.",
+            ],
             &["<code>tasqx_list_projects</code>", "read", "List projects."],
             &["<code>tasqx_add_task</code>", "write", "Capture a task."],
             &["<code>tasqx_modify_task</code>", "write", "Change fields."],
-            &["<code>tasqx_complete_task</code>", "write", "Complete a task."],
-            &["<code>tasqx_start_timer</code>", "write", "Start the timer."],
+            &[
+                "<code>tasqx_complete_task</code>",
+                "write",
+                "Complete a task.",
+            ],
+            &[
+                "<code>tasqx_start_timer</code>",
+                "write",
+                "Start the timer.",
+            ],
             &["<code>tasqx_stop_timer</code>", "write", "Stop the timer."],
             &["<code>tasqx_tag_task</code>", "write", "Add tags."],
-            &["<code>tasqx_create_project</code>", "write", "Create a project."],
+            &[
+                "<code>tasqx_create_project</code>",
+                "write",
+                "Create a project.",
+            ],
         ],
     ));
 
@@ -1360,7 +1557,9 @@ fn page_mcp() -> String {
         "echo '{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"tasqx_list_tasks\",\"arguments\":{\"filter\":\"+api\"}}}' | tasqx mcp serve 2>/dev/null",
         "{\"id\":3,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"{\\n  \\\"count\\\": 1,\\n  \\\"tasks\\\": [\\n    {\\n      \\\"_rev\\\": 4,\\n      \\\"due\\\": \\\"2026-07-17T00:00:00Z\\\",\\n      \\\"estimate\\\": \\\"PT4H\\\",\\n      \\\"priority\\\": \\\"H\\\",\\n      \\\"project\\\": \\\"work.tasqx\\\",\\n      \\\"short_id\\\": 1,\\n      \\\"status\\\": \\\"pending\\\",\\n      \\\"tags\\\": [\\n        \\\"api\\\",\\n        \\\"release\\\"\\n      ],\\n      \\\"title\\\": \\\"Ship the v1 JSON API freeze\\\",\\n      \\\"urgency\\\": 17.5\\n    }\\n  ]\\n}\",\"type\":\"text\"}],\"isError\":false}}",
     ));
-    s.push_str(&p("Ask a read-only server to write, and it refuses by name:"));
+    s.push_str(&p(
+        "Ask a read-only server to write, and it refuses by name:",
+    ));
     s.push_str(&snippet(
         "echo '{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"tasqx_add_task\",\"arguments\":{\"title\":\"nope\"}}}' | tasqx mcp serve 2>/dev/null",
         "{\"id\":4,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"error [bad_request]: tool `tasqx_add_task` requires write scope, but this MCP server is running read-only\",\"type\":\"text\"}],\"isError\":true}}",
@@ -1436,18 +1635,40 @@ fn page_api() -> String {
     s.push_str(&table(
         &["Code", "Exit", "Means"],
         &[
-            &["<code>bad_request</code>", "2", "Malformed params, an unparseable date, contradictory input."],
-            &["<code>not_found</code>", "4", "No such task/project/reference."],
-            &["<code>conflict</code>", "5", "A lost <code>expected_rev</code> race, or a lifecycle rule."],
-            &["<code>unsupported_version</code>", "—", "The <code>tasqx</code> major you sent is not this build's."],
-            &["<code>internal</code>", "1", "A bug or an I/O failure. Should not happen."],
+            &[
+                "<code>bad_request</code>",
+                "2",
+                "Malformed params, an unparseable date, contradictory input.",
+            ],
+            &[
+                "<code>not_found</code>",
+                "4",
+                "No such task/project/reference.",
+            ],
+            &[
+                "<code>conflict</code>",
+                "5",
+                "A lost <code>expected_rev</code> race, or a lifecycle rule.",
+            ],
+            &[
+                "<code>unsupported_version</code>",
+                "—",
+                "The <code>tasqx</code> major you sent is not this build's.",
+            ],
+            &[
+                "<code>internal</code>",
+                "1",
+                "A bug or an I/O failure. Should not happen.",
+            ],
         ],
     ));
     s.push_str(&snippet(
         "echo '{\"tasqx\":\"1\",\"id\":\"e2\",\"method\":\"task.get\",\"params\":{\"ref\":\"999\"}}' | tasqx api",
         "{\"error\":{\"code\":\"not_found\",\"data\":{\"short_id\":999},\"message\":\"no task with short_id 999\"},\"id\":\"e2\",\"ok\":false,\"tasqx\":\"1\"}",
     ));
-    s.push_str(&p("Version mismatches are caught before dispatch, and tell you what <em>is</em> supported:"));
+    s.push_str(&p(
+        "Version mismatches are caught before dispatch, and tell you what <em>is</em> supported:",
+    ));
     s.push_str(&snippet(
         "echo '{\"tasqx\":\"2\",\"id\":\"v1\",\"method\":\"task.list\"}' | tasqx api",
         "{\"error\":{\"code\":\"unsupported_version\",\"data\":{\"supported\":\"1\"},\"message\":\"unsupported api major version: 2\"},\"id\":\"v1\",\"ok\":false,\"tasqx\":\"1\"}",
@@ -1473,7 +1694,11 @@ fn page_api() -> String {
     let method_rows: Vec<Vec<String>> = METHODS
         .iter()
         .map(|(method, params, returns)| {
-            vec![format!("<code>{method}</code>"), params.to_string(), returns.to_string()]
+            vec![
+                format!("<code>{method}</code>"),
+                params.to_string(),
+                returns.to_string(),
+            ]
         })
         .collect();
     s.push_str(&table_owned(&["Method", "Params", "Returns"], &method_rows));
@@ -1628,10 +1853,7 @@ fn page_data() -> String {
          <strong>upsert on the UUID</strong> — re-importing the same document is a no-op, not a \
          duplicate.",
     ));
-    s.push_str(&snippet(
-        "tasqx import slice.json",
-        "Imported 2 task(s)",
-    ));
+    s.push_str(&snippet("tasqx import slice.json", "Imported 2 task(s)"));
     s.push_str(&snippet(
         "tasqx export +api | TASQX_DB=/tmp/other.db tasqx import -",
         "Imported 1 task(s)",
@@ -1794,9 +2016,18 @@ fn page_themes() -> String {
     s.push_str(&table(
         &["Chart", "Flags"],
         &[
-            &["<code>throughput</code>", "<code>--weeks &lt;n&gt;</code> (default 12), <code>--weekly</code>"],
-            &["<code>heatmap</code>", "<code>--weeks &lt;n&gt;</code> (default 12), <code>--year</code> (52 weeks)"],
-            &["<code>burndown</code>", "<code>--days &lt;n&gt;</code> (default 30), <code>--project &lt;p&gt;</code>"],
+            &[
+                "<code>throughput</code>",
+                "<code>--weeks &lt;n&gt;</code> (default 12), <code>--weekly</code>",
+            ],
+            &[
+                "<code>heatmap</code>",
+                "<code>--weeks &lt;n&gt;</code> (default 12), <code>--year</code> (52 weeks)",
+            ],
+            &[
+                "<code>burndown</code>",
+                "<code>--days &lt;n&gt;</code> (default 30), <code>--project &lt;p&gt;</code>",
+            ],
         ],
     ));
 
@@ -1830,7 +2061,10 @@ fn page_themes() -> String {
 
 /// Open a page section. `title` is escaped; `id` is a literal from [`PAGES`].
 fn page_open(id: &str, title: &str) -> String {
-    format!("<section class=\"page\" id=\"{id}\"><h2>{}</h2>", esc(title))
+    format!(
+        "<section class=\"page\" id=\"{id}\"><h2>{}</h2>",
+        esc(title)
+    )
 }
 
 /// Close a page, appending prev/next links derived from [`PAGES`].
@@ -1863,7 +2097,13 @@ fn lead(text: &str) -> String {
 fn h3(text: &str) -> String {
     let anchor: String = text
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     format!("<h3 id=\"h-{anchor}\">{}</h3>", esc(text))
 }
@@ -1908,8 +2148,10 @@ fn pre_plain(text: &str) -> String {
 /// A table. Headers are escaped; cells are **trusted markup** (literals in this
 /// file) so they can carry `<code>` and cross-page links.
 fn table(headers: &[&str], rows: &[&[&str]]) -> String {
-    let owned: Vec<Vec<String>> =
-        rows.iter().map(|r| r.iter().map(|c| (*c).to_string()).collect()).collect();
+    let owned: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| r.iter().map(|c| (*c).to_string()).collect())
+        .collect();
     table_owned(headers, &owned)
 }
 
@@ -2200,25 +2442,35 @@ mod tests {
     fn html_verbs_agree_with_cmddoc() {
         use crate::cmddoc::COMMAND_REF;
         for (verb, aliases_html, method) in VERBS {
-            let d = COMMAND_REF.iter().find(|d| d.verb == verb)
+            let d = COMMAND_REF
+                .iter()
+                .find(|d| d.verb == verb)
                 .unwrap_or_else(|| panic!("VERBS has `{verb}`, cmddoc does not"));
             assert_eq!(d.method, method, "method drift on `{verb}`");
             let mut html_aliases: Vec<String> = if aliases_html == "—" {
                 vec![]
             } else {
-                aliases_html.split(',')
+                aliases_html
+                    .split(',')
                     .map(|a| a.trim().replace("<code>", "").replace("</code>", ""))
                     .collect()
             };
             let mut ours: Vec<String> = d.aliases.iter().map(|s| s.to_string()).collect();
-            html_aliases.sort(); ours.sort();
-            assert_eq!(html_aliases, ours, "alias drift (html vs cmddoc) on `{verb}`");
+            html_aliases.sort();
+            ours.sort();
+            assert_eq!(
+                html_aliases, ours,
+                "alias drift (html vs cmddoc) on `{verb}`"
+            );
         }
         // reverse direction: every cmddoc verb (incl. `manual`) must be documented
         // in the HTML guide too.
         for d in COMMAND_REF {
-            assert!(VERBS.iter().any(|(v, ..)| *v == d.verb),
-                "cmddoc verb `{}` missing from the HTML VERBS table", d.verb);
+            assert!(
+                VERBS.iter().any(|(v, ..)| *v == d.verb),
+                "cmddoc verb `{}` missing from the HTML VERBS table",
+                d.verb
+            );
         }
     }
 
@@ -2232,8 +2484,7 @@ mod tests {
                 .get_subcommands()
                 .find(|c| c.get_name() == verb)
                 .unwrap_or_else(|| panic!("no such subcommand: {verb}"));
-            let mut real: Vec<String> =
-                sub.get_all_aliases().map(|a| a.to_string()).collect();
+            let mut real: Vec<String> = sub.get_all_aliases().map(|a| a.to_string()).collect();
             real.sort();
 
             // "—" is the table's way of saying "no aliases".
@@ -2358,8 +2609,12 @@ mod tests {
                 continue;
             }
             // Only the rows that enumerate a shape, e.g. "<code>{count, tasks}</code>".
-            let Some(open) = returns.find('{') else { continue };
-            let Some(close) = returns[open..].find('}') else { continue };
+            let Some(open) = returns.find('{') else {
+                continue;
+            };
+            let Some(close) = returns[open..].find('}') else {
+                continue;
+            };
             let keys = param_names(&returns[open + 1..open + close]);
             if keys.is_empty() {
                 continue;
@@ -2426,7 +2681,10 @@ mod tests {
             documented_methods().iter().map(|s| s.to_string()).collect();
         real.sort();
         documented.sort();
-        assert_eq!(real, documented, "the JSON API page has drifted from core.capabilities");
+        assert_eq!(
+            real, documented,
+            "the JSON API page has drifted from core.capabilities"
+        );
     }
 
     /// The API page's Params column against the set the core now ENFORCES
@@ -2510,7 +2768,10 @@ mod tests {
             .map(|s| s.key)
             .filter(|k| !doc.contains(&format!("<code>{k}</code>")))
             .collect();
-        assert!(missing.is_empty(), "settings the guide never names: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "settings the guide never names: {missing:?}"
+        );
     }
 
     /// Every `TASQX_*` variable the code reads must be declared in SETTINGS or
@@ -2556,12 +2817,18 @@ mod tests {
         }
         found.sort();
         found.dedup();
-        let registered: Vec<&str> = crate::config::SETTINGS.iter().filter_map(|s| s.env).collect();
+        let registered: Vec<&str> = crate::config::SETTINGS
+            .iter()
+            .filter_map(|s| s.env)
+            .collect();
         let orphans: Vec<&String> = found
             .iter()
             .filter(|v| !registered.contains(&v.as_str()) && !EXCEPTIONS.contains(&v.as_str()))
             .collect();
-        assert!(orphans.is_empty(), "env vars with no setting and no exception: {orphans:?}");
+        assert!(
+            orphans.is_empty(),
+            "env vars with no setting and no exception: {orphans:?}"
+        );
     }
 
     /// `modify --clear` takes a closed set; the page prints it. If `main::CLEARABLE`
@@ -2616,8 +2883,14 @@ mod tests {
                 "escaped <{tag}> tag renders as literal text to the reader"
             );
         }
-        assert!(!doc.contains("&lt;a href"), "escaped <a href> renders as literal text");
-        assert!(doc.contains("&lt;addr&gt;"), "prose placeholders must stay escaped");
+        assert!(
+            !doc.contains("&lt;a href"),
+            "escaped <a href> renders as literal text"
+        );
+        assert!(
+            doc.contains("&lt;addr&gt;"),
+            "prose placeholders must stay escaped"
+        );
     }
 
     /// The filter page tells the reader which values `status:` accepts, and it
@@ -2687,7 +2960,10 @@ mod tests {
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
         let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\\");
-        assert_eq!(tail, "tasqx\\tasqx\\data\\tasks.db", "db_path()'s shape changed");
+        assert_eq!(
+            tail, "tasqx\\tasqx\\data\\tasks.db",
+            "db_path()'s shape changed"
+        );
 
         // The page holds the path as ordinary text (the `\\` in the source literal
         // is one backslash at runtime), so a plain substring check is the whole test.
@@ -2707,8 +2983,14 @@ mod tests {
         assert!(!doc.contains("@import"), "contains a CSS @import");
         assert!(!doc.contains("url("), "contains a CSS url() reference");
         assert!(!doc.contains("//fonts."), "contains a font host");
-        assert!(!doc.contains("integrity="), "contains an SRI attr — implies a CDN");
-        assert!(!doc.contains("<link"), "contains a <link> (stylesheet/font/icon)");
+        assert!(
+            !doc.contains("integrity="),
+            "contains an SRI attr — implies a CDN"
+        );
+        assert!(
+            !doc.contains("<link"),
+            "contains a <link> (stylesheet/font/icon)"
+        );
         assert!(!doc.contains("<iframe"), "contains an <iframe>");
     }
 
@@ -2757,7 +3039,10 @@ mod tests {
             !doc.contains("pushState"),
             "pushState throws a SecurityError on file://, which is how `tasqx docs` opens the guide"
         );
-        assert!(!doc.contains("replaceState"), "replaceState throws on file:// for the same reason");
+        assert!(
+            !doc.contains("replaceState"),
+            "replaceState throws on file:// for the same reason"
+        );
         assert!(
             doc.contains("addEventListener('hashchange'"),
             "navigation must be driven by hashchange, the only mechanism that works on file://"
@@ -2769,7 +3054,10 @@ mod tests {
     fn docs_page_has_both_color_schemes() {
         let doc = generate();
         assert!(doc.contains(":root {"), "light scheme root vars");
-        assert!(doc.contains("@media (prefers-color-scheme: dark)"), "dark scheme");
+        assert!(
+            doc.contains("@media (prefers-color-scheme: dark)"),
+            "dark scheme"
+        );
         assert!(doc.matches("--bg:").count() >= 2, "--bg for both schemes");
     }
 
@@ -2779,8 +3067,14 @@ mod tests {
     fn every_nav_link_has_a_page() {
         let doc = generate();
         for (id, _, _) in PAGES {
-            assert!(doc.contains(&format!("id=\"{id}\"")), "no section for nav page `{id}`");
-            assert!(doc.contains(&format!("href=\"#{id}\"")), "no nav link to page `{id}`");
+            assert!(
+                doc.contains(&format!("id=\"{id}\"")),
+                "no section for nav page `{id}`"
+            );
+            assert!(
+                doc.contains(&format!("href=\"#{id}\"")),
+                "no nav link to page `{id}`"
+            );
         }
         assert_eq!(
             doc.matches("class=\"page\"").count(),
@@ -2794,7 +3088,10 @@ mod tests {
     #[test]
     fn wide_content_scrolls_in_its_own_container() {
         let doc = generate();
-        assert!(doc.contains(".tw { overflow-x: auto;"), "table wrapper scrolls");
+        assert!(
+            doc.contains(".tw { overflow-x: auto;"),
+            "table wrapper scrolls"
+        );
         assert!(doc.contains("overflow-x: auto"), "pre blocks scroll");
         // Every table is wrapped in the scroller.
         assert_eq!(
@@ -2809,7 +3106,10 @@ mod tests {
     #[test]
     fn snippet_output_is_escaped() {
         let snip = snippet("tasqx list \"a<b\"", "<script>alert(1)</script> & done");
-        assert!(!snip.contains("<script>"), "raw markup survived into a snippet");
+        assert!(
+            !snip.contains("<script>"),
+            "raw markup survived into a snippet"
+        );
         assert!(snip.contains("&lt;script&gt;"));
         assert!(snip.contains("&amp; done"));
         assert!(snip.contains("a&lt;b"));
@@ -2823,9 +3123,13 @@ mod tests {
     fn snippets_of(page: &str) -> Vec<(String, String)> {
         let mut out = Vec::new();
         for chunk in page.split("<div class=\"snip\">").skip(1) {
-            let Some(c0) = chunk.find("<pre class=\"cmd\"><code>") else { continue };
+            let Some(c0) = chunk.find("<pre class=\"cmd\"><code>") else {
+                continue;
+            };
             let c0 = c0 + "<pre class=\"cmd\"><code>".len();
-            let Some(c1) = chunk[c0..].find("</code></pre>") else { continue };
+            let Some(c1) = chunk[c0..].find("</code></pre>") else {
+                continue;
+            };
             let cmd = unesc(&chunk[c0..c0 + c1]);
             let body = match chunk.find("<pre class=\"out\"><code>") {
                 Some(o0) => {
@@ -2890,7 +3194,10 @@ mod tests {
             .filter(|(cmd, _)| cmd.starts_with("tasqx add "))
             .filter_map(|(_, out)| out.lines().nth(1).map(|l| l.trim().to_string()))
             .collect();
-        assert!(!created.is_empty(), "no add blocks found — did the page change shape?");
+        assert!(
+            !created.is_empty(),
+            "no add blocks found — did the page change shape?"
+        );
 
         // Rows of the bare-`tasqx` working-set table.
         let (_, table) = snips
@@ -2899,12 +3206,17 @@ mod tests {
             .expect("the quickstart must show the working set");
         let rows: Vec<&str> = table
             .lines()
-            .filter(|l| l.starts_with("   ") && l.trim().chars().next().is_some_and(|c| c.is_ascii_digit()))
+            .filter(|l| {
+                l.starts_with("   ") && l.trim().chars().next().is_some_and(|c| c.is_ascii_digit())
+            })
             .collect();
 
         for row in &rows {
             let named = created.iter().any(|t| row.contains(t.as_str()));
-            assert!(named, "working-set row {row:?} shows a task no documented command creates");
+            assert!(
+                named,
+                "working-set row {row:?} shows a task no documented command creates"
+            );
         }
         // …and the count line must agree with the rows shown.
         assert!(
@@ -2912,9 +3224,12 @@ mod tests {
             "the table shows {} rows but its count line disagrees:\n{table}",
             rows.len()
         );
-        assert_eq!(rows.len(), created.len(), "every created task should be in the working set");
+        assert_eq!(
+            rows.len(),
+            created.len(),
+            "every created task should be in the working set"
+        );
     }
-
 
     /// D23: a documented command that *files* a task into a project may only
     /// name a project a documented `init` creates. The guide is one narrative
@@ -2930,8 +3245,11 @@ mod tests {
     fn every_documented_project_is_one_a_documented_init_creates() {
         let doc = generate();
         let snips = snippets_of(&doc);
-        let commands: Vec<String> =
-            snips.iter().flat_map(|(cmd, _)| cmd.lines()).map(|l| l.trim().to_string()).collect();
+        let commands: Vec<String> = snips
+            .iter()
+            .flat_map(|(cmd, _)| cmd.lines())
+            .map(|l| l.trim().to_string())
+            .collect();
 
         // Projects the page creates: `tasqx init <name> [--desc ...]`.
         let created: Vec<String> = commands
@@ -2940,7 +3258,10 @@ mod tests {
             .filter_map(|rest| rest.split_whitespace().next())
             .map(str::to_string)
             .collect();
-        assert!(!created.is_empty(), "the guide must create a project somewhere");
+        assert!(
+            !created.is_empty(),
+            "the guide must create a project somewhere"
+        );
 
         // Only the verbs that WRITE a project have to name a live one: `list`,
         // `export` and friends take a filter, and a filter may name anything.
@@ -2952,14 +3273,23 @@ mod tests {
                     .any(|v| c.starts_with(&format!("tasqx {v} ")))
             })
             .collect();
-        assert!(!writes.is_empty(), "the guide must show an add — did the page change shape?");
+        assert!(
+            !writes.is_empty(),
+            "the guide must show an add — did the page change shape?"
+        );
 
-        let clean = |s: &str| s.trim_matches(|c| c == '"' || c == '\\' || c == '\'').to_string();
+        let clean = |s: &str| {
+            s.trim_matches(|c| c == '"' || c == '\\' || c == '\'')
+                .to_string()
+        };
         let mut named: Vec<String> = Vec::new();
         for c in &writes {
             for tok in c.split_whitespace() {
                 let tok = tok.trim_start_matches(['"', '\\']);
-                if let Some(p) = tok.strip_prefix("project:").or_else(|| tok.strip_prefix("proj:")) {
+                if let Some(p) = tok
+                    .strip_prefix("project:")
+                    .or_else(|| tok.strip_prefix("proj:"))
+                {
                     named.push(clean(p));
                 }
             }
@@ -2972,7 +3302,10 @@ mod tests {
                 }
             }
         }
-        assert!(!named.is_empty(), "the guide must show a project: on an add — did the sugar change?");
+        assert!(
+            !named.is_empty(),
+            "the guide must show a project: on an add — did the sugar change?"
+        );
 
         for p in &named {
             assert!(
@@ -2987,7 +3320,14 @@ mod tests {
     #[test]
     fn docs_page_has_real_content() {
         let doc = generate();
-        assert!(doc.len() > 40_000, "the guide is suspiciously small: {} bytes", doc.len());
-        assert!(doc.matches("class=\"snip\"").count() >= 25, "too few worked examples");
+        assert!(
+            doc.len() > 40_000,
+            "the guide is suspiciously small: {} bytes",
+            doc.len()
+        );
+        assert!(
+            doc.matches("class=\"snip\"").count() >= 25,
+            "too few worked examples"
+        );
     }
 }

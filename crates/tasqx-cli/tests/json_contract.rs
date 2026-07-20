@@ -37,7 +37,9 @@ fn bin(cfg: &std::path::Path, db: &std::path::Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     // `--no-daemon` keeps every case one-shot and in-process: a developer with a
     // daemon running on the default socket must not change what this guard sees.
-    c.env("TASQX_CONFIG_DIR", cfg).env("TASQX_DB", db).arg("--no-daemon");
+    c.env("TASQX_CONFIG_DIR", cfg)
+        .env("TASQX_DB", db)
+        .arg("--no-daemon");
     c
 }
 
@@ -58,11 +60,19 @@ struct Case {
 }
 
 const fn c(verb: &'static str, args: &'static [&'static str]) -> Case {
-    Case { verb, args, fresh_store: false }
+    Case {
+        verb,
+        args,
+        fresh_store: false,
+    }
 }
 
 const fn c_fresh(verb: &'static str, args: &'static [&'static str]) -> Case {
-    Case { verb, args, fresh_store: true }
+    Case {
+        verb,
+        args,
+        fresh_store: true,
+    }
 }
 
 /// Ordered so each case's precondition is met by the ones before it: the tasks
@@ -129,7 +139,10 @@ fn every_command_is_either_covered_or_a_declared_carve_out() {
     // And the carve-out list may not name a command that no longer exists.
     let real = tasqx_cli::subcommand_names();
     for (name, _) in tasqx_cli::JSON_CARVE_OUTS {
-        assert!(real.contains(&name.to_string()), "carve-out `{name}` is not a real subcommand");
+        assert!(
+            real.contains(&name.to_string()),
+            "carve-out `{name}` is not a real subcommand"
+        );
     }
 }
 
@@ -146,9 +159,18 @@ fn every_non_carved_command_emits_json() {
         // The import fixture is exported from a SEPARATE store, so importing it
         // is a clean insert rather than a re-import of ids already present.
         let (dcfg, ddb) = scratch(&format!("{tag}-donor"));
-        bin(&dcfg, &ddb).args(["init", "donorproj"]).output().expect("donor init");
-        bin(&dcfg, &ddb).args(["add", "donated thing"]).output().expect("donor add");
-        let donated = bin(&dcfg, &ddb).args(["export"]).output().expect("donor export");
+        bin(&dcfg, &ddb)
+            .args(["init", "donorproj"])
+            .output()
+            .expect("donor init");
+        bin(&dcfg, &ddb)
+            .args(["add", "donated thing"])
+            .output()
+            .expect("donor add");
+        let donated = bin(&dcfg, &ddb)
+            .args(["export"])
+            .output()
+            .expect("donor export");
         std::fs::write(format!("{tmp}/roundtrip.json"), &donated.stdout).expect("write fixture");
 
         for (i, (case, args)) in cases(&tmp).into_iter().enumerate() {
@@ -196,7 +218,10 @@ fn report_honours_json_in_both_of_its_output_modes() {
     bin(&cfg, &db).args(["add", "t"]).output().expect("add");
     let html = cfg.join("r.html");
 
-    let text = bin(&cfg, &db).args(["--json", "report"]).output().expect("report");
+    let text = bin(&cfg, &db)
+        .args(["--json", "report"])
+        .output()
+        .expect("report");
     let doc = bin(&cfg, &db)
         .args(["--json", "report", "--html", "--out"])
         .arg(&html)
@@ -205,7 +230,10 @@ fn report_honours_json_in_both_of_its_output_modes() {
 
     for (label, out) in [("report", &text), ("report --html", &doc)] {
         serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap_or_else(|e| {
-            panic!("`{label}` ignored --json ({e}): {}", String::from_utf8_lossy(&out.stdout))
+            panic!(
+                "`{label}` ignored --json ({e}): {}",
+                String::from_utf8_lossy(&out.stdout)
+            )
         });
     }
     // The HTML mode's machine-relevant fact is where the file landed.
@@ -223,14 +251,20 @@ fn report_honours_json_in_both_of_its_output_modes() {
 #[test]
 fn theme_set_and_config_set_agree_under_json() {
     let (cfg, db) = scratch("alias");
-    let a = bin(&cfg, &db).args(["--json", "theme", "set", "dracula"]).output().expect("theme set");
+    let a = bin(&cfg, &db)
+        .args(["--json", "theme", "set", "dracula"])
+        .output()
+        .expect("theme set");
     let b = bin(&cfg, &db)
         .args(["--json", "config", "set", "theme.name", "dracula"])
         .output()
         .expect("config set");
 
     let ja: serde_json::Value = serde_json::from_slice(&a.stdout).unwrap_or_else(|e| {
-        panic!("`theme set` ignored --json ({e}): {}", String::from_utf8_lossy(&a.stdout))
+        panic!(
+            "`theme set` ignored --json ({e}): {}",
+            String::from_utf8_lossy(&a.stdout)
+        )
     });
     let jb: serde_json::Value = serde_json::from_slice(&b.stdout).expect("config set json");
     assert_eq!(ja, jb, "one write, two spellings, one JSON shape");
@@ -242,6 +276,9 @@ fn theme_set_and_config_set_agree_under_json() {
 #[test]
 fn every_carve_out_states_its_reason() {
     for (name, why) in tasqx_cli::JSON_CARVE_OUTS {
-        assert!(why.len() > 20, "carve-out `{name}` needs a real reason, got {why:?}");
+        assert!(
+            why.len() > 20,
+            "carve-out `{name}` needs a real reason, got {why:?}"
+        );
     }
 }

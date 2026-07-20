@@ -186,10 +186,7 @@ impl Engine {
     /// Keeps the `&self` shape via `new_unchecked`.
     fn begin_mutation(&self) -> Result<MutationContext<'_>, ApiError> {
         Ok(MutationContext {
-            transaction: Transaction::new_unchecked(
-                &self.conn,
-                TransactionBehavior::Immediate,
-            )?,
+            transaction: Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?,
         })
     }
 
@@ -998,14 +995,17 @@ mod tests {
 
         for handler in handlers {
             let marker = format!("pub fn {handler}(");
-            let start = source.find(&marker).unwrap_or_else(|| panic!("missing mutation {handler}"));
+            let start = source
+                .find(&marker)
+                .unwrap_or_else(|| panic!("missing mutation {handler}"));
             let rest = &source[start..];
             let end = rest[marker.len()..]
                 .find("\n    pub fn ")
                 .map(|offset| marker.len() + offset)
                 .unwrap_or(rest.len());
             let body = &rest[..end];
-            let lock = body.find("self.begin_mutation()")
+            let lock = body
+                .find("self.begin_mutation()")
                 .unwrap_or_else(|| panic!("{handler} must acquire a MutationContext"));
             let before_lock = &body[..lock];
             for forbidden in [

@@ -125,12 +125,16 @@ fn topic_section(ctx: &Ctx, t: Topic) -> String {
 fn unknown(name: &str) -> String {
     let mut valid: Vec<String> = Topic::ALL.iter().map(|t| t.slug().to_string()).collect();
     valid.extend(cmddoc::COMMAND_REF.iter().map(|d| d.verb.to_string()));
-    format!("no manual page for {name:?}. Try one of: {}", valid.join(", "))
+    format!(
+        "no manual page for {name:?}. Try one of: {}",
+        valid.join(", ")
+    )
 }
 
 fn topic_body(t: Topic) -> &'static str {
     match t {
-        Topic::GettingStarted => "\
+        Topic::GettingStarted => {
+            "\
 tasqx is a fast, terminal-first, AI-native task manager.
 
 The whole loop is four commands:
@@ -143,9 +147,11 @@ A project is just a name in the store — no folder is created.
 The store lives at $TASQX_DB, else your platform data dir.
 
 Deeper: `tasqx manual capturing` for the add grammar, or
-`tasqx docs` for the full browser guide.",
+`tasqx docs` for the full browser guide."
+        }
 
-        Topic::Projects => "\
+        Topic::Projects => {
+            "\
 A project is just a name in the store — no folder, no path.
 
   tasqx init <name>      claim a new project name
@@ -155,9 +161,11 @@ A project is just a name in the store — no folder, no path.
 A bare `tasqx add …` lands in the default project. The default
 is claimed only if the store had none yet; archiving the default
 project clears it, so a later add has no home until you `use`
-another one.",
+another one."
+        }
 
-        Topic::Capturing => "\
+        Topic::Capturing => {
+            "\
 Capture with a title plus inline sugar:
   tasqx add Ship it due:friday +api !high project:work
 
@@ -171,9 +179,11 @@ Inline sugar:
   remind:…        a reminder offset or time
 
 `tasqx modify <ref>` sets fields; `--clear <field>` removes them.
-Lifecycle: start · stop · done · cancel · reopen.",
+Lifecycle: start · stop · done · cancel · reopen."
+        }
 
-        Topic::Dates => "\
+        Topic::Dates => {
+            "\
 Dates take natural language: `friday`, \"in 3 days\", `eom`,
 signed offsets like `-1d`.
 
@@ -189,9 +199,11 @@ Recurrence forms:
   repeat:\"monthly on day 15\"
 
 Missed occurrences collapse to a single next one. `every N
-months` can drift across short months — anchor by day of month.",
+months` can drift across short months — anchor by day of month."
+        }
 
-        Topic::Filters => "\
+        Topic::Filters => {
+            "\
 Filters narrow any list:
   project:work   status:pending   +api
   due.before:friday   due.after:monday
@@ -225,18 +237,22 @@ that form on both sides:
   tasqx add \"paint\" project:\"My \\\"Big\\\" Project\"
 
 `due` is compared as an instant, not a calendar day. A bare
-`tasqx` (or `tasqx list`) shows the working set.",
+`tasqx` (or `tasqx list`) shows the working set."
+        }
 
-        Topic::Reminders => "\
+        Topic::Reminders => {
+            "\
 `remind:` takes a signed offset (`-1h`, `-30m`) kept symbolic:
 moving `due` moves the reminder with it. An absolute time is
 also accepted.
 
 Reminders fire only while the daemon is running (`tasqx daemon`).
 They are quiet by default — the OS toast lives behind the
-off-by-default `notify-os` build feature.",
+off-by-default `notify-os` build feature."
+        }
 
-        Topic::Reports => "\
+        Topic::Reports => {
+            "\
   tasqx report [group_by]   counts, optionally grouped
                             (project | status | priority)
   tasqx report --html       one self-contained HTML file
@@ -244,18 +260,22 @@ off-by-default `notify-os` build feature.",
   tasqx chart heatmap       activity calendar
   tasqx chart burndown      remaining work over time
   tasqx why <ref>           explain a task's urgency score
-  tasqx theme list / show   browse and preview themes",
+  tasqx theme list / show   browse and preview themes"
+        }
 
-        Topic::Daemon => "\
+        Topic::Daemon => {
+            "\
 `tasqx daemon` binds a local socket (a named pipe on Windows)
 and serves the one JSON API as the single writer.
 
 One-shot commands auto-route through a running daemon, so your
 edits serialize safely. `tasqx watch` is a live view fed by the
 daemon's push stream. `--no-daemon` is the escape hatch: run a
-command directly against the store instead.",
+command directly against the store instead."
+        }
 
-        Topic::Automation => "\
+        Topic::Automation => {
+            "\
 Every surface is a client of the one JSON API.
 
   tasqx mcp serve            stdio JSON-RPC for AI agents;
@@ -264,9 +284,11 @@ Every surface is a client of the one JSON API.
                              explicitly expose write tools
   tasqx api                  one JSON envelope in → one out
 
-Scope configures this local process; it is not authentication.",
+Scope configures this local process; it is not authentication."
+        }
 
-        Topic::JsonApi => "\
+        Topic::JsonApi => {
+            "\
 Everything speaks one envelope:
   {\"tasqx\":\"1\",\"id\":\"1\",\"method\":\"task.list\",\"params\":{}}
 
@@ -275,7 +297,8 @@ codes mirror the error model: 0 ok, 2 bad_request, 4 not_found,
 5 conflict.
 
 `tasqx export` / `tasqx import` round-trip canonical JSON. See
-`tasqx docs` for the full method table.",
+`tasqx docs` for the full method table."
+        }
     }
 }
 
@@ -320,7 +343,10 @@ mod tests {
     fn unknown_arg_is_an_error_naming_valid_targets() {
         let e = render(&plain(), Some("bogus")).unwrap_err();
         assert!(e.contains("bogus"), "{e}");
-        assert!(e.contains("init") || e.contains("projects"), "lists valid names: {e}");
+        assert!(
+            e.contains("init") || e.contains("projects"),
+            "lists valid names: {e}"
+        );
     }
 
     #[test]

@@ -170,6 +170,4 @@ impl Engine {
             "blocked": self.is_blocked(&task.id)?,
         }))
     }
-
 }
-

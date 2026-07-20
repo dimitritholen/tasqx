@@ -471,4 +471,3 @@ pub(super) enum McpAction {
         scope: String,
     },
 }
-
