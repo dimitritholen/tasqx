@@ -462,8 +462,9 @@ impl Engine {
     // ---- task.start ----------------------------------------------------------
 
     pub fn task_start(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
         let keep = opt_bool(p, "keep")?.unwrap_or(false);
+        let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
 
         match task.status {
             Status::Active => {
@@ -484,7 +485,6 @@ impl Engine {
         }
 
         let ts = now();
-        let tx = self.begin()?;
 
         // D6: single active by default — auto-stop any currently active task.
         if !keep {
@@ -539,7 +539,8 @@ impl Engine {
     // ---- task.stop -----------------------------------------------------------
 
     pub fn task_stop(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
+        let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
         if task.status != Status::Active {
             return Err(ApiError::conflict(format!(
                 "cannot stop a {} task (only active -> pending)",
@@ -551,7 +552,6 @@ impl Engine {
         let elapsed = seconds_between(&task.active_since, &ts);
         let total = task.tracked_seconds + elapsed;
 
-        let tx = self.begin()?;
         tx.execute(
             "UPDATE tasks SET status='pending', active_since=NULL, \
              tracked_seconds=?1, rev=?2, modified=?3 WHERE id=?4",
@@ -566,7 +566,8 @@ impl Engine {
     // ---- task.done -----------------------------------------------------------
 
     pub fn task_done(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
+        let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
             Status::Pending | Status::Active => {}
             other => {
@@ -586,11 +587,9 @@ impl Engine {
         };
         let total = task.tracked_seconds + elapsed;
 
-        // A recurring template spawns its next instance on completion (D2). Read
-        // the template's tags before opening the write tx (they don't change).
-        let template_tags = task_tags(&self.conn, &task.id)?;
-
-        let tx = self.begin()?;
+        // A recurring template spawns its next instance on completion (D2).
+        // Tags belong to the same locked snapshot as the template row.
+        let template_tags = task_tags(&tx, &task.id)?;
         tx.execute(
             "UPDATE tasks SET status='done', completed=?1, active_since=NULL, \
              tracked_seconds=?2, rev=?3, modified=?4 WHERE id=?5",
@@ -1199,7 +1198,8 @@ impl Engine {
     // ---- task.cancel ---------------------------------------------------------
 
     pub fn task_cancel(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
+        let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
             Status::Backlog | Status::Pending | Status::Active => {}
             other => {
@@ -1219,7 +1219,6 @@ impl Engine {
         };
         let total = task.tracked_seconds + elapsed;
 
-        let tx = self.begin()?;
         tx.execute(
             "UPDATE tasks SET status='cancelled', active_since=NULL, \
              tracked_seconds=?1, rev=?2, modified=?3 WHERE id=?4",
@@ -1237,7 +1236,8 @@ impl Engine {
     // ---- task.reopen ---------------------------------------------------------
 
     pub fn task_reopen(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
+        let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
             Status::Done | Status::Cancelled => {}
             other => {
@@ -1249,7 +1249,6 @@ impl Engine {
         }
 
         let ts = now();
-        let tx = self.begin()?;
         tx.execute(
             "UPDATE tasks SET status='pending', completed=NULL, rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],

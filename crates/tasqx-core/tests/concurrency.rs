@@ -61,14 +61,16 @@ fn modify(engine: Engine, title: &'static str) -> Result<Value, ApiError> {
     }))
 }
 
-#[test]
-fn two_guarded_modifies_from_one_revision_have_one_winner() {
+fn race_two<A, B>(
+    store: &Store,
+    first_call: impl FnOnce(Engine) -> A + Send + 'static,
+    second_call: impl FnOnce(Engine) -> B + Send + 'static,
+) -> (A, B)
+where
+    A: Send + 'static,
+    B: Send + 'static,
+{
     let _serial = RACE_LOCK.lock().expect("race test lock");
-    let store = Store::new("guarded-modify");
-    let seed = store.engine();
-    seed.task_add(&json!({ "title": "original" })).expect("seed task");
-    drop(seed);
-
     // Open/configure both Engines before the blocker takes the write lock:
     // Engine::open performs migrations, which are writes of their own.
     let first = store.engine();
@@ -82,8 +84,8 @@ fn two_guarded_modifies_from_one_revision_have_one_winner() {
     let (busy_tx, busy_rx) = mpsc::channel();
     *BUSY_SENDER.lock().expect("set busy sender") = Some(busy_tx);
 
-    let a = thread::spawn(move || modify(first, "alpha"));
-    let b = thread::spawn(move || modify(second, "beta"));
+    let a = thread::spawn(move || first_call(first));
+    let b = thread::spawn(move || second_call(second));
 
     for worker in ["first", "second"] {
         busy_rx
@@ -92,8 +94,33 @@ fn two_guarded_modifies_from_one_revision_have_one_winner() {
     }
     blocker.execute_batch("COMMIT").expect("release write reservation");
 
-    let results = [a.join().expect("first worker"), b.join().expect("second worker")];
+    let results = (a.join().expect("first worker"), b.join().expect("second worker"));
     BUSY_SENDER.lock().expect("clear busy sender").take();
+    results
+}
+
+fn op_count(events: &Value, op: &str) -> usize {
+    events["events"]
+        .as_array()
+        .expect("event array")
+        .iter()
+        .filter(|event| event["op"] == op)
+        .count()
+}
+
+#[test]
+fn two_guarded_modifies_from_one_revision_have_one_winner() {
+    let store = Store::new("guarded-modify");
+    let seed = store.engine();
+    seed.task_add(&json!({ "title": "original" })).expect("seed task");
+    drop(seed);
+
+    let raced = race_two(
+        &store,
+        |engine| modify(engine, "alpha"),
+        |engine| modify(engine, "beta"),
+    );
+    let results = [raced.0, raced.1];
 
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "exactly one guarded edit wins");
     let errors: Vec<&ApiError> = results.iter().filter_map(|r| r.as_ref().err()).collect();
@@ -104,11 +131,58 @@ fn two_guarded_modifies_from_one_revision_have_one_winner() {
     let task = check.task_get(&json!({ "ref": 1 })).expect("read final task");
     assert_eq!(task["_rev"], 2, "one effective edit advances one revision");
     let events = check.event_list(&json!({ "entity": "task", "limit": 20 })).expect("events");
-    let modifies = events["events"]
-        .as_array()
-        .expect("event array")
-        .iter()
-        .filter(|event| event["op"] == "modify")
-        .count();
-    assert_eq!(modifies, 1, "one effective edit appends one modify event");
+    assert_eq!(op_count(&events, "modify"), 1, "one effective edit appends one modify event");
+}
+
+#[test]
+fn racing_starts_create_one_interval() {
+    let store = Store::new("start");
+    store.engine().task_add(&json!({ "title": "timer" })).expect("seed task");
+
+    let results = race_two(
+        &store,
+        |engine| engine.task_start(&json!({ "ref": 1 })),
+        |engine| engine.task_start(&json!({ "ref": 1 })),
+    );
+    assert!(results.0.is_ok(), "first start: {:?}", results.0.err().map(|e| e.message));
+    assert!(results.1.is_ok(), "second start is idempotent: {:?}", results.1.err().map(|e| e.message));
+
+    let check = store.engine();
+    let task = check.task_get(&json!({ "ref": 1 })).expect("read final task");
+    assert_eq!(task["status"], "active");
+    assert_eq!(task["_rev"], 2, "one effective start advances one revision");
+    let events = check.event_list(&json!({ "entity": "task", "limit": 20 })).expect("events");
+    assert_eq!(op_count(&events, "start"), 1, "only one interval starts");
+    assert_eq!(op_count(&events, "stop"), 0, "the second call must not stop the first interval");
+}
+
+#[test]
+fn racing_recurring_completions_spawn_once() {
+    let store = Store::new("done");
+    store
+        .engine()
+        .task_add(&json!({
+            "title": "repeat me",
+            "due": "2099-01-01T09:00:00Z",
+            "recurrence": "every 3 days",
+        }))
+        .expect("seed recurring task");
+
+    let raced = race_two(
+        &store,
+        |engine| engine.task_done(&json!({ "ref": 1 })),
+        |engine| engine.task_done(&json!({ "ref": 1 })),
+    );
+    let results = [raced.0, raced.1];
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "one completion wins");
+    let errors: Vec<&ApiError> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+    assert_eq!(errors.len(), 1, "the second completion conflicts");
+    assert_eq!(errors[0].code, ErrorCode::Conflict);
+
+    let check = store.engine();
+    let tasks = check.task_list(&json!({ "filter": "" })).expect("list tasks");
+    assert_eq!(tasks["count"], 2, "the template spawns exactly one successor");
+    let events = check.event_list(&json!({ "entity": "task", "limit": 20 })).expect("events");
+    assert_eq!(op_count(&events, "done"), 1, "the template completes once");
+    assert_eq!(op_count(&events, "add"), 2, "one seed and one spawned add event");
 }
