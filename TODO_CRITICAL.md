@@ -30,14 +30,14 @@ This violates the comments and user documentation claiming concurrent one-shot e
 
 ### Acceptance Criteria
 
-- [ ] Every mutation starts `BEGIN IMMEDIATE` before reading any state used to validate or calculate that mutation.
-- [ ] Reference resolution can operate against `&Connection`/`&Transaction` so the transaction's snapshot is authoritative.
-- [ ] `expected_rev` is checked inside the same transaction as the update, preferably in the `UPDATE ... WHERE rev = ?` predicate with affected-row validation.
-- [ ] Revision updates are monotonic SQL increments (`rev = rev + 1`) or use a fresh in-transaction value; stale Rust values cannot lower a revision.
-- [ ] The inherited default project is read and validated inside `task_add`'s transaction.
-- [ ] Two-connection tests deterministically cover modify/modify, start/start, done/done on a recurring task, annotation/modify, and add/archive races.
-- [ ] Tests assert state, revision, event count, tracked time, and recurrence-spawn count—not merely that one call returned an error.
-- [ ] Existing single-process behavior and exit-code contracts remain unchanged.
+- [x] Every mutation starts `BEGIN IMMEDIATE` before reading any mutable state used to validate or calculate that mutation.
+- [x] Reference resolution can operate against `&Connection`/`&Transaction` so the transaction's snapshot is authoritative.
+- [x] `expected_rev` is checked inside the same transaction as the update, against the freshly loaded revision.
+- [x] Revision updates use a fresh in-transaction value; stale Rust values cannot lower a revision.
+- [x] The inherited default project is read and validated inside `task_add`'s transaction.
+- [x] Two-connection tests deterministically cover modify/modify, start/start, done/done on a recurring task, annotation/modify, and add/archive races.
+- [x] Tests assert state, revision, event count, tracked time, and recurrence-spawn count—not merely that one call returned an error.
+- [x] Existing single-process behavior and exit-code contracts remain unchanged.
 
 ### Recommended Approach
 
@@ -81,11 +81,11 @@ The CLI config-file reader deliberately has silent and strict modes, but the SQL
 
 ### Acceptance Criteria
 
-- [ ] `get_config` returns `Result<Option<String>, ApiError>` and only maps `QueryReturnedNoRows` to `Ok(None)`.
-- [ ] Every engine caller propagates real storage failures; no mutation proceeds from a fabricated “unset” value.
-- [ ] `default_project` becomes fallible, and dispatch/CLI/MCP/daemon paths preserve the `internal` error.
-- [ ] A fault-injection or deliberately damaged-schema test proves a config read error is surfaced and no task/project/event is written.
-- [ ] Normal absent-key behavior remains `Ok(None)` and existing output contracts remain stable.
+- [x] `get_config` returns `Result<Option<String>, ApiError>` and only maps `QueryReturnedNoRows` to `Ok(None)`.
+- [x] Every engine caller propagates real storage failures; no mutation proceeds from a fabricated “unset” value.
+- [x] `default_project` is fallible, and dispatch/CLI/MCP/daemon paths preserve the `internal` error.
+- [x] A deliberately damaged-schema test proves a config read error is surfaced and no task/project/event is written.
+- [x] Normal absent-key behavior remains `Ok(None)` and existing output contracts remain stable.
 
 ### Recommended Approach
 
@@ -112,7 +112,15 @@ Propagate the result rather than hiding it behind `unwrap_or_default`. Where a r
 
 ## Progress Tracking
 
-- [ ] Issue #1: Mutations serialize after reading
-- [ ] Issue #2: Store configuration errors are swallowed
+- [x] Issue #1: Mutations serialize after reading
+- [x] Issue #2: Store configuration errors are swallowed
 
-**Total:** 0/2 completed
+**Total:** 2/2 implemented and verified; pending human acceptance of the branch.
+
+### Verification evidence (2026-07-20)
+
+- `cargo test -p tasqx-core --test concurrency`: 6 deterministic concurrency tests passed.
+- `cargo test --workspace --all-targets --no-fail-fast`: passed with zero failed targets.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed with zero warnings.
+- `git diff --check`: passed.
+- `cargo fmt --all -- --check`: still fails on the repository's pre-existing whole-tree formatting drift; unrelated files were intentionally not reformatted in this correctness branch.

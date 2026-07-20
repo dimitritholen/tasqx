@@ -1,7 +1,7 @@
 # Transaction integrity remediation — design
 
 **Date:** 2026-07-20  
-**Status:** approved 2026-07-20
+**Status:** implemented and verified 2026-07-20; pending human acceptance
 **Scope:** first remediation slice on `fix/transaction-integrity`: Critical #1 (stale read-modify-write races) and Critical #2 (swallowed SQLite configuration errors). Daemon delivery, query performance, architectural decomposition beyond what this fix needs, and lower-severity audit work are explicitly deferred to later accepted branches.
 
 ## Problem
@@ -151,6 +151,12 @@ If the resulting helper set is cohesive enough to warrant a private module, extr
 - `cargo test --workspace --all-targets --no-fail-fast` passes.
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Public JSON response shapes, error codes, and CLI exit codes do not change.
+
+## Implementation verification
+
+The mutation audit confirmed that mutable task, lifecycle, relationship, configuration, and project-state reads now occur after `BEGIN IMMEDIATE`. `project.archive` still parses the requested name and reads the project's immutable identity before beginning; project IDs cannot be changed by public mutations or import, while its mutable archived/default state is handled under the transaction.
+
+The branch is evidenced by six deterministic file-backed concurrency tests, the deliberately damaged-config regression, the full all-target workspace suite, and Clippy with warnings denied. The repository-wide rustfmt check continues to expose pre-existing formatting drift outside this slice, so unrelated files were not reformatted. Human acceptance remains the final gate before integration or starting the next remediation branch.
 
 ## Deferred to later branches
 

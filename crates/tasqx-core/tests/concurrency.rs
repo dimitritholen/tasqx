@@ -216,6 +216,14 @@ fn racing_starts_create_one_interval() {
         .expect("read final task");
     assert_eq!(task["status"], "active");
     assert_eq!(task["_rev"], 2, "one effective start advances one revision");
+    assert_eq!(
+        task["tracked"], "PT0S",
+        "the second start must not close the new interval"
+    );
+    assert!(
+        task["active_since"].is_string(),
+        "the winning interval remains open"
+    );
     let events = check
         .event_list(&json!({ "entity": "task", "limit": 20 }))
         .expect("events");
@@ -316,6 +324,47 @@ fn annotation_and_tag_advance_two_revisions() {
         .expect("events");
     assert_eq!(op_count(&events, "annotation.add"), 1);
     assert_eq!(op_count(&events, "tag.add"), 1);
+}
+
+#[test]
+fn annotation_and_modify_preserve_both_mutations() {
+    let store = Store::new("annotation-modify");
+    store
+        .engine()
+        .task_add(&json!({ "title": "original" }))
+        .expect("seed task");
+
+    let results = race_two(
+        &store,
+        |engine| engine.annotation_add(&json!({ "ref": 1, "body": "keep this note" })),
+        |engine| engine.task_modify(&json!({ "ref": 1, "set": { "title": "modified" } })),
+    );
+    assert!(
+        results.0.is_ok(),
+        "annotation succeeds: {:?}",
+        results.0.err().map(|e| e.message)
+    );
+    assert!(
+        results.1.is_ok(),
+        "modify succeeds: {:?}",
+        results.1.err().map(|e| e.message)
+    );
+
+    let check = store.engine();
+    let task = check
+        .task_get(&json!({ "ref": 1 }))
+        .expect("read final task");
+    assert_eq!(task["title"], "modified");
+    assert_eq!(task["annotations"][0]["body"], "keep this note");
+    assert_eq!(
+        task["_rev"], 3,
+        "both effective mutations advance the revision"
+    );
+    let events = check
+        .event_list(&json!({ "entity": "task", "limit": 20 }))
+        .expect("events");
+    assert_eq!(op_count(&events, "annotation.add"), 1);
+    assert_eq!(op_count(&events, "modify"), 1);
 }
 
 #[test]
