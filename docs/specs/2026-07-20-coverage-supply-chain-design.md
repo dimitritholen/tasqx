@@ -1,7 +1,7 @@
 # Coverage and supply-chain evidence — design
 
 **Date:** 2026-07-20
-**Status:** approved for implementation
+**Status:** implemented and verified
 **Scope:** Low #3 only: publish coverage evidence and enforce dependency advisory/license/source policy.
 
 ## Coverage decision

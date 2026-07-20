@@ -85,11 +85,11 @@ Coverage percentage should not become a vanity target; the concrete concurrency 
 
 ### Acceptance Criteria
 
-- [ ] CI publishes line and branch coverage, with exclusions documented for generated/static documentation if appropriate.
-- [ ] Start with report-only coverage; set thresholds only after establishing a baseline and inspecting meaningful gaps.
-- [ ] CI checks RustSec advisories and the project's intended license/source policy with pinned tooling/action versions.
-- [ ] Findings have an explicit allowlist format with owner/reason/expiry rather than blanket ignores.
-- [ ] Critical concurrency/error-path tests are added regardless of aggregate percentage.
+- [x] CI publishes line and branch coverage, with exclusions documented for generated/static documentation if appropriate.
+- [x] Start with report-only coverage; set thresholds only after establishing a baseline and inspecting meaningful gaps.
+- [x] CI checks RustSec advisories and the project's intended license/source policy with pinned tooling/action versions.
+- [x] Findings have an explicit allowlist format with owner/reason/expiry rather than blanket ignores.
+- [x] Critical concurrency/error-path tests are added regardless of aggregate percentage.
 
 ### Recommended Approach
 
@@ -107,9 +107,21 @@ Add `cargo llvm-cov` reporting and either `cargo audit` plus a license check, or
 
 - [x] Issue #1: Clarify or replace MCP token semantics
 - [x] Issue #2: Adopt an enforceable formatting policy
-- [ ] Issue #3: Add coverage and dependency/license evidence
+- [x] Issue #3: Add coverage and dependency/license evidence
 
-**Total:** 2/3 completed
+**Total:** 3/3 completed
+
+### Issue #3 verification (2026-07-20)
+
+- Pinned `cargo-llvm-cov 0.8.6` with nightly branch instrumentation ran every workspace target and measured 91.98% line coverage and 75.96% branch coverage; CI publishes JSON, HTML, and text summary artifacts without a threshold.
+- Pinned `cargo-deny 0.20.2` reports advisories, bans, licenses, and sources all `ok` over the all-features Linux/Windows/macOS graph. Five transitive duplicate pairs remain visible warnings by policy, not skipped exceptions.
+- `deny.toml` contains no advisory or license exceptions; `docs/dependency-policy.md` requires owner, specific reason, expiry, and removal condition for any future narrow exception.
+- Transaction race/revision tests and daemon retained-event, supervised-failure, decode-watermark, admission, idle-cancellation, and socket-permission tests run in the normal matrix and the coverage job regardless of aggregate coverage.
+- `cargo fmt --all -- --check`: passed.
+- `cargo test --workspace --all-targets --no-fail-fast`: passed (one manual benchmark ignored).
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo deny --all-features check`: passed.
+- Workflow YAML parsing and `git diff --check`: passed.
 
 ### Issue #2 verification (2026-07-20)
 
