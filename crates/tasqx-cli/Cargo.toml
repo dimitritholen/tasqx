@@ -10,7 +10,7 @@ name = "tasqx"
 path = "src/main.rs"
 
 [dependencies]
-tasqx-core = { path = "../tasqx-core" }
+tasqx-core = { path = "../tasqx-core", version = "0.1.0" }
 serde_json = { workspace = true }
 clap = { version = "4.6.1", features = ["derive"] }
 ctrlc = "3.5"

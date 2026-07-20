@@ -87,6 +87,56 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  coverage:
+    name: line + branch coverage (report only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # cargo-llvm-cov branch instrumentation is currently nightly-only. Keep
+      # nightly isolated here; every correctness gate above remains stable.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2.83.4
+        with:
+          tool: cargo-llvm-cov@0.8.6
+          fallback: none
+      - uses: Swatinem/rust-cache@v2
+      - name: Run instrumented workspace tests
+        run: cargo llvm-cov --workspace --all-targets --branch --json --output-path coverage.json
+      - name: Render reports
+        if: always()
+        run: |
+          cargo llvm-cov report --branch --html
+          cargo llvm-cov report --branch --summary-only | tee coverage-summary.txt
+      - name: Publish summary
+        if: always()
+        run: |
+          echo '## Line and branch coverage' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Report-only baseline; no aggregate threshold is enforced.' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f coverage-summary.txt ]; then cat coverage-summary.txt >> "$GITHUB_STEP_SUMMARY"; else echo 'Report generation failed.' >> "$GITHUB_STEP_SUMMARY"; fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            coverage.json
+            coverage-summary.txt
+            target/llvm-cov/html/
+          if-no-files-found: error
+
+  supply-chain:
+    name: advisories + licenses + sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # v2.1.1 embeds cargo-deny 0.20.2; both the action and tool are pinned.
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          arguments: --all-features
+
   # Mutation testing: does the suite NOTICE when the code is wrong?
   #
   # Advisory, NOT a gate — the same reasoning that kept clippy advisory until

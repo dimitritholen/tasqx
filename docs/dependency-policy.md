@@ -1,6 +1,6 @@
 # Dependency policy
 
-`cargo deny check --all-features` is the executable dependency gate. The committed `deny.toml` permits only reviewed licenses and sources and checks the live RustSec advisory database.
+`cargo deny --all-features check` is the executable dependency gate. The committed `deny.toml` permits only reviewed licenses and sources and checks the live RustSec advisory database.
 
 ## Exceptions
 
