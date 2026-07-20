@@ -136,33 +136,44 @@ impl Engine {
     /// Resolve a `ref` param (short_id integer, or a string that is either a
     /// numeric short_id or a full UUID) to the loaded task.
     fn resolve_ref(&self, p: &Value) -> Result<Task, ApiError> {
+        self.resolve_ref_on(&self.conn, p)
+    }
+
+    /// Resolve a `ref` against the caller's connection view. Mutations pass
+    /// their IMMEDIATE transaction so validation and the eventual write share
+    /// one serialized snapshot.
+    fn resolve_ref_on(&self, conn: &Connection, p: &Value) -> Result<Task, ApiError> {
         let r = p
             .get("ref")
             .ok_or_else(|| ApiError::bad_request("missing required field: ref"))?;
-        self.resolve_ref_value(r)
+        self.resolve_ref_value_on(conn, r)
     }
 
     /// Resolve any JSON ref value (int short_id, numeric string, or UUID string)
     /// to a task. Shared by `resolve_ref` and the dependency handlers.
     fn resolve_ref_value(&self, r: &Value) -> Result<Task, ApiError> {
+        self.resolve_ref_value_on(&self.conn, r)
+    }
+
+    fn resolve_ref_value_on(&self, conn: &Connection, r: &Value) -> Result<Task, ApiError> {
         // Numeric ref => short_id.
         if let Some(n) = r.as_i64() {
-            return self.task_by_short(n);
+            return self.task_by_short_on(conn, n);
         }
         if let Some(s) = r.as_str() {
             if let Ok(n) = s.parse::<i64>() {
-                return self.task_by_short(n);
+                return self.task_by_short_on(conn, n);
             }
             if Uuid::parse_str(s).is_ok() {
-                return self.task_by_id(s);
+                return self.task_by_id_on(conn, s);
             }
             return Err(ApiError::bad_request(format!("ref is neither short_id nor UUID: {s}")));
         }
         Err(ApiError::bad_request("ref must be an integer or string"))
     }
 
-    fn task_by_short(&self, short_id: i64) -> Result<Task, ApiError> {
-        self.conn
+    fn task_by_short_on(&self, conn: &Connection, short_id: i64) -> Result<Task, ApiError> {
+        conn
             .query_row(
                 &format!("SELECT {TASK_COLS} FROM tasks WHERE short_id = ?1"),
                 params![short_id],
@@ -177,8 +188,8 @@ impl Engine {
             })
     }
 
-    fn task_by_id(&self, id: &str) -> Result<Task, ApiError> {
-        self.conn
+    fn task_by_id_on(&self, conn: &Connection, id: &str) -> Result<Task, ApiError> {
+        conn
             .query_row(
                 &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"),
                 params![id],
@@ -773,18 +784,24 @@ impl Engine {
     // ---- task.modify ---------------------------------------------------------
 
     pub fn task_modify(&self, p: &Value) -> Result<Value, ApiError> {
-        let task = self.resolve_ref(p)?;
         let set = req_object(p, "set")
             .map_err(|e| ApiError::bad_request(format!("{} (modify requires a `set` object)", e.message)))?;
         if set.is_empty() {
             return Err(ApiError::bad_request("`set` must contain at least one field"));
         }
+        let expected_rev = opt_i64(p, "expected_rev")?;
+
+        // Store-dependent validation starts only after BEGIN IMMEDIATE. Another
+        // process may have changed the row after request parsing but before this
+        // lock; the transaction's row is the only authoritative one.
+        let tx = self.begin()?;
+        let task = self.resolve_ref_on(&tx, p)?;
 
         // Optional optimistic concurrency.
         // D32: read through the typed layer. As `.and_then(Value::as_i64)` this
         // guard FAILED OPEN — `expected_rev: "1"` was indistinguishable from no
         // guard at all, so the stale write landed and the caller was told `ok`.
-        if let Some(exp) = opt_i64(p, "expected_rev")? {
+        if let Some(exp) = expected_rev {
             if exp != task.rev {
                 return Err(ApiError::conflict(format!(
                     "expected_rev {} but task is at rev {}",
@@ -938,7 +955,6 @@ impl Engine {
         let new_urg = urgency::score(priority, due.as_deref(), &task.created);
         let new_rev = task.rev + 1;
 
-        let tx = self.begin()?;
         if let Some(name) = &project_target {
             require_live_project(&tx, name)?;
         }
