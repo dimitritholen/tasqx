@@ -115,6 +115,47 @@ fn transport_round_trip_initialize_add_list() {
 }
 
 #[test]
+fn excess_clients_are_refused_without_disrupting_admitted_clients() {
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+    let mut clients = Vec::with_capacity(daemon::MAX_CONCURRENT_CLIENTS);
+
+    for index in 0..daemon::MAX_CONCURRENT_CLIENTS {
+        let mut client = daemon::try_connect(&sock).expect("connect admitted client");
+        let response = client.request("core.capabilities", &json!({})).unwrap();
+        assert_eq!(response["ok"], true, "admitted client {index}");
+        clients.push(client);
+    }
+
+    for _ in 0..8 {
+        let mut rejected = daemon::try_connect(&sock).expect("overload is an accepted-then-refused stream");
+        let error = rejected.request("core.capabilities", &json!({})).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+        assert!(error.to_string().contains("client limit"), "observable overload: {error}");
+    }
+
+    let response = clients[0].request("core.capabilities", &json!({})).unwrap();
+    assert_eq!(response["ok"], true, "an existing client must remain usable under overload");
+
+    drop(clients);
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_socket_is_owner_only_even_for_a_custom_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+    let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+#[test]
 fn two_clients_concurrent_no_deadlock_and_ids_match() {
     let (db, sock) = unique_target();
     let shutdown = start_daemon(&db, &sock);

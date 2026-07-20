@@ -20,3 +20,8 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { version = "1.23.5", features = ["v7"] }
+
+[target.'cfg(windows)'.dependencies]
+# Interprocess exposes no named-pipe I/O timeouts. CancelIoEx lets the bounded
+# connection watchdog interrupt blocking reads/writes on shutdown or deadline.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO"] }

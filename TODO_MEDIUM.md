@@ -120,11 +120,11 @@ Every accepted local connection spawns a reader thread, and each connection spaw
 
 ### Acceptance Criteria
 
-- [ ] The daemon has a documented maximum concurrent-client policy.
-- [ ] Connections beyond the bound are refused cheaply and observably.
-- [ ] Idle/read/write timeouts or shutdown mechanics prevent dead clients from occupying slots forever.
-- [ ] A stress test opens beyond the limit and proves memory/thread count remains bounded and existing clients keep working.
-- [ ] Unix socket permissions/custom socket threat model are documented and tested where supported.
+- [x] The daemon has a documented maximum concurrent-client policy.
+- [x] Connections beyond the bound are refused cheaply and observably.
+- [x] Idle/read/write timeouts or shutdown mechanics prevent dead clients from occupying slots forever.
+- [x] A stress test opens beyond the limit and proves memory/thread count remains bounded and existing clients keep working.
+- [x] Unix socket permissions/custom socket threat model are documented and tested where supported.
 
 ### Recommended Approach
 
@@ -178,10 +178,21 @@ Use issue #1 as the extraction driver: introduce a small transaction-scoped muta
 - [x] Issue #1: Remove full-scan N+1 query behavior
 - [x] Issue #2: Preserve events during watch requests
 - [x] Issue #3: Surface daemon background failures
-- [ ] Issue #4: Bound daemon connection resources
+- [x] Issue #4: Bound daemon connection resources
 - [ ] Issue #5: Establish cohesive typed transaction/command boundaries
 
-**Total:** 3/5 completed
+**Total:** 4/5 completed
+
+### Issue #4 verification (2026-07-20)
+
+- `admission_never_exceeds_its_limit_and_release_reopens_a_slot` pins the scoped 64-client admission model and permit release.
+- `excess_clients_are_refused_without_disrupting_admitted_clients` fills every slot, observes eight structured/rate-limited refusals without worker allocation, and proves an admitted client remains usable.
+- `idle_deadline_expires_at_the_boundary` pins the 15-minute policy; Unix native timeouts and the Windows `CancelIoEx` watchdog make idle, stalled-write, and shutdown cancellation bounded.
+- `unix_socket_is_owner_only_even_for_a_custom_path` pins mode `0600` on supported platforms; the design documents directory ownership, custom-path, Windows ACL, and authentication limits.
+- All daemon integrations, including concurrent clients, subscriptions, external writes, reminders, restart idempotence, and supervised failure, pass.
+- `cargo test --workspace --all-targets --no-fail-fast`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `git diff --check`: passed.
 
 ### Issue #1 verification (2026-07-20)
 

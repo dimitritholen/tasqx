@@ -15,7 +15,9 @@
 //!    thread owns the send half and drains a single `mpsc` channel. Every
 //!    outbound line — responses *and* event pushes — funnels through that one
 //!    channel, so a notification can never interleave with an in-flight
-//!    response on the same connection.
+//!    response on the same connection. Windows adds one watchdog thread per
+//!    admitted client because named pipes expose no native I/O timeouts; the
+//!    global admission cap bounds all three thread classes.
 //!  * Live event push (§2, §6a): a client sends `{"method":"subscribe"}` and
 //!    thereafter receives unsolicited `{"event":"task.changed",...}` frames.
 //!    Change detection is unified through a single watermark over the
@@ -32,11 +34,11 @@
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Write};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 
@@ -75,6 +77,17 @@ const OUT_QUEUE_CAP: usize = 1024;
 /// daemon to buffer unbounded input. 1 MiB is far larger than any real envelope.
 const MAX_FRAME_BYTES: usize = 1 << 20;
 
+/// Maximum number of admitted local clients. Each admitted client owns one
+/// reader thread, one writer thread, and one bounded outbound queue.
+pub const MAX_CONCURRENT_CLIENTS: usize = 64;
+
+#[cfg(unix)]
+const CLIENT_IO_POLL_TIMEOUT: Duration = Duration::from_secs(30);
+const CLIENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+#[cfg(windows)]
+const CLIENT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Lock a mutex, recovering the guard even if a previous holder panicked while
 /// holding it. A single panicked dispatch must never permanently wedge the
 /// daemon for every other client (DESIGN §2: "a client must never crash the
@@ -83,6 +96,94 @@ const MAX_FRAME_BYTES: usize = 1 << 20;
 /// acquisition.
 fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct Admission {
+    active: AtomicUsize,
+    limit: usize,
+    rejected: AtomicU64,
+}
+
+impl Admission {
+    fn new(limit: usize) -> Self {
+        Self { active: AtomicUsize::new(0), limit, rejected: AtomicU64::new(0) }
+    }
+
+    fn try_acquire(self: &Arc<Self>) -> Option<ClientPermit> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < self.limit).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| ClientPermit { admission: self.clone() })
+    }
+
+    fn note_rejection(&self) {
+        let count = self.rejected.fetch_add(1, Ordering::Relaxed) + 1;
+        if count == 1 || count.is_power_of_two() {
+            eprintln!(
+                "tasqx daemon: refused {count} connection(s): client limit {} reached",
+                self.limit
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn active(&self) -> usize {
+        self.active.load(Ordering::Acquire)
+    }
+}
+
+struct ClientPermit {
+    admission: Arc<Admission>,
+}
+
+impl Drop for ClientPermit {
+    fn drop(&mut self) {
+        self.admission.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn idle_expired(last_activity: Instant, now: Instant) -> bool {
+    now.duration_since(last_activity) >= CLIENT_IDLE_TIMEOUT
+}
+
+struct ConnectionIoState {
+    last_activity: Mutex<Instant>,
+    write_started: Mutex<Option<Instant>>,
+    done: AtomicBool,
+}
+
+impl ConnectionIoState {
+    fn new() -> Self {
+        Self {
+            last_activity: Mutex::new(Instant::now()),
+            write_started: Mutex::new(None),
+            done: AtomicBool::new(false),
+        }
+    }
+
+    fn record_activity(&self) {
+        *lock_recover(&self.last_activity) = Instant::now();
+    }
+
+    fn idle(&self, now: Instant) -> bool {
+        idle_expired(*lock_recover(&self.last_activity), now)
+    }
+
+    fn begin_write(&self) {
+        *lock_recover(&self.write_started) = Some(Instant::now());
+    }
+
+    fn end_write(&self) {
+        *lock_recover(&self.write_started) = None;
+    }
+
+    #[cfg(windows)]
+    fn write_timed_out(&self, now: Instant) -> bool {
+        lock_recover(&self.write_started)
+            .is_some_and(|started| now.duration_since(started) >= CLIENT_SEND_TIMEOUT)
+    }
 }
 
 // ---- name resolution --------------------------------------------------------
@@ -133,12 +234,19 @@ fn bind(socket: &str) -> io::Result<Listener> {
     }
     #[cfg(unix)]
     {
+        use std::os::unix::fs::PermissionsExt;
+
         remove_if_stale(socket);
         if let Some(parent) = std::path::Path::new(socket).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let name = socket.to_fs_name::<GenericFilePath>()?;
-        ListenerOptions::new().name(name).create_sync()
+        let listener = ListenerOptions::new().name(name).create_sync()?;
+        if let Err(error) = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)) {
+            let _ = std::fs::remove_file(socket);
+            return Err(error);
+        }
+        Ok(listener)
     }
 }
 
@@ -226,6 +334,7 @@ impl Hub {
 struct Shared {
     engine: Arc<Mutex<Engine>>,
     hub: Hub,
+    shutdown: Arc<AtomicBool>,
     /// Highest `events.rowid` already broadcast. Guards against double-sends
     /// when the immediate (post-commit) and poll paths race.
     watermark: Arc<Mutex<i64>>,
@@ -359,9 +468,11 @@ pub fn serve_with_notifier(
     let shared = Shared {
         engine: Arc::new(Mutex::new(engine)),
         hub: Hub::new(),
+        shutdown: shutdown.clone(),
         watermark: Arc::new(Mutex::new(start)),
         fatal: Some(fatal_tx),
     };
+    let admission = Arc::new(Admission::new(MAX_CONCURRENT_CLIENTS));
 
     // Background poller: surfaces external one-shot writes on the same DB.
     {
@@ -404,8 +515,13 @@ pub fn serve_with_notifier(
         }
         match listener.accept() {
             Ok(stream) => {
-                let sh = shared.clone();
-                thread::spawn(move || handle_conn(stream, sh));
+                if let Some(permit) = admission.try_acquire() {
+                    let sh = shared.clone();
+                    thread::spawn(move || handle_conn(stream, sh, permit));
+                } else {
+                    admission.note_rejection();
+                    reject_overloaded(stream);
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(20));
@@ -587,31 +703,88 @@ fn reminder_tick(
 
 /// One connection: a reader loop (this thread) + a writer thread draining a
 /// single channel, so responses and pushes never interleave.
-fn handle_conn(stream: Stream, sh: Shared) {
+#[cfg(windows)]
+fn start_connection_watchdog(
+    recv: &RecvHalf,
+    send: &SendHalf,
+    shutdown: &Arc<AtomicBool>,
+    state: &Arc<ConnectionIoState>,
+) -> thread::JoinHandle<()> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+
+    let RecvHalf::NamedPipe(recv) = recv;
+    let SendHalf::NamedPipe(send) = send;
+    let recv_handle = recv.as_handle().as_raw_handle() as usize;
+    let send_handle = send.as_handle().as_raw_handle() as usize;
+    let shutdown = shutdown.clone();
+    let state = state.clone();
+    thread::spawn(move || {
+        while !state.done.load(Ordering::Acquire) {
+            let now = Instant::now();
+            if shutdown.load(Ordering::Relaxed) || state.idle(now) {
+                cancel_io(recv_handle);
+                cancel_io(send_handle);
+            } else if state.write_timed_out(now) {
+                cancel_io(send_handle);
+            }
+            thread::sleep(CLIENT_WATCHDOG_INTERVAL);
+        }
+    })
+}
+
+#[cfg(windows)]
+fn cancel_io(raw_handle: usize) {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::IO::CancelIoEx;
+
+    // SAFETY: the connection owns this handle until its watchdog joins. A null
+    // OVERLAPPED pointer asks Windows to cancel every pending operation on it.
+    let _ = unsafe { CancelIoEx(raw_handle as HANDLE, std::ptr::null()) };
+}
+
+fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
+    #[cfg(unix)]
+    if stream.set_recv_timeout(Some(CLIENT_IO_POLL_TIMEOUT)).is_err()
+        || stream.set_send_timeout(Some(CLIENT_SEND_TIMEOUT)).is_err()
+    {
+        return;
+    }
     let (recv, send) = stream.split();
+    let io_state = Arc::new(ConnectionIoState::new());
+    #[cfg(windows)]
+    let watchdog = start_connection_watchdog(&recv, &send, &sh.shutdown, &io_state);
     // Bounded queue: a subscriber that stops reading can't grow memory without
     // bound (see OUT_QUEUE_CAP). Responses use the blocking `send` (only ever
     // stalls this one connection); broadcasts use non-blocking `try_send`.
     let (out_tx, out_rx) = mpsc::sync_channel::<String>(OUT_QUEUE_CAP);
 
+    let writer_shutdown = sh.shutdown.clone();
+    let writer_state = io_state.clone();
     let writer = thread::spawn(move || {
         let mut send: SendHalf = send;
         while let Ok(line) = out_rx.recv() {
-            if send.write_all(line.as_bytes()).is_err() {
+            if writer_shutdown.load(Ordering::Relaxed) {
                 break;
             }
-            let _ = send.flush();
+            writer_state.begin_write();
+            let result = send.write_all(line.as_bytes()).and_then(|_| send.flush());
+            writer_state.end_write();
+            if result.is_err() {
+                break;
+            }
         }
     });
 
     let mut sub_id: Option<u64> = None;
     let mut reader = BufReader::new(recv);
     let mut line = String::new();
+    let mut frame_bytes = Vec::new();
     loop {
         line.clear();
-        match read_frame_capped(&mut reader, &mut line, MAX_FRAME_BYTES) {
+        match read_frame_capped(&mut reader, &mut frame_bytes, &mut line, MAX_FRAME_BYTES) {
             Ok(0) => break, // EOF: client closed.
             Ok(_) => {
+                io_state.record_activity();
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
@@ -651,6 +824,15 @@ fn handle_conn(stream: Stream, sh: Shared) {
                     }
                 }
             }
+            Err(e)
+                if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) =>
+            {
+                if sh.shutdown.load(Ordering::Relaxed)
+                    || io_state.idle(Instant::now())
+                {
+                    break;
+                }
+            }
             Err(_) => break,
         }
     }
@@ -660,15 +842,45 @@ fn handle_conn(stream: Stream, sh: Shared) {
     }
     drop(out_tx); // closes the channel → writer thread exits.
     let _ = writer.join();
+    io_state.done.store(true, Ordering::Release);
+    #[cfg(windows)]
+    let _ = watchdog.join();
+}
+
+/// Reject overload before allocating worker threads or a per-client queue.
+/// The id-less response is transport-level: the accept loop deliberately does
+/// not read a request while overloaded because that would let one peer stall
+/// admission for everyone else.
+fn reject_overloaded(mut stream: Stream) {
+    #[cfg(unix)]
+    let _ = stream.set_send_timeout(Some(Duration::from_millis(100)));
+    #[cfg(windows)]
+    let _ = stream.set_nonblocking(true);
+    let response = json!({
+        "tasqx": crate::API_VERSION,
+        "ok": false,
+        "error": {
+            "code": "unavailable",
+            "message": format!(
+                "daemon client limit ({MAX_CONCURRENT_CLIENTS}) reached; retry after a client disconnects"
+            ),
+        },
+    });
+    let _ = writeln!(stream, "{response}");
+    let _ = stream.flush();
 }
 
 /// Read one newline-terminated frame into `buf`, but refuse to buffer more than
 /// `max` bytes for a single frame (returns `InvalidData` past the cap instead of
 /// growing memory unbounded for a client that never sends `\n`). Returns the
 /// number of bytes read (0 on EOF), mirroring `BufRead::read_line`.
-fn read_frame_capped<R: BufRead>(reader: &mut R, buf: &mut String, max: usize) -> io::Result<usize> {
+fn read_frame_capped<R: BufRead>(
+    reader: &mut R,
+    bytes: &mut Vec<u8>,
+    buf: &mut String,
+    max: usize,
+) -> io::Result<usize> {
     buf.clear();
-    let mut bytes: Vec<u8> = Vec::new();
     loop {
         let available = match reader.fill_buf() {
             Ok(b) => b,
@@ -676,30 +888,34 @@ fn read_frame_capped<R: BufRead>(reader: &mut R, buf: &mut String, max: usize) -
             Err(e) => return Err(e),
         };
         if available.is_empty() {
-            break; // EOF
+            let len = bytes.len();
+            buf.push_str(&String::from_utf8_lossy(bytes));
+            bytes.clear();
+            return Ok(len);
         }
         if let Some(i) = available.iter().position(|&b| b == b'\n') {
             if bytes.len() + i + 1 > max {
                 reader.consume(i + 1);
+                bytes.clear();
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "request frame exceeds limit"));
             }
             bytes.extend_from_slice(&available[..=i]);
             reader.consume(i + 1);
-            break;
+            let len = bytes.len();
+            buf.push_str(&String::from_utf8_lossy(bytes));
+            bytes.clear();
+            return Ok(len);
         }
         if bytes.len() + available.len() > max {
             let n = available.len();
             reader.consume(n);
+            bytes.clear();
             return Err(io::Error::new(io::ErrorKind::InvalidData, "request frame exceeds limit"));
         }
         let n = available.len();
         bytes.extend_from_slice(available);
         reader.consume(n);
     }
-    // Bytes are copied out once, so a multi-byte char split across fill_buf
-    // boundaries is reassembled before the lossy decode.
-    buf.push_str(&String::from_utf8_lossy(&bytes));
-    Ok(bytes.len())
 }
 
 /// True if `line` is a request whose method never appends to the `events` log,
@@ -889,6 +1105,16 @@ impl Conn {
                 }
                 Some(Frame::Event(v)) => self.pending_events.push_back(v),
                 Some(Frame::Response(v)) if v.get("id") == Some(&request_id) => return Ok(v),
+                Some(Frame::Response(v))
+                    if v.get("id").is_none() && v.get("ok") == Some(&Value::Bool(false)) =>
+                {
+                    let message = v
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("daemon refused the connection")
+                        .to_string();
+                    return Err(io::Error::new(io::ErrorKind::ConnectionRefused, message));
+                }
                 Some(Frame::Response(v)) => self.pending_responses.push_back(v),
             }
         }
@@ -931,10 +1157,33 @@ mod tests {
         s.parse().unwrap()
     }
 
+    #[test]
+    fn admission_never_exceeds_its_limit_and_release_reopens_a_slot() {
+        let admission = Arc::new(Admission::new(2));
+        let first = admission.try_acquire().expect("first slot");
+        let second = admission.try_acquire().expect("second slot");
+        assert!(admission.try_acquire().is_none(), "the third client must be refused");
+        assert_eq!(admission.active(), 2);
+
+        drop(first);
+        let replacement = admission.try_acquire().expect("released slot is reusable");
+        assert_eq!(admission.active(), 2);
+        drop((second, replacement));
+        assert_eq!(admission.active(), 0);
+    }
+
+    #[test]
+    fn idle_deadline_expires_at_the_boundary() {
+        let started = std::time::Instant::now();
+        assert!(!idle_expired(started, started + CLIENT_IDLE_TIMEOUT - Duration::from_millis(1)));
+        assert!(idle_expired(started, started + CLIENT_IDLE_TIMEOUT));
+    }
+
     fn shared(engine: Engine) -> Shared {
         Shared {
             engine: Arc::new(Mutex::new(engine)),
             hub: Hub::new(),
+            shutdown: Arc::new(AtomicBool::new(false)),
             watermark: Arc::new(Mutex::new(0)),
             fatal: None,
         }
