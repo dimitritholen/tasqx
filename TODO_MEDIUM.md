@@ -88,12 +88,12 @@ A permanent database/listener failure can therefore leave the process “running
 
 ### Acceptance Criteria
 
-- [ ] Database and listener failures are classified as transient or fatal; fatal errors stop `serve_with_notifier` with context.
-- [ ] Transient retries are rate-limited and logged once per state transition, not once per 20 ms loop.
-- [ ] Pump advances no watermark past a row it failed to decode and exposes the failure.
-- [ ] Background thread failures are communicated to the main serve loop.
-- [ ] A health/capabilities response reports degraded background components if the process intentionally remains alive.
-- [ ] Tests inject prepare/query/accept failures and assert observable behavior.
+- [x] Database and listener failures are classified as transient or fatal; fatal errors stop `serve_with_notifier` with component context.
+- [x] Transient reminder retries are rate-limited and logged once per state transition.
+- [x] Pump advances no watermark past a row it failed to decode and exposes the failure.
+- [x] Background thread failures are communicated to the main serve loop through a supervisor channel.
+- [x] No degraded health response is needed because required-component failures stop the daemon instead of intentionally remaining alive.
+- [x] Tests inject event-query/decode failures and classify non-`WouldBlock` accept failures as contextual fatal errors.
 
 ### Recommended Approach
 
@@ -177,11 +177,11 @@ Use issue #1 as the extraction driver: introduce a small transaction-scoped muta
 
 - [ ] Issue #1: Remove full-scan N+1 query behavior
 - [x] Issue #2: Preserve events during watch requests
-- [ ] Issue #3: Surface daemon background failures
+- [x] Issue #3: Surface daemon background failures
 - [ ] Issue #4: Bound daemon connection resources
 - [ ] Issue #5: Establish cohesive typed transaction/command boundaries
 
-**Total:** 1/5 completed
+**Total:** 2/5 completed
 
 ### Issue #2 verification (2026-07-20)
 
@@ -189,3 +189,10 @@ Use issue #1 as the extraction driver: introduce a small transaction-scoped muta
 - `cargo test --workspace --all-targets --no-fail-fast`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `git diff --check`: passed.
+
+### Issue #3 verification (2026-07-20)
+
+- `background_store_failure_stops_the_daemon_with_context` proves a required background component terminates the serve loop with context.
+- `pump_decode_failure_does_not_advance_the_watermark` proves failed batches do not skip event rows.
+- Transition and accept-classification unit tests cover retry log suppression and fatal listener context.
+- Full workspace tests, Clippy with warnings denied, and `git diff --check` passed.

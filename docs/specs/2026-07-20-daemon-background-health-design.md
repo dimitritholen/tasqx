@@ -1,7 +1,7 @@
 # Daemon background health — design
 
 **Date:** 2026-07-20
-**Status:** approved in advance 2026-07-20
+**Status:** implemented and verified 2026-07-20
 **Scope:** Medium #3 only: make daemon event-pump, listener, and background-thread failures observable. Connection admission and query performance remain separate branches.
 
 ## Decision
@@ -27,4 +27,3 @@ A permanent degraded mode plus health RPC was rejected because clients could con
 - A running daemon whose event table is damaged exits through `serve_with_notifier` with poller context within a bounded test deadline.
 - Existing reminder retry tests continue proving transient fire failures are retried.
 - Full workspace tests, Clippy with warnings denied, and diff checks pass.
-
