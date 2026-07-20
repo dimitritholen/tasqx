@@ -153,12 +153,12 @@ This is a Single Responsibility and Interface Segregation problem, not merely a 
 
 ### Acceptance Criteria
 
-- [ ] Transaction ownership is centralized enough that a mutation cannot accidentally perform authoritative reads before locking.
-- [ ] Typed request/response structs exist at least for internal mutation paths; JSON conversion remains at dispatch/MCP/CLI boundaries.
-- [ ] Engine code is split by cohesive domain (task lifecycle, projects, relationships, import/export, reports) without changing public wire contracts.
-- [ ] CLI parsing types are separated from execution/transport/render orchestration.
-- [ ] No “framework” or generic repository abstraction is introduced without two real consumers.
-- [ ] Each extraction lands with unchanged contract tests; do not combine it with product behavior changes.
+- [x] Transaction ownership is centralized enough that a mutation cannot accidentally perform authoritative reads before locking.
+- [x] Typed request/response structs exist at least for internal mutation paths; JSON conversion remains at dispatch/MCP/CLI boundaries.
+- [x] Engine code is split by cohesive domain (task lifecycle, projects, relationships, import/export, reports) without changing public wire contracts.
+- [x] CLI parsing types are separated from execution/transport/render orchestration.
+- [x] No “framework” or generic repository abstraction is introduced without two real consumers.
+- [x] Each extraction lands with unchanged contract tests; do not combine it with product behavior changes.
 
 ### Recommended Approach
 
@@ -179,9 +179,20 @@ Use issue #1 as the extraction driver: introduce a small transaction-scoped muta
 - [x] Issue #2: Preserve events during watch requests
 - [x] Issue #3: Surface daemon background failures
 - [x] Issue #4: Bound daemon connection resources
-- [ ] Issue #5: Establish cohesive typed transaction/command boundaries
+- [x] Issue #5: Establish cohesive typed transaction/command boundaries
 
-**Total:** 4/5 completed
+**Total:** 5/5 completed
+
+### Issue #5 verification (2026-07-20)
+
+- `every_mutation_locks_before_authoritative_reads` pins `BEGIN IMMEDIATE` acquisition before authoritative reads for every mutation handler.
+- `MutationContext` owns the concrete SQLite transaction and commit path; task, project, relationship, transfer, and report implementations now live in cohesive engine modules.
+- Typed lifecycle requests and responses cover start, stop, cancel, and reopen while `lifecycle_commands_parse_once_and_preserve_wire_results` pins the existing JSON shapes.
+- Clap declarations live in `command.rs`; `command_declarations_do_not_execute_or_render` prevents execution and rendering dependencies from crossing that boundary.
+- Focused lifecycle, concurrency, CLI parse/help, and JSON contract suites passed.
+- `cargo test --workspace --all-targets --no-fail-fast`: passed (one manual benchmark ignored).
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `git diff --check`: passed.
 
 ### Issue #4 verification (2026-07-20)
 

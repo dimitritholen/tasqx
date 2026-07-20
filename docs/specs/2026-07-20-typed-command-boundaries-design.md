@@ -1,7 +1,7 @@
 # Typed command and domain boundaries — design
 
 **Date:** 2026-07-20
-**Status:** approved for implementation
+**Status:** implemented and verified
 **Scope:** Medium #5 only: behavior-neutral core/CLI decomposition and typed mutation boundaries.
 
 ## Decision
