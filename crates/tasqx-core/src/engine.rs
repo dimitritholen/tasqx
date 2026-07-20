@@ -8,7 +8,7 @@
 //! `commit`, the transaction drops and rolls back — leaving no state change and
 //! no event. State and history therefore move together, always.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use jiff::Timestamp;
@@ -19,19 +19,18 @@ use uuid::Uuid;
 use crate::datetime;
 use crate::error::ApiError;
 use crate::filter::{Filter, MatchCtx};
+use crate::recur;
+use crate::remind;
 use crate::storage::{
     self, alloc_short_id, bump_short_id_floor, clear_config, ensure_tag_link, get_config,
     insert_event, map_task_row, set_config, task_tags, TASK_COLS,
 };
-use crate::recur;
-use crate::remind;
 use crate::types::{effective_status, Entity, Priority, Status, Task};
 use crate::urgency;
 use crate::util::{
     duration_secs, iso_duration, now, opt_array, opt_bool, opt_i64, opt_str, opt_str_array,
-    opt_str_nonempty,
-    opt_u64, parse_ts, req_array, req_i64, req_object, req_str, req_str_lookup, req_str_value,
-    seconds_between,
+    opt_str_nonempty, opt_u64, parse_ts, req_array, req_i64, req_object, req_str, req_str_lookup,
+    req_str_value, seconds_between,
 };
 
 /// The config key holding the default project name (inherited by `task.add`).
@@ -68,8 +67,9 @@ pub const SUMMARY_METRICS: [&str; 4] = ["count", "est_total", "overdue", "tracke
 /// halves are fixed by having one list: `parse_sort` validates against it, its
 /// rejection message is built from it, and the MCP schema and the HTML guide
 /// render their key lists from it.
-pub const SORT_KEYS: [&str; 7] =
-    ["urgency", "short_id", "priority", "due", "created", "modified", "title"];
+pub const SORT_KEYS: [&str; 7] = [
+    "urgency", "short_id", "priority", "due", "created", "modified", "title",
+];
 
 /// The keys `task.list`'s `fields` param may name. Sorted, since it is read off
 /// a `serde_json` object.
@@ -88,11 +88,26 @@ pub const SORT_KEYS: [&str; 7] =
 /// unrecognized status (D28) and must still be a name a caller may ask for.
 pub static TASK_FIELDS: LazyLock<Vec<String>> = LazyLock::new(|| {
     let probe = Task {
-        id: String::new(), short_id: 0, title: String::new(), status: Status::Pending,
-        status_raw: Some(String::new()), priority: None, project: None, due: None,
-        scheduled: None, wait: None, estimate: None, recurrence: None, remind: None,
-        urgency: 0.0, active_since: None, tracked_seconds: 0, rev: 0,
-        created: String::new(), modified: String::new(), completed: None,
+        id: String::new(),
+        short_id: 0,
+        title: String::new(),
+        status: Status::Pending,
+        status_raw: Some(String::new()),
+        priority: None,
+        project: None,
+        due: None,
+        scheduled: None,
+        wait: None,
+        estimate: None,
+        recurrence: None,
+        remind: None,
+        urgency: 0.0,
+        active_since: None,
+        tracked_seconds: 0,
+        rev: 0,
+        created: String::new(),
+        modified: String::new(),
+        completed: None,
     };
     match list_row_json(&probe, &[], false) {
         Value::Object(m) => m.keys().cloned().collect(),
@@ -106,15 +121,29 @@ pub struct Engine {
     conn: Connection,
 }
 
+const SNAPSHOT_QUERY_COUNT: usize = 5;
+
+struct TaskSnapshot {
+    task: Task,
+    tags: Vec<String>,
+    blocked: bool,
+    depends_on: Vec<String>,
+    annotations: Vec<Value>,
+}
+
 impl Engine {
     /// Open (creating if needed) a file-backed store.
     pub fn open(path: &str) -> Result<Engine, ApiError> {
-        Ok(Engine { conn: storage::open(path)? })
+        Ok(Engine {
+            conn: storage::open(path)?,
+        })
     }
 
     /// Open an ephemeral in-memory store (tests).
     pub fn open_in_memory() -> Result<Engine, ApiError> {
-        Ok(Engine { conn: storage::open_in_memory()? })
+        Ok(Engine {
+            conn: storage::open_in_memory()?,
+        })
     }
 
     /// Direct read access to the connection (read-only helpers, tests).
@@ -128,7 +157,10 @@ impl Engine {
     /// deferred read-then-write upgrade (DESIGN §2: writers wait, don't error).
     /// Keeps the `&self` shape via `new_unchecked`.
     fn begin(&self) -> Result<Transaction<'_>, ApiError> {
-        Ok(Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?)
+        Ok(Transaction::new_unchecked(
+            &self.conn,
+            TransactionBehavior::Immediate,
+        )?)
     }
 
     // ---- reference resolution ------------------------------------------------
@@ -165,41 +197,40 @@ impl Engine {
             if Uuid::parse_str(s).is_ok() {
                 return self.task_by_id_on(conn, s);
             }
-            return Err(ApiError::bad_request(format!("ref is neither short_id nor UUID: {s}")));
+            return Err(ApiError::bad_request(format!(
+                "ref is neither short_id nor UUID: {s}"
+            )));
         }
         Err(ApiError::bad_request("ref must be an integer or string"))
     }
 
     fn task_by_short_on(&self, conn: &Connection, short_id: i64) -> Result<Task, ApiError> {
-        conn
-            .query_row(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE short_id = ?1"),
-                params![short_id],
-                map_task_row,
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => ApiError::not_found(
-                    format!("no task with short_id {short_id}"),
-                    Some(json!({ "short_id": short_id })),
-                ),
-                other => other.into(),
-            })
+        conn.query_row(
+            &format!("SELECT {TASK_COLS} FROM tasks WHERE short_id = ?1"),
+            params![short_id],
+            map_task_row,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => ApiError::not_found(
+                format!("no task with short_id {short_id}"),
+                Some(json!({ "short_id": short_id })),
+            ),
+            other => other.into(),
+        })
     }
 
     fn task_by_id_on(&self, conn: &Connection, id: &str) -> Result<Task, ApiError> {
-        conn
-            .query_row(
-                &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"),
-                params![id],
-                map_task_row,
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => ApiError::not_found(
-                    format!("no task with id {id}"),
-                    Some(json!({ "id": id })),
-                ),
-                other => other.into(),
-            })
+        conn.query_row(
+            &format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"),
+            params![id],
+            map_task_row,
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                ApiError::not_found(format!("no task with id {id}"), Some(json!({ "id": id })))
+            }
+            other => other.into(),
+        })
     }
 
     // ---- project.create ------------------------------------------------------
@@ -226,10 +257,16 @@ impl Engine {
         // observes our committed row, yielding a clean `conflict` (not the
         // `internal` a bare UNIQUE-violation on the INSERT would produce).
         let exists: bool = tx
-            .query_row("SELECT 1 FROM projects WHERE name = ?1", params![name], |_| Ok(()))
+            .query_row(
+                "SELECT 1 FROM projects WHERE name = ?1",
+                params![name],
+                |_| Ok(()),
+            )
             .is_ok();
         if exists {
-            return Err(ApiError::conflict(format!("project already exists: {name}")));
+            return Err(ApiError::conflict(format!(
+                "project already exists: {name}"
+            )));
         }
         tx.execute(
             "INSERT INTO projects (id, name, description, archived, created) \
@@ -268,7 +305,11 @@ impl Engine {
         // no more than the store can. `current_default` says what the default IS
         // either way, so a caller who did not claim it still learns where a bare
         // `task.add` will go instead of having to ask a second method.
-        let current_default = if claimed { Some(name.clone()) } else { existing };
+        let current_default = if claimed {
+            Some(name.clone())
+        } else {
+            existing
+        };
         Ok(json!({
             "id": id,
             "name": name,
@@ -305,7 +346,10 @@ impl Engine {
             )
             .optional()?;
         let (id, archived) = row.ok_or_else(|| {
-            ApiError::not_found(format!("no project named {name}"), Some(json!({ "name": name })))
+            ApiError::not_found(
+                format!("no project named {name}"),
+                Some(json!({ "name": name })),
+            )
         })?;
         // D22: archived means out of rotation. Pointing the default at one would
         // route every bare `add` into a project the default project list does not
@@ -320,7 +364,13 @@ impl Engine {
         set_config(&tx, DEFAULT_PROJECT_KEY, &name)?;
         // THE invariant: the event row lands in the same transaction as the
         // mutation. The default is state, so moving it is history.
-        insert_event(&tx, Entity::Project, &id, "use", &json!({ "name": name, "previous": previous }))?;
+        insert_event(
+            &tx,
+            Entity::Project,
+            &id,
+            "use",
+            &json!({ "name": name, "previous": previous }),
+        )?;
         tx.commit()?;
 
         Ok(json!({ "name": name, "default": true, "previous": previous }))
@@ -381,7 +431,12 @@ impl Engine {
         // add -> pending, or backlog if wait/scheduled is in the future. Asking
         // the shared rule what a *backlog* task would be right now answers both
         // halves, and keeps this in step with the spawn path and every read.
-        let status = effective_status(Status::Backlog, wait.as_deref(), scheduled.as_deref(), now_ts);
+        let status = effective_status(
+            Status::Backlog,
+            wait.as_deref(),
+            scheduled.as_deref(),
+            now_ts,
+        );
 
         let id = Uuid::now_v7().to_string();
         let ts = now();
@@ -527,7 +582,13 @@ impl Engine {
             "UPDATE tasks SET status='active', active_since=?1, rev=?2, modified=?3 WHERE id=?4",
             params![ts, task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, Entity::Task, &task.id, "start", &json!({ "interval_started": ts }))?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "start",
+            &json!({ "interval_started": ts }),
+        )?;
         tx.commit()?;
 
         Ok(json!({
@@ -558,7 +619,13 @@ impl Engine {
              tracked_seconds=?1, rev=?2, modified=?3 WHERE id=?4",
             params![total, task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, Entity::Task, &task.id, "stop", &json!({ "tracked": iso_duration(elapsed) }))?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "stop",
+            &json!({ "tracked": iso_duration(elapsed) }),
+        )?;
         tx.commit()?;
 
         Ok(json!({ "status": "pending", "tracked": iso_duration(elapsed) }))
@@ -596,7 +663,13 @@ impl Engine {
              tracked_seconds=?2, rev=?3, modified=?4 WHERE id=?5",
             params![ts, total, task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, Entity::Task, &task.id, "done", &json!({ "completed": ts }))?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "done",
+            &json!({ "completed": ts }),
+        )?;
 
         // Spawn the next recurring instance in the SAME transaction: if this
         // fails, the whole completion rolls back — no orphan spawn, no event.
@@ -657,8 +730,12 @@ impl Engine {
 
         // Same rule as `task_add`, on the shifted timestamps, against this
         // completion's instant rather than a second reading of the clock.
-        let status =
-            effective_status(Status::Backlog, new_wait.as_deref(), new_scheduled.as_deref(), now_ts);
+        let status = effective_status(
+            Status::Backlog,
+            new_wait.as_deref(),
+            new_scheduled.as_deref(),
+            now_ts,
+        );
         let urg = urgency::score(template.priority, new_due.as_deref(), ts);
 
         // Carry the reminder onto the new instance (§9). A `due`-anchored offset
@@ -728,10 +805,7 @@ impl Engine {
     /// Return short_ids of tasks that depend on `done_id` and now have *all*
     /// their dependencies completed (i.e. this completion cleared their last
     /// blocker). With no dependencies in the MVP store this is trivially empty.
-    fn compute_unblocked(
-        tx: &rusqlite::Transaction,
-        done_id: &str,
-    ) -> Result<Vec<i64>, ApiError> {
+    fn compute_unblocked(tx: &rusqlite::Transaction, done_id: &str) -> Result<Vec<i64>, ApiError> {
         // Only *open* dependents can "become actionable" — a dependent that is
         // itself already done/cancelled must never be reported as unblocked.
         let dependents: Vec<String> = {
@@ -787,10 +861,13 @@ impl Engine {
         // Preserve the public validation order without loading store state:
         // callers have always seen a missing `ref` before errors in `set`.
         let _ = ref_param(p)?;
-        let set = req_object(p, "set")
-            .map_err(|e| ApiError::bad_request(format!("{} (modify requires a `set` object)", e.message)))?;
+        let set = req_object(p, "set").map_err(|e| {
+            ApiError::bad_request(format!("{} (modify requires a `set` object)", e.message))
+        })?;
         if set.is_empty() {
-            return Err(ApiError::bad_request("`set` must contain at least one field"));
+            return Err(ApiError::bad_request(
+                "`set` must contain at least one field",
+            ));
         }
         let expected_rev = opt_i64(p, "expected_rev")?;
 
@@ -853,9 +930,12 @@ impl Engine {
                         priority = None;
                         assignments.push(("priority", Value::Null));
                     } else {
-                        let s = v.as_str().ok_or_else(|| ApiError::bad_request("priority must be a string"))?;
-                        let pr = Priority::parse(s)
-                            .ok_or_else(|| ApiError::bad_request(format!("invalid priority: {s}")))?;
+                        let s = v
+                            .as_str()
+                            .ok_or_else(|| ApiError::bad_request("priority must be a string"))?;
+                        let pr = Priority::parse(s).ok_or_else(|| {
+                            ApiError::bad_request(format!("invalid priority: {s}"))
+                        })?;
                         priority = Some(pr);
                         assignments.push(("priority", Value::String(pr.as_str().to_string())));
                     }
@@ -883,9 +963,10 @@ impl Engine {
                     due = norm.as_str().map(str::to_string);
                     assignments.push(("due", norm));
                 }
-                "scheduled" => {
-                    assignments.push(("scheduled", nullable_when(v, "scheduled", Timestamp::now())?))
-                }
+                "scheduled" => assignments.push((
+                    "scheduled",
+                    nullable_when(v, "scheduled", Timestamp::now())?,
+                )),
                 "wait" => assignments.push(("wait", nullable_when(v, "wait", Timestamp::now())?)),
                 "estimate" => assignments.push(("estimate", nullable_duration(v, "estimate")?)),
                 "recurrence" => {
@@ -894,9 +975,9 @@ impl Engine {
                     if v.is_null() {
                         assignments.push(("recurrence", Value::Null));
                     } else {
-                        let s = v
-                            .as_str()
-                            .ok_or_else(|| ApiError::bad_request("recurrence must be a string or null"))?;
+                        let s = v.as_str().ok_or_else(|| {
+                            ApiError::bad_request("recurrence must be a string or null")
+                        })?;
                         let norm = recur::rule_to_string(&recur::parse_rule(s)?);
                         assignments.push(("recurrence", Value::String(norm)));
                     }
@@ -926,7 +1007,9 @@ impl Engine {
                     // (single-active D6, completed timestamp, interval closing)
                     // are enforced — otherwise this would produce
                     // invariant-violating rows.
-                    let s = v.as_str().ok_or_else(|| ApiError::bad_request("status must be a string"))?;
+                    let s = v
+                        .as_str()
+                        .ok_or_else(|| ApiError::bad_request("status must be a string"))?;
                     let st = Status::parse(s)
                         .ok_or_else(|| ApiError::bad_request(format!("invalid status: {s}")))?;
                     if st != Status::Cancelled {
@@ -949,7 +1032,9 @@ impl Engine {
                     assignments.push(("status", Value::String(st.as_str().to_string())));
                 }
                 other => {
-                    return Err(ApiError::bad_request(format!("field not modifiable: {other}")));
+                    return Err(ApiError::bad_request(format!(
+                        "field not modifiable: {other}"
+                    )));
                 }
             }
         }
@@ -977,7 +1062,13 @@ impl Engine {
             "UPDATE tasks SET urgency=?1, rev=?2, modified=?3 WHERE id=?4",
             params![new_urg, new_rev, ts, task.id],
         )?;
-        insert_event(&tx, Entity::Task, &task.id, "modify", &Value::Object(set.clone()))?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "modify",
+            &Value::Object(set.clone()),
+        )?;
         tx.commit()?;
 
         Ok(json!({ "short_id": task.short_id, "_rev": new_rev }))
@@ -989,7 +1080,9 @@ impl Engine {
         let _ = ref_param(p)?;
         let tags = opt_str_array(p, "tags")?;
         if tags.is_empty() {
-            return Err(ApiError::bad_request("tag.add requires a non-empty `tags` array"));
+            return Err(ApiError::bad_request(
+                "tag.add requires a non-empty `tags` array",
+            ));
         }
 
         let ts = now();
@@ -1002,7 +1095,13 @@ impl Engine {
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, Entity::Task, &task.id, "tag.add", &json!({ "tags": tags }))?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "tag.add",
+            &json!({ "tags": tags }),
+        )?;
 
         // Re-read the full tag set inside the transaction for the response.
         let all = {
@@ -1024,6 +1123,119 @@ impl Engine {
 
     // ---- task.list -----------------------------------------------------------
 
+    /// Load the complete task relation in a fixed number of statements. Bulk
+    /// readers need the same relationship data to evaluate filters; grouping
+    /// it here prevents each reader from drifting back to point queries.
+    fn load_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, ApiError> {
+        let (snapshots, statements) = self.load_task_snapshots_counted()?;
+        debug_assert_eq!(statements, SNAPSHOT_QUERY_COUNT);
+        Ok(snapshots)
+    }
+
+    /// Count statements as they execute so the performance contract is
+    /// directly regression-tested rather than inferred from the SQL text.
+    fn load_task_snapshots_counted(&self) -> Result<(Vec<TaskSnapshot>, usize), ApiError> {
+        let mut statements = 0usize;
+
+        statements += 1;
+        let tasks: Vec<Task> = {
+            let mut stmt = self
+                .conn
+                .prepare(&format!("SELECT {TASK_COLS} FROM tasks"))?;
+            let rows = stmt.query_map([], map_task_row)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            out
+        };
+
+        statements += 1;
+        let mut tags: HashMap<String, Vec<String>> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT tt.task_id, t.name FROM task_tags tt \
+                 JOIN tags t ON t.id = tt.tag_id ORDER BY tt.task_id, t.name",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (task_id, tag) = row?;
+                tags.entry(task_id).or_default().push(tag);
+            }
+        }
+
+        statements += 1;
+        let mut blocked = HashSet::new();
+        {
+            let terminal = Status::sql_in_list(Status::is_terminal);
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT DISTINCT d.task_id FROM dependencies d \
+                 JOIN tasks t ON t.id = d.depends_on_id \
+                 WHERE t.status NOT IN ({terminal})"
+            ))?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                blocked.insert(row?);
+            }
+        }
+
+        statements += 1;
+        let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT d.task_id, t.id FROM dependencies d \
+                 JOIN tasks t ON t.id = d.depends_on_id ORDER BY d.task_id, t.id",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (task_id, depends_on_id) = row?;
+                dependencies.entry(task_id).or_default().push(depends_on_id);
+            }
+        }
+
+        statements += 1;
+        let mut annotations: HashMap<String, Vec<Value>> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT task_id, id, body, created FROM annotations \
+                 ORDER BY task_id, created, id",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    json!({
+                        "id": row.get::<_, String>(1)?,
+                        "body": row.get::<_, String>(2)?,
+                        "created": row.get::<_, String>(3)?,
+                    }),
+                ))
+            })?;
+            for row in rows {
+                let (task_id, annotation) = row?;
+                annotations.entry(task_id).or_default().push(annotation);
+            }
+        }
+
+        let snapshots = tasks
+            .into_iter()
+            .map(|task| {
+                let id = &task.id;
+                TaskSnapshot {
+                    tags: tags.remove(id).unwrap_or_default(),
+                    blocked: blocked.contains(id),
+                    depends_on: dependencies.remove(id).unwrap_or_default(),
+                    annotations: annotations.remove(id).unwrap_or_default(),
+                    task,
+                }
+            })
+            .collect();
+        Ok((snapshots, statements))
+    }
+
     pub fn task_list(&self, p: &Value) -> Result<Value, ApiError> {
         // D35's one recorded exception, and it is a decision, not an oversight:
         // D27 ruled the empty filter matches everything — no filter means no
@@ -1037,15 +1249,7 @@ impl Engine {
         // Fetch all rows, then evaluate the filter in Rust: the §12-D8 grammar
         // (or/parens) and instant `due` comparison are evaluated on the loaded
         // task + its tags + its blocked flag (see filter.rs).
-        let mut all: Vec<Task> = {
-            let mut stmt = self.conn.prepare(&format!("SELECT {TASK_COLS} FROM tasks"))?;
-            let rows = stmt.query_map([], map_task_row)?;
-            let mut v = Vec::new();
-            for r in rows {
-                v.push(r?);
-            }
-            v
-        };
+        let mut all = self.load_task_snapshots()?;
 
         // Urgency has time-dependent terms (due proximity, age), so the value
         // persisted at write time goes stale. Recompute it for the fetched page
@@ -1056,28 +1260,27 @@ impl Engine {
         // already computed here for the filter, and throwing it away meant
         // `@blocked` could FILTER on a fact that `fields:["blocked"]` could not
         // RETURN. A caller wanting it per row had to issue one `task.get` each.
-        let mut tasks: Vec<(Task, Vec<String>, bool)> = Vec::new();
-        for mut t in all.drain(..) {
+        let mut tasks = Vec::new();
+        for mut snapshot in all.drain(..) {
+            let t = &mut snapshot.task;
             t.urgency = urgency::score(t.priority, t.due.as_deref(), &t.created);
-            let tags = task_tags(&self.conn, &t.id)?;
-            let blocked = self.is_blocked(&t.id)?;
             let ctx = MatchCtx {
                 status: t.status,
                 project: t.project.as_deref(),
-                tags: &tags,
+                tags: &snapshot.tags,
                 due: t.due.as_deref(),
                 completed: t.completed.as_deref(),
-                blocked,
+                blocked: snapshot.blocked,
             };
             if filter.matches(&ctx) {
-                tasks.push((t, tags, blocked));
+                tasks.push(snapshot);
             }
         }
 
         // Sort (default: hottest urgency first). Validated, so an unknown key
         // fails here rather than quietly producing some other order.
         let sort_keys = parse_sort(p)?;
-        tasks.sort_by(|a, b| compare_by(&a.0, &b.0, &sort_keys));
+        tasks.sort_by(|a, b| compare_by(&a.task, &b.task, &sort_keys));
 
         // Limit.
         if let Some(limit) = opt_u64(p, "limit")? {
@@ -1089,8 +1292,8 @@ impl Engine {
         let fields = parse_fields(p)?;
 
         let mut out = Vec::with_capacity(tasks.len());
-        for (t, tags, blocked) in &tasks {
-            let full = list_row_json(t, tags, *blocked);
+        for snapshot in &tasks {
+            let full = list_row_json(&snapshot.task, &snapshot.tags, snapshot.blocked);
             match &fields {
                 Some(keys) => {
                     let mut obj = Map::new();
@@ -1153,6 +1356,7 @@ impl Engine {
     /// reader disagreed with every other one and re-emitted edges the user could
     /// not observe. The FOREIGN KEY (§2 schema) makes that state unreachable
     /// now; the join keeps the two readers honest regardless.
+    #[cfg(test)]
     fn depends_on_ids(&self, task_id: &str) -> Result<Vec<String>, ApiError> {
         let mut stmt = self.conn.prepare(
             "SELECT t.id FROM dependencies d \
@@ -1193,7 +1397,11 @@ impl Engine {
         let tags = task_tags(&self.conn, &task.id)?;
         let mut obj = task_to_json(&task, &tags);
         // Recompute urgency for a live read (list does the same).
-        obj["urgency"] = json!(urgency::score(task.priority, task.due.as_deref(), &task.created));
+        obj["urgency"] = json!(urgency::score(
+            task.priority,
+            task.due.as_deref(),
+            &task.created
+        ));
         obj["depends_on"] = json!(self.depends_on_short_ids(&task.id)?);
         obj["annotations"] = json!(self.annotations_of(&task.id)?);
         obj["blocked"] = json!(self.is_blocked(&task.id)?);
@@ -1229,7 +1437,13 @@ impl Engine {
              tracked_seconds=?1, rev=?2, modified=?3 WHERE id=?4",
             params![total, task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, Entity::Task, &task.id, "cancel", &json!({ "from": task.status.as_str() }))?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "cancel",
+            &json!({ "from": task.status.as_str() }),
+        )?;
         // Cancelling a blocker resolves it (D11), so dependents may become
         // actionable — surface the same unblock cascade task.done reports.
         let unblocked = Self::compute_unblocked(&tx, &task.id)?;
@@ -1258,7 +1472,13 @@ impl Engine {
             "UPDATE tasks SET status='pending', completed=NULL, rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, Entity::Task, &task.id, "reopen", &json!({ "from": task.status.as_str() }))?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "reopen",
+            &json!({ "from": task.status.as_str() }),
+        )?;
         tx.commit()?;
 
         Ok(json!({ "short_id": task.short_id, "status": "pending" }))
@@ -1304,23 +1524,32 @@ impl Engine {
         let name = req_str_lookup(p, "name")?;
         let id: String = self
             .conn
-            .query_row("SELECT id FROM projects WHERE name = ?1", params![name], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM projects WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    ApiError::not_found(format!("no project named {name}"), Some(json!({ "name": name })))
-                }
+                rusqlite::Error::QueryReturnedNoRows => ApiError::not_found(
+                    format!("no project named {name}"),
+                    Some(json!({ "name": name })),
+                ),
                 other => other.into(),
             })?;
 
         let tx = self.begin()?;
-        tx.execute("UPDATE projects SET archived = 1 WHERE id = ?1", params![id])?;
+        tx.execute(
+            "UPDATE projects SET archived = 1 WHERE id = ?1",
+            params![id],
+        )?;
         // D22: archiving the *current* default un-points it, in this same
         // transaction. The alternative — leaving the default aimed at a retired
         // project — routes every bare `add` into a project `tasqx projects` no
         // longer lists, which is exactly the invisible state this change kills.
         // Clearing returns the store to the state a fresh one is in (no default,
         // bare `add` is projectless), and `use` is the way back.
-        let default_cleared = get_config(&tx, DEFAULT_PROJECT_KEY)?.as_deref() == Some(name.as_str())
+        let default_cleared = get_config(&tx, DEFAULT_PROJECT_KEY)?.as_deref()
+            == Some(name.as_str())
             && clear_config(&tx, DEFAULT_PROJECT_KEY)?;
         insert_event(
             &tx,
@@ -1354,7 +1583,13 @@ impl Engine {
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
         )?;
-        insert_event(&tx, Entity::Task, &task.id, "annotation.add", &json!({ "id": id, "body": body }))?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "annotation.add",
+            &json!({ "id": id, "body": body }),
+        )?;
         tx.commit()?;
 
         Ok(json!({
@@ -1487,7 +1722,9 @@ impl Engine {
                 v
             }
             Some(_) => {
-                return Err(ApiError::bad_request("`metrics` must be an array of metric names"))
+                return Err(ApiError::bad_request(
+                    "`metrics` must be an array of metric names",
+                ))
             }
         };
 
@@ -1519,22 +1756,18 @@ impl Engine {
         }
         let mut groups: BTreeMap<String, Agg> = BTreeMap::new();
 
-        let mut stmt = self.conn.prepare(&format!("SELECT {TASK_COLS} FROM tasks"))?;
-        let rows = stmt.query_map([], map_task_row)?;
-        for r in rows {
-            let t = r?;
+        for snapshot in self.load_task_snapshots()? {
+            let t = snapshot.task;
             if apply_default && !t.status.counts_in_reports() {
                 continue;
             }
-            let tags = task_tags(&self.conn, &t.id)?;
-            let blocked = self.is_blocked(&t.id)?;
             let ctx = MatchCtx {
                 status: t.status,
                 project: t.project.as_deref(),
-                tags: &tags,
+                tags: &snapshot.tags,
                 due: t.due.as_deref(),
                 completed: t.completed.as_deref(),
-                blocked,
+                blocked: snapshot.blocked,
             };
             if !filter.matches(&ctx) {
                 continue;
@@ -1542,10 +1775,18 @@ impl Engine {
             let key = match group_by.as_str() {
                 "project" => t.project.clone().unwrap_or_else(|| "(none)".to_string()),
                 "status" => t.status.as_str().to_string(),
-                "priority" => t.priority.map(|x| x.as_str().to_string()).unwrap_or_else(|| "(none)".to_string()),
+                "priority" => t
+                    .priority
+                    .map(|x| x.as_str().to_string())
+                    .unwrap_or_else(|| "(none)".to_string()),
                 _ => unreachable!(),
             };
-            let agg = groups.entry(key).or_insert(Agg { count: 0, est_secs: 0, tracked_secs: 0, overdue: 0 });
+            let agg = groups.entry(key).or_insert(Agg {
+                count: 0,
+                est_secs: 0,
+                tracked_secs: 0,
+                overdue: 0,
+            });
             agg.count += 1;
             // Saturating: a single estimate is bounded by `duration_secs`, but a
             // roll-up sums arbitrarily many rows. A clamped total is wrong-but-
@@ -1575,7 +1816,10 @@ impl Engine {
                         obj.insert("est_total".into(), json!(iso_duration(agg.est_secs)));
                     }
                     "tracked_total" => {
-                        obj.insert("tracked_total".into(), json!(iso_duration(agg.tracked_secs)));
+                        obj.insert(
+                            "tracked_total".into(),
+                            json!(iso_duration(agg.tracked_secs)),
+                        );
                     }
                     "overdue" => {
                         obj.insert("overdue".into(), json!(agg.overdue));
@@ -1604,36 +1848,37 @@ impl Engine {
     pub fn store_export(&self, p: &Value) -> Result<Value, ApiError> {
         let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default(), Timestamp::now())
             .map_err(ApiError::bad_request)?;
-        let mut stmt = self.conn.prepare(&format!("SELECT {TASK_COLS} FROM tasks ORDER BY short_id"))?;
-        let rows = stmt.query_map([], map_task_row)?;
+        let mut snapshots = self.load_task_snapshots()?;
+        snapshots.sort_by_key(|snapshot| snapshot.task.short_id);
 
         // Pass 1: which tasks survive the filter. Edges can only be resolved
         // against the *whole* selected set, so nothing is emitted yet.
-        let mut selected: Vec<(Task, Vec<String>)> = Vec::new();
-        for r in rows {
-            let t = r?;
-            let tags = task_tags(&self.conn, &t.id)?;
-            let blocked = self.is_blocked(&t.id)?;
+        let mut selected = Vec::new();
+        for snapshot in snapshots {
+            let t = &snapshot.task;
             let ctx = MatchCtx {
                 status: t.status,
                 project: t.project.as_deref(),
-                tags: &tags,
+                tags: &snapshot.tags,
                 due: t.due.as_deref(),
                 completed: t.completed.as_deref(),
-                blocked,
+                blocked: snapshot.blocked,
             };
             if !filter.matches(&ctx) {
                 continue;
             }
-            selected.push((t, tags));
+            selected.push(snapshot);
         }
-        let present: HashSet<&str> = selected.iter().map(|(t, _)| t.id.as_str()).collect();
+        let present: HashSet<&str> = selected
+            .iter()
+            .map(|snapshot| snapshot.task.id.as_str())
+            .collect();
 
         // Pass 2: emit, keeping only edges whose target is also being emitted.
         let mut dropped = 0i64;
         let mut out = Vec::with_capacity(selected.len());
-        for (t, tags) in &selected {
-            out.push(self.export_task(t, tags, &present, &mut dropped)?);
+        for snapshot in &selected {
+            out.push(Self::export_task(snapshot, &present, &mut dropped));
         }
         Ok(json!({
             "tasks": out,
@@ -1657,9 +1902,9 @@ impl Engine {
 
     /// Every project row, name-ordered, in the canonical §3 shape. D37.
     fn export_projects(&self) -> Result<Vec<Value>, ApiError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, description, archived, created FROM projects ORDER BY name")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, archived, created FROM projects ORDER BY name",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok(json!({
                 "id": r.get::<_, String>(0)?,
@@ -1680,52 +1925,57 @@ impl Engine {
     /// `Map` is a `BTreeMap`, so keys serialize sorted (canonical form).
     /// `present` is the id set being exported; edges leaving it are dropped and
     /// counted into `dropped`.
-    fn export_task(
-        &self,
-        t: &Task,
-        tags: &[String],
-        present: &HashSet<&str>,
-        dropped: &mut i64,
-    ) -> Result<Value, ApiError> {
-        let all = self.depends_on_ids(&t.id)?;
-        let kept: Vec<String> =
-            all.iter().filter(|d| present.contains(d.as_str())).cloned().collect();
+    fn export_task(snapshot: &TaskSnapshot, present: &HashSet<&str>, dropped: &mut i64) -> Value {
+        let t = &snapshot.task;
+        let all = &snapshot.depends_on;
+        let kept: Vec<String> = all
+            .iter()
+            .filter(|d| present.contains(d.as_str()))
+            .cloned()
+            .collect();
         *dropped += (all.len() - kept.len()) as i64;
-        Ok(flag_unrecognized_status(t, json!({
-            "id": t.id,
-            "short_id": t.short_id,
-            "title": t.title,
-            // Verbatim, not canonicalized: export is the escape hatch out of a
-            // store the reader could not fully understand, so it must hand back
-            // what is actually in the file. Re-importing it then fails naming
-            // this value (the import gate), which is what tells the user which
-            // line to edit — a rescue that quietly rewrote it would leave them
-            // with no evidence and a store that still disagrees with itself.
-            "status": t.status_text(),
-            "priority": t.priority.map(|x| x.as_str()),
-            "project": t.project,
-            "tags": tags,
-            "due": t.due,
-            "scheduled": t.scheduled,
-            "wait": t.wait,
-            "estimate": t.estimate,
-            "recurrence": t.recurrence,
-            "remind": t.remind,
-            "depends_on": kept,
-            "annotations": self.annotations_of(&t.id)?,
-            "urgency": urgency::score(t.priority, t.due.as_deref(), &t.created),
-            "created": t.created,
-            "modified": t.modified,
-            "completed": t.completed,
-            "_rev": t.rev,
-        })))
+        flag_unrecognized_status(
+            t,
+            json!({
+                "id": t.id,
+                "short_id": t.short_id,
+                "title": t.title,
+                // Verbatim, not canonicalized: export is the escape hatch out of a
+                // store the reader could not fully understand, so it must hand back
+                // what is actually in the file. Re-importing it then fails naming
+                // this value (the import gate), which is what tells the user which
+                // line to edit — a rescue that quietly rewrote it would leave them
+                // with no evidence and a store that still disagrees with itself.
+                "status": t.status_text(),
+                "priority": t.priority.map(|x| x.as_str()),
+                "project": t.project,
+                "tags": snapshot.tags,
+                "due": t.due,
+                "scheduled": t.scheduled,
+                "wait": t.wait,
+                "estimate": t.estimate,
+                "recurrence": t.recurrence,
+                "remind": t.remind,
+                "depends_on": kept,
+                "annotations": snapshot.annotations,
+                "urgency": urgency::score(t.priority, t.due.as_deref(), &t.created),
+                "created": t.created,
+                "modified": t.modified,
+                "completed": t.completed,
+                "_rev": t.rev,
+            }),
+        )
     }
 
     // ---- store.import --------------------------------------------------------
 
     pub fn store_import(&self, p: &Value) -> Result<Value, ApiError> {
-        let tasks = req_array(p, "tasks")
-            .map_err(|e| ApiError::bad_request(format!("{} — store.import requires a `tasks` array", e.message)))?;
+        let tasks = req_array(p, "tasks").map_err(|e| {
+            ApiError::bad_request(format!(
+                "{} — store.import requires a `tasks` array",
+                e.message
+            ))
+        })?;
 
         // D37: the projects half of the document, optional so an export written
         // by an older tasqx — which had no such section — still imports. Its
@@ -1768,19 +2018,31 @@ impl Engine {
                         e.message
                     ))
                 })?;
-                import_keys(&format!("project {name}, "), "project", pv, IMPORT_PROJECT_KEYS)?;
+                import_keys(
+                    &format!("project {name}, "),
+                    "project",
+                    pv,
+                    IMPORT_PROJECT_KEYS,
+                )?;
                 let description = import_project_field(
                     &name,
                     "description",
                     opt_str_nonempty(pv, "description"),
                 )?;
-                let archived =
-                    import_project_field(&name, "archived", opt_bool(pv, "archived"))?.unwrap_or(false);
-                let created = import_project_field(&name, "created", opt_str_nonempty(pv, "created"))?
-                    .unwrap_or_else(now);
-                let payload_id =
-                    import_project_field(&name, "id", opt_str_nonempty(pv, "id"))?;
-                let row_id = upsert_project(&tx, &name, description.as_deref(), archived, &created, payload_id.as_deref())?;
+                let archived = import_project_field(&name, "archived", opt_bool(pv, "archived"))?
+                    .unwrap_or(false);
+                let created =
+                    import_project_field(&name, "created", opt_str_nonempty(pv, "created"))?
+                        .unwrap_or_else(now);
+                let payload_id = import_project_field(&name, "id", opt_str_nonempty(pv, "id"))?;
+                let row_id = upsert_project(
+                    &tx,
+                    &name,
+                    description.as_deref(),
+                    archived,
+                    &created,
+                    payload_id.as_deref(),
+                )?;
                 insert_event(
                     &tx,
                     Entity::Project,
@@ -1797,7 +2059,10 @@ impl Engine {
             // the reader to hunt for a key in a value that cannot hold one.
             let tv = import_shape("", "task", tv)?;
             let id = req_str(tv, "id").map_err(|e| {
-                ApiError::bad_request(format!("{} — each imported task requires a string `id`", e.message))
+                ApiError::bad_request(format!(
+                    "{} — each imported task requires a string `id`",
+                    e.message
+                ))
             })?;
             let id = id.as_str();
             // After `id`, so the error can name the task the caller must edit —
@@ -1842,12 +2107,14 @@ impl Engine {
                 })?
                 .as_str();
             let priority = match import_field(id, "priority", opt_str_nonempty(tv, "priority"))? {
-                Some(raw) => Some(Priority::parse(&raw).map(Priority::as_str).ok_or_else(|| {
-                    ApiError::bad_request(format!(
-                        "store.import: task {id} has priority {raw:?} — expected one of {}",
-                        Priority::ALL.map(Priority::as_str).join(", ")
-                    ))
-                })?),
+                Some(raw) => {
+                    Some(Priority::parse(&raw).map(Priority::as_str).ok_or_else(|| {
+                        ApiError::bad_request(format!(
+                            "store.import: task {id} has priority {raw:?} — expected one of {}",
+                            Priority::ALL.map(Priority::as_str).join(", ")
+                        ))
+                    })?)
+                }
                 None => None,
             };
             // D35: D18's rule on the import path — `project: ""` used to become
@@ -1931,17 +2198,22 @@ impl Engine {
             // code comment, never a decision: normalization runs the same
             // functions that WROTE the stored form, so it is idempotent on
             // anything an export produced (D12 stays byte-identical).
-            let recurrence = match import_field(id, "recurrence", opt_str_nonempty(tv, "recurrence"))? {
-                Some(s) => Some(import_field(id, "recurrence", recur::parse_rule(&s))
-                    .map(|r| recur::rule_to_string(&r))?),
-                None => None,
-            };
+            let recurrence =
+                match import_field(id, "recurrence", opt_str_nonempty(tv, "recurrence"))? {
+                    Some(s) => Some(
+                        import_field(id, "recurrence", recur::parse_rule(&s))
+                            .map(|r| recur::rule_to_string(&r))?,
+                    ),
+                    None => None,
+                };
             // `parse_remind` validates the SHAPE without collapsing it: an
             // offset stays the symbolic `-1h` that re-anchors when `due` moves,
             // and only the absolute branch resolves — exactly as on `add`.
             let remind = match import_field(id, "remind", opt_str_nonempty(tv, "remind"))? {
-                Some(s) => Some(import_field(id, "remind", remind::parse_remind(&s, now_ts))
-                    .map(|r| remind::spec_to_string(&r))?),
+                Some(s) => Some(
+                    import_field(id, "remind", remind::parse_remind(&s, now_ts))
+                        .map(|r| remind::spec_to_string(&r))?,
+                ),
                 None => None,
             };
             // Through the SAME gate as due/scheduled/wait above, not a second
@@ -1952,15 +2224,14 @@ impl Engine {
             // every list is sorted by. The store writes all six as RFC3339, which
             // `parse_when` short-circuits on, so D12's byte-identical round trip
             // is untouched.
-            let created = import_field(id, "created", opt_when(tv, "created", now_ts))?.unwrap_or_else(now);
-            let modified = import_field(id, "modified", opt_when(tv, "modified", now_ts))?.unwrap_or_else(now);
+            let created =
+                import_field(id, "created", opt_when(tv, "created", now_ts))?.unwrap_or_else(now);
+            let modified =
+                import_field(id, "modified", opt_when(tv, "modified", now_ts))?.unwrap_or_else(now);
             let completed = import_field(id, "completed", opt_when(tv, "completed", now_ts))?;
             let rev = import_field(id, "_rev", opt_i64(tv, "_rev"))?.unwrap_or(1);
-            let urgency = urgency::score(
-                priority.and_then(Priority::parse),
-                due.as_deref(),
-                &created,
-            );
+            let urgency =
+                urgency::score(priority.and_then(Priority::parse), due.as_deref(), &created);
 
             // Upsert by id.
             tx.execute(
@@ -1973,8 +2244,8 @@ impl Engine {
                  scheduled=?8, wait=?9, estimate=?10, recurrence=?11, urgency=?12, \
                  rev=?13, created=?14, modified=?15, completed=?16, remind=?17",
                 params![
-                    id, short_id, title, status, priority, project, due, scheduled, wait,
-                    estimate, recurrence, urgency, rev, created, modified, completed, remind
+                    id, short_id, title, status, priority, project, due, scheduled, wait, estimate,
+                    recurrence, urgency, rev, created, modified, completed, remind
                 ],
             )?;
 
@@ -2006,8 +2277,9 @@ impl Engine {
                     let aid = import_field(id, "annotations[].id", opt_str_nonempty(a, "id"))?
                         .unwrap_or_else(|| Uuid::now_v7().to_string());
                     let body = import_field(id, "annotations[].body", req_str(a, "body"))?;
-                    let acreated = import_field(id, "annotations[].created", opt_str_nonempty(a, "created"))?
-                        .unwrap_or_else(now);
+                    let acreated =
+                        import_field(id, "annotations[].created", opt_str_nonempty(a, "created"))?
+                            .unwrap_or_else(now);
                     tx.execute(
                         "INSERT OR REPLACE INTO annotations (id, task_id, body, created) VALUES (?1,?2,?3,?4)",
                         params![aid, id, body, acreated],
@@ -2023,7 +2295,13 @@ impl Engine {
                 import_field(id, "depends_on", opt_str_array(tv, "depends_on"))?,
             ));
 
-            insert_event(&tx, Entity::Task, id, "import", &json!({ "short_id": short_id }))?;
+            insert_event(
+                &tx,
+                Entity::Task,
+                id,
+                "import",
+                &json!({ "short_id": short_id }),
+            )?;
             imported += 1;
         }
 
@@ -2087,9 +2365,11 @@ impl Engine {
         let standing = get_config(&tx, DEFAULT_PROJECT_KEY)?;
         if let Some(name) = &want_default {
             let row: Option<i64> = tx
-                .query_row("SELECT archived FROM projects WHERE name = ?1", params![name], |r| {
-                    r.get(0)
-                })
+                .query_row(
+                    "SELECT archived FROM projects WHERE name = ?1",
+                    params![name],
+                    |r| r.get(0),
+                )
                 .optional()?;
             match row {
                 None => {
@@ -2153,7 +2433,10 @@ impl Engine {
                     Entity::accepted()
                 ))
             })?;
-            ("WHERE entity = ?1".to_string(), Some(ent.as_str().to_string()))
+            (
+                "WHERE entity = ?1".to_string(),
+                Some(ent.as_str().to_string()),
+            )
         } else {
             ("".to_string(), None)
         };
@@ -2309,7 +2592,11 @@ fn ref_param(p: &Value) -> Result<&Value, ApiError> {
 /// half-applied, which is how the last three invisible-state bugs here worked.
 fn require_live_project(conn: &Connection, name: &str) -> Result<(), ApiError> {
     let archived: Option<i64> = conn
-        .query_row("SELECT archived FROM projects WHERE name = ?1", params![name], |r| r.get(0))
+        .query_row(
+            "SELECT archived FROM projects WHERE name = ?1",
+            params![name],
+            |r| r.get(0),
+        )
         .optional()?;
     match archived {
         None => Err(ApiError::not_found(
@@ -2338,8 +2625,7 @@ fn reaches(conn: &Connection, from: &str, goal: &str) -> Result<bool, ApiError> 
         if !seen.insert(cur.clone()) {
             continue;
         }
-        let mut stmt =
-            conn.prepare("SELECT depends_on_id FROM dependencies WHERE task_id = ?1")?;
+        let mut stmt = conn.prepare("SELECT depends_on_id FROM dependencies WHERE task_id = ?1")?;
         let rows = stmt.query_map(params![cur], |r| r.get::<_, String>(0))?;
         for r in rows {
             stack.push(r?);
@@ -2365,7 +2651,9 @@ fn nullable_string(v: &Value, field: &str) -> Result<Value, ApiError> {
     } else if let Some(s) = v.as_str() {
         Ok(Value::String(s.to_string()))
     } else {
-        Err(ApiError::bad_request(format!("{field} must be a string or null")))
+        Err(ApiError::bad_request(format!(
+            "{field} must be a string or null"
+        )))
     }
 }
 
@@ -2390,9 +2678,27 @@ fn import_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result<T, A
 /// only this table can tell them apart — which is why the gate is a list of
 /// what an EXPORT emits rather than a list of what the importer reads.
 pub const IMPORT_TASK_KEYS: &[&str] = &[
-    "id", "short_id", "title", "status", "priority", "project", "tags", "due", "scheduled",
-    "wait", "estimate", "recurrence", "remind", "depends_on", "annotations", "urgency",
-    "created", "modified", "completed", "_rev", "status_unrecognized",
+    "id",
+    "short_id",
+    "title",
+    "status",
+    "priority",
+    "project",
+    "tags",
+    "due",
+    "scheduled",
+    "wait",
+    "estimate",
+    "recurrence",
+    "remind",
+    "depends_on",
+    "annotations",
+    "urgency",
+    "created",
+    "modified",
+    "completed",
+    "_rev",
+    "status_unrecognized",
 ];
 
 /// Every key an exported annotation object can carry. D34.
@@ -2409,7 +2715,10 @@ pub const IMPORT_PROJECT_KEYS: &[&str] = &["id", "name", "description", "archive
 /// keyed by the one identifier a project row has that a human recognises.
 fn import_project_field<T>(name: &str, field: &str, r: Result<T, ApiError>) -> Result<T, ApiError> {
     r.map_err(|e| {
-        ApiError::bad_request(format!("store.import: project {name}, {field}: {}", e.message))
+        ApiError::bad_request(format!(
+            "store.import: project {name}, {field}: {}",
+            e.message
+        ))
     })
 }
 
@@ -2432,9 +2741,11 @@ fn upsert_project(
     payload_id: Option<&str>,
 ) -> Result<String, ApiError> {
     if let Some(id) = tx
-        .query_row("SELECT id FROM projects WHERE name = ?1", params![name], |r| {
-            r.get::<_, String>(0)
-        })
+        .query_row(
+            "SELECT id FROM projects WHERE name = ?1",
+            params![name],
+            |r| r.get::<_, String>(0),
+        )
         .optional()?
     {
         tx.execute(
@@ -2444,9 +2755,11 @@ fn upsert_project(
         return Ok(id);
     }
     let taken = |id: &str| -> Result<bool, ApiError> {
-        Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)", params![id], |r| {
-            r.get(0)
-        })?)
+        Ok(tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+            params![id],
+            |r| r.get(0),
+        )?)
     };
     let id = match payload_id {
         Some(id) if !taken(id)? => id.to_string(),
@@ -2482,9 +2795,14 @@ fn import_shape<'a>(ctx: &str, label: &str, v: &'a Value) -> Result<&'a Value, A
 }
 
 fn import_keys(ctx: &str, label: &str, v: &Value, accepted: &[&str]) -> Result<(), ApiError> {
-    let obj = import_shape(ctx, label, v)?.as_object().expect("import_shape proved it");
-    let unknown: Vec<&str> =
-        obj.keys().filter(|k| !accepted.contains(&k.as_str())).map(String::as_str).collect();
+    let obj = import_shape(ctx, label, v)?
+        .as_object()
+        .expect("import_shape proved it");
+    let unknown: Vec<&str> = obj
+        .keys()
+        .filter(|k| !accepted.contains(&k.as_str()))
+        .map(String::as_str)
+        .collect();
     if unknown.is_empty() {
         return Ok(());
     }
@@ -2495,7 +2813,11 @@ fn import_keys(ctx: &str, label: &str, v: &Value, accepted: &[&str]) -> Result<(
          drop it; it was silently ignored before, so the import reported success and the value \
          never arrived",
         if unknown.len() == 1 { "" } else { "s" },
-        unknown.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", "),
+        unknown
+            .iter()
+            .map(|k| format!("`{k}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
         accepted.join(", ")
     )))
 }
@@ -2571,28 +2893,31 @@ fn update_column(
 /// `report.summary`'s `tracked_total` about the same task — trading a missing
 /// number for two numbers that contradict each other.
 pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
-    flag_unrecognized_status(t, json!({
-        "id": t.id,
-        "short_id": t.short_id,
-        "title": t.title,
-        "status": t.status_text(),
-        "priority": t.priority.map(|x| x.as_str()),
-        "project": t.project,
-        "due": t.due,
-        "scheduled": t.scheduled,
-        "wait": t.wait,
-        "estimate": t.estimate,
-        "tracked": iso_duration(t.tracked_seconds),
-        "active_since": t.active_since,
-        "recurrence": t.recurrence,
-        "remind": t.remind,
-        "urgency": t.urgency,
-        "tags": tags,
-        "created": t.created,
-        "modified": t.modified,
-        "completed": t.completed,
-        "_rev": t.rev,
-    }))
+    flag_unrecognized_status(
+        t,
+        json!({
+            "id": t.id,
+            "short_id": t.short_id,
+            "title": t.title,
+            "status": t.status_text(),
+            "priority": t.priority.map(|x| x.as_str()),
+            "project": t.project,
+            "due": t.due,
+            "scheduled": t.scheduled,
+            "wait": t.wait,
+            "estimate": t.estimate,
+            "tracked": iso_duration(t.tracked_seconds),
+            "active_since": t.active_since,
+            "recurrence": t.recurrence,
+            "remind": t.remind,
+            "urgency": t.urgency,
+            "tags": tags,
+            "created": t.created,
+            "modified": t.modified,
+            "completed": t.completed,
+            "_rev": t.rev,
+        }),
+    )
 }
 
 /// One `task.list` row: the canonical task object plus the derived `blocked`
@@ -2657,11 +2982,17 @@ fn parse_sort(p: &Value) -> Result<Vec<SortKey>, ApiError> {
                 SORT_KEYS.join(", ")
             )));
         }
-        keys.push(SortKey { key: key.to_string(), desc });
+        keys.push(SortKey {
+            key: key.to_string(),
+            desc,
+        });
     }
     if keys.is_empty() {
         // The documented default, spelled from the same list it validates.
-        keys.push(SortKey { key: SORT_KEYS[0].to_string(), desc: true });
+        keys.push(SortKey {
+            key: SORT_KEYS[0].to_string(),
+            desc: true,
+        });
     }
     Ok(keys)
 }
@@ -2748,6 +3079,77 @@ mod tests {
     use super::*;
     use crate::error::ErrorCode;
 
+    #[test]
+    fn task_snapshot_statement_count_is_independent_of_task_count() {
+        let statement_count = |task_count: usize| {
+            let e = Engine::open_in_memory().unwrap();
+            for n in 0..task_count {
+                e.task_add(&json!({ "title": format!("task {n}"), "tags": ["shared"] }))
+                    .unwrap();
+            }
+            let (snapshots, statements) = e.load_task_snapshots_counted().unwrap();
+            assert_eq!(snapshots.len(), task_count);
+            statements
+        };
+
+        let empty = statement_count(0);
+        assert_eq!(empty, SNAPSHOT_QUERY_COUNT);
+        assert_eq!(statement_count(1), empty);
+        assert_eq!(statement_count(32), empty);
+    }
+
+    /// Manual fixture, deliberately ignored in CI: it gives maintainers a
+    /// repeatable before/after measurement without turning noisy wall-clock
+    /// timing into a correctness gate.
+    #[test]
+    #[ignore = "manual 1k/10k task snapshot benchmark"]
+    fn benchmark_task_snapshot_bulk_readers() {
+        use std::time::Instant;
+
+        for task_count in [1_000usize, 10_000] {
+            let e = Engine::open_in_memory().unwrap();
+            let ids: Vec<String> = (1..=task_count)
+                .map(|n| format!("019f7eb6-0000-7000-8000-{n:012x}"))
+                .collect();
+            let tasks: Vec<Value> = ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| {
+                    let depends_on = if index > 0 && index % 2 == 1 {
+                        vec![ids[index - 1].clone()]
+                    } else {
+                        Vec::new()
+                    };
+                    json!({
+                        "id": id,
+                        "short_id": index + 1,
+                        "title": format!("benchmark task {index}"),
+                        "tags": ["shared", format!("bucket-{}", index % 10)],
+                        "depends_on": depends_on,
+                    })
+                })
+                .collect();
+            e.store_import(&json!({ "tasks": tasks })).unwrap();
+
+            let started = Instant::now();
+            let listed = e.task_list(&json!({})).unwrap();
+            let list_elapsed = started.elapsed();
+            let started = Instant::now();
+            let report = e.report_summary(&json!({})).unwrap();
+            let report_elapsed = started.elapsed();
+            let started = Instant::now();
+            let exported = e.store_export(&json!({})).unwrap();
+            let export_elapsed = started.elapsed();
+
+            assert_eq!(listed["count"], task_count);
+            assert_eq!(report["groups"][0]["count"], task_count);
+            assert_eq!(exported["tasks"].as_array().unwrap().len(), task_count);
+            eprintln!(
+                "{task_count} tasks: list={list_elapsed:?}, report={report_elapsed:?}, export={export_elapsed:?}"
+            );
+        }
+    }
+
     /// `depends_on_ids` (the export reader) must agree with `is_blocked` /
     /// `depends_on_short_ids` (the display readers, which INNER JOIN `tasks`).
     /// A dangling edge contributes zero rows there, so it was invisible to the
@@ -2772,7 +3174,9 @@ mod tests {
 
         // Forge the pre-FOREIGN-KEY state: orphan the edge behind SQLite's back.
         e.conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
-        e.conn.execute("DELETE FROM tasks WHERE id = ?1", params![bid]).unwrap();
+        e.conn
+            .execute("DELETE FROM tasks WHERE id = ?1", params![bid])
+            .unwrap();
         e.conn.pragma_update(None, "foreign_keys", "ON").unwrap();
 
         assert!(e.depends_on_short_ids(&did).unwrap().is_empty());
@@ -2797,8 +3201,10 @@ mod tests {
         let e = Engine::open_in_memory().unwrap();
         let done = e.task_add(&json!({ "title": "done" })).unwrap();
         let gone = e.task_add(&json!({ "title": "cancelled" })).unwrap();
-        e.task_done(&json!({ "ref": done["short_id"].clone() })).unwrap();
-        e.task_cancel(&json!({ "ref": gone["short_id"].clone() })).unwrap();
+        e.task_done(&json!({ "ref": done["short_id"].clone() }))
+            .unwrap();
+        e.task_cancel(&json!({ "ref": gone["short_id"].clone() }))
+            .unwrap();
         for (row, secs) in [(&done, 3600i64), (&gone, 1800i64)] {
             e.conn
                 .execute(
@@ -2808,9 +3214,7 @@ mod tests {
                 .unwrap();
         }
 
-        let g = |p: Value| -> Value {
-            e.report_summary(&p).unwrap()["groups"][0].clone()
-        };
+        let g = |p: Value| -> Value { e.report_summary(&p).unwrap()["groups"][0].clone() };
         assert_eq!(
             g(json!({ "metrics": ["tracked_total"] }))["tracked_total"],
             "PT1H",
@@ -2841,7 +3245,11 @@ mod tests {
                 .task_add(&json!({ "title": "x", field: bad }))
                 .expect_err("the core must reject what the CLI rejects");
             assert_eq!(err.code, ErrorCode::BadRequest, "{field}");
-            assert!(err.message.contains(bad), "{field}: {} must name the offending value", err.message);
+            assert!(
+                err.message.contains(bad),
+                "{field}: {} must name the offending value",
+                err.message
+            );
         }
     }
 
@@ -2861,7 +3269,11 @@ mod tests {
                 .task_modify(&json!({ "ref": t["short_id"].clone(), "set": { field: bad } }))
                 .expect_err("the core must reject what the CLI rejects");
             assert_eq!(err.code, ErrorCode::BadRequest, "{field}");
-            assert!(err.message.contains(bad), "{field}: {} must name the offending value", err.message);
+            assert!(
+                err.message.contains(bad),
+                "{field}: {} must name the offending value",
+                err.message
+            );
         }
     }
 
@@ -2876,17 +3288,30 @@ mod tests {
             .unwrap();
         let r#ref = t["short_id"].clone();
         let get = |e: &Engine| e.task_get(&json!({ "ref": r#ref })).unwrap();
-        assert_eq!(get(&e)["due"], "2026-07-20T00:00:00Z", "a bare ISO date resolves to midnight UTC");
-        assert_eq!(get(&e)["estimate"], "PT4H", "a human duration is stored ISO");
+        assert_eq!(
+            get(&e)["due"],
+            "2026-07-20T00:00:00Z",
+            "a bare ISO date resolves to midnight UTC"
+        );
+        assert_eq!(
+            get(&e)["estimate"],
+            "PT4H",
+            "a human duration is stored ISO"
+        );
 
         // Absent: modifying only the title leaves due/estimate alone.
-        e.task_modify(&json!({ "ref": r#ref, "set": { "title": "y" } })).unwrap();
+        e.task_modify(&json!({ "ref": r#ref, "set": { "title": "y" } }))
+            .unwrap();
         assert_eq!(get(&e)["due"], "2026-07-20T00:00:00Z");
         assert_eq!(get(&e)["estimate"], "PT4H");
 
         // Explicit null still clears.
-        e.task_modify(&json!({ "ref": r#ref, "set": { "due": null, "estimate": null } })).unwrap();
+        e.task_modify(&json!({ "ref": r#ref, "set": { "due": null, "estimate": null } }))
+            .unwrap();
         assert!(get(&e)["due"].is_null(), "null must still clear due");
-        assert!(get(&e)["estimate"].is_null(), "null must still clear estimate");
+        assert!(
+            get(&e)["estimate"].is_null(),
+            "null must still clear estimate"
+        );
     }
 }

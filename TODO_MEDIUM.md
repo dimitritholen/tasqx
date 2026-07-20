@@ -20,12 +20,12 @@ The filter grammar makes a pure SQL rewrite non-trivial, but the N+1 portion doe
 
 ### Acceptance Criteria
 
-- [ ] Task rows, tags, and unresolved-dependency state are loaded with a bounded number of SQL statements independent of task count.
-- [ ] `task.list`, `report.summary`, and `store.export` share the snapshot-loading primitive rather than reimplementing it.
-- [ ] A benchmark fixture covers at least 1k and 10k tasks with tags/dependencies.
-- [ ] Query count is asserted or instrumented in a regression test.
-- [ ] Existing filter, dynamic urgency, effective-status, sort, field projection, and export semantics remain byte/shape compatible.
-- [ ] Further SQL pushdown is based on measured benefit; do not duplicate the full filter parser in SQL.
+- [x] Task rows, tags, and unresolved-dependency state are loaded with a bounded number of SQL statements independent of task count.
+- [x] `task.list`, `report.summary`, and `store.export` share the snapshot-loading primitive rather than reimplementing it.
+- [x] A benchmark fixture covers at least 1k and 10k tasks with tags/dependencies.
+- [x] Query count is asserted or instrumented in a regression test.
+- [x] Existing filter, dynamic urgency, effective-status, sort, field projection, and export semantics remain byte/shape compatible.
+- [x] Further SQL pushdown is based on measured benefit; do not duplicate the full filter parser in SQL.
 
 ### Recommended Approach
 
@@ -175,13 +175,23 @@ Use issue #1 as the extraction driver: introduce a small transaction-scoped muta
 
 ## Progress Tracking
 
-- [ ] Issue #1: Remove full-scan N+1 query behavior
+- [x] Issue #1: Remove full-scan N+1 query behavior
 - [x] Issue #2: Preserve events during watch requests
 - [x] Issue #3: Surface daemon background failures
 - [ ] Issue #4: Bound daemon connection resources
 - [ ] Issue #5: Establish cohesive typed transaction/command boundaries
 
-**Total:** 2/5 completed
+**Total:** 3/5 completed
+
+### Issue #1 verification (2026-07-20)
+
+- `task_snapshot_statement_count_is_independent_of_task_count` proves empty, one-task, and 32-task stores all execute the same five snapshot statements.
+- Ignored `benchmark_task_snapshot_bulk_readers` covers 1,000 and 10,000 tasks with tags and dependencies; the 10k debug-build sample completed list/report/export in approximately 275/68/291 ms on the verification machine.
+- The shared snapshot also bounds export dependency and annotation reads, beyond the minimum tags/blocked acceptance criterion.
+- Existing list, report, filtered-export, import round-trip, unknown-status, urgency, projection, and dependency tests pass unchanged.
+- `cargo test --workspace --all-targets --no-fail-fast`: passed on the verification rerun.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `git diff --check`: passed.
 
 ### Issue #2 verification (2026-07-20)
 

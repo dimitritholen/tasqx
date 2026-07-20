@@ -1,7 +1,7 @@
 # Bounded task snapshots — design
 
 **Date:** 2026-07-20
-**Status:** approved for implementation
+**Status:** implemented and verified 2026-07-20
 **Scope:** Medium #1 only: remove task-count-dependent reads from `task.list`, `report.summary`, and `store.export`.
 
 ## Decision
@@ -31,7 +31,7 @@ One SQL statement with JSON aggregation was rejected because it couples domain s
 
 ## Verification
 
-- Query-count regression for empty, small, and large stores.
-- Existing list/report/export behavior tests.
-- Ignored 1,000/10,000-task benchmark fixture.
-- Full workspace tests, Clippy with warnings denied, and diff checks.
+- `task_snapshot_statement_count_is_independent_of_task_count` passes for empty, one-task, and 32-task stores at five statements each.
+- Existing list/report/export behavior and byte-identical round-trip tests pass.
+- Ignored `benchmark_task_snapshot_bulk_readers` covers 1,000/10,000 tasks with tags and dependencies. The 10k debug-build verification sample measured approximately 275 ms list, 68 ms report, and 291 ms export.
+- Full workspace tests, Clippy with warnings denied, and diff checks pass.
