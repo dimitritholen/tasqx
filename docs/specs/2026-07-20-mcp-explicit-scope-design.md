@@ -1,7 +1,7 @@
 # MCP explicit scope — design
 
 **Date:** 2026-07-20
-**Status:** approved for implementation
+**Status:** implemented and verified
 **Scope:** Low #1 only: replace misleading MCP token semantics without changing MCP protocol behavior.
 
 ## Decision

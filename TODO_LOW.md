@@ -20,11 +20,11 @@ Because the MCP server uses stdio and the launcher supplies the token, this is n
 
 ### Acceptance Criteria
 
-- [ ] Decide and document whether this is operator intent or authentication.
-- [ ] If it is operator intent, replace token minting with an explicit `--scope read|write` and remove false opacity/credential language.
-- [ ] If it is authentication, validate and compare a real secret/capability rather than trusting a self-declared prefix.
-- [ ] Invalid/truncated/random tokens are covered by tests.
-- [ ] No future socket transport inherits the current parser as an auth boundary.
+- [x] Decide and document whether this is operator intent or authentication.
+- [x] If it is operator intent, replace token minting with an explicit `--scope read|write` and remove false opacity/credential language.
+- [x] If it is authentication, validate and compare a real secret/capability rather than trusting a self-declared prefix. *(Not applicable: explicitly classified as operator intent.)*
+- [x] Invalid/truncated/random tokens are covered by tests.
+- [x] No future socket transport inherits the current parser as an auth boundary.
 
 ### Recommended Approach
 
@@ -105,8 +105,17 @@ Add `cargo llvm-cov` reporting and either `cargo audit` plus a license check, or
 
 ## Progress Tracking
 
-- [ ] Issue #1: Clarify or replace MCP token semantics
+- [x] Issue #1: Clarify or replace MCP token semantics
 - [ ] Issue #2: Adopt an enforceable formatting policy
 - [ ] Issue #3: Add coverage and dependency/license evidence
 
-**Total:** 0/3 completed
+**Total:** 1/3 completed
+
+### Issue #1 verification (2026-07-20)
+
+- `tasqx mcp serve [--scope read|write]` now expresses operator intent directly and defaults to read-only.
+- Token minting/parsing, `mcp token`, `serve --token`, and `TASQX_MCP_TOKEN` were removed; `removed_mcp_token_forms_are_rejected_even_when_the_value_looks_plausible` covers truncated, forged-looking, and random values.
+- Existing MCP read/write tool filtering and JSON-RPC integration tests pass unchanged; architecture docs prohibit reusing caller-selected `Scope` as authentication for future network transports.
+- `cargo test --workspace --all-targets --no-fail-fast`: passed (one manual benchmark ignored).
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `git diff --check`: passed.
