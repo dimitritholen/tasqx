@@ -8,6 +8,7 @@
 //! `commit`, the transaction drops and rolls back — leaving no state change and
 //! no event. State and history therefore move together, always.
 
+mod commands;
 mod projects;
 mod relationships;
 mod reports;
@@ -934,9 +935,41 @@ mod tests {
     use crate::error::ErrorCode;
 
     #[test]
+    fn lifecycle_commands_parse_once_and_preserve_wire_results() {
+        let start = commands::parse_start_task(&json!({ "ref": "42", "keep": true })).unwrap();
+        assert_eq!(start.target.value, json!("42"));
+        assert!(start.keep);
+
+        let started: Value = commands::TaskStarted {
+            id: "task-id".to_string(),
+            interval_started: Some("2026-07-20T12:00:00Z".to_string()),
+        }
+        .into();
+        assert_eq!(
+            started,
+            json!({
+                "id": "task-id",
+                "status": "active",
+                "interval_started": "2026-07-20T12:00:00Z",
+            })
+        );
+
+        let cancelled: Value = commands::TaskCancelled {
+            short_id: 7,
+            unblocked: vec![8, 9],
+        }
+        .into();
+        assert_eq!(
+            cancelled,
+            json!({ "short_id": 7, "status": "cancelled", "unblocked": [8, 9] })
+        );
+    }
+
+    #[test]
     fn every_mutation_locks_before_authoritative_reads() {
         let source = [
             include_str!("engine.rs"),
+            include_str!("engine/commands.rs"),
             include_str!("engine/projects.rs"),
             include_str!("engine/relationships.rs"),
             include_str!("engine/reports.rs"),

@@ -138,19 +138,18 @@ impl Engine {
     // ---- task.start ----------------------------------------------------------
 
     pub fn task_start(&self, p: &Value) -> Result<Value, ApiError> {
-        let _ = ref_param(p)?;
-        let keep = opt_bool(p, "keep")?.unwrap_or(false);
+        let command = commands::parse_start_task(p)?;
         let tx = self.begin_mutation()?;
-        let task = self.resolve_ref_on(&tx, p)?;
+        let task = self.resolve_ref_value_on(&tx, &command.target.value)?;
 
         match task.status {
             Status::Active => {
                 // Idempotent: already running.
-                return Ok(json!({
-                    "id": task.id,
-                    "status": "active",
-                    "interval_started": task.active_since,
-                }));
+                return Ok(commands::TaskStarted {
+                    id: task.id,
+                    interval_started: task.active_since,
+                }
+                .into());
             }
             Status::Pending => {}
             other => {
@@ -164,7 +163,7 @@ impl Engine {
         let ts = now();
 
         // D6: single active by default — auto-stop any currently active task.
-        if !keep {
+        if !command.keep {
             let mut actives: Vec<(String, Option<String>, i64, i64)> = Vec::new();
             {
                 let mut stmt = tx.prepare(
@@ -212,18 +211,19 @@ impl Engine {
         )?;
         tx.commit()?;
 
-        Ok(json!({
-            "id": task.id,
-            "status": "active",
-            "interval_started": ts,
-        }))
+        Ok(commands::TaskStarted {
+            id: task.id,
+            interval_started: Some(ts),
+        }
+        .into())
     }
 
     // ---- task.stop -----------------------------------------------------------
 
     pub fn task_stop(&self, p: &Value) -> Result<Value, ApiError> {
+        let command = commands::parse_task_target(p)?;
         let tx = self.begin_mutation()?;
-        let task = self.resolve_ref_on(&tx, p)?;
+        let task = self.resolve_ref_value_on(&tx, &command.value)?;
         if task.status != Status::Active {
             return Err(ApiError::conflict(format!(
                 "cannot stop a {} task (only active -> pending)",
@@ -249,7 +249,10 @@ impl Engine {
         )?;
         tx.commit()?;
 
-        Ok(json!({ "status": "pending", "tracked": iso_duration(elapsed) }))
+        Ok(commands::TaskStopped {
+            tracked: iso_duration(elapsed),
+        }
+        .into())
     }
 
     // ---- task.done -----------------------------------------------------------
@@ -985,8 +988,9 @@ impl Engine {
     // ---- task.cancel ---------------------------------------------------------
 
     pub fn task_cancel(&self, p: &Value) -> Result<Value, ApiError> {
+        let command = commands::parse_task_target(p)?;
         let tx = self.begin_mutation()?;
-        let task = self.resolve_ref_on(&tx, p)?;
+        let task = self.resolve_ref_value_on(&tx, &command.value)?;
         match task.status {
             Status::Backlog | Status::Pending | Status::Active => {}
             other => {
@@ -1023,14 +1027,19 @@ impl Engine {
         let unblocked = Self::compute_unblocked(&tx, &task.id)?;
         tx.commit()?;
 
-        Ok(json!({ "short_id": task.short_id, "status": "cancelled", "unblocked": unblocked }))
+        Ok(commands::TaskCancelled {
+            short_id: task.short_id,
+            unblocked,
+        }
+        .into())
     }
 
     // ---- task.reopen ---------------------------------------------------------
 
     pub fn task_reopen(&self, p: &Value) -> Result<Value, ApiError> {
+        let command = commands::parse_task_target(p)?;
         let tx = self.begin_mutation()?;
-        let task = self.resolve_ref_on(&tx, p)?;
+        let task = self.resolve_ref_value_on(&tx, &command.value)?;
         match task.status {
             Status::Done | Status::Cancelled => {}
             other => {
@@ -1055,8 +1064,10 @@ impl Engine {
         )?;
         tx.commit()?;
 
-        Ok(json!({ "short_id": task.short_id, "status": "pending" }))
+        Ok(commands::TaskReopened {
+            short_id: task.short_id,
+        }
+        .into())
     }
 
 }
-

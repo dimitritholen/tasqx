@@ -229,6 +229,7 @@ mod tests {
     fn keys_read_per_fn() -> BTreeMap<String, BTreeSet<String>> {
         let src = [
             include_str!("engine.rs"),
+            include_str!("engine/commands.rs"),
             include_str!("engine/projects.rs"),
             include_str!("engine/relationships.rs"),
             include_str!("engine/reports.rs"),
