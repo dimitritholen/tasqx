@@ -712,9 +712,12 @@ pub struct Conn {
     reader: BufReader<RecvHalf>,
     writer: SendHalf,
     id: u64,
-    /// Response envelopes read while draining event pushes are buffered here so
-    /// no reply is ever lost when a push arrives mid-call.
-    pending: VecDeque<Value>,
+    /// Event pushes observed while a request waits for its correlated response.
+    /// `next_frame` drains these first so TTY watch refreshes again and stream
+    /// watch emits every event rather than losing the notification.
+    pending_events: VecDeque<Value>,
+    /// Response envelopes for request IDs other than the active request.
+    pending_responses: VecDeque<Value>,
 }
 
 /// Try to connect to a daemon at `socket`. Returns `None` immediately (no
@@ -723,7 +726,13 @@ pub struct Conn {
 pub fn try_connect(socket: &str) -> Option<Conn> {
     let stream = connect_stream(socket).ok()?;
     let (recv, send) = stream.split();
-    Some(Conn { reader: BufReader::new(recv), writer: send, id: 0, pending: VecDeque::new() })
+    Some(Conn {
+        reader: BufReader::new(recv),
+        writer: send,
+        id: 0,
+        pending_events: VecDeque::new(),
+        pending_responses: VecDeque::new(),
+    })
 }
 
 impl Conn {
@@ -747,12 +756,9 @@ impl Conn {
         }
     }
 
-    /// Read the next line, classifying it. Event pushes are surfaced as
-    /// [`Frame::Event`]; response envelopes as [`Frame::Response`].
-    pub fn next_frame(&mut self) -> io::Result<Option<Frame>> {
-        if let Some(v) = self.pending.pop_front() {
-            return Ok(Some(Frame::Response(v)));
-        }
+    /// Read and classify one frame directly from the transport, without
+    /// consulting either retained inbox.
+    fn read_wire_frame(&mut self) -> io::Result<Option<Frame>> {
         loop {
             match self.read_line()? {
                 None => return Ok(None),
@@ -772,28 +778,52 @@ impl Conn {
         }
     }
 
+    /// Surface retained events first, then unrelated responses, then new wire
+    /// input. Events take priority because each one is a dirty signal for TTY
+    /// watch and an individually emitted record for non-TTY watch.
+    pub fn next_frame(&mut self) -> io::Result<Option<Frame>> {
+        if let Some(v) = self.pending_events.pop_front() {
+            return Ok(Some(Frame::Event(v)));
+        }
+        if let Some(v) = self.pending_responses.pop_front() {
+            return Ok(Some(Frame::Response(v)));
+        }
+        self.read_wire_frame()
+    }
+
     /// Send a request envelope and return the correlated response envelope,
-    /// transparently skipping (and dropping) any event pushes that arrive while
+    /// retaining event pushes and responses for other IDs that arrive while
     /// waiting. Safe to call on a subscribed connection.
     pub fn request(&mut self, method: &str, params: &Value) -> io::Result<Value> {
         self.id += 1;
+        let request_id = json!(self.id);
         let env = json!({
             "tasqx": crate::API_VERSION,
-            "id": self.id,
+            "id": request_id,
             "method": method,
             "params": params,
         });
         self.send_line(&env.to_string())?;
+
+        if let Some(i) = self
+            .pending_responses
+            .iter()
+            .position(|response| response.get("id") == Some(&request_id))
+        {
+            return Ok(self.pending_responses.remove(i).expect("position came from this queue"));
+        }
+
         loop {
-            match self.next_frame()? {
+            match self.read_wire_frame()? {
                 None => {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "daemon closed the connection",
                     ))
                 }
-                Some(Frame::Event(_)) => continue, // drop pushes while awaiting a reply
-                Some(Frame::Response(v)) => return Ok(v),
+                Some(Frame::Event(v)) => self.pending_events.push_back(v),
+                Some(Frame::Response(v)) if v.get("id") == Some(&request_id) => return Ok(v),
+                Some(Frame::Response(v)) => self.pending_responses.push_back(v),
             }
         }
     }
@@ -816,6 +846,20 @@ mod tests {
     use crate::scheduler::Pending;
     use jiff::Timestamp;
     use std::sync::atomic::AtomicUsize;
+
+    static CLIENT_TEST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn client_test_socket(label: &str) -> String {
+        let n = CLIENT_TEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        if cfg!(windows) {
+            format!("tasqx-client-{label}-{}-{n}", std::process::id())
+        } else {
+            std::env::temp_dir()
+                .join(format!("tasqx-client-{label}-{}-{n}.sock", std::process::id()))
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
 
     fn ts(s: &str) -> Timestamp {
         s.parse().unwrap()
@@ -852,6 +896,77 @@ mod tests {
             .task_add(&json!({ "title": title, "due": due, "remind": remind }))
             .unwrap();
         r.get("short_id").and_then(Value::as_i64).unwrap()
+    }
+
+    #[test]
+    fn request_correlates_responses_and_retains_events_for_the_next_refresh() {
+        let socket = client_test_socket("retained-event");
+        let listener = bind(&socket).expect("bind scripted server");
+        let server = thread::spawn(move || {
+            let stream = listener.accept().expect("accept scripted client");
+            let (recv, mut send) = stream.split();
+            let mut reader = BufReader::new(recv);
+            let mut line = String::new();
+
+            reader.read_line(&mut line).expect("first request");
+            let first: Value = serde_json::from_str(line.trim()).expect("first request JSON");
+            let first_id = first["id"].clone();
+
+            writeln!(
+                send,
+                "{}",
+                json!({ "event": "task.changed", "data": { "op": "add", "short_id": 2 } })
+            )
+            .expect("event");
+            writeln!(
+                send,
+                "{}",
+                json!({ "tasqx": crate::API_VERSION, "id": 999, "ok": true, "result": { "tasks": ["wrong response"] } })
+            )
+            .expect("unrelated response");
+            writeln!(
+                send,
+                "{}",
+                json!({ "tasqx": crate::API_VERSION, "id": first_id, "ok": true, "result": { "tasks": ["first"] } })
+            )
+            .expect("first response");
+            send.flush().expect("flush first frames");
+
+            line.clear();
+            reader.read_line(&mut line).expect("second request");
+            let second: Value = serde_json::from_str(line.trim()).expect("second request JSON");
+            writeln!(
+                send,
+                "{}",
+                json!({
+                    "tasqx": crate::API_VERSION,
+                    "id": second["id"].clone(),
+                    "ok": true,
+                    "result": { "tasks": ["first", "second"] },
+                })
+            )
+            .expect("second response");
+            send.flush().expect("flush second response");
+        });
+
+        let mut conn = try_connect(&socket).expect("connect scripted client");
+        let stale = conn.request("task.list", &json!({})).expect("first list");
+        assert_eq!(stale["id"], 1, "request must ignore a response for another ID");
+        assert_eq!(stale["result"]["tasks"], json!(["first"]));
+
+        let retained = conn.next_frame().expect("retained frame").expect("event frame");
+        assert!(matches!(retained, Frame::Event(ref event) if event["data"]["short_id"] == 2));
+
+        let fresh = conn.request("task.list", &json!({})).expect("second list");
+        assert_eq!(fresh["id"], 2);
+        assert_eq!(
+            fresh["result"]["tasks"],
+            json!(["first", "second"]),
+            "the retained event drives a refresh whose state includes the second change"
+        );
+
+        server.join().expect("scripted server");
+        cleanup(&socket);
     }
 
     /// A failed write must not consume the reminder. `pop_ripe` has already taken
