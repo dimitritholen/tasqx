@@ -1,7 +1,7 @@
 # Enforceable Rust formatting policy — design
 
 **Date:** 2026-07-20
-**Status:** approved for implementation
+**Status:** implemented and verified
 **Scope:** Low #2 only: make Rust formatting deterministic and CI-enforced.
 
 ## Decision

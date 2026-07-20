@@ -53,10 +53,10 @@ This is not a runtime defect, and a whole-tree format change should not be smugg
 
 ### Acceptance Criteria
 
-- [ ] Team explicitly accepts either rustfmt or a documented, enforceable alternative.
-- [ ] If adopting rustfmt, apply it in one behavior-free commit and add `cargo fmt --all -- --check` to CI.
-- [ ] Any rustfmt configuration is minimal and stable-compatible.
-- [ ] If retaining house style, document the exact formatter/check that reproduces it; prose alone is not a gate.
+- [x] Team explicitly accepts either rustfmt or a documented, enforceable alternative.
+- [x] If adopting rustfmt, apply it in one behavior-free commit and add `cargo fmt --all -- --check` to CI.
+- [x] Any rustfmt configuration is minimal and stable-compatible. *(Stock stable defaults; no configuration file.)*
+- [x] If retaining house style, document the exact formatter/check that reproduces it; prose alone is not a gate. *(Not applicable: house style was replaced.)*
 
 ### Recommended Approach
 
@@ -106,10 +106,19 @@ Add `cargo llvm-cov` reporting and either `cargo audit` plus a license check, or
 ## Progress Tracking
 
 - [x] Issue #1: Clarify or replace MCP token semantics
-- [ ] Issue #2: Adopt an enforceable formatting policy
+- [x] Issue #2: Adopt an enforceable formatting policy
 - [ ] Issue #3: Add coverage and dependency/license evidence
 
-**Total:** 1/3 completed
+**Total:** 2/3 completed
+
+### Issue #2 verification (2026-07-20)
+
+- Stock stable rustfmt formatted 45 Rust files in the isolated `style: apply stock rustfmt` commit; no configuration or non-Rust change is mixed into that commit.
+- CI now installs the stable rustfmt component and runs the same `cargo fmt --all -- --check` command documented for local use.
+- `cargo fmt --all -- --check`: passed after previously failing on the unformatted baseline.
+- `cargo test --workspace --all-targets --no-fail-fast`: passed (one manual benchmark ignored).
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `git diff --check`: passed.
 
 ### Issue #1 verification (2026-07-20)
 
