@@ -27,4 +27,4 @@
 
 - [x] Run format check, full workspace tests, Clippy, cargo-deny, and diff checks.
 - [x] Update Low #3 with verification evidence.
-- [ ] Commit, fast-forward merge into `main`, verify merged state, and delete the branch.
+- [x] Commit, fast-forward merge into `main`, verify merged state, and delete the branch.
