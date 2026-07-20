@@ -1,7 +1,7 @@
 # Transaction integrity remediation — design
 
 **Date:** 2026-07-20  
-**Status:** proposed, awaiting written-spec approval  
+**Status:** approved 2026-07-20
 **Scope:** first remediation slice on `fix/transaction-integrity`: Critical #1 (stale read-modify-write races) and Critical #2 (swallowed SQLite configuration errors). Daemon delivery, query performance, architectural decomposition beyond what this fix needs, and lower-severity audit work are explicitly deferred to later accepted branches.
 
 ## Problem
