@@ -121,6 +121,27 @@ pub struct Engine {
     conn: Connection,
 }
 
+/// Owns one serialized mutation from `BEGIN IMMEDIATE` through commit. The
+/// concrete transaction remains directly usable through `Deref`, while the
+/// type makes lock ownership visible in every mutating handler signature.
+struct MutationContext<'conn> {
+    transaction: Transaction<'conn>,
+}
+
+impl<'conn> std::ops::Deref for MutationContext<'conn> {
+    type Target = Transaction<'conn>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.transaction
+    }
+}
+
+impl MutationContext<'_> {
+    fn commit(self) -> Result<(), ApiError> {
+        self.transaction.commit().map_err(ApiError::from)
+    }
+}
+
 const SNAPSHOT_QUERY_COUNT: usize = 5;
 
 struct TaskSnapshot {
@@ -156,11 +177,13 @@ impl Engine {
     /// one-shot writers instead of one hitting `SQLITE_BUSY_SNAPSHOT` on a
     /// deferred read-then-write upgrade (DESIGN §2: writers wait, don't error).
     /// Keeps the `&self` shape via `new_unchecked`.
-    fn begin(&self) -> Result<Transaction<'_>, ApiError> {
-        Ok(Transaction::new_unchecked(
-            &self.conn,
-            TransactionBehavior::Immediate,
-        )?)
+    fn begin_mutation(&self) -> Result<MutationContext<'_>, ApiError> {
+        Ok(MutationContext {
+            transaction: Transaction::new_unchecked(
+                &self.conn,
+                TransactionBehavior::Immediate,
+            )?,
+        })
     }
 
     // ---- reference resolution ------------------------------------------------
@@ -251,7 +274,7 @@ impl Engine {
 
         let id = Uuid::now_v7().to_string();
         let ts = now();
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         // Duplicate check runs inside the IMMEDIATE tx: the write lock is already
         // held, so a racing project.create serializes behind us and its check
         // observes our committed row, yielding a clean `conflict` (not the
@@ -334,7 +357,7 @@ impl Engine {
         // make it unselectable forever (D28).
         let name = req_str_lookup(p, "name")?;
 
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         // Existence + archived state are read inside the IMMEDIATE tx: the write
         // lock is held, so a racing `project.archive` serializes against us and
         // we can never commit a default aimed at a project archived mid-flight.
@@ -442,7 +465,7 @@ impl Engine {
         let ts = now();
         let urg = urgency::score(priority, due.as_deref(), &ts);
 
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         // Resolve both explicit and inherited routing inside the IMMEDIATE
         // transaction. Otherwise an archive can clear/retire the default after
         // this command reads it but before this write obtains its lock.
@@ -519,7 +542,7 @@ impl Engine {
     pub fn task_start(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
         let keep = opt_bool(p, "keep")?.unwrap_or(false);
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
 
         match task.status {
@@ -601,7 +624,7 @@ impl Engine {
     // ---- task.stop -----------------------------------------------------------
 
     pub fn task_stop(&self, p: &Value) -> Result<Value, ApiError> {
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         if task.status != Status::Active {
             return Err(ApiError::conflict(format!(
@@ -634,7 +657,7 @@ impl Engine {
     // ---- task.done -----------------------------------------------------------
 
     pub fn task_done(&self, p: &Value) -> Result<Value, ApiError> {
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
             Status::Pending | Status::Active => {}
@@ -874,7 +897,7 @@ impl Engine {
         // Store-dependent validation starts only after BEGIN IMMEDIATE. Another
         // process may have changed the row after request parsing but before this
         // lock; the transaction's row is the only authoritative one.
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
 
         // Optional optimistic concurrency.
@@ -1086,7 +1109,7 @@ impl Engine {
         }
 
         let ts = now();
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         for tag in &tags {
             ensure_tag_link(&tx, &task.id, tag)?;
@@ -1411,7 +1434,7 @@ impl Engine {
     // ---- task.cancel ---------------------------------------------------------
 
     pub fn task_cancel(&self, p: &Value) -> Result<Value, ApiError> {
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
             Status::Backlog | Status::Pending | Status::Active => {}
@@ -1455,7 +1478,7 @@ impl Engine {
     // ---- task.reopen ---------------------------------------------------------
 
     pub fn task_reopen(&self, p: &Value) -> Result<Value, ApiError> {
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
             Status::Done | Status::Cancelled => {}
@@ -1537,7 +1560,7 @@ impl Engine {
                 other => other.into(),
             })?;
 
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         tx.execute(
             "UPDATE projects SET archived = 1 WHERE id = ?1",
             params![id],
@@ -1573,7 +1596,7 @@ impl Engine {
 
         let id = Uuid::now_v7().to_string();
         let ts = now();
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         tx.execute(
             "INSERT INTO annotations (id, task_id, body, created) VALUES (?1, ?2, ?3, ?4)",
@@ -1605,7 +1628,7 @@ impl Engine {
         let dep = p
             .get("depends_on")
             .ok_or_else(|| ApiError::bad_request("missing required field: depends_on"))?;
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         let target = self.resolve_ref_value_on(&tx, dep)?;
 
@@ -1656,7 +1679,7 @@ impl Engine {
         let dep = p
             .get("depends_on")
             .ok_or_else(|| ApiError::bad_request("missing required field: depends_on"))?;
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         let target = self.resolve_ref_value_on(&tx, dep)?;
         let ts = now();
@@ -1999,7 +2022,7 @@ impl Engine {
         // (task_id, its validated `depends_on` ids) — typed at collection time so
         // pass 2 cannot inherit a silently-dropped edge from a wrong-typed value.
         let mut edges: Vec<(String, Vec<String>)> = Vec::new();
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
 
         // Pass 0: projects, before any task, so a task's `project` can be checked
         // against the document's own records rather than against whatever the
@@ -2533,7 +2556,7 @@ impl Engine {
             })?
             .to_string();
 
-        let tx = self.begin()?;
+        let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         if storage::already_reminded(&tx, &task.id, &at)? {
             return Ok(json!({ "fired": false, "short_id": task.short_id, "at": at }));
@@ -3078,6 +3101,55 @@ fn opt_cmp(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
+
+    #[test]
+    fn every_mutation_locks_before_authoritative_reads() {
+        let source = include_str!("engine.rs");
+        let handlers = [
+            "project_create",
+            "project_use",
+            "project_archive",
+            "task_add",
+            "task_start",
+            "task_stop",
+            "task_done",
+            "task_modify",
+            "task_cancel",
+            "task_reopen",
+            "tag_add",
+            "annotation_add",
+            "dependency_add",
+            "dependency_remove",
+            "store_import",
+            "reminder_fire",
+        ];
+
+        for handler in handlers {
+            let marker = format!("pub fn {handler}(");
+            let start = source.find(&marker).unwrap_or_else(|| panic!("missing mutation {handler}"));
+            let rest = &source[start..];
+            let end = rest[marker.len()..]
+                .find("\n    pub fn ")
+                .map(|offset| marker.len() + offset)
+                .unwrap_or(rest.len());
+            let body = &rest[..end];
+            let lock = body.find("self.begin_mutation()")
+                .unwrap_or_else(|| panic!("{handler} must acquire a MutationContext"));
+            let before_lock = &body[..lock];
+            for forbidden in [
+                "self.resolve_ref(",
+                "self.resolve_ref_on(",
+                "self.task_by_",
+                "self.default_project(",
+                "self.conn.",
+            ] {
+                assert!(
+                    !before_lock.contains(forbidden),
+                    "{handler} performs authoritative read {forbidden} before begin_mutation"
+                );
+            }
+        }
+    }
 
     #[test]
     fn task_snapshot_statement_count_is_independent_of_task_count() {
