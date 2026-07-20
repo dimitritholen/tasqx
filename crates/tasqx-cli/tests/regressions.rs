@@ -580,19 +580,35 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
     ok(&["add", "painted", "+needs paint"]);
     ok(&["add", "unrelated", "+api"]);
 
-    // `list`: the shell-stripped form is the bug; the literal-quote form is the
-    // control that already worked and must keep working.
-    for form in ["+needs paint", r#"+"needs paint""#] {
-        let s = ok(&["list", form]);
-        assert!(s.contains("painted"), "{form:?} must select the spaced tag: {s}");
-        assert!(!s.contains("unrelated"), "{form:?} must not widen to every task: {s}");
-    }
+    // `list`: the literal-quote form is what the tool teaches and must work.
+    let s = ok(&["list", r#"+"needs paint""#]);
+    assert!(s.contains("painted"), "the literal form must select the spaced tag: {s}");
+    assert!(!s.contains("unrelated"), "and must not widen to every task: {s}");
     // A value key with a space behaves the same; `Home Renovation` is the
     // project `add` accepted whole one command earlier.
-    for form in ["project:Home Renovation", r#"project:"Home Renovation""#] {
-        let s = ok(&["list", form]);
-        assert!(s.contains("painted") && s.contains("unrelated"), "{form:?}: {s}");
+    let s = ok(&["list", r#"project:"Home Renovation""#]);
+    assert!(s.contains("painted") && s.contains("unrelated"), "the literal form names the project: {s}");
+
+    // N1a: the shell-STRIPPED form is no longer guessed back into one value.
+    // The re-quoting heuristic that did so could not tell a spaced value from a
+    // whole expression passed as one argument, and answered `list "+api or
+    // +web"` with a confident `No tasks.`. Refusing is the decision; the hint
+    // is what makes refusing good, so both halves are pinned.
+    for (form, hint) in [
+        ("+needs paint", r#"+"needs paint""#),
+        ("project:Home Renovation", r#"project:"Home Renovation""#),
+    ] {
+        let out = run(&["list", form]);
+        assert_eq!(out.status.code(), Some(2), "{form:?} must be refused, not answered: {out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(hint), "{form:?} must teach the literal spelling, got: {err}");
+        assert!(err.contains("quote"), "{form:?} must say why: {err}");
     }
+    // And the reading the heuristic used to lose now works, which is the point:
+    // an element that opens with a prefix and continues into an EXPRESSION was
+    // read as one tag literally named `api or +nosuch`, and answered "No tasks."
+    let s = ok(&["list", "+api or +nosuch"]);
+    assert!(s.contains("unrelated") && !s.contains("painted"), "an expression in one argv element: {s}");
 
     // Several argv elements must still be several tokens: this filter matches
     // nothing precisely because both predicates are read and ANDed.
@@ -602,13 +618,13 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
     assert!(s.contains("unrelated") && !s.contains("painted"), "and still select: {s}");
 
     // `export`, `report` and `watch` each carried their own join.
-    let s = ok(&["export", "+needs paint"]);
+    let s = ok(&["export", r#"+"needs paint""#]);
     assert!(s.contains("painted") && !s.contains("unrelated"), "export takes a filter too: {s}");
-    let s = ok(&["report", "project", "+needs paint"]);
+    let s = ok(&["report", "project", r#"+"needs paint""#]);
     assert!(s.contains("Home Renovation"), "report's tail after group_by is a filter: {s}");
     // `watch` blocks on a daemon, so only its argument handling is reachable:
     // the filter must at least not be rejected as unparseable before connecting.
-    let out = run(&["watch", "+needs paint", "--json"]);
+    let out = run(&["watch", r#"+"needs paint""#, "--json"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains("unknown filter token"), "watch must not mis-split its filter: {err}");
 }
@@ -786,11 +802,16 @@ fn one_quoting_rule_spans_the_write_and_read_sides() {
     // The two spellings converge, as they already do on the read side: a value
     // whose only special character is a space needs no quotes once the shell
     // has drawn the argument boundary.
+    // The WRITE side still honours the argv boundary the shell drew — sugar
+    // gets one element and has no expression grammar to be ambiguous against —
+    // so both spellings create the same project. The READ side is where the
+    // ambiguity lives, and since N1a it teaches the literal form rather than
+    // guessing (see `a_shell_quoted_filter_value_reaches_the_parser_whole`).
     ok(&["init", "Home Renovation"]);
     ok(&["add", "stripped", "project:Home Renovation"]);
     ok(&["add", "literal", r#"project:"Home Renovation""#]);
-    let s = ok(&["list", "project:Home Renovation"]);
-    assert!(s.contains("stripped") && s.contains("literal"), "both spellings converge: {s}");
+    let s = ok(&["list", r#"project:"Home Renovation""#]);
+    assert!(s.contains("stripped") && s.contains("literal"), "both write spellings converge: {s}");
 
     // A lone quote is now a refusal, not a silent swallow. `+say"hi` opens a
     // quoted run that never closes; guessing where it ended is how the tag
@@ -1092,7 +1113,9 @@ fn a_due_bound_takes_the_dates_the_tool_advertises_and_refuses_the_rest() {
 
     // Every spelling the date-error message recommends, in the widest form so
     // the answer cannot depend on which day the suite runs.
-    for bound in ["in 2 weeks", "eom", "2099-12-31", "2099-12-31T17:00", "+1y"] {
+    // A spelling containing a space takes the literal-quote form, which is what
+    // the tool teaches everywhere since N1a removed the argv re-quoting guess.
+    for bound in [r#""in 2 weeks""#, "eom", "2099-12-31", "2099-12-31T17:00", "+1y"] {
         let out = bin("due-bound", &dir)
             .args(["list", &format!("due.before:{bound}")])
             .output()
@@ -1115,4 +1138,169 @@ fn a_due_bound_takes_the_dates_the_tool_advertises_and_refuses_the_rest() {
         !msg.contains("No tasks"),
         "a typo must never be answered with an empty result set: {msg}"
     );
+}
+
+/// N1c — THE INVARIANT THE WHOLE CLUSTER WAS MISSING: three spellings of one
+/// filter must select the same rows.
+///
+/// Every regression in this area came from a test that covered one spelling and
+/// not its sibling. `from_argv` was fixed against argv given as separate words
+/// and broke the single quoted argument; the argv pre-pass was fixed against
+/// filter tokens and broke `-h`; the two shell spellings of a spaced value were
+/// asserted against each other in a unit test that built the split itself. One
+/// example per behaviour is not a guard, so this is a corpus crossed with every
+/// spelling, and the crossing is the test:
+///
+///   (i)   the filter as ONE argv element   — `tasqx list "(+api or +web)"`
+///   (ii)  the same as SEVERAL argv words   — `tasqx list ( +api or +web )`
+///   (iii) the same string to `task.list`   — the JSON API, no clap in front
+///
+/// (i) and (iii) send byte-identical filter strings and so pin the CLI plumbing
+/// between them: `from_argv`, the dash pre-pass and `unescape`. (ii) pins the
+/// join. All three run the REAL BINARY, because every bug here lived in argv
+/// handling and a unit test that hand-builds the token list encodes the buggy
+/// split as its own input.
+///
+/// Cases that are expected to FAIL are asserted as failures rather than left
+/// out — the shell-stripped `project:Home Renovation` is refused since N1a, and
+/// omitting it would let a future re-introduction of the guessing heuristic
+/// pass this test.
+#[test]
+fn one_filter_selects_one_set_of_rows_in_every_spelling() {
+    use std::io::Write;
+    let dir = fresh_config_dir("spelling-invariant");
+    let run = |args: &[&str]| -> std::process::Output {
+        bin("spelling-invariant", &dir).args(args).output().expect("run tasqx")
+    };
+    let ok = |args: &[&str]| {
+        let out = run(args);
+        assert!(out.status.success(), "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    };
+
+    // The store. Titles are the identity this test compares on, so they are
+    // distinct words that cannot appear in each other.
+    ok(&["init", "Home Renovation"]);
+    ok(&["init", "Work"]);
+    ok(&["add", "alpha", "--project", "Work", "+api", "due:tomorrow"]);
+    ok(&["add", "bravo", "--project", "Work", "+api", "+web"]);
+    ok(&["add", "charlie", "--project", "Work", "+web"]);
+    ok(&["add", "delta", "--project", "Home Renovation", r#"+"needs paint""#]);
+    ok(&["add", "echo", "--project", "Work", "+api"]);
+    ok(&["done", "5"]);
+
+    // Titles of the rows a `list --json` payload selected, sorted so the
+    // comparison is about membership and not about ordering — which is a
+    // separate contract with its own tests.
+    let titles = |stdout: &[u8]| -> Vec<String> {
+        let v: serde_json::Value = serde_json::from_slice(stdout).expect("list --json emits one object");
+        let mut t: Vec<String> = v["tasks"]
+            .as_array()
+            .expect("a tasks array")
+            .iter()
+            .map(|r| r["title"].as_str().expect("a title").to_string())
+            .collect();
+        t.sort();
+        t
+    };
+
+    // (iii) the same filter string with no clap in front of it at all.
+    let via_api = |filter: &str| -> serde_json::Value {
+        let mut child = bin("spelling-invariant", &dir)
+            .arg("api")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn tasqx api");
+        let env = serde_json::json!({
+            "tasqx": "1", "id": "n1c", "method": "task.list",
+            "params": {"filter": filter},
+        });
+        child.stdin.take().expect("stdin").write_all(env.to_string().as_bytes()).expect("write envelope");
+        let out = child.wait_with_output().expect("wait");
+        serde_json::from_slice(&out.stdout).expect("one JSON response")
+    };
+
+    // Each case is the MULTI-WORD spelling; the single-argument spelling is its
+    // join. A word may itself carry literal quotes — that is the spelling the
+    // tool teaches for a value containing a space, and it is the one thing the
+    // shell hands through unchanged.
+    let corpus: [&[&str]; 9] = [
+        &["+api"],                         // a bare tag
+        &["+api", "+web"],                 // two tags, implicit AND
+        &["(", "+api", "or", "+web", ")"], // grouping with parens and `or`
+        &["(+api", "or", "+web)"],         // parens glued to their operands
+        &["status:done"],                  // a status predicate
+        &["due.before:+1y"],               // a date bound (widest, so the day cannot matter)
+        &[r#"project:"Home Renovation""#], // a project name containing a space
+        &[r#"+"needs paint""#],            // a tag containing a space
+        &["-api"],                         // an exclusion, the one-dash grammar
+    ];
+
+    for words in corpus {
+        let joined = words.join(" ");
+
+        // (ii) several bare argv words.
+        let mut argv = vec!["list", "--json"];
+        argv.extend_from_slice(words);
+        let many = run(&argv);
+        assert!(
+            many.status.success(),
+            "{words:?} as words failed: {}",
+            String::from_utf8_lossy(&many.stderr)
+        );
+        let many = titles(&many.stdout);
+
+        // (i) one argv element.
+        let one = run(&["list", "--json", &joined]);
+        assert!(
+            one.status.success(),
+            "{joined:?} as one arg failed: {}",
+            String::from_utf8_lossy(&one.stderr)
+        );
+        let one = titles(&one.stdout);
+
+        // (iii) the JSON API.
+        let api = via_api(&joined);
+        assert_eq!(api["ok"], true, "{joined:?} must be accepted by the API too: {api}");
+        let mut api: Vec<String> = api["result"]["tasks"]
+            .as_array()
+            .expect("a tasks array")
+            .iter()
+            .map(|r| r["title"].as_str().expect("a title").to_string())
+            .collect();
+        api.sort();
+
+        assert_eq!(one, many, "{words:?}: one argv element and several must select the same rows");
+        assert_eq!(one, api, "{joined:?}: the CLI and the API must select the same rows");
+        // A filter that selects nothing everywhere would satisfy the three
+        // equalities while proving nothing, which is how a broken tokenizer
+        // could hide here.
+        assert!(!one.is_empty(), "{words:?} must select at least one row, got nothing");
+    }
+
+    // The case that must FAIL, in every spelling, for the same reason: N1a
+    // deleted the heuristic that guessed `project:Home` + `Renovation` back
+    // into one value, because the guess was also a valid reading of a whole
+    // expression and it answered the wrong one silently.
+    let stripped: [&[&str]; 2] = [&["project:Home", "Renovation"], &["+needs", "paint"]];
+    for words in stripped {
+        let joined = words.join(" ");
+        let mut argv = vec!["list"];
+        argv.extend_from_slice(words);
+        for out in [run(&argv), run(&["list", &joined])] {
+            assert_eq!(out.status.code(), Some(2), "{joined:?} must be refused, not answered");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains("did you mean"), "{joined:?} must teach the fix: {err}");
+        }
+        let api = via_api(&joined);
+        assert_eq!(api["ok"], false, "{joined:?} must be refused on the API too: {api}");
+        let msg = api["error"]["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("did you mean"), "{joined:?}: the API gets the same hint: {msg}");
+    }
+
+    // No output on any of those paths may carry the pre-pass sentinel, which is
+    // the failure mode the dash escape has already leaked three times.
+    let out = run(&["list", "--json", "-api"]);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains('\u{1}'), "sentinel leaked to stdout");
+    assert!(!String::from_utf8_lossy(&out.stderr).contains('\u{1}'), "sentinel leaked to stderr");
 }

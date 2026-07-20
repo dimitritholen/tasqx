@@ -111,6 +111,22 @@ pub fn prepass<I: IntoIterator<Item = OsString>>(raw: I) -> Prepass {
             if !long.contains('=') && long_value_follows(sub, long) {
                 j += 1;
             }
+        } else if let Some(short) = declared_short(sub, &tok) {
+            // Clap's own short flag, left alone for the same reason a `--flag`
+            // is: escaping it made it unreachable. `-h` is the case that bit —
+            // `tasqx list -h` ran the command and `tasqx export -h` DUMPED THE
+            // STORE instead of printing help, because the help flag was hidden
+            // behind the sentinel and clap never saw it. Read out of clap's arg
+            // table rather than spelled `-h` here: a hardcoded exception is the
+            // hand-maintained registry shape that produced this bug in the
+            // first place (D30 — when a fix can be "derive it from clap", do).
+            // The trade, which the dash grammar already implies: a tag whose
+            // name is exactly one character that clap declares as a short flag
+            // is not excludable from the CLI. `-h` was never a usable tag
+            // exclusion anyway, and the API path takes the filter verbatim.
+            if short_takes_value(sub, short) {
+                j += 1;
+            }
         } else if is_tag_exclusion(&tok) {
             argv[j] = OsString::from(format!("{ESCAPED_DASH}{}", &tok[1..]));
         }
@@ -142,6 +158,18 @@ pub fn unescape(tokens: &mut [String]) {
             *tok = format!("-{}", &tok[ESCAPED_DASH.len_utf8()..]);
         }
     }
+}
+
+/// The short flag `tok` names, if `cmd` declares one by that letter.
+///
+/// Deliberately exact-match on a SINGLE character: `-needs` is a tag exclusion
+/// even where `-n` is a flag, because the dash grammar says a one-dash token is
+/// filter text and clusters are not part of it. Only the spelling a user
+/// reaching for a flag actually types is handed back to clap.
+fn declared_short(cmd: &clap::Command, tok: &str) -> Option<char> {
+    let mut chars = tok.strip_prefix('-')?.chars();
+    let (c, None) = (chars.next()?, chars.next()) else { return None };
+    cmd.get_arguments().any(|a| a.get_short() == Some(c)).then_some(c)
 }
 
 /// `-x…`: a tag exclusion. `--x` is a flag (real or mistyped) and stays clap's
@@ -259,6 +287,58 @@ mod tests {
         assert_eq!(go(&["tasqx", "list", "--bogus"]), ["tasqx", "list", "--bogus"]);
         assert_eq!(go(&["tasqx", "add", "x", "--remind", "-1h"]), ["tasqx", "add", "x", "--remind", "-1h"]);
         assert_eq!(go(&["tasqx", "import", "-"]), ["tasqx", "import", "-"]);
+    }
+
+    /// N1b: the pre-pass escaped EVERY single-dash token, clap's own help flag
+    /// included, so `-h` never reached clap on a filter command. `tasqx list -h`
+    /// listed tasks and `tasqx export -h` dumped the whole store to stdout.
+    ///
+    /// Asserted over every short flag each filter command DECLARES, read out of
+    /// clap rather than listed here. Listing `-h` as an exception is the
+    /// hand-maintained shape that caused the bug; this guard covers `-V` and
+    /// anything else the day it is declared, including on a filter command
+    /// added later.
+    #[test]
+    fn no_declared_short_flag_is_ever_escaped() {
+        let mut cmd = Cli::command();
+        cmd.build();
+        let mut seen = 0;
+        for name in FILTER_COMMANDS {
+            let sub = cmd.find_subcommand(name).expect("registered");
+            let shorts: Vec<char> = sub.get_arguments().filter_map(clap::Arg::get_short).collect();
+            // A filter command with no short flag at all would let this pass by
+            // matching nothing — `-h` alone makes that unreachable in practice,
+            // and the floor below makes it unreachable in fact.
+            for c in shorts {
+                seen += 1;
+                let argv = [OsString::from("tasqx"), OsString::from(name), OsString::from(format!("-{c}"))];
+                let out = prepass(argv);
+                assert_eq!(
+                    out.argv[2].to_string_lossy(),
+                    format!("-{c}"),
+                    "`{name} -{c}` is a flag {name} declares; escaping it hides it from clap"
+                );
+            }
+        }
+        assert!(seen >= FILTER_COMMANDS.len(), "every filter command declares at least `-h`");
+    }
+
+    /// The other half of N1b: exempting clap's shorts must not re-break `-tag`.
+    /// A multi-character token is filter text even when its first letter names a
+    /// flag, because the dash grammar counts dashes, not letters.
+    #[test]
+    fn a_multi_character_dash_token_is_still_a_tag_exclusion() {
+        let go = |args: &[&str]| -> Vec<String> {
+            prepass(args.iter().map(OsString::from))
+                .argv
+                .iter()
+                .map(|s| s.to_string_lossy().replace(ESCAPED_DASH, "<esc>"))
+                .collect()
+        };
+        // `h` is `--help`'s short; `-hotfix` is a tag named `hotfix`.
+        assert_eq!(go(&["tasqx", "list", "-hotfix"]), ["tasqx", "list", "<esc>hotfix"]);
+        assert_eq!(go(&["tasqx", "list", "-h"]), ["tasqx", "list", "-h"], "clap's own flag reaches clap");
+        assert_eq!(go(&["tasqx", "list", "-needs", "-h"]), ["tasqx", "list", "<esc>needs", "-h"]);
     }
 
     /// C7: a sentinel that lands in a flag VALUE is never restored, because

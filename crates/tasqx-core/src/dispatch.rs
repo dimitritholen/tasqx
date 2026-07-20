@@ -59,7 +59,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("dependency.remove", &["ref", "depends_on"], false),
     ("report.summary", &["group_by", "filter", "metrics", "all"], false),
     ("store.export", &["filter"], false),
-    ("store.import", &["tasks"], true),
+    ("store.import", &["tasks", "projects", "default_project"], true),
     ("event.list", &["limit", "ref", "entity"], false),
     ("reminder.fire", &["ref", "at"], false),
     ("core.capabilities", &[], false),

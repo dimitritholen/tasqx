@@ -145,8 +145,16 @@ const METHODS: [(&str, &str, &str); 23] = [
         "<code>{groups, generated}</code>. <code>group_by</code> defaults to \
          <code>project</code>.",
     ),
-    ("store.export", "<code>filter?</code>", "<code>{tasks, dropped_dependencies}</code>."),
-    ("store.import", "<code>tasks</code>", "<code>{imported}</code>."),
+    (
+        "store.export",
+        "<code>filter?</code>",
+        "<code>{tasks, projects, default_project, dropped_dependencies}</code>.",
+    ),
+    (
+        "store.import",
+        "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>",
+        "<code>{imported, projects_imported, projects_created, default_project}</code>.",
+    ),
     (
         "event.list",
         "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>",
@@ -1583,13 +1591,32 @@ fn page_data() -> String {
     ));
     s.push_str(&snippet(
         "tasqx export +api --json",
-        "{\n  \"dropped_dependencies\": 0,\n  \"tasks\": [ ... ]\n}",
+        "{\n  \"default_project\": \"work\",\n  \"dropped_dependencies\": 0,\n  \
+         \"projects\": [ ... ],\n  \"tasks\": [ ... ]\n}",
+    ));
+    s.push_str(&h3("What a document carries"));
+    s.push_str(&p(
+        "An export is a <strong>self-contained document</strong>, and a project is part of it \
+         (D37): the <code>projects</code> array carries every project row — name, description, \
+         archived state, identity — and <code>default_project</code> names the project a bare \
+         <code>tasqx add</code> inherits. Restoring gives you back the store you exported, not \
+         just its tasks. Both sections are <strong>optional on import</strong>, so a file written \
+         by an older tasqx still restores: with no <code>projects</code> section there is nothing \
+         to check a task&rsquo;s <code>project</code> against, so the row is created from the \
+         tasks and <code>import</code> says which ones it made. With one, the document is \
+         authoritative — a task naming a project it does not define is refused, exactly as \
+         <code>tasqx add --project</code> refuses a name no <code>init</code> ever created.",
+    ));
+    s.push_str(&note(
+        "An import never moves your default. If the destination store already has one, the \
+         document&rsquo;s is ignored and the result names the default that stands.",
     ));
 
     s.push_str(&h3("Import"));
     s.push_str(&p(
-        "Takes a file, or <code>-</code> for stdin. It accepts either a bare array (what \
-         <code>export</code> prints) or a <code>{\"tasks\": [...]}</code> object. Import is an \
+        "Takes a file, or <code>-</code> for stdin. It accepts either the document \
+         <code>export</code> prints or a bare array of tasks (which is what every older \
+         <code>export</code> wrote). Import is an \
          <strong>upsert on the UUID</strong> — re-importing the same document is a no-op, not a \
          duplicate.",
     ));

@@ -103,6 +103,24 @@ use crate::util::parse_ts;
 ///
 /// Every value-taking predicate takes a `VALUE`, tags included. There is no
 /// form restricted to bare words, which is what the old `WORD` implied.
+///
+/// A VALUE holding a space MUST be quoted, and the quotes have to REACH this
+/// parser — so on a command line they need protecting from the shell as well:
+///
+/// ```text
+/// tasqx list 'project:"Home Renovation"'
+/// tasqx list '+"needs paint"'
+/// ```
+///
+/// Nothing puts back quoting the shell removed. `from_argv` explains why at
+/// length; the short version is that `project:Home Renovation` is also a valid
+/// reading of a whole expression passed as one argument, so guessing meant
+/// answering one of the two silently and wrongly. The stray word is refused,
+/// and the refusal names the spelling above.
+///
+/// The example lines live here and not inside the const because
+/// `value_prefixes_match_the_grammar` scans it for `key:"` shapes and would
+/// count an example as a fifth predicate.
 pub const GRAMMAR: &str = "\
 filter     := or_expr
 or_expr    := and_expr ( \"or\" and_expr )*
@@ -324,61 +342,40 @@ pub fn quote(value: &str) -> String {
 const VALUE_PREFIXES: [&str; 6] =
     ["project:", "status:", "due.before:", "due.after:", "+", "-"];
 
-/// Compose one filter string from argv, honouring the boundaries the shell drew.
+/// Compose one filter string from argv by joining the elements with a space.
 ///
-/// The read side used to `join(" ")` and let [`tokenize`] re-split. That throws
-/// away the one thing argv knows and a flat string cannot: which spaces the
-/// user quoted. `tasqx list +"needs paint"` reaches us as the single element
-/// `+needs paint` — the shell already ate the quotes — and re-splitting it
-/// asked for the tag `needs` plus a stray token `paint`, which the parser
-/// rightly refused. So the tag `add` could create (C2 taught the write side
-/// this same lesson) was one no `list` could name.
+/// It deliberately does NOT guess. An earlier version tried to put back the
+/// quoting the shell removed: an element carrying whitespace and leading with a
+/// value-taking prefix had its value re-quoted, so `list +"needs paint"` (which
+/// reaches us as the single element `+needs paint`) meant the spaced tag.
 ///
-/// The repair is to put back exactly the quoting the shell removed, per
-/// element, before joining: an element that carries whitespace *and* leads with
-/// a value-taking prefix gets its value re-quoted through [`quote`]. Everything
-/// else passes through untouched, which is what keeps ordinary multi-element
-/// filters multi-token: `list +api status:done` has no whitespace inside any
-/// element, so nothing is quoted and both predicates parse as before. Quoting
-/// every element unconditionally would have been simpler and wrong — it would
-/// turn `(`, `or` and `+api` into literal text and break the grammar outright.
+/// That heuristic was reverted because the two readings it chose between are
+/// GENUINELY ambiguous, and it therefore had to be wrong for somebody.
+/// `project:Work and (+bug or +review)` arriving as one element is a valid
+/// reading of both "one project name containing spaces" and "a whole filter
+/// expression the user quoted as one argument" — and the heuristic answered
+/// `list "+api or +web"` with a confident `No tasks.`, because it read the
+/// expression as one tag literally named `api or +web`. It caused two bugs that
+/// way. A guess that returns a silent wrong answer is worse than a refusal:
+/// that is D27's own rule, and this heuristic was the thing D27 exists to
+/// forbid, one layer up at the argv boundary.
 ///
-/// An element that still carries a literal `"` is left for [`tokenize`], which
-/// already understands quotes; re-quoting it would double them. That is the
-/// same split the write side draws in `cli/sugar.rs::tokenize_argv`, and it is
-/// why both spellings converge on one filter.
+/// So the ambiguity is handed to the user, who is the only one who knows which
+/// they meant, and the grammar already gives them a way to say it: LITERAL
+/// quotes, which survive the shell and reach [`tokenize`] intact.
 ///
-/// The trade this accepts, the read-side twin of the one `parse_add` accepts:
-/// an argv element that opens with a value prefix and then continues into an
-/// EXPRESSION — `list "+api or +web"` — is now read as one tag named
-/// `api or +web` instead. It is genuinely ambiguous at argv level, one of the
-/// two readings has to lose, and this one loses cheaply: the same query typed
-/// without the outer quotes (`list +api or +web`, three elements) means the
-/// expression and always did. The spaced *value* has no such alternative
-/// spelling, which is the whole reason quoting was added to the grammar.
-/// An expression that needs parens is unaffected — `"(+api or +web)"` opens
-/// with `(`, not a prefix.
+/// ```text
+/// tasqx list 'project:"Home Renovation"'   # the spaced value
+/// tasqx list '+"needs paint"'              # the spaced tag
+/// tasqx list "+api or +web"                # the expression
+/// ```
+///
+/// The consequence, which is intended: `list project:Home Renovation` with the
+/// shell eating the quotes is `project:Home` plus a stray token `Renovation`,
+/// and is REFUSED. It fails loudly instead of answering wrongly, and
+/// [`spacing_hint`] makes that refusal name the literal-quote spelling.
 pub fn from_argv(args: &[String]) -> String {
-    args.iter().map(|a| requote(a)).collect::<Vec<_>>().join(" ")
-}
-
-fn requote(arg: &str) -> String {
-    if arg.contains('"') || !arg.contains(char::is_whitespace) {
-        return arg.to_string();
-    }
-    for p in VALUE_PREFIXES {
-        let Some(value) = arg.strip_prefix(p) else { continue };
-        // The prefix must be followed by content, not by the space itself: a
-        // bare `+ foo` names no tag, and quoting it whole would mint `" foo"`.
-        if value.is_empty() || value.starts_with(char::is_whitespace) {
-            continue;
-        }
-        return format!("{p}{}", quote(value));
-    }
-    // No prefix matched, so the whitespace is not inside a value we can name —
-    // a whole expression passed as one argument (`"(+api or +web)"`), or a bare
-    // word. Passing it through unchanged keeps those forms working.
-    arg.to_string()
+    args.join(" ")
 }
 
 // ---- tokenizer --------------------------------------------------------------
@@ -598,9 +595,53 @@ impl Parser {
             return Ok(inner);
         }
         let tok = self.toks[self.pos].text.clone();
+        let prev = self.pos.checked_sub(1).and_then(|p| self.toks.get(p));
+        let hint = spacing_hint(prev, &self.toks[self.pos]);
         self.pos += 1;
-        Ok(Expr::Pred(predicate(&tok, self.now)?))
+        Ok(Expr::Pred(predicate(&tok, self.now).map_err(|e| match hint {
+            Some(h) => format!("{e} — {h}"),
+            None => e,
+        })?))
     }
+}
+
+/// The one hint that turns the cost of refusing a shell-stripped value into a fix.
+///
+/// `from_argv` no longer guesses (see its comment), so `list project:Home
+/// Renovation` — the shell having eaten the quotes — arrives as `project:Home`
+/// followed by a bare `Renovation` and is refused. That refusal is correct and
+/// is the whole point, but "unknown filter token" alone tells a user who typed
+/// a perfectly reasonable project name nothing about what to do next. The
+/// preceding token is the evidence: a value-taking prefix carrying an UNQUOTED
+/// value, immediately followed by a bare word, is overwhelmingly one value the
+/// shell split rather than two predicates. So the message names the literal
+/// spelling that survives the shell.
+///
+/// It is a hint and not a repair on purpose. Guessing here is what was just
+/// reverted; suggesting is free, because a wrong suggestion costs a glance and
+/// a wrong guess costs a wrong answer.
+///
+/// `prev.quoted` disqualifies the hint: after `project:"Home Renovation"` the
+/// value was already spelled correctly and the stray word is genuinely stray,
+/// so proposing to swallow it into the value would be advice to break a working
+/// filter.
+fn spacing_hint(prev: Option<&Tok>, tok: &Tok) -> Option<String> {
+    let prev = prev?;
+    if prev.quoted || tok.quoted {
+        return None;
+    }
+    // Only a bare word is a plausible fragment of a split value. Anything that
+    // opens a predicate of its own is a token the user meant as a token, and
+    // its error should stand unadorned.
+    if VALUE_PREFIXES.iter().any(|p| tok.text.starts_with(p)) || tok.text.starts_with('@') {
+        return None;
+    }
+    let p = VALUE_PREFIXES.iter().find(|p| prev.text.strip_prefix(**p).is_some_and(|v| !v.is_empty()))?;
+    let value = prev.text.strip_prefix(*p).expect("just matched");
+    Some(format!(
+        "did you mean {p}{}? quote a value that contains a space, so the shell hands it over whole",
+        quote(&format!("{value} {}", tok.text))
+    ))
 }
 
 /// Map a single token to a leaf predicate, or say why it is not one.
@@ -1083,52 +1124,80 @@ mod tests {
         assert_eq!(seen, 4, "expected four `key:`-shaped predicates in GRAMMAR");
     }
 
-    /// Documents the rule. The guard that matters is the e2e one in
-    /// `cli/tests/regressions.rs`: this test builds the argv split itself and
-    /// so would agree with a wrong split.
+    /// `from_argv` joins and nothing else. Documents the revert, so a future
+    /// reader sees the absence is a decision rather than an omission.
+    ///
+    /// The guard that matters is the e2e one in `cli/tests/regressions.rs`:
+    /// this test builds the argv split itself and so would agree with a wrong
+    /// split.
     #[test]
-    fn from_argv_requotes_only_what_the_shell_unquoted() {
+    fn from_argv_joins_and_does_not_guess() {
         let go = |args: &[&str]| from_argv(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        // The shell ate the quotes; we put them back so the value stays whole.
-        assert_eq!(go(&["+needs paint"]), r#"+"needs paint""#);
-        assert_eq!(go(&["project:Home Renovation"]), r#"project:"Home Renovation""#);
-        // No whitespace => nothing to protect; several elements stay several tokens.
+        // Several elements stay several tokens, as they always did.
         assert_eq!(go(&["+api", "status:done"]), "+api status:done");
-        // Literal quotes are the tokenizer's job; re-quoting would double them.
+        // Literal quotes pass through to the tokenizer, which understands them.
         assert_eq!(go(&[r#"+"needs paint""#]), r#"+"needs paint""#);
-        // A parenthesised expression as one argument opens with `(`, not a
-        // prefix, and is left alone.
+        // An expression in one element stays an expression. The re-quoting
+        // heuristic read this as one tag named `api or +web` and answered
+        // "No tasks." — the silent wrong answer that got it reverted.
+        assert_eq!(go(&["+api or +web"]), "+api or +web");
         assert_eq!(go(&["(+api or +web)"]), "(+api or +web)");
-        // But one that opens with a prefix is read as a value — the documented
-        // trade. Typed as separate elements it still means the expression.
-        assert_eq!(go(&["+api or +web"]), r#"+"api or +web""#);
-        assert_eq!(go(&["+api", "or", "+web"]), "+api or +web");
-        // A prefix must be followed by content, not by the space itself.
-        assert_eq!(go(&["+ foo"]), "+ foo");
+        // And the shell-stripped value is NOT put back together. It is two
+        // tokens, which is what `spacing_hint` then explains.
+        assert_eq!(go(&["project:Home Renovation"]), "project:Home Renovation");
     }
 
-    /// Both spellings must reach the same filter — the read-side half of the
-    /// convergence C2 established on the write side. Asserted on the composed
-    /// string *and* on what it selects, so a future `from_argv` that made them
-    /// spell it differently would still have to make them mean the same thing.
+    /// The literal-quote spelling is the one the tool teaches, so it must work
+    /// on both a `key:` value and a tag — and the shell-stripped spelling must
+    /// FAIL, loudly, naming the literal spelling that fixes it.
+    ///
+    /// Both halves in one test on purpose: "it is refused" without "and here is
+    /// the fix" is the state N1a would have shipped if the hint were optional.
     #[test]
-    fn the_two_shell_spellings_of_a_spaced_value_agree() {
-        for (shell, literal) in [
+    fn a_shell_stripped_spaced_value_is_refused_and_taught_the_quoted_spelling() {
+        let tags = ["needs paint".to_string()];
+        let ctx = MatchCtx {
+            status: Status::Pending,
+            project: Some("Home Renovation"),
+            tags: &tags,
+            due: None,
+            blocked: false,
+        };
+        for (stripped, literal) in [
             ("+needs paint", r#"+"needs paint""#),
             ("project:Home Renovation", r#"project:"Home Renovation""#),
         ] {
-            let a = from_argv(&[shell.to_string()]);
-            let b = from_argv(&[literal.to_string()]);
-            assert_eq!(a, b, "{shell:?} and {literal:?} must compose one filter");
-            let tags = ["needs paint".to_string()];
-            let ctx = MatchCtx {
-                status: Status::Pending,
-                project: Some("Home Renovation"),
-                tags: &tags,
-                due: None,
-                blocked: false,
-            };
-            assert!(Filter::parse(&a, anchor()).expect("parses").matches(&ctx), "{shell:?} must select");
+            assert!(
+                Filter::parse(literal, anchor()).expect("the literal form parses").matches(&ctx),
+                "{literal:?} must select"
+            );
+            let err = Filter::parse(stripped, anchor()).expect_err("{stripped:?} must be refused");
+            assert!(err.contains(literal), "{stripped:?} must name the spelling that works: {err}");
+            assert!(err.contains("quote"), "{stripped:?} must say why: {err}");
+        }
+    }
+
+    /// The hint must not fire where it would be wrong advice. A value already
+    /// spelled with literal quotes is correct, so a stray word after it is
+    /// genuinely stray — proposing to swallow it would advise breaking a
+    /// working filter — and a token that opens a predicate of its own is a
+    /// token the user meant.
+    #[test]
+    fn the_quoting_hint_stays_out_of_filters_it_would_mislead() {
+        for input in [
+            r#"project:"Home Renovation" Renovation"#,
+            "+api Renovation",
+            "Renovation",
+        ] {
+            let err = Filter::parse(input, anchor()).expect_err("still refused");
+            assert!(err.contains("unknown filter token"), "{input:?}: {err}");
+        }
+        // Only the first of those three is about a quoted value; the middle one
+        // legitimately DOES get the hint (`+"api Renovation"`), so pin the two
+        // that must not.
+        for input in [r#"project:"Home Renovation" Renovation"#, "Renovation"] {
+            let err = Filter::parse(input, anchor()).expect_err("still refused");
+            assert!(!err.contains("did you mean"), "{input:?} must not be hinted at: {err}");
         }
     }
 

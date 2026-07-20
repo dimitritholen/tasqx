@@ -30,7 +30,8 @@ use crate::urgency;
 use crate::util::{
     duration_secs, iso_duration, now, opt_array, opt_bool, opt_i64, opt_str, opt_str_array,
     opt_str_nonempty,
-    opt_u64, parse_ts, req_array, req_i64, req_object, req_str, seconds_between,
+    opt_u64, parse_ts, req_array, req_i64, req_object, req_str, req_str_lookup, req_str_value,
+    seconds_between,
 };
 
 /// The config key holding the default project name (inherited by `task.add`).
@@ -195,16 +196,13 @@ impl Engine {
     // ---- project.create ------------------------------------------------------
 
     pub fn project_create(&self, p: &Value) -> Result<Value, ApiError> {
-        let name = req_str(p, "name")?;
-        // D23: D18's rule at the edge where a project name is *born*. `req_str`
-        // only rejects "", so `init "$UNSET_VAR "` used to mint a project whose
-        // name is whitespace — one that claims the default, prints as a blank
+        // D23's rule at the edge where a project name is *born* — `init " "`
+        // used to mint a project that claimed the default, printed as a blank
         // row in `tasqx projects`, and (since `use` rejects the same string)
-        // could never be re-selected once the default moved. Names are validated
-        // where they are created, so every later edge can just look them up.
-        if name.trim().is_empty() {
-            return Err(ApiError::bad_request("project name cannot be empty"));
-        }
+        // could never be re-selected once the default moved. D36 moved the check
+        // itself into `req_str`, so this door no longer carries a private copy:
+        // one rule means a title and a name cannot drift apart again.
+        let name = req_str(p, "name")?;
         // D35: the last nullable free-text column with no parser in front of it.
         // `""` used to be laundered into NULL, so `init x --description "$UNSET"`
         // gave "no description" two spellings and threw the stated intent away —
@@ -276,12 +274,15 @@ impl Engine {
     /// only method that moves the default once it is set.
     pub fn project_use(&self, p: &Value) -> Result<Value, ApiError> {
         // D23: emptiness is checked where names are born (`project.create`), not
-        // here. `req_str` still rejects "" (`use "$UNSET"` → bad_request), and a
-        // whitespace-only name now simply names no project, so the lookup below
+        // here. `req_str_lookup` still rejects "" (`use "$UNSET"` → bad_request),
+        // and a whitespace-only name simply names no project, so the lookup below
         // answers it truthfully with not_found. The previous special case made
         // `use` reject a name `init` would happily create — a one-way door of
-        // the exact kind D21 exists to remove, at a narrower edge.
-        let name = req_str(p, "name")?;
+        // the exact kind D21 exists to remove, at a narrower edge. D36 is why
+        // this is `_lookup` and not `req_str`: a store written before D23 can
+        // still HOLD such a project, and a write-door rule applied here would
+        // make it unselectable forever (D28).
+        let name = req_str_lookup(p, "name")?;
 
         let tx = self.begin()?;
         // Existence + archived state are read inside the IMMEDIATE tx: the write
@@ -805,8 +806,12 @@ impl Engine {
         for (k, v) in set {
             match k.as_str() {
                 "title" => {
-                    let s = v.as_str().ok_or_else(|| ApiError::bad_request("title must be a string"))?;
-                    assignments.push(("title", Value::String(s.to_string())));
+                    // D36: the SAME rule `task.add` and `store.import` apply.
+                    // This arm used to accept any string, so `set:{title:""}`
+                    // wrote a store that exported fine and then failed its own
+                    // import — D12's round trip breakable from the API.
+                    let s = req_str_value("title", Some(v))?;
+                    assignments.push(("title", Value::String(s)));
                 }
                 "priority" => {
                     if v.is_null() {
@@ -1258,7 +1263,9 @@ impl Engine {
     // ---- project.archive -----------------------------------------------------
 
     pub fn project_archive(&self, p: &Value) -> Result<Value, ApiError> {
-        let name = req_str(p, "name")?;
+        // A lookup, like `project.use`: retiring a legacy whitespace-named
+        // project is precisely the escape hatch D36 must not weld shut (D28).
+        let name = req_str_lookup(p, "name")?;
         let id: String = self
             .conn
             .query_row("SELECT id FROM projects WHERE name = ?1", params![name], |r| r.get(0))
@@ -1588,7 +1595,45 @@ impl Engine {
         for (t, tags) in &selected {
             out.push(self.export_task(t, tags, &present, &mut dropped)?);
         }
-        Ok(json!({ "tasks": out, "dropped_dependencies": dropped }))
+        Ok(json!({
+            "tasks": out,
+            "dropped_dependencies": dropped,
+            // D37: a project is a RECORD (D21/D22/D23), not a string that happens
+            // to appear on tasks, and an export that carries only the string is
+            // not the self-contained document D12 promises — restoring it lost
+            // every description, every archived flag, and the default, leaving a
+            // store whose tasks name projects `tasqx projects` does not list and
+            // `task.add` refuses. Always ALL of them, archived included and
+            // regardless of `filter`: a filter selects TASKS, and a project the
+            // selected tasks do not mention is not a dangling pointer, so there
+            // is nothing to trim and no second `dropped_` counter to explain.
+            "projects": self.export_projects()?,
+            // Store state, so the document carries it (D21: it lives in the
+            // store's `config` table, never in config.toml). `null` when there
+            // is none, which is a fact and not an omission.
+            "default_project": self.default_project(),
+        }))
+    }
+
+    /// Every project row, name-ordered, in the canonical §3 shape. D37.
+    fn export_projects(&self) -> Result<Vec<Value>, ApiError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, description, archived, created FROM projects ORDER BY name")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "name": r.get::<_, String>(1)?,
+                "description": r.get::<_, Option<String>>(2)?,
+                "archived": r.get::<_, i64>(3)? != 0,
+                "created": r.get::<_, String>(4)?,
+            }))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Build the canonical §3 export object for one task. serde_json's default
@@ -1642,12 +1687,70 @@ impl Engine {
         let tasks = req_array(p, "tasks")
             .map_err(|e| ApiError::bad_request(format!("{} — store.import requires a `tasks` array", e.message)))?;
 
+        // D37: the projects half of the document, optional so an export written
+        // by an older tasqx — which had no such section — still imports. Its
+        // PRESENCE is load-bearing, not just its contents: a payload that
+        // declares its projects is claiming to be self-contained, and is held to
+        // it below; one that does not is a legacy document whose projects can
+        // only be inferred from the tasks. `opt_array` distinguishes the two,
+        // which `unwrap_or_default` would have flattened.
+        let declared = opt_array(p, "projects")?.cloned();
+        // Read before the transaction so a malformed default is refused without
+        // taking the write lock. Validated below either way — whether a document
+        // is coherent is a property of the document, not of where it lands.
+        let want_default = opt_str_nonempty(p, "default_project")?;
+
         let mut imported = 0i64;
+        let mut projects_imported = 0i64;
+        // Names minted by inference rather than sent as records. A write the
+        // caller did not ask for must be visible, so these are reported.
+        let mut projects_created: Vec<String> = Vec::new();
         // (task_id, its raw `depends_on` value) collected during pass 1.
         // (task_id, its validated `depends_on` ids) — typed at collection time so
         // pass 2 cannot inherit a silently-dropped edge from a wrong-typed value.
         let mut edges: Vec<(String, Vec<String>)> = Vec::new();
         let tx = self.begin()?;
+
+        // Pass 0: projects, before any task, so a task's `project` can be checked
+        // against the document's own records rather than against whatever the
+        // destination happened to already hold.
+        if let Some(rows) = &declared {
+            for pv in rows {
+                let pv = import_shape("", "project", pv)?;
+                // D36/D28: a LOOKUP-strength read, not `req_str`. A store written
+                // before D23 can hold a whitespace-named project, its export says
+                // so, and refusing the name here would make that document — the
+                // escape hatch out of exactly such a store — impossible to
+                // restore. `""` is still refused.
+                let name = req_str_lookup(pv, "name").map_err(|e| {
+                    ApiError::bad_request(format!(
+                        "{} — each imported project requires a string `name`",
+                        e.message
+                    ))
+                })?;
+                import_keys(&format!("project {name}, "), "project", pv, IMPORT_PROJECT_KEYS)?;
+                let description = import_project_field(
+                    &name,
+                    "description",
+                    opt_str_nonempty(pv, "description"),
+                )?;
+                let archived =
+                    import_project_field(&name, "archived", opt_bool(pv, "archived"))?.unwrap_or(false);
+                let created = import_project_field(&name, "created", opt_str_nonempty(pv, "created"))?
+                    .unwrap_or_else(now);
+                let payload_id =
+                    import_project_field(&name, "id", opt_str_nonempty(pv, "id"))?;
+                let row_id = upsert_project(&tx, &name, description.as_deref(), archived, &created, payload_id.as_deref())?;
+                insert_event(
+                    &tx,
+                    Entity::Project,
+                    &row_id,
+                    "import",
+                    &json!({ "name": name, "archived": archived }),
+                )?;
+                projects_imported += 1;
+            }
+        }
         for tv in tasks {
             // Shape first, fields second: a non-object entry used to be
             // diagnosed by `req_str` as "missing required field: id", sending
@@ -1710,6 +1813,53 @@ impl Engine {
             // D35: D18's rule on the import path — `project: ""` used to become
             // NULL, the ghost-bucket state D18 exists to prevent.
             let project = import_field(id, "project", opt_str_nonempty(tv, "project"))?;
+            // D37 / N3b: D23 closed this for `task.add` and `task.modify` — "an
+            // unknown --project exits 4 naming it, because a typo lost the task
+            // silently" — and left import open, so a payload could mint a task in
+            // a bucket no project surface has ever heard of. What "closed" means
+            // depends on what the document claimed:
+            //
+            //   * It declared its projects → it is authoritative, and naming a
+            //     project it did not define is an incoherent document. Refuse,
+            //     naming the task and the value, exactly as D23 does at the other
+            //     two doors. This is the only way a typo in a hand-edited export
+            //     is ever caught.
+            //   * It declared none (an older tasqx) → there is nothing to be
+            //     incoherent WITH, and refusing would make every legacy export
+            //     unrestorable. Infer the row instead, so the store still ends up
+            //     coherent — the name the import accepted is a name `add`
+            //     accepts — and report the mint, because a record the caller did
+            //     not send is not something to write silently.
+            //
+            // Existence only, never archived state: an export legitimately holds
+            // done work in a retired project (D22 puts a project out of rotation
+            // for NEW work), and refusing to restore history is not what that
+            // rule says.
+            if let Some(name) = &project {
+                let exists: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM projects WHERE name = ?1)",
+                    params![name],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    if declared.is_some() {
+                        return Err(ApiError::bad_request(format!(
+                            "store.import: task {id} names project {name:?}, which the payload's \
+                             `projects` section does not define and the store does not have — \
+                             add it to `projects`, or create it first with `tasqx init {name}`"
+                        )));
+                    }
+                    let row_id = upsert_project(&tx, name, None, false, &now(), None)?;
+                    insert_event(
+                        &tx,
+                        Entity::Project,
+                        &row_id,
+                        "import",
+                        &json!({ "name": name, "inferred": true }),
+                    )?;
+                    projects_created.push(name.clone());
+                }
+            }
             // The same gate the CLI, the JSON API and MCP pass, called on the
             // import payload itself rather than restated here: these four fields
             // used to be read raw into the INSERT, so `due whenever` entered a
@@ -1879,9 +2029,57 @@ impl Engine {
                 )?;
             }
         }
+        // Pass 3: the default, last, because it must be checked against the
+        // projects this very transaction wrote. D21's rule — nothing silently
+        // steals the default — applies here more than anywhere else: import is
+        // the only write that can carry SOMEONE ELSE'S default in its payload,
+        // and redirecting where a bare `add` lands is the invisible-write bug
+        // D21 exists to kill. So the document's default is honoured only by a
+        // store that has none; otherwise the standing one wins. It is validated
+        // either way, so the same document is not coherent in one store and
+        // incoherent in another.
+        let standing = get_config(&tx, DEFAULT_PROJECT_KEY);
+        if let Some(name) = &want_default {
+            let row: Option<i64> = tx
+                .query_row("SELECT archived FROM projects WHERE name = ?1", params![name], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            match row {
+                None => {
+                    return Err(ApiError::bad_request(format!(
+                        "store.import: `default_project` names {name:?}, which the payload's \
+                         `projects` section does not define and the store does not have"
+                    )))
+                }
+                // D22: archived is out of rotation, so a default aimed at one is
+                // a state no live sequence of calls can reach and the D23
+                // open-time repair would undo on the next open anyway.
+                Some(a) if a != 0 => {
+                    return Err(ApiError::bad_request(format!(
+                        "store.import: `default_project` names {name:?}, which is archived \
+                         (an archived project cannot be the default)"
+                    )))
+                }
+                Some(_) => {}
+            }
+            if standing.is_none() {
+                set_config(&tx, DEFAULT_PROJECT_KEY, name)?;
+            }
+        }
+        let default_project = standing.or_else(|| want_default.clone());
         tx.commit()?;
 
-        Ok(json!({ "imported": imported }))
+        // All four always present: a machine consumer must be able to tell "no
+        // projects in the document" from "this build does not report them", the
+        // same reason `dropped_dependencies` and `default_cleared` are never
+        // omitted.
+        Ok(json!({
+            "imported": imported,
+            "projects_imported": projects_imported,
+            "projects_created": projects_created,
+            "default_project": default_project,
+        }))
     }
 
     // ---- event.list ----------------------------------------------------------
@@ -2147,6 +2345,67 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
 
 /// Every key an exported annotation object can carry. D34.
 pub const IMPORT_ANNOTATION_KEYS: &[&str] = &["id", "body", "created"];
+
+/// Every key an exported project object can carry. D34's gate, D37's record.
+///
+/// Deliberately NOT `default`: `project.list` marks the default row with one,
+/// but the document states its default once, at the top level, where a second
+/// spelling cannot disagree with the first.
+pub const IMPORT_PROJECT_KEYS: &[&str] = &["id", "name", "description", "archived", "created"];
+
+/// [`import_field`] for a project: the same "name the record to edit" context,
+/// keyed by the one identifier a project row has that a human recognises.
+fn import_project_field<T>(name: &str, field: &str, r: Result<T, ApiError>) -> Result<T, ApiError> {
+    r.map_err(|e| {
+        ApiError::bad_request(format!("store.import: project {name}, {field}: {}", e.message))
+    })
+}
+
+/// Write a project row, keyed by NAME, and answer the row's id. D37.
+///
+/// Name, not id, because `name` is what a task points at and what the UNIQUE
+/// constraint protects: a destination that already knows `work` keeps its own
+/// id and `created` (its history is real and the payload's is not more true),
+/// and only the fields the document is authoritative about — description and
+/// archived — are updated. The payload's id is honoured only when it is free,
+/// so restoring into a FRESH store round-trips identity exactly while a
+/// collision with an unrelated row yields a new id rather than the `internal`
+/// error a bare PRIMARY KEY violation would surface as.
+fn upsert_project(
+    tx: &Transaction,
+    name: &str,
+    description: Option<&str>,
+    archived: bool,
+    created: &str,
+    payload_id: Option<&str>,
+) -> Result<String, ApiError> {
+    if let Some(id) = tx
+        .query_row("SELECT id FROM projects WHERE name = ?1", params![name], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+    {
+        tx.execute(
+            "UPDATE projects SET description = ?2, archived = ?3 WHERE id = ?1",
+            params![id, description, archived as i64],
+        )?;
+        return Ok(id);
+    }
+    let taken = |id: &str| -> Result<bool, ApiError> {
+        Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)", params![id], |r| {
+            r.get(0)
+        })?)
+    };
+    let id = match payload_id {
+        Some(id) if !taken(id)? => id.to_string(),
+        _ => Uuid::now_v7().to_string(),
+    };
+    tx.execute(
+        "INSERT INTO projects (id, name, description, archived, created) VALUES (?1,?2,?3,?4,?5)",
+        params![id, name, description, archived as i64, created],
+    )?;
+    Ok(id)
+}
 
 /// Require an object and refuse any key outside `accepted`. D34.
 ///

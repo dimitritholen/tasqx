@@ -1399,9 +1399,16 @@ fn run_export(be: &mut Backend, filter: &[String]) -> CmdOutcome {
              widen the filter to keep them"
         );
     }
-    // Human output IS the canonical JSON array (git-diffable, greppable).
-    let arr = result.get("tasks").cloned().unwrap_or(Value::Array(vec![]));
-    let text = format!("{}\n", serde_json::to_string_pretty(&arr).unwrap_or_default());
+    // Human output IS the canonical JSON document (git-diffable, greppable).
+    //
+    // D37: the whole document, not just its `tasks` array. This is the surface
+    // almost every user actually restores from, and printing one section of a
+    // two-section document made the CLI lose exactly what the core had just
+    // been taught to carry — projects, their archived state, and the default.
+    // `import` has always accepted an object with a `tasks` key as well as a
+    // bare array, so files written by this build and by every earlier one both
+    // still restore; only the direction that can carry MORE has changed.
+    let text = format!("{}\n", serde_json::to_string_pretty(&result).unwrap_or_default());
     Ok((result, text))
 }
 
@@ -1429,19 +1436,45 @@ fn run_import(be: &mut Backend, file: String) -> CmdOutcome {
              a bare array of tasks or an object with a `tasks` array"
         ))
     };
-    let tasks = match parsed {
-        Value::Array(_) => parsed,
+    // D37: an object is forwarded WHOLE, not reduced to its `tasks` array. The
+    // array was all a document used to hold; now it also carries `projects` and
+    // `default_project`, and a verb that unwraps one section discards the rest —
+    // silently, since the import would still report every task restored. A bare
+    // array is still wrapped, because that is precisely what an older export is:
+    // a document with no projects section, which `store.import` reads as "infer
+    // them" rather than refusing.
+    let params = match parsed {
+        Value::Array(_) => json!({ "tasks": parsed }),
         Value::Object(ref o) => {
-            o.get("tasks").cloned().ok_or_else(|| shape("the JSON object has no `tasks` key"))?
+            if !o.contains_key("tasks") {
+                return Err(shape("the JSON object has no `tasks` key"));
+            }
+            parsed.clone()
         }
         Value::String(_) => return Err(shape("the top level is a JSON string")),
         Value::Number(_) => return Err(shape("the top level is a JSON number")),
         Value::Bool(_) => return Err(shape("the top level is a JSON boolean")),
         Value::Null => return Err(shape("the top level is JSON null")),
     };
-    let result = be.call("store.import", &json!({ "tasks": tasks }))?;
+    let result = be.call("store.import", &params)?;
     let n = result.get("imported").and_then(Value::as_i64).unwrap_or(0);
-    Ok((result, format!("Imported {n} task(s)\n")))
+    let p = result.get("projects_imported").and_then(Value::as_i64).unwrap_or(0);
+    // A project row the caller did not send is a write they did not ask for, so
+    // it is named on the human surface too, not only in the JSON (D37).
+    let minted: Vec<&str> = result
+        .get("projects_created")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let mut text = format!("Imported {n} task(s), {p} project(s)\n");
+    if !minted.is_empty() {
+        text.push_str(&format!(
+            "note: the document carried no `projects` section, so {} created from the tasks: {}\n",
+            if minted.len() == 1 { "1 project was" } else { "projects were" },
+            minted.join(", ")
+        ));
+    }
+    Ok((result, text))
 }
 
 fn run_next(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {

@@ -156,10 +156,61 @@ fn present<'a>(p: &'a Value, key: &str) -> Option<&'a Value> {
 
 /// Extract a required string field from a params object.
 pub fn req_str(p: &Value, key: &str) -> Result<String, ApiError> {
+    req_str_value(key, present(p, key))
+}
+
+/// **The one rule for a required string**, wherever one is written: absent,
+/// null, `""` and whitespace-only are all refused; anything else is accepted
+/// and **stored verbatim**.
+///
+/// D36. This exists as a function taking a `Value` rather than a params object
+/// because `task.modify` reads its fields out of a `set` map and so could not
+/// call [`req_str`] — which is exactly how it ended up with a *different* rule,
+/// accepting an empty title that `task.add` and `store.import` refuse and
+/// producing a store that exported cleanly and then failed its own import
+/// (D12). Every door now shares this body: there is no second place to forget.
+///
+/// **On trimming:** trim is the emptiness *test*, never a normalisation. The
+/// accepted value keeps its padding, because trimming at the write door would
+/// make `store.import` rewrite the titles of a store that already holds padded
+/// rows — and then D12's byte-identical round trip fails on exactly the legacy
+/// data D28 promises will survive. Strictness is for values arriving; bytes
+/// already on disk are read back as they are.
+pub fn req_str_value(key: &str, v: Option<&Value>) -> Result<String, ApiError> {
     // An empty string is "missing" rather than a type error: it is the shape
     // `use "$UNSET"` produces, and D23 already fixed that wording in place.
     // Stated HERE rather than inherited from `opt_str`, which since D35 hands
     // back the `""` the caller actually sent.
+    let s = match v {
+        None => return Err(ApiError::bad_request(format!("missing or empty required field: {key}"))),
+        Some(v) => v.as_str().ok_or_else(|| wrong_type(key, "a string", v))?,
+    };
+    if s.is_empty() {
+        return Err(ApiError::bad_request(format!("missing or empty required field: {key}")));
+    }
+    // D23 ruled this for a project name — `init " "` minted a row that printed
+    // blank and could never be re-selected. A blank title is that same failure
+    // one noun over, so it gets the same answer rather than a second opinion.
+    if s.trim().is_empty() {
+        return Err(ApiError::bad_request(format!(
+            "{key} cannot be blank: got {s:?} — a {key} needs at least one non-whitespace character"
+        )));
+    }
+    Ok(s.to_string())
+}
+
+/// [`req_str`] for a **lookup** door — a name the caller is matching against
+/// rows that already exist, not one being written. `""` is still refused (it is
+/// the `use "$UNSET"` shape and names nothing), but a whitespace-only string is
+/// handed to the lookup, which answers `not_found` truthfully.
+///
+/// D36's strictness is a WRITE rule, and this is the D28 line it stops at: a
+/// store written before D23 can hold a project whose name is whitespace, and
+/// refusing the string here would make that project impossible to select or
+/// archive — the one-way door D21 and D23 both exist to remove, rebuilt by the
+/// very check meant to prevent it. Deliberately a separate function so the
+/// exception is named and reasoned rather than an argument someone flips.
+pub fn req_str_lookup(p: &Value, key: &str) -> Result<String, ApiError> {
     match opt_str(p, key)? {
         Some(s) if !s.is_empty() => Ok(s),
         _ => Err(ApiError::bad_request(format!("missing or empty required field: {key}"))),

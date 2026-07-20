@@ -201,8 +201,16 @@ Combine with boolean `or` and group with parentheses:
 
 Double-quote a value containing a space, and the quotes also
 hide parentheses and the and/or keywords, as a shell does.
-Your shell's own quotes are enough; nothing is escaped twice:
-  tasqx list project:\"Home Renovation\" +\"needs paint\"
+The quotes must REACH tasqx, so protect them from your shell —
+wrap the whole token in single quotes (or backslash-escape it):
+  tasqx list 'project:\"Home Renovation\"' '+\"needs paint\"'
+
+tasqx does not guess where a value ended. Letting the shell eat
+the quotes leaves `project:Home Renovation`, which is
+`project:Home` plus a stray word, and that is refused with the
+spelling above rather than answered with the wrong rows. The
+same rule is what lets you pass a whole expression as one
+argument: `tasqx list \"+api or +web\"` is the expression.
 
 The same rule splits `add`/`modify` sugar, so what you can
 create you can filter for. Write `\\\"` for a literal quote and

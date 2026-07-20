@@ -2722,8 +2722,42 @@ fn the_import_key_gate_leaves_an_unfiltered_round_trip_byte_identical() {
     let export_a = a.store_export(&json!({})).unwrap();
 
     let b = engine();
-    b.store_import(&json!({ "tasks": export_a["tasks"].clone() })).unwrap();
+    // D37: the WHOLE document, which is what an export now is. Handing back only
+    // its `tasks` array is the legacy shape, and it round-trips its tasks but not
+    // its projects — see the sibling below, where that difference is the point.
+    b.store_import(&export_a).unwrap();
     assert_eq!(export_a, b.store_export(&json!({})).unwrap());
+}
+
+/// D37's compatibility half, pinned: a document with NO `projects` section — the
+/// only shape any tasqx before this one ever wrote — must still import, and must
+/// still leave a coherent store behind. Its tasks come back byte-identical; its
+/// projects cannot, because the document never carried their identity, so the
+/// row is inferred and says so through `projects_created`.
+#[test]
+fn a_document_with_no_projects_section_round_trips_its_tasks_and_infers_the_rest() {
+    let a = engine();
+    a.project_create(&json!({ "name": "work", "description": "day job" })).unwrap();
+    a.task_add(&json!({ "title": "everything", "project": "work" })).unwrap();
+    let export_a = a.store_export(&json!({})).unwrap();
+
+    let b = engine();
+    let r = b.store_import(&json!({ "tasks": export_a["tasks"].clone() })).unwrap();
+    assert_eq!(r["projects_created"], json!(["work"]), "the inferred row must be reported: {r}");
+    assert_eq!(r["projects_imported"], json!(0));
+
+    let export_b = b.store_export(&json!({})).unwrap();
+    assert_eq!(export_b["tasks"], export_a["tasks"], "the task half is still byte-identical");
+    // What a legacy document genuinely cannot carry, and therefore does not:
+    // the description, the identity, and the default.
+    assert_eq!(export_b["projects"][0]["name"], json!("work"));
+    assert_eq!(export_b["projects"][0]["description"], Value::Null);
+    assert_eq!(export_b["projects"][0]["archived"], json!(false));
+    assert_eq!(export_b["default_project"], Value::Null);
+    // But the store is usable: the name the import accepted is a name `add`
+    // accepts, which is the whole reason the row is minted instead of refused.
+    a.task_add(&json!({ "title": "x", "project": "work" })).expect("source");
+    b.task_add(&json!({ "title": "x", "project": "work" })).expect("restored store must work too");
 }
 
 // ---- D35: an explicitly-supplied empty string is a PRESENT value ------------
@@ -2856,4 +2890,180 @@ fn an_empty_filter_string_is_a_genuine_empty_filter_not_a_refusal() {
         e.store_export(&json!({})).unwrap()["tasks"],
     );
     assert_eq!(e.report_summary(&json!({ "filter": "" })).unwrap()["groups"].as_array().unwrap().len(), 1);
+}
+
+// ---- D36: one rule for a required string, at every door ----------------------
+
+/// Every door that WRITES a required string must give the same answer to the
+/// same blank input. The regression this pins: `task.modify` accepted a title
+/// `task.add` and `store.import` refuse, so the API could mint a store that
+/// exported cleanly and then failed its own import — D12's round trip broken
+/// from inside. The whitespace half is the same bug one character over, and it
+/// was already ruled on for a project name in D23.
+///
+/// The table is deliberately a cross product: the previous rounds shipped three
+/// regressions whose single cause was a test that covered one spelling and not
+/// its sibling, so neither the doors nor the spellings may be sampled.
+#[test]
+fn a_blank_required_string_is_refused_at_every_door() {
+    // "" is the shape `--title "$UNSET"` produces; the rest are what a shell
+    // hands over when the variable expands to padding rather than nothing.
+    for blank in ["", " ", "   ", "\t", "\n", " \t \n "] {
+        let e = engine();
+        let seed = e.task_add(&json!({ "title": "seed" })).unwrap();
+        let r#ref = seed["short_id"].clone();
+
+        let add = e.task_add(&json!({ "title": blank })).unwrap_err();
+        assert_eq!(add.code, ErrorCode::BadRequest, "task.add must refuse {blank:?}");
+
+        let modify = e
+            .task_modify(&json!({ "ref": r#ref, "set": { "title": blank } }))
+            .unwrap_err();
+        assert_eq!(modify.code, ErrorCode::BadRequest, "task.modify must refuse {blank:?}");
+
+        let project = e.project_create(&json!({ "name": blank })).unwrap_err();
+        assert_eq!(project.code, ErrorCode::BadRequest, "project.create must refuse {blank:?}");
+
+        let import = e
+            .store_import(&json!({ "tasks": [{
+                "id": "019f7eb6-0000-7000-8000-000000000001", "short_id": 9, "title": blank,
+            }] }))
+            .unwrap_err();
+        assert_eq!(import.code, ErrorCode::BadRequest, "store.import must refuse {blank:?}");
+
+        // A refusal writes nothing: the seed keeps its title and its _rev.
+        let got = e.task_get(&json!({ "ref": r#ref })).unwrap();
+        assert_eq!(got["title"], "seed", "a refused modify must not have written");
+        assert_eq!(got["_rev"], 1, "a refused modify must not bump the revision");
+        assert_eq!(count(&e.task_list(&json!({})).unwrap()), 1, "no blank task was created");
+    }
+}
+
+/// The N2a round trip, end to end through the core: anything the tool accepts
+/// must survive export and re-import. Before the fix, `set: {title: ""}` was
+/// `ok` and the resulting export was rejected by `store.import` naming the
+/// task's uuid — a store you could write and could not restore.
+#[test]
+fn anything_modify_accepts_can_be_re_imported() {
+    let e = engine();
+    let seed = e.task_add(&json!({ "title": "alpha" })).unwrap();
+    assert!(e
+        .task_modify(&json!({ "ref": seed["short_id"].clone(), "set": { "title": "" } }))
+        .is_err());
+
+    // And the accepted spelling still round-trips, so the guard above is not
+    // just "modify always fails".
+    e.task_modify(&json!({ "ref": seed["short_id"].clone(), "set": { "title": "beta" } })).unwrap();
+    let exported = e.store_export(&json!({})).unwrap();
+    let fresh = engine();
+    fresh.store_import(&json!({ "tasks": exported["tasks"].clone() })).unwrap();
+    assert_eq!(
+        fresh.store_export(&json!({})).unwrap()["tasks"],
+        exported["tasks"],
+        "D12: the unfiltered round trip is byte-identical"
+    );
+}
+
+/// D28: the strictness belongs at the WRITE door. A store already holding a
+/// blank or padded title — written by an older binary, or by another tool —
+/// must still export, because refusing to read is how you lose the data the
+/// rule was meant to protect. Seeded through the connection because no sequence
+/// of current calls can reach that state any more.
+#[test]
+fn a_store_already_holding_a_blank_title_still_reads_and_exports() {
+    for stored in ["", "   ", "  padded  "] {
+        let e = engine();
+        e.task_add(&json!({ "title": "seed" })).unwrap();
+        e.conn().execute("UPDATE tasks SET title = ?1", [stored]).unwrap();
+
+        let listed = e.task_list(&json!({})).unwrap();
+        assert_eq!(count(&listed), 1, "a blank title must not vanish from a read");
+        assert_eq!(listed["tasks"][0]["title"], stored, "and it reads back verbatim");
+
+        let exported = e.store_export(&json!({})).unwrap();
+        assert_eq!(exported["tasks"][0]["title"], stored, "export never refuses (D28)");
+
+        // The other half of D28's asymmetry, and the same shape the rescue
+        // export already has for an unrecognized status: that export is refused
+        // on the way back IN, loudly and naming the task, because import is a
+        // write door. The data is never trapped — it exported, so the user can
+        // see the blank title and fix it — but it is not laundered into a fresh
+        // store either. A padded title is a legal value and re-imports cleanly.
+        let fresh = engine();
+        let back = fresh.store_import(&json!({ "tasks": exported["tasks"].clone() }));
+        if stored.trim().is_empty() {
+            let err = back.unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest, "a blank title is refused at the door");
+            assert!(err.message.contains("title"), "and the message names what to edit: {}", err.message);
+        } else {
+            back.unwrap();
+            assert_eq!(
+                fresh.store_export(&json!({})).unwrap()["tasks"],
+                exported["tasks"],
+                "D12: a padded title survives the round trip byte-identical"
+            );
+        }
+    }
+}
+
+/// The accepted-value half of the rule, stated so it is a decision and not a
+/// side effect: a title with surrounding whitespace is STORED VERBATIM. Trim is
+/// the emptiness test, never a normalisation — trimming on write would make
+/// `store.import` rewrite the titles of a store that already holds padded rows,
+/// and D12's byte-identical round trip would fail on exactly the legacy data
+/// D28 says must survive.
+#[test]
+fn an_accepted_required_string_is_stored_verbatim_not_trimmed() {
+    let e = engine();
+    let added = e.task_add(&json!({ "title": "  padded  " })).unwrap();
+    let r#ref = added["short_id"].clone();
+    assert_eq!(e.task_get(&json!({ "ref": r#ref.clone() })).unwrap()["title"], "  padded  ");
+
+    e.task_modify(&json!({ "ref": r#ref.clone(), "set": { "title": "\tmodified " } })).unwrap();
+    assert_eq!(e.task_get(&json!({ "ref": r#ref })).unwrap()["title"], "\tmodified ");
+
+    let p = e.project_create(&json!({ "name": " spaced " })).unwrap();
+    assert_eq!(p["name"], " spaced ", "a project name is not trimmed either");
+
+    // The whole point of not trimming: a padded row survives import unchanged.
+    let exported = e.store_export(&json!({})).unwrap();
+    let fresh = engine();
+    fresh.store_import(&json!({ "tasks": exported["tasks"].clone() })).unwrap();
+    assert_eq!(fresh.store_export(&json!({})).unwrap()["tasks"], exported["tasks"]);
+}
+
+/// D36 stops at the write door, and this is where it stops. A store written
+/// before D23 can hold a project whose name is whitespace; `project.use` and
+/// `project.archive` are LOOKUPS, so they must keep taking the exact string
+/// that names it. Applying the write rule there would make that project
+/// impossible to select and impossible to retire — D21's one-way door rebuilt
+/// by the check meant to prevent it, and D28's "a reader never refuses".
+#[test]
+fn a_lookup_door_still_accepts_a_name_no_write_door_would_mint() {
+    let e = engine();
+    // Seeded through the connection because `project.create` refuses it now —
+    // which is the whole point: the state is legacy, and it must stay reachable.
+    e.project_create(&json!({ "name": "work" })).unwrap();
+    e.conn()
+        .execute(
+            "INSERT INTO projects (id, name, archived, created) \
+             VALUES ('p-legacy', '   ', 0, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+    // Selectable by the exact name it has.
+    e.project_use(&json!({ "name": "   " })).unwrap();
+    assert_eq!(e.default_project().as_deref(), Some("   "), "the legacy project is reachable");
+    // And retirable, so there is a way out of it.
+    e.project_archive(&json!({ "name": "   " })).unwrap();
+
+    // "" is still refused at a lookup: it is `use "$UNSET"`, and it names nothing.
+    assert_eq!(e.project_use(&json!({ "name": "" })).unwrap_err().code, ErrorCode::BadRequest);
+    // A whitespace name matching no row is a truthful not_found, not a bad_request.
+    assert_eq!(
+        e.project_use(&json!({ "name": " \t " })).unwrap_err().code,
+        ErrorCode::NotFound,
+        "D23: emptiness is checked where names are born, not at the lookup"
+    );
 }
