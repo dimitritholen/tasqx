@@ -100,8 +100,11 @@ impl<'a> Report<'a> {
             .cloned()
             .unwrap_or_default();
 
-        // Derived counts.
-        let now_ts = jiff::Timestamp::now();
+        // Derived counts. All windows are measured against the injected `now`,
+        // not the wall clock — rendering must stay a pure function of the
+        // struct's inputs, or a fixture pinned to one date starts answering
+        // differently as real time passes.
+        let now_ts = parse_ts(self.now).unwrap_or_else(jiff::Timestamp::now);
         let mut open = 0usize;
         let mut overdue = 0usize;
         let mut completed_recent: Vec<&Value> = Vec::new();
@@ -945,6 +948,41 @@ mod tests {
             "--bg defined for both schemes"
         );
         assert!(doc.contains("--accent:"), "accent token present");
+    }
+
+    /// The report takes `now` precisely so rendering is a pure function of its
+    /// inputs, but the derived 7-day "completed recently" window read the wall
+    /// clock instead. The synthetic fixture (completed 2026-07-14, now pinned
+    /// 2026-07-15) therefore aged out of the window when the REAL date passed
+    /// 2026-07-21, and `report_escapes_user_content` failed on unchanged code.
+    /// Pin: a completion recent by the wall clock but ancient relative to the
+    /// injected `now` must not render as recent.
+    #[test]
+    fn recent_window_follows_injected_now_not_wall_clock() {
+        let (summary, mut export, actionable, events) = synthetic();
+        let wall_yesterday = jiff::Timestamp::now()
+            .checked_sub(jiff::ToSpan::hours(24i64))
+            .unwrap()
+            .to_string();
+        export["tasks"][0]["title"] = json!("Wall-clock straggler");
+        export["tasks"][0]["completed"] = json!(wall_yesterday);
+
+        let th = theme::builtin("nord").unwrap();
+        let now = "2030-01-01T00:00:00Z".to_string();
+        let doc = Report {
+            theme: &th,
+            group_by: "project",
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        }
+        .render();
+        assert!(
+            !doc.contains("Wall-clock straggler"),
+            "a completion years before the injected now is not 'recent'"
+        );
     }
 
     #[test]
