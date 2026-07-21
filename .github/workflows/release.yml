@@ -1,0 +1,127 @@
+name: Release
+
+# Prebuilt binaries are the difference between "install Rust, clone, build" and
+# "download, unpack, run" — for a task manager the first one loses most of the
+# audience at hello. A tag push builds all four targets, runs the full suite on
+# every platform that can run it natively, and attaches the archives to a
+# GitHub release. No tag, no release: workflow_dispatch builds the same
+# artifacts for inspection but publishes nothing, so the pipeline can be
+# rehearsed without minting a version.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write # gh release create needs it; every other job only reads
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            test: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            test: true
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            test: true
+          # Cross-compiled on the arm64 runner; the binary is not executed
+          # there, so this entry is build-only. Intel Macs get a binary that
+          # compiled but whose tests ran only on the other three targets —
+          # stated here rather than hidden, the same honesty rule as the
+          # "macOS is built but not in the CI test matrix" line in the README.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            test: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      # A release build that skipped the suite would happily ship a binary the
+      # next `git push` would have turned red. Same flags as ci.yml's test job:
+      # --no-fail-fast so one broken binary can't hide the rest, -D warnings
+      # because a warning here is a warning there.
+      - name: Test
+        if: matrix.test
+        run: cargo test --workspace --all-targets --no-fail-fast
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Build
+        run: cargo build --release -p tasqx-cli --target ${{ matrix.target }}
+
+      # Archive name: tasqx-<tag>-<target>.{tar.gz,zip}. The version comes from
+      # the ref so the filename can never disagree with the tag that built it;
+      # a dispatch run (no tag) stamps the short SHA instead.
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then VERSION="$(git rev-parse --short HEAD)"; fi
+          STAGE="tasqx-${VERSION}-${{ matrix.target }}"
+          mkdir "$STAGE"
+          cp "target/${{ matrix.target }}/release/tasqx" "$STAGE/"
+          cp README.md "$STAGE/"
+          tar czf "$STAGE.tar.gz" "$STAGE"
+          shasum -a 256 "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          if ($env:GITHUB_REF_TYPE -ne 'tag') { $version = (git rev-parse --short HEAD) }
+          $stage = "tasqx-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tasqx.exe" $stage
+          Copy-Item README.md $stage
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+          (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower() + "  $stage.zip" | Set-Content "$stage.zip.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tasqx-${{ matrix.target }}
+          path: |
+            tasqx-*.tar.gz*
+            tasqx-*.zip*
+          if-no-files-found: error
+
+  # Publishing is done with the preinstalled `gh` CLI rather than a release
+  # action — the same reasoning the mutants job applies to cargo-mutants: one
+  # fewer third-party action holding a write-scoped token.
+  release:
+    name: publish release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # --verify-tag refuses to invent a release for a tag the repo does not
+      # have; --generate-notes seeds the body from the commit log, which the
+      # tagger can edit afterwards. Draft-free on purpose: if the suite and
+      # four builds passed, the release IS ready, and a draft step that a
+      # human must remember to click is where releases go to be forgotten.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --verify-tag \
+            --title "tasqx ${GITHUB_REF_NAME}" \
+            --generate-notes
