@@ -56,6 +56,8 @@ Beyond that: start/stop with time tracking, dependencies that mark tasks blocked
 
 Reports come as grouped summaries in the terminal, three chart types (throughput, heatmap, burndown), or a self-contained themed HTML page. Five built-in themes, and the output degrades cleanly from truecolor down to a terminal that can't do color at all.
 
+Settings live in a TOML file, but you don't hand-edit it: `tasqx config set theme.name nord` works, `tasqx config list` shows every setting with its value, source and default, and `tasqx config edit` opens an interactive screen that previews themes live.
+
 Every command prints readable text and takes `--json`. Exit codes mean something and don't change.
 
 ## For agents
@@ -81,18 +83,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo mutants                    # see docs/mutation-testing.md
 ```
 
-CI runs the suite on Linux and Windows, builds the `notify-os` feature that's off by default, and gates on clippy. Rustc warnings are fatal, which sounds strict until you've had a `#[test]` get separated from its function by a careless edit. The test stops running, rustc says "function is never used" in every build after that, and nobody reads it.
+CI runs the suite on Linux and Windows, builds the `notify-os` feature that's off by default, and gates on clippy and rustfmt. A `cargo deny` job gates dependency advisories, licenses and sources (`docs/dependency-policy.md` has the policy), and a coverage job publishes a line-and-branch report on every push — report only, no threshold. Rustc warnings are fatal, which sounds strict until you've had a `#[test]` get separated from its function by a careless edit. The test stops running, rustc says "function is never used" in every build after that, and nobody reads it.
 
 A good chunk of the suite is drift guards: tests that break the build when the docs and the code disagree. Every CLI flag has to show up in its verb's usage line. Every example in the docs has to parse, and the ones marked safe get executed for real. Status sets in SQL, in the filter language and in Rust all come from one enum, so you can't add a status and forget one of them.
 
 `cargo mutants` is the interesting one. It breaks the code on purpose and checks whether any test notices. It found a bug where deleting one line made `(a or b) and c` silently parse as `a or (b and c)`, which would have returned a perfectly normal-looking table full of the rows you filtered out. 316 passing tests hadn't caught it.
 
-`DESIGN.md` is the spec and carries the decision log, D1 through D24, explaining why things are the way they are.
+`DESIGN.md` is the spec and carries the decision log, D1 through D40, explaining why things are the way they are.
 
 ## What's missing
 
-You can't change settings without hand-editing a TOML file. There's no `tasqx config`, no way to set a theme from the CLI. That's the roughest edge right now.
+`tasqx pick` and `agenda` are specified and not built, and there's no `undo` — `cancel` and `reopen` are the reversible paths for now. Tags travel through `add` and `modify`; a standalone `tag`/`untag` verb doesn't exist yet, and neither does archiving a project from the CLI.
 
-The TUI, plugins and sync are all specified in `DESIGN.md` and none of them exist. They were designed together so that adding them later doesn't touch the data model, but "designed" is doing a lot of work in that sentence.
-
-Also: `tasqx theme show` with a name that doesn't exist prints the default theme and exits 0 instead of telling you that you typo'd.
+The rest of the TUI (the settings screen behind `tasqx config edit` is the only piece built), plugins and sync are all specified in `DESIGN.md` and don't exist. They were designed together so that adding them later doesn't touch the data model, but "designed" is doing a lot of work in that sentence.
