@@ -696,7 +696,7 @@ The MCP server is **a long-lived socket client of the core** (§4). It maps each
 
 ### Design principle: few, unambiguous tools
 
-An agent must never dither over *which* tool. So: **one verb = one tool**, names are imperative, read and write are visibly separated, and the risky ones gate. We expose ~10 tools, not one `tasqx_do(method, params)` passthrough — a generic passthrough forces the model to author raw envelopes and invites malformed calls.
+An agent must never dither over *which* tool. So: **one verb = one tool**, names are imperative, read and write are visibly separated, and the risky ones gate. We expose ~13 tools, not one `tasqx_do(method, params)` passthrough — a generic passthrough forces the model to author raw envelopes and invites malformed calls.
 
 ### Tool surface
 
@@ -711,6 +711,8 @@ An agent must never dither over *which* tool. So: **one verb = one tool**, names
 | `tasqx_complete_task` | W | `ref` | `{status, unblocked[]}` | `task.done` |
 | `tasqx_start_timer` / `tasqx_stop_timer` | W | `ref` | interval / `tracked` | `task.start` / `task.stop` |
 | `tasqx_tag_task` | W | `ref`, `tags[]` | resulting tag set | `tag.add` |
+| `tasqx_annotate_task` | W | `ref`, `body` (verbatim text; markdown fine) | `{short_id, annotation{id, body, created}}` | `annotation.add` |
+| `tasqx_add_dependency` | W | `ref`, `depends_on` (short_id or UUID) | `{short_id, depends_on[], blocked}`; cycle → `conflict` | `dependency.add` |
 | `tasqx_create_project` | W | `name`, `description?` | `{id, name}` | `project.create` |
 
 **Why these, not a `modify` overload:** completion, timing, and tagging get distinct imperative tools because the model picks better from distinct names than from a `set` blob — and because they map to distinct core methods with distinct side effects (`task.done` returns `unblocked`; `task.stop` returns `tracked`).

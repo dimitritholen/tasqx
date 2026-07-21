@@ -1499,7 +1499,7 @@ fn page_mcp() -> String {
 
     s.push_str(&h3("The tools"));
     s.push_str(&p(
-        "Four read tools always; seven write tools only with write scope. Each carries MCP \
+        "Four read tools always; nine write tools only with write scope. Each carries MCP \
          annotations (<code>readOnlyHint</code>, <code>destructiveHint</code>) so a client can reason \
          about them before calling.",
     ));
@@ -1536,6 +1536,16 @@ fn page_mcp() -> String {
             ],
             &["<code>tasqx_stop_timer</code>", "write", "Stop the timer."],
             &["<code>tasqx_tag_task</code>", "write", "Add tags."],
+            &[
+                "<code>tasqx_annotate_task</code>",
+                "write",
+                "Attach a note (markdown-friendly).",
+            ],
+            &[
+                "<code>tasqx_add_dependency</code>",
+                "write",
+                "Block one task on another.",
+            ],
             &[
                 "<code>tasqx_create_project</code>",
                 "write",

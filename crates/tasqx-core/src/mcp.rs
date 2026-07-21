@@ -310,6 +310,43 @@ fn tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "tasqx_annotate_task",
+            method: "annotation.add",
+            write: true,
+            description: "Attach a timestamped note to a task. The body is \
+                stored verbatim (newlines and markdown included), so this is \
+                where long-form context lives: acceptance criteria, links, \
+                implementation notes.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "body": { "type": "string", "description": "Note text, stored verbatim. Multi-line markdown is fine." }
+                },
+                "required": ["ref", "body"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_add_dependency",
+            method: "dependency.add",
+            write: true,
+            description: "Make one task depend on another: `ref` is blocked \
+                until `depends_on` is done or cancelled. Returns the resulting \
+                dependency list and blocked state. A cycle is refused as a \
+                conflict.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "depends_on": {
+                        "type": ["integer", "string"],
+                        "description": "The task `ref` must wait for: short_id (integer) or full UUID (string)."
+                    }
+                },
+                "required": ["ref", "depends_on"]
+            }),
+        },
+        ToolSpec {
             name: "tasqx_create_project",
             method: "project.create",
             write: true,

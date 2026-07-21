@@ -70,7 +70,7 @@ fn full_protocol_sequence() {
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 11, "expected 11 tools");
+    assert_eq!(tools.len(), 13, "expected 13 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -83,6 +83,8 @@ fn full_protocol_sequence() {
         "tasqx_start_timer",
         "tasqx_stop_timer",
         "tasqx_tag_task",
+        "tasqx_annotate_task",
+        "tasqx_add_dependency",
         "tasqx_create_project",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
@@ -306,6 +308,136 @@ fn initialize_negotiates_supported_protocol_version() {
         }))
         .expect("initialize is a request");
     assert_eq!(unknown["result"]["protocolVersion"], "2025-06-18");
+}
+
+// ---- annotation.add over MCP -------------------------------------------------
+
+#[test]
+fn annotate_tool_round_trips_multiline_markdown() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let added = call(&server, 1, "tasqx_add_task", json!({ "title": "carrier" }));
+    let short_id = tool_text(&added)["short_id"].as_i64().expect("short_id");
+
+    // The body is exactly the feature-context shape the tool exists for:
+    // multi-line markdown with headers, checkboxes, and a fenced code block.
+    let body = "## Context\n\n- [ ] server-side recompute\n\n```rust\nfn f() {}\n```";
+    let annotated = call(
+        &server,
+        2,
+        "tasqx_annotate_task",
+        json!({ "ref": short_id, "body": body }),
+    );
+    assert!(!is_error(&annotated), "annotate failed: {annotated}");
+    let ann = &tool_text(&annotated)["annotation"];
+    assert_eq!(ann["body"], body, "body must survive byte-for-byte");
+    assert!(
+        ann["created"].is_string(),
+        "annotation carries its timestamp"
+    );
+
+    // The annotation is readable back through tasqx_get_task, unmangled.
+    let got = call(&server, 3, "tasqx_get_task", json!({ "ref": short_id }));
+    assert_eq!(tool_text(&got)["annotations"][0]["body"], body);
+}
+
+#[test]
+fn annotate_tool_without_body_is_bad_request_not_panic() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let added = call(&server, 1, "tasqx_add_task", json!({ "title": "carrier" }));
+    let short_id = tool_text(&added)["short_id"].as_i64().expect("short_id");
+
+    let resp = call(
+        &server,
+        2,
+        "tasqx_annotate_task",
+        json!({ "ref": short_id }),
+    );
+    assert!(is_error(&resp), "missing body must be an isError result");
+    let msg = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        msg.contains("body"),
+        "error should name the missing field: {msg}"
+    );
+}
+
+// ---- dependency.add over MCP ---------------------------------------------------
+
+#[test]
+fn add_dependency_tool_blocks_task_and_refuses_cycles() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let a = tool_text(&call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "design" }),
+    ))["short_id"]
+        .as_i64()
+        .unwrap();
+    let b = tool_text(&call(
+        &server,
+        2,
+        "tasqx_add_task",
+        json!({ "title": "implement" }),
+    ))["short_id"]
+        .as_i64()
+        .unwrap();
+
+    // b depends on a: b is now blocked and reports the edge.
+    let dep = call(
+        &server,
+        3,
+        "tasqx_add_dependency",
+        json!({ "ref": b, "depends_on": a }),
+    );
+    assert!(!is_error(&dep), "dependency add failed: {dep}");
+    let dep_body = tool_text(&dep);
+    assert_eq!(dep_body["blocked"], true);
+    assert_eq!(dep_body["depends_on"][0].as_i64(), Some(a));
+
+    // The reverse edge would be a cycle: refused as a conflict, not applied.
+    let cycle = call(
+        &server,
+        4,
+        "tasqx_add_dependency",
+        json!({ "ref": a, "depends_on": b }),
+    );
+    assert!(is_error(&cycle), "a cycle must be an isError result");
+    let msg = cycle["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        msg.contains("conflict"),
+        "cycle should be a conflict: {msg}"
+    );
+
+    // Completing a unblocks b — the dependency is live, not decorative.
+    let done = call(&server, 5, "tasqx_complete_task", json!({ "ref": a }));
+    assert_eq!(tool_text(&done)["unblocked"][0].as_i64(), Some(b));
+}
+
+#[test]
+fn new_relationship_tools_are_write_scoped() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Read);
+    for (id, name, args) in [
+        (1, "tasqx_annotate_task", json!({ "ref": 1, "body": "x" })),
+        (
+            2,
+            "tasqx_add_dependency",
+            json!({ "ref": 1, "depends_on": 2 }),
+        ),
+    ] {
+        let resp = call(&server, id, name, args);
+        assert!(is_error(&resp), "{name} must be refused under read scope");
+        let msg = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            msg.contains("read-only") || msg.contains("write scope"),
+            "{name} refusal should say why: {msg}"
+        );
+    }
 }
 
 // ---- operator-selected scope -------------------------------------------------
