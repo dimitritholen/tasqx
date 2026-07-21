@@ -19,8 +19,39 @@ permissions:
   contents: write # gh release create needs it; every other job only reads
 
 jobs:
+  # The archives are named from the TAG but the binary reports CARGO.TOML —
+  # two sources for one version number, and nothing else compares them. Tag
+  # v0.2.0 on a tree whose Cargo.toml still says 0.1.0 and the pipeline would
+  # happily publish a tasqx-v0.2.0 archive whose binary answers `--version`
+  # with 0.1.0. This job makes that a red run in the first seconds instead of
+  # a mislabeled release after three platform builds. Releasing stays manual
+  # (bump, commit, tag); only forgetting the bump became impossible.
+  version-guard:
+    name: tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # cargo metadata rather than grepping the TOML: the workspace root also
+      # holds dependency `version =` lines, and a grep that happens to match
+      # the right one is drift bait. Both cargo and jq are preinstalled.
+      - name: Compare
+        run: |
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "dispatch run, no tag to check"
+            exit 0
+          fi
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "tasqx-cli") | .version')"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} says ${TAG_VERSION}, but Cargo.toml says ${CARGO_VERSION} — bump [workspace.package] version and re-tag"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} == Cargo.toml ${CARGO_VERSION}"
+
   build:
     name: build (${{ matrix.target }})
+    needs: version-guard
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
