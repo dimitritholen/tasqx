@@ -20,13 +20,7 @@ The next tier is operational: database read errors are sometimes converted into 
 | Medium | 5 | query scaling; watch consistency; daemon resilience; unbounded connection threads; architecture/test seam |
 | Low | 3 | token semantics; formatting policy; missing automated dependency/coverage evidence |
 
-**Remediation status (2026-07-20):** all 10 findings are implemented, verified, and merged locally. Detailed acceptance evidence is recorded in `TODO_CRITICAL.md`, `TODO_MEDIUM.md`, and `TODO_LOW.md`.
-
-Implementation-ready tasks are in:
-
-- `TODO_CRITICAL.md`
-- `TODO_MEDIUM.md`
-- `TODO_LOW.md`
+**Remediation status (2026-07-20):** all 10 findings are implemented, verified, and merged. Detailed acceptance evidence is recorded in `docs/reviews/TODO_CRITICAL.md`, `docs/reviews/TODO_MEDIUM.md`, and `docs/reviews/TODO_LOW.md` (moved out of the repository root on 2026-07-21, after all items closed).
 
 ## Recommended order
 
