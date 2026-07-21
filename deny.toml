@@ -20,6 +20,10 @@ allow = [
   "Apache-2.0 WITH LLVM-exception",
   "0BSD",
   "BSL-1.0",
+  # tasqx's OWN license (the workspace crates are in this check's graph). No
+  # dependency is expected to carry it; one that did would deserve a look, but
+  # the gate cannot distinguish "ours" from "theirs" by license id alone.
+  "FSL-1.1-MIT",
   "MIT",
   "MPL-2.0",
   "Unicode-3.0",

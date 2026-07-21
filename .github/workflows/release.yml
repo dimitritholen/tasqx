@@ -105,7 +105,7 @@ jobs:
           STAGE="tasqx-${VERSION}-${{ matrix.target }}"
           mkdir "$STAGE"
           cp "target/${{ matrix.target }}/release/tasqx" "$STAGE/"
-          cp README.md "$STAGE/"
+          cp README.md LICENSE.md "$STAGE/"
           tar czf "$STAGE.tar.gz" "$STAGE"
           shasum -a 256 "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
       - name: Package (windows)
@@ -117,7 +117,7 @@ jobs:
           $stage = "tasqx-$version-${{ matrix.target }}"
           New-Item -ItemType Directory $stage | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/tasqx.exe" $stage
-          Copy-Item README.md $stage
+          Copy-Item README.md, LICENSE.md $stage
           Compress-Archive -Path $stage -DestinationPath "$stage.zip"
           (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower() + "  $stage.zip" | Set-Content "$stage.zip.sha256"
 

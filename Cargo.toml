@@ -9,7 +9,7 @@ edition = "2021"
 # is a real floor rather than a guess. Stated here so cargo enforces it instead
 # of the README claiming it.
 rust-version = "1.80"
-license = "MIT OR Apache-2.0"
+license = "FSL-1.1-MIT"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

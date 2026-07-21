@@ -122,6 +122,10 @@ A good chunk of the suite is drift guards: tests that break the build when the d
 
 `DESIGN.md` is the spec and carries the decision log, D1 through D40, explaining why things are the way they are.
 
+## License
+
+[FSL-1.1-MIT](LICENSE.md) — use tasqx for anything except selling a competing product, and every release automatically becomes plain MIT two years after it ships. Using tasqx inside your company, scripting it, building on its API: all fine.
+
 ## What's missing
 
 `tasqx pick` and `agenda` are specified and not built, and there's no `undo` — `cancel` and `reopen` are the reversible paths for now. Tags travel through `add` and `modify`; a standalone `tag`/`untag` verb doesn't exist yet, and neither does archiving a project from the CLI.
