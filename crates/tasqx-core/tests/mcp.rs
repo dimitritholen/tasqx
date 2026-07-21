@@ -70,13 +70,14 @@ fn full_protocol_sequence() {
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 13, "expected 13 tools");
+    assert_eq!(tools.len(), 15, "expected 15 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
         "tasqx_get_task",
         "tasqx_summary",
         "tasqx_list_projects",
+        "tasqx_search_memory",
         "tasqx_add_task",
         "tasqx_modify_task",
         "tasqx_complete_task",
@@ -85,6 +86,7 @@ fn full_protocol_sequence() {
         "tasqx_tag_task",
         "tasqx_annotate_task",
         "tasqx_add_dependency",
+        "tasqx_add_memory",
         "tasqx_create_project",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
@@ -225,8 +227,9 @@ fn read_scope_tools_list_hides_write_tools() {
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    // A read-only session advertises only the four read tools.
-    assert_eq!(tools.len(), 4, "read scope should list only the read tools");
+    // A read-only session advertises only the five read tools — including
+    // memory search: a read-only agent may consult knowledge (D41).
+    assert_eq!(tools.len(), 5, "read scope should list only the read tools");
     for t in tools {
         assert_eq!(
             t["annotations"]["readOnlyHint"], true,
@@ -438,6 +441,64 @@ fn new_relationship_tools_are_write_scoped() {
             "{name} refusal should say why: {msg}"
         );
     }
+}
+
+// ---- memory over MCP (D41) ---------------------------------------------------
+
+#[test]
+fn memory_add_is_write_scoped_but_search_works_read_only() {
+    let engine = engine();
+
+    // Seed one doc through a write session.
+    let writer = McpServer::new(&engine, Scope::Write);
+    let added = call(
+        &writer,
+        1,
+        "tasqx_add_memory",
+        json!({ "title": "Deploy runbook", "body": "deploys go through the blue-green pipeline" }),
+    );
+    assert!(!is_error(&added), "add_memory failed: {added}");
+    assert!(tool_text(&added)["id"].is_string());
+
+    // A read-only session can consult knowledge but not write it.
+    let reader = McpServer::new(&engine, Scope::Read);
+    let found = call(
+        &reader,
+        2,
+        "tasqx_search_memory",
+        json!({ "query": "blue-green" }),
+    );
+    assert!(!is_error(&found), "search under read scope failed: {found}");
+    assert_eq!(tool_text(&found)["count"], 1);
+
+    let refused = call(
+        &reader,
+        3,
+        "tasqx_add_memory",
+        json!({ "title": "nope", "body": "nope" }),
+    );
+    assert!(is_error(&refused), "add_memory must be refused read-only");
+}
+
+#[test]
+fn search_memory_schema_advertises_the_scope_enum() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Read);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let search = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_search_memory")
+        .expect("search_memory is a read tool");
+    // The schema enum renders from MEMORY_SCOPES — the agent must read the
+    // same closed set the engine validates against.
+    let scopes = search["inputSchema"]["properties"]["scope"]["enum"]
+        .as_array()
+        .expect("scope enum");
+    let names: Vec<&str> = scopes.iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(names, tasqx_core::engine::MEMORY_SCOPES);
 }
 
 // ---- operator-selected scope -------------------------------------------------

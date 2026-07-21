@@ -427,6 +427,32 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::GettingStarted,
     },
     CmdDoc {
+        verb: "memory",
+        aliases: &[],
+        method: "memory.search + add/remove",
+        summary: "Store and search knowledge: docs, patterns, and your task annotations (D41).",
+        usage: "tasqx memory <add|search|rm|import> ...",
+        examples: &[
+            ex("tasqx memory add \"Deploy runbook\" \"deploys go through the blue-green pipeline\""),
+            ex("tasqx memory search blue-green"),
+            ex_norun(
+                "tasqx memory import docs/adr",
+                "one doc per .md file; title from the first # heading",
+            ),
+            ex_norun(
+                "tasqx memory rm 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12",
+                "by the id search printed",
+            ),
+        ],
+        notes: &[
+            "Search covers your imported docs AND task annotations, bm25-ranked. Plain words are matched as phrases (hyphens and dots are safe); pass --raw for FTS5 operator syntax.",
+            "Import is one transaction: a bad file imports nothing, and re-importing a directory replaces docs from the same source instead of duplicating them.",
+            "An MCP agent reaches the same store: tasqx_search_memory works even read-only, so agents can consult knowledge while executing tasks.",
+        ],
+        see_also: &["annotate", "mcp", "api"],
+        topic: Topic::Automation,
+    },
+    CmdDoc {
         verb: "export",
         aliases: &[],
         method: "store.export",

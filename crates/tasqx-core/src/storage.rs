@@ -174,6 +174,89 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
 
     add_dependency_foreign_keys_if_missing(conn)?;
     repair_stale_default_project(conn)?;
+    migrate_memory(conn)?;
+    Ok(())
+}
+
+/// D41 memory subsystem: the `docs` table plus FTS5 indexes over `docs` and
+/// `annotations`, kept in sync by triggers so no writer can forget the index.
+///
+/// The rebuild step matters for upgrades: a store that predates this migration
+/// already holds annotation rows the brand-new index has never seen, and
+/// external-content FTS5 reads its content table only when told to. Rebuilding
+/// unconditionally would rescan every body on every open, so it runs only when
+/// this call actually created the index.
+fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
+    // One transaction around gate + DDL + rebuild (review finding): the gate
+    // below is "annotations_fts exists", and the CREATE that makes it exist
+    // used to commit separately from the rebuild it vouches for — a crash (or
+    // disk-full) between the two left every pre-upgrade annotation silently
+    // unsearchable forever, because every later open saw the table and skipped
+    // the backfill. SQLite DDL is transactional, so rolling back the CREATEs
+    // makes the next open retry from scratch.
+    let tx = conn.unchecked_transaction()?;
+    let fts_existed: bool = tx
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='annotations_fts'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)?;
+
+    tx.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS docs (
+            id       TEXT PRIMARY KEY,
+            source   TEXT,
+            title    TEXT NOT NULL,
+            body     TEXT NOT NULL,
+            created  TEXT NOT NULL,
+            modified TEXT NOT NULL
+        );
+
+        -- External-content FTS: the index stores no second copy of the text;
+        -- rows are joined back by rowid. Triggers are the only writers.
+        CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
+            title, body, content='docs', content_rowid='rowid'
+        );
+        CREATE TRIGGER IF NOT EXISTS docs_fts_ai AFTER INSERT ON docs BEGIN
+            INSERT INTO docs_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS docs_fts_ad AFTER DELETE ON docs BEGIN
+            INSERT INTO docs_fts(docs_fts, rowid, title, body)
+                VALUES ('delete', old.rowid, old.title, old.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS docs_fts_au AFTER UPDATE ON docs BEGIN
+            INSERT INTO docs_fts(docs_fts, rowid, title, body)
+                VALUES ('delete', old.rowid, old.title, old.body);
+            INSERT INTO docs_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
+        END;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS annotations_fts USING fts5(
+            body, content='annotations', content_rowid='rowid'
+        );
+        CREATE TRIGGER IF NOT EXISTS annotations_fts_ai AFTER INSERT ON annotations BEGIN
+            INSERT INTO annotations_fts(rowid, body) VALUES (new.rowid, new.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS annotations_fts_ad AFTER DELETE ON annotations BEGIN
+            INSERT INTO annotations_fts(annotations_fts, rowid, body)
+                VALUES ('delete', old.rowid, old.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS annotations_fts_au AFTER UPDATE ON annotations BEGIN
+            INSERT INTO annotations_fts(annotations_fts, rowid, body)
+                VALUES ('delete', old.rowid, old.body);
+            INSERT INTO annotations_fts(rowid, body) VALUES (new.rowid, new.body);
+        END;
+        "#,
+    )?;
+
+    if !fts_existed {
+        tx.execute_batch(
+            "INSERT INTO annotations_fts(annotations_fts) VALUES('rebuild');
+             INSERT INTO docs_fts(docs_fts) VALUES('rebuild');",
+        )?;
+    }
+    tx.commit()?;
     Ok(())
 }
 

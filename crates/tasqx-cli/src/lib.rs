@@ -40,7 +40,7 @@ use tasqx_core::{
     Scope,
 };
 
-use command::{ChartKind, Cli, Command, ConfigAction, McpAction, ThemeAction};
+use command::{ChartKind, Cli, Command, ConfigAction, McpAction, MemoryAction, ThemeAction};
 use theme::{Caps, Ctx};
 
 /// The real reference instant handed to the natural-language date parser.
@@ -454,6 +454,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Config { action }) => {
             run_config(&mut backend, &ctx, &action, theme_flag.as_deref())
         }
+        Some(Command::Memory { action }) => run_memory(&mut backend, &action),
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, file),
         Some(Command::Next) => run_next(&mut backend, &ctx),
@@ -1070,6 +1071,142 @@ fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>, all: bool) -> CmdO
     let result = be.call("report.summary", &params)?;
     let text = render::report(ctx, &result, &group_by);
     Ok((result, text))
+}
+
+/// `tasqx memory add|search|rm|import` (DESIGN.md §12-D41).
+fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome {
+    match action {
+        MemoryAction::Add {
+            title,
+            body,
+            source,
+        } => {
+            let mut params = json!({ "title": title, "body": body });
+            if let Some(s) = source {
+                params["source"] = json!(s);
+            }
+            let result = be.call("memory.add", &params)?;
+            let text = format!(
+                "Stored {}  ·  {}\n",
+                render::san(result["id"].as_str().unwrap_or("?")),
+                render::san(title)
+            );
+            Ok((result, text))
+        }
+        MemoryAction::Search {
+            query,
+            limit,
+            scope,
+            raw,
+        } => {
+            let mut params = json!({ "query": query.join(" ") });
+            if let Some(n) = limit {
+                params["limit"] = json!(n);
+            }
+            if let Some(s) = scope {
+                params["scope"] = json!(s);
+            }
+            if *raw {
+                params["raw"] = json!(true);
+            }
+            let result = be.call("memory.search", &params)?;
+            let mut text = String::new();
+            for hit in result["hits"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                let title = render::san(hit["title"].as_str().unwrap_or(""));
+                let kind = render::san(hit["kind"].as_str().unwrap_or("?"));
+                let src = render::san(hit["source"].as_str().unwrap_or("—"));
+                let snip = render::san(hit["snippet"].as_str().unwrap_or(""));
+                let id = render::san(hit["id"].as_str().unwrap_or("?"));
+                text.push_str(&format!("{title}  ({kind} · {src})\n  {snip}\n  id {id}\n"));
+            }
+            let count = result["count"].as_u64().unwrap_or(0);
+            text.push_str(&format!("{count} hit(s)\n"));
+            Ok((result, text))
+        }
+        MemoryAction::Rm { id } => {
+            let result = be.call("memory.remove", &json!({ "id": id }))?;
+            let text = format!("Removed {}\n", render::san(id));
+            Ok((result, text))
+        }
+        MemoryAction::Import { path } => run_memory_import(be, path),
+    }
+}
+
+/// One doc per file. A directory imports its direct `*.md` children; finding
+/// none is an error, not `Imported 0` at exit 0 — the same never-say-nothing
+/// rule `import` learned for truncated task files.
+fn run_memory_import(be: &mut Backend, path: &str) -> CmdOutcome {
+    // Two-phase (review finding): ALL file I/O and title derivation happen
+    // before a single write, then one `memory.import` lands the batch in one
+    // transaction with replace-by-source semantics — a failure imports
+    // nothing, and a re-run replaces instead of duplicating.
+    let docs = memory_docs_from_path(path)?;
+    let result = be.call("memory.import", &json!({ "docs": docs }))?;
+    let text = format!(
+        "Imported {} doc(s) into memory\n",
+        result["imported"].as_u64().unwrap_or(0)
+    );
+    Ok((result, text))
+}
+
+/// Read `path` (a file, or a directory's direct `*.md` children) into
+/// `memory.import` doc objects. Pure I/O — no store access — so the whole
+/// failure surface of an import is exhausted before anything is written.
+fn memory_docs_from_path(path: &str) -> Result<Vec<Value>, tasqx_core::ApiError> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| tasqx_core::ApiError::bad_request(format!("cannot read {path}: {e}")))?;
+    let files: Vec<std::path::PathBuf> = if meta.is_dir() {
+        let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(path)
+            .map_err(|e| tasqx_core::ApiError::bad_request(format!("cannot read {path}: {e}")))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            // Case-insensitive: README.MD is a markdown file on every
+            // platform, and skipping it silently on the OS whose filesystems
+            // are case-insensitive was the exact wrong place to be strict.
+            .filter(|p| {
+                p.is_file()
+                    && p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+            })
+            .collect();
+        found.sort();
+        if found.is_empty() {
+            return Err(tasqx_core::ApiError::bad_request(format!(
+                "no .md files found in {path} — memory import takes a markdown file or a \
+                 directory containing them"
+            )));
+        }
+        found
+    } else {
+        vec![std::path::PathBuf::from(path)]
+    };
+
+    let mut docs = Vec::new();
+    for file in &files {
+        let body = std::fs::read_to_string(file).map_err(|e| {
+            tasqx_core::ApiError::bad_request(format!("cannot read {}: {e}", file.display()))
+        })?;
+        // A UTF-8 BOM would defeat the `# ` heading match below AND end up in
+        // the stored body and the index; strip it once, here.
+        let body = body.strip_prefix('\u{FEFF}').unwrap_or(&body);
+        // Title: the first `# ` heading, else the file stem. The heading STAYS
+        // in the body — the title is an index entry, not a cut.
+        let title = body
+            .lines()
+            .find_map(|l| l.strip_prefix("# "))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                file.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("untitled")
+                    .to_string()
+            });
+        docs.push(json!({ "title": title, "body": body, "source": file.display().to_string() }));
+    }
+    Ok(docs)
 }
 
 fn run_export(be: &mut Backend, filter: &[String]) -> CmdOutcome {
@@ -2507,6 +2644,34 @@ mod tests {
     }
 
     /// Every documented example must at least be a command this binary accepts.
+    /// Review findings on `memory import`: the `*.md` filter was
+    /// case-sensitive (README.MD silently skipped, on the OS whose filesystems
+    /// are case-insensitive), and a UTF-8 BOM defeated the `# ` title match
+    /// and leaked into the stored body.
+    #[test]
+    fn memory_import_reads_upper_case_md_and_strips_the_bom() {
+        let dir = std::env::temp_dir().join(format!("tasqx-memimp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lower.md"), "# Lower doc\n\nbody").unwrap();
+        std::fs::write(dir.join("UPPER.MD"), "\u{FEFF}# Upper doc\n\nbody").unwrap();
+
+        let docs = memory_docs_from_path(dir.to_str().unwrap()).expect("both files import");
+        assert_eq!(docs.len(), 2, "UPPER.MD must not be skipped");
+        let titles: Vec<&str> = docs.iter().map(|d| d["title"].as_str().unwrap()).collect();
+        assert!(
+            titles.contains(&"Upper doc"),
+            "the BOM must not defeat title derivation: {titles:?}"
+        );
+        for d in &docs {
+            assert!(
+                !d["body"].as_str().unwrap().starts_with('\u{FEFF}'),
+                "the BOM must not reach the stored body"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     ///
     /// The executable guard in `tests/help.rs` only runs the `RunKind::Safe`
     /// half; the `NoRun` half — the mutating and long-running examples, more

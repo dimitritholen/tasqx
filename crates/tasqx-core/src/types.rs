@@ -28,17 +28,22 @@ use crate::util::is_future_at;
 pub enum Entity {
     Task,
     Project,
+    /// A memory document (D41). Annotation events stay under [`Entity::Task`]
+    /// — an annotation belongs to its task — so `doc` covers only the
+    /// standalone knowledge rows in `docs`.
+    Doc,
 }
 
 impl Entity {
     /// Every variant. Hand-written like [`Status::ALL`], and pinned by the same
     /// exhaustiveness test, because Rust has no way to enumerate a plain enum.
-    pub const ALL: [Entity; 2] = [Entity::Task, Entity::Project];
+    pub const ALL: [Entity; 3] = [Entity::Task, Entity::Project, Entity::Doc];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Entity::Task => "task",
             Entity::Project => "project",
+            Entity::Doc => "doc",
         }
     }
 
@@ -46,6 +51,7 @@ impl Entity {
         match s {
             "task" => Some(Entity::Task),
             "project" => Some(Entity::Project),
+            "doc" => Some(Entity::Doc),
             _ => None,
         }
     }
@@ -410,7 +416,7 @@ mod tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), before, "Entity::ALL contains a duplicate");
-        assert_eq!(before, 2, "Entity::ALL must list every variant");
+        assert_eq!(before, 3, "Entity::ALL must list every variant");
         for e in Entity::ALL {
             assert_eq!(
                 Entity::parse(e.as_str()),

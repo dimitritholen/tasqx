@@ -9,11 +9,14 @@
 //! no event. State and history therefore move together, always.
 
 mod commands;
+mod memory;
 mod projects;
 mod relationships;
 mod reports;
 mod task;
 mod transfer;
+
+pub use memory::MEMORY_SCOPES;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -556,6 +559,9 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
 /// Every key an exported annotation object can carry. D34.
 pub const IMPORT_ANNOTATION_KEYS: &[&str] = &["id", "body", "created"];
 
+/// Every key an exported memory doc object can carry. D41, held to D34's gate.
+pub const IMPORT_DOC_KEYS: &[&str] = &["id", "source", "title", "body", "created", "modified"];
+
 /// Every key an exported project object can carry. D34's gate, D37's record.
 ///
 /// Deliberately NOT `default`: `project.list` marks the default row with one,
@@ -967,6 +973,7 @@ mod tests {
         let source = [
             include_str!("engine.rs"),
             include_str!("engine/commands.rs"),
+            include_str!("engine/memory.rs"),
             include_str!("engine/projects.rs"),
             include_str!("engine/relationships.rs"),
             include_str!("engine/reports.rs"),
@@ -989,6 +996,9 @@ mod tests {
             "annotation_add",
             "dependency_add",
             "dependency_remove",
+            "memory_add",
+            "memory_remove",
+            "memory_import",
             "store_import",
             "reminder_fire",
         ];

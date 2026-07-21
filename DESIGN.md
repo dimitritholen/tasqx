@@ -114,6 +114,7 @@ The CLI **never requires** the daemon. If one is running it uses the socket (liv
 | **Tag** | `id`, `name`; join `task_tags(task_id, tag_id)` | Many-to-many. |
 | **Dependency** | `task_id`, `depends_on_id` | DAG; a task is *blocked* if any dependency is not *resolved* — where resolved means `done` **or** `cancelled` (D11). |
 | **Annotation** | `id`, `task_id`, `body`, `created` | Timestamped plain-text notes. |
+| **Doc** | `id`, `source?`, `title`, `body`, `created`, `modified` | D41 memory: standalone knowledge rows, FTS5-indexed together with annotation bodies. |
 | **Recurrence** | `rule` (RRULE-subset or interval), `anchor`, `template_task_id` | A recurring task is a template that spawns concrete instances. |
 | **Event (audit log)** | `id`, `entity`, `entity_id`, `op`, `payload` (JSON diff), `ts`, `actor` | Append-only. The spine of history *and* future sync. |
 
@@ -243,6 +244,7 @@ CLI exit codes map to these (`0` ok, `2` bad_request, `4` not_found, `5` conflic
 | `project` | `create`, `list`, `use`, `archive` |
 | `annotation` | `add` |
 | `dependency` | `add`, `remove` |
+| `memory` | `add`, `search`, `remove`, `import` (D41) |
 | `report` | `summary` |
 | `event` | `list`, `revert` |
 | `store` | `export`, `import` |
@@ -421,6 +423,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `tasqx 42 +blocking` | `tag.add` | `-blocking` → `tag.remove`. |
 | `tasqx 42 annotate "…"` | `annotation.add` | — |
 | `tasqx 42 dep 43` | `dependency.add` | Cycle → exit 5 (`conflict`). |
+| `tasqx memory add/search/rm/import` | `memory.add` / `memory.search` / `memory.remove` / `memory.import` | D41. `import`: one doc per `.md` file, one transaction, same `source` replaces. |
 | `tasqx pick [filter]` | `task.list` → verb | Fetches candidates, then dispatches chosen verb. |
 | `tasqx agenda [week]` | `task.list` (date-bounded) | Client renders the calendar grid. |
 | `tasqx report <name>` | `report.summary` | Feeds charts (§8) and HTML export. |
@@ -696,7 +699,7 @@ The MCP server is **a long-lived socket client of the core** (§4). It maps each
 
 ### Design principle: few, unambiguous tools
 
-An agent must never dither over *which* tool. So: **one verb = one tool**, names are imperative, read and write are visibly separated, and the risky ones gate. We expose ~13 tools, not one `tasqx_do(method, params)` passthrough — a generic passthrough forces the model to author raw envelopes and invites malformed calls.
+An agent must never dither over *which* tool. So: **one verb = one tool**, names are imperative, read and write are visibly separated, and the risky ones gate. We expose ~15 tools, not one `tasqx_do(method, params)` passthrough — a generic passthrough forces the model to author raw envelopes and invites malformed calls.
 
 ### Tool surface
 
@@ -711,8 +714,10 @@ An agent must never dither over *which* tool. So: **one verb = one tool**, names
 | `tasqx_complete_task` | W | `ref` | `{status, unblocked[]}` | `task.done` |
 | `tasqx_start_timer` / `tasqx_stop_timer` | W | `ref` | interval / `tracked` | `task.start` / `task.stop` |
 | `tasqx_tag_task` | W | `ref`, `tags[]` | resulting tag set | `tag.add` |
+| `tasqx_search_memory` | R | `query`, `limit?`, `scope?`, `raw?` | `{count, hits[]}` bm25-ranked (D41) | `memory.search` |
 | `tasqx_annotate_task` | W | `ref`, `body` (verbatim text; markdown fine) | `{short_id, annotation{id, body, created}}` | `annotation.add` |
 | `tasqx_add_dependency` | W | `ref`, `depends_on` (short_id or UUID) | `{short_id, depends_on[], blocked}`; cycle → `conflict` | `dependency.add` |
+| `tasqx_add_memory` | W | `title`, `body`, `source?` | `{id, title, created}` (D41) | `memory.add` |
 | `tasqx_create_project` | W | `name`, `description?` | `{id, name}` | `project.create` |
 
 **Why these, not a `modify` overload:** completion, timing, and tagging get distinct imperative tools because the model picks better from distinct names than from a `set` blob — and because they map to distinct core methods with distinct side effects (`task.done` returns `unblocked`; `task.stop` returns `tracked`).
@@ -1062,7 +1067,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, native charts, shell completions. |
 | **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report. |
 | **Extensibility** | Hooks + git-style custom subcommands; plugin capability/permission model. |
-| **MCP** | `tasqx-mcp` server with the ~10 tools (§7), authenticating as a scoped plugin. |
+| **MCP** | `tasqx-mcp` server with the ~15 tools (§7), authenticating as a scoped plugin. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
 
 ### Later — additive only, never breaking v1
@@ -1292,3 +1297,9 @@ Meanwhile five commands silently accepted `--json` and printed prose, because `c
 **Decision:** the filter accepts `completed.before:` and `completed.after:`, taking the same `parse_when` grammar and the same D33 refusal as the `due.` pair, and sharing `instant_cmp` so the two date fields cannot answer a boundary differently. A task that was never completed falls outside every `completed.` bound — the rule an undated task already had for `due.`.
 **Why, and the general rule worth recording:** §8 presented `filter:"completed.after:-7d"` as the query behind the weekly report while the parser answered `unknown filter token`. **When spec and code disagree, resolve in whichever direction is *reachable* from what already exists.** Here the field was stored, returned by the API, and had a sibling pair fixing its exact shape, so the spec described something one function short of working and the code was the error. Deleting the example would have removed the tool's only way to ask the one question the `completed` column exists to answer.
 **Also recorded:** the refusal message's token list is now one `TOKEN_SHAPES` const pinned to `VALUE_PREFIXES`. It had been two hand-typed copies of one sentence — the parallel-list shape D30 rules against — and a filter that accepts a token its own error message does not list teaches the user that token does not exist.
+
+### D41 — Memory: lexical retrieval over docs and annotations, retrieval-agnostic API
+**Decision:** tasqx gains a memory subsystem: a `docs` table (id UUIDv7, source?, title, body, created, modified) plus **FTS5** full-text indexes over `docs` and `annotations.body`, exposed as four additive v1 methods — `memory.add {title, body, source?}`, `memory.search {query, limit?, scope?: all|docs|annotations, raw?}`, `memory.remove {id}`, and `memory.import {docs}` (one transaction, all-or-nothing, a doc whose `source` matches an existing one replaces it) — a `tasqx memory add|search|rm|import` CLI family, and two MCP tools: `tasqx_search_memory` (**read scope**, deliberately: a read-only agent may consult knowledge) and `tasqx_add_memory` (write). BM25 ranking with `snippet()` excerpts. Search hits carry `{id, kind: doc|annotation, title, snippet, rank, source}`; annotation hits name their task as `task:#<short_id>`.
+**Why FTS5 and not embeddings:** the bundled SQLite already compiles with `SQLITE_ENABLE_FTS5` (verified in `libsqlite3-sys` build.rs and at runtime against the pinned rusqlite), so lexical search costs zero dependencies and zero binary bytes — while every embedding route fails a design principle: a local model (fastembed → `ort` + `hf-hub`) multiplies the binary, pulls ~600 tree entries against tasqx-core's 45, and downloads models at first use (breaks offline/no-signup); client-supplied embeddings shift the burden onto every MCP client with no standard mechanism to do so. The API is therefore **retrieval-agnostic**: `memory.search` promises ranked hits, not a ranking algorithm, so a semantic backend (e.g. sqlite-vec behind a feature flag) can slot in later without a wire change — the additive-v1 rule applied to retrieval.
+**The sharp edge, handled at the door:** FTS5 query syntax treats `-`, `.`, and quotes as operators; a raw user query like `server-side` is a *syntax error* against the index (verified). `memory.search` therefore escapes the query into quoted phrase terms by default; callers who want operators pass `raw:true` and own the syntax. This is D28's inversion yet again — refuse or defuse hostile input at the boundary, never let it reach a parser that answers with `no such column`.
+**Also recorded, from the adversarial review of this feature:** (1) **never `INSERT OR REPLACE` into a trigger-synced table** — REPLACE's implicit delete does not fire delete triggers (recursive_triggers is off), so `store.import`'s annotation REPLACE left dangling `annotations_fts` entries that later answered searches with an *unrelated* annotation; every upsert on `annotations`/`docs` is `ON CONFLICT DO UPDATE`, whose UPDATE path the triggers do see. (2) **A migration's gate must commit atomically with the work it vouches for** — `migrate_memory`'s create+rebuild runs in one transaction, else a crash between them left pre-upgrade annotations unsearchable forever with nothing red. (3) **The export document carries `docs`** — omitting them was D37's omission shape reintroduced: a backup that restores everything except your knowledge, silently.

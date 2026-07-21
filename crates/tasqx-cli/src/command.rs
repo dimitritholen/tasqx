@@ -304,6 +304,12 @@ pub(super) enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Memory: store and search knowledge docs + annotations (DESIGN.md §12-D41).
+    #[command(after_help = crate::cmddoc::after_help("memory"))]
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
     /// Export tasks as canonical JSON (maps to store.export).
     #[command(after_help = crate::cmddoc::after_help("export"))]
     Export {
@@ -460,6 +466,48 @@ pub(super) enum ConfigAction {
     Path,
     /// Edit settings on an interactive screen, previewing themes live.
     Edit,
+}
+
+#[derive(Subcommand)]
+pub(super) enum MemoryAction {
+    /// Store a knowledge doc (maps to memory.add). Body is stored verbatim.
+    Add {
+        /// Doc title.
+        title: String,
+        /// Body text — multi-line markdown is fine.
+        body: String,
+        /// Where this came from: a path, URL, or ticket.
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Search docs + annotations, bm25-ranked (maps to memory.search).
+    Search {
+        /// Search words. Matched as phrases, so hyphens and dots are safe.
+        ///
+        /// Deliberately NOT named `filter`: this is FTS text, not the filter
+        /// DSL, so the argv hyphen pre-pass must leave it alone.
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// Max hits (default 10).
+        #[arg(long)]
+        limit: Option<u64>,
+        /// What to search: all | docs | annotations.
+        #[arg(long)]
+        scope: Option<String>,
+        /// Treat the query as raw FTS5 syntax (prefix*, AND/OR, columns).
+        #[arg(long)]
+        raw: bool,
+    },
+    /// Remove a doc by id (maps to memory.remove).
+    Rm {
+        /// The doc UUID, as printed by `memory add` and `memory search`.
+        id: String,
+    },
+    /// Import markdown files as docs: one doc per file (maps to memory.add).
+    Import {
+        /// A file, or a directory whose *.md files are imported (non-recursive).
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]

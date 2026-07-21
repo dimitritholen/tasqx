@@ -63,11 +63,39 @@ impl Engine {
             // selected tasks do not mention is not a dangling pointer, so there
             // is nothing to trim and no second `dropped_` counter to explain.
             "projects": self.export_projects()?,
+            // D41 memory docs, ALL of them regardless of `filter` — a filter
+            // selects tasks, and knowledge is not attached to a task. Omitting
+            // them was the D37 omission shape reintroduced: a backup that
+            // answered ok:true and silently lost every doc on restore (review
+            // finding).
+            "docs": self.export_docs()?,
             // Store state, so the document carries it (D21: it lives in the
             // store's `config` table, never in config.toml). `null` when there
             // is none, which is a fact and not an omission.
             "default_project": self.default_project()?,
         }))
+    }
+
+    /// Every memory doc row, id-ordered (creation order, since UUIDv7). D41.
+    fn export_docs(&self) -> Result<Vec<Value>, ApiError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, source, title, body, created, modified FROM docs ORDER BY id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "source": r.get::<_, Option<String>>(1)?,
+                "title": r.get::<_, String>(2)?,
+                "body": r.get::<_, String>(3)?,
+                "created": r.get::<_, String>(4)?,
+                "modified": r.get::<_, String>(5)?,
+            }))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Every project row, name-ordered, in the canonical §3 shape. D37.
@@ -223,6 +251,51 @@ impl Engine {
                 projects_imported += 1;
             }
         }
+
+        // D41 memory docs: optional, so a pre-D41 document still imports.
+        // Upsert by id via ON CONFLICT DO UPDATE — the UPDATE path fires
+        // docs_fts_au, so the search index follows (the same trigger rule the
+        // annotation upsert below learned from the review).
+        let mut docs_imported = 0i64;
+        if let Some(rows) = opt_array(p, "docs")?.cloned() {
+            for dv in &rows {
+                let dv = import_shape("", "doc", dv)?;
+                import_keys("", "doc", dv, IMPORT_DOC_KEYS)?;
+                let did = opt_str_nonempty(dv, "id")?.unwrap_or_else(|| Uuid::now_v7().to_string());
+                let title = req_str(dv, "title").map_err(|e| {
+                    ApiError::bad_request(format!(
+                        "{} — each imported doc requires a `title`",
+                        e.message
+                    ))
+                })?;
+                let body = req_str(dv, "body").map_err(|e| {
+                    ApiError::bad_request(format!(
+                        "{} — each imported doc requires a `body`",
+                        e.message
+                    ))
+                })?;
+                let source = opt_str_nonempty(dv, "source")?;
+                let created = opt_str_nonempty(dv, "created")?.unwrap_or_else(now);
+                let modified = opt_str_nonempty(dv, "modified")?.unwrap_or_else(now);
+                tx.execute(
+                    "INSERT INTO docs (id, source, title, body, created, modified) \
+                     VALUES (?1,?2,?3,?4,?5,?6) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                     source=excluded.source, title=excluded.title, body=excluded.body, \
+                     created=excluded.created, modified=excluded.modified",
+                    params![did, source, title, body, created, modified],
+                )?;
+                insert_event(
+                    &tx,
+                    Entity::Doc,
+                    &did,
+                    "memory.add",
+                    &json!({ "title": title, "source": source, "via": "store.import" }),
+                )?;
+                docs_imported += 1;
+            }
+        }
+
         for tv in tasks {
             // Shape first, fields second: a non-object entry used to be
             // diagnosed by `req_str` as "missing required field: id", sending
@@ -450,8 +523,20 @@ impl Engine {
                     let acreated =
                         import_field(id, "annotations[].created", opt_str_nonempty(a, "created"))?
                             .unwrap_or_else(now);
+                    // ON CONFLICT DO UPDATE, never INSERT OR REPLACE: REPLACE
+                    // deletes the old row WITHOUT firing the delete trigger
+                    // (recursive_triggers is off), so a payload that moves an
+                    // annotation id from a task outside the payload left a
+                    // dangling entry in annotations_fts — and once the freed
+                    // rowid was reused, memory.search answered the OLD text
+                    // with an UNRELATED annotation. The UPDATE path keeps the
+                    // rowid and fires annotations_fts_au, which does the
+                    // delete+insert pair the index needs (D41 review finding).
                     tx.execute(
-                        "INSERT OR REPLACE INTO annotations (id, task_id, body, created) VALUES (?1,?2,?3,?4)",
+                        "INSERT INTO annotations (id, task_id, body, created) \
+                         VALUES (?1,?2,?3,?4) \
+                         ON CONFLICT(id) DO UPDATE SET \
+                         task_id=excluded.task_id, body=excluded.body, created=excluded.created",
                         params![aid, id, body, acreated],
                     )?;
                 }
@@ -574,6 +659,7 @@ impl Engine {
             "imported": imported,
             "projects_imported": projects_imported,
             "projects_created": projects_created,
+            "docs_imported": docs_imported,
             "default_project": default_project,
         }))
     }

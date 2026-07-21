@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 29] = [
+const VERBS: [(&str, &str, &str); 30] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("add", "<code>a</code>, <code>new</code>", "task.add"),
@@ -90,6 +90,7 @@ const VERBS: [(&str, &str, &str); 29] = [
     ("chart", "—", "event.list"),
     ("theme", "—", "— (no store)"),
     ("config", "—", "— (registry + core.capabilities)"),
+    ("memory", "—", "memory.search + add/remove"),
     ("export", "—", "store.export"),
     ("import", "—", "store.import"),
     ("api", "—", "(any)"),
@@ -102,7 +103,7 @@ const VERBS: [(&str, &str, &str); 29] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 23] = [
+const METHODS: [(&str, &str, &str); 27] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -192,6 +193,26 @@ const METHODS: [(&str, &str, &str); 23] = [
         "Dep state + <code>blocked</code>.",
     ),
     (
+        "memory.add",
+        "<code>title</code>, <code>body</code>, <code>source?</code>",
+        "<code>{id, title, created}</code>. Body stored verbatim (D41).",
+    ),
+    (
+        "memory.search",
+        "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>",
+        "<code>{count, hits}</code> — bm25-ranked over docs + annotations.",
+    ),
+    (
+        "memory.remove",
+        "<code>id</code>",
+        "<code>{id, removed}</code>.",
+    ),
+    (
+        "memory.import",
+        "<code>docs</code>",
+        "<code>{imported, docs}</code>. One transaction; same <code>source</code> replaces.",
+    ),
+    (
         "report.summary",
         "<code>group_by?</code>, <code>filter?</code>, <code>metrics?</code>, <code>all?</code>",
         "<code>{groups, generated}</code>. <code>group_by</code> defaults to \
@@ -200,12 +221,12 @@ const METHODS: [(&str, &str, &str); 23] = [
     (
         "store.export",
         "<code>filter?</code>",
-        "<code>{tasks, projects, default_project, dropped_dependencies}</code>.",
+        "<code>{tasks, projects, docs, default_project, dropped_dependencies}</code>.",
     ),
     (
         "store.import",
-        "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>",
-        "<code>{imported, projects_imported, projects_created, default_project}</code>.",
+        "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>, <code>docs?</code>",
+        "<code>{imported, projects_imported, projects_created, docs_imported, default_project}</code>.",
     ),
     (
         "event.list",
@@ -1499,7 +1520,7 @@ fn page_mcp() -> String {
 
     s.push_str(&h3("The tools"));
     s.push_str(&p(
-        "Four read tools always; nine write tools only with write scope. Each carries MCP \
+        "Five read tools always; ten write tools only with write scope. Each carries MCP \
          annotations (<code>readOnlyHint</code>, <code>destructiveHint</code>) so a client can reason \
          about them before calling.",
     ));
@@ -1522,6 +1543,11 @@ fn page_mcp() -> String {
                 "Aggregate report by project/status/priority.",
             ],
             &["<code>tasqx_list_projects</code>", "read", "List projects."],
+            &[
+                "<code>tasqx_search_memory</code>",
+                "read",
+                "Search docs + annotations (D41).",
+            ],
             &["<code>tasqx_add_task</code>", "write", "Capture a task."],
             &["<code>tasqx_modify_task</code>", "write", "Change fields."],
             &[
@@ -1545,6 +1571,11 @@ fn page_mcp() -> String {
                 "<code>tasqx_add_dependency</code>",
                 "write",
                 "Block one task on another.",
+            ],
+            &[
+                "<code>tasqx_add_memory</code>",
+                "write",
+                "Store a knowledge doc.",
             ],
             &[
                 "<code>tasqx_create_project</code>",
@@ -1691,12 +1722,12 @@ fn page_api() -> String {
     ));
     s.push_str(&snippet(
         "echo '{\"tasqx\":\"1\",\"id\":\"c1\",\"method\":\"core.capabilities\"}' | tasqx api",
-        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"dependency.add\",\"dependency.remove\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\"],\"task.stop\":[\"ref\"]}},\"tasqx\":\"1\"}",
+        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"dependency.add\",\"dependency.remove\",\"memory.add\",\"memory.search\",\"memory.remove\",\"memory.import\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"memory.add\":[\"title\",\"body\",\"source\"],\"memory.import\":[\"docs\"],\"memory.remove\":[\"id\"],\"memory.search\":[\"query\",\"limit\",\"scope\",\"raw\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\",\"projects\",\"default_project\",\"docs\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\"],\"task.stop\":[\"ref\"]}},\"tasqx\":\"1\"}",
     ));
 
     s.push_str(&h3("The methods"));
     s.push_str(&p(
-        "All twenty-three — and this table is what the tests compare against \
+        "All twenty-seven — and this table is what the tests compare against \
          <code>core.capabilities</code>: the method names, and (D33) the Params column against its \
          <code>params</code> map, so it cannot describe a method — or a key — this build does not \
          have. A key not in the accepted set is refused, never ignored.",
@@ -2599,7 +2630,7 @@ mod tests {
     /// Partial by construction, and worth naming precisely: this only covers the
     /// methods callable with no arguments, because those are the ones a
     /// doc-drift test can invoke without inventing fixture data. That is six of
-    /// the twenty-three rows. The write methods' return shapes, and every prose
+    /// the twenty-seven rows. The write methods' return shapes, and every prose
     /// `returns` cell that describes rather than enumerates ("The task, timer
     /// running."), stay unguarded — asserting on English is not a thing a test
     /// can do, and asserting on the write shapes needs a fixture store per

@@ -18,7 +18,9 @@
 use serde_json::{json, Value};
 
 use crate::dispatch::dispatch;
-use crate::engine::{Engine, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS, TASK_FIELDS};
+use crate::engine::{
+    Engine, MEMORY_SCOPES, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS, TASK_FIELDS,
+};
 use crate::types::Priority;
 
 /// MCP protocol revision this server implements by default (the `initialize`
@@ -39,8 +41,8 @@ pub const SERVER_NAME: &str = "tasqx";
 /// tools and `Write` permits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// Read-only: the four `tasqx_list_*`/`get`/`summary` tools. Write tools
-    /// are refused with an `isError` result.
+    /// Read-only: the five read tools (`tasqx_list_*`, `get_task`, `summary`,
+    /// `search_memory`). Write tools are refused with an `isError` result.
     Read,
     /// Full access: every tool.
     Write,
@@ -200,6 +202,39 @@ fn tool_specs() -> Vec<ToolSpec> {
                 }
             }),
         },
+        // Read, deliberately (D41): consulting knowledge mutates nothing, so a
+        // read-only agent gets it too.
+        ToolSpec {
+            name: "tasqx_search_memory",
+            method: "memory.search",
+            write: false,
+            description: "Search the memory store: imported docs/patterns and \
+                task annotations, bm25-ranked with snippets. Plain text queries \
+                are matched as phrases; set raw=true for FTS5 operator syntax \
+                (prefix*, AND/OR, column filters).",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Plain-text search words. Matched as quoted phrases, so hyphens and dots are safe."
+                    },
+                    // No `minimum` bound: `query` is required, so the one-key
+                    // boundary probe in the minimum guard could never test it.
+                    "limit": { "type": "integer", "description": "Max hits (0 or more); default 10." },
+                    "scope": {
+                        "type": "string",
+                        "enum": enum_of(MEMORY_SCOPES),
+                        "description": format!("What to search. Optional; defaults to {}.", MEMORY_SCOPES[0])
+                    },
+                    "raw": {
+                        "type": "boolean",
+                        "description": "Pass the query through as FTS5 syntax. Invalid syntax is refused as bad_request."
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
         // ---- writes ---------------------------------------------------------
         ToolSpec {
             name: "tasqx_add_task",
@@ -344,6 +379,24 @@ fn tool_specs() -> Vec<ToolSpec> {
                     }
                 },
                 "required": ["ref", "depends_on"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_add_memory",
+            method: "memory.add",
+            write: true,
+            description: "Store a knowledge document in memory: company \
+                patterns, documentation, decisions worth finding again. Body is \
+                stored verbatim (markdown fine) and becomes searchable via \
+                tasqx_search_memory.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "body": { "type": "string", "description": "Stored verbatim; multi-line markdown is fine." },
+                    "source": { "type": "string", "description": "Where this came from: a path, URL, or ticket." }
+                },
+                "required": ["title", "body"]
             }),
         },
         ToolSpec {

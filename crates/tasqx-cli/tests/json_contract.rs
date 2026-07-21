@@ -88,6 +88,13 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("show", &["show", "1"]),
         c("modify", &["modify", "1", "--priority", "high"]),
         c("annotate", &["annotate", "1", "a note"]),
+        // Add before search so the search case has a doc to find; the shared
+        // store carries both forward.
+        c(
+            "memory",
+            &["memory", "add", "Guard doc", "the guard needle body"],
+        ),
+        c("memory", &["memory", "search", "needle"]),
         c("start", &["start", "1"]),
         c("stop", &["stop", "1"]),
         c("dep", &["dep", "1", "2"]),

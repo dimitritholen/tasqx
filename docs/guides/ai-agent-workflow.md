@@ -43,6 +43,18 @@ The tool surface is designed around one loop — work the backlog one task at a 
 `tasqx_add_dependency` lets the agent decompose a feature itself: capture subtasks
 with `tasqx_add_task`, wire the order, then work the chain.
 
+## Give the agent memory
+
+`tasqx memory import docs/` turns your markdown docs — ADRs, runbooks, company
+patterns — into a searchable knowledge store, and `tasqx_search_memory` lets the
+agent consult it mid-task (it works even read-only, deliberately). Task
+annotations are searchable through the same tool, so decisions written down
+during one task resurface during the next:
+
+1. `tasqx_search_memory` with `"payment idempotency"` before touching payment code.
+2. Hits come back bm25-ranked with snippets — docs and past annotations alike.
+3. After the work, `tasqx_add_memory` stores what the next session should know.
+
 ## Safety properties you get for free
 
 - Every mutation is optimistic-concurrency-checked: if you edited a task in another
