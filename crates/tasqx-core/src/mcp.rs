@@ -178,7 +178,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                     "filter": { "type": "string", "description": "Optional filter DSL to scope the report." },
                     "all": {
                         "type": "boolean",
-                        "description": "Include every status. By default a report with no status term in its filter covers open work only (D24)."
+                        "description": "Count cancelled tasks too. By default a report with no status term in its filter skips only cancelled tasks — done work always counts (D24)."
                     },
                     "metrics": {
                         "type": "array",

@@ -310,7 +310,7 @@ impl<'a> Report<'a> {
             .cloned()
             .unwrap_or_default();
         if groups.is_empty() {
-            return section(&title, &format!("No open work grouped by {axis}."), "");
+            return section(&title, &format!("Nothing to report grouped by {axis}."), "");
         }
         let mut rows = String::new();
         for g in &groups {
