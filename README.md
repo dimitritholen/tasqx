@@ -26,13 +26,17 @@ Your tasks are a SQLite file on your disk. It works offline and there's nothing 
 
 ## Install
 
-No prebuilt binaries yet, so you build it. Needs Rust 1.80 or newer, which `Cargo.toml` enforces.
+Tagged releases get prebuilt binaries for Linux, macOS and Windows on the [Releases page](https://github.com/dimitritholen/tasqx/releases) — download, unpack, put `tasqx` on your PATH. There is no runtime to install and no dynamic linking; SQLite is bundled.
+
+Or build from source. Needs Rust 1.80 or newer, which `Cargo.toml` enforces:
 
 ```console
 git clone https://github.com/dimitritholen/tasqx.git
 cd tasqx
 cargo install --path crates/tasqx-cli --force
 ```
+
+CI tests Linux and Windows on every push. macOS binaries are built and released but not yet covered by the test matrix.
 
 ## Getting started
 
@@ -45,6 +49,15 @@ tasqx done 1
 ```
 
 `tasqx manual` is a real manual, not a wall of flags. `tasqx <verb> -h` gives you per-command help with examples you can copy. `tasqx docs` renders the same content as a single HTML file you can open in a browser.
+
+## Use cases
+
+Four worked scenarios, each a five-minute read with copy-pasteable commands:
+
+- [Feature development](docs/guides/feature-development.md) — a backlog per feature, tasks ordered by dependencies, acceptance criteria in annotations. The solo alternative to a board.
+- [Driving tasqx from an AI agent](docs/guides/ai-agent-workflow.md) — wire up the MCP server and let an agent work the backlog: read context, do the task, complete it, pick up what that unblocked.
+- [Personal task management](docs/guides/personal-gtd.md) — frictionless capture, a working set that hides what you can't act on yet, and a five-minute weekly review.
+- [Standups and reports](docs/guides/standup-reporting.md) — yesterday's output, terminal charts from the event log, and a self-contained HTML review you can send someone.
 
 ## What works
 
@@ -66,6 +79,24 @@ Every command prints readable text and takes `--json`. Exit codes mean something
 tasqx mcp serve                  # read-only by default
 tasqx mcp serve --scope write    # explicit write access
 ```
+
+Wiring it into Claude Code is one line:
+
+```console
+claude mcp add tasqx -- tasqx mcp serve --scope write
+```
+
+Any other MCP client takes the same shape:
+
+```json
+{
+  "mcpServers": {
+    "tasqx": { "command": "tasqx", "args": ["mcp", "serve", "--scope", "write"] }
+  }
+}
+```
+
+Thirteen tools, one verb each. Four reads: `list_tasks`, `get_task`, `summary`, `list_projects`. Nine writes: `add_task`, `modify_task`, `complete_task`, `start_timer`, `stop_timer`, `tag_task`, `annotate_task`, `add_dependency`, `create_project` (all prefixed `tasqx_`). The interesting ones for agent work: `complete_task` returns which tasks its completion unblocked, `annotate_task` stores long-form markdown context verbatim, and `add_dependency` lets an agent decompose a feature into an ordered chain.
 
 A read-only session never sees the write tools in its tool list, so an agent can't call what it isn't allowed to call. Scope configures this local stdio child process; it is not an authentication credential. There's no bulk-delete tool on purpose. Cancelling goes through the same reversible, logged path everything else does, so an agent can't quietly destroy a week of work.
 
