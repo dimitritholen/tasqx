@@ -1865,7 +1865,8 @@ fn page_data() -> String {
     ));
     s.push_str(&snippet(
         "tasqx export +api --json",
-        "{\n  \"default_project\": \"work\",\n  \"dropped_dependencies\": 0,\n  \
+        "{\n  \"default_project\": \"work\",\n  \"docs\": [ ... ],\n  \
+         \"dropped_dependencies\": 0,\n  \
          \"projects\": [ ... ],\n  \"tasks\": [ ... ]\n}",
     ));
     s.push_str(&h3("What a document carries"));
@@ -1873,12 +1874,15 @@ fn page_data() -> String {
         "An export is a <strong>self-contained document</strong>, and a project is part of it \
          (D37): the <code>projects</code> array carries every project row — name, description, \
          archived state, identity — and <code>default_project</code> names the project a bare \
-         <code>tasqx add</code> inherits. Restoring gives you back the store you exported, not \
-         just its tasks. Both sections are <strong>optional on import</strong>, so a file written \
-         by an older tasqx still restores: with no <code>projects</code> section there is nothing \
-         to check a task&rsquo;s <code>project</code> against, so the row is created from the \
-         tasks and <code>import</code> says which ones it made. With one, the document is \
-         authoritative — a task naming a project it does not define is refused, exactly as \
+         <code>tasqx add</code> inherits. So are your <a href=\"#commands\">memory docs</a> \
+         (D41): the <code>docs</code> array carries every knowledge document, all of them \
+         regardless of any filter — a filter selects tasks, and knowledge is not attached to a \
+         task. Restoring gives you back the store you exported, not just its tasks. These \
+         sections are <strong>optional on import</strong>, so a file written by an older tasqx \
+         still restores: with no <code>projects</code> section there is nothing to check a \
+         task&rsquo;s <code>project</code> against, so the row is created from the tasks and \
+         <code>import</code> says which ones it made. With one, the document is authoritative — \
+         a task naming a project it does not define is refused, exactly as \
          <code>tasqx add --project</code> refuses a name no <code>init</code> ever created.",
     ));
     s.push_str(&note(
@@ -1894,10 +1898,13 @@ fn page_data() -> String {
          <strong>upsert on the UUID</strong> — re-importing the same document is a no-op, not a \
          duplicate.",
     ));
-    s.push_str(&snippet("tasqx import slice.json", "Imported 2 task(s)"));
+    s.push_str(&snippet(
+        "tasqx import slice.json",
+        "Imported 2 task(s), 1 project(s), 3 memory doc(s)",
+    ));
     s.push_str(&snippet(
         "tasqx export +api | TASQX_DB=/tmp/other.db tasqx import -",
-        "Imported 1 task(s)",
+        "Imported 1 task(s), 1 project(s)",
     ));
 
     s.push_str(&h3("A field the schema does not name is rejected"));
