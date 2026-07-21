@@ -83,15 +83,21 @@ fn start_daemon_with_notifier(
         let engine = Engine::open(&db).expect("open engine");
         daemon::serve_with_notifier(engine, &sk, sd, notifier).expect("serve");
     });
-    // Wait until the listener is up (fast — usually the first or second try).
-    for _ in 0..200 {
+    // Wait until the listener is up. Healthy runs connect on the first or
+    // second try, so the deadline costs nothing when things work — but it used
+    // to be a hard 2s (200 × 10ms), which the coverage job's instrumented
+    // build on a busy CI runner overran on 2026-07-21 with the daemon code
+    // untouched. A generous wall-clock budget makes "slow" and "broken"
+    // distinguishable; only "broken" should be red.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
         if let Some(c) = daemon::try_connect(sock) {
             drop(c);
             return shutdown;
         }
         thread::sleep(Duration::from_millis(10));
     }
-    panic!("daemon never became connectable at {sock}");
+    panic!("daemon never became connectable at {sock} within 20s");
 }
 
 fn ok(env: &Value) -> &Value {
