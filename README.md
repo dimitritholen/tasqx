@@ -100,6 +100,8 @@ Fifteen tools, one verb each. Five reads: `list_tasks`, `get_task`, `summary`, `
 
 A read-only session never sees the write tools in its tool list, so an agent can't call what it isn't allowed to call. Scope configures this local stdio child process; it is not an authentication credential. There's no bulk-delete tool on purpose. Cancelling goes through the same reversible, logged path everything else does, so an agent can't quietly destroy a week of work.
 
+The MCP server tells an agent what it can call. The skill in [`.claude/skills/tasqx-workflow/`](.claude/skills/tasqx-workflow/SKILL.md) tells it how to work: what deserves a backlog entry, the search-memory-first work loop, and why an annotation goes on before `complete_task` — annotations feed the same search index as imported docs, so an agent that completes tasks well is building the knowledge base as a side effect. Claude Code picks the skill up automatically when working inside this repo; for your own projects, copy the folder into `~/.claude/skills/`, or paste `SKILL.md` into whatever instructions file your client reads.
+
 You can also talk to the API directly:
 
 ```console
