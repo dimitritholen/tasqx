@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/tasqx-core", "crates/tasqx-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 # `std::sync::LazyLock` (crates/tasqx-cli/src/lib.rs) stabilised in 1.80, so this
 # is a real floor rather than a guess. Stated here so cargo enforces it instead

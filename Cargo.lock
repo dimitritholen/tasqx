@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "tasqx-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1642,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "tasqx-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "interprocess",
  "jiff",
