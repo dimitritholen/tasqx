@@ -377,3 +377,98 @@ fn empty_correlation_strings_are_refused() {
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(err.message.contains("session_id"), "{}", err.message);
 }
+
+// ---- #13 self-report on task.done ------------------------------------------------
+
+#[test]
+fn task_done_with_token_counts_records_a_self_report_measurement() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+
+    let r = e
+        .task_done(&json!({
+            "ref": sid,
+            "session_id": "sess-2",
+            "tool": "cursor",
+            "model": "gpt-5.4",
+            "input_tokens": 800,
+            "output_tokens": 120,
+        }))
+        .unwrap();
+    assert_eq!(r["status"], "done");
+
+    // One measurement row, fixed source and confidence, absent counts 0.
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    let m = &got["tokens"][0];
+    assert_eq!(m["tool"], "cursor");
+    assert_eq!(m["source"], "self-report");
+    assert_eq!(m["confidence"], "medium");
+    assert_eq!(m["model"], "gpt-5.4");
+    assert_eq!(m["input_tokens"], 800);
+    assert_eq!(m["output_tokens"], 120);
+    assert_eq!(m["cache_read_tokens"], 0);
+    assert_eq!(m["cache_creation_tokens"], 0);
+
+    // ONE event for the whole mutation — the measurement rides in the done
+    // payload, there is no separate token.add event.
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events WHERE op='token.add'"),
+        0
+    );
+    let done = event_payload(&e, "done");
+    assert_eq!(done["session_id"], "sess-2");
+    assert_eq!(done["tokens"], *m, "the done event echoes the measurement");
+}
+
+/// Over MCP the agent usually passes no `tool` — the injected `client` is the
+/// attribution fallback.
+#[test]
+fn task_done_self_report_tool_defaults_to_the_client() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": sid, "client": "claude-code 2.1.0", "output_tokens": 42 }))
+        .unwrap();
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    assert_eq!(got["tokens"][0]["tool"], "claude-code 2.1.0");
+}
+
+#[test]
+fn task_done_token_counts_without_any_attribution_are_refused() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    let err = e
+        .task_done(&json!({ "ref": sid, "input_tokens": 10 }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("tool"), "{}", err.message);
+
+    // The refusal happened before the lock: the task is still open and no
+    // partial write survived.
+    assert_eq!(
+        e.task_get(&json!({ "ref": sid })).unwrap()["status"],
+        "pending"
+    );
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 0);
+}
+
+/// `tool`/`model` without a single count would change nothing — refused
+/// rather than silently ignored (the D33 rule).
+#[test]
+fn task_done_tool_without_counts_is_refused() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    let err = e
+        .task_done(&json!({ "ref": sid, "tool": "cursor" }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("tool"), "{}", err.message);
+}
+
+#[test]
+fn task_done_without_token_params_writes_no_measurement() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": sid })).unwrap();
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 0);
+    assert!(event_payload(&e, "done").get("tokens").is_none());
+}

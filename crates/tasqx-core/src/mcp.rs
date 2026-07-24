@@ -346,10 +346,45 @@ fn tool_specs() -> Vec<ToolSpec> {
             write: true,
             description: "Mark a task done. Returns any tasks newly unblocked by its \
                 completion. Correlation params (session_id, prompt_id, transcript_path, \
-                client) are recorded on the completion event for token attribution.",
+                client) are recorded on the completion event for token attribution. If \
+                you know the tokens this task cost, self-report them via the *_tokens \
+                params — any present count records a measurement.",
+            // The token-count fields carry no `minimum`: the numeric-minimum
+            // drift guard cannot probe a bound on a tool with required args,
+            // so the floor lives in the engine (opt_u64 refuses negatives)
+            // and the description says "0 or more".
             schema: with_correlation(json!({
                 "type": "object",
-                "properties": { "ref": ref_schema() },
+                "properties": {
+                    "ref": ref_schema(),
+                    "tool": {
+                        "type": "string",
+                        "description": "Self-report: the AI tool that spent the tokens, \
+                            free-form (e.g. \"claude-code\"). Defaults to `client` when \
+                            token counts are present."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Self-report: the model that spent the tokens, \
+                            e.g. \"claude-fable-5\"."
+                    },
+                    "input_tokens": {
+                        "type": "integer",
+                        "description": "Self-reported input tokens this task cost (0 or more)."
+                    },
+                    "output_tokens": {
+                        "type": "integer",
+                        "description": "Self-reported output tokens this task cost (0 or more)."
+                    },
+                    "cache_read_tokens": {
+                        "type": "integer",
+                        "description": "Self-reported cache-read tokens this task cost (0 or more)."
+                    },
+                    "cache_creation_tokens": {
+                        "type": "integer",
+                        "description": "Self-reported cache-creation tokens this task cost (0 or more)."
+                    }
+                },
                 "required": ["ref"]
             })),
         },

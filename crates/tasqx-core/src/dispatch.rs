@@ -78,6 +78,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         false,
     ),
     ("task.stop", &["ref"], false),
+    // task.done additionally takes the #13 self-report params: any present
+    // token count records one self-report measurement in the completing
+    // transaction, echoed in the done event payload.
     (
         "task.done",
         &[
@@ -86,6 +89,12 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "prompt_id",
             "transcript_path",
             "client",
+            "tool",
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
         ],
         false,
     ),
