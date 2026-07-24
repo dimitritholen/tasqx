@@ -196,7 +196,27 @@ impl<'a> Report<'a> {
         let css = self.css();
         let mut body = String::new();
 
-        body.push_str(&self.header(open, completed_recent.len(), velocity, overdue));
+        // Report-wide token total, summed across the summary's groups (which
+        // already carry core's D24 scope — cancelled work is excluded unless the
+        // caller asked for `all`). Saturating, like the per-group roll-up.
+        let total_tokens: i64 = self
+            .summary
+            .get("groups")
+            .and_then(Value::as_array)
+            .map(|gs| {
+                gs.iter()
+                    .map(|g| g.get("tokens_total").and_then(Value::as_i64).unwrap_or(0))
+                    .fold(0i64, i64::saturating_add)
+            })
+            .unwrap_or(0);
+
+        body.push_str(&self.header(
+            open,
+            completed_recent.len(),
+            velocity,
+            overdue,
+            total_tokens,
+        ));
         body.push_str("<main>");
 
         body.push_str(&section(
@@ -233,16 +253,24 @@ impl<'a> Report<'a> {
         )
     }
 
-    fn header(&self, open: usize, done: usize, velocity: usize, overdue: usize) -> String {
+    fn header(
+        &self,
+        open: usize,
+        done: usize,
+        velocity: usize,
+        overdue: usize,
+        tokens: i64,
+    ) -> String {
         format!(
             "<header class=\"summary\">\
                <div class=\"brand\">tasqx <span class=\"muted\">weekly review</span></div>\
-               <div class=\"stats\">{}{}{}{}</div>\
+               <div class=\"stats\">{}{}{}{}{}</div>\
              </header>",
             stat(&open.to_string(), "open"),
             stat(&done.to_string(), "done this week"),
             stat(&velocity.to_string(), "velocity /wk"),
             stat_flag(&overdue.to_string(), "overdue", overdue > 0),
+            stat(&tokens.to_string(), "AI tokens"),
         )
     }
 
@@ -328,13 +356,27 @@ impl<'a> Report<'a> {
             } else {
                 "<td class=\"muted\">0</td>".to_string()
             };
+            // The full four-bucket breakdown plus its total. The buckets are kept
+            // apart on purpose (research rule #5) — cache tokens cost a fraction —
+            // so the HTML report, unlike the terminal one, shows all of them.
+            let tok = |name: &str| g.get(name).and_then(Value::as_i64).unwrap_or(0);
+            let tokens_cells = format!(
+                "<td>{}</td><td class=\"muted\">{}</td><td class=\"muted\">{}</td>\
+                 <td class=\"muted\">{}</td><td class=\"muted\">{}</td>",
+                tok("tokens_total"),
+                tok("tokens_in"),
+                tok("tokens_out"),
+                tok("tokens_cache_read"),
+                tok("tokens_cache_creation"),
+            );
             rows.push_str(&format!(
-                "<tr><td class=\"proj\">{name}</td><td>{count}</td><td>{est}</td><td>{tracked}</td>{od}</tr>",
+                "<tr><td class=\"proj\">{name}</td><td>{count}</td><td>{est}</td><td>{tracked}</td>{od}{tokens_cells}</tr>",
                 name = esc(name),
             ));
         }
         let table = format!(
-            "<table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th></tr></thead><tbody>{rows}</tbody></table>",
+            "<table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
+             <th>Tokens</th><th>In</th><th>Out</th><th>Cache read</th><th>Cache create</th></tr></thead><tbody>{rows}</tbody></table>",
             // The axis name, title-cased — `esc` because it reaches markup, even
             // though core has already restricted it to SUMMARY_GROUP_BY.
             head = esc(&title_case(axis)),
@@ -347,7 +389,7 @@ impl<'a> Report<'a> {
         section(
             &title,
             &format!(
-                "Task count (cancelled excluded), estimate vs. tracked time, and overdue per {axis}."
+                "Task count (cancelled excluded), estimate vs. tracked time, overdue, and AI tokens per {axis}."
             ),
             &table,
         )
@@ -916,6 +958,56 @@ mod tests {
                 "{axis}: the row key was read from the wrong column"
             );
         }
+    }
+
+    /// #19/D39: the token metrics core rolls up must be rendered on a human
+    /// surface. The HTML report carries the full four-bucket breakdown plus the
+    /// total in the per-group table, and a report-wide total in a header tile —
+    /// all as escaped integers, no external references.
+    #[test]
+    fn per_group_table_and_header_render_token_metrics() {
+        let summary = json!({
+            "groups": [
+                { "project": "work.tasqx", "count": 2, "est_total": "PT1H",
+                  "tracked_total": "PT0S", "overdue": 0,
+                  "tokens_in": 1000, "tokens_out": 200, "tokens_cache_read": 50,
+                  "tokens_cache_creation": 5, "tokens_total": 1255 }
+            ],
+            "generated": "2026-07-15T12:00:00Z"
+        });
+        let export = json!({ "tasks": [] });
+        let actionable = json!({ "tasks": [] });
+        let events = json!({ "events": [] });
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let doc = Report {
+            theme: &th,
+            group_by: "project",
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        }
+        .render();
+
+        assert!(
+            doc.contains(
+                "<th>Tokens</th><th>In</th><th>Out</th><th>Cache read</th><th>Cache create</th>"
+            ),
+            "token columns missing from the By-project table: {doc}"
+        );
+        assert!(
+            doc.contains(
+                "<td>1255</td><td class=\"muted\">1000</td><td class=\"muted\">200</td>\
+                 <td class=\"muted\">50</td><td class=\"muted\">5</td>"
+            ),
+            "token cells missing or mis-ordered: {doc}"
+        );
+        assert!(
+            doc.contains("<div class=\"n\">1255</div><div class=\"l\">AI tokens</div>"),
+            "the report-wide AI tokens header tile is missing: {doc}"
+        );
     }
 
     #[test]
