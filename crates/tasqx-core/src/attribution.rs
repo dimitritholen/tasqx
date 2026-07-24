@@ -201,6 +201,15 @@ pub struct PendingAttribution {
     /// The tool that emitted the buffered OTLP samples, used only to label the
     /// stored measurement when the completion carried no `client`.
     pub otel_tool: Option<String>,
+    /// True when this completion already self-reported its token spend (#13): a
+    /// `token_usage` row was written in the SAME transaction as `task.done` and
+    /// echoed as the `tokens` key of the done payload. That self-report is the
+    /// authoritative measurement for the task, so async attribution must NOT
+    /// reconstruct a second measurement for the same window — doing so would
+    /// double-count identical spend in every report. Such a task is still carried
+    /// through the pending set so it receives a terminating `tokens.attributed`
+    /// marker, but with no measurement.
+    pub self_reported: bool,
 }
 
 /// The outcome of attributing one task: the four-way totals, how many samples
@@ -253,6 +262,16 @@ pub fn compute_attribution(
     now: Timestamp,
 ) -> Result<AttributionResult, ApiError> {
     let tool = pa.client.clone().unwrap_or_default();
+
+    // A completion that already self-reported its spend (#13) is the
+    // authoritative measurement for this task — a `token_usage` row was written
+    // atomically with `task.done`. Reconstructing a second measurement (from the
+    // OTLP buffer or a transcript) for the same window would double-count the
+    // identical tokens in every roll-up. Terminate with a marker only, before the
+    // telemetry and log-parse paths below, so neither can re-measure it.
+    if pa.self_reported {
+        return Ok(AttributionResult::empty(tool));
+    }
 
     // Prefer buffered OTLP telemetry (#18) when it correlated to this task's
     // session and lands in the window: it is per-request, timestamped, and needs
@@ -431,6 +450,7 @@ struct DoneInfo {
     client: Option<String>,
     transcript_path: Option<String>,
     session_id: Option<String>,
+    self_reported: bool,
 }
 
 /// The durable pending queue (store-as-queue, reminder precedent): every task
@@ -508,6 +528,11 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             if client.is_none() && transcript_path.is_none() && session_id.is_none() {
                 continue;
             }
+            // A self-report on `task.done` (#13) echoes its measurement into the
+            // done payload's `tokens` key. Its presence means the spend is already
+            // recorded, so this task must terminate with a marker only — never a
+            // second, double-counting measurement.
+            let self_reported = v.get("tokens").is_some_and(|t| !t.is_null());
             let completed = field("completed").unwrap_or(ts);
             candidates.insert(
                 task_id,
@@ -516,6 +541,7 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
                     client,
                     transcript_path,
                     session_id,
+                    self_reported,
                 },
             );
         }
@@ -601,6 +627,7 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             session_id: info.session_id,
             otel_samples,
             otel_tool,
+            self_reported: info.self_reported,
         });
     }
     // Deterministic order for tests and for stable log lines.
@@ -695,6 +722,7 @@ mod tests {
             session_id: None,
             otel_samples: Vec::new(),
             otel_tool: None,
+            self_reported: false,
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(!r.found);
@@ -714,6 +742,7 @@ mod tests {
             session_id: None,
             otel_samples: Vec::new(),
             otel_tool: None,
+            self_reported: false,
         };
         // Minutes after completion: still transient (the file may yet be flushed).
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
@@ -732,6 +761,7 @@ mod tests {
             session_id: None,
             otel_samples: Vec::new(),
             otel_tool: None,
+            self_reported: false,
         };
         // Two days later the file is never coming: terminate with an empty marker
         // (found == false) rather than retrying — and forcing a rebuild — forever.
@@ -774,6 +804,7 @@ mod tests {
             session_id: Some("sess-1".into()),
             otel_samples: Vec::new(),
             otel_tool: None,
+            self_reported: false,
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
@@ -818,6 +849,7 @@ mod tests {
             session_id: Some("wrong-or-stale-id".into()),
             otel_samples: Vec::new(),
             otel_tool: None,
+            self_reported: false,
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found, "the transcript was parsed and had in-window spend");
@@ -848,6 +880,7 @@ mod tests {
                 sample("2026-07-24T12:00:00Z", 9999, 9999), // out of window: excluded
             ],
             otel_tool: Some("claude-code".into()),
+            self_reported: false,
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
@@ -876,6 +909,7 @@ mod tests {
             session_id: Some("sess-1".into()),
             otel_samples: vec![sample("2026-07-24T12:30:00Z", 100, 200)],
             otel_tool: Some("claude-code".into()),
+            self_reported: false,
         };
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
         assert!(
@@ -952,5 +986,71 @@ mod tests {
             source, SOURCE_OTEL,
             "the stored measurement is otel-sourced"
         );
+    }
+
+    #[test]
+    fn a_self_reported_completion_is_not_re_attributed_and_never_double_counted() {
+        // The documented happy path: an agent completes a task self-reporting its
+        // spend AND supplying correlation (a session id + transcript). The
+        // self-report writes one `token_usage` row in the done transaction. Async
+        // attribution then sees a correlated `done` with no marker — it MUST NOT
+        // reconstruct a second measurement for the same window, or every report
+        // would show double the tokens actually spent.
+        let engine = Engine::open_in_memory().unwrap();
+        let sid = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        engine
+            .task_done(&json!({
+                "ref": sid,
+                "client": "claude-code",
+                "session_id": "sess-77",
+                "input_tokens": 1000,
+                "output_tokens": 500,
+            }))
+            .unwrap();
+        assert_eq!(
+            count_rows(&engine, "SELECT COUNT(*) FROM token_usage"),
+            1,
+            "the self-report is the single measurement"
+        );
+
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(pending.len(), 1, "correlated completion is pending");
+        let pa = &pending[0];
+        assert!(
+            pa.self_reported,
+            "the pending-set build flags the self-reported completion"
+        );
+
+        let r = compute_attribution(pa, ts("2026-07-24T11:05:00Z")).unwrap();
+        assert!(
+            !r.found,
+            "no second measurement: the self-report is authoritative"
+        );
+
+        assert!(
+            attribute_one(&engine, pa, &r).unwrap(),
+            "the task is still terminated with a marker so it leaves the queue"
+        );
+        assert_eq!(
+            count_rows(&engine, "SELECT COUNT(*) FROM token_usage"),
+            1,
+            "still exactly one measurement — no double count"
+        );
+        assert_eq!(
+            count_rows(
+                &engine,
+                "SELECT COUNT(*) FROM events WHERE op = 'tokens.attributed'"
+            ),
+            1,
+            "and one terminating marker, so it never re-enters the pending set"
+        );
+        // A second tick is a clean no-op: the marker now sits past the done.
+        assert!(pending_attributions(&engine).unwrap().is_empty());
+    }
+
+    fn count_rows(engine: &Engine, sql: &str) -> i64 {
+        engine.conn().query_row(sql, [], |r| r.get(0)).unwrap()
     }
 }
