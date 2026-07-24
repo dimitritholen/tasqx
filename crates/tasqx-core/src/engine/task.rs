@@ -799,6 +799,25 @@ impl Engine {
             }
         }
 
+        statements += 1;
+        let mut token_rows: HashMap<String, Vec<Value>> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT task_id, {} FROM token_usage ORDER BY task_id, created, id",
+                tokens::TOKEN_COLS
+            ))?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    tokens::measurement_from_row(row, 1)?,
+                ))
+            })?;
+            for row in rows {
+                let (task_id, measurement) = row?;
+                token_rows.entry(task_id).or_default().push(measurement);
+            }
+        }
+
         let snapshots = tasks
             .into_iter()
             .map(|task| {
@@ -808,6 +827,7 @@ impl Engine {
                     blocked: blocked.contains(id),
                     depends_on: dependencies.remove(id).unwrap_or_default(),
                     annotations: annotations.remove(id).unwrap_or_default(),
+                    tokens: token_rows.remove(id).unwrap_or_default(),
                     task,
                 }
             })
@@ -983,6 +1003,7 @@ impl Engine {
         ));
         obj["depends_on"] = json!(self.depends_on_short_ids(&task.id)?);
         obj["annotations"] = json!(self.annotations_of(&task.id)?);
+        obj["tokens"] = json!(self.tokens_of(&task.id)?);
         obj["blocked"] = json!(self.is_blocked(&task.id)?);
         Ok(obj)
     }

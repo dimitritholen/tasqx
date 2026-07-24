@@ -132,9 +132,7 @@ impl Engine {
             .cloned()
             .collect();
         *dropped += (all.len() - kept.len()) as i64;
-        flag_unrecognized_status(
-            t,
-            json!({
+        let mut out = json!({
                 "id": t.id,
                 "short_id": t.short_id,
                 "title": t.title,
@@ -161,8 +159,15 @@ impl Engine {
                 "modified": t.modified,
                 "completed": t.completed,
                 "_rev": t.rev,
-            }),
-        )
+        });
+        // Absent, not `[]`, when a task has no measurements — the
+        // `status_unrecognized` rule: an always-empty key on every task would
+        // change the §3 export shape for stores that never recorded a token,
+        // and the D12 byte-identical round trip holds only while it does not.
+        if !snapshot.tokens.is_empty() {
+            out["tokens"] = json!(snapshot.tokens);
+        }
+        flag_unrecognized_status(t, out)
     }
 
     // ---- store.import --------------------------------------------------------
@@ -538,6 +543,74 @@ impl Engine {
                          ON CONFLICT(id) DO UPDATE SET \
                          task_id=excluded.task_id, body=excluded.body, created=excluded.created",
                         params![aid, id, body, acreated],
+                    )?;
+                }
+            }
+
+            // Replace token measurements, wholesale like tags and annotations:
+            // the payload's task object is authoritative about its own child
+            // rows. Each row passes the same closed-vocabulary gates
+            // `token.add` enforces, with `import_field` naming the task —
+            // carrying an unknown source/confidence verbatim would let one bad
+            // payload re-export the corruption to every downstream store (D16).
+            tx.execute("DELETE FROM token_usage WHERE task_id = ?1", params![id])?;
+            if let Some(measurements) = import_field(id, "tokens", opt_array(tv, "tokens"))? {
+                for m in measurements {
+                    import_keys(&format!("task {id}, "), "tokens[]", m, IMPORT_TOKEN_KEYS)?;
+                    let mid = import_field(id, "tokens[].id", opt_str_nonempty(m, "id"))?
+                        .unwrap_or_else(|| Uuid::now_v7().to_string());
+                    let tool = import_field(id, "tokens[].tool", req_str(m, "tool"))?;
+                    let source = import_field(id, "tokens[].source", req_str(m, "source"))?;
+                    import_field(
+                        id,
+                        "tokens[].source",
+                        crate::tokens::require_source(&source),
+                    )?;
+                    let confidence =
+                        import_field(id, "tokens[].confidence", req_str(m, "confidence"))?;
+                    import_field(
+                        id,
+                        "tokens[].confidence",
+                        crate::tokens::require_confidence(&confidence),
+                    )?;
+                    let model = import_field(id, "tokens[].model", opt_str_nonempty(m, "model"))?;
+                    let count = |key: &str| -> Result<i64, ApiError> {
+                        Ok(import_field(
+                            id,
+                            &format!("tokens[].{key}"),
+                            super::tokens::opt_token_count(m, key),
+                        )?
+                        .unwrap_or(0))
+                    };
+                    let mcreated =
+                        import_field(id, "tokens[].created", opt_str_nonempty(m, "created"))?
+                            .unwrap_or_else(now);
+                    tx.execute(
+                        "INSERT INTO token_usage (id, task_id, tool, source, model, \
+                         input_tokens, output_tokens, cache_read_tokens, \
+                         cache_creation_tokens, confidence, created) \
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) \
+                         ON CONFLICT(id) DO UPDATE SET \
+                         task_id=excluded.task_id, tool=excluded.tool, \
+                         source=excluded.source, model=excluded.model, \
+                         input_tokens=excluded.input_tokens, \
+                         output_tokens=excluded.output_tokens, \
+                         cache_read_tokens=excluded.cache_read_tokens, \
+                         cache_creation_tokens=excluded.cache_creation_tokens, \
+                         confidence=excluded.confidence, created=excluded.created",
+                        params![
+                            mid,
+                            id,
+                            tool,
+                            source,
+                            model,
+                            count("input_tokens")?,
+                            count("output_tokens")?,
+                            count("cache_read_tokens")?,
+                            count("cache_creation_tokens")?,
+                            confidence,
+                            mcreated
+                        ],
                     )?;
                 }
             }

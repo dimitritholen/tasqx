@@ -3416,6 +3416,13 @@ fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
     let sid = t["short_id"].clone();
     e.annotation_add(&json!({ "ref": sid, "body": "note" }))
         .unwrap();
+    // `tokens` is emitted only when a task has measurements (the
+    // status_unrecognized rule), so the maximal fixture needs one.
+    e.token_add(&json!({
+        "ref": sid, "tool": "claude-code", "source": "log-parse",
+        "model": "claude-fable-5", "input_tokens": 1, "confidence": "high"
+    }))
+    .unwrap();
     e.task_done(&json!({ "ref": sid })).unwrap();
 
     let exported = e.store_export(&json!({})).unwrap()["tasks"][0].clone();
@@ -3444,6 +3451,19 @@ fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
         ann_declared,
         keys(&exported["annotations"][0]),
         "IMPORT_ANNOTATION_KEYS drifted"
+    );
+
+    // Same contract one child table over. `extra` is deliberately outside the
+    // gate until something writes it (see IMPORT_TOKEN_KEYS), so this stays an
+    // equality against what an export actually emits.
+    let tok_declared: BTreeSet<String> = tasqx_core::engine::IMPORT_TOKEN_KEYS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        tok_declared,
+        keys(&exported["tokens"][0]),
+        "IMPORT_TOKEN_KEYS drifted"
     );
 }
 
