@@ -14,6 +14,10 @@
 
 use crate::error::ApiError;
 
+// Per-tool transcript parsers. Keep this list alphabetical to minimize merge
+// conflicts as sibling parsers land in parallel.
+pub mod claude_code;
+
 /// Where a stored measurement came from. Closed vocabulary (D34): each source
 /// implies a different trust story (`log-parse` = read from the tool's own
 /// transcript, `otel` = received over the opt-in telemetry channel,
