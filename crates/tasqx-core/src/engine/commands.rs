@@ -142,13 +142,13 @@ impl SelfReport {
             })?;
         Ok(Some(tokens::NewTokenUsage {
             tool,
-            source: "self-report".to_string(),
+            source: crate::tokens::SOURCE_SELF_REPORT.to_string(),
             model: self.model,
             input_tokens: self.input_tokens.unwrap_or(0),
             output_tokens: self.output_tokens.unwrap_or(0),
             cache_read_tokens: self.cache_read_tokens.unwrap_or(0),
             cache_creation_tokens: self.cache_creation_tokens.unwrap_or(0),
-            confidence: "medium".to_string(),
+            confidence: crate::tokens::CONFIDENCE_MEDIUM.to_string(),
         }))
     }
 }

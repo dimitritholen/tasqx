@@ -21,13 +21,19 @@ use crate::error::ApiError;
 /// tell them apart forever. `tool` stays free-form on purpose — new coding
 /// agents appear faster than tasqx releases — but a *source* is a tasqx
 /// mechanism, and there are exactly as many as tasqx implements.
-pub const TOKEN_SOURCES: [&str; 3] = ["log-parse", "otel", "self-report"];
+pub const SOURCE_LOG_PARSE: &str = "log-parse";
+pub const SOURCE_OTEL: &str = "otel";
+pub const SOURCE_SELF_REPORT: &str = "self-report";
+pub const TOKEN_SOURCES: [&str; 3] = [SOURCE_LOG_PARSE, SOURCE_OTEL, SOURCE_SELF_REPORT];
 
 /// How much to trust a measurement. Closed vocabulary (D34), same reasoning
 /// as [`TOKEN_SOURCES`]: `high` = per-request samples bucketed into an exact
 /// window, `medium` = plausible but unverifiable (an agent's self-report),
 /// `low` = a whole-session number attributed by fuzzy time-window overlap.
-pub const TOKEN_CONFIDENCE: [&str; 3] = ["high", "medium", "low"];
+pub const CONFIDENCE_HIGH: &str = "high";
+pub const CONFIDENCE_MEDIUM: &str = "medium";
+pub const CONFIDENCE_LOW: &str = "low";
+pub const TOKEN_CONFIDENCE: [&str; 3] = [CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW];
 
 /// Refuse a `source` outside [`TOKEN_SOURCES`], naming the value and the
 /// accepted set (the house rule for every closed-vocabulary refusal).

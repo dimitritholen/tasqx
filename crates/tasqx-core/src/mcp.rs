@@ -638,10 +638,13 @@ impl<'e> McpServer<'e> {
         // #12, the expected_rev pattern again: lifecycle calls are stamped
         // with the tool captured at initialize, so the start/done events name
         // who did the work even when the agent passes nothing. A caller that
-        // supplies its own `client` is respected as-is.
+        // supplies its own `client` is respected as-is — but an explicit
+        // `client: null` counts as absent, matching the engine's D32 read
+        // (clients that serialize unset optionals as null must not lose
+        // attribution).
         if spec.method == "task.start" || spec.method == "task.done" {
             if let Some(obj) = args.as_object_mut() {
-                if !obj.contains_key("client") {
+                if !obj.get("client").is_some_and(|v| !v.is_null()) {
                     if let Some(label) = self.client_label() {
                         obj.insert("client".to_string(), Value::String(label));
                     }

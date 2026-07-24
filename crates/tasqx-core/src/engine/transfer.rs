@@ -585,19 +585,38 @@ impl Engine {
                     let mcreated =
                         import_field(id, "tokens[].created", opt_str_nonempty(m, "created"))?
                             .unwrap_or_else(now);
+                    // Plain INSERT, unlike the annotations upsert above: this
+                    // task's rows were just deleted, so a surviving row with
+                    // the same id means the payload reuses one measurement id
+                    // across tasks (or steals it from a task outside the
+                    // payload). An upsert would silently move the row to the
+                    // last claimant and the earlier task's spend would vanish
+                    // — refuse and name the id instead. No FTS index hangs off
+                    // token_usage, so the annotations' trigger reasoning does
+                    // not apply here.
+                    let taken: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM token_usage WHERE id = ?1)",
+                        params![mid],
+                        |r| r.get(0),
+                    )?;
+                    import_field(
+                        id,
+                        "tokens[].id",
+                        if taken {
+                            Err(ApiError::bad_request(format!(
+                                "measurement id {mid:?} appears more than once in the \
+                                 import (or belongs to a task outside it) — every \
+                                 tokens[].id must be unique"
+                            )))
+                        } else {
+                            Ok(())
+                        },
+                    )?;
                     tx.execute(
                         "INSERT INTO token_usage (id, task_id, tool, source, model, \
                          input_tokens, output_tokens, cache_read_tokens, \
                          cache_creation_tokens, confidence, created) \
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) \
-                         ON CONFLICT(id) DO UPDATE SET \
-                         task_id=excluded.task_id, tool=excluded.tool, \
-                         source=excluded.source, model=excluded.model, \
-                         input_tokens=excluded.input_tokens, \
-                         output_tokens=excluded.output_tokens, \
-                         cache_read_tokens=excluded.cache_read_tokens, \
-                         cache_creation_tokens=excluded.cache_creation_tokens, \
-                         confidence=excluded.confidence, created=excluded.created",
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                         params![
                             mid,
                             id,
