@@ -8,7 +8,16 @@
 use rusqlite::Row;
 
 use super::*;
+use crate::otlp::OtlpSample;
 use crate::tokens::{require_confidence, require_source};
+
+/// How long a buffered OTLP sample is kept before opportunistic pruning (#18).
+/// The buffer is a short-lived staging area between telemetry arriving and a task
+/// completing; a task is normally attributed within seconds of `task.done`, so
+/// 30 days is generous headroom that still bounds the table for a daemon that
+/// runs for months. Pruning runs inside every ingest, so no separate sweeper
+/// thread is needed.
+const OTLP_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
 
 /// An `opt_u64` whose value must also fit the INTEGER column it is stored in.
 /// Without the bound, a count above `i64::MAX` would fail at the SQL binding
@@ -254,6 +263,101 @@ impl Engine {
         tx.commit()?;
 
         Ok(true)
+    }
+
+    // ---- otlp buffer (local OTLP receiver, #18) ------------------------------
+
+    /// Buffer raw per-request OTLP samples received over the opt-in telemetry
+    /// channel (#18). These are NOT attributed to any task yet — they are matched
+    /// to a task later by `session_id` + time window — so unlike every other
+    /// mutation here there is deliberately **no** task event and **no** `rev`
+    /// bump: nothing about a task changed, only the staging buffer grew. The
+    /// IMMEDIATE transaction is still taken to serialize the write and to fold the
+    /// opportunistic retention prune into the same commit; there is no entity to
+    /// read-back because a raw append correlates to no task.
+    ///
+    /// Returns the number of rows inserted.
+    pub fn otlp_ingest(&self, samples: &[OtlpSample]) -> Result<usize, ApiError> {
+        if samples.is_empty() {
+            return Ok(0);
+        }
+        let created = now();
+        let tx = self.begin_mutation()?;
+        for s in samples {
+            // Client-supplied counts can exceed i64 in theory; clamp rather than
+            // fail the whole export on one absurd row (the export is best-effort).
+            let clamp = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+            tx.execute(
+                "INSERT INTO otlp_samples (id, session_id, tool, ts, model, input_tokens, \
+                 output_tokens, cache_read_tokens, cache_creation_tokens, created) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![
+                    Uuid::now_v7().to_string(),
+                    s.session_id,
+                    s.tool,
+                    s.sample.ts,
+                    s.sample.model,
+                    clamp(s.sample.input_tokens),
+                    clamp(s.sample.output_tokens),
+                    clamp(s.sample.cache_read_tokens),
+                    clamp(s.sample.cache_creation_tokens),
+                    created,
+                ],
+            )?;
+        }
+        // Opportunistic retention prune, in the same transaction. An unresolvable
+        // cutoff (clock underflow) yields "" and deletes nothing — never a panic.
+        let cutoff = jiff::Timestamp::now()
+            .checked_sub(jiff::SignedDuration::from_secs(OTLP_RETENTION_SECS))
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        tx.execute(
+            "DELETE FROM otlp_samples WHERE created < ?1",
+            params![cutoff],
+        )?;
+        tx.commit()?;
+        Ok(samples.len())
+    }
+
+    /// Buffered OTLP samples for one session, oldest first, with the tool that
+    /// emitted the first of them. Read during the attribution pending-set build
+    /// (a cheap indexed query, safe under the short engine lock) so the compute
+    /// step can prefer telemetry over log-parsing without any file I/O. An empty
+    /// or missing session id never matches, so it returns nothing.
+    pub(crate) fn otlp_samples_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<crate::tokens::UsageSample>, Option<String>), ApiError> {
+        if session_id.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT tool, ts, model, input_tokens, output_tokens, cache_read_tokens, \
+             cache_creation_tokens FROM otlp_samples WHERE session_id = ?1 ORDER BY ts, id",
+        )?;
+        let rows = stmt.query_map(params![session_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                crate::tokens::UsageSample {
+                    ts: r.get::<_, String>(1)?,
+                    model: r.get::<_, Option<String>>(2)?,
+                    input_tokens: r.get::<_, i64>(3)?.max(0) as u64,
+                    output_tokens: r.get::<_, i64>(4)?.max(0) as u64,
+                    cache_read_tokens: r.get::<_, i64>(5)?.max(0) as u64,
+                    cache_creation_tokens: r.get::<_, i64>(6)?.max(0) as u64,
+                },
+            ))
+        })?;
+        let mut samples = Vec::new();
+        let mut tool = None;
+        for r in rows {
+            let (t, s) = r?;
+            if tool.is_none() {
+                tool = Some(t);
+            }
+            samples.push(s);
+        }
+        Ok((samples, tool))
     }
 
     /// Measurements of a task as canonical objects, oldest first (the
