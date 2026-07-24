@@ -67,12 +67,16 @@ pub fn default_roots() -> Vec<PathBuf> {
 /// unparseable documents and records without a usable timestamp are skipped so
 /// one corrupt record never sinks the whole file.
 pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    // Read bytes and decode lossily: only *opening* the file is a hard error, so
+    // a stray non-UTF8 byte must not sink an otherwise-parseable file. The bad
+    // byte becomes U+FFFD and only that object fails to parse; the rest survive.
+    let bytes = std::fs::read(path).map_err(|e| {
         ApiError::internal(format!(
             "failed to read Gemini telemetry file {}: {e}",
             path.display()
         ))
     })?;
+    let content = String::from_utf8_lossy(&bytes);
 
     let mut samples = Vec::new();
     for chunk in split_json_objects(&content) {
@@ -389,6 +393,25 @@ mod tests {
 
         let noise = write_fixture("not json at all\n[]\n{ }\n\n");
         assert!(samples_from_file(&noise).expect("parse").is_empty());
+    }
+
+    #[test]
+    fn non_utf8_bytes_do_not_sink_the_file() {
+        // A non-UTF8 byte in the stream must decode lossily and cost at most the
+        // one object it corrupts, not turn the read into a hard error.
+        let good = record("2026-07-24T10:00:00Z", 100, 40, 0, 0);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"{\xff not utf8}\n");
+        bytes.extend_from_slice(good.as_bytes());
+        bytes.push(b'\n');
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("tasqx-gemini-utf8-{}-{n}.log", std::process::id()));
+        std::fs::write(&path, &bytes).expect("write fixture");
+        let samples = samples_from_file(&path).expect("non-utf8 must not error");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].input_tokens, 100);
     }
 
     #[test]
