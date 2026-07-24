@@ -127,6 +127,11 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
     // The model from the most recent `turn_context` line, stamped onto every
     // sample that follows it.
     let mut current_model: Option<String> = None;
+    // Set when a changed-total event was dropped for a bad timestamp. Its
+    // tokens fold into the next emitted sample's delta (baseline is not
+    // advanced), so that delta legitimately spans more than one request and
+    // must not be compared against a single `last_token_usage`.
+    let mut dropped_pending = false;
 
     for line in content.lines() {
         let line = line.trim();
@@ -165,14 +170,19 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
                     continue;
                 }
 
-                // A sample with usage but no usable RFC3339 timestamp is skipped.
+                // A sample with usage but no usable timestamp is skipped, and
+                // parsing normalizes it to canonical RFC3339 so cross-tool
+                // sample timestamps compare byte-for-byte (the other parsers do
+                // the same via jiff).
                 let Some(ts) = value
                     .get("timestamp")
                     .and_then(Value::as_str)
-                    .filter(|s| crate::util::parse_ts(s).is_some())
+                    .and_then(crate::util::parse_ts)
                 else {
                     // Do not advance `prev_total`: a dropped event must not make
-                    // the next real one look unchanged.
+                    // the next real one look unchanged. Its tokens instead fold
+                    // into the next kept sample's delta.
+                    dropped_pending = true;
                     continue;
                 };
 
@@ -188,6 +198,10 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
                 };
                 let last = info.get("last_token_usage").and_then(read_usage);
                 let usage = match last {
+                    // A pending dropped event means this delta spans more than
+                    // one request, so `delta != last` is expected, not drift:
+                    // use the authoritative delta silently.
+                    _ if dropped_pending => delta,
                     Some(last) if last == delta => last,
                     Some(last) => {
                         eprintln!(
@@ -202,6 +216,7 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
                     // No `last_token_usage` at all: fall back to the delta.
                     None => delta,
                 };
+                dropped_pending = false;
 
                 let (input_tokens, cache_read_tokens, output_tokens) = map_fields(usage);
                 samples.push(UsageSample {
@@ -361,7 +376,8 @@ mod tests {
         assert_eq!(samples[0].output_tokens, 341);
         assert_eq!(samples[1].input_tokens, 11891 - 3456);
         assert_eq!(samples[1].output_tokens, 142);
-        assert_eq!(samples[0].ts, "2026-03-10T10:47:41.050Z");
+        // Timestamp is normalized to canonical RFC3339 (trailing zero trimmed).
+        assert_eq!(samples[0].ts, "2026-03-10T10:47:41.05Z");
     }
 
     #[test]
@@ -466,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_is_kept_as_rfc3339() {
+    fn timestamp_is_normalized_to_canonical_rfc3339() {
         let l = token_count_line(
             "2026-03-10T10:47:41.050Z",
             (100, 10, 5, 105),
@@ -475,7 +491,8 @@ mod tests {
         let path = temp_rollout(&format!("{l}\n"));
         let samples = samples_from_file(&path).expect("parse");
         std::fs::remove_file(&path).ok();
-        assert_eq!(samples[0].ts, "2026-03-10T10:47:41.050Z");
+        // Canonical form trims the trailing fractional zero.
+        assert_eq!(samples[0].ts, "2026-03-10T10:47:41.05Z");
         assert!(crate::util::parse_ts(&samples[0].ts).is_some());
     }
 
@@ -522,6 +539,35 @@ mod tests {
         assert_eq!(samples[1].cache_read_tokens, 10);
         assert_eq!(samples[1].output_tokens, 8);
         assert_eq!(samples[1].cache_creation_tokens, 0);
+    }
+
+    #[test]
+    fn changed_event_dropped_for_bad_timestamp_folds_into_the_next_sample() {
+        // e1 valid; e2 has a changed total but an unparseable timestamp so it is
+        // dropped WITHOUT losing its tokens; e3 valid. e3's delta spans e2+e3, so
+        // it must not be mistaken for drift, and no tokens go missing.
+        let e1 = token_count_line(
+            "2026-03-10T10:00:00.000Z",
+            (100, 0, 50, 150),
+            (100, 0, 50, 150),
+        );
+        let e2 = token_count_line("not-a-date", (200, 0, 90, 290), (100, 0, 40, 140));
+        let e3 = token_count_line(
+            "2026-03-10T10:02:00.000Z",
+            (320, 0, 150, 470),
+            (120, 0, 60, 180),
+        );
+        let path = temp_rollout(&format!("{e1}\n{e2}\n{e3}\n"));
+        let samples = samples_from_file(&path).expect("parse");
+        std::fs::remove_file(&path).ok();
+        // Two kept samples (e2 dropped). The second folds e2+e3: delta total
+        // 470-150 = 320; fresh input 320-100 = 220, output 150-50 = 100.
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[1].input_tokens, 220);
+        assert_eq!(samples[1].output_tokens, 100);
+        // No tokens lost: the two samples' inputs sum to the final cumulative
+        // fresh input (100 + 220 = 320).
+        assert_eq!(samples[0].input_tokens + samples[1].input_tokens, 320);
     }
 
     #[test]
