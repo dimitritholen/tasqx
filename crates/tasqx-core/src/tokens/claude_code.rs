@@ -44,6 +44,34 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
     Ok(parse_samples(&content))
 }
 
+/// Whether `session_id` provably identifies this transcript — the correlation
+/// the attribution confidence rule requires to earn HIGH. Claude Code names each
+/// transcript file `<session-id>.jsonl` and stamps that same id on every line's
+/// `sessionId`, so matching either the file stem or an embedded id confirms the
+/// completion belongs to this file. An empty id never matches; a supplied id
+/// that matches neither is a mismatch (stale/wrong hook argument) and must not
+/// be trusted as correlated.
+pub fn session_matches(path: &Path, session_id: &str) -> bool {
+    if session_id.is_empty() {
+        return false;
+    }
+    if path.file_stem().and_then(|s| s.to_str()) == Some(session_id) {
+        return true;
+    }
+    // The file may have been renamed; fall back to the id stamped on each line.
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let content = String::from_utf8_lossy(&bytes);
+    content.lines().any(|line| {
+        serde_json::from_str::<Line>(line)
+            .ok()
+            .and_then(|l| l.session_id)
+            .as_deref()
+            == Some(session_id)
+    })
+}
+
 /// The directories Claude Code writes session transcripts into, whether or not
 /// they currently exist. `$CLAUDE_CONFIG_DIR` (its config-dir override) comes
 /// first when set; the two standard locations always follow.
@@ -65,6 +93,8 @@ fn home_dir() -> Option<PathBuf> {
 #[derive(Deserialize)]
 struct Line {
     timestamp: Option<String>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
     message: Option<Message>,
 }
 

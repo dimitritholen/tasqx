@@ -1787,7 +1787,9 @@ mod tests {
     fn attribution_tick_measures_a_completed_task_from_its_transcript() {
         let sh = shared(Engine::open_in_memory().unwrap());
         let dir = attr_test_dir("happy");
-        let path = dir.join("session.jsonl");
+        // Claude Code names each transcript `<session-id>.jsonl`; naming the file
+        // for the completion's session id is a verified correlation => HIGH.
+        let path = dir.join("sess-1.jsonl");
 
         let id = add_task(&sh, "ship it");
         // Capture an instant AFTER creation and write the transcript at it; the
@@ -1842,6 +1844,78 @@ mod tests {
             conf, "high",
             "explicit path + session id => high confidence"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reopen_and_re_complete_is_attributed_again_not_suppressed_by_the_old_marker() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let dir = attr_test_dir("reopen");
+
+        let id = add_task(&sh, "ship it");
+
+        // First completion + attribution: one measurement, one marker.
+        let first_path = dir.join("sess-1.jsonl");
+        std::fs::write(&first_path, transcript(&jiff::Timestamp::now().to_string())).unwrap();
+        complete(
+            &sh,
+            json!({
+                "ref": id,
+                "client": "claude-code",
+                "session_id": "sess-1",
+                "transcript_path": first_path.to_string_lossy(),
+            }),
+        );
+        let mut errors = ErrorTransition::default();
+        attribution_tick(
+            &sh,
+            -1,
+            jiff::Timestamp::now(),
+            &attribution::attribute_one,
+            &mut errors,
+        )
+        .unwrap();
+        assert_eq!(count(&sh, N_MEASUREMENTS), 1, "first completion attributed");
+        assert_eq!(count(&sh, N_ATTRIBUTED), 1);
+
+        // Reopen (bug found), do more work, complete again with a fresh session.
+        {
+            let g = lock_recover(&sh.engine);
+            g.task_reopen(&json!({ "ref": id })).unwrap();
+        }
+        let second_path = dir.join("sess-2.jsonl");
+        std::fs::write(
+            &second_path,
+            transcript(&jiff::Timestamp::now().to_string()),
+        )
+        .unwrap();
+        complete(
+            &sh,
+            json!({
+                "ref": id,
+                "client": "claude-code",
+                "session_id": "sess-2",
+                "transcript_path": second_path.to_string_lossy(),
+            }),
+        );
+
+        // The stale marker must NOT suppress the post-reopen session: the new
+        // `done` sits past the old marker, so the tick re-attributes.
+        attribution_tick(
+            &sh,
+            -1,
+            jiff::Timestamp::now(),
+            &attribution::attribute_one,
+            &mut errors,
+        )
+        .unwrap();
+        assert_eq!(
+            count(&sh, N_MEASUREMENTS),
+            2,
+            "the post-reopen session is attributed, not silently lost"
+        );
+        assert_eq!(count(&sh, N_ATTRIBUTED), 2, "a fresh marker per completion");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
