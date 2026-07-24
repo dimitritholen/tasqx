@@ -166,6 +166,28 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         );
         CREATE INDEX IF NOT EXISTS idx_token_usage_task ON token_usage(task_id);
 
+        -- Raw per-request OTLP samples buffered by the opt-in local receiver
+        -- (#18, docs/research/token-accounting.md). Deliberately NOT joined to a
+        -- task: these arrive over telemetry *before* any attribution and are
+        -- matched to a task later by `session_id` + time window, so there is no
+        -- `task_id` and no foreign key. `session_id` is nullable because a tool
+        -- may emit a record without one. Bounded retention is enforced by the
+        -- writer (`Engine::otlp_ingest`), not the schema.
+        CREATE TABLE IF NOT EXISTS otlp_samples (
+            id                    TEXT PRIMARY KEY,
+            session_id            TEXT,
+            tool                  TEXT NOT NULL,
+            ts                    TEXT NOT NULL,
+            model                 TEXT,
+            input_tokens          INTEGER NOT NULL DEFAULT 0,
+            output_tokens         INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            created               TEXT NOT NULL
+        );
+        -- Attribution looks samples up by the completing task's session id.
+        CREATE INDEX IF NOT EXISTS idx_otlp_samples_session ON otlp_samples(session_id);
+
         CREATE TABLE IF NOT EXISTS events (
             id        TEXT PRIMARY KEY,
             entity    TEXT NOT NULL,
@@ -766,5 +788,62 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM token_usage", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 1, "a re-run migration must not touch measurements");
+    }
+
+    /// A store created before the OTLP receiver (#18) has no `otlp_samples`
+    /// table; `CREATE TABLE IF NOT EXISTS` is the whole migration for it. Model a
+    /// pre-#18 store as an otherwise-current one with exactly that table dropped,
+    /// prove the upgrade re-creates the table + its session index, and prove a
+    /// second migrate is a no-op that keeps buffered rows.
+    #[test]
+    fn migration_creates_the_otlp_samples_table_on_a_legacy_store() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let object_count = |name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        // Simulate a pre-#18 store: drop exactly the table this migration adds
+        // (dropping the table drops its index with it).
+        conn.execute_batch("DROP TABLE otlp_samples;").unwrap();
+        assert_eq!(
+            object_count("otlp_samples"),
+            0,
+            "precondition: table absent"
+        );
+
+        // The upgrade re-creates the table and its session index.
+        migrate(&conn).unwrap();
+        assert_eq!(object_count("otlp_samples"), 1, "the table must exist");
+        assert_eq!(
+            object_count("idx_otlp_samples_session"),
+            1,
+            "and its session index"
+        );
+
+        // A buffered row (no task foreign key: raw telemetry, not attributed).
+        conn.execute(
+            "INSERT INTO otlp_samples (id, session_id, tool, ts, created) \
+             VALUES ('s1', 'sess-x', 'claude_code', 't', 't')",
+            [],
+        )
+        .unwrap();
+
+        // Idempotent, and it does not eat data: a second migrate keeps the row.
+        migrate(&conn).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM otlp_samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            rows, 1,
+            "a re-run migration must not touch buffered samples"
+        );
     }
 }

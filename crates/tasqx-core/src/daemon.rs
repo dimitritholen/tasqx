@@ -56,6 +56,7 @@ use crate::dispatch::handle_envelope;
 use crate::engine::Engine;
 use crate::error::ApiError;
 use crate::notify::{LogNotifier, Notifier};
+use crate::otlp;
 use crate::scheduler::{self, ReminderScheduler};
 
 /// Poll interval for detecting external (out-of-daemon) writes.
@@ -487,14 +488,15 @@ pub fn serve_with_notifier(
         DaemonOptions {
             notifier,
             tokens_enabled: false,
+            otlp_port: None,
         },
     )
 }
 
 /// Optional daemon behaviours bundled into one struct so the entry point keeps a
-/// stable arity as features are added (#17 token attribution, later #18 OTLP):
-/// the alternative — a fifth positional argument or yet another `serve_with_*`
-/// variant per feature — is exactly the churn this avoids.
+/// stable arity as features are added (#17 token attribution, #18 OTLP): the
+/// alternative — a positional argument or yet another `serve_with_*` variant per
+/// feature — is exactly the churn this avoids.
 pub struct DaemonOptions {
     /// Reminder notification transport (§9). Defaults to the always-safe log
     /// backend so tests and CI never grow an OS-notification dependency.
@@ -503,6 +505,10 @@ pub struct DaemonOptions {
     /// (DESIGN §10): the daemon parses AI tool transcripts only when the user
     /// opts in via `[tokens] enabled`.
     pub tokens_enabled: bool,
+    /// Run the local OTLP/HTTP receiver on `127.0.0.1:<port>` (#18). `None`
+    /// (default) means no listener thread — the receiver is opt-in via
+    /// `[otlp] enabled`, off by default (DESIGN §10).
+    pub otlp_port: Option<u16>,
 }
 
 impl Default for DaemonOptions {
@@ -510,6 +516,7 @@ impl Default for DaemonOptions {
         DaemonOptions {
             notifier: Arc::new(LogNotifier),
             tokens_enabled: false,
+            otlp_port: None,
         }
     }
 }
@@ -526,6 +533,7 @@ pub fn serve_with_options(
     let DaemonOptions {
         notifier,
         tokens_enabled,
+        otlp_port,
     } = options;
     let listener = bind(socket)?;
     // Non-blocking accept so the loop can observe `shutdown`; accepted streams
@@ -585,6 +593,18 @@ pub fn serve_with_options(
         let sh = shared.clone();
         let sd = shutdown.clone();
         thread::spawn(move || attribution_loop(sh, sd));
+    }
+
+    // Local OTLP/HTTP receiver (#18): a supervised thread on its own std
+    // TcpListener, spawned only when the user opted in via `[otlp] enabled`.
+    // Independent of `tokens_enabled` — it buffers telemetry regardless; the
+    // attribution thread (when on) then prefers that buffer over log-parsing. A
+    // bind failure inside the receiver is logged and non-fatal (it is auxiliary),
+    // so no `fatal` channel is wired to it.
+    if let Some(port) = otlp_port {
+        let engine = shared.engine.clone();
+        let sd = shutdown.clone();
+        thread::spawn(move || otlp::run_receiver(engine, port, sd));
     }
 
     let result = loop {
@@ -1412,6 +1432,18 @@ mod tests {
 
     fn ts(s: &str) -> Timestamp {
         s.parse().unwrap()
+    }
+
+    /// Opt-in default-off (DESIGN §10): with no explicit `otlp_port`, the serve
+    /// loop's `if let Some(port)` guard spawns no receiver thread. Encoding the
+    /// default here pins "disabled config => no listener" at the one seam the CLI
+    /// wires (`config_otlp_enabled().then(config_otlp_port)` yields `None`).
+    #[test]
+    fn otlp_receiver_is_off_by_default() {
+        assert!(
+            DaemonOptions::default().otlp_port.is_none(),
+            "a default daemon must not open a telemetry port"
+        );
     }
 
     #[test]

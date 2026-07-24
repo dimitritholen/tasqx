@@ -623,6 +623,30 @@ fn config_tokens_enabled() -> bool {
     v == "true"
 }
 
+/// Read `[otlp] enabled` from `config.toml` (#18, DESIGN §10).
+///
+/// Off by default: like [`config_tokens_enabled`], every failure mode lands on
+/// "don't listen", so a fresh install never opens a local telemetry port until
+/// the user opts in.
+fn config_otlp_enabled() -> bool {
+    let s = config::find("otlp.enabled").expect("otlp.enabled is a registered setting");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    v == "true"
+}
+
+/// Read `[otlp] port` from `config.toml` (#18), falling back to the registered
+/// default (4318). The registry already validated the range, so a parse failure
+/// here can only be the default, which is a valid `u16`.
+fn config_otlp_port() -> u16 {
+    let s = config::find("otlp.port").expect("otlp.port is a registered setting");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    v.parse::<u16>().unwrap_or_else(|_| {
+        s.default
+            .parse()
+            .expect("the registered default is a valid port")
+    })
+}
+
 /// Result of a rendered command: the raw API result (for `--json`) plus the
 /// pre-rendered human string.
 type CmdOutcome = Result<(Value, String), tasqx_core::ApiError>;
@@ -2290,10 +2314,16 @@ fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
     // attribute token usage to completed tasks. Off by default.
     let tokens_enabled = config_tokens_enabled();
 
+    // #18: the local OTLP receiver is opt-in (DESIGN §10). When `[otlp] enabled`,
+    // the daemon binds a std TcpListener on 127.0.0.1:<port> to ingest token
+    // telemetry from AI tools; off by default => no listener thread.
+    let otlp_port = config_otlp_enabled().then(config_otlp_port);
+
     eprintln!("tasqx daemon: listening on {socket} (Ctrl-C to stop)");
     let options = daemon::DaemonOptions {
         notifier,
         tokens_enabled,
+        otlp_port,
     };
     match daemon::serve_with_options(engine, &socket, shutdown, options) {
         Ok(()) => eprintln!("tasqx daemon: stopped"),
@@ -2810,6 +2840,7 @@ mod tests {
             // effective-value resolution untouched, whatever it looks like.
             let held = match s.kind {
                 config::Kind::Bool => "true",
+                config::Kind::Uint => "4318",
                 _ => "a-value-that-is-not-a-theme",
             };
             let (value, source, warning) = effective_setting(s, None, Some(held));

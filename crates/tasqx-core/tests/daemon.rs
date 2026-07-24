@@ -96,6 +96,7 @@ fn start_daemon_with_options(
         let options = daemon::DaemonOptions {
             notifier,
             tokens_enabled,
+            otlp_port: None,
         };
         daemon::serve_with_options(engine, &sk, sd, options).expect("serve");
     });
