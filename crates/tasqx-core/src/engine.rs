@@ -14,6 +14,7 @@ mod projects;
 mod relationships;
 mod reports;
 mod task;
+mod tokens;
 mod transfer;
 
 pub use memory::MEMORY_SCOPES;
@@ -152,7 +153,7 @@ impl MutationContext<'_> {
     }
 }
 
-const SNAPSHOT_QUERY_COUNT: usize = 5;
+const SNAPSHOT_QUERY_COUNT: usize = 6;
 
 struct TaskSnapshot {
     task: Task,
@@ -160,6 +161,10 @@ struct TaskSnapshot {
     blocked: bool,
     depends_on: Vec<String>,
     annotations: Vec<Value>,
+    /// Token measurements in the canonical object shape, oldest first. Loaded
+    /// set-based like every other side table — a per-task point query here is
+    /// the N+1 the statement-count test exists to forbid.
+    tokens: Vec<Value>,
 }
 
 impl Engine {
@@ -548,6 +553,7 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     "remind",
     "depends_on",
     "annotations",
+    "tokens",
     "urgency",
     "created",
     "modified",
@@ -558,6 +564,25 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
 
 /// Every key an exported annotation object can carry. D34.
 pub const IMPORT_ANNOTATION_KEYS: &[&str] = &["id", "body", "created"];
+
+/// Every key an exported token measurement object can carry. D34.
+///
+/// Deliberately NOT `extra`: the column is reserved for later parser phases,
+/// nothing writes it yet, so no export can emit it — and the day something
+/// does, this gate makes forgetting the import half a loud failure instead of
+/// a silently dropped field.
+pub const IMPORT_TOKEN_KEYS: &[&str] = &[
+    "id",
+    "tool",
+    "source",
+    "model",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "confidence",
+    "created",
+];
 
 /// Every key an exported memory doc object can carry. D41, held to D34's gate.
 pub const IMPORT_DOC_KEYS: &[&str] = &["id", "source", "title", "body", "created", "modified"];
@@ -978,6 +1003,7 @@ mod tests {
             include_str!("engine/relationships.rs"),
             include_str!("engine/reports.rs"),
             include_str!("engine/task.rs"),
+            include_str!("engine/tokens.rs"),
             include_str!("engine/transfer.rs"),
         ]
         .join("\n");
@@ -1001,6 +1027,7 @@ mod tests {
             "memory_import",
             "store_import",
             "reminder_fire",
+            "token_add",
         ];
 
         for handler in handlers {

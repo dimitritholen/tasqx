@@ -495,6 +495,28 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
             out.push_str(&format!("  depends_on {}\n", refs.join(" ")));
         }
     }
+    // D39: AI token spend renders here or it is data nobody reported.
+    // Conditional like `tracked`: most tasks never get a measurement, and four
+    // zeroes on every one of them is noise. Totals, not per-measurement rows —
+    // the detail view answers "what did this task cost", and `--json` carries
+    // the individual measurements for anyone who needs them.
+    if let Some(tokens) = result.get("tokens").and_then(Value::as_array) {
+        if !tokens.is_empty() {
+            let sum = |key: &str| -> u64 {
+                tokens
+                    .iter()
+                    .filter_map(|m| m.get(key).and_then(Value::as_u64))
+                    .fold(0u64, u64::saturating_add)
+            };
+            out.push_str(&format!(
+                "  tokens     in {} · out {} · cacheR {} · cacheW {}\n",
+                sum("input_tokens"),
+                sum("output_tokens"),
+                sum("cache_read_tokens"),
+                sum("cache_creation_tokens")
+            ));
+        }
+    }
     if let Some(anns) = result.get("annotations").and_then(Value::as_array) {
         for a in anns {
             out.push_str(&format!(

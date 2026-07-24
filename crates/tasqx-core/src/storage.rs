@@ -143,6 +143,29 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         );
         CREATE INDEX IF NOT EXISTS idx_annotations_task ON annotations(task_id);
 
+        -- AI token measurements, many per task (docs/research/token-accounting.md).
+        -- Four separate counts by design — cache tokens cost a fraction of fresh
+        -- ones, so a blended total destroys what a cost report needs. `tool` is
+        -- free-form (new agents appear faster than releases); `source` and
+        -- `confidence` are the closed vocabularies in `crate::tokens`, enforced
+        -- at every write door. `extra` is reserved for per-tool oddities the
+        -- later parser phases may need to carry (nothing writes it yet).
+        CREATE TABLE IF NOT EXISTS token_usage (
+            id                    TEXT PRIMARY KEY,
+            task_id               TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            tool                  TEXT NOT NULL,
+            source                TEXT NOT NULL,
+            model                 TEXT,
+            input_tokens          INTEGER NOT NULL DEFAULT 0,
+            output_tokens         INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            extra                 TEXT,
+            confidence            TEXT NOT NULL,
+            created               TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_token_usage_task ON token_usage(task_id);
+
         CREATE TABLE IF NOT EXISTS events (
             id        TEXT PRIMARY KEY,
             entity    TEXT NOT NULL,
@@ -683,5 +706,65 @@ mod tests {
         // Idempotent: a second migrate is a no-op, not another rebuild.
         migrate(&conn).unwrap();
         assert_eq!(fk_count(&conn), 2);
+    }
+
+    /// A store created before token accounting has no `token_usage` table, and
+    /// `CREATE TABLE IF NOT EXISTS` is the whole migration for a brand-new
+    /// table. This seeds the legacy shape directly (the same recipe as the
+    /// dependency-FK test above), proves the upgrade creates the table with a
+    /// LIVE foreign key and its task index, and proves a second migrate is a
+    /// no-op that keeps existing measurement rows.
+    #[test]
+    fn migration_creates_the_token_usage_table_on_a_legacy_store() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        // Hand-build a pre-token-accounting store: tasks exist, token_usage
+        // does not.
+        conn.execute_batch(
+            "CREATE TABLE tasks (id TEXT PRIMARY KEY, short_id INTEGER NOT NULL UNIQUE, \
+               title TEXT NOT NULL, status TEXT NOT NULL, priority TEXT, project TEXT, \
+               due TEXT, scheduled TEXT, wait TEXT, estimate TEXT, recurrence TEXT, \
+               urgency REAL NOT NULL DEFAULT 0, active_since TEXT, \
+               tracked_seconds INTEGER NOT NULL DEFAULT 0, rev INTEGER NOT NULL DEFAULT 0, \
+               created TEXT NOT NULL, modified TEXT NOT NULL, completed TEXT);
+             INSERT INTO tasks (id, short_id, title, status, created, modified)
+                VALUES ('a', 1, 'carrier', 'pending', 't', 't');",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let table_count = |name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(table_count("token_usage"), 1, "the table must exist");
+        assert_eq!(table_count("idx_token_usage_task"), 1, "and its index");
+
+        // The FOREIGN KEY is live, not merely declared: a measurement against
+        // a task that is not there must be refused by SQLite itself.
+        conn.execute(
+            "INSERT INTO token_usage (id, task_id, tool, source, confidence, created) \
+             VALUES ('m1', 'a', 'claude-code', 'self-report', 'medium', 't')",
+            [],
+        )
+        .unwrap();
+        let err = conn.execute(
+            "INSERT INTO token_usage (id, task_id, tool, source, confidence, created) \
+             VALUES ('m2', 'gone', 'claude-code', 'self-report', 'medium', 't')",
+            [],
+        );
+        assert!(err.is_err(), "a dangling task_id must be rejected");
+
+        // Idempotent, and it does not eat data: a second migrate keeps the row.
+        migrate(&conn).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM token_usage", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "a re-run migration must not touch measurements");
     }
 }
