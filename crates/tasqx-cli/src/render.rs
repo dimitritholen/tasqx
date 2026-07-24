@@ -707,15 +707,21 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
         return "No matching tasks.\n".to_string();
     }
     let mut out = String::new();
+    // The terminal report carries only `tokens_total`: the full four-bucket
+    // breakdown (in/out/cache_read/cache_creation) would blow past a usable
+    // width, so it lives on the HTML report and the MCP surface instead, while
+    // the one number that answers "how much did this cost in tokens?" stays
+    // visible here.
     out.push_str(&ctx.paint(
         "header",
         &format!(
-            "{:<20}  {:>5}  {:>10}  {:>7}  {:>10}",
+            "{:<20}  {:>5}  {:>10}  {:>7}  {:>10}  {:>12}",
             group_by.to_uppercase(),
             "COUNT",
             "EST",
             "OVERDUE",
-            "TRACKED"
+            "TRACKED",
+            "TOKENS"
         ),
     ));
     out.push('\n');
@@ -728,6 +734,7 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
             .get("tracked_total")
             .and_then(Value::as_str)
             .unwrap_or("-");
+        let tokens = g.get("tokens_total").and_then(Value::as_i64).unwrap_or(0);
         let overdue_cell = format!("{overdue:>7}");
         let overdue_p = if overdue > 0 {
             ctx.paint("warn", &overdue_cell)
@@ -735,7 +742,7 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
             ctx.paint("muted", &overdue_cell)
         };
         out.push_str(&format!(
-            "{}  {count:>5}  {est:>10}  {overdue_p}  {tracked:>10}\n",
+            "{}  {count:>5}  {est:>10}  {overdue_p}  {tracked:>10}  {tokens:>12}\n",
             ctx.paint("project", &pad(&key, 20))
         ));
     }
@@ -1311,7 +1318,7 @@ mod tests {
             .iter()
             .map(|k| {
                 json!({ "project": k, "count": 1, "est_total": "PT1H", "overdue": 0,
-                             "tracked_total": "PT2H" })
+                             "tracked_total": "PT2H", "tokens_total": 123456 })
             })
             .collect();
         let out = report(&ctx, &json!({ "groups": groups }), "project");
@@ -1324,6 +1331,27 @@ mod tests {
                 "report group {k:?} broke alignment: {row:?}"
             );
         }
+    }
+
+    /// #19/D39: the terminal report carries the one token number that answers
+    /// "how much did this cost?" — `tokens_total` — under a TOKENS header. The
+    /// full breakdown lives on the HTML/MCP surfaces; here width is the budget.
+    #[test]
+    fn report_shows_a_tokens_total_column() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = report(
+            &ctx,
+            &json!({ "groups": [
+                { "project": "P", "count": 1, "est_total": "PT1H", "overdue": 0,
+                  "tracked_total": "PT2H", "tokens_total": 4242 }
+            ] }),
+            "project",
+        );
+        assert!(out.contains("TOKENS"), "TOKENS header missing: {out:?}");
+        assert!(
+            out.lines().nth(1).unwrap().contains("4242"),
+            "the group's tokens_total is not rendered: {out:?}"
+        );
     }
 
     /// Truncation has to cut on a GRAPHEME boundary and budget in cells. Half a

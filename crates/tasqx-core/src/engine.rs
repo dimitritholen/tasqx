@@ -64,7 +64,21 @@ pub const SUMMARY_GROUP_BY: [&str; 3] = ["project", "status", "priority"];
 /// Source of truth for the same reason as [`SUMMARY_GROUP_BY`]: the MCP schema's
 /// `enum` is built from this, and a test drives every entry through the engine
 /// to prove the name still produces a field.
-pub const SUMMARY_METRICS: [&str; 4] = ["count", "est_total", "overdue", "tracked_total"];
+///
+/// The `tokens_*` metrics roll up the per-task token measurements (#11) and are
+/// emitted as JSON integers, never ISO durations: a token count is a cardinal
+/// number, and the JSON type of a metric is frozen from its first release.
+pub const SUMMARY_METRICS: [&str; 9] = [
+    "count",
+    "est_total",
+    "overdue",
+    "tracked_total",
+    "tokens_in",
+    "tokens_out",
+    "tokens_cache_read",
+    "tokens_cache_creation",
+    "tokens_total",
+];
 
 /// The keys `task.list` can sort by. A `-` prefix on any of them sorts
 /// descending; the default when `sort` is omitted is `-urgency`.
