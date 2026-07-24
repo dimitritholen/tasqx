@@ -29,6 +29,7 @@
 //! configurable urgency weights. Adding them stays additive — new match arms in
 //! [`dispatch`] and new engine methods — with no change to the envelope.
 
+pub mod attribution;
 pub mod daemon;
 pub mod datetime;
 pub mod dispatch;

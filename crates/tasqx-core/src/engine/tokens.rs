@@ -86,6 +86,20 @@ pub(super) fn record_token_usage(
     }))
 }
 
+/// True when a `tokens.attributed` event already exists for this task — the
+/// async attribution dedupe record (the `already_reminded` precedent). Takes a
+/// `&Connection` so it runs on the open `Transaction` (which derefs to
+/// `Connection`), letting [`Engine::token_attribute`] re-check inside its own
+/// write lock.
+pub(super) fn has_attributed_event(conn: &Connection, task_id: &str) -> Result<bool, ApiError> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE entity_id = ?1 AND op = 'tokens.attributed'",
+        params![task_id],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
 /// Map a token_usage row into the canonical measurement object. `base` is the
 /// column index the measurement starts at, so the grouped snapshot query
 /// (which leads with `task_id`) and the per-task reader share one mapper.
@@ -147,6 +161,93 @@ impl Engine {
         tx.commit()?;
 
         Ok(json!({ "short_id": task.short_id, "measurement": measurement }))
+    }
+
+    // ---- token.attribute (async attribution engine, #17) --------------------
+
+    /// Idempotently record the tokens the async attribution engine reconstructed
+    /// for one completed task, and mark the task attributed.
+    ///
+    /// Shaped like `scheduler::fire_one` and the reminder precedent: the dedupe
+    /// record is an event (`tokens.attributed`), re-checked INSIDE this IMMEDIATE
+    /// transaction so a restart, a racing tick, or a redelivery all converge on
+    /// exactly one attribution per task. Like `reminder_fire` / `token_add` it
+    /// does NOT bump the task's `rev`/`modified` — attribution runs
+    /// asynchronously after completion and must never break a client's
+    /// `expected_rev` on a task the client never touched.
+    ///
+    /// Exactly one event is written per call (the one-event-per-mutation
+    /// invariant). A `token_usage` measurement row is inserted ONLY when real
+    /// spend was found (total > 0); an unknown-client or empty-window task still
+    /// gets the marker so it terminates and never re-enters the pending set. The
+    /// heavy transcript parse happens in `crate::attribution`, off this lock and
+    /// before this call.
+    ///
+    /// Returns `true` when this call performed the attribution, `false` when it
+    /// was already attributed (the idempotent no-op path).
+    pub fn token_attribute(&self, p: &Value) -> Result<bool, ApiError> {
+        // `ref` first, so an empty call is refused over the same field every
+        // other task verb names first.
+        let _ = ref_param(p)?;
+        let source = req_str(p, "source")?;
+        require_source(&source)?;
+        let confidence = req_str(p, "confidence")?;
+        require_confidence(&confidence)?;
+        let tool = req_str(p, "tool")?;
+        let samples = opt_u64(p, "samples")?.unwrap_or(0);
+        let input = opt_token_count(p, "input_tokens")?.unwrap_or(0);
+        let output = opt_token_count(p, "output_tokens")?.unwrap_or(0);
+        let cache_read = opt_token_count(p, "cache_read_tokens")?.unwrap_or(0);
+        let cache_creation = opt_token_count(p, "cache_creation_tokens")?.unwrap_or(0);
+        let total = input
+            .saturating_add(output)
+            .saturating_add(cache_read)
+            .saturating_add(cache_creation);
+
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_on(&tx, p)?;
+
+        // Idempotency: a prior tick may already have attributed this task
+        // (catch-up scans re-see everything). Re-check inside the write lock so
+        // two racing daemons cannot both write a marker.
+        if has_attributed_event(&tx, &task.id)? {
+            return Ok(false);
+        }
+
+        // A measurement row only when there is real spend to record; otherwise
+        // just the marker. Either way, exactly one event.
+        let payload = if total > 0 {
+            let usage = NewTokenUsage {
+                tool: tool.clone(),
+                source: source.clone(),
+                model: None,
+                input_tokens: input,
+                output_tokens: output,
+                cache_read_tokens: cache_read,
+                cache_creation_tokens: cache_creation,
+                confidence: confidence.clone(),
+            };
+            let measurement = record_token_usage(&tx, &task.id, &usage)?;
+            json!({
+                "source": source,
+                "tool": tool,
+                "confidence": confidence,
+                "samples": samples,
+                "totals": {
+                    "input_tokens": input,
+                    "output_tokens": output,
+                    "cache_read_tokens": cache_read,
+                    "cache_creation_tokens": cache_creation,
+                },
+                "measurement": measurement.get("id").cloned().unwrap_or(Value::Null),
+            })
+        } else {
+            json!({ "samples": 0 })
+        };
+        insert_event(&tx, Entity::Task, &task.id, "tokens.attributed", &payload)?;
+        tx.commit()?;
+
+        Ok(true)
     }
 
     /// Measurements of a task as canonical objects, oldest first (the

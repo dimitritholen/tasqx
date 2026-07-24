@@ -1028,6 +1028,7 @@ mod tests {
             "store_import",
             "reminder_fire",
             "token_add",
+            "token_attribute",
         ];
 
         for handler in handlers {

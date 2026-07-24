@@ -98,6 +98,16 @@ impl TokenTotals {
         self.cache_read = self.cache_read.saturating_add(s.cache_read_tokens);
         self.cache_creation = self.cache_creation.saturating_add(s.cache_creation_tokens);
     }
+
+    /// The blended grand total across all four buckets, saturating. Used only to
+    /// answer "did we find anything?" — a measurement row is still stored as the
+    /// four separate fields, never this number (research rule #5).
+    pub fn total(&self) -> u64 {
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_creation)
+    }
 }
 
 #[cfg(test)]
