@@ -612,6 +612,17 @@ fn config_notify_enabled() -> bool {
     v == "true"
 }
 
+/// Read `[tokens] enabled` from `config.toml` (#17, DESIGN §10).
+///
+/// Off by default: like [`config_notify_enabled`], every failure mode — no
+/// config dir, no file, malformed TOML, wrong type — lands on "don't attribute",
+/// so a fresh install never parses AI tool transcripts until the user opts in.
+fn config_tokens_enabled() -> bool {
+    let s = config::find("tokens.enabled").expect("tokens.enabled is a registered setting");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    v == "true"
+}
+
 /// Result of a rendered command: the raw API result (for `--json`) plus the
 /// pre-rendered human string.
 type CmdOutcome = Result<(Value, String), tasqx_core::ApiError>;
@@ -2274,8 +2285,17 @@ fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
     let os_notify = config_notify_enabled();
     let notifier = notify::default_notifier(os_notify);
 
+    // #17: token attribution is opt-in (DESIGN §10). When enabled, the daemon
+    // spawns a third background thread that parses AI tool transcripts to
+    // attribute token usage to completed tasks. Off by default.
+    let tokens_enabled = config_tokens_enabled();
+
     eprintln!("tasqx daemon: listening on {socket} (Ctrl-C to stop)");
-    match daemon::serve_with_notifier(engine, &socket, shutdown, notifier) {
+    let options = daemon::DaemonOptions {
+        notifier,
+        tokens_enabled,
+    };
+    match daemon::serve_with_options(engine, &socket, shutdown, options) {
         Ok(()) => eprintln!("tasqx daemon: stopped"),
         Err(e) => {
             eprintln!("tasqx daemon: bind/serve failed on {socket}: {e}");

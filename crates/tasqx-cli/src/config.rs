@@ -128,6 +128,17 @@ pub const SETTINGS: &[Setting] = &[
         summary: "Allow the daemon to raise native OS notifications for reminders.",
     },
     Setting {
+        key: "tokens.enabled",
+        home: Home::Toml,
+        kind: Kind::Bool,
+        default: "false",
+        env: None,
+        flag: None,
+        choices: Choices::Free,
+        summary:
+            "Allow the daemon to attribute AI token usage by parsing local tool transcripts (#17).",
+    },
+    Setting {
         key: "default_project",
         home: Home::Store,
         kind: Kind::Str,
