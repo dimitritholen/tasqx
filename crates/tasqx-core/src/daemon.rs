@@ -762,10 +762,20 @@ fn cancel_io(raw_handle: usize) {
 }
 
 fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
+    // The accept loop's listener is nonblocking, and BSD-derived kernels
+    // (macOS) hand every accepted socket the listener's O_NONBLOCK flag —
+    // Linux does not, and interprocess's `Accept` mode only ever sets the
+    // flag on accepted streams, never clears it. A stream left nonblocking
+    // turns both SO_* timeouts below into no-ops and the first reply larger
+    // than the socket buffer (8 KiB on macOS) into a mid-frame WouldBlock
+    // that kills the writer thread; the client then hangs on a truncated
+    // frame until CLIENT_IDLE_TIMEOUT closes the zombie connection. Restore
+    // the blocking contract explicitly instead of assuming the platform did.
     #[cfg(unix)]
-    if stream
-        .set_recv_timeout(Some(CLIENT_IO_POLL_TIMEOUT))
-        .is_err()
+    if stream.set_nonblocking(false).is_err()
+        || stream
+            .set_recv_timeout(Some(CLIENT_IO_POLL_TIMEOUT))
+            .is_err()
         || stream.set_send_timeout(Some(CLIENT_SEND_TIMEOUT)).is_err()
     {
         return;
