@@ -54,12 +54,12 @@
 //! Because both the receiver and each tool's exporter are off by default, no
 //! telemetry leaves the machine unless the user turns both on.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -75,9 +75,20 @@ const MAX_BODY_BYTES: usize = 1 << 20;
 /// small enough that a client dribbling headers cannot grow memory unbounded.
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 
-/// Per-accept read/write deadline. OTLP posts are small and local; a peer that
-/// stalls mid-request must not pin the single receiver thread.
+/// Per-read/write socket timeout. OTLP posts are small and local; a peer that
+/// goes fully idle mid-request must not pin the single receiver thread. This is a
+/// PER-READ timeout — it resets on every byte received — so on its own it only
+/// catches a *fully* idle peer, not a slow-drip one; [`REQUEST_DEADLINE`] bounds
+/// the latter.
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Whole-request deadline from the moment a connection is accepted. Unlike
+/// [`IO_TIMEOUT`] (which resets on every byte and so is defeated by a peer
+/// dribbling one byte just inside the timeout — a slowloris), this is a hard
+/// ceiling on the total time one peer may hold the single receiver thread,
+/// regardless of how it paces its bytes. Generous for a legitimate local export
+/// (a few KiB, sub-millisecond over loopback) yet fatal to a hostile drip.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Nonblocking-accept step, matching the attribution/reminder loops' 50 ms
 /// shutdown-responsiveness discipline.
@@ -147,8 +158,11 @@ fn handle_connection(stream: TcpStream, engine: &Arc<Mutex<Engine>>) {
 
     // `&TcpStream` implements both Read and Write, so the reader borrows the
     // stream immutably and the response write below takes a second shared borrow.
+    // The read side is wrapped in a `DeadlineReader` so the whole request is
+    // bounded in wall-clock time (defeating a slow-drip peer the per-read
+    // `IO_TIMEOUT` alone cannot catch).
     let (status, body) = {
-        let mut reader = io::BufReader::new(&stream);
+        let mut reader = io::BufReader::new(DeadlineReader::new(&stream, REQUEST_DEADLINE));
         match read_http_request(&mut reader, MAX_BODY_BYTES) {
             Ok(req) => dispatch(&req, engine),
             Err(HttpError::MethodNotAllowed) => (405, "method not allowed"),
@@ -211,6 +225,38 @@ fn write_response(mut stream: &TcpStream, status: u16, body: &str) {
     );
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
+}
+
+/// A `Read` adapter that fails once a whole-request deadline passes. The socket's
+/// [`IO_TIMEOUT`] is a *per-read* timeout: it resets on every byte, so a peer
+/// dribbling one byte just inside it makes progress forever while holding the
+/// single receiver thread (slowloris). Checking a fixed deadline on each read
+/// turns that steady drip into a bounded one — the next read after the deadline
+/// returns `TimedOut`, which the parser treats as a dropped connection.
+struct DeadlineReader<R> {
+    inner: R,
+    deadline: Instant,
+}
+
+impl<R> DeadlineReader<R> {
+    fn new(inner: R, budget: Duration) -> Self {
+        DeadlineReader {
+            inner,
+            deadline: Instant::now() + budget,
+        }
+    }
+}
+
+impl<R: Read> Read for DeadlineReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if Instant::now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "OTLP request deadline exceeded",
+            ));
+        }
+        self.inner.read(buf)
+    }
 }
 
 // ---- HTTP/1.1 request parsing (hand-rolled, no `http` crate) -----------------
@@ -296,13 +342,25 @@ fn read_http_request<R: BufRead>(
 
 /// Read one line into `out`, charging its bytes against the header budget.
 /// Empty read is EOF (the peer closed); overrunning the budget is a bad request.
+///
+/// The read is bounded to the remaining header budget (`+1`, so a line that would
+/// overrun is detected rather than truncated). This matters: `BufRead::read_line`
+/// appends the ENTIRE line to `out` before returning, so without the bound a peer
+/// streaming a newline-less line could grow `out` without limit — the budget
+/// check below would only fire *after* the whole line was already in memory. The
+/// `Take` makes the allocation itself bounded by [`MAX_HEADER_BYTES`].
 fn read_line_capped<R: BufRead>(
     reader: &mut R,
     out: &mut String,
     total: &mut usize,
 ) -> Result<(), HttpError> {
     out.clear();
-    let n = reader.read_line(out).map_err(|_| HttpError::Io)?;
+    let remaining = MAX_HEADER_BYTES.saturating_sub(*total);
+    let n = reader
+        .by_ref()
+        .take(remaining as u64 + 1)
+        .read_line(out)
+        .map_err(|_| HttpError::Io)?;
     if n == 0 {
         return Err(HttpError::Io);
     }
@@ -551,6 +609,29 @@ mod tests {
         let raw = b"GET /v1/logs HTTP/1.1\r\nContent-Length: 0\r\n\r\n";
         let err = parse(raw, MAX_BODY_BYTES).expect_err("GET is not accepted");
         assert!(matches!(err, HttpError::MethodNotAllowed), "{err:?}");
+    }
+
+    #[test]
+    fn an_unterminated_header_line_is_capped_not_buffered_unbounded() {
+        // A header value with no CRLF terminator, far larger than the header cap.
+        // `read_line` would otherwise append the whole line before any size check;
+        // the `Take` bound must refuse it on the budget instead.
+        let mut raw = b"POST /v1/logs HTTP/1.1\r\nX: ".to_vec();
+        raw.extend(std::iter::repeat_n(b'A', MAX_HEADER_BYTES + 4096));
+        let err = parse(&raw, MAX_BODY_BYTES).expect_err("over the header cap");
+        assert!(matches!(err, HttpError::BadRequest), "{err:?}");
+    }
+
+    #[test]
+    fn deadline_reader_fails_the_read_once_the_budget_is_spent() {
+        // A zero budget means the deadline equals construction time; the monotonic
+        // clock has advanced by the time `read` runs, so the first read fails
+        // rather than dribbling forever (the slowloris defense).
+        let data = b"hello world";
+        let mut reader = DeadlineReader::new(&data[..], Duration::from_millis(0));
+        let mut buf = [0u8; 4];
+        let err = reader.read(&mut buf).expect_err("past deadline fails");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err:?}");
     }
 
     #[test]
