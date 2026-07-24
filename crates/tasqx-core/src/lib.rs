@@ -38,6 +38,7 @@ pub mod error;
 pub mod filter;
 pub mod mcp;
 pub mod notify;
+pub mod otlp;
 pub mod recur;
 pub mod remind;
 pub mod scheduler;

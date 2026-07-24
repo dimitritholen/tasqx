@@ -472,3 +472,111 @@ fn task_done_without_token_params_writes_no_measurement() {
     assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 0);
     assert!(event_payload(&e, "done").get("tokens").is_none());
 }
+
+// ---- OTLP buffer (#18) --------------------------------------------------------
+
+/// Buffered OTLP samples (#18) are raw telemetry, not attributed to any task:
+/// they must write NO task event and NO measurement row, only `otlp_samples`.
+#[test]
+fn otlp_ingest_buffers_samples_without_task_events_or_measurements() {
+    use tasqx_core::otlp::OtlpSample;
+    use tasqx_core::tokens::UsageSample;
+
+    let e = engine();
+    let n = e
+        .otlp_ingest(&[
+            OtlpSample {
+                tool: "claude-code".into(),
+                session_id: Some("sess-1".into()),
+                sample: UsageSample {
+                    ts: "2026-07-24T10:00:00Z".into(),
+                    model: Some("claude-opus-4-8".into()),
+                    input_tokens: 10,
+                    output_tokens: 20,
+                    cache_read_tokens: 3,
+                    cache_creation_tokens: 1,
+                },
+            },
+            OtlpSample {
+                tool: "codex".into(),
+                session_id: Some("sess-2".into()),
+                sample: UsageSample {
+                    ts: "2026-07-24T10:05:00Z".into(),
+                    model: None,
+                    input_tokens: 5,
+                    output_tokens: 6,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                },
+            },
+        ])
+        .unwrap();
+    assert_eq!(n, 2);
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 2);
+    // Raw telemetry is not a task mutation: no events, no measurements.
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), 0);
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 0);
+    // The row was stored with its four separate counts and its tool.
+    let cache_read: i64 = e
+        .conn()
+        .query_row(
+            "SELECT cache_read_tokens FROM otlp_samples WHERE session_id = 'sess-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cache_read, 3);
+    let tool: String = e
+        .conn()
+        .query_row(
+            "SELECT tool FROM otlp_samples WHERE session_id = 'sess-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(tool, "claude-code");
+}
+
+/// Retention prune runs inside every ingest: a row older than the window is
+/// dropped when a fresh sample arrives, so the buffer cannot grow unbounded.
+#[test]
+fn otlp_ingest_prunes_samples_past_the_retention_window() {
+    use tasqx_core::otlp::OtlpSample;
+    use tasqx_core::tokens::UsageSample;
+
+    let e = engine();
+    // Seed a stale row directly with a very old `created` (well past 30 days).
+    e.conn()
+        .execute(
+            "INSERT INTO otlp_samples (id, session_id, tool, ts, created) \
+             VALUES ('old', 'sess-old', 'codex', '2000-01-01T00:00:00Z', '2000-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 1);
+
+    // A fresh ingest triggers the opportunistic prune of the stale row.
+    e.otlp_ingest(&[OtlpSample {
+        tool: "codex".into(),
+        session_id: Some("sess-new".into()),
+        sample: UsageSample {
+            ts: "2026-07-24T10:00:00Z".into(),
+            model: None,
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        },
+    }])
+    .unwrap();
+    // Only the fresh row remains; the decade-old one was pruned.
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 1);
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM otlp_samples WHERE session_id = 'sess-old'"
+        ),
+        0,
+        "the stale row must have been pruned"
+    );
+}

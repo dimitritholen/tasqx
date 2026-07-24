@@ -44,7 +44,7 @@ use crate::engine::Engine;
 use crate::error::ApiError;
 use crate::tokens::{
     self, codex, TokenTotals, UsageSample, CONFIDENCE_HIGH, CONFIDENCE_LOW, CONFIDENCE_MEDIUM,
-    SOURCE_LOG_PARSE,
+    SOURCE_LOG_PARSE, SOURCE_OTEL,
 };
 
 /// Upper bound on transcript files inspected during discovery (no
@@ -193,6 +193,14 @@ pub struct PendingAttribution {
     pub client: Option<String>,
     pub transcript_path: Option<String>,
     pub session_id: Option<String>,
+    /// Buffered OTLP samples (#18) whose `session_id` matched this task's, read
+    /// from the store during the pending-set build. When non-empty and in-window,
+    /// they are preferred over log-parsing (source `otel`), so a task is measured
+    /// from EITHER telemetry OR a transcript, never both.
+    pub otel_samples: Vec<UsageSample>,
+    /// The tool that emitted the buffered OTLP samples, used only to label the
+    /// stored measurement when the completion carried no `client`.
+    pub otel_tool: Option<String>,
 }
 
 /// The outcome of attributing one task: the four-way totals, how many samples
@@ -202,6 +210,10 @@ pub struct AttributionResult {
     pub totals: TokenTotals,
     pub samples: usize,
     pub tool: String,
+    /// Where these tokens came from: [`SOURCE_OTEL`] when buffered telemetry won,
+    /// [`SOURCE_LOG_PARSE`] otherwise. Stored on the measurement so a report can
+    /// tell the two trust stories apart forever.
+    pub source: &'static str,
     pub confidence: &'static str,
     /// True when the window held real spend (total > 0), so a `token_usage` row
     /// should be written. When false only the terminating `tokens.attributed`
@@ -218,6 +230,7 @@ impl AttributionResult {
             totals: TokenTotals::default(),
             samples: 0,
             tool,
+            source: SOURCE_LOG_PARSE,
             confidence: CONFIDENCE_LOW,
             found: false,
         }
@@ -240,6 +253,32 @@ pub fn compute_attribution(
     now: Timestamp,
 ) -> Result<AttributionResult, ApiError> {
     let tool = pa.client.clone().unwrap_or_default();
+
+    // Prefer buffered OTLP telemetry (#18) when it correlated to this task's
+    // session and lands in the window: it is per-request, timestamped, and needs
+    // no file I/O. Because we return here, a task measured from telemetry is
+    // never ALSO log-parsed — one source per task, so no double-count. The buffer
+    // was matched by `session_id` during the pending-set build, so a hit is a
+    // verified correlation => HIGH confidence. This runs even for a client tasqx
+    // has no transcript parser for (telemetry needs none).
+    if !pa.otel_samples.is_empty() {
+        let (totals, n) = totals_in_window(&pa.otel_samples, &pa.window_start, &pa.window_end);
+        if totals.total() > 0 {
+            let otel_tool = pa
+                .client
+                .clone()
+                .or_else(|| pa.otel_tool.clone())
+                .unwrap_or_default();
+            return Ok(AttributionResult {
+                totals,
+                samples: n,
+                tool: otel_tool,
+                source: SOURCE_OTEL,
+                confidence: CONFIDENCE_HIGH,
+                found: true,
+            });
+        }
+    }
 
     // No client, or a client tasqx has no parser for: terminate with a marker.
     let Some(parser) = pa.client.as_deref().and_then(parser_for) else {
@@ -282,6 +321,7 @@ pub fn compute_attribution(
         totals,
         samples: n,
         tool,
+        source: SOURCE_LOG_PARSE,
         confidence: confidence_for(transcript_parsed, session_correlated),
         found,
     })
@@ -374,7 +414,7 @@ pub fn attribute_one(
 ) -> Result<bool, ApiError> {
     engine.token_attribute(&json!({
         "ref": pa.short_id,
-        "source": SOURCE_LOG_PARSE,
+        "source": result.source,
         "tool": result.tool,
         "confidence": result.confidence,
         "samples": result.samples,
@@ -543,6 +583,14 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             continue;
         };
         let window_start = starts.get(&task_id).cloned().unwrap_or(created);
+        // Buffered OTLP telemetry (#18) for this session, read here under the
+        // short engine lock (a cheap indexed query — no file I/O) so the compute
+        // step can prefer it over log-parsing. An absent session id matches
+        // nothing, which is the common (log-parse-only) case.
+        let (otel_samples, otel_tool) = match info.session_id.as_deref() {
+            Some(sid) => engine.otlp_samples_for_session(sid)?,
+            None => (Vec::new(), None),
+        };
         out.push(PendingAttribution {
             task_id,
             short_id,
@@ -551,6 +599,8 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             client: info.client,
             transcript_path: info.transcript_path,
             session_id: info.session_id,
+            otel_samples,
+            otel_tool,
         });
     }
     // Deterministic order for tests and for stable log lines.
@@ -643,6 +693,8 @@ mod tests {
             client: Some("cursor".into()),
             transcript_path: None,
             session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(!r.found);
@@ -660,6 +712,8 @@ mod tests {
             client: Some("claude-code".into()),
             transcript_path: Some("/no/such/transcript.jsonl".into()),
             session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
         };
         // Minutes after completion: still transient (the file may yet be flushed).
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
@@ -676,6 +730,8 @@ mod tests {
             client: Some("claude-code".into()),
             transcript_path: Some("/no/such/transcript.jsonl".into()),
             session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
         };
         // Two days later the file is never coming: terminate with an empty marker
         // (found == false) rather than retrying — and forcing a rebuild — forever.
@@ -716,6 +772,8 @@ mod tests {
             client: Some("claude-code".into()),
             transcript_path: Some(path.to_string_lossy().into_owned()),
             session_id: Some("sess-1".into()),
+            otel_samples: Vec::new(),
+            otel_tool: None,
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
@@ -758,6 +816,8 @@ mod tests {
             client: Some("claude-code".into()),
             transcript_path: Some(path.to_string_lossy().into_owned()),
             session_id: Some("wrong-or-stale-id".into()),
+            otel_samples: Vec::new(),
+            otel_tool: None,
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found, "the transcript was parsed and had in-window spend");
@@ -767,5 +827,130 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn buffered_otel_is_preferred_over_a_transcript_and_never_double_counted() {
+        // A transcript path is present AND buffered OTLP samples correlated by
+        // session. OTEL must win: source `otel`, HIGH confidence, and the numbers
+        // come from the buffer — the transcript is never even read (its path here
+        // does not exist, which would be a transient error on the log-parse path).
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some("/no/such/transcript.jsonl".into()),
+            session_id: Some("sess-1".into()),
+            otel_samples: vec![
+                sample("2026-07-24T10:15:00Z", 100, 200),
+                sample("2026-07-24T12:00:00Z", 9999, 9999), // out of window: excluded
+            ],
+            otel_tool: Some("claude-code".into()),
+        };
+        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
+        assert!(r.found);
+        assert_eq!(r.source, SOURCE_OTEL, "telemetry outranks log-parse");
+        assert_eq!(
+            r.confidence, CONFIDENCE_HIGH,
+            "session-matched buffer is high"
+        );
+        assert_eq!(r.samples, 1, "only the in-window telemetry sample counts");
+        assert_eq!(r.totals.input, 100);
+        assert_eq!(r.totals.output, 200);
+    }
+
+    #[test]
+    fn otel_buffered_but_out_of_window_falls_back_to_log_parse() {
+        // The session has telemetry, but none of it lands in the task's window,
+        // so log-parse remains the fallback (here: an absent transcript => the
+        // ordinary transient error, proving we fell through rather than using otel).
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some("/no/such/transcript.jsonl".into()),
+            session_id: Some("sess-1".into()),
+            otel_samples: vec![sample("2026-07-24T12:30:00Z", 100, 200)],
+            otel_tool: Some("claude-code".into()),
+        };
+        let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
+        assert!(
+            err.message.contains("not available yet"),
+            "fell back to the log-parse path: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn pending_set_reads_the_otel_buffer_and_the_write_stamps_source_otel() {
+        // End-to-end over a real store: telemetry buffered for a session, a task
+        // completed with that session id, and no transcript anywhere. Attribution
+        // must reconstruct the tokens from the OTLP buffer and stamp the stored
+        // measurement `source=otel` — with never a log-parse for this task.
+        let engine = Engine::open_in_memory().unwrap();
+        let sid = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        // window_start defaults to `created`; use it as the sample time so the
+        // sample lands on the inclusive lower bound without a clock dependency.
+        let created: String = engine
+            .conn()
+            .query_row("SELECT created FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        engine
+            .otlp_ingest(&[crate::otlp::OtlpSample {
+                tool: "claude-code".into(),
+                session_id: Some("sess-42".into()),
+                sample: UsageSample {
+                    ts: created,
+                    model: Some("claude-opus-4-8".into()),
+                    input_tokens: 111,
+                    output_tokens: 222,
+                    cache_read_tokens: 5,
+                    cache_creation_tokens: 0,
+                },
+            }])
+            .unwrap();
+        engine
+            .task_done(&json!({ "ref": sid, "client": "claude-code", "session_id": "sess-42" }))
+            .unwrap();
+
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "the completed task is pending attribution"
+        );
+        let pa = &pending[0];
+        assert_eq!(
+            pa.otel_samples.len(),
+            1,
+            "the pending-set build read the OTLP buffer by session id"
+        );
+
+        // `now` is irrelevant on the otel path (no absent-transcript give-up).
+        let r = compute_attribution(pa, ts("2026-07-24T11:05:00Z")).unwrap();
+        assert_eq!(r.source, SOURCE_OTEL);
+        assert_eq!(r.confidence, CONFIDENCE_HIGH);
+        assert!(r.found);
+        assert_eq!(r.totals.input, 111);
+        assert_eq!(r.totals.output, 222);
+
+        assert!(
+            attribute_one(&engine, pa, &r).unwrap(),
+            "first write performs it"
+        );
+        let source: String = engine
+            .conn()
+            .query_row("SELECT source FROM token_usage", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            source, SOURCE_OTEL,
+            "the stored measurement is otel-sourced"
+        );
     }
 }
