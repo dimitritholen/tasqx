@@ -75,13 +75,29 @@ fn start_daemon_with_notifier(
     sock: &str,
     notifier: Arc<dyn Notifier>,
 ) -> Arc<AtomicBool> {
+    start_daemon_with_options(db, sock, notifier, false)
+}
+
+/// [`start_daemon`], with the notifier and the `[tokens] enabled` opt-in
+/// injected (#17): the seam the attribution integration tests use to turn the
+/// third background thread on or off.
+fn start_daemon_with_options(
+    db: &str,
+    sock: &str,
+    notifier: Arc<dyn Notifier>,
+    tokens_enabled: bool,
+) -> Arc<AtomicBool> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let sd = shutdown.clone();
     let db = db.to_string();
     let sk = sock.to_string();
     thread::spawn(move || {
         let engine = Engine::open(&db).expect("open engine");
-        daemon::serve_with_notifier(engine, &sk, sd, notifier).expect("serve");
+        let options = daemon::DaemonOptions {
+            notifier,
+            tokens_enabled,
+        };
+        daemon::serve_with_options(engine, &sk, sd, options).expect("serve");
     });
     // Wait until the listener is up. Healthy runs connect on the first or
     // second try, so the deadline costs nothing when things work — but it used
@@ -604,4 +620,128 @@ fn background_store_failure_stops_the_daemon_with_context() {
         "failure must identify the background component: {err}"
     );
     let _ = std::fs::remove_file(&db);
+}
+
+// ---- §10 / #17: async token attribution over the daemon ---------------------
+
+/// A unique temp directory for a synthetic transcript, isolated per test.
+fn unique_dir(label: &str) -> std::path::PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("tasqx-attr-it-{label}-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A Claude Code transcript with two in-window lines (110 input / 220 output)
+/// and one far-future line every real window excludes.
+fn transcript(in_window_ts: &str) -> String {
+    [
+        format!(
+            r#"{{"timestamp":"{in_window_ts}","message":{{"id":"a","model":"claude-opus-4-8","usage":{{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+        ),
+        format!(
+            r#"{{"timestamp":"{in_window_ts}","message":{{"id":"b","model":"claude-opus-4-8","usage":{{"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+        ),
+        r#"{"timestamp":"2099-01-01T00:00:00Z","message":{"id":"c","usage":{"input_tokens":9999,"output_tokens":9999}}}"#.to_string(),
+    ]
+    .join("\n")
+}
+
+/// The headless verification surface for attribution: a correlated completion,
+/// with `[tokens] enabled`, must reach a `watch` subscriber as an ordinary
+/// `tokens.attributed` push and leave a stored `log-parse` measurement on the
+/// task — with no OS transport and no client `expected_rev` bump.
+#[test]
+fn a_correlated_completion_yields_a_stored_measurement_and_a_push() {
+    let (db, sock) = unique_target();
+    let dir = unique_dir("push");
+    let path = dir.join("session.jsonl");
+
+    let shutdown = start_daemon_with_options(&db, &sock, Arc::new(LogNotifier), true);
+    let rx = subscribe_events(&sock);
+    let mut c = daemon::try_connect(&sock).expect("connect");
+
+    let add = c
+        .request("task.add", &json!({ "title": "ship it" }))
+        .unwrap();
+    let id = ok(&add)["short_id"].as_i64().unwrap();
+
+    // An instant captured after creation and before completion is provably
+    // inside the task's [created, completed] window.
+    let in_window = tasqx_core::util::now();
+    std::fs::write(&path, transcript(&in_window)).unwrap();
+
+    let done = c
+        .request(
+            "task.done",
+            &json!({
+                "ref": id,
+                "client": "claude-code",
+                "session_id": "sess-1",
+                "transcript_path": path.to_string_lossy(),
+            }),
+        )
+        .unwrap();
+    let rev_after_done = ok(&done);
+    let _ = rev_after_done; // completion succeeds; attribution runs afterwards.
+
+    // Async attribution lands on the event stream.
+    let evt = wait_for_op(&rx, "tokens.attributed");
+    assert_eq!(evt["data"]["short_id"], json!(id));
+
+    // The measurement is stored and visible on task.get.
+    let got = c.request("task.get", &json!({ "ref": id })).unwrap();
+    let result = ok(&got);
+    let tokens = result["tokens"].as_array().expect("tokens array");
+    assert_eq!(tokens.len(), 1, "exactly one measurement, got {tokens:?}");
+    assert_eq!(tokens[0]["source"], json!("log-parse"));
+    assert_eq!(tokens[0]["input_tokens"], json!(110), "in-window only");
+    assert_eq!(tokens[0]["output_tokens"], json!(220));
+    assert_eq!(tokens[0]["confidence"], json!("high"));
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// With the opt-in OFF (the default), the attribution thread is never spawned:
+/// a correlated completion is left un-attributed no matter how long we wait.
+#[test]
+fn attribution_does_not_run_when_the_opt_in_is_off() {
+    let (db, sock) = unique_target();
+    let dir = unique_dir("off");
+    let path = dir.join("session.jsonl");
+
+    let shutdown = start_daemon(&db, &sock); // tokens disabled by default
+    let mut c = daemon::try_connect(&sock).expect("connect");
+
+    let add = c
+        .request("task.add", &json!({ "title": "ship it" }))
+        .unwrap();
+    let id = ok(&add)["short_id"].as_i64().unwrap();
+    let in_window = tasqx_core::util::now();
+    std::fs::write(&path, transcript(&in_window)).unwrap();
+    c.request(
+        "task.done",
+        &json!({
+            "ref": id,
+            "client": "claude-code",
+            "transcript_path": path.to_string_lossy(),
+        }),
+    )
+    .unwrap();
+
+    // Well past several attribution ticks (500ms each): nothing may appear.
+    thread::sleep(Duration::from_millis(1500));
+    let got = c.request("task.get", &json!({ "ref": id })).unwrap();
+    let tokens = ok(&got)["tokens"].as_array().expect("tokens array");
+    assert!(
+        tokens.is_empty(),
+        "attribution must stay off without the opt-in, got {tokens:?}"
+    );
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+    let _ = std::fs::remove_dir_all(&dir);
 }
