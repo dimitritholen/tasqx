@@ -86,14 +86,20 @@ pub(super) fn record_token_usage(
     }))
 }
 
-/// True when a `tokens.attributed` event already exists for this task — the
-/// async attribution dedupe record (the `already_reminded` precedent). Takes a
+/// True when this task's latest completion has already been attributed — the
+/// async attribution dedupe record (the `already_reminded` precedent). A task is
+/// attributed only when a `tokens.attributed` event exists *after* its most
+/// recent `done` (rowid strictly greater), so a reopen + re-complete (which
+/// appends a fresh `done` past the old marker, the log being append-only) is
+/// re-attributed instead of being suppressed by the stale marker. Takes a
 /// `&Connection` so it runs on the open `Transaction` (which derefs to
 /// `Connection`), letting [`Engine::token_attribute`] re-check inside its own
 /// write lock.
 pub(super) fn has_attributed_event(conn: &Connection, task_id: &str) -> Result<bool, ApiError> {
     let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM events WHERE entity_id = ?1 AND op = 'tokens.attributed'",
+        "SELECT COUNT(*) FROM events \
+         WHERE entity_id = ?1 AND op = 'tokens.attributed' AND rowid > COALESCE( \
+             (SELECT MAX(rowid) FROM events WHERE entity_id = ?1 AND op = 'done'), 0)",
         params![task_id],
         |r| r.get(0),
     )?;

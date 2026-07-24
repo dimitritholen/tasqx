@@ -34,7 +34,7 @@
 //! matching is not available; discovery therefore stays low-confidence and may
 //! legitimately attribute nothing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
@@ -99,6 +99,23 @@ impl Parser {
         }
     }
 
+    /// Whether `session_id` provably identifies `path` — the correlation the
+    /// HIGH-confidence rule requires. Best-effort per tool: Claude Code and Codex
+    /// stamp a session id into the transcript (filename / `session_meta`), so a
+    /// supplied id can be confirmed or refuted; Gemini and Copilot expose no
+    /// per-session anchor, so an explicit path with a session id can never be
+    /// *proven* correlated and stays at MEDIUM rather than claiming HIGH.
+    fn session_matches(self, path: &Path, session_id: &str) -> bool {
+        match self {
+            Parser::ClaudeCode => tokens::claude_code::session_matches(path, session_id),
+            Parser::Codex => matches!(
+                tokens::codex::session_meta(path),
+                Ok(Some(meta)) if meta.id.as_deref() == Some(session_id)
+            ),
+            Parser::Gemini | Parser::Copilot => false,
+        }
+    }
+
     /// The directories this tool writes session transcripts into.
     fn default_roots(self) -> Vec<PathBuf> {
         match self {
@@ -140,8 +157,11 @@ pub fn totals_in_window(samples: &[UsageSample], start: &str, done: &str) -> (To
 }
 
 /// The confidence to stamp on a measurement, per the module's confidence rule.
-pub fn confidence_for(transcript_path_parsed: bool, session_present: bool) -> &'static str {
-    match (transcript_path_parsed, session_present) {
+/// `session_correlated` means a supplied session id was *verified* against the
+/// parsed transcript (not merely that some id was present); HIGH is earned only
+/// when the explicit path was parsed AND that correlation actually held.
+pub fn confidence_for(transcript_path_parsed: bool, session_correlated: bool) -> &'static str {
+    match (transcript_path_parsed, session_correlated) {
         (true, true) => CONFIDENCE_HIGH,
         (true, false) => CONFIDENCE_MEDIUM,
         (false, _) => CONFIDENCE_LOW,
@@ -207,14 +227,13 @@ impl AttributionResult {
 /// terminate.
 pub fn compute_attribution(pa: &PendingAttribution) -> Result<AttributionResult, ApiError> {
     let tool = pa.client.clone().unwrap_or_default();
-    let session_present = pa.session_id.as_deref().is_some_and(|s| !s.is_empty());
 
     // No client, or a client tasqx has no parser for: terminate with a marker.
     let Some(parser) = pa.client.as_deref().and_then(parser_for) else {
         return Ok(AttributionResult::empty(tool));
     };
 
-    let (samples, transcript_parsed) = match pa.transcript_path.as_deref() {
+    let (samples, transcript_parsed, session_correlated) = match pa.transcript_path.as_deref() {
         Some(path) if !path.is_empty() => {
             let file = Path::new(path);
             if !file.exists() {
@@ -225,9 +244,18 @@ pub fn compute_attribution(pa: &PendingAttribution) -> Result<AttributionResult,
                     "transcript not available yet: {path}"
                 )));
             }
-            (parser.samples_from_file(file)?, true)
+            let samples = parser.samples_from_file(file)?;
+            // HIGH is earned only when the supplied session id is *verified*
+            // against this transcript, not merely present: a stale or wrong id
+            // must not masquerade as a high-trust correlation.
+            let correlated = pa
+                .session_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_some_and(|sid| parser.session_matches(file, sid));
+            (samples, true, correlated)
         }
-        _ => (discover_samples(parser, pa), false),
+        _ => (discover_samples(parser, pa), false, false),
     };
 
     let (totals, n) = totals_in_window(&samples, &pa.window_start, &pa.window_end);
@@ -236,7 +264,7 @@ pub fn compute_attribution(pa: &PendingAttribution) -> Result<AttributionResult,
         totals,
         samples: n,
         tool,
-        confidence: confidence_for(transcript_parsed, session_present),
+        confidence: confidence_for(transcript_parsed, session_correlated),
         found,
     })
 }
@@ -346,35 +374,50 @@ struct DoneInfo {
 pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, ApiError> {
     let conn = engine.conn();
 
-    // 1. Already-attributed tasks — the dedupe record (reminded_keys precedent).
-    let attributed: HashSet<String> = {
-        let mut stmt =
-            conn.prepare("SELECT DISTINCT entity_id FROM events WHERE op = 'tokens.attributed'")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        let mut set = HashSet::new();
+    // 1. The latest `tokens.attributed` rowid per task — the dedupe record
+    //    (reminded_keys precedent). Keyed by rowid, not mere presence, so a
+    //    marker written for an *earlier* completion does not suppress a later
+    //    one: a reopen + re-complete appends a fresh `done` past this marker and
+    //    must re-enter the queue (task_reopen leaves the old marker in place, as
+    //    the event log is append-only).
+    let attributed: HashMap<String, i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT entity_id, MAX(rowid) FROM events \
+             WHERE op = 'tokens.attributed' GROUP BY entity_id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut map = HashMap::new();
         for r in rows {
-            set.insert(r?);
+            let (id, rowid) = r?;
+            map.insert(id, rowid);
         }
-        set
+        map
     };
 
     // 2. Latest `done` per task carrying correlation, not yet attributed. Rowid
-    //    order so a reopened-then-redone task's most recent completion wins.
+    //    order so a reopened-then-redone task's most recent completion wins — and
+    //    a `done` is "not yet attributed" when no `tokens.attributed` marker
+    //    exists *after* it (rowid strictly greater), so tokens spent between a
+    //    reopen and the next completion are attributed rather than silently lost.
     let mut candidates: HashMap<String, DoneInfo> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT entity_id, payload, ts FROM events WHERE op = 'done' ORDER BY rowid",
+            "SELECT entity_id, payload, ts, rowid FROM events WHERE op = 'done' ORDER BY rowid",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
             ))
         })?;
         for r in rows {
-            let (task_id, payload, ts) = r?;
-            if attributed.contains(&task_id) {
+            let (task_id, payload, ts, done_rowid) = r?;
+            if attributed
+                .get(&task_id)
+                .is_some_and(|&attr_rowid| attr_rowid > done_rowid)
+            {
                 continue;
             }
             let v = payload
@@ -598,7 +641,9 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("session.jsonl");
+        // Claude Code names each transcript `<session-id>.jsonl`, so a file named
+        // for the completion's session id is a *verified* correlation => HIGH.
+        let path = dir.join("sess-1.jsonl");
         // Two in-window assistant lines and one after the window.
         let content = [
             r#"{"timestamp":"2026-07-24T10:10:00.000Z","message":{"id":"a","model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":3,"cache_creation_input_tokens":4}}}"#,
@@ -626,7 +671,44 @@ mod tests {
         assert_eq!(r.totals.cache_creation, 4);
         assert_eq!(
             r.confidence, CONFIDENCE_HIGH,
-            "explicit path + session id => high"
+            "explicit path + verified session id => high"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_uncorrelated_session_id_is_medium_not_high() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-uncorr-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The transcript neither is named for the session id nor carries it on a
+        // line, so the supplied id is a stale/wrong hook argument that cannot be
+        // verified — the parse still happened, so MEDIUM, never HIGH.
+        let path = dir.join("some-other-file.jsonl");
+        let content = r#"{"timestamp":"2026-07-24T10:10:00.000Z","message":{"id":"a","model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":20}}}"#;
+        std::fs::write(&path, content).unwrap();
+
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some(path.to_string_lossy().into_owned()),
+            session_id: Some("wrong-or-stale-id".into()),
+        };
+        let r = compute_attribution(&pa).unwrap();
+        assert!(r.found, "the transcript was parsed and had in-window spend");
+        assert_eq!(
+            r.confidence, CONFIDENCE_MEDIUM,
+            "an unverifiable session id downgrades to medium"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

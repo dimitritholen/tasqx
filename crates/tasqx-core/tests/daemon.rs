@@ -656,7 +656,9 @@ fn transcript(in_window_ts: &str) -> String {
 fn a_correlated_completion_yields_a_stored_measurement_and_a_push() {
     let (db, sock) = unique_target();
     let dir = unique_dir("push");
-    let path = dir.join("session.jsonl");
+    // Claude Code names each transcript `<session-id>.jsonl`; naming the fixture
+    // for the completion's session id makes this a *verified* correlation => HIGH.
+    let path = dir.join("sess-1.jsonl");
 
     let shutdown = start_daemon_with_options(&db, &sock, Arc::new(LogNotifier), true);
     let rx = subscribe_events(&sock);
