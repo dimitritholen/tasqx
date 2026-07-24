@@ -50,8 +50,14 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
 pub fn default_roots() -> Vec<PathBuf> {
     roots_from(
         env_path("CLAUDE_CONFIG_DIR").as_deref(),
-        env_path("HOME").as_deref(),
+        home_dir().as_deref(),
     )
+}
+
+/// Best-effort home directory without a dependency: `$HOME` on Unix,
+/// `%USERPROFILE%` on Windows (matching the sibling parsers).
+fn home_dir() -> Option<PathBuf> {
+    env_path(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
 }
 
 /// A transcript line. Unknown fields are ignored on purpose (version

@@ -206,7 +206,15 @@ fn exporter_override_dir() -> Option<PathBuf> {
     if trimmed.is_empty() {
         return None;
     }
-    Path::new(trimmed).parent().map(Path::to_path_buf)
+    // A bare filename (`export.jsonl`) has an empty parent; its directory is the
+    // current one, so map that to `.` rather than injecting an empty path.
+    Path::new(trimmed).parent().map(|p| {
+        if p.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            p.to_path_buf()
+        }
+    })
 }
 
 /// Resolve a record's timestamp to an RFC3339 string, or `None` if no field
