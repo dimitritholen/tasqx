@@ -195,6 +195,38 @@ fn unix_socket_is_owner_only_even_for_a_custom_path() {
 }
 
 #[test]
+fn a_reply_larger_than_one_socket_buffer_arrives_whole() {
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+    let mut c = daemon::try_connect(&sock).expect("connect");
+
+    // 64 tasks × 200-char titles ≈ 14 KiB of `task.list` reply — past the 8 KiB
+    // default Unix-socket buffer on macOS (net.local.stream.sendspace), so the
+    // reply only arrives whole if the daemon writes across a buffer-full
+    // boundary. An accepted stream accidentally left nonblocking (BSD listeners
+    // bequeath O_NONBLOCK; Linux does not) fails here on the first WouldBlock:
+    // the v0.2.0 release run died with EOF at column 8192 after the 15-minute
+    // idle timeout finally closed the half-written connection.
+    let title = "t".repeat(200);
+    for _ in 0..64 {
+        let added = c.request("task.add", &json!({ "title": title })).unwrap();
+        assert_eq!(added.get("ok"), Some(&Value::Bool(true)));
+    }
+    let listed = c
+        .request(
+            "task.list",
+            &json!({ "filter": "status:pending", "limit": 1000 }),
+        )
+        .unwrap();
+    let tasks = ok(&listed).get("tasks").and_then(Value::as_array).unwrap();
+    assert_eq!(tasks.len(), 64, "every task survives a multi-buffer reply");
+
+    drop(c);
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+#[test]
 fn two_clients_concurrent_no_deadlock_and_ids_match() {
     let (db, sock) = unique_target();
     let shutdown = start_daemon(&db, &sock);
