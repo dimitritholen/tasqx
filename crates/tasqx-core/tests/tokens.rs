@@ -293,3 +293,87 @@ fn import_replaces_measurements_wholesale() {
         "the payload's task object is authoritative about its child rows"
     );
 }
+
+// ---- #12 correlation metadata ---------------------------------------------------
+
+/// The one payload of the given event op, parsed. Events are the durable
+/// correlation record, so the payload IS the read surface under test.
+fn event_payload(e: &Engine, op: &str) -> serde_json::Value {
+    let raw: String = e
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE op = ?1 ORDER BY id DESC LIMIT 1",
+            [op],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+#[test]
+fn start_and_done_events_carry_the_correlation_params() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+
+    e.task_start(&json!({
+        "ref": sid,
+        "session_id": "sess-1",
+        "prompt_id": "prompt-9",
+        "transcript_path": "/home/me/.claude/projects/x/sess-1.jsonl",
+        "client": "claude-code 2.1.0",
+    }))
+    .unwrap();
+    let start = event_payload(&e, "start");
+    assert!(start["interval_started"].is_string());
+    assert_eq!(start["session_id"], "sess-1");
+    assert_eq!(start["prompt_id"], "prompt-9");
+    assert_eq!(
+        start["transcript_path"],
+        "/home/me/.claude/projects/x/sess-1.jsonl"
+    );
+    assert_eq!(start["client"], "claude-code 2.1.0");
+
+    e.task_done(&json!({ "ref": sid, "session_id": "sess-1", "client": "claude-code 2.1.0" }))
+        .unwrap();
+    let done = event_payload(&e, "done");
+    assert!(done["completed"].is_string());
+    assert_eq!(done["session_id"], "sess-1");
+    assert_eq!(done["client"], "claude-code 2.1.0");
+    // Keys not supplied stay ABSENT, not null — a human's `tasqx done 4`
+    // must not grow four null fields on every event.
+    assert!(done.get("prompt_id").is_none());
+    assert!(done.get("transcript_path").is_none());
+}
+
+#[test]
+fn a_plain_start_and_done_write_the_same_payloads_as_before() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_start(&json!({ "ref": sid })).unwrap();
+    let start = event_payload(&e, "start");
+    assert_eq!(
+        start.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["interval_started"],
+        "no correlation given, no new keys: {start}"
+    );
+    e.task_done(&json!({ "ref": sid })).unwrap();
+    let done = event_payload(&e, "done");
+    assert_eq!(
+        done.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["completed"],
+        "no correlation given, no new keys: {done}"
+    );
+}
+
+/// D35: an empty correlation string is a present value with no meaning here,
+/// so it is refused naming the param rather than silently absent.
+#[test]
+fn empty_correlation_strings_are_refused() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    let err = e
+        .task_done(&json!({ "ref": sid, "session_id": "" }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("session_id"), "{}", err.message);
+}

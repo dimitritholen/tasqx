@@ -443,6 +443,88 @@ fn new_relationship_tools_are_write_scoped() {
     }
 }
 
+// ---- clientInfo -> lifecycle correlation (#12) ---------------------------------
+
+/// The newest event payload of the given op, straight from the store — events
+/// are the durable correlation record, so this is the surface under test.
+fn event_payload(engine: &Engine, op: &str) -> Value {
+    let raw: String = engine
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE op = ?1 ORDER BY id DESC LIMIT 1",
+            [op],
+            |r| r.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+#[test]
+fn client_info_from_initialize_is_stamped_onto_start_and_done_events() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "claude-code", "version": "2.1.0" }
+            }
+        }))
+        .expect("initialize is a request");
+
+    let added = call(&server, 2, "tasqx_add_task", json!({ "title": "carrier" }));
+    let sid = tool_text(&added)["short_id"].as_i64().expect("short_id");
+
+    let started = call(&server, 3, "tasqx_start_timer", json!({ "ref": sid }));
+    assert!(!is_error(&started), "start failed: {started}");
+    assert_eq!(
+        event_payload(&engine, "start")["client"],
+        "claude-code 2.1.0",
+        "the start event must name the tool captured at initialize"
+    );
+
+    let done = call(&server, 4, "tasqx_complete_task", json!({ "ref": sid }));
+    assert!(!is_error(&done), "done failed: {done}");
+    assert_eq!(
+        event_payload(&engine, "done")["client"],
+        "claude-code 2.1.0",
+        "the done event must name the tool captured at initialize"
+    );
+}
+
+/// The expected_rev rule carried over: a caller that supplies its own
+/// `client` is respected, and a session that never sent clientInfo injects
+/// nothing rather than an empty string the engine would refuse.
+#[test]
+fn a_caller_supplied_client_wins_and_no_client_info_injects_nothing() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    // No initialize at all: nothing to inject.
+    let added = call(&server, 1, "tasqx_add_task", json!({ "title": "carrier" }));
+    let sid = tool_text(&added)["short_id"].as_i64().expect("short_id");
+    let started = call(&server, 2, "tasqx_start_timer", json!({ "ref": sid }));
+    assert!(!is_error(&started), "start failed: {started}");
+    assert!(
+        event_payload(&engine, "start").get("client").is_none(),
+        "no clientInfo, no client key"
+    );
+
+    let done = call(
+        &server,
+        3,
+        "tasqx_complete_task",
+        json!({ "ref": sid, "client": "my-wrapper 0.1" }),
+    );
+    assert!(!is_error(&done), "done failed: {done}");
+    assert_eq!(
+        event_payload(&engine, "done")["client"],
+        "my-wrapper 0.1",
+        "an explicit client must not be overwritten"
+    );
+}
+
 // ---- memory over MCP (D41) ---------------------------------------------------
 
 #[test]

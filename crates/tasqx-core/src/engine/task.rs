@@ -202,13 +202,12 @@ impl Engine {
             "UPDATE tasks SET status='active', active_since=?1, rev=?2, modified=?3 WHERE id=?4",
             params![ts, task.rev + 1, ts, task.id],
         )?;
-        insert_event(
-            &tx,
-            Entity::Task,
-            &task.id,
-            "start",
-            &json!({ "interval_started": ts }),
-        )?;
+        // #12: the start event is the durable half of the correlation record —
+        // the attribution engine later pairs it with the done event to know
+        // which session/transcript covered this interval.
+        let mut start_payload = json!({ "interval_started": ts });
+        command.correlation.apply(&mut start_payload);
+        insert_event(&tx, Entity::Task, &task.id, "start", &start_payload)?;
         tx.commit()?;
 
         Ok(commands::TaskStarted {
@@ -258,6 +257,9 @@ impl Engine {
     // ---- task.done -----------------------------------------------------------
 
     pub fn task_done(&self, p: &Value) -> Result<Value, ApiError> {
+        // Pure params first (#12): correlation metadata is validated before
+        // the write lock, exactly like every other parse-then-lock mutation.
+        let correlation = commands::parse_correlation(p)?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
@@ -287,13 +289,12 @@ impl Engine {
              tracked_seconds=?2, rev=?3, modified=?4 WHERE id=?5",
             params![ts, total, task.rev + 1, ts, task.id],
         )?;
-        insert_event(
-            &tx,
-            Entity::Task,
-            &task.id,
-            "done",
-            &json!({ "completed": ts }),
-        )?;
+        // #12: the done event carries the correlation record for this
+        // completion — see `commands::Correlation` for why it lives in the
+        // event payload rather than on the task row.
+        let mut done_payload = json!({ "completed": ts });
+        correlation.apply(&mut done_payload);
+        insert_event(&tx, Entity::Task, &task.id, "done", &done_payload)?;
 
         // Spawn the next recurring instance in the SAME transaction: if this
         // fails, the whole completion rolls back — no orphan spawn, no event.
