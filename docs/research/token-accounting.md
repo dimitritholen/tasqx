@@ -1,5 +1,9 @@
 # Per-task AI token accounting — research report
 
+> **Implementation status (2026-07-24):** fully implemented on branch `feat/token-accounting` (backlog project `tasqx-token-accounting`, tasks #10–#19). Built exactly on the hybrid recommendation below: a `token_usage` table + `token.add`; correlation metadata in the start/done event payloads with MCP `clientInfo` capture; self-report params on `tasqx_complete_task`; local transcript parsers for Claude Code, Codex, Gemini CLI and Copilot CLI (`crates/tasqx-core/src/tokens/`); an async attribution engine in the daemon (`attribution.rs`, reminder-loop pattern, off the engine lock) that buckets per-request samples into each task's time window; an opt-in local OTLP/HTTP receiver (`otlp.rs`, `[otlp] enabled`, off by default) preferred over log-parsing when present; and five `tokens_*` metrics on the summary/HTML/terminal reports. Sources are stored separately (`log-parse` / `otel` / `self-report`) with a confidence grade; a task attributed by one source is never double-counted by another. The Codex `token_count` semantics question was resolved empirically (see the spike section). 715 tests pass.
+
+
+
 *Deep-research run 2026-07-24 (106 agents, 24 sources, 25 claims adversarially verified: 21 confirmed, 4 refuted). Question: how can tasqx reliably capture tokens spent by arbitrary AI coding tools when a task is closed, for later reporting?*
 
 ## TL;DR
