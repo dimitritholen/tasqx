@@ -31,12 +31,16 @@ use crate::tokens::UsageSample;
 /// error (it names the path); every per-line problem is skipped, so a file with
 /// no usable samples returns `Ok(vec![])`.
 pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    // Read bytes and decode lossily: only *opening* the file is a hard error, so
+    // a stray non-UTF8 byte must not sink an otherwise-parseable file. The bad
+    // byte becomes U+FFFD and only that line fails to parse; the rest survive.
+    let bytes = std::fs::read(path).map_err(|e| {
         ApiError::internal(format!(
             "failed to read Claude Code transcript {}: {e}",
             path.display()
         ))
     })?;
+    let content = String::from_utf8_lossy(&bytes);
     Ok(parse_samples(&content))
 }
 
@@ -319,6 +323,25 @@ mod tests {
         assert_eq!(out[0].input_tokens, 9);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn samples_from_file_tolerates_non_utf8_bytes() {
+        // A non-UTF8 byte on one line must decode lossily and skip only that
+        // line, not turn the whole best-effort read into a hard error.
+        let good = assistant_line("2026-07-24T10:00:00Z", "msg_a", "claude-opus-4-7", 9, 9);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"{\xff not utf8}\n");
+        bytes.extend_from_slice(good.as_bytes());
+        bytes.push(b'\n');
+        let path =
+            std::env::temp_dir().join(format!("tasqx-cc-utf8-{}.jsonl", uuid::Uuid::now_v7()));
+        std::fs::write(&path, &bytes).expect("write temp transcript");
+
+        let out = samples_from_file(&path).expect("non-utf8 must not error");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].input_tokens, 9);
     }
 
     #[test]

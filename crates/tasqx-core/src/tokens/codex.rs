@@ -108,12 +108,17 @@ fn map_fields(u: CodexUsage) -> (u64, u64, u64) {
 /// changed total are all skipped, and a file with nothing usable returns
 /// `Ok(vec![])`.
 pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    // Read bytes and decode lossily: only *opening* the file is a hard error, so
+    // a stray non-UTF8 byte must not sink an otherwise-parseable file. The bad
+    // byte becomes U+FFFD, that one line fails to parse as JSON, and every other
+    // line is still processed.
+    let bytes = std::fs::read(path).map_err(|e| {
         ApiError::internal(format!(
             "cannot read Codex rollout file {}: {e}",
             path.display()
         ))
     })?;
+    let content = String::from_utf8_lossy(&bytes);
 
     let mut samples = Vec::new();
     // The last kept event's cumulative totals; `None` until the first kept
@@ -221,12 +226,15 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
 /// Returns `Ok(None)` when no `session_meta` line is present (e.g. a truncated
 /// or non-Codex file); opening the file is the only hard error.
 pub fn session_meta(path: &Path) -> Result<Option<CodexSessionMeta>, ApiError> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    // See `samples_from_file`: lossy decode so a non-UTF8 byte cannot turn a
+    // best-effort read into a hard error.
+    let bytes = std::fs::read(path).map_err(|e| {
         ApiError::internal(format!(
             "cannot read Codex rollout file {}: {e}",
             path.display()
         ))
     })?;
+    let content = String::from_utf8_lossy(&bytes);
 
     for line in content.lines() {
         let line = line.trim();
@@ -379,6 +387,28 @@ mod tests {
         );
         let path = temp_rollout(&format!("{{not json\n{good}\n"));
         let samples = samples_from_file(&path).expect("parse");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].output_tokens, 5);
+    }
+
+    #[test]
+    fn non_utf8_bytes_do_not_sink_the_file() {
+        // A non-UTF8 byte on one line must decode lossily and skip only that
+        // line, not turn the whole best-effort read into a hard error.
+        let good = token_count_line(
+            "2026-03-10T10:47:41.050Z",
+            (100, 10, 5, 105),
+            (100, 10, 5, 105),
+        );
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"{\xff not utf8}\n");
+        bytes.extend_from_slice(good.as_bytes());
+        bytes.push(b'\n');
+        let path =
+            std::env::temp_dir().join(format!("tasqx-codex-utf8-{}.jsonl", std::process::id()));
+        std::fs::write(&path, &bytes).expect("write temp rollout");
+        let samples = samples_from_file(&path).expect("non-utf8 must not error");
         std::fs::remove_file(&path).ok();
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].output_tokens, 5);

@@ -24,7 +24,6 @@
 //! dedup is the minimal correct defense against double counting while staying
 //! tolerant of record shapes we have never seen.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -69,15 +68,30 @@ pub fn default_roots() -> Vec<PathBuf> {
 /// JSON, no `attributes`, no usage, no timestamp — skips just that line. A file
 /// with nothing usable returns `Ok(vec![])`.
 pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    // Read bytes and decode lossily: only *opening* the file is a hard error, so
+    // a stray non-UTF8 byte must not sink an otherwise-parseable file. The bad
+    // byte becomes U+FFFD and only that line fails to parse; the rest survive.
+    let bytes = std::fs::read(path).map_err(|e| {
         ApiError::internal(format!(
             "failed to read Copilot otel file {}: {e}",
             path.display()
         ))
     })?;
+    let content = String::from_utf8_lossy(&bytes);
 
-    let mut samples = Vec::new();
-    let mut seen_response_ids = HashSet::new();
+    // Copilot re-emits one model response under several record shapes (a chat
+    // span, an inference-details log, an agent-turn log) and the copies expose
+    // DIFFERENT subsets of the usage breakdown — e.g. a lean span with no cache
+    // fields written before a detailed log that carries the cache_read /
+    // cache_creation split. Collapsing to the first-seen copy would silently
+    // drop that detail and misattribute fresh vs. cached input. Instead we
+    // accumulate the RAW counts per `gen_ai.response.id`, keeping the largest
+    // value seen for each field, and derive fresh input once at the end. This is
+    // order-independent (whichever copy arrives first, the merged result is the
+    // same) and still counts each response exactly once.
+    let mut accs: Vec<ResponseAcc> = Vec::new();
+    let mut slot_by_response: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -99,35 +113,81 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
             continue; // no token usage on this record
         }
 
-        // Skip before touching the dedup set so a later, timestamped copy of the
+        // Skip before touching the dedup map so a later, timestamped copy of the
         // same response can still win if this one lacks a usable timestamp.
         let Some(ts) = resolve_timestamp(&record) else {
             continue;
         };
 
-        // Copilot follows OpenAI-style accounting: `input_tokens` INCLUDES the
-        // cache-read tokens. `UsageSample` keeps the four counts non-overlapping,
-        // so subtract the cache reads back out to get fresh input (matches
-        // ccusage's Copilot adapter).
-        let input = raw_input.saturating_sub(raw_input.min(cache_read));
-
-        if let Some(response_id) = attr_string(attributes, "gen_ai.response.id") {
-            if !seen_response_ids.insert(response_id) {
-                continue; // same model response, re-emitted under another record shape
-            }
-        }
-
-        samples.push(UsageSample {
+        let incoming = ResponseAcc {
             ts,
             model: first_attr(attributes, MODEL_ATTRS),
-            input_tokens: input,
-            output_tokens: output,
-            cache_read_tokens: cache_read,
-            cache_creation_tokens: cache_creation,
-        });
+            raw_input,
+            output,
+            cache_read,
+            cache_creation,
+        };
+
+        match attr_string(attributes, "gen_ai.response.id") {
+            Some(id) => match slot_by_response.get(&id) {
+                // Same model response under another record shape: merge, keeping
+                // the richest value for each field so no breakdown is lost.
+                Some(&idx) => accs[idx].merge_max(incoming),
+                None => {
+                    slot_by_response.insert(id, accs.len());
+                    accs.push(incoming);
+                }
+            },
+            // No response id to dedupe on: keep every such record on its own.
+            None => accs.push(incoming),
+        }
     }
 
-    Ok(samples)
+    Ok(accs.into_iter().map(ResponseAcc::into_sample).collect())
+}
+
+/// Raw per-response usage accumulated across the redundant record shapes Copilot
+/// writes for one model response. Holds RAW `input_tokens` (which still includes
+/// the cache-read tokens); fresh input is derived only in [`into_sample`].
+struct ResponseAcc {
+    ts: String,
+    model: Option<String>,
+    raw_input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_creation: u64,
+}
+
+impl ResponseAcc {
+    /// Fold another copy of the same response in, keeping the largest value seen
+    /// for each count. `ts` stays first-seen; `model` fills in if still unknown.
+    fn merge_max(&mut self, other: ResponseAcc) {
+        self.raw_input = self.raw_input.max(other.raw_input);
+        self.output = self.output.max(other.output);
+        self.cache_read = self.cache_read.max(other.cache_read);
+        self.cache_creation = self.cache_creation.max(other.cache_creation);
+        if self.model.is_none() {
+            self.model = other.model;
+        }
+    }
+
+    /// Copilot follows OpenAI-style accounting: `input_tokens` INCLUDES the
+    /// cache-read tokens. `UsageSample` keeps the four counts non-overlapping, so
+    /// subtract the cache reads back out to get fresh input (matches ccusage's
+    /// Copilot adapter).
+    fn into_sample(self) -> UsageSample {
+        let input = self
+            .raw_input
+            .saturating_sub(self.raw_input.min(self.cache_read));
+        UsageSample {
+            ts: self.ts,
+            model: self.model,
+            input_tokens: input,
+            output_tokens: self.output,
+            cache_read_tokens: self.cache_read,
+            cache_creation_tokens: self.cache_creation,
+        }
+    }
 }
 
 /// Home directory from `HOME` (Unix) or `USERPROFILE` (Windows). No `dirs`
@@ -447,6 +507,57 @@ mod tests {
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].input_tokens, 0);
         assert_eq!(samples[0].cache_read_tokens, 500);
+    }
+
+    #[test]
+    fn duplicate_response_merges_the_richer_breakdown() {
+        // A lean chat span (no cache fields) is written BEFORE the detailed
+        // inference log carrying the cache_read / cache_creation split. First-
+        // wins dedup would keep the span and report fresh input as the full
+        // 1000; the merge must instead pick up the cache breakdown and derive
+        // fresh input = 1000 - 300 = 700. Order-independent by construction.
+        let content = concat!(
+            r#"{"attributes":{"gen_ai.operation.name":"chat","gen_ai.response.id":"r","gen_ai.usage.input_tokens":1000,"gen_ai.usage.output_tokens":200},"endTime":[1700000000,0]}"#,
+            "\n",
+            r#"{"attributes":{"event.name":"gen_ai.client.inference.operation.details","gen_ai.response.id":"r","gen_ai.usage.input_tokens":1000,"gen_ai.usage.output_tokens":200,"gen_ai.usage.cache_read.input_tokens":300,"gen_ai.usage.cache_creation.input_tokens":64},"timeUnixNano":1700000000000000000}"#,
+            "\n",
+        );
+        let path = write_fixture(content);
+        let samples = samples_from_file(&path).expect("parse");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].input_tokens, 700);
+        assert_eq!(samples[0].output_tokens, 200);
+        assert_eq!(samples[0].cache_read_tokens, 300);
+        assert_eq!(samples[0].cache_creation_tokens, 64);
+    }
+
+    #[test]
+    fn non_utf8_bytes_do_not_sink_the_file() {
+        // One line carries an invalid UTF-8 byte; it must decode lossily, fail
+        // JSON parsing on its own, and leave the valid record untouched.
+        let good = concat!(
+            r#"{"attributes":{"gen_ai.response.id":"ok","gen_ai.usage.input_tokens":10,"gen_ai.usage.output_tokens":5},"#,
+            r#""timeUnixNano":1700000000000000000}"#,
+        );
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"{\xff not utf8}\n");
+        bytes.extend_from_slice(good.as_bytes());
+        bytes.push(b'\n');
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "tasqx-copilot-utf8-{}-{}.jsonl",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::write(&path, &bytes).expect("write fixture");
+        let samples = samples_from_file(&path).expect("non-utf8 must not error");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].input_tokens, 10);
+        assert_eq!(samples[0].output_tokens, 5);
     }
 
     #[test]
