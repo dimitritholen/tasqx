@@ -12,6 +12,10 @@
 //! fresh ones and every tool defines them differently (research rule #5), so
 //! a single number destroys exactly the information a cost report needs.
 
+// Per-tool transcript parsers. Kept alphabetical to minimize merge conflicts
+// as sibling parsers land in parallel.
+pub mod codex;
+
 use crate::error::ApiError;
 
 // Per-tool transcript parsers. Keep this list alphabetical to minimize merge
