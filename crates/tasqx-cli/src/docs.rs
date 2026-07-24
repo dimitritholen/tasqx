@@ -144,8 +144,9 @@ const METHODS: [(&str, &str, &str); 28] = [
     ),
     (
         "task.start",
-        "<code>ref</code>, <code>keep?</code>",
-        "The task, timer running.",
+        "<code>ref</code>, <code>keep?</code>, <code>session_id?</code>, \
+         <code>prompt_id?</code>, <code>transcript_path?</code>, <code>client?</code>",
+        "The task, timer running. Correlation params land in the start event.",
     ),
     (
         "task.stop",
@@ -154,8 +155,10 @@ const METHODS: [(&str, &str, &str); 28] = [
     ),
     (
         "task.done",
-        "<code>ref</code>",
-        "The task; plus the spawned next instance if recurring.",
+        "<code>ref</code>, <code>session_id?</code>, <code>prompt_id?</code>, \
+         <code>transcript_path?</code>, <code>client?</code>",
+        "The task; plus the spawned next instance if recurring. Correlation params \
+         land in the done event.",
     ),
     (
         "task.modify",
@@ -1730,7 +1733,7 @@ fn page_api() -> String {
     ));
     s.push_str(&snippet(
         "echo '{\"tasqx\":\"1\",\"id\":\"c1\",\"method\":\"core.capabilities\"}' | tasqx api",
-        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"token.add\",\"dependency.add\",\"dependency.remove\",\"memory.add\",\"memory.search\",\"memory.remove\",\"memory.import\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"memory.add\":[\"title\",\"body\",\"source\"],\"memory.import\":[\"docs\"],\"memory.remove\":[\"id\"],\"memory.search\":[\"query\",\"limit\",\"scope\",\"raw\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\",\"projects\",\"default_project\",\"docs\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\"],\"task.stop\":[\"ref\"],\"token.add\":[\"ref\",\"tool\",\"source\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\",\"confidence\"]}},\"tasqx\":\"1\"}",
+        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"token.add\",\"dependency.add\",\"dependency.remove\",\"memory.add\",\"memory.search\",\"memory.remove\",\"memory.import\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"memory.add\":[\"title\",\"body\",\"source\"],\"memory.import\":[\"docs\"],\"memory.remove\":[\"id\"],\"memory.search\":[\"query\",\"limit\",\"scope\",\"raw\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\",\"projects\",\"default_project\",\"docs\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\"],\"task.stop\":[\"ref\"],\"token.add\":[\"ref\",\"tool\",\"source\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\",\"confidence\"]}},\"tasqx\":\"1\"}",
     ));
 
     s.push_str(&h3("The methods"));
