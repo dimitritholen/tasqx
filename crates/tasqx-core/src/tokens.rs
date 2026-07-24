@@ -12,6 +12,10 @@
 //! fresh ones and every tool defines them differently (research rule #5), so
 //! a single number destroys exactly the information a cost report needs.
 
+// Per-tool transcript parsers. Keep alphabetical to minimize merge conflicts
+// as siblings land in parallel.
+pub mod gemini;
+
 use crate::error::ApiError;
 
 /// Where a stored measurement came from. Closed vocabulary (D34): each source
