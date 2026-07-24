@@ -257,9 +257,11 @@ impl Engine {
     // ---- task.done -----------------------------------------------------------
 
     pub fn task_done(&self, p: &Value) -> Result<Value, ApiError> {
-        // Pure params first (#12): correlation metadata is validated before
-        // the write lock, exactly like every other parse-then-lock mutation.
+        // Pure params first (#12/#13): correlation metadata and any
+        // self-reported token usage are validated before the write lock,
+        // exactly like every other parse-then-lock mutation.
         let correlation = commands::parse_correlation(p)?;
+        let usage = commands::parse_self_report(p)?.into_usage(&correlation)?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
@@ -294,6 +296,14 @@ impl Engine {
         // event payload rather than on the task row.
         let mut done_payload = json!({ "completed": ts });
         correlation.apply(&mut done_payload);
+        // #13: a self-report is one measurement row in the SAME transaction,
+        // echoed in this done event's payload — NOT a second `token.add`
+        // event, because one mutation writes exactly one event (the invariant
+        // tests/engine.rs pins), and the completion is the occurrence the
+        // measurement belongs to.
+        if let Some(u) = &usage {
+            done_payload["tokens"] = tokens::record_token_usage(&tx, &task.id, u)?;
+        }
         insert_event(&tx, Entity::Task, &task.id, "done", &done_payload)?;
 
         // Spawn the next recurring instance in the SAME transaction: if this

@@ -525,6 +525,67 @@ fn a_caller_supplied_client_wins_and_no_client_info_injects_nothing() {
     );
 }
 
+// ---- self-reported tokens on complete (#13) ------------------------------------
+
+#[test]
+fn complete_task_with_token_args_records_a_self_report() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "cursor", "version": "1.3" }
+            }
+        }))
+        .expect("initialize is a request");
+
+    let added = call(&server, 2, "tasqx_add_task", json!({ "title": "carrier" }));
+    let sid = tool_text(&added)["short_id"].as_i64().expect("short_id");
+
+    // No `tool` supplied: the injected client is the attribution fallback.
+    let done = call(
+        &server,
+        3,
+        "tasqx_complete_task",
+        json!({
+            "ref": sid,
+            "model": "gpt-5.4",
+            "input_tokens": 500,
+            "output_tokens": 60,
+            "cache_read_tokens": 2000
+        }),
+    );
+    assert!(!is_error(&done), "complete failed: {done}");
+    assert_eq!(tool_text(&done)["status"], "done");
+
+    let got = tool_text(&call(&server, 4, "tasqx_get_task", json!({ "ref": sid })));
+    let m = &got["tokens"][0];
+    assert_eq!(m["tool"], "cursor 1.3");
+    assert_eq!(m["source"], "self-report");
+    assert_eq!(m["confidence"], "medium");
+    assert_eq!(m["model"], "gpt-5.4");
+    assert_eq!(m["input_tokens"], 500);
+    assert_eq!(m["output_tokens"], 60);
+    assert_eq!(m["cache_read_tokens"], 2000);
+    assert_eq!(m["cache_creation_tokens"], 0);
+
+    // The done event echoes the measurement and no token.add event exists —
+    // one mutation, one event.
+    assert_eq!(event_payload(&engine, "done")["tokens"], *m);
+    let token_add_events: i64 = engine
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE op = 'token.add'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(token_add_events, 0);
+}
+
 // ---- memory over MCP (D41) ---------------------------------------------------
 
 #[test]

@@ -73,6 +73,86 @@ pub(super) fn parse_correlation(p: &Value) -> Result<Correlation, ApiError> {
     })
 }
 
+/// Self-reported token usage on `task.done` (#13) — the fallback channel for
+/// tools with neither parseable local logs nor telemetry (research doc: e.g.
+/// Cursor). Everything optional: a completion without counts is the normal
+/// case and must stay exactly what it was.
+pub(super) struct SelfReport {
+    pub(super) tool: Option<String>,
+    pub(super) model: Option<String>,
+    pub(super) input_tokens: Option<i64>,
+    pub(super) output_tokens: Option<i64>,
+    pub(super) cache_read_tokens: Option<i64>,
+    pub(super) cache_creation_tokens: Option<i64>,
+}
+
+pub(super) fn parse_self_report(p: &Value) -> Result<SelfReport, ApiError> {
+    Ok(SelfReport {
+        tool: opt_str_nonempty(p, "tool")?,
+        model: opt_str_nonempty(p, "model")?,
+        input_tokens: tokens::opt_token_count(p, "input_tokens")?,
+        output_tokens: tokens::opt_token_count(p, "output_tokens")?,
+        cache_read_tokens: tokens::opt_token_count(p, "cache_read_tokens")?,
+        cache_creation_tokens: tokens::opt_token_count(p, "cache_creation_tokens")?,
+    })
+}
+
+impl SelfReport {
+    /// The measurement this report asks for, or `None` when no token count
+    /// was given. Policy decided here, once:
+    ///
+    ///  * ANY present count makes a measurement, absent counts default to 0 —
+    ///    a tool that only knows its output tokens still reports honestly;
+    ///  * `tool`/`model` WITHOUT any count is refused rather than silently
+    ///    dropped (the D33 rule: a value that changes nothing must not answer
+    ///    `ok`);
+    ///  * the attributed tool falls back to the correlation `client` (which
+    ///    the MCP server injects from clientInfo), and with neither present
+    ///    the report is refused — a measurement attributed to nobody cannot
+    ///    be reported per tool later, which is the whole point of recording it.
+    pub(super) fn into_usage(
+        self,
+        correlation: &Correlation,
+    ) -> Result<Option<tokens::NewTokenUsage>, ApiError> {
+        let any_count = self.input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.cache_read_tokens.is_some()
+            || self.cache_creation_tokens.is_some();
+        if !any_count {
+            if let Some(orphan) = [("tool", &self.tool), ("model", &self.model)]
+                .into_iter()
+                .find_map(|(k, v)| v.as_ref().map(|_| k))
+            {
+                return Err(ApiError::bad_request(format!(
+                    "`{orphan}` was given without any token count — send input_tokens, \
+                     output_tokens, cache_read_tokens or cache_creation_tokens alongside it, \
+                     or drop `{orphan}`"
+                )));
+            }
+            return Ok(None);
+        }
+        let tool = self
+            .tool
+            .or_else(|| correlation.client.clone())
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "self-reported token counts need a `tool` (or `client`) naming the AI tool \
+                     that spent them — over MCP the server fills `client` in from clientInfo",
+                )
+            })?;
+        Ok(Some(tokens::NewTokenUsage {
+            tool,
+            source: "self-report".to_string(),
+            model: self.model,
+            input_tokens: self.input_tokens.unwrap_or(0),
+            output_tokens: self.output_tokens.unwrap_or(0),
+            cache_read_tokens: self.cache_read_tokens.unwrap_or(0),
+            cache_creation_tokens: self.cache_creation_tokens.unwrap_or(0),
+            confidence: "medium".to_string(),
+        }))
+    }
+}
+
 pub(super) struct TaskStarted {
     pub(super) id: String,
     pub(super) interval_started: Option<String>,
