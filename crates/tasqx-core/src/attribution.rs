@@ -58,6 +58,14 @@ const MAX_DISCOVERY_FILES: usize = 256;
 /// a bound stops a symlink loop or a surprise deep tree from wedging a tick.
 const MAX_DISCOVERY_DEPTH: usize = 6;
 
+/// How long after completion an explicit-but-absent `transcript_path` keeps
+/// being retried before the task terminates with an empty marker. Transcripts
+/// are flushed asynchronously and lag the completion hook, so a brief retry is
+/// correct — but a file that has not appeared a full day later is never coming
+/// (deleted, rotated, or a wrong path), and retrying it forever forces a full
+/// pending-set rebuild every tick for the life of the daemon.
+const TRANSCRIPT_GIVE_UP_SECS: i64 = 24 * 60 * 60;
+
 /// A per-tool transcript parser. Internal enum wrapping the free functions each
 /// `crate::tokens::<tool>` module exposes, so the attribution engine has one
 /// uniform seam instead of a `match` at every call site.
@@ -224,8 +232,13 @@ impl AttributionResult {
 /// completion hook, research doc) or unreadable. The daemon treats that as a
 /// retry, never a fatal error and never a stored marker. An unknown client or a
 /// discovery scan that finds nothing is `Ok` with `found == false`: those
-/// terminate.
-pub fn compute_attribution(pa: &PendingAttribution) -> Result<AttributionResult, ApiError> {
+/// terminate. A transcript still absent [`TRANSCRIPT_GIVE_UP_SECS`] after
+/// completion also terminates (`now` is used only for that cutoff), so one stuck
+/// task cannot force a full pending rebuild every tick forever.
+pub fn compute_attribution(
+    pa: &PendingAttribution,
+    now: Timestamp,
+) -> Result<AttributionResult, ApiError> {
     let tool = pa.client.clone().unwrap_or_default();
 
     // No client, or a client tasqx has no parser for: terminate with a marker.
@@ -239,7 +252,12 @@ pub fn compute_attribution(pa: &PendingAttribution) -> Result<AttributionResult,
             if !file.exists() {
                 // A transcript that has not been flushed yet is transient, not
                 // "no data": retry on a later tick rather than writing a wrong
-                // zero-sample marker that would suppress the real numbers.
+                // zero-sample marker that would suppress the real numbers — but
+                // only until the completion is old enough that the file is
+                // never coming, then terminate so the task leaves the queue.
+                if transcript_gave_up(now, &pa.window_end) {
+                    return Ok(AttributionResult::empty(tool));
+                }
                 return Err(ApiError::internal(format!(
                     "transcript not available yet: {path}"
                 )));
@@ -267,6 +285,18 @@ pub fn compute_attribution(pa: &PendingAttribution) -> Result<AttributionResult,
         confidence: confidence_for(transcript_parsed, session_correlated),
         found,
     })
+}
+
+/// Whether an absent explicit transcript has been retried long enough to give
+/// up: true once `now` is more than [`TRANSCRIPT_GIVE_UP_SECS`] past the
+/// completion instant. An unparseable `window_end` never gives up (keeps the
+/// old retry-forever behavior for that pathological case rather than discarding
+/// a possibly-real completion).
+fn transcript_gave_up(now: Timestamp, window_end: &str) -> bool {
+    match window_end.parse::<Timestamp>() {
+        Ok(end) => now.duration_since(end).as_secs() > TRANSCRIPT_GIVE_UP_SECS,
+        Err(_) => false,
+    }
 }
 
 /// Best-effort discovery when no `transcript_path` was supplied: scan the tool's
@@ -532,6 +562,11 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
 mod tests {
     use super::*;
 
+    /// Parse an RFC3339 instant for the `now` argument of `compute_attribution`.
+    fn ts(s: &str) -> Timestamp {
+        s.parse().expect("valid RFC3339 test timestamp")
+    }
+
     fn sample(ts: &str, input: u64, output: u64) -> UsageSample {
         UsageSample {
             ts: ts.to_string(),
@@ -609,7 +644,7 @@ mod tests {
             transcript_path: None,
             session_id: None,
         };
-        let r = compute_attribution(&pa).unwrap();
+        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(!r.found);
         assert_eq!(r.samples, 0);
         assert_eq!(r.tool, "cursor");
@@ -626,8 +661,28 @@ mod tests {
             transcript_path: Some("/no/such/transcript.jsonl".into()),
             session_id: None,
         };
-        let err = compute_attribution(&pa).unwrap_err();
+        // Minutes after completion: still transient (the file may yet be flushed).
+        let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
         assert!(err.message.contains("not available yet"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_long_absent_transcript_path_gives_up_and_terminates() {
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some("/no/such/transcript.jsonl".into()),
+            session_id: None,
+        };
+        // Two days later the file is never coming: terminate with an empty marker
+        // (found == false) rather than retrying — and forcing a rebuild — forever.
+        let r = compute_attribution(&pa, ts("2026-07-26T11:05:00Z")).unwrap();
+        assert!(!r.found);
+        assert_eq!(r.samples, 0);
+        assert_eq!(r.tool, "claude-code");
     }
 
     #[test]
@@ -662,7 +717,7 @@ mod tests {
             transcript_path: Some(path.to_string_lossy().into_owned()),
             session_id: Some("sess-1".into()),
         };
-        let r = compute_attribution(&pa).unwrap();
+        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
         assert_eq!(r.samples, 2, "the out-of-window line is excluded");
         assert_eq!(r.totals.input, 110);
@@ -704,7 +759,7 @@ mod tests {
             transcript_path: Some(path.to_string_lossy().into_owned()),
             session_id: Some("wrong-or-stale-id".into()),
         };
-        let r = compute_attribution(&pa).unwrap();
+        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found, "the transcript was parsed and had in-window spend");
         assert_eq!(
             r.confidence, CONFIDENCE_MEDIUM,

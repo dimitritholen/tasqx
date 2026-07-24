@@ -851,9 +851,10 @@ fn attribution_loop(sh: Shared, shutdown: Arc<AtomicBool>) {
 /// write the result through the idempotent [`Engine::token_attribute`] under a
 /// short lock. Returns the watermark to carry into the next tick.
 ///
-/// `now` is injected so the seam matches [`reminder_tick`] and stays a pure
-/// function of its arguments; the attribution window itself is reconstructed
-/// entirely from event timestamps, so the tick needs no wall clock of its own.
+/// `now` is injected (matching the [`reminder_tick`] seam) and used only to
+/// decide when an absent explicit transcript has been retried long enough to
+/// give up; the attribution window itself is reconstructed entirely from event
+/// timestamps.
 ///
 /// The returned watermark obeys the same invariant as [`reminder_tick`]: it may
 /// only be a rowid the pending set was actually built from. A transient per-task
@@ -867,10 +868,6 @@ fn attribution_tick(
     attribute: &AttributeFn,
     errors: &mut ErrorTransition,
 ) -> Result<i64, ApiError> {
-    // The window derives from event timestamps, not the wall clock; `now` is
-    // accepted only to keep this seam identical to `reminder_tick`.
-    let _ = now;
-
     let cur = {
         let g = lock_recover(&sh.engine);
         max_event_rowid(&g)?
@@ -890,7 +887,7 @@ fn attribution_tick(
     let mut failed_any = false;
     for pa in &pending {
         // Heavy transcript parse, OFF the lock.
-        let result = match attribution::compute_attribution(pa) {
+        let result = match attribution::compute_attribution(pa, now) {
             Ok(r) => r,
             Err(e) => {
                 errors.report(format!(
