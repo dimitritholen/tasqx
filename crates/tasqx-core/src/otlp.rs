@@ -53,6 +53,15 @@
 //!
 //! Because both the receiver and each tool's exporter are off by default, no
 //! telemetry leaves the machine unless the user turns both on.
+//!
+//! ## Trust model
+//! The receiver binds `127.0.0.1` only (never `0.0.0.0`), so nothing off the
+//! machine can reach it. There is no authentication: any *local* process can
+//! POST a forged export and inject arbitrary token counts, which would land as
+//! `source=otel` measurements. This is an accepted trade-off — a local attacker
+//! already runs as the user — but it is the reason the receiver is opt-in and
+//! localhost-bound, and why `otel` measurements are only as trustworthy as the
+//! processes on the machine. Do not expose the port beyond loopback.
 
 use std::io::{self, BufRead, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
