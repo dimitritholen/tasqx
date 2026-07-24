@@ -20,6 +20,10 @@ pub mod gemini;
 
 use crate::error::ApiError;
 
+// Per-tool transcript parsers. Keep alphabetical to minimize merge conflicts as
+// siblings land in parallel.
+pub mod copilot;
+
 /// Where a stored measurement came from. Closed vocabulary (D34): each source
 /// implies a different trust story (`log-parse` = read from the tool's own
 /// transcript, `otel` = received over the opt-in telemetry channel,
