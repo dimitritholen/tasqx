@@ -47,6 +47,11 @@ pub(super) fn record_token_usage(
     task_id: &str,
     usage: &NewTokenUsage,
 ) -> Result<Value, ApiError> {
+    // Every write door enforces the closed vocabularies (storage.rs schema
+    // comment); internal callers pass the `crate::tokens` constants, so this
+    // only fires on a genuinely out-of-vocabulary value.
+    crate::tokens::require_source(&usage.source)?;
+    crate::tokens::require_confidence(&usage.confidence)?;
     let id = Uuid::now_v7().to_string();
     let created = now();
     tx.execute(
