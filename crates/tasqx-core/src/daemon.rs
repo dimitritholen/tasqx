@@ -17,9 +17,16 @@
 //!    channel, so a notification can never interleave with an in-flight
 //!    response on the same connection. Windows adds one watchdog thread per
 //!    admitted client because named pipes expose no native I/O timeouts; the
-//!    global admission cap bounds all three thread classes.
+//!    global admission cap bounds all three thread classes. On shutdown the
+//!    reader refuses further requests with a transport-level `unavailable`
+//!    frame and the writer drains what is already queued, so stopping the
+//!    daemon can never commit a mutation it then fails to answer.
 //!  * Live event push (§2, §6a): a client sends `{"method":"subscribe"}` and
-//!    thereafter receives unsolicited `{"event":"task.changed",...}` frames.
+//!    thereafter receives unsolicited `{"event":"task.changed",...}` frames. A
+//!    subscriber whose bounded queue overflows is told so — a
+//!    `task.changed.gap` frame naming the number of lost events precedes the
+//!    next one it can receive — because for a non-redrawing consumer a silent
+//!    drop is unrecoverable.
 //!    Change detection is unified through a single watermark over the
 //!    append-only `events` rowid: mutations that arrive through the daemon are
 //!    pumped immediately after commit, and a background poller (~400 ms) picks
@@ -31,7 +38,7 @@
 //!    like any other — so the reminder's verification surface is the ordinary
 //!    event stream, not the OS notification. See [`reminder_loop`].
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -66,10 +73,16 @@ const REMINDER_TICK_MS: u64 = 200;
 
 /// Per-connection outbound queue depth. Responses *and* event pushes share this
 /// bounded channel, so a subscriber that stops reading its socket can never make
-/// daemon memory grow without bound: broadcasts to a full queue are dropped
-/// (the subscriber simply misses events until it drains — `watch` re-renders the
-/// whole working set on the next event it *does* receive, so a coalesced drop is
-/// self-healing rather than corrupting).
+/// daemon memory grow without bound: broadcasts to a full queue are dropped and
+/// the subscriber misses events until it drains.
+///
+/// This comment used to call that self-healing because "`watch` re-renders the
+/// whole working set on the next event it does receive". That holds for the TTY
+/// branch only. The non-TTY branch emits one line per event and never resyncs,
+/// so for it a drop is unrecoverable data loss, not a coalesced redraw — which
+/// is why [`Hub::broadcast`] announces the gap instead of hiding it. A bulk
+/// import through the external-writer path (uncapped by `MAX_FRAME_BYTES`) plus
+/// a slow consumer is enough to trigger it in practice.
 const OUT_QUEUE_CAP: usize = 1024;
 
 /// Hard cap on a single request frame (bytes up to and including the newline).
@@ -295,11 +308,40 @@ fn cleanup(socket: &str) {
 
 // ---- subscriber hub ---------------------------------------------------------
 
-/// One registered subscriber: its hub-assigned id and the sending half of its
-/// connection's writer channel. Named because the bare tuple appears in the
-/// hub's field type, in `retain` closures, and in `register`'s push — three
-/// places where `(u64, SyncSender<String>)` says nothing about which `u64`.
-type Subscriber = (u64, mpsc::SyncSender<String>);
+/// One registered subscriber: its hub-assigned id, the sending half of its
+/// connection's writer channel, and how many broadcasts its full queue has
+/// swallowed since the last frame it could actually receive.
+///
+/// This was a `(u64, SyncSender<String>)` alias, which said nothing about which
+/// `u64` — and had nowhere to keep the drop count that makes a lost event
+/// reportable instead of merely survivable.
+struct Subscriber {
+    id: u64,
+    tx: mpsc::SyncSender<String>,
+    /// Events dropped since this subscriber last accepted a frame. Cleared only
+    /// when the gap marker carrying the count is actually queued, so the debt
+    /// can never be lost by the very congestion that created it.
+    dropped: u64,
+}
+
+/// The frame that tells a subscriber it missed `dropped` events.
+///
+/// A new event name is additive under the frozen `"tasqx":"1"` API (DESIGN.md
+/// §6a) and `subscribe` is all-or-nothing, so no per-event filtering has to
+/// learn about it. `op` is redundant for a reader that switches on `event`; it
+/// is here because the shipping non-TTY `watch` arm does not switch on the
+/// event name yet and prints `task.changed op=<data.op or "change">` for any
+/// frame with an `event` key. Without it the marker would render as a
+/// counterfeit `task.changed` line and make the stream strictly worse than the
+/// silence it replaces. Drop the field once that arm reads `event`.
+fn gap_notification(dropped: u64) -> String {
+    let notif = json!({
+        "tasqx": crate::API_VERSION,
+        "event": "task.changed.gap",
+        "data": { "op": "gap", "dropped": dropped },
+    });
+    format!("{notif}\n")
+}
 
 /// A simple in-memory broadcast hub: every subscriber registers the `Sender`
 /// end of its connection's writer channel, so a broadcast is just an in-memory
@@ -319,22 +361,71 @@ impl Hub {
     }
     fn register(&self, tx: mpsc::SyncSender<String>) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        lock_recover(&self.subs).push((id, tx));
+        lock_recover(&self.subs).push(Subscriber {
+            id,
+            tx,
+            dropped: 0,
+        });
         id
     }
     fn unregister(&self, id: u64) {
-        lock_recover(&self.subs).retain(|(i, _)| *i != id);
+        lock_recover(&self.subs).retain(|s| s.id != id);
     }
     /// Push a line to every subscriber. Never blocks the daemon: the send is a
     /// non-blocking `try_send` on a bounded queue. A disconnected subscriber is
-    /// pruned; a *full* one keeps its slot but drops this event (bounded memory,
-    /// no head-of-line blocking of the broadcaster).
+    /// pruned; a *full* one keeps its slot and misses this event (bounded
+    /// memory, no head-of-line blocking of the broadcaster).
+    ///
+    /// A miss is **counted and then announced**, because a silent drop is not
+    /// recoverable for every consumer: only the full-redraw (TTY) `watch` branch
+    /// re-reads the whole working set on the next event it does receive. The
+    /// non-TTY branch emits exactly one line per event and never resyncs, so a
+    /// dropped row there is a permanently missing record in a stream scripts
+    /// tally — with nothing in the stream to attribute the difference to. The
+    /// marker goes out immediately *before* the first frame the subscriber can
+    /// take again, so the gap is always reported at the position it happened.
+    ///
+    /// `retain_mut`, not `retain`: the closure has to update `dropped`.
     fn broadcast(&self, line: &str) {
         let mut subs = lock_recover(&self.subs);
-        subs.retain(|(_, tx)| match tx.try_send(line.to_string()) {
-            Ok(()) => true,
-            Err(mpsc::TrySendError::Full(_)) => true,
-            Err(mpsc::TrySendError::Disconnected(_)) => false,
+        subs.retain_mut(|sub| {
+            if sub.dropped > 0 {
+                match sub.tx.try_send(gap_notification(sub.dropped)) {
+                    Ok(()) => {
+                        eprintln!(
+                            "tasqx daemon: subscriber {} resumed after dropping {} event(s)",
+                            sub.id, sub.dropped
+                        );
+                        sub.dropped = 0;
+                    }
+                    // Still congested. Keep the debt (this line is lost too) and
+                    // do not attempt the event: the queue that just refused a
+                    // marker will refuse it as well, and clearing the counter
+                    // here would erase the loss at its largest.
+                    Err(mpsc::TrySendError::Full(_)) => {
+                        sub.dropped += 1;
+                        return true;
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => return false,
+                }
+            }
+            match sub.tx.try_send(line.to_string()) {
+                Ok(()) => true,
+                Err(mpsc::TrySendError::Full(_)) => {
+                    // One line per congestion episode, not per lost event: the
+                    // operator needs to know a subscriber fell behind, and the
+                    // total arrives with the recovery line above.
+                    if sub.dropped == 0 {
+                        eprintln!(
+                            "tasqx daemon: subscriber {} is not draining its queue (cap {OUT_QUEUE_CAP}); dropping events",
+                            sub.id
+                        );
+                    }
+                    sub.dropped += 1;
+                    true
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => false,
+            }
         });
     }
 }
@@ -614,28 +705,56 @@ fn reminder_loop(sh: Shared, notifier: Arc<dyn Notifier>, shutdown: Arc<AtomicBo
 /// only through disk/lock faults that cannot be provoked from a test.
 type FireFn = dyn Fn(&Engine, &scheduler::Pending) -> Result<bool, ApiError> + Send + Sync;
 
+/// Rate-limits the daemon's transient-failure lines to one per *subject* per
+/// state change, where the subject is the task the message is about.
+///
+/// This used to be a single `Option<String>` plus an argument-less `recovered()`,
+/// which bounded nothing in practice. Every message embeds the task's `short_id`,
+/// so two tasks failing in the same tick produced two alternating strings: each
+/// call differed from the immediately preceding one, so each call was a
+/// "transition" and each one printed, every tick, for as long as the fault
+/// lasted. And `recovered()` cleared the single slot on *any* successful write,
+/// so one task completing normally re-armed the log line of a different task
+/// that was still failing — defeating the throttle without even needing two
+/// concurrent failures. At [`REMINDER_TICK_MS`] either case is five stderr lines
+/// a second, on a daemon whose stderr the CLI inherits rather than nulls.
+///
+/// Recovery is implicit and per subject: a task that stops failing simply stops
+/// appearing in `current`, so its next failure prints again. That also bounds
+/// the maps to the tasks that actually failed in the last two ticks — no entry
+/// can outlive the failure that created it, which a `HashMap` keyed off a
+/// long-lived `report`/`recovered` pair could not promise.
 #[derive(Default)]
 struct ErrorTransition {
-    current: Option<String>,
+    /// What each subject reported during the previous tick.
+    previous: HashMap<i64, String>,
+    /// What each subject has reported so far in this tick.
+    current: HashMap<i64, String>,
 }
 
 impl ErrorTransition {
-    fn enter(&mut self, message: String) -> bool {
-        if self.current.as_deref() == Some(message.as_str()) {
-            return false;
-        }
-        self.current = Some(message);
-        true
+    /// Open a tick. Whatever was reported in the last tick becomes the
+    /// suppression baseline; whatever is not re-reported has recovered.
+    fn begin_tick(&mut self) {
+        self.previous = std::mem::take(&mut self.current);
     }
 
-    fn report(&mut self, message: String) {
-        if self.enter(message.clone()) {
+    /// Record `message` against `subject`; `true` if it is new for that subject
+    /// (this tick or the last), i.e. worth printing.
+    fn enter(&mut self, subject: i64, message: &str) -> bool {
+        let seen = self
+            .current
+            .get(&subject)
+            .or_else(|| self.previous.get(&subject));
+        let repeat = seen.is_some_and(|previous| previous == message);
+        self.current.insert(subject, message.to_string());
+        !repeat
+    }
+
+    fn report(&mut self, subject: i64, message: String) {
+        if self.enter(subject, &message) {
             eprintln!("tasqx daemon: {message}");
         }
-    }
-
-    fn recovered(&mut self) {
-        self.current = None;
     }
 }
 
@@ -682,26 +801,33 @@ fn reminder_tick(
     //    for a long time and must never serialize other clients.
     let ripe = sched.pop_ripe(now);
     let mut fired_any = false;
+    // One pass over the ripe set is one tick for log-throttling purposes: a task
+    // that does not report a failure below has recovered, per task, without any
+    // other task's success speaking for it.
+    fire_errors.begin_tick();
     for p in &ripe {
         let fired = {
             let g = lock_recover(&sh.engine);
             fire(&g, p)
         };
         match fired {
-            // Deduped (already reminded) => do NOT notify, but it still proves
-            // the previously failing store operation recovered.
+            // Deduped (already reminded) => do NOT notify. Recovery needs no
+            // call: not reporting a failure for this task in this tick *is* the
+            // recovery signal, and it cannot speak for any other task.
             Ok(fired) => {
-                fire_errors.recovered();
                 if fired {
                     fired_any = true;
                     notifier.notify(&scheduler::notification_for(p));
                 }
             }
             Err(e) => {
-                fire_errors.report(format!(
-                    "could not record reminder for #{}: {}",
-                    p.short_id, e.message
-                ));
+                fire_errors.report(
+                    p.short_id,
+                    format!(
+                        "could not record reminder for #{}: {}",
+                        p.short_id, e.message
+                    ),
+                );
                 // `pop_ripe` already took this entry off the heap and the failed
                 // write left no event behind, so the watermark would otherwise
                 // still match and the next tick would skip the rebuild — dropping
@@ -738,17 +864,56 @@ fn start_connection_watchdog(
     let shutdown = shutdown.clone();
     let state = state.clone();
     thread::spawn(move || {
+        let mut shutdown_since: Option<Instant> = None;
         while !state.done.load(Ordering::Acquire) {
             let now = Instant::now();
-            if shutdown.load(Ordering::Relaxed) || state.idle(now) {
+            let stopping = shutdown.load(Ordering::Relaxed);
+            if stopping && shutdown_since.is_none() {
+                shutdown_since = Some(now);
+            }
+            let idle = state.idle(now);
+            // Cancelling the *read* is what unblocks the reader loop so the
+            // connection can wind down at all, and an aborted read destroys
+            // nothing: the request it was waiting for was never dispatched.
+            if stopping || idle {
                 cancel_io(recv_handle);
-                cancel_io(send_handle);
-            } else if state.write_timed_out(now) {
+            }
+            // A write is the opposite. Cancelling it mid-flush throws away a
+            // response whose transaction already committed — the same
+            // lost-response bug the writer's old pre-write shutdown check had,
+            // reintroduced one layer down. Shutdown therefore only cancels
+            // writes after the drain grace, while an idle client or a stuck
+            // write is still cut immediately.
+            if send_cancel_due(shutdown_since, idle, state.write_timed_out(now), now) {
                 cancel_io(send_handle);
             }
             thread::sleep(CLIENT_WATCHDOG_INTERVAL);
         }
     })
+}
+
+/// Whether the connection watchdog may cancel an in-flight *write*.
+///
+/// Compiled under `test` on every platform on purpose: the Windows watchdog is
+/// its only caller, but the policy it encodes — shutdown alone must not abort a
+/// committed response — is exactly the thing that silently regresses, and it has
+/// to stay assertable on the platforms that cannot run the watchdog at all.
+///
+/// The shutdown grace is [`CLIENT_SEND_TIMEOUT`] rather than a constant of its
+/// own so both platforms answer to one bound: a healthy client drains in
+/// microseconds (the read is cancelled immediately, which ends the reader loop,
+/// drops `out_tx` and lets the writer finish), and a client that has stopped
+/// reading is cut at the same 5 s deadline Unix `SO_SNDTIMEO` would impose.
+#[cfg(any(windows, test))]
+fn send_cancel_due(
+    shutdown_since: Option<Instant>,
+    idle: bool,
+    write_timed_out: bool,
+    now: Instant,
+) -> bool {
+    idle
+        || write_timed_out
+        || shutdown_since.is_some_and(|since| now.duration_since(since) >= CLIENT_SEND_TIMEOUT)
 }
 
 #[cfg(windows)]
@@ -789,14 +954,21 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
     // stalls this one connection); broadcasts use non-blocking `try_send`.
     let (out_tx, out_rx) = mpsc::sync_channel::<String>(OUT_QUEUE_CAP);
 
-    let writer_shutdown = sh.shutdown.clone();
     let writer_state = io_state.clone();
+    // The writer deliberately does NOT consult the shutdown flag. It used to
+    // check it after dequeuing a line and break *before* writing, which threw
+    // away frames whose transaction had already committed: `handle_conn`
+    // releases the engine guard and only then queues the response, so a Ctrl-C
+    // landing in that window made the daemon commit the write and answer with a
+    // bare EOF (`daemon transport error` client-side — indistinguishable from a
+    // failure that never happened). Shutdown is bounded here by the queue
+    // emptying instead: the reader stops accepting work the moment it sees the
+    // flag, drops `out_tx`, and this loop exits as soon as it has drained what
+    // was already queued. A client that has stopped reading is still bounded by
+    // the send timeout (`SO_SNDTIMEO` on Unix, the watchdog on Windows).
     let writer = thread::spawn(move || {
         let mut send: SendHalf = send;
         while let Ok(line) = out_rx.recv() {
-            if writer_shutdown.load(Ordering::Relaxed) {
-                break;
-            }
             writer_state.begin_write();
             let result = send.write_all(line.as_bytes()).and_then(|_| send.flush());
             writer_state.end_write();
@@ -819,6 +991,22 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
+                }
+                // Observe shutdown *before* dispatching, not only on a read
+                // timeout further down. Otherwise a request that arrived after
+                // Ctrl-C is still committed to SQLite while the daemon is
+                // winding down, and the client can no longer tell "applied" from
+                // "not applied". Refusing up front makes the answer true: this
+                // request did not run, retry against the next daemon.
+                if sh.shutdown.load(Ordering::Relaxed) {
+                    let refusal =
+                        unavailable_envelope("daemon is shutting down; the request was not applied");
+                    // Queued, not written here: the writer owns the send half.
+                    // It drains what is already queued before exiting, so this
+                    // frame still reaches the socket. A send error only means
+                    // the client is already gone — we are closing regardless.
+                    let _ = out_tx.send(format!("{refusal}\n"));
+                    break;
                 }
                 // `subscribe` is a transport-level verb, not a core method: it
                 // registers this connection for pushes and acks.
@@ -879,6 +1067,21 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
     let _ = watchdog.join();
 }
 
+/// A transport-level refusal: the daemon did not run the request at all.
+///
+/// Deliberately carries no `id`, which is what makes [`Conn::request`] surface
+/// it as `ConnectionRefused` with this message instead of treating it as the
+/// answer to whatever it happened to ask. Both refusal paths — the admission cap
+/// and shutdown — mean the same thing to a caller ("nothing was applied, retry"),
+/// and that is precisely the distinction a bare EOF destroys.
+fn unavailable_envelope(message: &str) -> Value {
+    json!({
+        "tasqx": crate::API_VERSION,
+        "ok": false,
+        "error": { "code": "unavailable", "message": message },
+    })
+}
+
 /// Reject overload before allocating worker threads or a per-client queue.
 /// The id-less response is transport-level: the accept loop deliberately does
 /// not read a request while overloaded because that would let one peer stall
@@ -888,16 +1091,9 @@ fn reject_overloaded(mut stream: Stream) {
     let _ = stream.set_send_timeout(Some(Duration::from_millis(100)));
     #[cfg(windows)]
     let _ = stream.set_nonblocking(true);
-    let response = json!({
-        "tasqx": crate::API_VERSION,
-        "ok": false,
-        "error": {
-            "code": "unavailable",
-            "message": format!(
-                "daemon client limit ({MAX_CONCURRENT_CLIENTS}) reached; retry after a client disconnects"
-            ),
-        },
-    });
+    let response = unavailable_envelope(&format!(
+        "daemon client limit ({MAX_CONCURRENT_CLIENTS}) reached; retry after a client disconnects"
+    ));
     let _ = writeln!(stream, "{response}");
     let _ = stream.flush();
 }
@@ -1201,6 +1397,127 @@ mod tests {
         s.parse().unwrap()
     }
 
+    /// Run a client script on its own thread and fail the test rather than hang
+    /// if it blocks. Every shutdown assertion below is about a frame that either
+    /// arrives or is silently dropped, and a dropped frame parks the client in a
+    /// read that nothing will ever satisfy — without a deadline the regression
+    /// shows up as a wedged test run instead of a failed assertion.
+    fn with_deadline<T: Send + 'static>(
+        what: &str,
+        script: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(script());
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("{what}: the daemon never answered"))
+    }
+
+    fn task_count(sh: &Shared) -> i64 {
+        lock_recover(&sh.engine)
+            .conn()
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Serve exactly one connection through the real [`handle_conn`], so the
+    /// reader loop, the writer thread and the shutdown flag are the production
+    /// ones rather than a scripted stand-in.
+    fn serve_one_conn(socket: &str, sh: Shared) -> thread::JoinHandle<()> {
+        let listener = bind(socket).expect("bind one-connection server");
+        thread::spawn(move || {
+            let stream = listener.accept().expect("accept one-connection client");
+            let permit = Arc::new(Admission::new(1))
+                .try_acquire()
+                .expect("admission permit");
+            handle_conn(stream, sh, permit);
+        })
+    }
+
+    /// Shutdown must not turn a mutation into a *silent* one. The reader only
+    /// noticed the flag on a read timeout, so a request that arrived after
+    /// Ctrl-C was dispatched and committed — and then the writer's pre-write
+    /// shutdown check dropped the response, leaving the client with a bare EOF
+    /// (`daemon transport error`) for a write that actually landed.
+    #[test]
+    fn a_request_arriving_after_shutdown_is_refused_instead_of_committed_unanswered() {
+        let socket = client_test_socket("shutdown-refusal");
+        let sh = shared(Engine::open_in_memory().unwrap());
+        sh.shutdown.store(true, Ordering::Relaxed);
+        let server = serve_one_conn(&socket, sh.clone());
+
+        let mut conn = try_connect(&socket).expect("connect to shutting-down daemon");
+        let outcome = with_deadline("task.add after shutdown", move || {
+            conn.request("task.add", &json!({ "title": "ship it" }))
+        });
+
+        let err = outcome.expect_err("a shutting-down daemon must refuse, not stay silent");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::ConnectionRefused,
+            "the refusal must be a transport-level unavailability, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("shutting down"),
+            "the client must be told why: {err}"
+        );
+        assert_eq!(
+            task_count(&sh),
+            0,
+            "a refused request must never have been dispatched"
+        );
+
+        server.join().expect("connection thread");
+        cleanup(&socket);
+    }
+
+    /// Frames already queued when shutdown lands must still reach the socket.
+    /// The writer dequeued a line, saw the flag, and broke *before* writing it —
+    /// so the last response of every daemon stop was discarded even though the
+    /// transaction behind it had already committed.
+    #[test]
+    fn frames_queued_before_shutdown_are_flushed_not_discarded() {
+        let socket = client_test_socket("shutdown-drain");
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let server = serve_one_conn(&socket, sh.clone());
+
+        let mut conn = try_connect(&socket).expect("connect subscriber");
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (frame_tx, frame_rx) = mpsc::channel();
+        thread::spawn(move || {
+            conn.subscribe().expect("subscribe ack");
+            ready_tx.send(()).expect("hand the test its cue");
+            let _ = frame_tx.send(conn.next_frame());
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("subscribe must be acked");
+
+        // Ctrl-C, then a frame that was already committed to the queue: the
+        // ordering the daemon hits on every stop with in-flight work.
+        sh.shutdown.store(true, Ordering::Relaxed);
+        let notif = json!({
+            "tasqx": crate::API_VERSION,
+            "event": "task.changed",
+            "data": { "op": "add", "short_id": 7 },
+        });
+        sh.hub.broadcast(&format!("{notif}\n"));
+
+        let frame = frame_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a queued frame must still be written during shutdown")
+            .expect("no read error")
+            .expect("no EOF before the queued frame");
+        assert!(
+            matches!(frame, Frame::Event(ref e) if e["data"]["short_id"] == 7),
+            "the queued event must arrive intact"
+        );
+
+        server.join().expect("connection thread");
+        cleanup(&socket);
+    }
+
     #[test]
     fn admission_never_exceeds_its_limit_and_release_reopens_a_slot() {
         let admission = Arc::new(Admission::new(2));
@@ -1219,6 +1536,33 @@ mod tests {
         assert_eq!(admission.active(), 0);
     }
 
+    /// The Windows watchdog cancels I/O the connection threads cannot interrupt
+    /// themselves. Cancelling the *send* handle the moment shutdown is set aborts
+    /// a flush of an already-committed response — the platform-specific half of
+    /// the same lost-response bug. Reads may be cut at once; writes only after
+    /// the drain grace, or on the pre-existing idle / stuck-write conditions.
+    #[test]
+    fn shutdown_alone_does_not_cancel_an_in_flight_write() {
+        let now = Instant::now();
+        let just_now = Some(now - Duration::from_millis(1));
+        assert!(
+            !send_cancel_due(just_now, false, false, now),
+            "a fresh shutdown must let a committed response finish flushing"
+        );
+        assert!(
+            send_cancel_due(Some(now - CLIENT_SEND_TIMEOUT), false, false, now),
+            "the drain grace is bounded, not unlimited"
+        );
+        assert!(
+            send_cancel_due(None, true, false, now),
+            "an idle client is still cut without waiting for shutdown"
+        );
+        assert!(
+            send_cancel_due(None, false, true, now),
+            "a stuck write is still cut without waiting for shutdown"
+        );
+    }
+
     #[test]
     fn idle_deadline_expires_at_the_boundary() {
         let started = std::time::Instant::now();
@@ -1227,6 +1571,80 @@ mod tests {
             started + CLIENT_IDLE_TIMEOUT - Duration::from_millis(1)
         ));
         assert!(idle_expired(started, started + CLIENT_IDLE_TIMEOUT));
+    }
+
+    fn frame(rx: &mpsc::Receiver<String>, what: &str) -> Value {
+        let line = rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap_or_else(|_| panic!("{what}: nothing was pushed"));
+        serde_json::from_str(line.trim()).expect("pushed frames are JSON")
+    }
+
+    /// A dropped broadcast must be *reported*, not merely survived. The bounded
+    /// queue is the right memory bound, but the subscriber has no way to notice
+    /// the loss: non-TTY `watch` emits one line per event and never resyncs, so
+    /// a dropped row is a permanently missing record in a stream scripts tally.
+    #[test]
+    fn a_subscriber_that_missed_events_is_told_how_many_before_the_next_one() {
+        let hub = Hub::new();
+        let (tx, rx) = mpsc::sync_channel::<String>(2);
+        hub.register(tx);
+
+        hub.broadcast("a\n");
+        hub.broadcast("b\n");
+        // The subscriber is not draining: these three are lost.
+        hub.broadcast("c\n");
+        hub.broadcast("d\n");
+        hub.broadcast("e\n");
+        assert_eq!(rx.recv().unwrap(), "a\n");
+        assert_eq!(rx.recv().unwrap(), "b\n");
+
+        hub.broadcast("f\n");
+        let marker = frame(&rx, "gap marker");
+        assert_eq!(
+            marker["event"], "task.changed.gap",
+            "the gap must be its own event, not a counterfeit task.changed"
+        );
+        assert_eq!(
+            marker["data"]["dropped"], 3,
+            "the marker must carry the exact number of lost events"
+        );
+        assert_eq!(
+            rx.recv().unwrap(),
+            "f\n",
+            "the marker precedes the first event the subscriber can receive again"
+        );
+
+        hub.broadcast("g\n");
+        assert_eq!(
+            rx.recv().unwrap(),
+            "g\n",
+            "a delivered marker clears the debt; it must not repeat"
+        );
+    }
+
+    /// The marker itself goes through the same bounded queue, so it can be
+    /// dropped too. If that reset the counter, the loss would become invisible
+    /// again at exactly the moment it is largest.
+    #[test]
+    fn a_gap_marker_that_cannot_be_queued_keeps_the_debt() {
+        let hub = Hub::new();
+        let (tx, rx) = mpsc::sync_channel::<String>(1);
+        hub.register(tx);
+
+        hub.broadcast("a\n"); // fills the queue
+        hub.broadcast("b\n"); // dropped (1)
+        hub.broadcast("c\n"); // dropped (2)
+        hub.broadcast("d\n"); // marker cannot be queued either; d dropped (3)
+        assert_eq!(rx.recv().unwrap(), "a\n");
+
+        hub.broadcast("e\n");
+        let marker = frame(&rx, "deferred gap marker");
+        assert_eq!(marker["event"], "task.changed.gap");
+        assert_eq!(
+            marker["data"]["dropped"], 3,
+            "an undeliverable marker must not swallow the events it was counting"
+        );
     }
 
     fn shared(engine: Engine) -> Shared {
@@ -1288,20 +1706,118 @@ mod tests {
     #[test]
     fn repeated_transient_failures_log_only_on_state_transitions() {
         let mut state = ErrorTransition::default();
-        assert!(state.enter("disk busy".to_string()));
+        assert!(state.enter(1, "disk busy"));
         assert!(
-            !state.enter("disk busy".to_string()),
+            !state.enter(1, "disk busy"),
             "the same failure must be rate-limited"
         );
         assert!(
-            state.enter("disk I/O".to_string()),
+            state.enter(1, "disk I/O"),
             "a changed failure is observable"
         );
-        state.recovered();
+        // Two ticks in which #1 reports nothing: it recovered.
+        state.begin_tick();
+        state.begin_tick();
         assert!(
-            state.enter("disk I/O".to_string()),
+            state.enter(1, "disk I/O"),
             "re-entering after recovery is observable"
         );
+    }
+
+    #[test]
+    fn a_second_failing_task_does_not_defeat_the_failure_dedupe() {
+        let mut state = ErrorTransition::default();
+        assert!(state.enter(1, "could not record reminder for #1: disk busy"));
+        assert!(state.enter(2, "could not record reminder for #2: disk busy"));
+        state.begin_tick();
+        assert!(
+            !state.enter(1, "could not record reminder for #1: disk busy"),
+            "two tasks failing in the same tick must not make every line a transition"
+        );
+        assert!(
+            !state.enter(2, "could not record reminder for #2: disk busy"),
+            "two tasks failing in the same tick must not make every line a transition"
+        );
+    }
+
+    #[test]
+    fn a_recovery_on_one_task_does_not_unsuppress_another() {
+        let mut state = ErrorTransition::default();
+        assert!(state.enter(1, "could not record reminder for #1: disk busy"));
+        assert!(state.enter(2, "could not record reminder for #2: disk busy"));
+
+        // Tick 2: #2 fires cleanly — it reports nothing at all — while #1 keeps
+        // failing. #2's success must not speak for #1.
+        state.begin_tick();
+        assert!(
+            !state.enter(1, "could not record reminder for #1: disk busy"),
+            "another task's recovery must not re-arm the failing task's line"
+        );
+
+        // Tick 3: #2 fails again. That is genuinely new for #2 and prints, but
+        // #1's ongoing failure must stay quiet.
+        state.begin_tick();
+        assert!(
+            state.enter(2, "could not record reminder for #2: disk busy"),
+            "a failure returning after recovery is observable"
+        );
+        assert!(
+            !state.enter(1, "could not record reminder for #1: disk busy"),
+            "another task's failure must not re-arm the failing task's line"
+        );
+    }
+
+    /// The type can only key by task if the call site hands it the task. This
+    /// pins the wiring: one tick with two failing reminders must leave two
+    /// separately-suppressed subjects, not one slot they overwrite in turn.
+    #[test]
+    fn reminder_failures_are_tracked_per_task() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let first = add(&sh, "ship it", "2026-07-20T17:00:00Z", "-1h");
+        let second = add(&sh, "pay rent", "2026-07-20T17:00:00Z", "-1h");
+        let notifier = Collecting::default();
+        let mut sched = ReminderScheduler::new();
+        let mut fire_errors = ErrorTransition::default();
+        let now = ts("2026-07-20T16:00:00Z");
+        let always_fails =
+            |_: &Engine, _: &Pending| -> Result<bool, ApiError> { Err(ApiError::internal("busy")) };
+
+        let seen = reminder_tick(
+            &sh,
+            &mut sched,
+            -1,
+            now,
+            &notifier,
+            &always_fails,
+            &mut fire_errors,
+        )
+        .unwrap();
+        assert_eq!(seen, -1, "both failures force a rebuild");
+        let mut subjects: Vec<i64> = fire_errors.current.keys().copied().collect();
+        subjects.sort_unstable();
+        assert_eq!(
+            subjects,
+            vec![first, second],
+            "each failing task must own its suppression slot"
+        );
+
+        // Second tick, same two failures: both are now repeats and stay quiet.
+        reminder_tick(
+            &sh,
+            &mut sched,
+            seen,
+            now,
+            &notifier,
+            &always_fails,
+            &mut fire_errors,
+        )
+        .unwrap();
+        for id in [first, second] {
+            assert!(
+                !fire_errors.enter(id, &format!("could not record reminder for #{id}: busy")),
+                "#{id} must still be suppressed after a second identical tick"
+            );
+        }
     }
 
     #[test]
