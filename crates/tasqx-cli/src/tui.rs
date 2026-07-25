@@ -126,23 +126,65 @@ impl<W: Write> Restore<W> {
 
 impl<W: Write> Drop for Restore<W> {
     fn drop(&mut self) {
-        if restore_once(&IN_RAW_MODE, &mut self.out) && self.raw {
-            let _ = ratatui::crossterm::terminal::disable_raw_mode();
-        }
+        // Copied out because the closure and `self.out` both borrow `self`.
+        let raw = self.raw;
+        restore_terminal(&IN_RAW_MODE, &mut self.out, || {
+            if raw {
+                let _ = ratatui::crossterm::terminal::disable_raw_mode();
+            }
+        });
+    }
+}
+
+/// The whole restore: the escape sequences AND the console mode, behind the one
+/// latch, so the two callers cannot each do half of it.
+///
+/// They used to. `Drop` read `restore_once(..) && self.raw` and the hook threw
+/// the answer away, so whichever ran second had already lost the latch and
+/// `disable_raw_mode` never fired at all — the hook always runs first, because
+/// Rust prints the panic message before it unwinds. The escape codes hid it:
+/// the alt screen was left and the cursor came back, so the terminal *looked*
+/// restored while still swallowing every keystroke (DESIGN.md D26).
+///
+/// `disable_raw` is injected rather than called directly because a test process
+/// has no console to take out of raw mode — the same seam `is_interactive_with`
+/// uses for the stream facts, and the only way to prove the hook side performs
+/// this step instead of silently dropping it again.
+fn restore_terminal(flag: &AtomicBool, w: &mut impl Write, disable_raw: impl FnOnce()) -> bool {
+    if restore_once(flag, w) {
+        disable_raw();
+        true
+    } else {
+        // Lost the latch: somebody else already handed the terminal back, and
+        // this process may no longer own a console to reconfigure.
+        false
     }
 }
 
 /// Chain a terminal restore in front of the existing panic hook.
 ///
 /// Untestable by construction — `set_hook` is process-global — so the logic it
-/// installs lives in [`restore_once`], which is tested directly. The closure
+/// installs lives in [`panic_restore`], which is tested directly. The closure
 /// here is the plumbing only.
 fn install_panic_hook() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore_once(&IN_RAW_MODE, &mut io::stdout());
+        panic_restore(&mut io::stdout(), || {
+            let _ = ratatui::crossterm::terminal::disable_raw_mode();
+        });
         prev(info);
     }));
+}
+
+/// The body of the panic hook, extracted so it can be driven with an in-memory
+/// writer and a console step the test can count.
+///
+/// Unconditionally asking to leave raw mode is safe: `IN_RAW_MODE` is armed at
+/// exactly one place, after both `enable_raw_mode` and `EnterAlternateScreen`
+/// have succeeded, so winning the latch means raw mode really is on. A panic
+/// raised outside `with_terminal` loses the latch and touches nothing.
+fn panic_restore(w: &mut impl Write, disable_raw: impl FnOnce()) -> bool {
+    restore_terminal(&IN_RAW_MODE, w, disable_raw)
 }
 
 /// Map a tasqx role style onto a ratatui style at the terminal's real depth.
@@ -380,6 +422,67 @@ mod tests {
             !IN_RAW_MODE.load(Ordering::SeqCst),
             "the flag must be cleared by the restore"
         );
+    }
+
+    /// The half of the restore no escape sequence can do. `\x1b[?1049l` leaves
+    /// the alt screen and `\x1b[?25h` shows the cursor, but raw mode is a
+    /// termios (or Windows console-mode) setting, and process exit does not put
+    /// it back — so the hook has to call `disable_raw_mode` itself.
+    ///
+    /// It used to not: the hook discarded `restore_once`'s answer, and because
+    /// Rust runs the hook *before* unwinding, the hook won the latch and the
+    /// guard's `Drop` then short-circuited on `restore_once(..) && self.raw`.
+    /// Nothing anywhere called `disable_raw_mode`, and `tasqx config edit`
+    /// panicking left the user in the shell DESIGN.md D26 names: no echo, no
+    /// line editing, Ctrl-C dead.
+    ///
+    /// The console step is injected because a test process has no console to put
+    /// into raw mode — the same seam `is_interactive_with` uses for the stream
+    /// facts, for the same reason.
+    #[test]
+    fn the_panic_hook_takes_the_console_out_of_raw_mode() {
+        let _lock = RAW_FLAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        IN_RAW_MODE.store(true, Ordering::SeqCst);
+        let disabled = std::cell::Cell::new(0usize);
+        let mut sink: Vec<u8> = Vec::new();
+
+        assert!(
+            panic_restore(&mut sink, || disabled.set(disabled.get() + 1)),
+            "the hook is the first claim on an armed terminal"
+        );
+        assert_eq!(
+            disabled.get(),
+            1,
+            "the hook left the console in raw mode; escape codes cannot undo termios"
+        );
+        assert!(
+            String::from_utf8(sink).unwrap().contains("\x1b[?1049l"),
+            "the hook must also leave the alternate screen"
+        );
+        assert!(
+            !IN_RAW_MODE.load(Ordering::SeqCst),
+            "the hook must consume the latch so the guard does not restore twice"
+        );
+    }
+
+    /// The loser of the latch must not touch the console mode. The hook is
+    /// process-global: it fires for every panic, including ones raised long
+    /// after `with_terminal` returned. Calling `disable_raw_mode` there would
+    /// reach for a console this process is no longer driving.
+    #[test]
+    fn a_lost_restore_latch_leaves_the_console_mode_alone() {
+        let flag = AtomicBool::new(false);
+        let disabled = std::cell::Cell::new(0usize);
+        let mut sink: Vec<u8> = Vec::new();
+
+        let claimed = restore_terminal(&flag, &mut sink, || disabled.set(disabled.get() + 1));
+        assert!(!claimed, "an unarmed restore must not claim the terminal");
+        assert_eq!(
+            disabled.get(),
+            0,
+            "an unarmed restore must not disable raw mode"
+        );
+        assert!(sink.is_empty(), "an unarmed restore emitted {sink:?}");
     }
 
     /// The TUI must render through the theme at the terminal's real depth, not
