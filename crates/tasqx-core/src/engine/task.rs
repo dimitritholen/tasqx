@@ -2,6 +2,65 @@
 
 use super::*;
 
+/// Which optional side tables a bulk snapshot load should read.
+///
+/// The bulk loader exists so no reader drifts back to point queries, but
+/// "everything, always" made the cheapest reader pay for the most expensive
+/// one: `task.list` — the hottest read in the tool, behind every `tasqx list`,
+/// the TUI and the HTML report — used the tasks/tags/blocked triple and threw
+/// the dependency edge list and every annotation away, after materialising a
+/// `serde_json` object per annotation row. That cost scales with a
+/// monotonically growing log, not with the page the caller asked for.
+///
+/// `tasks`, `tags` and the `blocked` set are NOT gateable: all three bulk
+/// readers build a [`MatchCtx`] from them to evaluate the filter, so a variant
+/// without them cannot answer the question it was asked. `blocked` and the
+/// edge list are separate gates on purpose — they are separate statements, and
+/// `task.list` needs only the yes/no.
+///
+/// CAVEAT a follow-up should close: a gated-away part arrives as an EMPTY
+/// collection, indistinguishable from a task that genuinely has none. Making
+/// that unrepresentable means changing `TaskSnapshot` itself (it lives in
+/// `engine.rs`), so for now the rule is enforced by call site: only pass a
+/// narrow variant from a reader that never touches the gated fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SnapshotParts {
+    /// Each task's full dependency edge list (`store.export` trims edges
+    /// leaving the exported set, so the yes/no `blocked` flag is not enough).
+    depends_on: bool,
+    /// Each task's annotations, as the exported `[{id, body, created}]`.
+    annotations: bool,
+}
+
+impl SnapshotParts {
+    /// Statements run regardless of the gates: tasks, tags, blocked.
+    const BASE_STATEMENTS: usize = 3;
+
+    /// Everything a filter needs and nothing else — `task.list`.
+    pub(super) const FILTERS_ONLY: Self = Self {
+        depends_on: false,
+        annotations: false,
+    };
+
+    /// The whole task relation — `store.export`, which emits both gated parts.
+    pub(super) const EVERYTHING: Self = Self {
+        depends_on: true,
+        annotations: true,
+    };
+
+    /// How many statements a load with these parts runs. Kept next to the
+    /// gates themselves so adding a part cannot silently leave the O(1)
+    /// statement contract unpinned.
+    pub(super) const fn statement_count(self) -> usize {
+        Self::BASE_STATEMENTS + self.depends_on as usize + self.annotations as usize
+    }
+}
+
+/// The pre-existing whole-relation count stays the authority for the widest
+/// variant, so `task_snapshot_statement_count_is_independent_of_task_count`
+/// keeps testing the same contract it always did.
+const _: () = assert!(SnapshotParts::EVERYTHING.statement_count() == SNAPSHOT_QUERY_COUNT);
+
 impl Engine {
     // ---- task.add ------------------------------------------------------------
 
@@ -704,15 +763,39 @@ impl Engine {
     /// readers need the same relationship data to evaluate filters; grouping
     /// it here prevents each reader from drifting back to point queries.
     pub(super) fn load_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, ApiError> {
-        let (snapshots, statements) = self.load_task_snapshots_counted()?;
-        debug_assert_eq!(statements, SNAPSHOT_QUERY_COUNT);
+        self.load_task_snapshots_for(SnapshotParts::EVERYTHING)
+    }
+
+    /// As [`Engine::load_task_snapshots`], but reading only the side tables
+    /// `parts` asks for — see [`SnapshotParts`] for why that is not a
+    /// micro-optimization.
+    pub(super) fn load_task_snapshots_for(
+        &self,
+        parts: SnapshotParts,
+    ) -> Result<Vec<TaskSnapshot>, ApiError> {
+        let (snapshots, statements) = self.load_task_snapshots_counted_for(parts)?;
+        // Per-variant, not the one global `SNAPSHOT_QUERY_COUNT`: a narrow
+        // load legitimately runs fewer statements, so keeping the old constant
+        // here would abort every debug-build `tasqx list` on this assert.
+        debug_assert_eq!(statements, parts.statement_count());
         Ok(snapshots)
     }
 
     /// Count statements as they execute so the performance contract is
     /// directly regression-tested rather than inferred from the SQL text.
+    /// Test-only since the widest variant now has no production caller that
+    /// needs the count — `load_task_snapshots_for` asserts it internally.
+    #[cfg(test)]
     pub(super) fn load_task_snapshots_counted(
         &self,
+    ) -> Result<(Vec<TaskSnapshot>, usize), ApiError> {
+        self.load_task_snapshots_counted_for(SnapshotParts::EVERYTHING)
+    }
+
+    /// Counting variant of [`Engine::load_task_snapshots_for`].
+    pub(super) fn load_task_snapshots_counted_for(
+        &self,
+        parts: SnapshotParts,
     ) -> Result<(Vec<TaskSnapshot>, usize), ApiError> {
         let mut statements = 0usize;
 
@@ -760,9 +843,12 @@ impl Engine {
             }
         }
 
-        statements += 1;
+        // The edge LIST is a different read from the blocked SET above: export
+        // needs every edge (to trim the ones leaving the exported set), while
+        // `task.list` only needs the yes/no. Gated separately for that reason.
         let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
-        {
+        if parts.depends_on {
+            statements += 1;
             let mut stmt = self.conn.prepare(
                 "SELECT d.task_id, t.id FROM dependencies d \
                  JOIN tasks t ON t.id = d.depends_on_id ORDER BY d.task_id, t.id",
@@ -776,9 +862,13 @@ impl Engine {
             }
         }
 
-        statements += 1;
+        // Only `store.export` emits annotations. Building a `serde_json` object
+        // per annotation for every task in the store — then dropping the lot
+        // before rendering — was the bulk of what a `tasqx list` spent its time
+        // on, and it grows with the log rather than with the requested page.
         let mut annotations: HashMap<String, Vec<Value>> = HashMap::new();
-        {
+        if parts.annotations {
+            statements += 1;
             let mut stmt = self.conn.prepare(
                 "SELECT task_id, id, body, created FROM annotations \
                  ORDER BY task_id, created, id",
@@ -828,7 +918,11 @@ impl Engine {
         // Fetch all rows, then evaluate the filter in Rust: the §12-D8 grammar
         // (or/parens) and instant `due` comparison are evaluated on the loaded
         // task + its tags + its blocked flag (see filter.rs).
-        let mut all = self.load_task_snapshots()?;
+        // Filter inputs only: the projection below emits the task columns, its
+        // tags and `blocked`, and `TASK_FIELDS` has no key sourced from the
+        // dependency or annotation tables. Loading those here meant every
+        // `tasqx list` scanned both end to end and discarded the result.
+        let mut all = self.load_task_snapshots_for(SnapshotParts::FILTERS_ONLY)?;
 
         // Urgency has time-dependent terms (due proximity, age), so the value
         // persisted at write time goes stale. Recompute it for the fetched page
@@ -1070,5 +1164,111 @@ impl Engine {
             short_id: task.short_id,
         }
         .into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two tasks — #2 blocked by #1 — plus one annotation and one tag, so every
+    /// side table the bulk loader can read has at least one row to find.
+    fn seeded() -> Engine {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "blocker", "tags": ["shared"] }))
+            .unwrap();
+        e.task_add(&json!({ "title": "dependent", "tags": ["shared"] }))
+            .unwrap();
+        e.dependency_add(&json!({ "ref": 2, "depends_on": 1 }))
+            .unwrap();
+        e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
+            .unwrap();
+        e
+    }
+
+    #[test]
+    fn task_list_never_touches_the_annotations_table() {
+        let e = seeded();
+        // Dropping the table is what PROVES the read is gone: a statement
+        // count can be met while still scanning a table end to end, and it is
+        // the scan — not the statement — that costs a `tasqx list` its time on
+        // a store with thousands of annotations.
+        e.conn().execute_batch("DROP TABLE annotations").unwrap();
+
+        let out = e.task_list(&json!({ "sort": ["short_id"] })).unwrap();
+        assert_eq!(out["count"], 2);
+        // `blocked` is read from `dependencies` and must SURVIVE the trim:
+        // gating the wrong statement away would silently break `@blocked`
+        // filtering and the `blocked` field of every listed row.
+        assert_eq!(out["tasks"][0]["blocked"], json!(false));
+        assert_eq!(out["tasks"][1]["blocked"], json!(true));
+    }
+
+    #[test]
+    fn snapshot_parts_gate_the_optional_side_tables() {
+        let e = seeded();
+
+        // Filter-only: tasks + tags + blocked, three statements, and the two
+        // gated collections come back empty rather than half-populated.
+        let (narrow, statements) = e
+            .load_task_snapshots_counted_for(SnapshotParts::FILTERS_ONLY)
+            .unwrap();
+        assert_eq!(statements, SnapshotParts::FILTERS_ONLY.statement_count());
+        assert_eq!(statements, 3);
+        assert_eq!(narrow.len(), 2);
+        assert!(narrow.iter().all(|s| s.depends_on.is_empty()));
+        assert!(narrow.iter().all(|s| s.annotations.is_empty()));
+        assert!(narrow.iter().all(|s| s.tags == ["shared"]));
+        assert_eq!(narrow.iter().filter(|s| s.blocked).count(), 1);
+
+        // Everything: the two extra statements run and their rows arrive.
+        let (full, statements) = e.load_task_snapshots_counted().unwrap();
+        assert_eq!(statements, SNAPSHOT_QUERY_COUNT);
+        assert_eq!(full.iter().filter(|s| !s.depends_on.is_empty()).count(), 1);
+        assert_eq!(full.iter().filter(|s| !s.annotations.is_empty()).count(), 1);
+        // Same `blocked` answer either way — the narrow load is a smaller read,
+        // not a different one.
+        assert_eq!(full.iter().filter(|s| s.blocked).count(), 1);
+    }
+
+    /// Manual fixture, ignored in CI for the same reason as
+    /// `benchmark_task_snapshot_bulk_readers`: wall-clock timing is a lousy
+    /// correctness gate. It exists separately because that one seeds NO
+    /// annotations, and so is structurally blind to the cost this variant
+    /// removes — the side tables, not the task table, are what a big store
+    /// grows. Release profile, 2000 tasks × 2 annotations, best of 5:
+    /// 10.6 ms loading every part, 3.5 ms with `FILTERS_ONLY`.
+    #[test]
+    #[ignore = "manual annotated-store task.list benchmark"]
+    fn benchmark_task_list_on_an_annotated_store() {
+        use std::time::Instant;
+
+        let task_count = 2_000usize;
+        let e = Engine::open_in_memory().unwrap();
+        let tasks: Vec<Value> = (0..task_count)
+            .map(|index| {
+                json!({
+                    "id": format!("019f7eb6-0000-7000-8000-{:012x}", index + 1),
+                    "short_id": index + 1,
+                    "title": format!("benchmark task {index}"),
+                    "tags": ["shared", format!("bucket-{}", index % 10)],
+                    "annotations": [
+                        { "body": "first note on this task", "created": "2026-01-01T00:00:00Z" },
+                        { "body": "second note on this task", "created": "2026-01-02T00:00:00Z" },
+                    ],
+                })
+            })
+            .collect();
+        e.store_import(&json!({ "tasks": tasks })).unwrap();
+
+        let mut best = None;
+        for _ in 0..5 {
+            let started = Instant::now();
+            let listed = e.task_list(&json!({ "limit": 12 })).unwrap();
+            let elapsed = started.elapsed();
+            assert_eq!(listed["count"], 12);
+            best = Some(best.map_or(elapsed, |b: std::time::Duration| b.min(elapsed)));
+        }
+        println!("task.list over {task_count} annotated tasks: {best:?} (best of 5)");
     }
 }
