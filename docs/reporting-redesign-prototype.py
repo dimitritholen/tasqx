@@ -306,37 +306,52 @@ def token_burn(summary: dict) -> str:
         total = g["tokens_total"]
         width = total / scale * 100.0
 
-        segs = []
-        for key, label, _l, _d in BUCKETS:
-            v = g.get(key, 0)
-            if v <= 0:
-                continue
-            pct = v / total * 100.0
-            segs.append(
-                f'<span class="seg seg-{key}" style="flex:{pct:.4f} 1 0"'
-                f' title="{esc(label)}: {esc(f"{v:,}")} tokens ({pct:.1f}%)"></span>'
-            )
+        def segments(values: dict, denom: float, unit: str) -> str:
+            out = []
+            for key, label, _l, _d in BUCKETS:
+                v = values.get(key, 0)
+                if v <= 0:
+                    continue
+                pct = v / denom * 100.0
+                out.append(
+                    f'<span class="seg seg-{key}" style="flex:{pct:.4f} 1 0"'
+                    f' title="{esc(label)}: {pct:.1f}% of {esc(unit)}"></span>'
+                )
+            return "".join(out)
 
-        # Which bucket dominates the BILL, not the count. This is the whole
-        # argument for four buckets rendered as one sentence: a bar that is 97%
-        # cache-read by volume is a bar that is mostly *not* cache-read by cost.
+        # TWO bars, not one. Looking at the rendered page is what forced this:
+        # with cache read at 98% of volume, the other three buckets rendered at
+        # 7px, 2px and 3px — three of the four buckets were visually nil, and the
+        # one claim the panel exists to make ("volume is not cost") was carried
+        # only by a footnote. The cost-weighted bar makes the argument the way a
+        # chart is supposed to: by looking different from the one above it.
         weighted = {k: g.get(k, 0) * w for k, w in WEIGHTS.items()}
         wtotal = sum(weighted.values())
+
+        vol_bar = (
+            f'<span class="btrack vol"><span class="bbar" style="width:{width:.3f}%">'
+            f'{segments(g, total, "volume")}</span></span>'
+        )
         if wtotal > 0:
             top = max(weighted, key=weighted.get)
             toplabel = next(l for k, l, _a, _b in BUCKETS if k == top)
             share = weighted[top] / wtotal * 100.0
             costnote = f"{toplabel} drives ~{share:.0f}% of the cost"
+            cost_bar = (
+                '<span class="btrack cost"><span class="bbar" style="width:100%">'
+                f'{segments(weighted, wtotal, "cost")}</span></span>'
+            )
         else:
             costnote = ""
+            cost_bar = '<span class="btrack cost"></span>'
 
         rows.append(
             f'<button type="button" class="brow" data-project="{esc(sid)}"'
             f' aria-pressed="false">'
             f'<span class="bname">{esc(proj)}</span>'
-            f'<span class="btrack"><span class="bbar" style="width:{width:.3f}%">'
-            f'{"".join(segs)}</span></span>'
+            f'<span class="blabel">volume</span>{vol_bar}'
             f'<span class="bval">{esc(compact(total))}</span>'
+            f'<span class="blabel2">cost share</span>{cost_bar}'
             f'<span class="bnote">{esc(costnote)}</span>'
             "</button>"
         )
@@ -742,9 +757,13 @@ body {{ margin: 0; background: var(--bg); color: var(--fg); line-height: 1.55;
 main {{ max-width: 92ch; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }}
 a {{ color: var(--accent); }}
 
+/* The header shares main's measure. Full-bleed, the stats drifted to the far
+   right of a 2055px viewport while the content column sat centred 640px away —
+   they read as belonging to different pages. */
 header.summary {{ position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--line);
-  background: var(--bg); padding: .85rem 1.25rem; display: flex; align-items: center;
-  justify-content: space-between; gap: 1rem; flex-wrap: wrap; }}
+  background: var(--bg); }}
+header.summary > .hwrap {{ max-width: 92ch; margin: 0 auto; padding: .85rem 1.25rem;
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }}
 .brand {{ font-weight: 700; font-size: 1.1rem; letter-spacing: -.01em; }}
 .brand span {{ font-weight: 400; color: var(--muted); }}
 .stats {{ display: flex; gap: 1.5rem; flex-wrap: wrap; }}
@@ -755,7 +774,7 @@ header.summary {{ position: sticky; top: 0; z-index: 5; border-bottom: 1px solid
 .stat .s {{ font-size: .7rem; color: var(--muted); }}
 .stat.flag .n {{ color: var(--danger); }}
 
-section {{ margin-top: 2.4rem; scroll-margin-top: 5rem; }}
+section {{ margin-top: 2.4rem; scroll-margin-top: 8rem; }}
 section > h2 {{ font-size: 1.05rem; margin: 0 0 .15rem; letter-spacing: -.01em; }}
 section > .sub {{ color: var(--muted); font-size: .85rem; margin: 0 0 .9rem; max-width: 70ch; }}
 h3 {{ font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 1.2rem 0 .4rem; }}
@@ -777,14 +796,30 @@ h4 {{ font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color
 {hides}
 
 .bars {{ display: flex; flex-direction: column; gap: .35rem; }}
-.brow {{ display: grid; grid-template-columns: 16ch 1fr 7ch; grid-template-areas: "n b v" ". note note";
-  gap: .1rem .7rem; align-items: center; width: 100%; text-align: left; font: inherit;
-  background: none; border: 0; border-radius: 8px; padding: .45rem .5rem; cursor: pointer; }}
+.brow {{ display: grid; grid-template-columns: 16ch 6.5ch 1fr 7ch;
+  grid-template-areas: "n l1 b1 v" ". l2 b2 ." ". . note note";
+  gap: .25rem .7rem; align-items: center; width: 100%; text-align: left; font: inherit;
+  background: none; border: 0; border-radius: 8px; padding: .55rem .5rem; cursor: pointer; }}
+.blabel {{ grid-area: l1; }} .blabel2 {{ grid-area: l2; }}
+.blabel, .blabel2 {{ font-size: .64rem; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); text-align: right; }}
+/* Explicit classes, not :nth-of-type — that pseudo-class counts among siblings
+   of the same ELEMENT type, and every cell in this row is a <span>, so
+   :nth-of-type(2) selected the second span rather than the second track and
+   dropped the cost bar into the name column. Caught by looking at the page. */
+.btrack.vol {{ grid-area: b1; }}
+.btrack.cost {{ grid-area: b2; }}
+.btrack.cost .bbar {{ height: 12px; }}
 .brow:hover {{ background: var(--card); }}
 .brow[aria-pressed="true"] {{ background: var(--card); outline: 2px solid var(--accent); }}
 .bname {{ grid-area: n; font-weight: 600; font-size: .87rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-.btrack {{ grid-area: b; background: var(--card); border-radius: 5px; overflow: hidden; }}
+.btrack {{ background: var(--card); border-radius: 5px; overflow: hidden; }}
 .bbar {{ display: flex; height: 20px; gap: 2px; }}
+/* td.tok is a flex row, so without a basis the track collapses to its content
+   and the four segments render ~2px wide each — measured 14px total in the
+   browser before this line existed. Found by looking at the page, not by any
+   structural check. */
+.btrack.mini {{ flex: 1 1 auto; min-width: 8rem; }}
 .btrack.mini .bbar {{ height: 12px; }}
 .seg {{ min-width: 2px; }}
 .seg:first-child {{ border-radius: 4px 0 0 4px; }}
@@ -825,9 +860,12 @@ li.ev .det {{ font-size: .76rem; color: var(--muted); }}
 .page[data-filter] li.ev {{ display: none; }}
 .page[data-filter] li.ev.match {{ display: flex; }}
 
-.details .detail {{ display: none; }}
+/* scroll-margin lives on the panel itself, not on :target — it must apply
+   before the jump, and the sticky header measures 114px, not the 80px a
+   5rem guess assumed. Measured in the browser. */
+.details .detail {{ display: none; scroll-margin-top: 8rem; }}
 .details .detail:target {{ display: block; border: 1px solid var(--accent); border-radius: 12px;
-  background: var(--card); padding: 1rem 1.1rem; margin-top: 2rem; scroll-margin-top: 5rem; }}
+  background: var(--card); padding: 1rem 1.1rem; margin-top: 2rem; }}
 .detail header {{ display: flex; align-items: baseline; gap: .6rem; }}
 .detail header h3 {{ margin: 0; font-size: 1rem; text-transform: none; letter-spacing: 0; color: var(--fg); flex: 1; }}
 .detail .close {{ font-size: .78rem; }}
@@ -957,13 +995,13 @@ def render(data: dict) -> str:
         tokstats = stat("—", "tokens", "not measured yet")
 
     head = (
-        '<header class="summary">'
+        '<header class="summary"><div class="hwrap">'
         '<div class="brand">tasqx <span>review</span></div>'
         f'<div class="stats">{stat(str(open_n), "open")}'
         f'{stat(str(done_recent), "done / 7d")}'
         f'{stat(humanize(tracked_total), "tracked")}'
         f'{stat(str(overdue_n), "overdue", flag=overdue_n > 0)}'
-        f"{tokstats}</div></header>"
+        f"{tokstats}</div></div></header>"
     )
 
     body = [
