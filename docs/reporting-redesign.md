@@ -271,9 +271,17 @@ backwards.
   bucket is driving the bill?
 - **Data source:** `report.summary` `group_by=project` → the four `tokens_*`
   metrics.
-- **Mark:** horizontal stacked bar, one row per project, four segments, 2px surface
-  gap between segments, 4px rounded data-ends anchored to the baseline. Row width
-  scaled to the largest project so cross-project magnitude is comparable.
+- **Mark:** **two** horizontal stacked bars per project row, sharing one axis —
+  a `volume` bar (row width scaled to the largest project, so cross-project
+  magnitude is comparable) and a full-width `cost share` bar of the same four
+  segments weighted by relative price. 2px surface gap between segments, 4px
+  rounded data-ends.
+- **Why two bars:** this started as one bar and a footnote. Rendering it against
+  real data settled it — with cache read at 98 % of volume the other three
+  buckets measured 7px, 2px and 3px wide, so three of the four buckets were
+  visually nil and the single claim the panel exists to make was carried entirely
+  by a sentence underneath. The second bar makes the argument the way a chart is
+  supposed to: by looking *different* from the one above it.
 - **Theme roles:** the four derived bucket steps above; `project` for the row label.
 - **Empty state:** *"No token data in this range."* + *"Token accounting is opt-in:
   `tasqx config set tokens.enabled true`, then run `tasqx daemon` so the
@@ -608,6 +616,30 @@ surface:** the dark lightness band (L 0.48–0.67) and a 3:1 contrast floor are 
 jointly satisfiable against the current `--card`; they are against `--bg`. Drawing
 charts on the page background rather than the card is the cheaper of the two fixes
 and leaves the rest of the card styling alone.
+
+---
+
+## 8a. What only opening the page caught
+
+The prototype passed fifteen structural checks — self-containment, escaping, link
+resolution, both colour schemes — before anyone looked at it. Opening it in a
+browser then found five defects in ten minutes, none of which any of those checks
+could have expressed. Recorded here because it is an argument about *method*, and
+because a future `html.rs` port will hit the same class of thing.
+
+| Found | Why no check caught it |
+|---|---|
+| The cost-table micro-bar collapsed to **14px** — its four segments ~2px each. `td.tok` is a flex row and `.btrack.mini` had no flex basis. | Every element was present, correctly classed and correctly coloured. Only its computed width was wrong. |
+| The cost-share bar rendered **in the name column**. `.btrack:nth-of-type(2)` counts among siblings of the same *element type*, and every cell in the row is a `<span>` — so it selected the second span, not the second track. | Valid CSS, valid selector, wrong set. |
+| The sticky header measures **114px**; `scroll-margin-top: 5rem` (80px) left every drill-down target's own heading clipped underneath it. | The anchor resolved, the panel displayed. It was just under something. |
+| Header stats sat at x≈1375 on a 2055px viewport while the content column ended at 1417 — full-bleed header against a centred `92ch` main. | Both are legitimate layouts. Only together are they wrong. |
+| One bar could not carry the volume-vs-cost argument at all (above). | A design failure, not an implementation one. |
+
+Two of these — the `nth-of-type` selector and the flex-basis collapse — are the
+kind of thing a screenshot test would pin cheaply. That is worth considering
+alongside the guards in §7, though a pixel baseline for a themed page with five
+built-ins and two colour schemes is ten baselines, not one, and is probably worth
+it only for the two chart panels.
 
 ---
 
