@@ -2,11 +2,12 @@
 //!  * storage round-trip
 //!  * lifecycle transitions + an invalid transition => conflict
 //!  * the same-transaction event-log invariant (commit => exactly one event;
-//!    rollback => no event)
+//!    rollback => no event), per-op for the dependency edges and as a
+//!    whole-surface floor for every handler that opens a mutation
 //!  * an end-to-end envelope integration test
 
 use rusqlite::params;
-use serde_json::json;
+use serde_json::{json, Value};
 use tasqx_core::{dispatch, handle_envelope, storage, Engine, ErrorCode};
 
 fn engine() -> Engine {
@@ -110,8 +111,15 @@ fn wait_in_future_starts_in_backlog() {
 
 // ---- the same-transaction event-log invariant -------------------------------
 
+/// Two handlers out of the nineteen that open a mutation transaction. The name
+/// used to promise "every mutation", which is what let `dependency.add` and
+/// `dependency.remove` ship with no event assertion anywhere in the workspace —
+/// a test that claims a surface it never walks stops anyone looking for the
+/// gap. The whole-surface floor lives in
+/// `every_handler_that_opens_a_mutation_also_appends_an_event` below; the
+/// per-op payload assertions live beside the behaviour they belong to.
 #[test]
-fn every_mutation_writes_exactly_one_event() {
+fn task_add_and_task_start_each_write_exactly_one_event() {
     let e = engine();
     assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), 0);
 
@@ -801,4 +809,239 @@ fn a_bad_value_and_an_empty_value_name_the_task_alike() {
             );
         }
     }
+}
+
+// ---- dependency edges leave the same audit trail as every other edit --------
+
+/// The `dependency.*` events recorded against one task, newest first (the
+/// `task.add` noise every fixture generates is filtered out here so the counts
+/// below read as "how many dependency edits were logged").
+fn dependency_events(e: &Engine, short_id: &Value) -> Vec<Value> {
+    let listed = e
+        .event_list(&json!({ "ref": short_id.clone() }))
+        .expect("event.list");
+    listed["events"]
+        .as_array()
+        .expect("event.list returns an events array")
+        .iter()
+        .filter(|ev| {
+            ev["op"]
+                .as_str()
+                .is_some_and(|op| op.starts_with("dependency."))
+        })
+        .cloned()
+        .collect()
+}
+
+/// A task plus the blocker it will depend on, and the `{ref, depends_on}` params
+/// naming that edge — the three values every test below starts from.
+fn dependent_blocker_edge(e: &Engine) -> (Value, Value, Value) {
+    let blocker = e.task_add(&json!({ "title": "blocker" })).expect("add");
+    let dependent = e.task_add(&json!({ "title": "dependent" })).expect("add");
+    let edge = json!({
+        "ref": dependent["short_id"].clone(),
+        "depends_on": blocker["short_id"].clone(),
+    });
+    (dependent, blocker, edge)
+}
+
+/// The events table is two things at once: the audit log, and the daemon's
+/// change feed — the poller derives every `task.changed` push from new event
+/// rows. So deleting `dependency_add`'s `insert_event` call breaks watchers
+/// without breaking storage, and the whole workspace stayed green when it was
+/// deleted: the edge still lands in `dependencies`, but nothing is announced,
+/// so an open TUI or `tasqx watch` keeps reporting `blocked: false` and `why`
+/// over a daemon answers from stale state. Nothing crashes, nothing turns red.
+///
+/// The payload names the blocker by UUID rather than by short_id (the short id
+/// is a display handle a later import can re-mint), so the log stays meaningful
+/// replayed against another store.
+#[test]
+fn dependency_add_logs_one_event_naming_the_blocker_by_uuid() {
+    let e = engine();
+    let (dependent, blocker, edge) = dependent_blocker_edge(&e);
+
+    e.dependency_add(&edge).expect("dependency.add");
+
+    let logged = dependency_events(&e, &dependent["short_id"]);
+    assert_eq!(
+        logged.len(),
+        1,
+        "one edge added => one logged edit, got {logged:#?}"
+    );
+    assert_eq!(logged[0]["op"], "dependency.add");
+    assert_eq!(logged[0]["entity"], "task");
+    // Recorded against the DEPENDENT: it is the task whose `blocked` flipped,
+    // and the task a subscriber is watching.
+    assert_eq!(logged[0]["entity_id"], dependent["id"]);
+    assert_eq!(
+        logged[0]["payload"]["depends_on"], blocker["id"],
+        "the payload must carry the blocker's uuid, not its short_id"
+    );
+
+    // The blocker itself was not edited, so its own log stays empty.
+    assert!(
+        dependency_events(&e, &blocker["short_id"]).is_empty(),
+        "the edge belongs to the dependent's history only"
+    );
+}
+
+/// The removal half, and the case the `if removed > 0` guard exists for: taking
+/// away an edge that was never there must append nothing and bump nothing.
+/// Without the guard a no-op call would push a spurious `task.changed` to every
+/// subscriber and invalidate a concurrent client's `expected_rev` for an edit
+/// that did not happen — the optimistic-concurrency token has to mean "the task
+/// really changed".
+#[test]
+fn dependency_remove_logs_one_event_and_a_no_op_removal_logs_none() {
+    let e = engine();
+    let (dependent, blocker, edge) = dependent_blocker_edge(&e);
+    let dependent_ref = json!({ "ref": dependent["short_id"].clone() });
+
+    e.dependency_add(&edge).expect("dependency.add");
+    e.dependency_remove(&edge).expect("dependency.remove");
+
+    let logged = dependency_events(&e, &dependent["short_id"]);
+    assert_eq!(
+        logged.len(),
+        2,
+        "add then remove => two logged edits, got {logged:#?}"
+    );
+    // event.list is newest-first (UUIDv7 ordering).
+    assert_eq!(logged[0]["op"], "dependency.remove");
+    assert_eq!(logged[0]["entity_id"], dependent["id"]);
+    assert_eq!(
+        logged[0]["payload"]["depends_on"], blocker["id"],
+        "the removal must name the same uuid the addition did"
+    );
+
+    let rev_before = e.task_get(&dependent_ref).unwrap()["_rev"].clone();
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    // Removing the already-removed edge is not an error — and not an edit.
+    e.dependency_remove(&edge)
+        .expect("removing an absent edge is a no-op, not a failure");
+
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "a no-op removal appended an event the daemon would push as a change"
+    );
+    assert_eq!(
+        e.task_get(&dependent_ref).unwrap()["_rev"],
+        rev_before,
+        "a no-op removal bumped `rev`, invalidating a client's expected_rev"
+    );
+}
+
+/// The asymmetry between the two handlers, pinned deliberately rather than left
+/// to be discovered: `dependency_add` inserts the edge with `INSERT OR IGNORE`,
+/// so re-adding an existing dependency touches no row — yet it bumps `rev` and
+/// appends a second `dependency.add` unconditionally, while `dependency_remove`
+/// guards exactly that case (the test above).
+///
+/// Pinned as current behaviour because it is defensible on the log side — the
+/// events table is append-only history and "the caller asked again" is a fact
+/// that happened — but the `rev` bump is visible to clients, so if this is ever
+/// made symmetric with removal, this test is the single place that has to
+/// change, and it states what the old contract was.
+#[test]
+fn a_repeated_dependency_add_logs_a_second_event_and_bumps_rev() {
+    let e = engine();
+    let (dependent, _blocker, edge) = dependent_blocker_edge(&e);
+    let dependent_ref = json!({ "ref": dependent["short_id"].clone() });
+
+    e.dependency_add(&edge).expect("dependency.add");
+    let rev_after_first = e.task_get(&dependent_ref).unwrap()["_rev"]
+        .as_i64()
+        .expect("_rev is an integer");
+
+    let again = e.dependency_add(&edge).expect("a duplicate add is accepted");
+
+    // The graph did not change: one edge, still exactly one blocker.
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM dependencies"), 1);
+    assert_eq!(again["depends_on"].as_array().unwrap().len(), 1);
+    assert_eq!(again["blocked"], true);
+
+    // The history and the rev did move, though.
+    let logged = dependency_events(&e, &dependent["short_id"]);
+    assert_eq!(logged.len(), 2, "got {logged:#?}");
+    assert!(logged.iter().all(|ev| ev["op"] == "dependency.add"));
+    assert_eq!(
+        e.task_get(&dependent_ref).unwrap()["_rev"],
+        json!(rev_after_first + 1)
+    );
+}
+
+/// The whole-surface floor for the class of regression the tests above cover
+/// one handler at a time: a handler that opens a mutation transaction must also
+/// append an event inside it, because DESIGN's coupling is commit => exactly one
+/// event, and the daemon has no other way to learn that anything changed.
+///
+/// The mutating set is DERIVED from the source, not listed here. A hand-written
+/// list's failure mode is the handler nobody remembers to add to it — which is
+/// how `dependency.add` and `dependency.remove` came to have no event assertion
+/// at all — so the scan asks the code which handlers mutate: every method whose
+/// body reaches for `begin_mutation`. A new handler is therefore covered the
+/// day it is written.
+///
+/// What a text scan cannot see is that the right op reaches the right row with
+/// the right payload; that is what the per-handler tests are for. What it does
+/// catch, for all nineteen at once and at zero runtime cost, is the write
+/// disappearing entirely — the mutation that stayed green.
+#[test]
+fn every_handler_that_opens_a_mutation_also_appends_an_event() {
+    // Every file carrying `impl Engine` methods. include_str! makes each one a
+    // rebuild dependency, so the scan can never read a stale copy.
+    const SOURCES: [(&str, &str); 6] = [
+        ("engine.rs", include_str!("../src/engine.rs")),
+        ("engine/memory.rs", include_str!("../src/engine/memory.rs")),
+        (
+            "engine/projects.rs",
+            include_str!("../src/engine/projects.rs"),
+        ),
+        (
+            "engine/relationships.rs",
+            include_str!("../src/engine/relationships.rs"),
+        ),
+        ("engine/task.rs", include_str!("../src/engine/task.rs")),
+        (
+            "engine/transfer.rs",
+            include_str!("../src/engine/transfer.rs"),
+        ),
+    ];
+
+    let mut mutating = 0;
+    for (file, source) in SOURCES {
+        // engine.rs's own unit tests run a sibling scan and mention
+        // `begin_mutation` inside a string literal; cut there so this scan sees
+        // production code only.
+        let production = source.split("\n#[cfg(test)]").next().unwrap_or(source);
+        for chunk in production.split("\n    pub fn ").skip(1) {
+            // A chunk runs to the next method; truncate at the `}` in column
+            // zero too, so the last method of an impl block does not absorb the
+            // free functions that follow it.
+            let body = chunk.split("\n}").next().unwrap_or(chunk);
+            if !body.contains("self.begin_mutation()") {
+                continue;
+            }
+            let name = chunk.split('(').next().unwrap_or(chunk).trim();
+            mutating += 1;
+            assert!(
+                body.contains("insert_event("),
+                "{file}: `{name}` opens a mutation transaction but appends no event — \
+                 the write would land while every watcher (daemon push, `tasqx watch`, \
+                 the audit log) is told nothing"
+            );
+        }
+    }
+
+    // A source-scanning guard's real failure mode is matching nothing at all
+    // (a renamed helper, a re-indented impl). Nineteen handlers mutate at the
+    // time of writing; the floor keeps a refactor that hides them from being
+    // silently "all clear", while still letting the set grow.
+    assert!(
+        mutating >= 19,
+        "the scan found only {mutating} mutating handlers — it has stopped matching"
+    );
 }
