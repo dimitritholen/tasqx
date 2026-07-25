@@ -48,11 +48,17 @@ And one thing the presentation layer gets wrong today:
 > header, and `render.rs` prints one blended `TOKENS` column in the terminal
 > table. The core's care is discarded at both output surfaces.
 
-Measured from this session's own store:
+Measured from this session's own store, **all time** (no range filter):
 
 ```
 tasqx-reporting-redesign | in 136 | out 83 479 | cacheR 13 630 240 | cacheW 186 965 | total 13 900 820
 ```
+
+The label matters now that the prototype defaults to a 30-day window: these are
+unwindowed figures. They happen to be identical at `--range 30d` today, because
+every measurement in this store belongs to a task that closed inside the last
+day — but that is an accident of a young store, not an invariant, and the page
+prints its own window precisely so the two can be told apart.
 
 Weighted by the published relative prices (input 1.0, output ~5.0, cache read 0.1,
 cache write 1.25):
@@ -105,7 +111,13 @@ drive.**
 
 ### Conventional UX patterns worth inheriting
 
-- Date-range control with presets, top-left, applying to the whole page.
+- A stated range applying to the whole page. Every product ships this as a
+  *control*; a generated static document cannot (re-querying needs `fetch`,
+  re-aggregating in the browser needs a second implementation of core's roll-up,
+  and reflecting the choice in the URL needs `replaceState`, which throws
+  `SecurityError` on `file://`). It becomes a **generation-time parameter** that
+  the page prints prominently, including the literal filter clause so the reader
+  can reproduce the set.
 - A grouping selector adjacent to the chart it regroups.
 - Drill-down from aggregate → entity → raw entries.
 - Empty states that name the next action rather than showing a blank panel.
@@ -183,16 +195,25 @@ that matters most. Sticky header. Sections in decision order, not data order.
 
 ```
 ┌─ sticky header ─────────────────────────────────────────────┐
-│ tasqx review    open · done/7d · tracked · overdue          │
-│                 cache read · cache write · input · output   │  ← four, never one
+│ tasqx review    open · done · tracked · overdue             │  ← four, tagged
+│                 (each tile says "now" or "in range")        │
 └─────────────────────────────────────────────────────────────┘
-  §activity   Completions, last 21 days          (inline SVG, urgency.ramp)
-  §tokens     Token burn by project              (stacked bars + legend)
-  §cost       Cost per task                      (table, two currencies)
-  §timeline   Started / stopped / completed      (event log, filterable)
+  §range      the stated window                  (label · boundary · clause;
+                                                  OUTSIDE the sticky element)
+  §activity   Completions, <range>               (inline SVG, urgency.ramp)
+  §tokens     Token burn by project · <range>    (stacked bars + legend)
+              cache read · cache write · input · output   ← four, never one
+  §cost       Cost per task · <range>            (table, two currencies)
+  §unattributed  Completions with no attribution (count + two lists, hidden at zero)
+  §timeline   Started / stopped / completed · <range>  (event log, filterable)
   ─────────────────────────────────────────────────────────────
   #task-N     detail panels                      (:target, hidden until linked)
 ```
+
+§activity, §tokens, §cost, §unattributed and §timeline all carry **the same**
+range label. The header stats are as-of-now and say so on each tile — backlog is
+a state, throughput and tokens are a window, and no completion bound can select a
+task that never completed.
 
 ### Colour: the theme is not a chart palette
 
@@ -248,22 +269,39 @@ backwards.
 - **Question it answers:** is anything on fire, and what did this range cost?
 - **Data source:** `store.export` (derived open/overdue/done counts) + `task.list`
   `tracked` + `report.summary` → four `tokens_*` metrics summed across groups.
-- **Mark:** eight stat tiles, mono tabular numerals. No plot.
+- **Mark:** four stat tiles, mono tabular numerals, each tagged `now` or
+  `in range` on a sub-line. No plot. The four token tiles used to sit here too —
+  eight tiles, two different *kinds* of number sharing one row with no read order
+  between them, 181px of a 726px viewport at 420px wide. They now live in
+  §tokens, beside the bars that decompose them.
 - **Theme roles:** `overdue` (→ `--danger`) on the overdue tile when non-zero.
-- **Empty state:** the four token tiles collapse to a single `—` tile labelled
-  *"tokens · not measured yet"*. Four zeros would imply four measurements of zero.
 - **Interaction:** none. It is the 5-second read.
 - **Replaces:** the current single blended `stat("AI tokens")` at `html.rs:273`.
 
-#### Widget: Completions, last 21 days
+#### Widget: Completions, in range
 - **Question it answers:** is work still closing, and when did it stop?
 - **Data source:** `event.list` → `op == "done"`, bucketed by calendar day.
 - **Mark:** inline SVG column chart, 4px rounded tops, 2px baseline stub on empty
-  days so a gap reads as *measured zero* rather than *missing*.
+  days so a gap reads as *measured zero* rather than *missing* (the stub now
+  carries its own `<title>`, so hovering a zero says `0 done` instead of nothing).
+- **Axis:** **every day carries a number**, and the label step is *derived* from
+  the viewBox geometry rather than hardcoded to every third day. On this file's
+  684u plot width a two-digit 11px monospace label needs 17.2u including gutter,
+  so break-even is at **39 days**; past that the step grows one whole day at a
+  time and the figcaption says so in words. `html.rs`'s plot is 674u, i.e. 39.2 —
+  recompute it there, do not copy this number.
+- **Month rules:** day-of-month numbers stop being identifiers as soon as the
+  range can repeat one, so each month's first slot gets a 1px rule and a `%b`
+  label (with the year on the first mark only).
+- **Range cap:** the chart draws at most `CHART_DAYS_CAP` (90) days. When the
+  page range is wider — `--range all`, or anything over 90 — the figcaption says
+  so explicitly, because the section heading would otherwise claim "all time"
+  over a 90-day chart. The svg's `min-width` is proportional to the day count
+  and emitted inline, so a 7-day chart no longer forces a phone scrollbar.
 - **Theme roles:** `urgency.ramp` as a real `<linearGradient id="ramp">`, matching
   `html.rs::ramp_stops`.
-- **Empty state:** *"Nothing completed in the last 21 days"* + *"The bars appear as
-  `tasqx done` events land."*
+- **Empty state:** *"Nothing completed in the last N days"* + *"The bars appear as
+  `tasqx done` events land."* (N is the real day count, not a hardcoded 21.)
 - **Interaction:** `<title>` per bar (native SVG tooltip, zero JS).
 
 #### Widget: Token burn by project
@@ -271,11 +309,20 @@ backwards.
   bucket is driving the bill?
 - **Data source:** `report.summary` `group_by=project` → the four `tokens_*`
   metrics.
-- **Mark:** **two** horizontal stacked bars per project row, sharing one axis —
-  a `volume` bar (row width scaled to the largest project, so cross-project
-  magnitude is comparable) and a full-width `cost share` bar of the same four
-  segments weighted by relative price. 2px surface gap between segments, 4px
-  rounded data-ends.
+- **Mark:** the **four bucket tiles** (re-homed from the sticky header, so the
+  totals sit directly above the bars that decompose them), then **two**
+  horizontal stacked bars per project row — a `volume` bar and a `cost` bar of
+  the same four segments weighted by relative price. 2px surface gap between
+  segments, 4px rounded data-ends.
+- **Both bars are now scaled**, each to the heaviest project *on its own axis*:
+  volume in raw tokens, cost in weighted tokens. The cost bar used to be pinned
+  at `width:100%` by construction — correct within a row, but down the column it
+  claimed every project cost the same, and it claimed it before any label was
+  read. The consequence has to be stated rather than left implicit: the two bars
+  now have **different denominators**, so lengths are comparable *down a column*
+  and never *between the two bars of one row*. Two things close that: a per-row
+  cost-share percentage (unit-free, correct across rows, needs no axis) and a
+  `.scalenote` under the bars naming both denominators in words.
 - **Why two bars:** this started as one bar and a footnote. Rendering it against
   real data settled it — with cache read at 98 % of volume the other three
   buckets measured 7px, 2px and 3px wide, so three of the four buckets were
@@ -283,13 +330,20 @@ backwards.
   by a sentence underneath. The second bar makes the argument the way a chart is
   supposed to: by looking *different* from the one above it.
 - **Theme roles:** the four derived bucket steps above; `project` for the row label.
-- **Empty state:** *"No token data in this range."* + *"Token accounting is opt-in:
-  `tasqx config set tokens.enabled true`, then run `tasqx daemon` so the
-  attribution thread can reconstruct spend after each completion."* — the second
-  clause matters, see §7.
+- **Empty state:** the four bucket tiles collapse to a single `—` tile labelled
+  *"tokens · not measured yet"* — four zeros would imply four measurements of
+  zero, which is a different and false statement. Plus *"No token data in
+  &lt;range&gt;."* + *"Token accounting is opt-in: `tasqx config set
+  tokens.enabled true`, then run `tasqx daemon` so the attribution thread can
+  reconstruct spend after each completion. Or widen the window with `--range
+  all`."* — the second and third clauses matter, see §7; the third is the only
+  place the empty token panel tells the reader that the *range* may be the
+  reason.
 - **Interaction:** click a row → filters the timeline below to that project;
   clicking the active row clears. Legend chips toggle a bucket across every bar at
-  once.
+  once — *and dim the matching tile*, because with the tiles now sitting directly
+  above the bars, toggling `cache read` off visibly empties the bars while an
+  undimmed tile still reads 13.63M.
 - **Sub-label:** *"cache read drives ~68% of the cost"* — the weighted-dominance
   sentence from §3.
 
@@ -297,17 +351,81 @@ backwards.
 - **Question it answers:** what did this task cost me, in both currencies?
 - **Data source:** `store.export` → `tokens[]`; **plus** `task.list` → `tracked`
   (see the API delta in §5 — no single read has both).
+- **Row selection, stated on the page:** a task appears if it was **started,
+  stopped or completed inside the range**, or carries a measurement created
+  inside it. Not a pure completion bound — that would drop the task you started
+  on Monday and have not finished, which is the work a weekly review is most
+  about. A row set nobody can predict is a row set nobody can trust, so the
+  sub-line says this in words.
 - **Mark:** table; mono tabular time column; a four-segment micro-bar per row
   scaled to the heaviest task; a confidence badge.
+- **The "skip rows with nothing" gate is deleted.** The old
+  `if not toks and tracked <= 0: continue` silently dropped exactly the tasks
+  this panel exists to surface — a completion with no spend and no timer. On this
+  store it hid 2 of 15 in-range completions.
+- **`tracked` has three states, not two.** A duration; `0s ⚠` (a timer ran and
+  measured nothing — `tasqx start` on another task stops the running one
+  silently, so a worked interval lands on the wrong task); or `never timed` (no
+  `start` event anywhere in the log). `tracked` alone cannot tell the last two
+  apart — both are `PT0S` and both used to render as one dash — but the event log
+  can. Measured: #12/#13 never timed, #21/#23 timed zero.
+- **The confidence badge is the WEAKEST measurement in the row**, not the first.
+  The bug it replaces is `sorted(conf)[0]`: over the closed vocabulary
+  `tokens.rs:40-43` publishes, alphabetical order does not pick arbitrarily — it
+  reliably picks the *strongest* value, so a row mixing one `high` transcript
+  parse with one `low` directory-scan guess rendered HIGH. A total is only as
+  trustworthy as its weakest input (§5 D-3 argues the same one level up). A mixed
+  row carries a `*` and names every grade in its title; a value outside the
+  vocabulary ranks below `low` and renders `unknown` with a dashed border,
+  because `require_confidence` should have refused it at write time.
+- **Sortable columns.** Every `<th>` that sorts carries `aria-sort` and a real
+  `<button>`; the sort keys are the raw integers on `data-tracked` /
+  `data-tokens`, never the rendered `3h 20m` / `1.23M` strings, so a sort
+  reorders `<tr>` nodes and never re-parses or rewrites a cell. Server-side order
+  stays tokens-descending, so the page answers *"what cost most?"* with JS
+  disabled.
+- **Row cap, ranked in both currencies.** `COST_ROW_LIMIT` = 60. The cap ranks by
+  whichever currency puts a task highest — a pure tokens-descending cut would
+  hide the longest-tracked task *and* decapitate the zero-token `never timed`
+  rows the panel now exists to show. The clip note states the count and that
+  sorting reorders the kept rows only.
 - **Theme roles:** the four bucket steps; `timer.active` (→ `--ok`) for a `high`
   confidence badge.
-- **Empty state:** *"No measured work yet."* + *"A task is measurable once it has a
-  timer interval or an attributed measurement."*
-- **Interaction:** the id cell is `href="#task-N"` → opens that task's detail panel.
+- **Empty state:** *"No measured work in this range."* + *"A task appears here
+  once it is started, stopped or completed inside the range. Widen it with
+  `--range 90d` or `--range all`, or start something with `tasqx start &lt;id&gt;`."*
+- **Interaction:** the id cell is `href="#task-N"` → opens that task's detail
+  panel. Emitted through `TaskRefs.link()` like every other `#task-N` reference on
+  the page — see guard 6.
 - **Why confidence is on the row and not in a footnote:** `high` means the
   transcript was parsed *and* the session id was verified against it
   (`attribution.rs:171`); `low` means a directory scan guessed. Those are different
   numbers and must not look alike.
+
+#### Widget: Completions with no attribution
+- **Question it answers:** which completions in this range recorded no token
+  spend at all — and therefore, how incomplete is every token number on this page?
+- **Data source:** `store.export` → `tokens[]`; `event.list` → `tokens.attributed`.
+- **Mark:** a headline count in the shape *"12 of 15 completions in range"* (a
+  bare `12` cannot say whether that is most of them or a rounding error), then
+  **two** lists.
+- **Two populations, because they need two different fixes:**
+  - *attribution never ran* — no `tokens.attributed` event exists at all. No
+    daemon was listening, or `tokens.enabled` is false. Measured on this store:
+    **10** of 15. These appeared **nowhere** on the old page, not even as a
+    footnote, because the footnote is keyed off an event that was never written.
+  - *attribution ran and found nothing* — a `tokens.attributed` event carrying
+    `samples: 0`. Measured: **2**. Causes named in the order worth checking: the
+    transcript had not flushed when attribution fired; the `done` event carried no
+    correlation, leaving only a fuzzy directory scan; or the work genuinely
+    happened outside any instrumented tool.
+- **Theme roles:** `--danger` for the border, the headline and the per-list
+  counts — the panel only exists when there is something to fix.
+- **Empty state:** **the absence of the section itself.** At zero it renders
+  nothing — no heading, no anchor. A panel that says "all good" every week is a
+  panel nobody reads on the week it matters. Verified: absent from the sparse
+  fixture.
+- **Interaction:** each id links to its task panel, through `TaskRefs.link()`.
 
 #### Widget: Lifecycle timeline
 - **Question it answers:** what happened, in order, and what did each interval cost?
@@ -329,16 +447,37 @@ backwards.
   down about it?
 - **Data source:** `store.export` → the full task object incl. `annotations[]` and
   `tokens[]`.
-- **Mark:** one panel per task, `display:none` until `:target` selects it. Metadata
-  as a `<dl>`, the four buckets as a small grid, annotations as a timestamped list
-  with `white-space: pre-wrap`.
+- **Mark:** one panel per **reachable** task — the page collects its own `#task-N`
+  references through `TaskRefs` and renders exactly that set, bounded by
+  `PANEL_BUDGET` (160). `display:none` until `:target` selects it. Metadata as a
+  `<dl>`, the four buckets as a small grid, annotations as a timestamped list with
+  `white-space: pre-wrap`. Rendering one panel per *exported* task put 24 panels in
+  a 94 KB page with >90% of the bytes never displayed; on a 500-task fixture it was
+  1 866 752 B / 500 panels.
+- **`tracked` carries the same three states as the cost table.** #21's panel used
+  to read `tracked —` while carrying 8.9M attributed tokens and a `start`+`stop`
+  pair: the single most misleading cell on the page, since it read as *no work
+  happened* on the task that consumed the most tokens in the store.
+- **Annotations clamp to six lines** with a CSS-only disclosure over a **single**
+  copy of the text: a clipped checkbox before the body, a `<label>` after it, and
+  `.annx:checked ~ .body` lifting the clamp. The obvious `<details>`/`<summary>`
+  route would duplicate the body into the summary — doubling exactly the bytes
+  this change exists to shed — and a `<summary>` holding a 300-line body announces
+  that entire body as the button's accessible name. Short annotations get no
+  control and no clamp markup at all.
+- **A reference the export does not carry renders an "outside this report's
+  scope" stub**, not a dead anchor.
 - **Theme roles:** `accent` for the panel border and the id.
 - **Empty state:** *"No token measurement. A task is only attributed when its
   `done` event carries correlation (client / session_id / transcript_path)."*
-- **Interaction:** pure `:target` CSS, **zero JS**. Reached from any `#task-N`
-  link; closed by a link back to `#cost`. The History API is untouched because its
-  state-pushing methods throw `SecurityError` on a `file://` document
-  (DESIGN.md §8a).
+- **Interaction:** `:target` for the **reveal**; ~20 lines of JS for **focus and
+  announcement**. No browser focuses a fragment target, so without it a keyboard
+  user is left tabbing the page *behind* an open panel and a screen-reader user is
+  told nothing. The panel is `tabindex="-1"` + `role="region"` +
+  `aria-labelledby`; the script focuses it on `hashchange` and at load, and
+  Escape closes. The History API stays untouched — assigning `location.hash` is a
+  **navigation**, not History state, and is `file://`-safe; `pushState` throws
+  `SecurityError` there (DESIGN.md §8a).
 
 ---
 
@@ -359,6 +498,8 @@ the canonical export task object.
 **Note:** the export is the round-trip form, so this needs a decision about whether
 tracked time is *derived* state that `store.import` should recompute from the event
 log rather than accept. That is why this is a listed delta and not a patch.
+**Now load-bearing for the range:** the in-range tracked total in the header comes
+off this join, so D-1 is no longer only about one table cell.
 
 ### D-2. A time axis for token roll-ups
 
@@ -375,6 +516,20 @@ question is *tokens per project per day*, which a single-axis `group_by` cannot
 express.
 **Until then:** the activity sparkline counts `done` events off the event log,
 which is honest but is not the same chart.
+**And the page reads `report.summary` twice.** This is a *consequence of D-2*, not
+a design preference. The page mixes two kinds of question and they do not share a
+window: `summary_now` (scope only) answers the backlog — open, overdue, about
+*now* — and `summary_window` (scope **and** the range clause) answers throughput
+and tokens, about the *window*. One filtered summary cannot serve both, and the
+failure is silent rather than loud: under any `completed.` predicate the non-token
+metrics change meaning without changing name (`count` stops being "tasks" and
+becomes "completions in window"), and `overdue` goes **structurally** to zero
+because `reports.rs:142` guards it with `status.is_open()` while `filter.rs:335`
+makes a null `completed` fail every completion bound — the two conditions are
+mutually exclusive by construction. Measured: `completed.after:-1d` returns
+`overdue: 0` for every group. A page that fed the windowed summary to the header
+would print a confident `0 OVERDUE` meaning *"we filtered out everything that
+could have been overdue"*. With a real time axis one read could carry both.
 
 ### D-3. `report.summary` should expose measurement provenance
 
@@ -392,8 +547,12 @@ and averaging confidence produces a number with no meaning.
 
 ## 6. Framework choice
 
-**Recommendation: hand-rolled vanilla JS.** ~2.1 KB inline, no vendored library.
-The generated prototype's script block measures **2 129 bytes**.
+**Recommendation: hand-rolled vanilla JS.** ~4.7 KB inline, no vendored library.
+The generated prototype's script block measures **4 669 bytes** raw (3 259 bytes
+comment-free). It grew from 2 129 B when drill-down focus management and column
+sorting were added; that is a 2.2× jump in one change and was taken as a
+deliberate budget decision, not absorbed silently. It is still ~9% of uPlot and
+~10% of Alpine, and §6's case against those was never about size.
 
 ### Measured sizes
 
@@ -407,7 +566,7 @@ site:
 | `preact@10.26.9` `preact.min.js` | 11 195 B | 4 762 B | MIT |
 | `htm@3.1.1` `htm.js` | 1 265 B | 678 B | Apache-2.0 |
 | `alpinejs@3.14.9` `cdn.min.js` | 44 758 B | 16 171 B | MIT |
-| **this design, inline** | **2 129 B** | ~950 B | — |
+| **this design, inline** | **4 669 B** | ~1 700 B | — |
 
 **Correction to the framing.** Gzipped size is the wrong metric here. The page is
 opened over `file://` with no HTTP transport, so nothing decompresses it — the
@@ -459,15 +618,21 @@ decisive on its own.
 |---|---|---|---|
 | 1 | Toggle a bucket in the legend | flip `data-off` on `.page`; CSS attribute selectors hide `.seg-*` | ~15 lines |
 | 2 | Click a project → filter timeline | set `data-filter` + a `.match` class; CSS does the rest | ~20 lines |
-| 3 | Open a task detail | `:target` | **none** |
+| 3 | Open a task detail | `:target` — the reveal itself is pure CSS | **none** (row 5 covers the focus move) |
 | 4 | Per-bar tooltips | native SVG `<title>` | **none** |
+| 5 | Focus the revealed drill-down panel | `hashchange` + `focus()` + a polite live region | ~20 lines |
+| 6 | Sort the cost table in place | reorder `<tr>` by `data-*` integers | ~20 lines |
+
+The column is summable: rows 3 and 5 are the *same* ~20 lines seen from two
+sides — an earlier draft counted them twice and implied ~95 lines where the
+script has ~75. Measured total: **4 669 B raw, 3 259 B comment-free.**
 
 No build step, no minifier in the build, and the shipped script is readable in the
 generated file — which matters for a document a reader may need to trust.
 
 ### Binary and page cost, plainly
 
-Vanilla adds ~2.1 KB to the binary and ~2.1 KB to every page. uPlot would add
+Vanilla adds ~4.7 KB to the binary and ~4.7 KB to every page. uPlot would add
 ~53 KB, Alpine ~45 KB. Against a release binary in the megabytes those are small
 in isolation — **the argument against them is not size.** It is the second chart
 implementation, the second escaper, the license no gate can see, and the chart that
@@ -501,12 +666,31 @@ Two are corrections to guards that exist.
    Catches: a background-image data URI or webfont creeping in.
 
 5. **The four token buckets are never summed into a headline stat.** Assert the
-   rendered header contains four distinct bucket labels and that no element
-   carries a blended token total. Catches the *current* defect: the core refuses
-   to blend and the presentation layer blends anyway.
+   rendered **page** contains four distinct bucket labels *adjacent to the bars
+   that decompose them* (they are no longer in the header), and that no element
+   carries a blended token total. **Two stated exceptions, both `.bval`:** the
+   cost table's per-row magnitude label beside its four-segment micro-bar
+   (`prototype.py:969`), and the per-project one beside the volume bar in
+   §tokens (`prototype.py:780`, reading e.g. `13.90M`). Each is a scale hint for
+   a bar the reader is already looking at, scoped to that bar's own row, and in
+   both cases the four buckets it labels are rendered separately right beside it.
+   Neither is a headline. The guard as written would fail on both, so both are
+   named here rather than discovered later — and the count matters: an earlier
+   draft of this paragraph named only the cost table's, which is exactly the
+   half-stated exception that gets a guard weakened by whoever hits it next.
+   Catches the *current* defect: the core refuses to blend and the presentation
+   layer blends anyway.
 
-6. **Every `#task-N` link resolves to a `#task-N` panel in the same document.**
-   Catches a filtered export where the link survives but the panel was scoped out.
+6. **Every `#task-N` link resolves to a `#task-N` panel in the same document —
+   and its dual, `set(panel ids) == set(href ids)`.** This is now true *by
+   construction*: `TaskRefs.link()` only emits an `href` for an id it
+   simultaneously registers for a panel, and past the budget it degrades to inert
+   `.nolink` text instead of dangling. So the guard is a cheap regression test
+   rather than a design worry. The dual catches the other direction — the old
+   24-panels/15-links waste coming back. **The enforcement rule, in prose:
+   *every* `#task-N` emitter calls `refs.link()`.** A panel that links to a task
+   any other way is the defect; that is exactly how the unattributed panel first
+   shipped a set of hrefs the collector had never seen.
 
 7. **The chart palette passes the colour checks for both schemes.** The four steps
    per scheme are constants; a unit test can assert OKLCH lightness band, chroma
@@ -515,7 +699,27 @@ Two are corrections to guards that exist.
 
 8. **Sparse and empty render as deliberate states.** Render the page against a
    fixture with zero measurements and assert each token panel emits its empty
-   state, and that the header shows one `—` tile rather than four zeros.
+   state, and that **§tokens** shows one `—` tile rather than four zeros. Assert
+   too that §unattributed is *absent* when the count is zero — its empty state is
+   the absence of the section.
+
+9. **Every windowed panel states its window, and all of them state the SAME one.**
+   Render at a known range and assert each of the throughput/token sections
+   carries the range label, and that no two windowed panels carry different
+   labels. Catches the defect this change fixes: header tiles at all time, a
+   chart at 21 days, a timeline at 60 events, and nothing on the page saying so.
+
+10. **A backlog metric is never read off a windowed summary.** Assert the header's
+    `overdue` comes from a `report.summary` call whose filter carries no
+    `completed.` predicate. Catches a confident `0 OVERDUE` produced by the
+    structural fact that `reports.rs:142` guards overdue with `status.is_open()`
+    while `filter.rs:335` makes a null `completed` fail every completion bound —
+    the two are mutually exclusive, so a windowed summary always answers 0.
+
+11. **Panel count is bounded independently of store size.** Render a 500-task
+    fixture and assert the document holds at most `PANEL_BUDGET` `.detail`
+    panels. Measured at the old budget of 120: 1 866 752 B / 500 panels →
+    465 005 B / 112 panels. Re-measure at the current budget of 160.
 
 ---
 
@@ -529,9 +733,10 @@ To be appended to DESIGN.md §12 in the existing style.
 
 **Decision:** Three parts, one rule.
 
-**(a) The four token buckets are never blended on any output surface.** The
-sticky header renders `cache read`, `cache write`, `input` and `output` as four
-stats; the per-project chart is a four-segment stacked bar; the per-task table
+**(a) The four token buckets are never blended on any output surface.** The page
+renders `cache read`, `cache write`, `input` and `output` as four separate stats,
+**adjacent to the bars that decompose them**; the per-project chart is a
+four-segment stacked bar; the per-task table
 carries a four-segment micro-bar. The single blended `stat("AI tokens")`
 (`html.rs:273`) and the single blended `TOKENS` column in the terminal report are
 deleted. Where a page needs to say which bucket matters, it renders a **weighted
@@ -558,7 +763,28 @@ protan-confusable pairs are never adjacent. In dark mode the chart surface is
 `--bg`, not `--card`. `urgency.ramp` stays a **sequential** ramp and is used only
 for magnitude (the activity gradient), never as four categorical fills.
 
-**No library is vendored.** The interaction budget is ~2.1 KB of inline vanilla JS.
+**(d) Every panel states its window, and the windowed ones share one range.** The
+split is honest rather than uniform: **backlog is a state, throughput and tokens
+are a window.** Open and overdue are as-of-now and cannot be windowed by
+completion at all — `filter.rs::instant_cmp` returns false for a null
+`completed`, so `completed.after:` excludes every open task by construction, and
+`reports.rs:142` guards `overdue` with `status.is_open()`; the two conditions are
+mutually exclusive, so a windowed summary answers `overdue: 0` structurally. So
+each header tile is tagged `now` or `in range`, and every windowed panel prints
+the same range label. **The range is a generation-time parameter, not an in-page
+control.** Every product in §1 ships that control; a static `file://` document
+cannot: re-querying needs `fetch` (banned, and dead on `file://`), re-aggregating
+in the browser needs a second implementation of core's roll-up beside the Rust
+one — the same "second implementation" objection that killed uPlot — and even
+reflecting the choice in the URL needs `replaceState`, which throws
+`SecurityError` there. What a static page *can* do is state its window
+unmissably, print the literal filter clause so the reader can paste it into
+`tasqx list` and reproduce the set, and make regenerating at another window one
+flag. An unreadable range refuses and names the accepted spellings rather than
+silently defaulting — a page whose stated window is not the window you asked for
+is the exact class of defect this part exists to fix.
+
+**No library is vendored.** The interaction budget is ~4.7 KB of inline vanilla JS.
 
 **Why (a):** `engine/reports.rs:73` already carries the comment — "cache tokens
 cost a fraction, so a blended total would lie" — and keeps `tokens_in`,
@@ -596,9 +822,13 @@ document produces **false positives** the moment untrusted task text mentions
 annotation's contents. A guard that fails on innocent user data will be weakened by
 whoever hits it next, and a weakened guard is worse than a correct one. **On the
 History API:** DESIGN.md §8a already records that its state-pushing methods throw
-`SecurityError` on a `file://` document, discovered the expensive way; the drill-down
-here is `:target` CSS with no JS at all, and the guard asserts the API stays
-untouched so that lesson cannot be re-learned.
+`SecurityError` on a `file://` document, discovered the expensive way. Here,
+`:target` CSS does the **reveal**; a small focus handler (~20 lines) moves the
+caret into the revealed panel and announces it, because no browser focuses a
+fragment target and a keyboard user is otherwise left tabbing the page behind an
+open panel. The History API stays untouched — assigning `location.hash` is a
+navigation, not History state — and the guard asserts that, so the lesson cannot
+be re-learned.
 
 **Why (c):** themes are terminal palettes. Fed straight into SVG fills on the
 report's light surface, `nord`'s roles fail four of five colour checks — worst
@@ -624,16 +854,32 @@ and leaves the rest of the card styling alone.
 The prototype passed fifteen structural checks — self-containment, escaping, link
 resolution, both colour schemes — before anyone looked at it. Opening it in a
 browser then found five defects in ten minutes, none of which any of those checks
-could have expressed. Recorded here because it is an argument about *method*, and
+could have expressed. Two more of the same shape have been added since. Recorded here because it is an argument about *method*, and
 because a future `html.rs` port will hit the same class of thing.
 
 | Found | Why no check caught it |
 |---|---|
 | The cost-table micro-bar collapsed to **14px** — its four segments ~2px each. `td.tok` is a flex row and `.btrack.mini` had no flex basis. | Every element was present, correctly classed and correctly coloured. Only its computed width was wrong. |
 | The cost-share bar rendered **in the name column**. `.btrack:nth-of-type(2)` counts among siblings of the same *element type*, and every cell in the row is a `<span>` — so it selected the second span, not the second track. | Valid CSS, valid selector, wrong set. |
-| The sticky header measures **114px**; `scroll-margin-top: 5rem` (80px) left every drill-down target's own heading clipped underneath it. | The anchor resolved, the panel displayed. It was just under something. |
+| The sticky header measures **114px**; `scroll-margin-top: 5rem` (80px) left every drill-down target's own heading clipped underneath it. **Stale twice over since:** the header has gone 114px → 181px (eight tiles) → ~81px (four tiles with a sub-line), and each move silently re-broke or over-corrected the clearance. The fix is a single `--hh` custom property — hardcoding a measured height in three places is *how* it went stale — and it must be **re-measured in a browser after any header change**, which is why it is a variable and not a fourth guess. | The anchor resolved, the panel displayed. It was just under something. |
 | Header stats sat at x≈1375 on a 2055px viewport while the content column ended at 1417 — full-bleed header against a centred `92ch` main. | Both are legitimate layouts. Only together are they wrong. |
 | One bar could not carry the volume-vs-cost argument at all (above). | A design failure, not an implementation one. |
+| The confidence badge showed **HIGH** for a row containing a `low` measurement. `sorted({'high','low','medium'})[0]` is `'high'` — over this exact vocabulary alphabetical order reliably selects the *strongest* value. | Invisible to every structural check: the element was present, correctly classed and correctly coloured — for the wrong value. Only a human who knew the row's inputs could see it. |
+| The range band placed **inside** the `position: sticky` header: two wrapped rows of italic caveat at 420px, ~120-150px of sticky chrome against an 88px `--hh`. It silently re-broke the scroll-margin the same file had already fixed twice. | Every rule was valid and the anchor still resolved. The band is now emitted as the first child of `.page`, outside the sticky element. |
+
+**The `--hh` measurement, on the record.** Taken in Chrome against the shipped
+fixture on 2026-07-25, which is the whole point of making it a variable:
+
+| viewport | measured header | `--hh` | clearance |
+|---|---:|---:|---:|
+| 1576px | 82.45px | 5.5rem = 88px | 7.55px |
+| 700px (stats do not wrap) | 80.45px | 5.5rem = 88px | 7.55px |
+| 500px (`≤600px` branch) | 73.28px | 5rem = 80px | 6.72px |
+
+The values the spec carried in were `6.5rem` / `8rem` — safe, and never clipped,
+but the mobile one threw away **55px of a 726px phone screen** on every
+drill-down. "Safe over-estimate" is not the same as measured, and a variable
+whose value is still a guess has only moved the guess to one place.
 
 Two of these — the `nth-of-type` selector and the flex-basis collapse — are the
 kind of thing a screenshot test would pin cheaply. That is worth considering
@@ -646,18 +892,32 @@ it only for the two chart panels.
 ## 9. Regenerating the prototype
 
 ```bash
-# full page, from the live store
+# full page, 30-day window (the default), from the live store
 python3 docs/reporting-redesign-prototype.py > docs/reporting-redesign-prototype.html
 
-# the empty / sparse variant — any filter that selects tasks with no token history
-python3 docs/reporting-redesign-prototype.py 'project:finly-next' \
+# a different window — the range is a GENERATION-TIME parameter, not an
+# in-page control (see §8 D27(d))
+python3 docs/reporting-redesign-prototype.py --range 7d  > weekly.html
+python3 docs/reporting-redesign-prototype.py --range all > alltime.html
+
+# the empty / sparse variant — filter and range compose
+python3 docs/reporting-redesign-prototype.py 'project:finly-next' --range 30d \
   > docs/reporting-redesign-prototype-empty.html
 ```
 
-The generator shells out to `tasqx api` for every panel — `report.summary`,
-`store.export`, `task.list` ×2, `event.list` — which is the same claim DESIGN.md §8
-makes about the real generator: *"the report generator is just another client —
-anything it shows, a plugin or the MCP server could compute the same way."*
+`--range` accepts `Nd`, `Nw` or `all` (`-30d` is a synonym for `30d`, because
+that is the shape of the `completed.after:-30d` clause the page prints). An
+unreadable value is refused with the accepted spellings, never silently
+defaulted.
+
+The generator shells out to `tasqx api` for every panel — **five reads**:
+`report.summary` ×2 (one unwindowed for the backlog, one windowed for the flow —
+see §5 D-2), `store.export`, `task.list` (the tracked join, §5 D-1) and
+`event.list`. It used to issue six: a `@working` `task.list` fed a panel that was
+never built, so it was one subprocess per page for nothing and has been deleted.
+Five reads is the same claim DESIGN.md §8 makes about the real generator: *"the
+report generator is just another client — anything it shows, a plugin or the MCP
+server could compute the same way."*
 
 It deliberately mirrors `html.rs`'s structure so the port is mechanical:
 
@@ -668,6 +928,9 @@ It deliberately mirrors `html.rs`'s structure so the port is mechanical:
 | `Report::css()` | `css()` |
 | `esc()` (D19) | `esc()` — same rule: strip C0/C1 keeping tab+newline, then escape the five |
 | `svg_*()` | `svg_activity()` |
+| — | `Range` / `parse_range()` — the one window, ported as a struct |
+| — | `derive_counts()` — every count the page states, each tagged NOW or RANGE |
+| — | `TaskRefs` — the `#task-N` collector that bounds the panel set |
 
 ---
 

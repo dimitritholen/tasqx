@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tasqx report · redesign prototype</title>
+<title>tasqx report · last 30 days · redesign prototype</title>
 <style>
 :root {
   color-scheme: light dark;
@@ -34,6 +34,19 @@
   --c-tokens_out: #5fa036;
   }
 }
+/* The sticky header used to be 114px, then 181px at 420px. It is now four work
+   tiles with a sub-line and no token tiles. Hardcoding a measured header height
+   in three places is exactly how those numbers went stale, so the clearance is
+   ONE variable. Re-measure --hh in the browser after any header change
+   (DESIGN doc §8a).
+
+   MEASURED in Chrome on the shipped fixture, 2026-07-25: 82.45px at 1576px
+   viewport, 80.45px at 700px (stats do not wrap in the desktop branch), 73.28px
+   in the <=600px branch. 5.5rem = 88px clears the 82.45px worst case by 5.5px,
+   about one line of leading. The previous 6.5rem/8rem pair was a safe
+   over-estimate carried in from the spec — safe, but it threw away 55px of a
+   726px phone screen on every drill-down. */
+:root { --hh: 5.5rem; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg); line-height: 1.55;
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -44,21 +57,26 @@ a { color: var(--accent); }
 /* The header shares main's measure. Full-bleed, the stats drifted to the far
    right of a 2055px viewport while the content column sat centred 640px away —
    they read as belonging to different pages. */
+/* Four work tiles instead of eight mixed ones, on a tighter vertical rhythm.
+   The four token buckets left this row for §tokens, beside the bars that
+   decompose them. */
 header.summary { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--line);
   background: var(--bg); }
-header.summary > .hwrap { max-width: 92ch; margin: 0 auto; padding: .85rem 1.25rem;
-  display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-.brand { font-weight: 700; font-size: 1.1rem; letter-spacing: -.01em; }
+header.summary > .hwrap { max-width: 92ch; margin: 0 auto; padding: .7rem 1.25rem;
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: .5rem 1rem; flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 1.05rem; letter-spacing: -.01em; }
 .brand span { font-weight: 400; color: var(--muted); }
-.stats { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.stats { display: flex; gap: 1.25rem; flex-wrap: wrap; }
 .stat { text-align: right; }
-.stat .n { font-size: 1.45rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums;
-  font-family: ui-monospace, monospace; }
-.stat .l { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.stat .n { font-size: 1.3rem; font-weight: 700; line-height: 1.1;
+  font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+.stat .l { font-size: .68rem; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .06em; }
 .stat .s { font-size: .7rem; color: var(--muted); }
 .stat.flag .n { color: var(--danger); }
 
-section { margin-top: 2.4rem; scroll-margin-top: 8rem; }
+section { margin-top: 2.4rem; scroll-margin-top: var(--hh); }
 section > h2 { font-size: 1.05rem; margin: 0 0 .15rem; letter-spacing: -.01em; }
 section > .sub { color: var(--muted); font-size: .85rem; margin: 0 0 .9rem; max-width: 70ch; }
 h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 1.2rem 0 .4rem; }
@@ -82,18 +100,42 @@ h4 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color:
 .sw-tokens_out, .seg-tokens_out { background: var(--c-tokens_out); }
 .page[data-off~="tokens_cache_read"] .seg-tokens_cache_read { display: none; }
 .page[data-off~="tokens_cache_read"] .lg[data-bucket="tokens_cache_read"] { opacity: .45; text-decoration: line-through; }
+.page[data-off~="tokens_cache_read"] .tile[data-bucket="tokens_cache_read"] { opacity: .45; }
 .page[data-off~="tokens_cache_creation"] .seg-tokens_cache_creation { display: none; }
 .page[data-off~="tokens_cache_creation"] .lg[data-bucket="tokens_cache_creation"] { opacity: .45; text-decoration: line-through; }
+.page[data-off~="tokens_cache_creation"] .tile[data-bucket="tokens_cache_creation"] { opacity: .45; }
 .page[data-off~="tokens_in"] .seg-tokens_in { display: none; }
 .page[data-off~="tokens_in"] .lg[data-bucket="tokens_in"] { opacity: .45; text-decoration: line-through; }
+.page[data-off~="tokens_in"] .tile[data-bucket="tokens_in"] { opacity: .45; }
 .page[data-off~="tokens_out"] .seg-tokens_out { display: none; }
 .page[data-off~="tokens_out"] .lg[data-bucket="tokens_out"] { opacity: .45; text-decoration: line-through; }
+.page[data-off~="tokens_out"] .tile[data-bucket="tokens_out"] { opacity: .45; }
+
+/* The four bucket tiles, re-homed from the sticky header into §tokens.
+   Still four tiles; nothing here sums them. */
+.tokrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: .5rem; margin: 0 0 .9rem; }
+.tokrow-empty { grid-template-columns: minmax(0, 18rem); }
+.tile { display: grid; grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "sw n" "l l" "s s"; align-items: center; gap: .05rem .45rem;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: .5rem .7rem; }
+.tile .sw { grid-area: sw; }
+.tile .tn { grid-area: n; font-family: ui-monospace, monospace; font-size: 1.15rem;
+  font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.tile .tl { grid-area: l; font-size: .68rem; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted); }
+.tile .ts { grid-area: s; font-size: .7rem; color: var(--muted); }
 
 .bars { display: flex; flex-direction: column; gap: .35rem; }
-.brow { display: grid; grid-template-columns: 16ch 6.5ch 1fr 7ch;
-  grid-template-areas: "n l1 b1 v" ". l2 b2 ." ". . note note";
+/* Two changes over the original: a v2 cell for the cost-share percentage, and
+   minmax(0,1fr) on the bar column so it can actually shrink instead of forcing
+   an overflow. */
+.brow { display: grid; grid-template-columns: 16ch 6.5ch minmax(0, 1fr) 7ch;
+  grid-template-areas: "n l1 b1 v" ". l2 b2 v2" ". . note note";
   gap: .25rem .7rem; align-items: center; width: 100%; text-align: left; font: inherit;
-  background: none; border: 0; border-radius: 8px; padding: .55rem .5rem; cursor: pointer; }
+  color: inherit; background: none; border: 0; border-radius: 8px; padding: .55rem .5rem;
+  cursor: pointer; }
 .blabel { grid-area: l1; } .blabel2 { grid-area: l2; }
 .blabel, .blabel2 { font-size: .64rem; text-transform: uppercase; letter-spacing: .05em;
   color: var(--muted); text-align: right; }
@@ -106,9 +148,13 @@ h4 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color:
 .btrack.cost .bbar { height: 12px; }
 .brow:hover { background: var(--card); }
 .brow[aria-pressed="true"] { background: var(--card); outline: 2px solid var(--accent); }
-.bname { grid-area: n; font-weight: 600; font-size: .87rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bname { grid-area: n; font-weight: 600; font-size: .87rem; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btrack { background: var(--card); border-radius: 5px; overflow: hidden; }
-.bbar { display: flex; height: 20px; gap: 2px; }
+/* The cost bar is now scaled to the heaviest weighted project rather than pinned
+   at 100%, so a light project renders genuinely short. 2px keeps a non-zero row
+   visible without inflating it back into a lie. */
+.bbar { display: flex; height: 20px; gap: 2px; min-width: 2px; }
 /* td.tok is a flex row, so without a basis the track collapses to its content
    and the four segments render ~2px wide each — measured 14px total in the
    browser before this line existed. Found by looking at the page, not by any
@@ -118,8 +164,13 @@ h4 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color:
 .seg { min-width: 2px; }
 .seg:first-child { border-radius: 4px 0 0 4px; }
 .seg:last-child { border-radius: 0 4px 4px 0; }
-.bval { grid-area: v; text-align: right; font-size: .82rem; font-variant-numeric: tabular-nums; }
+.bval { grid-area: v; text-align: right; font-size: .82rem;
+  font-variant-numeric: tabular-nums; }
+.bval2 { grid-area: v2; text-align: right; font-size: .78rem; color: var(--muted);
+  font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
 .bnote { grid-area: note; font-size: .72rem; color: var(--muted); }
+/* The two bars now have two different denominators. This says so. */
+.scalenote { color: var(--muted); font-size: .75rem; margin: .7rem 0 0; max-width: 72ch; }
 
 .tablewrap { overflow-x: auto; }
 table.grid { width: 100%; border-collapse: collapse; font-size: .88rem; }
@@ -132,7 +183,6 @@ table.grid td.tok { display: flex; align-items: center; gap: .5rem; min-width: 1
 td.chip { color: var(--muted); font-size: .8rem; }
 .conf { font-size: .66rem; text-transform: uppercase; letter-spacing: .05em; border-radius: 999px;
   padding: .05rem .45rem; border: 1px solid var(--line); }
-.conf-high { color: var(--ok); border-color: var(--ok); }
 
 .filterbar { display: flex; align-items: center; gap: .6rem; margin-bottom: .8rem;
   background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .35rem .7rem; font-size: .82rem; }
@@ -149,20 +199,13 @@ li.ev-start .dot { background: var(--ok); }
 li.ev-done .dot { background: var(--ramp2); }
 li.ev-stop .dot { background: var(--accent); }
 li.ev .op { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); min-width: 9ch; }
-li.ev .ttl { flex: 1; min-width: 14ch; }
+li.ev .ttl { flex: 1; min-width: 14ch; overflow-wrap: anywhere; }
 li.ev .det { font-size: .76rem; color: var(--muted); }
 .page[data-filter] li.ev { display: none; }
 .page[data-filter] li.ev.match { display: flex; }
 
-/* scroll-margin lives on the panel itself, not on :target — it must apply
-   before the jump, and the sticky header measures 114px, not the 80px a
-   5rem guess assumed. Measured in the browser. */
-.details .detail { display: none; scroll-margin-top: 8rem; }
-.details .detail:target { display: block; border: 1px solid var(--accent); border-radius: 12px;
-  background: var(--card); padding: 1rem 1.1rem; margin-top: 2rem; }
 .detail header { display: flex; align-items: baseline; gap: .6rem; }
 .detail header h3 { margin: 0; font-size: 1rem; text-transform: none; letter-spacing: 0; color: var(--fg); flex: 1; }
-.detail .close { font-size: .78rem; }
 dl.meta { display: flex; flex-wrap: wrap; gap: .3rem 1.5rem; margin: .8rem 0 0; }
 dl.meta dt { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 dl.meta dd { margin: 0; font-size: .9rem; }
@@ -173,33 +216,222 @@ dl.meta dd { margin: 0; font-size: .9rem; }
 .tkv { font-size: .84rem; font-variant-numeric: tabular-nums; }
 .prov { font-size: .76rem; color: var(--muted); margin: .5rem 0 0; }
 ul.anns { list-style: none; margin: 0; padding: 0; }
-ul.anns li { border-left: 2px solid var(--line); padding: .3rem 0 .6rem .8rem; margin-bottom: .3rem; }
-ul.anns .when { font-size: .72rem; color: var(--muted); }
-ul.anns .body { white-space: pre-wrap; font-size: .87rem; }
 .tags { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .6rem; }
 .tag { font-size: .74rem; border: 1px solid var(--line); border-radius: 999px; padding: .05rem .55rem; color: var(--muted); }
 
-figure.chart { margin: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); padding: .8rem; }
-figure.chart svg { display: block; width: 100%; height: auto; }
-text.ax { fill: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
+/* text.ax goes 10px -> 11px: inside the phone-width figure a 10px viewBox label
+   rendered at ~8.4 CSS px. The 11px also feeds the label-step maths in
+   svg_activity() — change one and you must change the other.
+   The scroll lives on .svgwrap, not on figure, so the figcaption keeps the
+   figure's width and wraps normally. The svg's min-width is emitted INLINE and
+   is proportional to the day count (max(20rem, days * 1.05rem)): a fixed 38rem
+   forced a phone scrollbar for a seven-bar chart while still crushing 90. */
+figure.chart { margin: 0; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--bg); padding: .8rem; max-width: 100%; }
+figure.chart .svgwrap { overflow-x: auto; }
+figure.chart svg { display: block; width: 100%; min-width: 0; height: auto; }
+figure.chart figcaption { color: var(--muted); font-size: .74rem; margin-top: .45rem; }
+text.ax { fill: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; }
+text.mon { fill: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
+line.mrule { stroke: var(--line); stroke-width: 1; }
 rect.zero { fill: var(--line); }
 
+/* --- utility ------------------------------------------------------------ */
+.vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+p.clip { font-size: .78rem; color: var(--muted); margin: .55rem 0 0; }
+.nolink { color: var(--muted); border-bottom: 1px dotted var(--line); cursor: help; }
+
+/* --- sortable columns --------------------------------------------------- */
+/* The <th> carries aria-sort (what a screen reader reads off the column); the
+   <button> inside carries the click target and the focus ring. Padding moves
+   from the th to the button so the whole cell is clickable. */
+table.grid th.sortable { padding: 0; }
+.sortbtn { font: inherit; font-weight: inherit; color: inherit; background: none;
+  border: 0; margin: 0; padding: .4rem .5rem; border-radius: 6px; cursor: pointer;
+  text-transform: inherit; letter-spacing: inherit;
+  display: inline-flex; align-items: center; gap: .3rem; }
+.sortbtn:hover { color: var(--fg); background: var(--card); }
+.sortbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.arw::after { content: "\2195"; opacity: .35; }
+th[aria-sort="ascending"] .arw::after { content: "\2191"; opacity: 1; }
+th[aria-sort="descending"] .arw::after { content: "\2193"; opacity: 1; }
+th[aria-sort="ascending"], th[aria-sort="descending"] { color: var(--fg); }
+
+/* --- detail panels ------------------------------------------------------ */
+/* scroll-margin lives on the panel itself, not on :target - it must apply
+   before the jump. The clearance is --hh, one variable, because hardcoding a
+   measured header height in three places is exactly how 5rem then 8rem went
+   stale (DESIGN doc §8a). Re-measure --hh in the browser after any header
+   change. */
+.details .detail { display: none; scroll-margin-top: var(--hh); }
+.details .detail:target { display: block; border: 1px solid var(--accent); border-radius: 12px;
+  background: var(--card); padding: 1rem 1.1rem; margin-top: 2rem; }
+/* The panel is focused programmatically (script step 3). Suppress the plain
+   focus ring - the accent border IS the "you are here" - but keep a real one
+   for keyboard navigation, where the ring is the only positional feedback. */
+.details .detail:focus { outline: none; }
+.details .detail:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.detail .close { font-size: .78rem; white-space: nowrap; }
+
+/* --- annotations: clamp to six lines, one copy of the text --------------- */
+/* The checkbox sits BEFORE the body so `:checked ~ .body` can reach it; it is
+   clipped rather than display:none so it stays focusable and Space still
+   toggles it. The fade is a gradient mask, so it needs no knowledge of the
+   body's height and vanishes automatically when the clamp lifts. */
+ul.anns li { position: relative; border-left: 2px solid var(--line);
+  padding: .3rem 0 .6rem .8rem; margin-bottom: .3rem; }
+ul.anns .when { display: block; font-size: .72rem; color: var(--muted); }
+ul.anns .body { white-space: pre-wrap; font-size: .87rem; overflow-wrap: anywhere; }
+ul.anns .body.clamp { display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6; line-clamp: 6; overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 78%, transparent 100%); }
+.annx { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
+.annx:checked ~ .body.clamp { display: block; -webkit-line-clamp: none; line-clamp: none;
+  overflow: visible; -webkit-mask-image: none; mask-image: none; }
+.annmore { display: inline-block; margin-top: .3rem; font-size: .74rem; color: var(--accent);
+  cursor: pointer; border-bottom: 1px dotted currentColor; }
+.annmore .less, .annx:checked ~ .annmore .more { display: none; }
+.annx:checked ~ .annmore .less { display: inline; }
+.annx:focus-visible ~ .annmore { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* --- The stated range ---------------------------------------------------
+   Shares main's measure for the reason header.summary already does: at 2055px
+   a full-bleed band would sit 600px away from the column it describes.
+   Emitted OUTSIDE the sticky header: two or three wrapped rows of italic prose
+   inside a position:sticky element re-breaks the scroll-margin this file has
+   already fixed twice. */
+.rangeband { max-width: 92ch; margin: 0 auto; padding: 0 1.25rem .7rem;
+  display: flex; align-items: baseline; gap: .35rem 1rem; flex-wrap: wrap; font-size: .78rem; }
+.rangeband .rk { text-transform: uppercase; letter-spacing: .06em; font-size: .64rem;
+  color: var(--muted); }
+.rangeband b { font-size: .9rem; }
+.rangeband .rs { color: var(--muted); }
+/* The caveats get their own row so they read as prose, not as another chip. */
+.rangeband .rn { flex-basis: 100%; color: var(--muted); font-style: italic; }
+.rangeband code { font-size: .74rem; background: var(--card); border: 1px solid var(--line);
+  border-radius: 5px; padding: .02rem .35rem; }
+
+/* --- Confidence: the WEAKEST input ---------------------------------------
+   Four states, and `low` must not be able to pass for `high` at a glance.
+   No new colour tokens: these are the semantic roles already in the sheet, so
+   the validated four-bucket chart palette is untouched. */
+.conf-high { color: var(--ok); border-color: var(--ok); }
+.conf-medium { color: var(--fg); border-color: var(--muted); }
+.conf-low { color: var(--danger); border-color: var(--danger); }
+/* Dashed, because `unknown` is not a grade — it means a value got past
+   tokens.rs::require_confidence and something upstream is broken. */
+.conf-unknown { color: var(--danger); border-color: var(--danger); border-style: dashed; }
+.conf .mixed { margin-left: .12rem; font-weight: 700; }
+
+/* --- Tracked: three states, not two -------------------------------------- */
+.tv { font-variant-numeric: tabular-nums; }
+.tnever { color: var(--muted); font-size: .78rem; font-style: italic; }
+.tzero { color: var(--danger); font-size: .8rem; white-space: nowrap; }
+
+/* --- Completions with no attribution -------------------------------------
+   Bordered in --danger because the panel only exists when there is something
+   to fix; at zero the section is not rendered at all. */
+.unattr { border: 1px solid var(--danger); border-radius: 12px; background: var(--card);
+  padding: 1rem 1.1rem; }
+.unattr .bignum { margin: 0 0 .8rem; font-family: ui-monospace, monospace; font-size: 2.1rem;
+  font-weight: 700; line-height: 1; color: var(--danger); font-variant-numeric: tabular-nums; }
+/* "12" alone cannot say whether that is most of them or a rounding error. */
+.unattr .bignum .of { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: .82rem; font-weight: 400; color: var(--muted); margin-left: .5rem; }
+.uacols { display: grid; grid-template-columns: repeat(auto-fit, minmax(26ch, 1fr));
+  gap: 1rem 1.8rem; }
+.uacol h3 { margin-top: 0; color: var(--fg); text-transform: none; letter-spacing: 0;
+  font-size: .84rem; }
+.uacol .uan { font-family: ui-monospace, monospace; color: var(--danger); margin-left: .3rem; }
+.uacol .hint { color: var(--muted); font-size: .8rem; margin: 0 0 .6rem; }
+ul.ualist { list-style: none; margin: 0; padding: 0; }
+ul.ualist li { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap;
+  padding: .28rem 0; border-top: 1px solid var(--line); font-size: .84rem; }
+ul.ualist .ttl { flex: 1; min-width: 14ch; }
+ul.ualist .chip, ul.ualist .when { color: var(--muted); font-size: .74rem; }
+
 footer { max-width: 92ch; margin: 0 auto; padding: 1rem 1.25rem 3rem; color: var(--muted); font-size: .8rem; }
-@media print { header.summary { position: static; } .details .detail { display: block; } }
+
+/* Responsive. Verified target: 420px, body must not scroll.
+   .brow's fixed px/ch columns left the bar column at ~133px, so four segments
+   became slivers. Below 600px the row stacks: name and volume figure on one
+   line, then label/bar pairs at full container width, then the note. */
+@media (max-width: 600px) {
+  :root { --hh: 5rem; }   /* measured 73.28px; 80px clears it by 6.7px */
+  main { padding: 1rem .85rem 3rem; }
+  header.summary > .hwrap { padding: .6rem .85rem; gap: .3rem .8rem; }
+  .stats { gap: .8rem 1rem; }
+  .stat .n { font-size: 1.1rem; }
+  .stat .l { font-size: .62rem; letter-spacing: .04em; }
+  .stat .s { font-size: .62rem; }
+
+  .tokrow { grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); gap: .4rem; }
+  .tile { padding: .4rem .55rem; }
+  .tile .tn { font-size: 1rem; }
+
+  .brow { grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "n v" "l1 l1" "b1 b1" "l2 v2" "b2 b2" "note note";
+    gap: .1rem .6rem; padding: .6rem .35rem; align-items: baseline; }
+  .bname { white-space: normal; overflow: visible; text-overflow: clip;
+    overflow-wrap: anywhere; }
+  .blabel, .blabel2 { text-align: left; margin-top: .3rem; }
+  .bnote { margin-top: .25rem; }
+  .bbar { height: 18px; }
+  .btrack.cost .bbar { height: 14px; }
+
+  figure.chart { padding: .55rem; }
+  .scalenote { font-size: .72rem; }
+
+  /* The regions the cost table and the detail panels own: without these they
+     keep desktop metrics on a phone while everything around them shrinks. */
+  table.grid { font-size: .82rem; }
+  table.grid td, table.grid th { padding: .35rem .4rem; }
+  .sortbtn { padding: .3rem .4rem; }
+  .detail header { flex-wrap: wrap; }
+  dl.meta { gap: .3rem .9rem; }
+  .details .detail:target { padding: .8rem .85rem; }
+  ul.ualist li { gap: .35rem; }
+}
+
+/* ONE print block. Paper has no scrollbar and no disclosure: everything is
+   shown, nothing is masked, nothing is clipped at a container edge. */
+@media print {
+  header.summary { position: static; }
+  .details .detail { display: block; }
+  ul.anns .body.clamp { display: block; -webkit-line-clamp: none; line-clamp: none;
+    overflow: visible; -webkit-mask-image: none; mask-image: none; }
+  .annx, .annmore, .arw { display: none; }
+  .sortbtn { padding: 0; }
+  li.ev .ttl { min-width: 0; }
+  figure.chart .svgwrap { overflow: visible; }
+  /* !important is load-bearing: svg_activity emits min-width INLINE (it is
+     proportional to the day count), and an inline declaration outranks any
+     author rule without it. Without this the chart clips at the paper edge
+     instead of fitting — .svgwrap is overflow:visible in print, so there is
+     no scrollbar to rescue it. */
+  figure.chart svg { min-width: 0 !important; }
+  .tokrow { grid-template-columns: repeat(4, 1fr); }
+  .unattr { break-inside: avoid; }
+}
 </style>
 </head>
 <body>
 <div class="page">
-<header class="summary"><div class="hwrap"><div class="brand">tasqx <span>review</span></div><div class="stats"><div class="stat"><div class="n">3</div><div class="l">open</div></div><div class="stat"><div class="n">0</div><div class="l">done / 7d</div></div><div class="stat"><div class="n">—</div><div class="l">tracked</div></div><div class="stat"><div class="n">0</div><div class="l">overdue</div></div><div class="stat"><div class="n">—</div><div class="l">tokens</div><div class="s">not measured yet</div></div></div></div></header><main><section id="activity"><h2>Completions, last 21 days</h2><p class="sub">0 of 3 tasks carry a token measurement.</p><figure class="chart"><svg viewBox="0 0 720 96" role="img" aria-label="Tasks completed per day, last 21 days"><defs><linearGradient id="ramp" x1="0" y1="1" x2="0" y2="0"><stop offset="0%" stop-color="var(--ramp0)"/><stop offset="50%" stop-color="var(--ramp1)"/><stop offset="100%" stop-color="var(--ramp2)"/></linearGradient></defs><text class="ax" x="0" y="16.0">10</text><text class="ax" x="0" y="78.0">0</text><rect x="32.2" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="64.8" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="97.3" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="129.9" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="162.5" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="195.0" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="227.6" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="260.2" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="292.8" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="325.3" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="357.9" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="390.5" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="423.0" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="455.6" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="488.2" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="520.8" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="553.3" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="585.9" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="618.5" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="651.0" y="8.0" width="20.2" height="70.0" rx="4" fill="url(#ramp)"><title>2026-07-24: 10 done</title></rect><rect x="683.6" y="43.0" width="20.2" height="35.0" rx="4" fill="url(#ramp)"><title>2026-07-25: 5 done</title></rect><text class="ax" x="42.3" y="92.0" text-anchor="middle">05</text><text class="ax" x="140.0" y="92.0" text-anchor="middle">08</text><text class="ax" x="237.7" y="92.0" text-anchor="middle">11</text><text class="ax" x="335.4" y="92.0" text-anchor="middle">14</text><text class="ax" x="433.1" y="92.0" text-anchor="middle">17</text><text class="ax" x="530.9" y="92.0" text-anchor="middle">20</text><text class="ax" x="628.6" y="92.0" text-anchor="middle">23</text></svg></figure></section><section id="tokens"><h2>Token burn by project</h2><p class="sub">Where this range&#39;s tokens actually went.</p><div class="empty"><p>No token data in this range.</p><p class="hint">Token accounting is opt-in: `tasqx config set tokens.enabled true`, then run `tasqx daemon` so the attribution thread can reconstruct spend after each completion.</p></div></section><section id="cost"><h2>Cost per task</h2><p class="sub">Time and tokens, side by side.</p><div class="empty"><p>No measured work yet.</p><p class="hint">A task is measurable once it has a timer interval or an attributed measurement. Start one with `tasqx start &lt;id&gt;`.</p></div></section><section id="timeline"><h2>Timeline</h2><p class="sub">Started, stopped, completed — straight off the event log. Filtered by the project you select above.</p><div class="filterbar" id="filterbar" hidden><span class="fnote">Filtered to <b id="fname"></b></span><button type="button" id="fclear" class="fclear">clear</button></div><div class="timeline"><div class="day"><h3>Sat 25 Jul</h3><ul class="events"><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">no spend found in window</span></li><li class="ev ev-done" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">no spend found in window</span></li><li class="ev ev-done" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">10:01</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">9.09M tokens · 41 samples</span></li><li class="ev ev-done" data-project="none"><span class="tm">10:01</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">09:49</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">1.50M tokens · 8 samples</span></li><li class="ev ev-done" data-project="none"><span class="tm">09:49</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-stop" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">stopped</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">3.31M tokens · 25 samples</span></li><li class="ev ev-done" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">09:39</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li></ul></div><div class="day"><h3>Fri 24 Jul</h3><ul class="events"><li class="ev ev-done" data-project="none"><span class="tm">16:14</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">16:14</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">15:30</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">15:30</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">15:30</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:46</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:45</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:45</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:45</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:04</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:04</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:04</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:03</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:03</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:03</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">13:18</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">13:16</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">13:14</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li></ul></div></div></section><div class="details"><article class="detail" id="task-2"><header><span class="id">#2</span><h3>link-message 403-guard bouwen in AccessTokenService:66 + MR !6517 mergen</h3><a class="close" href="#cost" aria-label="Close">close</a></header><dl class="meta"><div><dt>status</dt><dd>pending</dd></div><div><dt>project</dt><dd>finly-next</dd></div><div><dt>priority</dt><dd>H</dd></div><div><dt>estimate</dt><dd>—</dd></div><div><dt>tracked</dt><dd>—</dd></div><div><dt>urgency</dt><dd>6.0</dd></div></dl><div class="tags"><span class="tag">bugfix</span><span class="tag">link-message</span></div><h4>Token cost</h4><p class="muted small">No token measurement. A task is only attributed when its <code>done</code> event carries correlation (client / session_id / transcript_path).</p><h4>Annotations</h4><ul class="anns"><li><span class="when">2026-07-24 09:51 UTC</span><div class="body">Context: memory-doc &quot;link-message 403 masked 500&quot; (link-message-403-masked-500.md). Lege 500 = verkapte abort(403) mailbox-toegang; guard nog te bouwen op AccessTokenService:66. Ook open: productvraag persoonlijke mailboxen.</div></li></ul></article><article class="detail" id="task-5"><header><span class="id">#5</span><h3>Staging webhook-401 fixen: PUT sub 5437d758 naar workflow f78b0665 + oude subs opruimen (wachten op klant-test / herinnering)</h3><a class="close" href="#cost" aria-label="Close">close</a></header><dl class="meta"><div><dt>status</dt><dd>pending</dd></div><div><dt>project</dt><dd>finly-next</dd></div><div><dt>priority</dt><dd>M</dd></div><div><dt>estimate</dt><dd>—</dd></div><div><dt>tracked</dt><dd>—</dd></div><div><dt>urgency</dt><dd>3.9</dd></div></dl><div class="tags"><span class="tag">qore</span><span class="tag">staging</span><span class="tag">webhook</span></div><h4>Token cost</h4><p class="muted small">No token measurement. A task is only attributed when its <code>done</code> event carries correlation (client / session_id / transcript_path).</p><h4>Annotations</h4><ul class="anns"><li><span class="when">2026-07-24 09:51 UTC</span><div class="body">Context: memory-doc &quot;Staging webhook 401 fix PENDING&quot; (qore-staging-webhook-401-fix-pending.md). Optie 1, geen env/redeploy nodig. Klant test eerst; uitvoeren zodra Dimitri het sein geeft.</div></li></ul></article><article class="detail" id="task-6"><header><span class="id">#6</span><h3>Qore MCP tools/list cycle-bug: develop-fix + Fix B bridge-vangnet</h3><a class="close" href="#cost" aria-label="Close">close</a></header><dl class="meta"><div><dt>status</dt><dd>pending</dd></div><div><dt>project</dt><dd>finly-next</dd></div><div><dt>priority</dt><dd>M</dd></div><div><dt>estimate</dt><dd>—</dd></div><div><dt>tracked</dt><dd>—</dd></div><div><dt>urgency</dt><dd>3.9</dd></div></dl><div class="tags"><span class="tag">bugfix</span><span class="tag">mcp</span><span class="tag">qore</span></div><h4>Token cost</h4><p class="muted small">No token measurement. A task is only attributed when its <code>done</code> event carries correlation (client / session_id / transcript_path).</p><h4>Annotations</h4><ul class="anns"><li><span class="when">2026-07-24 09:51 UTC</span><div class="body">Context: memory-doc &quot;Qore MCP tools/list cycle-bug&quot; (qore-mcp-toolslist-cycle-bug.md). Circulaire $ref Account↔OfficeLabel; staging gefixt via Chris&#39; MR !6481, develop nog kapot. Docs in finly-dev root.</div></li></ul></article></div></main><footer>Generated 2026-07-25 10:17 UTC · every panel is a pure read of the tasqx core API · prototype for docs/reporting-redesign.md</footer>
+<header class="summary"><div class="hwrap"><div class="brand">tasqx <span>review</span></div><div class="stats"><div class="stat"><div class="n">3</div><div class="l">open</div><div class="s">now</div></div><div class="stat"><div class="n">0</div><div class="l">done</div><div class="s">in range</div></div><div class="stat"><div class="n">0s</div><div class="l">tracked</div><div class="s">in range</div></div><div class="stat"><div class="n">0</div><div class="l">overdue</div><div class="s">now</div></div></div></div></header><div class="rangeband"><span class="rk">range</span><b>last 30 days</b><span class="rs">completed after 2026-06-25 00:00 UTC · <code>completed.after:-30d</code></span><span class="rk">scope</span><code>project:finly-next</code><span class="rn">open and overdue are as of NOW, not windowed: no completion bound can select a task that never completed (filter.rs::instant_cmp)</span></div><main><p class="vh" id="live" role="status" aria-live="polite"></p><section id="activity"><h2>Completions, last 30 days</h2><p class="sub">0 of 0 completions in range carry a token measurement · 0 were never timed, 0 had a timer that recorded 0s.</p><figure class="chart"><div class="svgwrap"><svg style="min-width:32rem" viewBox="0 0 720 111" role="img" aria-label="Tasks completed per day, 26 Jun 2026 to 25 Jul 2026; peak 10 in a day"><defs><linearGradient id="ramp" x1="0" y1="1" x2="0" y2="0"><stop offset="0%" stop-color="var(--ramp0)"/><stop offset="50%" stop-color="var(--ramp1)"/><stop offset="100%" stop-color="var(--ramp2)"/></linearGradient></defs><text class="ax" x="0" y="17.0">10</text><text class="ax" x="0" y="82.0">0</text><text class="mon" x="29.0" y="108.0">Jun 2026</text><line class="mrule" x1="140.0" y1="8.0" x2="140.0" y2="86.0"/><text class="mon" x="143.0" y="108.0">Jul</text><rect x="30.3" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-06-26: 0 done</title></rect><rect x="53.1" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-06-27: 0 done</title></rect><rect x="75.9" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-06-28: 0 done</title></rect><rect x="98.7" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-06-29: 0 done</title></rect><rect x="121.5" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-06-30: 0 done</title></rect><rect x="144.3" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-01: 0 done</title></rect><rect x="167.1" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-02: 0 done</title></rect><rect x="189.9" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-03: 0 done</title></rect><rect x="212.7" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-04: 0 done</title></rect><rect x="235.5" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-05: 0 done</title></rect><rect x="258.3" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-06: 0 done</title></rect><rect x="281.1" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-07: 0 done</title></rect><rect x="303.9" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-08: 0 done</title></rect><rect x="326.7" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-09: 0 done</title></rect><rect x="349.5" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-10: 0 done</title></rect><rect x="372.3" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-11: 0 done</title></rect><rect x="395.1" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-12: 0 done</title></rect><rect x="417.9" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-13: 0 done</title></rect><rect x="440.7" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-14: 0 done</title></rect><rect x="463.5" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-15: 0 done</title></rect><rect x="486.3" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-16: 0 done</title></rect><rect x="509.1" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-17: 0 done</title></rect><rect x="531.9" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-18: 0 done</title></rect><rect x="554.7" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-19: 0 done</title></rect><rect x="577.5" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-20: 0 done</title></rect><rect x="600.3" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-21: 0 done</title></rect><rect x="623.1" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-22: 0 done</title></rect><rect x="645.9" y="80.0" width="14.1" height="2" rx="1" class="zero"><title>2026-07-23: 0 done</title></rect><rect x="668.7" y="8.0" width="14.1" height="74.0" rx="4" fill="url(#ramp)"><title>2026-07-24: 10 done</title></rect><rect x="691.5" y="45.0" width="14.1" height="37.0" rx="4" fill="url(#ramp)"><title>2026-07-25: 5 done</title></rect><text class="ax" x="37.4" y="94.0" text-anchor="middle">26</text><text class="ax" x="60.2" y="94.0" text-anchor="middle">27</text><text class="ax" x="83.0" y="94.0" text-anchor="middle">28</text><text class="ax" x="105.8" y="94.0" text-anchor="middle">29</text><text class="ax" x="128.6" y="94.0" text-anchor="middle">30</text><text class="ax" x="151.4" y="94.0" text-anchor="middle">01</text><text class="ax" x="174.2" y="94.0" text-anchor="middle">02</text><text class="ax" x="197.0" y="94.0" text-anchor="middle">03</text><text class="ax" x="219.8" y="94.0" text-anchor="middle">04</text><text class="ax" x="242.6" y="94.0" text-anchor="middle">05</text><text class="ax" x="265.4" y="94.0" text-anchor="middle">06</text><text class="ax" x="288.2" y="94.0" text-anchor="middle">07</text><text class="ax" x="311.0" y="94.0" text-anchor="middle">08</text><text class="ax" x="333.8" y="94.0" text-anchor="middle">09</text><text class="ax" x="356.6" y="94.0" text-anchor="middle">10</text><text class="ax" x="379.4" y="94.0" text-anchor="middle">11</text><text class="ax" x="402.2" y="94.0" text-anchor="middle">12</text><text class="ax" x="425.0" y="94.0" text-anchor="middle">13</text><text class="ax" x="447.8" y="94.0" text-anchor="middle">14</text><text class="ax" x="470.6" y="94.0" text-anchor="middle">15</text><text class="ax" x="493.4" y="94.0" text-anchor="middle">16</text><text class="ax" x="516.2" y="94.0" text-anchor="middle">17</text><text class="ax" x="539.0" y="94.0" text-anchor="middle">18</text><text class="ax" x="561.8" y="94.0" text-anchor="middle">19</text><text class="ax" x="584.6" y="94.0" text-anchor="middle">20</text><text class="ax" x="607.4" y="94.0" text-anchor="middle">21</text><text class="ax" x="630.2" y="94.0" text-anchor="middle">22</text><text class="ax" x="653.0" y="94.0" text-anchor="middle">23</text><text class="ax" x="675.8" y="94.0" text-anchor="middle">24</text><text class="ax" x="698.6" y="94.0" text-anchor="middle">25</text></svg></div><figcaption>One bar and one number per day; month starts are ruled.</figcaption></figure></section><section id="tokens"><h2>Token burn by project · last 30 days</h2><p class="sub">Where last 30 days tokens actually went.</p><div class="tokrow tokrow-empty"><div class="tile"><span class="tn">&#8212;</span><span class="tl">tokens</span><span class="ts">not measured yet</span></div></div><div class="empty"><p>No token data in last 30 days.</p><p class="hint">Token accounting is opt-in: `tasqx config set tokens.enabled true`, then run `tasqx daemon` so the attribution thread can reconstruct spend after each completion. Or widen the window with `--range all`.</p></div></section><section id="cost"><h2>Cost per task · last 30 days</h2><p class="sub">Time and tokens, side by side — last 30 days.</p><div class="empty"><p>No measured work in this range.</p><p class="hint">A task appears here once it is started, stopped or completed inside the range. Widen it with `--range 90d` or `--range all`, or start something with `tasqx start &lt;id&gt;`.</p></div></section><section id="timeline"><h2>Timeline · last 30 days</h2><p class="sub">Started, stopped, completed — straight off the event log. Filtered by the project you select above.</p><div class="filterbar" id="filterbar" hidden><span class="fnote">Filtered to <b id="fname"></b></span><button type="button" id="fclear" class="fclear">clear</button></div><div class="timeline"><div class="day"><h3>Sat 25 Jul</h3><ul class="events"><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">no spend found in window</span></li><li class="ev ev-done" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">no spend found in window</span></li><li class="ev ev-done" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">10:01</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">9.09M tokens · 41 samples</span></li><li class="ev ev-done" data-project="none"><span class="tm">10:01</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">09:49</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">1.50M tokens · 8 samples</span></li><li class="ev ev-done" data-project="none"><span class="tm">09:49</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-stop" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">stopped</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">3.31M tokens · 25 samples</span></li><li class="ev ev-done" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">09:39</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li></ul></div><div class="day"><h3>Fri 24 Jul</h3><ul class="events"><li class="ev ev-done" data-project="none"><span class="tm">16:14</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">16:14</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">15:30</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">15:30</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">15:30</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:46</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:45</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:45</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:45</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:04</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:04</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:04</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:03</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:03</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:03</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">13:18</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">13:16</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">13:14</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li></ul></div></div></section></main><footer>Generated 2026-07-25 11:44 UTC · range last 30 days (completed after 2026-06-25 00:00 UTC) · backlog figures are as of generation time · every panel is a pure read of the tasqx core API · prototype for docs/reporting-redesign.md</footer>
 </div>
 <script>
 // The entire interaction budget of this page, in vanilla JS.
 // The History API is deliberately untouched: its state-pushing methods throw
 // SecurityError on a file:// document (origin null), which is exactly how this
-// page is opened (DESIGN.md 8a). Drill-down is :target CSS instead.
-// Everything below is attribute flips; CSS does the rendering.
+// page is opened (DESIGN.md 8a). Drill-down stays :target CSS; the JS below only
+// moves FOCUS to what :target already revealed - the one part of a drill-down
+// that CSS cannot do. Everything else is attribute flips; CSS renders.
 (function () {
   var page = document.querySelector('.page');
+  var live = document.getElementById('live');
+  var $ = function (id) { return document.getElementById(id); };
 
   // 1. Legend toggles a bucket off across every stacked bar at once.
   page.addEventListener('click', function (e) {
@@ -218,8 +450,7 @@ footer { max-width: 92ch; margin: 0 auto; padding: 1rem 1.25rem 3rem; color: var
   });
 
   // 2. A project row filters the timeline. Clicking the active row clears it.
-  var bar = document.getElementById('filterbar');
-  var fname = document.getElementById('fname');
+  var bar = $('filterbar'), fname = $('fname'), fclear = $('fclear');
   function applyFilter(slug, label) {
     page.querySelectorAll('.brow').forEach(function (b) {
       b.setAttribute('aria-pressed', b.dataset.project === slug ? 'true' : 'false');
@@ -236,15 +467,66 @@ footer { max-width: 92ch; margin: 0 auto; padding: 1rem 1.25rem 3rem; color: var
       li.classList.toggle('match', !slug || li.dataset.project === slug);
     });
   }
-  page.addEventListener('click', function (e) {
-    var row = e.target.closest('.brow');
-    if (!row) return;
-    var active = row.getAttribute('aria-pressed') === 'true';
-    applyFilter(active ? null : row.dataset.project,
-                active ? '' : row.querySelector('.bname').textContent);
+  if (bar) {
+    page.addEventListener('click', function (e) {
+      var row = e.target.closest('.brow');
+      if (!row) return;
+      var active = row.getAttribute('aria-pressed') === 'true';
+      applyFilter(active ? null : row.dataset.project,
+                  active ? '' : row.querySelector('.bname').textContent);
+    });
+    fclear.addEventListener('click', function () { applyFilter(null, ''); });
+  }
+
+  // 3. Drill-down focus. :target reveals the panel, but a keyboard or
+  //    screen-reader user is told nothing and the caret stays put, so Tab then
+  //    walks the page BEHIND the panel that just opened. Move focus to it and
+  //    name it. Runs on load too, so a mailed #task-N deep link lands correctly.
+  function land() {
+    var el = $(location.hash.slice(1));
+    if (!el) return;
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
+    el.focus();
+    // The panel is a named region, so focus alone already announces its title.
+    // The live line adds only what focus cannot say: how to get back out.
+    var h = el.querySelector('h2, h3');
+    if (live) {
+      live.textContent = el.classList.contains('detail')
+        ? 'Task detail opened. Press Escape to close.'
+        : (h ? h.textContent : el.id);
+    }
+  }
+  window.addEventListener('hashchange', land);
+  if (location.hash) land();
+  document.addEventListener('keydown', function (e) {
+    // Assigning location.hash is a navigation, not History state - file:// safe.
+    if (e.key === 'Escape' && location.hash.slice(0, 6) === '#task-') {
+      location.hash = '#cost';
+    }
   });
-  document.getElementById('fclear').addEventListener('click', function () {
-    applyFilter(null, '');
+
+  // 4. Sort the cost table in place. Every key is a data-* number already on the
+  //    row, so nothing is re-parsed and no cell is rewritten - only row order.
+  var tbl = $('costtable');
+  if (tbl) tbl.addEventListener('click', function (e) {
+    var btn = e.target.closest('.sortbtn');
+    if (!btn) return;
+    var th = btn.parentNode, k = th.dataset.key;
+    var dir = th.getAttribute('aria-sort') === 'descending' ? 1 : -1;
+    var body = tbl.tBodies[0], rows = [].slice.call(body.rows);
+    rows.sort(function (x, y) {
+      var a = x.dataset[k], b = y.dataset[k], n = a - b;
+      return (n === n ? n : String(a).localeCompare(String(b))) * dir;  // n!==n is NaN
+    });
+    rows.forEach(function (r) { body.appendChild(r); });
+    [].forEach.call(th.parentNode.children, function (c) {
+      if (c.dataset.key) c.setAttribute('aria-sort', 'none');
+    });
+    th.setAttribute('aria-sort', dir < 0 ? 'descending' : 'ascending');
+    if (live) {
+      live.textContent = 'Sorted by ' + k + ', ' +
+                         (dir < 0 ? 'highest first' : 'lowest first') + '.';
+    }
   });
 })();
 </script>

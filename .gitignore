@@ -37,3 +37,10 @@ HANDOFF.md
 
 # Execution plans: agent task-checklists for work already shipped.
 docs/plans/
+
+# Python bytecode from the docs/ prototype generator.
+__pycache__/
+*.pyc
+
+# Playwright MCP session artefacts (page snapshots, console logs).
+.playwright-mcp/
