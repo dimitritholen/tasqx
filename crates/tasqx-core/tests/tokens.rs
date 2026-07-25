@@ -545,15 +545,28 @@ fn otlp_ingest_prunes_samples_past_the_retention_window() {
     use tasqx_core::tokens::UsageSample;
 
     let e = engine();
-    // Seed a stale row directly with a very old `created` (well past 30 days).
-    e.conn()
-        .execute(
-            "INSERT INTO otlp_samples (id, session_id, tool, ts, created) \
-             VALUES ('old', 'sess-old', 'codex', '2000-01-01T00:00:00Z', '2000-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-    assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 1);
+    // 29 and 31 days, spelled out here rather than derived from
+    // `OTLP_RETENTION_SECS`. Deriving them (`now - (RETENTION - 1h)`) would move
+    // the seeds and the cutoff together, so shrinking the constant from 30 days
+    // to 1 would leave this green — which is exactly the state this test was in
+    // when it seeded a row dated 2000-01-01: any window from seconds to
+    // millennia pruned that row, so it proved a DELETE ran and nothing about
+    // WHEN. The pair pins the window's MAGNITUDE. It deliberately does not pin
+    // `<` vs `<=`: the cutoff comes from `Timestamp::now()` inside the ingest,
+    // so a row landing exactly on it is a race no deterministic test can seed.
+    let day = jiff::SignedDuration::from_hours(24);
+    let keep = (jiff::Timestamp::now() - day * 29).to_string();
+    let prune = (jiff::Timestamp::now() - day * 31).to_string();
+    for (id, created) in [("young", &keep), ("old", &prune)] {
+        e.conn()
+            .execute(
+                "INSERT INTO otlp_samples (id, session_id, tool, ts, created) \
+                 VALUES (?1, 'sess-old', 'codex', ?2, ?2)",
+                rusqlite::params![id, created],
+            )
+            .unwrap();
+    }
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 2);
 
     // A fresh ingest triggers the opportunistic prune of the stale row.
     e.otlp_ingest(&[OtlpSample {
@@ -569,14 +582,19 @@ fn otlp_ingest_prunes_samples_past_the_retention_window() {
         },
     }])
     .unwrap();
-    // Only the fresh row remains; the decade-old one was pruned.
-    assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 1);
+    // Both halves, and both are load-bearing. Asserting only the prune would
+    // stay green if the window shrank to nothing and took every row with it;
+    // asserting only the survivor would stay green if the prune never ran.
     assert_eq!(
-        count(
-            &e,
-            "SELECT COUNT(*) FROM otlp_samples WHERE session_id = 'sess-old'"
-        ),
+        count(&e, "SELECT COUNT(*) FROM otlp_samples WHERE id = 'old'"),
         0,
-        "the stale row must have been pruned"
+        "a row 31 days old is past the retention window and must be pruned"
     );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM otlp_samples WHERE id = 'young'"),
+        1,
+        "a row 29 days old is inside the window and must survive"
+    );
+    // The ingest's own row, plus the survivor.
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 2);
 }
