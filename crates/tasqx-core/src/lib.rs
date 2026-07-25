@@ -133,9 +133,11 @@ mod doc_gate_tests {
     fn ci_fails_the_build_on_a_rustdoc_warning() {
         let step = step_with("cargo doc");
         assert!(
-            step.contains("-p tasqx-core"),
-            "the doc gate must name this crate explicitly; widening it to \
-             --workspace requires tasqx-cli to be warning-free first:\n{step}"
+            step.contains("--workspace"),
+            "the doc gate must cover BOTH crates. It was scoped to -p tasqx-core \
+             while tasqx-cli still had public docs linking to private items; those \
+             are code spans now, and narrowing the gate again would let the CLI's \
+             rendered docs rot with every gate green:\n{step}"
         );
         assert!(
             step.contains("--all-features"),

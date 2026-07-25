@@ -100,13 +100,13 @@ jobs:
       # build. No apt step is needed for it; notify-rust 4 talks D-Bus through
       # zbus (pure Rust), so nothing here links libdbus.
       #
-      # -p tasqx-core, not --workspace, and that is a known gap rather than a
-      # preference: tasqx-cli still has two public doc comments linking to
-      # private items (config.rs `read_table_in`, lib.rs `Exit::self_framed`).
-      # Widen this to --workspace the moment those are demoted to code spans. A
-      # gate that is red on arrival teaches everyone to ignore it, which is the
-      # reasoning the clippy and mutants jobs above already record.
-      - run: cargo doc -p tasqx-core --no-deps --all-features
+      # --workspace, because the three public doc comments that linked to
+      # private items (filter.rs `MAX_NESTING`, config.rs `read_table_in`,
+      # lib.rs `Exit::self_framed`) are code spans now. A private item is a fine
+      # thing to NAME in public prose and a broken thing to LINK to, since the
+      # link resolves for `--document-private-items` and 404s for the readers
+      # who get the published page — so the fix is the span, not an allow.
+      - run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
