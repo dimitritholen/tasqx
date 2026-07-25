@@ -5,6 +5,10 @@ use super::*;
 impl Engine {
     // ---- tag.add -------------------------------------------------------------
 
+    /// `tag.add` — attach one or more tags to a task. Params: `ref`, `tags` (a
+    /// non-empty array). Returns the task's FULL tag set, re-read inside the
+    /// transaction, so the caller never has to guess what a partially-duplicate
+    /// add left behind.
     pub fn tag_add(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
         let tags = opt_str_array(p, "tags")?;
@@ -52,6 +56,9 @@ impl Engine {
 
     // ---- annotation.add ------------------------------------------------------
 
+    /// `annotation.add` — append a timestamped note to a task. Params: `ref`,
+    /// `body`. Annotations are indexed alongside docs by `memory.search`, which
+    /// is why the note is worth writing rather than editing into the title.
     pub fn annotation_add(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
         let body = req_str(p, "body")?;
@@ -85,6 +92,12 @@ impl Engine {
 
     // ---- dependency.add ------------------------------------------------------
 
+    /// `dependency.add` — record that `ref` is blocked by `depends_on`. Both are
+    /// refs (short_id or UUID). Self-dependency and any edge that would close a
+    /// cycle are `conflict`.
+    ///
+    /// The acyclicity check runs INSIDE the write transaction, so no concurrent
+    /// writer can slip the closing edge in between the check and the insert.
     pub fn dependency_add(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
         let dep = p
@@ -136,6 +149,12 @@ impl Engine {
 
     // ---- dependency.remove ---------------------------------------------------
 
+    /// `dependency.remove` — drop the `ref` → `depends_on` edge. Both refs must
+    /// resolve; an edge that was not there is a no-op that bumps no `rev` and
+    /// writes no event, since nothing changed.
+    ///
+    /// The response reports `depends_on` and `blocked` either way, so the caller
+    /// reads the resulting state rather than inferring it from "removed".
     pub fn dependency_remove(&self, p: &Value) -> Result<Value, ApiError> {
         let _ = ref_param(p)?;
         let dep = p

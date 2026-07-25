@@ -5,6 +5,16 @@ use super::*;
 impl Engine {
     // ---- report.summary ------------------------------------------------------
 
+    /// `report.summary` — counts and totals per group. Params: `group_by` (one
+    /// of [`SUMMARY_GROUP_BY`], default the first), `filter`, `metrics` (a
+    /// subset of [`SUMMARY_METRICS`], default `count`), `all`.
+    ///
+    /// Cancelled tasks are excluded — D24's [`Status::counts_in_reports`]
+    /// partition, which is why `done` still counts and `cancelled` does not —
+    /// unless `all` is set OR the `filter` names a status itself, in which case
+    /// the caller's explicit ask wins over the default. An unknown metric is refused
+    /// rather than dropped: a table quietly missing a column still looks like a
+    /// valid table.
     pub fn report_summary(&self, p: &Value) -> Result<Value, ApiError> {
         // D35: `unwrap_or_else` fires only on a genuinely ABSENT value now, so
         // `group_by: ""` reaches the vocabulary check below instead of silently

@@ -2,7 +2,7 @@
 //! method (DESIGN.md §2, §4).
 //!
 //! One `Engine` owns one SQLite connection. Every mutating method opens an
-//! immediate transaction via [`Engine::begin`] (so the public API can take
+//! immediate transaction via `begin_mutation` (so the public API can take
 //! `&self` per DESIGN's `dispatch(&Engine, ...)` shape), performs its state change AND
 //! writes the corresponding event row, then commits. If anything fails before
 //! `commit`, the transaction drops and rolls back — leaving no state change and
@@ -90,7 +90,7 @@ pub const SORT_KEYS: [&str; 7] = [
 /// `ok: true` — a typo and an empty column look identical, forever.
 ///
 /// **Derived, not typed out.** It is the key set of one real
-/// [`list_row_json`] call, so a field added to the projection joins this list
+/// `list_row_json` call, so a field added to the projection joins this list
 /// the moment it exists, and a field removed leaves it. The alternative — a
 /// hand-written array next to `task_to_json` — is exactly the parallel-copy
 /// drift this codebase keeps paying for (D30's rule: derive it). The probe task
@@ -265,6 +265,13 @@ impl Engine {
 
     // ---- event.list ----------------------------------------------------------
 
+    /// `event.list` — the audit log, newest first. Params: `limit` (default 50),
+    /// and at most one scope, either `ref` (one task) or `entity` (a whole
+    /// [`Entity`] class).
+    ///
+    /// `entity` is validated against the closed vocabulary rather than passed
+    /// into the `WHERE` clause; the comment below records why an empty list was
+    /// the wrong answer to a typo.
     pub fn event_list(&self, p: &Value) -> Result<Value, ApiError> {
         // Checked, not `as i64`: a value above i64::MAX wrapped negative, and
         // SQLite reads a negative LIMIT as UNLIMITED — the exact opposite of

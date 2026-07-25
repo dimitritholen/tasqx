@@ -5,6 +5,11 @@ use super::*;
 impl Engine {
     // ---- project.create ------------------------------------------------------
 
+    /// `project.create` — mint a project. Params: `name` (the dotted path),
+    /// optional `description`. A name that already exists is `conflict`.
+    ///
+    /// The first project created also becomes the default (D21), so this is the
+    /// method that decides where a bare `tasqx add` lands.
     pub fn project_create(&self, p: &Value) -> Result<Value, ApiError> {
         // D23's rule at the edge where a project name is *born* — `init " "`
         // used to mint a project that claimed the default, printed as a blank
@@ -154,6 +159,9 @@ impl Engine {
 
     // ---- project.list --------------------------------------------------------
 
+    /// `project.list` — every project by name. Param: `include_archived`
+    /// (default `false`). Each row carries a `default` flag read from the same
+    /// config key `core.capabilities` reports, so the two cannot disagree.
     pub fn project_list(&self, p: &Value) -> Result<Value, ApiError> {
         let include_archived = opt_bool(p, "include_archived")?.unwrap_or(false);
         let sql = if include_archived {
@@ -186,6 +194,12 @@ impl Engine {
 
     // ---- project.archive -----------------------------------------------------
 
+    /// `project.archive` — hide a project from the default listing by `name`.
+    /// Its tasks are untouched: archiving is a shelf, not a delete.
+    ///
+    /// `name` is read as a LOOKUP rather than validated (D28/D36): retiring a
+    /// legacy whitespace-named project is exactly the escape hatch the name
+    /// rules must not weld shut.
     pub fn project_archive(&self, p: &Value) -> Result<Value, ApiError> {
         // A lookup, like `project.use`: retiring a legacy whitespace-named
         // project is precisely the escape hatch D36 must not weld shut (D28).

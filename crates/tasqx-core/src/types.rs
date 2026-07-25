@@ -26,7 +26,9 @@ use crate::util::is_future_at;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Entity {
+    /// A task row. Also the entity every annotation event is filed under.
     Task,
+    /// A project row.
     Project,
     /// A memory document (D41). Annotation events stay under [`Entity::Task`]
     /// — an annotation belongs to its task — so `doc` covers only the
@@ -39,6 +41,8 @@ impl Entity {
     /// exhaustiveness test, because Rust has no way to enumerate a plain enum.
     pub const ALL: [Entity; 3] = [Entity::Task, Entity::Project, Entity::Doc];
 
+    /// The wire spelling written into `events.entity` — the exact lowercase word
+    /// [`Entity::parse`] round-trips, and the only text any writer may store.
     pub fn as_str(self) -> &'static str {
         match self {
             Entity::Task => "task",
@@ -47,6 +51,9 @@ impl Entity {
         }
     }
 
+    /// The inverse of [`Entity::as_str`]. `None` for anything outside the closed
+    /// set, which is what lets `event.list {entity}` refuse a typo instead of
+    /// answering it with an empty list.
     pub fn parse(s: &str) -> Option<Entity> {
         match s {
             "task" => Some(Entity::Task),
@@ -154,14 +161,19 @@ impl Status {
         }
     }
 
-    /// True for work that is not finished — the complement of [`is_terminal`].
+    /// True for work that is not finished — the complement of
+    /// [`Status::is_terminal`].
+    ///
+    /// Written as a qualified path, not a bare ``[`is_terminal`]``: an inherent
+    /// associated item is not in module scope for intra-doc resolution, so the
+    /// short form resolves to nothing and renders as plain text.
     pub fn is_open(self) -> bool {
         !self.is_terminal()
     }
 
     /// True when this status counts toward report aggregations (DESIGN §12-D24):
     /// everything except `cancelled`. Abandoned work is not work; completed work
-    /// is, which is why this is not the same question as [`is_open`].
+    /// is, which is why this is not the same question as [`Status::is_open`].
     pub fn counts_in_reports(self) -> bool {
         match self {
             Status::Cancelled => false,
@@ -169,6 +181,9 @@ impl Status {
         }
     }
 
+    /// The wire spelling stored in `tasks.status` and emitted by every read
+    /// surface. A bare lowercase ASCII word by contract — [`Status::sql_in_list`]
+    /// interpolates these straight into SQL and asserts that shape.
     pub fn as_str(self) -> &'static str {
         match self {
             Status::Backlog => "backlog",
@@ -220,6 +235,9 @@ impl Status {
             .join(", ")
     }
 
+    /// The inverse of [`Status::as_str`], exact-match only. `None` is what makes
+    /// a row carrying an unrecognized status visible rather than silently
+    /// recoded — see [`Task::status_raw`].
     pub fn parse(s: &str) -> Option<Status> {
         match s {
             "backlog" => Some(Status::Backlog),
@@ -235,8 +253,11 @@ impl Status {
 /// Task priority. Serialized as the single letters used across the CLI/API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Priority {
+    /// High. Contributes the largest priority term to [`crate::urgency`].
     H,
+    /// Medium.
     M,
+    /// Low. Still ranked above a task carrying no priority at all.
     L,
 }
 
@@ -254,6 +275,8 @@ impl Priority {
     /// nothing was comparing the two lists.
     pub const ALL: [Priority; 3] = [Priority::H, Priority::M, Priority::L];
 
+    /// The wire spelling: a single UPPERCASE letter. [`Priority::parse`] is the
+    /// forgiving side of the pair, so the two are not symmetric on purpose.
     pub fn as_str(self) -> &'static str {
         match self {
             Priority::H => "H",
@@ -276,18 +299,29 @@ impl Priority {
 /// A project — hierarchy is expressed via dotted names (`work.api`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
+    /// Stable UUID. The identity that survives a rename; `name` does not.
     pub id: String,
+    /// The dotted path (`work.api`). This IS the hierarchy — there is no parent
+    /// column — so `work` and `work.api` are related only by this string.
     pub name: String,
+    /// Free-text description. Omitted from the JSON entirely when absent, so a
+    /// client cannot tell "unset" from "set to null" (there is no null case).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Archived projects stay in the store and keep their tasks; they are hidden
+    /// from `project.list` unless the caller asks for them.
     pub archived: bool,
+    /// RFC3339 instant the project row was written.
     pub created: String,
 }
 
 /// A tag. Many-to-many with tasks via the `task_tags` join.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
+    /// Stable UUID for the tag row.
     pub id: String,
+    /// The tag text as the user typed it, without the `+`/`-` filter sigil —
+    /// those are filter syntax ([`crate::filter`]), never part of the name.
     pub name: String,
 }
 
@@ -296,9 +330,21 @@ pub struct Tag {
 /// canonical in-memory row used internally and for `task.list` rendering.
 #[derive(Debug, Clone)]
 pub struct Task {
+    /// Stable UUID (v7, so it sorts by creation time). The identity every event
+    /// row, dependency edge and tag link points at.
     pub id: String,
+    /// The small integer a human types (`tasqx done 12`). Allocated from a
+    /// monotonic floor, so it is stable for the life of the task and is NOT
+    /// reused after deletion — a recycled number would silently redirect a
+    /// command typed from memory at whatever now holds it.
     pub short_id: i64,
+    /// The task's one-line summary.
     pub title: String,
+    /// The lifecycle state as this reader understood it. Read through
+    /// [`effective_status`] on the way out of storage, so a task parked behind a
+    /// future `wait`/`scheduled` reads `backlog` and releases to `pending` on its
+    /// own. When the stored text was not one of the five this holds a
+    /// placeholder and [`Task::status_raw`] holds the truth.
     pub status: Status,
     /// The `status` column's text, kept **only** when it is not one of the five
     /// (`Status::parse` returned `None`). `None` on every well-formed row.
@@ -311,16 +357,36 @@ pub struct Task {
     /// read surface prints and what `store.export` emits, so the original bytes
     /// survive the one command that can get data out of a store like this.
     pub status_raw: Option<String>,
+    /// Priority, or `None` for "unset" — which is a real third answer, not a
+    /// synonym for [`Priority::L`]: it scores 0 where `L` scores 1.8.
     pub priority: Option<Priority>,
+    /// The owning project's dotted NAME, not its id. Denormalized on purpose so
+    /// a task row renders without a join; a renamed project therefore has to
+    /// rewrite its tasks.
     pub project: Option<String>,
+    /// RFC3339 deadline. The dominant term in [`crate::urgency`], and the anchor
+    /// a relative `remind` offset is measured back from.
     pub due: Option<String>,
+    /// RFC3339 instant before which the task is not meant to be started. Holds
+    /// the task in `backlog` while it is in the future ([`effective_status`]).
     pub scheduled: Option<String>,
+    /// RFC3339 instant before which the task should not even be SHOWN. Holds the
+    /// task in `backlog` exactly as `scheduled` does; the two differ in intent,
+    /// not in mechanism.
     pub wait: Option<String>,
+    /// Estimated effort as an ISO-8601 duration (`PT4H`). Normalized on write by
+    /// `datetime::parse_duration`, so the friendly `4h` a user types is never
+    /// what lands here — one stored spelling, one reader.
     pub estimate: Option<String>,
+    /// The recurrence rule in [`crate::recur`]'s canonical spelling, normalized
+    /// on write for the same reason `estimate` is. `None` on a one-off task.
     pub recurrence: Option<String>,
     /// Reminder spec (§9), canonical form: a signed offset anchored to `due`
     /// (`-1h`) or an absolute RFC3339 instant. See [`crate::remind`].
     pub remind: Option<String>,
+    /// The cached [`crate::urgency`] score. A DERIVED value that is also
+    /// persisted, so it is only as fresh as the last write to this row — the
+    /// due-proximity and age terms both move with the wall clock.
     pub urgency: f64,
     /// RFC3339 instant the current active interval began (None when not active).
     pub active_since: Option<String>,
@@ -328,8 +394,15 @@ pub struct Task {
     pub tracked_seconds: i64,
     /// Per-task event counter (`_rev` in the API).
     pub rev: i64,
+    /// RFC3339 instant the task was added. Feeds the small age term in
+    /// [`crate::urgency`].
     pub created: String,
+    /// RFC3339 instant of the last mutation. Moves with every event this task
+    /// records, including ones that change no visible field.
     pub modified: String,
+    /// RFC3339 instant the task reached `done`, `None` otherwise. This is the
+    /// field `completed.before:`/`completed.after:` filter on, and the reason
+    /// "what did I finish this week" is answerable at all.
     pub completed: Option<String>,
 }
 
@@ -355,10 +428,20 @@ impl Task {
 /// Request envelope (DESIGN.md §4). `params` and `id` are optional on stdio.
 #[derive(Debug, Deserialize)]
 pub struct ApiRequest {
+    /// The client's API version string. Checked against [`crate::API_VERSION`];
+    /// a major it does not serve is refused with `unsupported_version` rather
+    /// than answered on a best guess.
     pub tasqx: String,
+    /// Opaque correlation id, echoed verbatim in the response. Any JSON value,
+    /// because it is the CLIENT's — nothing here interprets it. Absent on a
+    /// notification, which is what makes it `Option` rather than defaulted.
     #[serde(default)]
     pub id: Option<Value>,
+    /// The dotted method name (`task.add`), matched by [`crate::dispatch()`].
     pub method: String,
+    /// The method's arguments. Optional because several methods take none;
+    /// `check_params` is what turns an unknown or missing key into a
+    /// `bad_request` instead of a silently ignored field.
     #[serde(default)]
     pub params: Option<Value>,
 }

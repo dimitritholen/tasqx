@@ -214,6 +214,14 @@ impl Engine {
 
     // ---- store.import --------------------------------------------------------
 
+    /// `store.import` — load an export document. Params: `tasks` (required),
+    /// `projects`, `default_project`, `docs`.
+    ///
+    /// The one method whose params are a DOCUMENT, not a request (the `document`
+    /// flag in [`crate::PARAMS`]): an export written by a newer tasqx must stay
+    /// readable here, so an unrecognized top-level key is a future field rather
+    /// than a typo. That tolerance is only safe because `tasks` is required — a
+    /// misspelled `taskss` is still refused, by absence.
     pub fn store_import(&self, p: &Value) -> Result<Value, ApiError> {
         let tasks = req_array(p, "tasks").map_err(|e| {
             ApiError::bad_request(format!(
