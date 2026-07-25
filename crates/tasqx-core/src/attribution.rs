@@ -58,12 +58,14 @@ const MAX_DISCOVERY_FILES: usize = 256;
 /// a bound stops a symlink loop or a surprise deep tree from wedging a tick.
 const MAX_DISCOVERY_DEPTH: usize = 6;
 
-/// How long after completion an explicit-but-absent `transcript_path` keeps
-/// being retried before the task terminates with an empty marker. Transcripts
-/// are flushed asynchronously and lag the completion hook, so a brief retry is
-/// correct — but a file that has not appeared a full day later is never coming
-/// (deleted, rotated, or a wrong path), and retrying it forever forces a full
-/// pending-set rebuild every tick for the life of the daemon.
+/// How long after completion an explicit `transcript_path` that cannot be turned
+/// into samples — absent, or present but unreadable — keeps being retried before
+/// the task terminates with an empty marker. Transcripts are flushed
+/// asynchronously and lag the completion hook, so a brief retry is correct — but
+/// a path that is still unusable a full day later never will be (deleted,
+/// rotated, wrong path, a directory, or owned by another user), and retrying it
+/// forever forces a full pending-set rebuild every tick for the life of the
+/// daemon.
 const TRANSCRIPT_GIVE_UP_SECS: i64 = 24 * 60 * 60;
 
 /// A per-tool transcript parser. Internal enum wrapping the free functions each
@@ -251,12 +253,17 @@ impl AttributionResult {
 ///
 /// Returns `Err` only for a *transient* condition — an explicit `transcript_path`
 /// that is not present yet (transcripts are written asynchronously and lag the
-/// completion hook, research doc) or unreadable. The daemon treats that as a
-/// retry, never a fatal error and never a stored marker. An unknown client or a
-/// discovery scan that finds nothing is `Ok` with `found == false`: those
-/// terminate. A transcript still absent [`TRANSCRIPT_GIVE_UP_SECS`] after
-/// completion also terminates (`now` is used only for that cutoff), so one stuck
-/// task cannot force a full pending rebuild every tick forever.
+/// completion hook, research doc) or that is present but could not be read this
+/// time. The daemon treats that as a retry, never a fatal error and never a
+/// stored marker. An unknown client or a discovery scan that finds nothing is
+/// `Ok` with `found == false`: those terminate. So does EITHER transcript
+/// failure — absent or unreadable — once the completion is more than
+/// [`TRANSCRIPT_GIVE_UP_SECS`] old (`now` is used only for that cutoff): the two
+/// share one deadline, because an unreadable path (a directory, a root-owned
+/// file) repeats forever just as reliably as an absent one, and each repeat
+/// costs a full pending-set rebuild on the next tick. The lone remaining
+/// retry-forever case is a `window_end` that does not parse — deliberate, see
+/// [`transcript_gave_up`].
 pub fn compute_attribution(
     pa: &PendingAttribution,
     now: Timestamp,
@@ -320,7 +327,23 @@ pub fn compute_attribution(
                     "transcript not available yet: {path}"
                 )));
             }
-            let samples = parser.samples_from_file(file)?;
+            let samples = match parser.samples_from_file(file) {
+                Ok(samples) => samples,
+                // Present but unreadable — a directory at that path, a
+                // root-owned session file, a torn read of a file being written.
+                // A read that failed once may succeed on the next tick, so this
+                // is transient exactly like the absent case above and gets the
+                // SAME deadline: without it the read fails identically on every
+                // tick forever, and each failure makes `attribution_tick` return
+                // -1, rebuilding the whole pending set at the tick rate for the
+                // life of the daemon while the task never terminates.
+                Err(e) => {
+                    if transcript_gave_up(now, &pa.window_end) {
+                        return Ok(AttributionResult::empty(tool));
+                    }
+                    return Err(e);
+                }
+            };
             // HIGH is earned only when the supplied session id is *verified*
             // against this transcript, not merely present: a stale or wrong id
             // must not masquerade as a high-trust correlation.
@@ -346,11 +369,12 @@ pub fn compute_attribution(
     })
 }
 
-/// Whether an absent explicit transcript has been retried long enough to give
-/// up: true once `now` is more than [`TRANSCRIPT_GIVE_UP_SECS`] past the
-/// completion instant. An unparseable `window_end` never gives up (keeps the
-/// old retry-forever behavior for that pathological case rather than discarding
-/// a possibly-real completion).
+/// Whether an unusable explicit transcript — absent, or present but unreadable —
+/// has been retried long enough to give up: true once `now` is more than
+/// [`TRANSCRIPT_GIVE_UP_SECS`] past the completion instant. An unparseable
+/// `window_end` never gives up (keeps the old retry-forever behavior for that
+/// pathological case rather than discarding a possibly-real completion), so this
+/// bound is not a guarantee that retries always terminate.
 fn transcript_gave_up(now: Timestamp, window_end: &str) -> bool {
     match window_end.parse::<Timestamp>() {
         Ok(end) => now.duration_since(end).as_secs() > TRANSCRIPT_GIVE_UP_SECS,
@@ -769,6 +793,53 @@ mod tests {
         assert!(!r.found);
         assert_eq!(r.samples, 0);
         assert_eq!(r.tool, "claude-code");
+    }
+
+    #[test]
+    fn an_unreadable_transcript_retries_then_gives_up_on_the_same_deadline() {
+        // A directory at the transcript path: `exists()` is true (so the absent
+        // branch never fires) but every `std::fs::read` fails with EISDIR, exactly
+        // like a root-owned session file or a `--transcript-path` typo pointing at
+        // a folder. Before this test the unreadable case had NO cutoff at all: it
+        // errored on every tick forever, and each error makes `attribution_tick`
+        // return -1, which rebuilds the whole pending set twice a second for the
+        // life of the daemon and never terminates the task.
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-unreadable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some(dir.to_string_lossy().into_owned()),
+            session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+        };
+
+        // Minutes after completion: still transient. A file being written right
+        // now can fail one read and succeed the next, so retry rather than burn
+        // the task's only chance on a zero-sample marker.
+        let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
+        assert!(err.message.contains("failed to read"), "{}", err.message);
+
+        // Two days later it is never becoming readable: terminate with an empty
+        // marker, the same deadline the absent case already honoured.
+        let r = compute_attribution(&pa, ts("2026-07-26T11:05:00Z")).unwrap();
+        assert!(!r.found);
+        assert_eq!(r.samples, 0);
+        assert_eq!(r.tool, "claude-code");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
