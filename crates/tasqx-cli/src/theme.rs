@@ -822,6 +822,12 @@ pub struct UserTheme {
     pub palette: BTreeMap<String, Rgb>,
     roles: BTreeMap<String, StyleSpec>,
     ramp: Option<Vec<String>>,
+    /// Values the parser had to throw away, as ready-to-print fragments (no file
+    /// path — `load_reporting` prefixes that). Recorded here because this is the
+    /// last point that still holds the raw text that failed to parse; by the time
+    /// the overlay reaches `merge`, a mistyped `#gggggg` is indistinguishable
+    /// from an anchor the user never wrote.
+    pub dropped: Vec<String>,
 }
 
 /// Parse a user theme TOML string into an overlay (DESIGN.md §8 shape). Dotted
@@ -842,8 +848,17 @@ pub fn parse_user_theme(src: &str) -> Result<UserTheme, String> {
 
     if let Some(pal) = val.get("palette").and_then(|v| v.as_table()) {
         for (k, v) in pal {
-            if let Some(hex) = v.as_str().and_then(Rgb::parse_hex) {
-                ut.palette.insert(k.clone(), hex);
+            match v.as_str().and_then(Rgb::parse_hex) {
+                Some(hex) => {
+                    ut.palette.insert(k.clone(), hex);
+                }
+                // A `filter_map` here left `#gggggg` as a parse-clean file whose
+                // color simply never applies — the quietest failure in the whole
+                // theme path, with nothing on stderr to connect the missing color
+                // to the typo that caused it.
+                None => ut
+                    .dropped
+                    .push(format!("palette.{k} = {v} is not #rrggbb; ignored")),
             }
         }
     }
@@ -957,27 +972,187 @@ pub fn merge(base: &Theme, user: &UserTheme) -> Theme {
     }
 }
 
-/// Load a theme by name: a user file `<themes_dir>/<name>.toml` wins (extending
-/// its `extends` base or `nord`); otherwise a built-in; otherwise the default.
-pub fn load(name: &str, themes_dir: Option<&std::path::Path>) -> Theme {
-    if let Some(dir) = themes_dir {
-        let path = dir.join(format!("{name}.toml"));
-        if let Ok(src) = std::fs::read_to_string(&path) {
-            if let Ok(user) = parse_user_theme(&src) {
-                let base_name = user
-                    .extends
-                    .clone()
-                    .unwrap_or_else(|| DEFAULT_THEME.to_string());
-                let base = builtin(&base_name).unwrap_or_else(default_theme);
-                let mut merged = merge(&base, &user);
-                if user.name.is_none() {
-                    merged.name = name.to_string();
-                }
-                return merged;
-            }
+/// What the user's `<name>.toml` contributed to a load, and what it cost.
+///
+/// The two call paths need different answers to the same load, which is why the
+/// severity is in the type rather than in a bare string: the render path warns
+/// and renders anyway (a broken theme must never fail a task capture), while
+/// `theme show` must refuse a `Rejected` outright — printing nord when the user
+/// asked for `mine` is exactly the failure
+/// `theme_show_rejects_an_unknown_name` was written to stop, reached through a
+/// file instead of a name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOutcome {
+    /// No `<name>.toml` (or no themes dir at all): a built-in, or the default.
+    /// The overwhelmingly common case — it must stay silent, or every run of
+    /// every built-in theme prints a warning.
+    Untouched,
+    /// The file was read and merged. Each string names a piece of it that had to
+    /// be dropped anyway: an `extends` naming a non-built-in, a hex value that
+    /// does not parse. Empty means a clean file.
+    Merged(Vec<String>),
+    /// The file exists but yielded no theme at all — unreadable, or invalid
+    /// TOML. The theme handed back is a fallback the user never asked for.
+    Rejected(String),
+}
+
+// Both readers live in `lib.rs`, which this change does not touch: the render
+// path (`build_ctx`) warns and continues, `theme show` refuses a rejection the
+// way it already refuses an unknown *name*. Until those two lines land, nothing
+// outside the tests reads either method, and `mod theme` is private so
+// `pub` alone does not keep dead_code quiet. Drop these two attributes when the
+// call sites are wired up — MSRV 1.80 rules out `#[expect]`, which would have
+// failed loudly at that point instead of needing to be remembered.
+#[allow(dead_code)]
+impl FileOutcome {
+    /// The complaint that means "this is not the theme you asked for". `None`
+    /// for `Merged`, however many pieces it dropped: the user's name, palette
+    /// and roles did apply, so `theme show` is still showing their theme.
+    pub fn rejection(&self) -> Option<&str> {
+        match self {
+            FileOutcome::Rejected(m) => Some(m),
+            FileOutcome::Untouched | FileOutcome::Merged(_) => None,
         }
     }
-    builtin(name).unwrap_or_else(default_theme)
+
+    /// Every complaint, in file order — what the render path prints, which does
+    /// not care about the severity because it continues either way.
+    pub fn messages(&self) -> &[String] {
+        match self {
+            FileOutcome::Untouched => &[],
+            FileOutcome::Merged(v) => v,
+            // One rejection is still one message; `from_ref` avoids storing the
+            // single-element case as a Vec that could then hold two.
+            FileOutcome::Rejected(m) => std::slice::from_ref(m),
+        }
+    }
+}
+
+/// A theme plus what loading it had to say. `load` throws the second half away.
+pub struct Loaded {
+    pub theme: Theme,
+    #[allow(dead_code)] // see FileOutcome above: read by lib.rs once wired up.
+    pub file: FileOutcome,
+}
+
+/// Load a theme by name: a user file `<themes_dir>/<name>.toml` wins (extending
+/// its `extends` base or `nord`); otherwise a built-in; otherwise the default.
+///
+/// This is `load` with the diagnostics kept instead of discarded. Every failure
+/// here used to be an `if let Ok` or a `filter_map` that fell through to nord at
+/// exit 0 with an empty stderr: a mistyped bracket in `themes/mine.toml`
+/// rendered every subsequent command in nord and never said why, even though
+/// `parse_user_theme` had already formatted the line and column.
+pub fn load_reporting(name: &str, themes_dir: Option<&std::path::Path>) -> Loaded {
+    // The fallback used by every early return below: the built-in of the same
+    // name if there is one, else the default. Unchanged from before.
+    let fallback = || Loaded {
+        theme: builtin(name).unwrap_or_else(default_theme),
+        file: FileOutcome::Untouched,
+    };
+    let Some(dir) = themes_dir else {
+        return fallback();
+    };
+    let path = dir.join(format!("{name}.toml"));
+    // `at` prefixes every message: a user with several theme files needs to know
+    // WHICH one is being skipped, and the path is the only thing that says so.
+    let at = format!("theme file {}", path.display());
+
+    let src = match std::fs::read_to_string(&path) {
+        Ok(src) => src,
+        // "No such file" is how a built-in name resolves, not a problem.
+        // Anything else — a directory, a permission bit, a bad symlink — is a
+        // file the user meant to be read and that they will never see used.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return fallback(),
+        Err(e) => {
+            return Loaded {
+                theme: builtin(name).unwrap_or_else(default_theme),
+                file: FileOutcome::Rejected(format!("{at}: {e}")),
+            };
+        }
+    };
+
+    let user = match parse_user_theme(&src) {
+        Ok(user) => user,
+        // The toml error carries the line and column; that string was built and
+        // then dropped on the floor by the old `if let Ok`.
+        Err(e) => {
+            return Loaded {
+                theme: builtin(name).unwrap_or_else(default_theme),
+                file: FileOutcome::Rejected(format!("{at}: {e}")),
+            };
+        }
+    };
+
+    // Everything below is a file that DID load, with pieces of it dropped.
+    let mut dropped: Vec<String> = user
+        .dropped
+        .iter()
+        .map(|what| format!("{at}: {what}"))
+        .collect();
+
+    let base_name = user
+        .extends
+        .clone()
+        .unwrap_or_else(|| DEFAULT_THEME.to_string());
+    let base = match builtin(&base_name) {
+        Some(base) => base,
+        None => {
+            // Say "built-in", not just "unknown": `builtin()` is the only lookup
+            // here, so `extends = "myothertheme"` naming another *user* file is
+            // dropped exactly the same way, and a message that merely listed the
+            // known names would leave that user re-reading their own file.
+            dropped.push(format!(
+                "{at}: extends {base_name:?}, which is not a built-in theme (extends must name one of: {}); extended {DEFAULT_THEME} instead",
+                BUILTINS.join(", ")
+            ));
+            default_theme()
+        }
+    };
+    let mut merged = merge(&base, &user);
+
+    // `merge` drops unparsable ramp entries and unresolvable role colors through
+    // a filter_map and an `Option`, and neither keeps the raw string, so the
+    // complaints are reconstructed here from the overlay against the *merged*
+    // palette — the same palette `merge` resolved against, so this cannot
+    // disagree with what actually happened.
+    if let Some(list) = &user.ramp {
+        for h in list.iter().filter(|h| Rgb::parse_hex(h).is_none()) {
+            dropped.push(format!(
+                "{at}: urgency.ramp entry {h:?} is not #rrggbb; ignored"
+            ));
+        }
+    }
+    for (role, spec) in &user.roles {
+        let Some(fg) = spec.fg.as_deref() else { continue };
+        if Rgb::parse_hex(fg).is_none() && !merged.palette.contains_key(fg) {
+            // Note this is worse than "ignored": `merge` writes the unresolved
+            // `None` over the base role's color, so the role ends up with no
+            // color at all rather than the one it inherited.
+            dropped.push(format!(
+                "{at}: roles.{role} fg {fg:?} is neither #rrggbb nor a [palette] key; {role} rendered without color"
+            ));
+        }
+    }
+
+    if user.name.is_none() {
+        merged.name = name.to_string();
+    }
+    Loaded {
+        theme: merged,
+        file: FileOutcome::Merged(dropped),
+    }
+}
+
+/// Load a theme by name, discarding what loading it had to say.
+///
+/// Kept because five of the eight call sites pass `themes_dir = None` and so can
+/// never produce a diagnostic, and a sixth renders a live preview inside the
+/// TUI's alt screen where an `eprintln!` would corrupt the frame. Only the two
+/// call sites that can actually reach a user — the render path and `theme show`
+/// — need `load_reporting`.
+pub fn load(name: &str, themes_dir: Option<&std::path::Path>) -> Theme {
+    load_reporting(name, themes_dir).theme
 }
 
 /// The compiled-in default theme (nord), always available with zero files.
@@ -1305,5 +1480,195 @@ urgency.ramp = ["#000000", "#ffffff"]
         assert_eq!(t.ramp_rgb(0.5), None);
         // hot end still readable via bold under mono
         assert!(t.ramp_style(0.9).bold);
+    }
+
+    // ---- user-file diagnostics ----------------------------------------------
+    //
+    // Every case below used to fall through to nord in silence: the `if let Ok`
+    // pair in `load` threw away both the io error and the toml error (which
+    // already carries the line and column the user needs), `builtin(&base_name)`
+    // turned an unknown `extends` into the default, and both hex parsers are
+    // `filter_map`s. A mistyped bracket in `~/.config/tasqx/themes/mine.toml`
+    // therefore rendered every subsequent `tasqx list` in nord with nothing on
+    // stderr and exit 0.
+
+    /// A scratch themes directory, unique per test so the suite's threads cannot
+    /// collide, and never the user's real `~/.config/tasqx/themes`.
+    fn scratch_themes_dir(tag: &str) -> std::path::PathBuf {
+        let mut d = std::env::temp_dir();
+        d.push(format!("tasqx-theme-diag-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("create scratch themes dir");
+        d
+    }
+
+    fn write_theme(dir: &std::path::Path, name: &str, src: &str) {
+        std::fs::write(dir.join(format!("{name}.toml")), src).expect("write theme file");
+    }
+
+    #[test]
+    fn missing_user_file_reports_nothing() {
+        // The common case: every built-in name resolves with no file on disk, so
+        // a NotFound must stay silent or the warning fires on every single run.
+        let dir = scratch_themes_dir("absent");
+        let loaded = load_reporting("gruvbox", Some(&dir));
+        assert_eq!(loaded.theme.name, "gruvbox");
+        assert_eq!(loaded.file, FileOutcome::Untouched);
+    }
+
+    #[test]
+    fn unreadable_user_file_is_rejected_with_the_io_error() {
+        // A directory where a file belongs is the portable way to make
+        // read_to_string fail without depending on chmod (root ignores 0o000).
+        let dir = scratch_themes_dir("unreadable");
+        std::fs::create_dir_all(dir.join("mine.toml")).expect("mkdir mine.toml");
+        let loaded = load_reporting("mine", Some(&dir));
+        let msg = loaded
+            .file
+            .rejection()
+            .expect("an unreadable theme file must be rejected, not swallowed");
+        assert!(msg.contains("mine.toml"), "must name the file: {msg}");
+        // The io::Error itself, so the user learns *why* it could not be read.
+        assert!(
+            msg.to_lowercase().contains("directory"),
+            "must carry the io error: {msg}"
+        );
+        assert_eq!(loaded.theme.name, DEFAULT_THEME, "falls back, as before");
+    }
+
+    #[test]
+    fn malformed_toml_is_rejected_with_line_and_column() {
+        let dir = scratch_themes_dir("malformed");
+        write_theme(&dir, "mine", "[palette\ndanger = \"#ff0000\"\n");
+        let loaded = load_reporting("mine", Some(&dir));
+        let msg = loaded
+            .file
+            .rejection()
+            .expect("invalid TOML must be rejected, not swallowed");
+        assert!(msg.contains("mine.toml"), "must name the file: {msg}");
+        assert!(
+            msg.contains("invalid theme TOML"),
+            "must carry the parser's own complaint: {msg}"
+        );
+        // parse_user_theme already formats the position; it was being dropped at
+        // the `if let Ok`. Line 1 is where the unclosed bracket is.
+        assert!(
+            msg.contains("line 1"),
+            "must carry the position the parser knows: {msg}"
+        );
+    }
+
+    #[test]
+    fn unknown_extends_is_reported_but_the_file_still_applies() {
+        let dir = scratch_themes_dir("extends");
+        write_theme(
+            &dir,
+            "mine",
+            "extends = \"nosuchbase\"\n[roles]\ntag = { fg = \"#123456\" }\n",
+        );
+        let loaded = load_reporting("mine", Some(&dir));
+        assert!(
+            loaded.file.rejection().is_none(),
+            "the user's own overrides still applied, so this is not a rejection"
+        );
+        let msgs = loaded.file.messages();
+        assert_eq!(msgs.len(), 1, "one complaint, about extends: {msgs:?}");
+        assert!(msgs[0].contains("nosuchbase"), "names the value: {msgs:?}");
+        // `builtin()` knows built-ins ONLY, so `extends = "myothertheme"` naming
+        // another user file is dropped too — the message has to say so.
+        assert!(
+            msgs[0].contains("built-in"),
+            "must say the base has to be a built-in: {msgs:?}"
+        );
+        assert_eq!(
+            loaded.theme.role("tag").fg,
+            Some(Rgb::new(0x12, 0x34, 0x56)),
+            "the rest of the file is still the user's"
+        );
+    }
+
+    #[test]
+    fn unparsable_palette_hex_is_reported() {
+        // Parse-clean file, color simply never applies: the quietest case of all.
+        let dir = scratch_themes_dir("badhex");
+        write_theme(
+            &dir,
+            "mine",
+            "extends = \"nord\"\n[palette]\ndanger = \"#gggggg\"\n",
+        );
+        let msgs = load_reporting("mine", Some(&dir)).file.messages().to_vec();
+        assert_eq!(msgs.len(), 1, "expected one complaint: {msgs:?}");
+        assert!(msgs[0].contains("danger"), "names the anchor: {msgs:?}");
+        assert!(msgs[0].contains("#gggggg"), "names the value: {msgs:?}");
+    }
+
+    #[test]
+    fn unparsable_ramp_entry_is_reported() {
+        let dir = scratch_themes_dir("badramp");
+        write_theme(
+            &dir,
+            "mine",
+            "extends = \"nord\"\n[roles]\nurgency.ramp = [\"#000000\", \"nope\"]\n",
+        );
+        let msgs = load_reporting("mine", Some(&dir)).file.messages().to_vec();
+        assert_eq!(msgs.len(), 1, "expected one complaint: {msgs:?}");
+        assert!(msgs[0].contains("ramp"), "names the role: {msgs:?}");
+        assert!(msgs[0].contains("nope"), "names the value: {msgs:?}");
+    }
+
+    #[test]
+    fn role_fg_naming_nothing_is_reported() {
+        // `merge` resolves an unknown fg to None, which does not fall back to the
+        // base color — it strips it. Worse than ignored, and equally silent.
+        let dir = scratch_themes_dir("badrole");
+        write_theme(
+            &dir,
+            "mine",
+            "extends = \"nord\"\n[roles]\nheader = { fg = \"dangre\" }\n",
+        );
+        let loaded = load_reporting("mine", Some(&dir));
+        let msgs = loaded.file.messages();
+        assert_eq!(msgs.len(), 1, "expected one complaint: {msgs:?}");
+        assert!(msgs[0].contains("header"), "names the role: {msgs:?}");
+        assert!(msgs[0].contains("dangre"), "names the typo: {msgs:?}");
+        assert_eq!(loaded.theme.role("header").fg, None, "color really is gone");
+    }
+
+    #[test]
+    fn a_good_user_file_reports_nothing() {
+        // The guard on every message above: none of them may fire on a file that
+        // is simply correct, or the render path warns on every run forever.
+        let dir = scratch_themes_dir("clean");
+        write_theme(
+            &dir,
+            "mine",
+            r##"
+name    = "mine"
+extends = "gruvbox"
+
+[palette]
+danger = "#ff0000"
+
+[roles]
+tag          = { fg = "#123456" }
+priority.H   = { fg = "danger", bold = true }
+urgency.ramp = ["#000000", "#ffffff"]
+"##,
+        );
+        let loaded = load_reporting("mine", Some(&dir));
+        assert_eq!(loaded.file, FileOutcome::Merged(Vec::new()));
+        assert_eq!(loaded.theme.name, "mine");
+    }
+
+    #[test]
+    fn load_is_load_reporting_without_the_diagnostic() {
+        // The 8 existing call sites keep the old signature; only the two that can
+        // print anything need the richer one.
+        let dir = scratch_themes_dir("delegates");
+        write_theme(&dir, "mine", "extends = \"nord\"\n[roles]\ntag = { fg = \"#123456\" }\n");
+        assert_eq!(
+            load("mine", Some(&dir)).role("tag").fg,
+            load_reporting("mine", Some(&dir)).theme.role("tag").fg
+        );
     }
 }
