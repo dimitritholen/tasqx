@@ -156,6 +156,24 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         -- event.list {ref} scopes by entity_id alone; the composite index above
         -- is entity-leading and can't serve it, so index entity_id directly.
         CREATE INDEX IF NOT EXISTS idx_events_entity_id ON events(entity_id);
+        -- `events` is append-only and never pruned, so an op-keyed filter over it
+        -- is a scan that grows forever — against DESIGN.md "Keeping startup
+        -- instant", which asks a query to touch an index, not the whole table.
+        -- `reminded_keys` is the one that hurts: every scheduler rebuild runs it,
+        -- up to 5x/s while anything is writing, *holding the engine mutex*, so
+        -- its cost is every client's cost. Measured at 10^5 events: 4.1ms
+        -- -> 0.08ms.
+        --
+        -- `entity_id` trails `op` rather than this being a bare `events(op)`,
+        -- and that second column is not decoration. `already_reminded` filters
+        -- `entity_id AND op`, and a single-column op index makes the planner
+        -- drop `idx_events_entity_id` for it — swapping a seek over one task's
+        -- handful of events for a seek over every `reminded` row ever written,
+        -- i.e. paying for the rebuild by slowing the per-task check. With `op`
+        -- leading and `entity_id` behind it, the rebuild seeks on the prefix and
+        -- the dedupe check seeks on the whole key. `idx_events_entity_id` still
+        -- serves `event.list {ref}`, which has no `op` to lead with.
+        CREATE INDEX IF NOT EXISTS idx_events_op ON events(op, entity_id);
         "#,
     )?;
 
@@ -596,6 +614,14 @@ pub fn task_tags(conn: &Connection, task_id: &str) -> Result<Vec<String>, ApiErr
 
 /// Ensure a tag row exists (by name) and link it to a task inside `tx`.
 /// Returns silently if the link already exists.
+///
+/// `.optional()?`, not `.ok()`, for the same reason as [`get_config`]: only an
+/// absent row is absence. `.ok()` folded every read fault — most reachably a
+/// `tags.id` written as NULL or INTEGER by an external writer, which this
+/// non-STRICT schema accepts — into the same `None` that means "first use of
+/// this tag", so the function minted a fresh UUID and INSERTed. The operator
+/// then saw `UNIQUE constraint failed: tags.name` on a column they never
+/// touched, and the actual fault was never named.
 pub fn ensure_tag_link(tx: &Transaction, task_id: &str, tag_name: &str) -> Result<(), ApiError> {
     let existing: Option<String> = tx
         .query_row(
@@ -603,7 +629,7 @@ pub fn ensure_tag_link(tx: &Transaction, task_id: &str, tag_name: &str) -> Resul
             params![tag_name],
             |r| r.get(0),
         )
-        .ok();
+        .optional()?;
     let tag_id = match existing {
         Some(id) => id,
         None => {
@@ -683,5 +709,133 @@ mod tests {
         // Idempotent: a second migrate is a no-op, not another rebuild.
         migrate(&conn).unwrap();
         assert_eq!(fk_count(&conn), 2);
+    }
+
+    fn query_plan(conn: &Connection, sql: &str) -> String {
+        conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    /// `events` is append-only and never pruned, so a query that filters it by
+    /// `op` alone must reach an index rather than walk the whole log. The one
+    /// that exists today is [`reminded_keys`], on the scheduler's hot path under
+    /// the engine mutex; the schema used to index only `entity`/`entity_id`, so
+    /// it scanned. The literal `reminded_keys` SQL is asserted, not a paraphrase,
+    /// because the plan is a property of that exact statement.
+    #[test]
+    fn events_op_filter_uses_an_index() {
+        let conn = open_in_memory().unwrap();
+        let sql = "SELECT entity_id, payload FROM events WHERE op = 'reminded'";
+        let plan = query_plan(&conn, sql);
+        assert!(
+            plan.contains("USING INDEX idx_events_op"),
+            "the {sql:?} filter must reach idx_events_op, got: {plan}"
+        );
+    }
+
+    /// Adding an `op` index must not *cost* the single-task lookup beside it.
+    /// [`already_reminded`] filters `entity_id AND op`, and a bare `events(op)`
+    /// index makes the planner abandon `idx_events_entity_id` for it — trading a
+    /// seek on the handful of events for one task for a seek on every `reminded`
+    /// event ever written, which is the unbounded set. Leading `op` with
+    /// `entity_id` serves both: the rebuild seeks on the prefix, this one seeks
+    /// on the whole key.
+    #[test]
+    fn the_op_index_does_not_widen_the_single_task_dedupe_check() {
+        let conn = open_in_memory().unwrap();
+        let plan = query_plan(
+            &conn,
+            "SELECT payload FROM events WHERE entity_id = 'x' AND op = 'reminded'",
+        );
+        assert!(
+            plan.contains("entity_id=?"),
+            "the dedupe check must still narrow by entity_id, got: {plan}"
+        );
+    }
+
+    /// The index has to appear on a store created before it existed too — the
+    /// CREATE lives in the batch that reruns on every open, so an upgrade is
+    /// covered, but only as long as nobody moves it behind a version gate.
+    #[test]
+    fn migration_adds_events_op_index_to_a_legacy_store() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        // Legacy shape: the events table with only the two entity indices.
+        conn.execute_batch(
+            "CREATE TABLE events (id TEXT PRIMARY KEY, entity TEXT NOT NULL, \
+               entity_id TEXT NOT NULL, op TEXT NOT NULL, payload TEXT, \
+               ts TEXT NOT NULL, actor TEXT);
+             CREATE INDEX idx_events_entity ON events(entity, entity_id);
+             CREATE INDEX idx_events_entity_id ON events(entity_id);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type='index' AND name='idx_events_op'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "upgrading an existing store must create idx_events_op");
+    }
+
+    /// A `tags` row this function cannot *read* is a store fault, not "no such
+    /// tag". Folding the read error into `None` made the function mint a fresh
+    /// UUID and INSERT, so the operator was handed a UNIQUE-constraint failure on
+    /// a column they never touched while the actual fault went unmentioned.
+    ///
+    /// The store is not STRICT and `tags.id` is a non-INTEGER PRIMARY KEY, so
+    /// SQLite accepts a NULL there — this is reachable on a healthy file that any
+    /// external writer has touched, not only on a corrupt one.
+    #[test]
+    fn ensure_tag_link_reports_a_read_fault_instead_of_a_duplicate_tag() {
+        let mut conn = open_in_memory().unwrap();
+        conn.execute("INSERT INTO tags (id, name) VALUES (NULL, 'work')", [])
+            .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let err = ensure_tag_link(&tx, "task-1", "work")
+            .expect_err("an unreadable tag row must surface as an error");
+
+        assert!(
+            !err.message.contains("UNIQUE constraint"),
+            "the fault is the unreadable id column, not a duplicate name: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("Invalid column type"),
+            "the underlying rusqlite fault must reach the operator: {}",
+            err.message
+        );
+    }
+
+    /// The absent-tag path must keep working: `.optional()` maps only
+    /// `QueryReturnedNoRows` to `None`, so a first-use tag is still created.
+    #[test]
+    fn ensure_tag_link_still_creates_a_missing_tag() {
+        let mut conn = open_in_memory().unwrap();
+        let tx = conn.transaction().unwrap();
+        ensure_tag_link(&tx, "task-1", "work").unwrap();
+        ensure_tag_link(&tx, "task-2", "work").unwrap();
+        tx.commit().unwrap();
+
+        let tags: Vec<String> = conn
+            .prepare("SELECT name FROM tags")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(tags, vec!["work".to_string()], "the tag row is reused");
+        assert_eq!(task_tags(&conn, "task-2").unwrap(), vec!["work".to_string()]);
     }
 }
