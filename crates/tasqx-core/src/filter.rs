@@ -12,6 +12,11 @@
 //! space is preserved. Per §12-D8 the grammar deliberately stops here: no
 //! arithmetic, computed expressions, or subqueries.
 //!
+//! **Grouping is bounded**: more than [`MAX_NESTING`] open `(` is a parse
+//! error, on the same terms as an unclosed `(` or a stray `)`. Unbounded here
+//! did not mean "generous", it meant a filter string could abort the process —
+//! see that constant.
+//!
 //! **A value may be double-quoted**, which is the only way to name a project or
 //! tag containing a space: `project:"Home Renovation"`, `+"needs paint"`. The
 //! rule is the shell's, so it is one rule and not a table: inside quotes,
@@ -250,7 +255,12 @@ impl Filter {
                 root: Expr::Pred(Pred::Always),
             });
         }
-        let mut p = Parser { toks, pos: 0, now };
+        let mut p = Parser {
+            toks,
+            pos: 0,
+            now,
+            depth: 0,
+        };
         let root = p.parse_or()?;
         // `parse_or` stops at the first token it cannot continue on. Anything
         // left is unbalanced — a stray `)` — and dropping it would silently
@@ -588,6 +598,31 @@ fn scan(input: &str, parens: Parens, context: &str) -> Result<Vec<Tok>, String> 
 
 // ---- parser -----------------------------------------------------------------
 
+/// How many `(` groups may be open at once before the filter is refused.
+///
+/// This is not a taste limit, it is the only thing standing between a filter
+/// string and `fatal runtime error: stack overflow`. The parser is recursive
+/// descent, so each open group costs three stack frames — `parse_or` ->
+/// `parse_and` -> `parse_term` -> `parse_or` — and a few thousand `(` in debug
+/// (about fifty thousand in release, i.e. ~50 KB of input) walks off the end of
+/// the thread stack. Rust turns that into SIGABRT, not a panic, so the daemon's
+/// `catch_unwind` around dispatch cannot see it: one `task.list` kills the
+/// process for every connected client, drops every `watch` stream and leaves
+/// the unix socket behind, with no error ever reaching the caller. The daemon's
+/// 1 MiB frame cap does not help, because the abort arrives an order of
+/// magnitude below it.
+///
+/// The counter lives here rather than in the daemon's request validation
+/// because the same input reaches the same parser through `--no-daemon` and
+/// through `argv.rs`, which re-parses an offending token purely to build an
+/// error message.
+///
+/// 64 is chosen to be unreachable by hand and by composition — `html.rs` wraps
+/// a caller's filter in one further group — while staying two orders of
+/// magnitude under the depth that hurts. Per D8 the grammar is not going to
+/// grow expressions that nest deeper.
+const MAX_NESTING: u32 = 64;
+
 struct Parser {
     toks: Vec<Tok>,
     pos: usize,
@@ -595,6 +630,10 @@ struct Parser {
     /// against. Carried on the parser, not read per predicate, so one query
     /// cannot resolve `tomorrow` twice and get two answers.
     now: Timestamp,
+    /// How many `(` groups are open at this point in the parse — a depth, not a
+    /// total, so a flat run of sibling groups never approaches the cap. See
+    /// [`MAX_NESTING`] for what it prevents.
+    depth: u32,
 }
 
 impl Parser {
@@ -660,7 +699,21 @@ impl Parser {
     fn parse_term(&mut self) -> Result<Expr, String> {
         if self.is_sym("(") {
             self.pos += 1; // consume '('
-            let inner = self.parse_or()?;
+            // Checked before the increment, so `depth` is only ever raised on a
+            // path that also lowers it again — the two halves cannot drift.
+            if self.depth == MAX_NESTING {
+                return Err(format!(
+                    "filter nests more than {MAX_NESTING} '(' groups deep"
+                ));
+            }
+            self.depth += 1;
+            let inner = self.parse_or();
+            // Given back before the `?`, not after. An error unwinds this frame
+            // exactly as a success does, and a counter returned only on the
+            // happy path is one that silently drifts upward the moment anything
+            // above here recovers from a failed sub-parse.
+            self.depth -= 1;
+            let inner = inner?;
             if !self.is_sym(")") {
                 // Previously the missing `)` was skipped in silence, which let
                 // `(+api or +infra` parse as though the group were closed.
@@ -1735,5 +1788,104 @@ mod tests {
                 "{prefix:?} takes a quoted value but the grammar says otherwise: {line}"
             );
         }
+    }
+
+    /// A filter nested past the cap must come back as an `Err`, and the process
+    /// must still be alive to return it.
+    ///
+    /// Every `(` costs three stack frames — `parse_or` -> `parse_and` ->
+    /// `parse_term` -> `parse_or` — so before the cap this input did not fail,
+    /// it ABORTED: `fatal runtime error: stack overflow`, SIGABRT, which Rust
+    /// gives no way to catch. The filter string arrives verbatim from
+    /// `task.list` / `store.export` / `report.*` / `watch`, so any client could
+    /// end the daemon process for every other client with one call, defeating
+    /// the `catch_unwind` in `handle_conn` that exists precisely so a bad
+    /// request never takes the daemon down (an abort is not an unwind).
+    ///
+    /// 100_000 and not a friendlier number on purpose: a release build survived
+    /// 10_000, so a smaller case here would have passed against the unfixed
+    /// parser and proved nothing. ~50 KB of input is also well under the
+    /// daemon's `MAX_FRAME_BYTES` (1 MiB), which is why the frame cap was not
+    /// already a guard.
+    #[test]
+    fn deep_nesting_is_refused_rather_than_overflowing_the_stack() {
+        let err = Filter::parse(&"(".repeat(100_000), anchor())
+            .expect_err("100k nested groups must be refused, not parsed");
+        assert!(
+            err.contains("nest") && err.contains(&MAX_NESTING.to_string()),
+            "the refusal must name nesting and the cap, got {err:?}"
+        );
+        // The unclosed-`(` check must not shadow it: a *closed* nest is equally
+        // fatal and equally refused, so the cap is what is being asserted here
+        // rather than the balance check that happens to sit on the same path.
+        let closed = format!("{}@working{}", "(".repeat(100_000), ")".repeat(100_000));
+        let err = Filter::parse(&closed, anchor())
+            .expect_err("a balanced 100k-deep nest is still too deep");
+        assert!(
+            err.contains("nest"),
+            "a balanced deep nest must be refused for nesting, not for balance, got {err:?}"
+        );
+    }
+
+    /// The cap has to sit far above anything a person or a composer writes, and
+    /// the boundary has to be exact — a cap that refuses one group fewer than it
+    /// advertises turns a working filter into a `bad_request` for no reason.
+    ///
+    /// `html.rs` wraps the caller's filter in one more paren (`({f}) and
+    /// @working`), so the usable depth for a client is the cap minus one; at 64
+    /// that is still two orders of magnitude past any real filter.
+    #[test]
+    fn nesting_up_to_the_cap_still_parses_and_groups() {
+        let deep = format!(
+            "{}project:home{}",
+            "(".repeat(MAX_NESTING as usize),
+            ")".repeat(MAX_NESTING as usize)
+        );
+        let ctx = MatchCtx {
+            status: Status::Pending,
+            project: Some("home"),
+            tags: &[],
+            due: None,
+            completed: None,
+            blocked: false,
+        };
+        // Parses AND still means what it says: a cap that quietly truncated the
+        // tree would also "parse".
+        assert!(parsed(&deep).matches(&ctx));
+        assert!(!parsed(&deep).matches(&ctx_for(Status::Pending)));
+
+        let over = format!(
+            "{}project:home{}",
+            "(".repeat(MAX_NESTING as usize + 1),
+            ")".repeat(MAX_NESTING as usize + 1)
+        );
+        assert!(
+            Filter::parse(&over, anchor()).is_err(),
+            "one group past the cap must be refused, or the cap is not the cap"
+        );
+    }
+
+    /// Depth is a depth, not a running total. Incrementing on `(` without
+    /// giving the count back on `)` is the easy way to write this cap, and it
+    /// refuses `(+a) (+b) (+c) ...` — a flat list of sibling groups that never
+    /// nests at all and costs no stack — once the list is longer than the cap.
+    /// That failure mode is invisible to the deep-nesting test above, and it
+    /// breaks filters people actually write.
+    #[test]
+    fn sibling_groups_do_not_accumulate_depth() {
+        let flat = vec!["(project:home)"; 5_000].join(" or ");
+        let ctx = MatchCtx {
+            status: Status::Pending,
+            project: Some("home"),
+            tags: &[],
+            due: None,
+            completed: None,
+            blocked: false,
+        };
+        // Not through `parsed`: its panic message echoes the filter, and this
+        // one is 70 KB of `(project:home)`.
+        let f = Filter::parse(&flat, anchor())
+            .unwrap_or_else(|e| panic!("5000 sibling groups nest one deep, so: {e}"));
+        assert!(f.matches(&ctx));
     }
 }
