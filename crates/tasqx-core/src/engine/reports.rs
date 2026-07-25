@@ -91,7 +91,20 @@ impl Engine {
             }
             let key = match group_by.as_str() {
                 "project" => t.project.clone().unwrap_or_else(|| "(none)".to_string()),
-                "status" => t.status.as_str().to_string(),
+                // D28: the group *key* is a read surface, so it goes through the
+                // one choke point (`Task::status_text`) that prefers the stored
+                // text over the in-memory placeholder. `t.status.as_str()` filed
+                // an unrecognized status under `pending` — the placeholder D24's
+                // scope check deliberately keeps counting, but which no surface
+                // may print as fact — while `task.list` and `store.export` named
+                // the same row `Done`. Only the label changes here: `ctx.status`
+                // above still carries the placeholder, because that is what keeps
+                // the anomalous row inside the default `@working` view.
+                //
+                // Arbitrary text in this slot is already the norm — `project`
+                // feeds user input through it — and both renderers sanitise it
+                // (render.rs `san`, html.rs `esc`).
+                "status" => t.status_text().to_string(),
                 "priority" => t
                     .priority
                     .map(|x| x.as_str().to_string())
@@ -148,5 +161,58 @@ impl Engine {
         }
 
         Ok(json!({ "groups": out, "generated": now() }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The same fixture `increment.rs` uses for the B1 cluster: a row whose
+    /// `status` column holds text `Status::parse` rejects. `store.import`
+    /// accepted such a value until that cluster closed the hole, so this is a
+    /// real store shape an upgrade has to keep readable, not a hypothetical.
+    fn store_with_an_unrecognized_status() -> Engine {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "important work" })).unwrap();
+        e.conn()
+            .execute("UPDATE tasks SET status = 'Done'", [])
+            .unwrap();
+        e
+    }
+
+    /// D28: `report.summary --group_by status` is a read surface like any other,
+    /// so it must name the stored text, not the placeholder. Grouping on
+    /// `t.status` bypassed `Task::status_text` — the single choke point that
+    /// exists so no surface can print `Pending` as though it were the fact — and
+    /// filed the row under `pending`. That is worse than a cosmetic mislabel:
+    /// `tasqx list` and `store.export` both call the same row `Done`, so the
+    /// report showed one extra open task whose name matched nothing the user
+    /// could find anywhere else.
+    #[test]
+    fn group_by_status_names_the_stored_text_not_the_placeholder() {
+        let e = store_with_an_unrecognized_status();
+        let out = e
+            .report_summary(&json!({ "group_by": "status" }))
+            .expect("the report must survive a status the reader cannot parse");
+        let groups = out["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 1, "one row in, one group out: {out}");
+        assert_eq!(
+            groups[0]["status"],
+            json!("Done"),
+            "report.summary laundered the anomaly into the placeholder"
+        );
+    }
+
+    /// The counterpart, kept adjacent so a future "just use status_raw" shortcut
+    /// cannot pass by accident: on a well-formed row `status_text` is the
+    /// canonical name, and the group key must stay exactly the lowercase word
+    /// the filter grammar and the HTML report's CSS classes already use.
+    #[test]
+    fn group_by_status_still_names_recognized_statuses_canonically() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "a" })).unwrap();
+        let out = e.report_summary(&json!({ "group_by": "status" })).unwrap();
+        assert_eq!(out["groups"][0]["status"], json!("pending"));
     }
 }
