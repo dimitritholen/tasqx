@@ -266,7 +266,17 @@ impl Engine {
     // ---- event.list ----------------------------------------------------------
 
     pub fn event_list(&self, p: &Value) -> Result<Value, ApiError> {
-        let limit = opt_u64(p, "limit")?.unwrap_or(50) as i64;
+        // Checked, not `as i64`: a value above i64::MAX wrapped negative, and
+        // SQLite reads a negative LIMIT as UNLIMITED — the exact opposite of
+        // the bound the caller asked for, handed back at `ok: true`. Same
+        // wording as `memory.search` (engine/memory.rs), which already gated
+        // this; the two page-size parameters must not disagree.
+        let limit = i64::try_from(opt_u64(p, "limit")?.unwrap_or(50)).map_err(|_| {
+            ApiError::bad_request(format!(
+                "`limit` must be at most {}, or omitted for the default",
+                i64::MAX
+            ))
+        })?;
 
         // Optional scoping: `ref` (a task) or `entity` (a type name).
         let (where_sql, arg): (String, Option<String>) = if let Some(r) = p.get("ref") {
@@ -296,10 +306,18 @@ impl Engine {
             ("".to_string(), None)
         };
 
+        // The limit is BOUND, not interpolated — it is the only caller-supplied
+        // value in this query, and the placeholder index depends on the arm:
+        // both scoped arms above already spend `?1` on the scope, so their
+        // LIMIT is `?2`, while the unscoped arm's is `?1`. Spelling the index
+        // out (rather than a bare `?`, which happens to number correctly today)
+        // keeps the two `params!` calls below readable against one shared SQL
+        // string.
+        let limit_ph = if arg.is_some() { "?2" } else { "?1" };
         // events.id is UUIDv7 (time-ordered), so ORDER BY id DESC = newest first.
         let sql = format!(
             "SELECT id, entity, entity_id, op, payload, ts, actor FROM events \
-             {where_sql} ORDER BY id DESC LIMIT {limit}"
+             {where_sql} ORDER BY id DESC LIMIT {limit_ph}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let map = |r: &rusqlite::Row| -> rusqlite::Result<Value> {
@@ -321,13 +339,13 @@ impl Engine {
         let mut out = Vec::new();
         match arg {
             Some(a) => {
-                let rows = stmt.query_map(params![a], map)?;
+                let rows = stmt.query_map(params![a, limit], map)?;
                 for r in rows {
                     out.push(r?);
                 }
             }
             None => {
-                let rows = stmt.query_map([], map)?;
+                let rows = stmt.query_map(params![limit], map)?;
                 for r in rows {
                     out.push(r?);
                 }
@@ -1411,5 +1429,73 @@ mod tests {
             get(&e)["estimate"].is_null(),
             "null must still clear estimate"
         );
+    }
+
+    /// `event.list {limit}` used to be `opt_u64(...) as i64`: anything at or
+    /// above 2^63 wrapped negative, and SQLite reads a negative LIMIT as
+    /// UNLIMITED — so the one parameter whose whole job is to bound a page
+    /// silently returned the entire audit log at `ok: true`. `memory.search`
+    /// already rejects the same input (engine/memory.rs), so the two surfaces
+    /// must agree on what an out-of-range page size means.
+    #[test]
+    fn event_list_rejects_a_limit_past_i64_max_instead_of_unbounding_the_page() {
+        let e = Engine::open_in_memory().unwrap();
+        for _ in 0..6 {
+            e.task_add(&json!({ "title": "x" })).unwrap();
+        }
+        // Sanity: the parameter does bound the page for an honest value.
+        assert_eq!(e.event_list(&json!({ "limit": 2 })).unwrap()["count"], 2);
+
+        for over in [9_223_372_036_854_775_808_u64, u64::MAX] {
+            let err = e
+                .event_list(&json!({ "limit": over }))
+                .expect_err("a limit past i64::MAX must be a bad_request, not the whole log");
+            assert_eq!(err.code, ErrorCode::BadRequest, "limit {over}");
+            assert!(
+                err.message.contains(&i64::MAX.to_string()),
+                "limit {over}: {} must name the accepted maximum",
+                err.message
+            );
+        }
+    }
+
+    /// The limit moved out of `format!` into a bound parameter, and the two
+    /// arms of that `format!` no longer share one placeholder index — the
+    /// scoped arm binds the scope as `?1` and the limit as `?2`, the unscoped
+    /// arm binds the limit as `?1`. Get those indices wrong and the scope
+    /// filter is handed the number while LIMIT is handed the entity name.
+    /// Also pins the documented default of 50, which the checked conversion
+    /// must not move.
+    #[test]
+    fn event_list_applies_the_limit_in_every_scoping_arm() {
+        let e = Engine::open_in_memory().unwrap();
+        let mut first = Value::Null;
+        for i in 0..60 {
+            let t = e.task_add(&json!({ "title": format!("t{i}") })).unwrap();
+            if i == 0 {
+                first = t["short_id"].clone();
+            }
+        }
+        // Give the first task extra events so a `ref`-scoped page can overflow.
+        for i in 0..4 {
+            e.annotation_add(&json!({ "ref": first.clone(), "body": format!("n{i}") }))
+                .unwrap();
+        }
+
+        assert_eq!(
+            e.event_list(&json!({})).unwrap()["count"],
+            50,
+            "the default page size is 50 and the conversion must not move it"
+        );
+        let scoped = e
+            .event_list(&json!({ "entity": "task", "limit": 3 }))
+            .unwrap();
+        assert_eq!(scoped["count"], 3, "entity-scoped page must honour limit");
+        assert_eq!(
+            scoped["events"][0]["entity"], "task",
+            "entity-scoped page must still filter on entity"
+        );
+        let by_ref = e.event_list(&json!({ "ref": first, "limit": 2 })).unwrap();
+        assert_eq!(by_ref["count"], 2, "ref-scoped page must honour limit");
     }
 }
