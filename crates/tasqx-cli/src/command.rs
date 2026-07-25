@@ -274,8 +274,14 @@ pub(super) enum Command {
         /// external requests) instead of the terminal table.
         #[arg(long)]
         html: bool,
-        /// Write the HTML report to this file (default: stdout).
-        #[arg(long)]
+        /// Write the HTML report to this file (default: stdout). Requires --html.
+        ///
+        /// `requires` because only the `--html` branch of `execute` ever reads
+        /// it: the terminal-table branch destructures it away with `..`, so
+        /// `report --out r.html` used to print the table, write no file, and
+        /// exit 0. Under a CI redirect that reads as a report that was written.
+        /// Same silent omission `--all` below is guarded against.
+        #[arg(long, requires = "html")]
         out: Option<String>,
         /// Count cancelled tasks too. By default a report excludes cancelled
         /// tasks, unless the filter itself names a status (DESIGN D24).
@@ -375,7 +381,12 @@ pub(super) enum Command {
     Docs {
         /// Write the guide to this path instead of a temp file. Implies --no-open:
         /// naming an output file is asking for the file, not for a browser.
-        #[arg(long, value_name = "PATH")]
+        ///
+        /// Excludes --stdout: `run_docs` returns on the stdout branch before it
+        /// ever looks at `out`, so the pair wrote no file and exited 0. Two
+        /// destinations for one document is a usage error — which is what the
+        /// manual's `[--out PATH | --no-open | --stdout]` already promised.
+        #[arg(long, value_name = "PATH", conflicts_with = "stdout")]
         out: Option<String>,
         /// Write the file but never launch a browser. Prints the path instead.
         #[arg(long)]
@@ -394,6 +405,29 @@ pub(super) enum Command {
     },
 }
 
+/// Widest chart window we will draw, in weeks (a decade). The ceiling is not
+/// cosmetic: every window ends up inside `jiff`'s `ToSpan::days`, which PANICS
+/// outside ±7,304,484 — an abort whose message names neither tasqx nor the flag.
+/// Well below that threshold the same number is a hang instead, because
+/// `chart::heatmap` sizes a `Vec` by `weeks * 7` and `chart::throughput`
+/// allocates one `WeekBucket` per week.
+///
+/// Enforced here rather than clamped in `chart::default_weeks` for the reason
+/// D17 gives for `--estimate`: silently rewriting `--weeks 100000` into 520
+/// would answer a question the user did not ask, and label the chart as if it
+/// had. The floor is 1 because a zero-wide window charts nothing; `weeks.max(1)`
+/// downstream hid that request instead of refusing it.
+const MAX_CHART_WEEKS: u64 = 520;
+/// Same reasoning for `burndown --days`, which never passes through
+/// `default_weeks` at all — a decade of daily points.
+const MAX_CHART_DAYS: u64 = 3650;
+
+/// Bound a window flag at parse time. Yields `RangedU64ValueParser<usize>` so
+/// the fields stay `Option<usize>` and every call site keeps its type.
+fn window_parser(max: u64) -> clap::builder::RangedU64ValueParser<usize> {
+    clap::builder::RangedU64ValueParser::<usize>::new().range(1..=max)
+}
+
 #[derive(Subcommand)]
 pub(super) enum ChartKind {
     /// Tasks added vs done per ISO week (from the events table).
@@ -401,8 +435,8 @@ pub(super) enum ChartKind {
         /// Weekly buckets (default view; kept for parity with the spec).
         #[arg(long)]
         weekly: bool,
-        /// Number of weeks to show (default 12).
-        #[arg(long)]
+        /// Number of weeks to show (1-520; default 12).
+        #[arg(long, value_parser = window_parser(MAX_CHART_WEEKS))]
         weeks: Option<usize>,
     },
     /// GitHub-style completion density per day (from done events).
@@ -410,8 +444,8 @@ pub(super) enum ChartKind {
         /// Show a full year (52 weeks).
         #[arg(long)]
         year: bool,
-        /// Number of weeks to show (default 12; overrides --year).
-        #[arg(long)]
+        /// Number of weeks to show (1-520; default 12; overrides --year).
+        #[arg(long, value_parser = window_parser(MAX_CHART_WEEKS))]
         weeks: Option<usize>,
     },
     /// Remaining open tasks over the last N days (from the events table).
@@ -419,8 +453,8 @@ pub(super) enum ChartKind {
         /// Restrict to a project (else all tasks).
         #[arg(long)]
         project: Option<String>,
-        /// Number of days to show (default 30).
-        #[arg(long)]
+        /// Number of days to show (1-3650; default 30).
+        #[arg(long, value_parser = window_parser(MAX_CHART_DAYS))]
         days: Option<usize>,
     },
 }
@@ -518,4 +552,103 @@ pub(super) enum McpAction {
         #[arg(long, default_value = "read", value_parser = ["read", "write"])]
         scope: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    /// Chart windows are fed straight into `jiff`'s `ToSpan::days`, which PANICS
+    /// outside ±7,304,484, and long before that a `weeks * 7` window is a
+    /// multi-gigabyte allocation that never returns. The window therefore has to
+    /// be a parse-time constraint, not a runtime clamp: a silent clamp would
+    /// print a 520-week chart labelled as if `--weeks 100000` had been honoured.
+    #[test]
+    fn chart_windows_outside_the_supported_range_are_usage_errors() {
+        for argv in [
+            // Reproduced as aborts against the real binary: the jiff panic names
+            // neither tasqx nor the flag.
+            &["tasqx", "chart", "heatmap", "--weeks", "2000000"][..],
+            &["tasqx", "chart", "burndown", "--days", "99999999"][..],
+            // Reproduced as an 8s timeout: one `WeekBucket` allocated per week.
+            &["tasqx", "chart", "throughput", "--weeks", "100000000"][..],
+            // The low end matters too: a zero-wide window is a chart of nothing,
+            // and `weeks.max(1)` merely hid the request instead of refusing it.
+            &["tasqx", "chart", "heatmap", "--weeks", "0"][..],
+            &["tasqx", "chart", "throughput", "--weeks", "0"][..],
+            &["tasqx", "chart", "burndown", "--days", "0"][..],
+        ] {
+            let err = Cli::try_parse_from(argv)
+                .err()
+                .unwrap_or_else(|| panic!("{argv:?} must be rejected"));
+            assert_eq!(
+                err.kind(),
+                ErrorKind::ValueValidation,
+                "{argv:?} must fail as a usage error, not a panic or a hang"
+            );
+            // The whole point of the clap route over a clamp: the message names
+            // the flag the user mistyped.
+            let msg = err.to_string();
+            assert!(
+                msg.contains("--weeks") || msg.contains("--days"),
+                "{argv:?}: the error must name the flag, got {msg:?}"
+            );
+        }
+    }
+
+    /// The bound must not eat the documented windows: DESIGN.md §8 promises the
+    /// 12-week default and `--year` (52), and a decade is still a sane ask.
+    #[test]
+    fn chart_windows_inside_the_supported_range_still_parse() {
+        for argv in [
+            &["tasqx", "chart", "heatmap", "--weeks", "1"][..],
+            &["tasqx", "chart", "heatmap", "--weeks", "52"][..],
+            &["tasqx", "chart", "throughput", "--weeks", "520"][..],
+            &["tasqx", "chart", "burndown", "--days", "30"][..],
+            &["tasqx", "chart", "burndown", "--days", "3650"][..],
+        ] {
+            assert!(
+                Cli::try_parse_from(argv).is_ok(),
+                "{argv:?} is a supported window"
+            );
+        }
+    }
+
+    /// `--out` is read on the `--html` branch of `execute` only; the terminal
+    /// table branch destructures it away with `..`. `tasqx report --out r.html`
+    /// therefore printed the table, wrote no file, and exited 0 — a CI step that
+    /// redirects stdout sees success and a missing report. Same silent-omission
+    /// class as `--all` next door, and it must fail at parse time for the same
+    /// reason.
+    #[test]
+    fn report_out_without_html_is_rejected() {
+        let err = Cli::try_parse_from(["tasqx", "report", "--out", "r.html"])
+            .err()
+            .expect("--out with no --html writes nothing");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(
+            err.to_string().contains("--html"),
+            "the error must name the flag that makes --out mean something"
+        );
+        // The documented spelling (DESIGN.md §8) keeps working.
+        assert!(Cli::try_parse_from(["tasqx", "report", "--html", "--out", "review.html"]).is_ok());
+        assert!(Cli::try_parse_from(["tasqx", "report", "--html"]).is_ok());
+    }
+
+    /// `run_docs` returns on `to_stdout` before it ever looks at `out`, so
+    /// `--out X --stdout` wrote no file either. Two contradictory output sinks
+    /// are a usage error, which is what the manual's `[--out PATH | --no-open |
+    /// --stdout]` already promised without clap enforcing it.
+    #[test]
+    fn docs_out_with_stdout_is_rejected() {
+        let err = Cli::try_parse_from(["tasqx", "docs", "--out", "g.html", "--stdout"])
+            .err()
+            .expect("--out and --stdout are two different destinations");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        // Each sink on its own is untouched.
+        assert!(Cli::try_parse_from(["tasqx", "docs", "--out", "g.html"]).is_ok());
+        assert!(Cli::try_parse_from(["tasqx", "docs", "--stdout"]).is_ok());
+        assert!(Cli::try_parse_from(["tasqx", "docs", "--no-open"]).is_ok());
+    }
 }
