@@ -1532,7 +1532,14 @@ fn run_docs(out: Option<&str>, no_open: bool, to_stdout: bool) -> CmdOutcome {
     let explicit = out.is_some();
     let path = match out {
         Some(p) => PathBuf::from(p),
-        None => docs_temp_path(),
+        // No home dir means no private place to put it. Say so and name the way
+        // out rather than silently writing into a shared directory.
+        None => docs_default_path().ok_or_else(|| {
+            ApiError::internal(
+                "cannot determine a cache directory for the guide — write it somewhere explicit \
+                 with `tasqx docs --out PATH`",
+            )
+        })?,
     };
 
     if let Some(parent) = path.parent() {
@@ -1578,13 +1585,33 @@ fn run_docs(out: Option<&str>, no_open: bool, to_stdout: bool) -> CmdOutcome {
     }
 }
 
-/// Where a browser-bound guide gets written: the OS temp dir, under our own
-/// folder. Stable per version, so re-running `tasqx docs` reuses the path rather
-/// than littering temp with one file per invocation.
-fn docs_temp_path() -> PathBuf {
-    std::env::temp_dir()
-        .join("tasqx-docs")
-        .join(format!("tasqx-guide-{}.html", env!("CARGO_PKG_VERSION")))
+/// Where a browser-bound guide gets written: the user's own cache directory.
+/// Stable per version, so re-running `tasqx docs` reuses the one path rather
+/// than piling up a file per invocation.
+///
+/// Deliberately NOT `$TMPDIR/tasqx-docs/tasqx-guide-<ver>.html`, which is what
+/// this was. That name is fully predictable inside a world-writable directory:
+/// another local account can pre-create `tasqx-docs/` as its own non-sticky
+/// directory — so the kernel's `fs.protected_symlinks`, which only guards
+/// sticky world-writable dirs, never engages — holding a symlink at the guide's
+/// name. Neither `create_dir_all` (happy with a directory it does not own) nor
+/// `fs::write` (follows symlinks, no `O_NOFOLLOW`, no `create_new`) refuses
+/// that, so the victim's next `tasqx docs` truncates whatever the link names.
+/// The cheap variant is the same directory at mode 0755, which wedges every
+/// other user's `tasqx docs` on EACCES. The cache dir lives under the home of
+/// the single user running the command, which removes the shared-directory
+/// exposure outright instead of patching around it with a `create_new` dance,
+/// and keeps the path stable and browser-openable (D15: the file is the
+/// deliverable, the browser is a courtesy).
+///
+/// `None` only when no home directory can be determined at all. The caller
+/// turns that into an error pointing at `--out`; falling back to the temp dir
+/// would reinstate exactly the hole this closes.
+fn docs_default_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("dev", "tasqx", "tasqx").map(|dirs| {
+        dirs.cache_dir()
+            .join(format!("tasqx-guide-{}.html", env!("CARGO_PKG_VERSION")))
+    })
 }
 
 /// The platform's browser launchers, in preference order, for `path`.
@@ -3751,14 +3778,52 @@ mod tests {
         }
     }
 
-    /// The temp path must be stable across runs (so `docs` does not litter) and
-    /// must actually be an HTML file (so a browser renders rather than downloads).
+    /// The default path must be stable across runs (so `docs` does not litter)
+    /// and must actually be an HTML file (so a browser renders rather than
+    /// downloads).
     #[test]
-    fn docs_temp_path_is_stable_and_html() {
-        let a = docs_temp_path();
-        let b = docs_temp_path();
-        assert_eq!(a, b, "the temp path must not vary between invocations");
+    fn docs_default_path_is_stable_and_html() {
+        let a = docs_default_path().expect("a test machine has a home directory");
+        let b = docs_default_path().expect("a test machine has a home directory");
+        assert_eq!(a, b, "the default path must not vary between invocations");
         assert_eq!(a.extension().and_then(|e| e.to_str()), Some("html"));
+    }
+
+    /// The default guide lands in the user's OWN cache directory, never in the
+    /// shared system temp dir.
+    ///
+    /// It used to be `$TMPDIR/tasqx-docs/tasqx-guide-<ver>.html` — a fully
+    /// predictable name inside a world-writable directory. Any other local
+    /// account could pre-create `tasqx-docs/` (owned by them, non-sticky, so
+    /// `fs.protected_symlinks` does not apply) holding a symlink at that name,
+    /// and the victim's next `tasqx docs` would truncate whatever it pointed
+    /// at: `create_dir_all` succeeds on a directory it does not own and
+    /// `fs::write` follows symlinks. Same setup at mode 0755 wedges every other
+    /// user's `tasqx docs` on EACCES forever.
+    #[test]
+    fn docs_default_path_is_under_the_user_cache_dir() {
+        let cache = directories::ProjectDirs::from("dev", "tasqx", "tasqx")
+            .expect("a test machine has a home directory")
+            .cache_dir()
+            .to_path_buf();
+        let p = docs_default_path().expect("a test machine has a home directory");
+        assert!(
+            p.starts_with(&cache),
+            "the guide must live under {}, got {}",
+            cache.display(),
+            p.display()
+        );
+        // Guarded, because a machine may legitimately point XDG_CACHE_HOME into
+        // $TMPDIR; what must never happen is the path landing there while the
+        // cache dir is somewhere else.
+        let tmp = std::env::temp_dir();
+        if !cache.starts_with(&tmp) {
+            assert!(
+                !p.starts_with(&tmp),
+                "the guide must not be written into the shared temp dir: {}",
+                p.display()
+            );
+        }
     }
 
     // ---- the config verb ----------------------------------------------------
