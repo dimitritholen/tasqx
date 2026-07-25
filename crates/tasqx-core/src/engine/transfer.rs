@@ -18,6 +18,31 @@ impl Engine {
     pub fn store_export(&self, p: &Value) -> Result<Value, ApiError> {
         let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default(), Timestamp::now())
             .map_err(ApiError::bad_request)?;
+        // ONE snapshot for the whole document. This function issues eight
+        // statements (SNAPSHOT_QUERY_COUNT in `load_task_snapshots`, plus
+        // projects, docs and the default), and in WAL each one otherwise takes
+        // its own snapshot — so a writer committing between two of them tears
+        // the export: tasks read before a `done`, its annotations read after.
+        // Every mutation in this engine keeps its state and its event row in one
+        // transaction; the read that produces the BACKUP had no such boundary at
+        // all, which is the one read where it matters most. DESIGN §2 makes racing
+        // one-shot processes a supported configuration ("two `tasqx add` racing
+        // from two shells are safe"), and a backup that mixes two points in time
+        // is precisely the thing a backup must not be.
+        //
+        // DEFERRED (`unchecked_transaction`'s default), never `begin_mutation`'s
+        // IMMEDIATE: the read snapshot pins at the first read and holds, without
+        // taking the write lock — §2's "concurrent readers never block" means a
+        // long export must not stall every writer for its duration.
+        //
+        // Bound to a NAME, not `_`: `let _ = ...` drops the guard on the spot
+        // and the whole thing silently becomes a no-op. Dropping it at the end
+        // rolls back, which is the correct no-op for a pure read.
+        //
+        // Held by the helpers too, without threading `&tx` through them: a
+        // `Transaction` borrows this very `Connection`, so every `self.conn`
+        // read below already runs inside it.
+        let _snapshot = self.conn.unchecked_transaction()?;
         let mut snapshots = self.load_task_snapshots()?;
         snapshots.sort_by_key(|snapshot| snapshot.task.short_id);
 
@@ -219,6 +244,10 @@ impl Engine {
         // (task_id, its validated `depends_on` ids) — typed at collection time so
         // pass 2 cannot inherit a silently-dropped edge from a wrong-typed value.
         let mut edges: Vec<(String, Vec<String>)> = Vec::new();
+        // Task ids this payload has already written, so a short_id collision can
+        // say whether the number was taken by the DESTINATION or by an earlier
+        // task in the same document — two faults with two different remedies.
+        let mut written: HashSet<String> = HashSet::new();
         let tx = self.begin_mutation()?;
 
         // Pass 0: projects, before any task, so a task's `project` can be checked
@@ -515,6 +544,56 @@ impl Engine {
             let urgency =
                 urgency::score(priority.and_then(Priority::parse), due.as_deref(), &created);
 
+            // D4: `short_id` is the handle the whole CLI addresses a task by, and
+            // the column is NOT NULL UNIQUE — so a payload carrying a number some
+            // OTHER task in this store already holds cannot be written. The
+            // upsert keys on `id`, which never noticed, and the raw UNIQUE
+            // violation came back through `From<rusqlite::Error>` as `internal` /
+            // exit 1: the code §4 reserves for "internal bug; safe to
+            // retry-report", with a message naming neither task. Merging two
+            // machines' stores, or restoring a filtered export on top of live
+            // work, is a user error with an obvious remedy — it must read as one.
+            //
+            // `conflict` (exit 5), not `bad_request`: §4 files a duplicate under
+            // conflict, and the document is not malformed — it is this
+            // DESTINATION that already holds the number. The self-dependency and
+            // cycle guards in pass 2 spell the same distinction the same way.
+            // Hence also the message built by hand rather than through
+            // `import_field`, which relabels everything it wraps as bad_request.
+            //
+            // BEFORE the upsert, so it also catches a payload that moves one
+            // task's short_id onto another and two payload tasks claiming one
+            // number (the second sees the first, already inserted in this
+            // transaction). `.optional()`: no row is the normal case, and
+            // `query_row` would otherwise raise `QueryReturnedNoRows`.
+            let owner: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM tasks WHERE short_id = ?1",
+                    params![short_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(other) = owner.filter(|owner| owner != id) {
+                // Two faults, two remedies, so they must not share one sentence:
+                // a number this very payload already handed to another task is an
+                // incoherent DOCUMENT, and "import into a fresh store" fixes
+                // nothing — the second task would collide there too.
+                if written.contains(&other) {
+                    return Err(ApiError::conflict(format!(
+                        "store.import: task {id} carries short_id {short_id}, which task {other} \
+                         in the same payload already claims — one short_id addresses exactly one \
+                         task, so this document cannot be restored anywhere"
+                    )));
+                }
+                return Err(ApiError::conflict(format!(
+                    "store.import: task {id} carries short_id {short_id}, which already belongs \
+                     to task {other} in this store — import into a fresh store, or renumber"
+                )));
+            }
+            // Set, not a scan of `edges`: an import of 10k tasks would otherwise
+            // cost 10k² comparisons for a check that fires almost never.
+            written.insert(id.to_string());
+
             // Upsert by id.
             // Both timing columns are driven by the payload's STATUS, not
             // written blindly:
@@ -741,5 +820,228 @@ impl Engine {
             "docs_imported": docs_imported,
             "default_project": default_project,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ErrorCode;
+
+    /// A file-backed store, so a second connection can hold the write lock
+    /// against it. `:memory:` is private to one connection, so the snapshot
+    /// guarantees below are simply not observable there.
+    struct TempStore {
+        path: std::path::PathBuf,
+    }
+
+    impl TempStore {
+        fn new(label: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let n = SEQ.fetch_add(1, Ordering::Relaxed);
+            TempStore {
+                path: std::env::temp_dir().join(format!(
+                    "tasqx-transfer-{label}-{}-{n}.db",
+                    std::process::id()
+                )),
+            }
+        }
+
+        fn open_engine(&self) -> Engine {
+            Engine::open(self.path.to_str().expect("UTF-8 temp path")).expect("open test store")
+        }
+    }
+
+    impl Drop for TempStore {
+        fn drop(&mut self) {
+            // -wal/-shm too: WAL leaves both beside the database file.
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.path.display()));
+            }
+        }
+    }
+
+    fn exported_task_count(e: &Engine) -> usize {
+        e.store_export(&json!({})).expect("export")["tasks"]
+            .as_array()
+            .expect("tasks array")
+            .len()
+    }
+
+    /// A payload short_id that a DIFFERENT task in the destination already holds
+    /// is a collision the caller can act on, not an engine bug. It used to hit
+    /// the raw `tasks.short_id` UNIQUE constraint, which `From<rusqlite::Error>`
+    /// turns into `internal` / exit 1 — the code §4 reserves for "internal bug;
+    /// safe to retry-report" — with a message naming no task at all.
+    #[test]
+    fn store_import_refuses_a_short_id_another_task_already_holds() {
+        let e = Engine::open_in_memory().expect("open");
+        let mine = e.task_add(&json!({ "title": "already here" })).expect("add");
+        let mine_id = mine["id"].as_str().expect("id").to_string();
+        let taken = mine["short_id"].as_i64().expect("short_id");
+        let taken_text = taken.to_string();
+
+        const THEIRS: &str = "0193aaaa-0000-7000-8000-00000000beef";
+        let err = e
+            .store_import(&json!({ "tasks": [
+                { "id": THEIRS, "short_id": taken, "title": "from the other store" },
+            ] }))
+            .expect_err("a collision must not be accepted");
+
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        for needle in [mine_id.as_str(), THEIRS, taken_text.as_str()] {
+            assert!(
+                err.message.contains(needle),
+                "message must name {needle}: {}",
+                err.message
+            );
+        }
+        assert!(
+            !err.message.contains("UNIQUE constraint"),
+            "the raw SQLite string diagnoses nothing: {}",
+            err.message
+        );
+        // The remedy, not just the diagnosis: the document is fine, it is this
+        // destination that is already using the number.
+        assert!(
+            err.message.contains("in this store") && err.message.contains("fresh store"),
+            "message must say where the number is taken and what to do: {}",
+            err.message
+        );
+        // Same transaction, so the refusal writes nothing at all.
+        assert_eq!(exported_task_count(&e), 1);
+    }
+
+    /// The same guard, one step earlier: two payload tasks claiming one short_id
+    /// is an incoherent document, and the second one sees the first because both
+    /// are written inside the import's own transaction. A DIFFERENT fault from
+    /// the one above, so it must not be diagnosed with the same sentence:
+    /// "import into a fresh store" fixes nothing when both claimants arrived in
+    /// the same payload.
+    #[test]
+    fn store_import_refuses_two_payload_tasks_sharing_one_short_id() {
+        let e = Engine::open_in_memory().expect("open");
+        const FIRST: &str = "0193aaaa-0000-7000-8000-000000000001";
+        const SECOND: &str = "0193aaaa-0000-7000-8000-000000000002";
+        let err = e
+            .store_import(&json!({ "tasks": [
+                { "id": FIRST, "short_id": 7, "title": "first" },
+                { "id": SECOND, "short_id": 7, "title": "second" },
+            ] }))
+            .expect_err("one short_id cannot address two tasks");
+
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        assert!(err.message.contains(FIRST), "{}", err.message);
+        assert!(err.message.contains(SECOND), "{}", err.message);
+        assert!(
+            err.message.contains("same payload") && !err.message.contains("fresh store"),
+            "a payload that contradicts itself is not fixed by importing it elsewhere: {}",
+            err.message
+        );
+        assert_eq!(exported_task_count(&e), 0);
+    }
+
+    /// The guard is keyed on the OWNER, not on the number: re-importing a
+    /// document over the store it came from updates each task in place, which is
+    /// D12's round trip and the "restore on top of itself" workflow.
+    #[test]
+    fn store_import_still_accepts_a_task_reclaiming_its_own_short_id() {
+        let e = Engine::open_in_memory().expect("open");
+        e.task_add(&json!({ "title": "one" })).expect("add");
+        e.task_add(&json!({ "title": "two" })).expect("add");
+        let document = e.store_export(&json!({})).expect("export");
+
+        let again = e.store_import(&document).expect("re-import must still work");
+        assert_eq!(again["imported"], 2);
+        assert_eq!(
+            e.store_export(&json!({})).expect("export"),
+            document,
+            "export -> import -> export stays identity"
+        );
+    }
+
+    /// `store_export` must read its nine statements from ONE snapshot: in WAL
+    /// each statement otherwise takes its own, so a writer committing between
+    /// them tears the document (tasks read before a `done`, annotations after).
+    /// Structural, because the interleaving point is inside SQLite and rusqlite's
+    /// `hooks` feature — the only way to drive a write from between two of our
+    /// reads — is not compiled in. The companion test below pins the two things
+    /// about the guard that ARE observable.
+    #[test]
+    fn store_export_opens_its_snapshot_before_the_first_read() {
+        let source = include_str!("transfer.rs");
+        // Assembled, never written out literally: `dispatch`'s accepted-key
+        // guard splits this same source at every `fn NAME(`, so a marker spelled
+        // in full would register HERE as a second definition of the handler and
+        // overwrite the real one — with a body that reads no params at all.
+        let marker = format!("pub fn {}(", "store_export");
+        let marker = marker.as_str();
+        let start = source.find(marker).expect("store_export exists");
+        let rest = &source[start..];
+        let end = rest[marker.len()..]
+            .find("\n    fn ")
+            .map(|offset| marker.len() + offset)
+            .unwrap_or(rest.len());
+        // Comments out: this function's own prose names the two constructors it
+        // deliberately does NOT use, and a scanner that cannot tell code from a
+        // comment would read that as the defect it is warning about.
+        let body: String = rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = body.as_str();
+
+        let guard = body
+            .find("unchecked_transaction()")
+            .expect("store_export must open a transaction so its reads share one snapshot");
+        let first_read = body
+            .find("self.load_task_snapshots()")
+            .expect("store_export loads the task relation");
+        assert!(
+            guard < first_read,
+            "the snapshot pins at the first read, so the transaction must be opened before it"
+        );
+        assert!(
+            !body.contains("let _ = self.conn.unchecked_transaction"),
+            "a `_` binding drops the transaction on the spot, making the guard a no-op"
+        );
+        // DEFERRED, never IMMEDIATE: an exporting reader that takes the write
+        // lock blocks every writer for the length of the export, which is
+        // exactly what §2's "concurrent readers never block" forbids.
+        for forbidden in ["begin_mutation", "Immediate"] {
+            assert!(
+                !body.contains(forbidden),
+                "store_export must not take the write lock ({forbidden})"
+            );
+        }
+    }
+
+    /// The two observable halves of the same guard: it must not take the write
+    /// lock (or this export would wait out `busy_timeout` and fail while another
+    /// process holds it), and it must be released when the export returns (a
+    /// leaked transaction makes the next `BEGIN IMMEDIATE` fail outright).
+    #[test]
+    fn store_export_neither_takes_the_write_lock_nor_leaks_its_transaction() {
+        let store = TempStore::new("export-snapshot");
+        let e = store.open_engine();
+        e.task_add(&json!({ "title": "one" })).expect("add");
+
+        let blocker = Connection::open(&store.path).expect("second connection");
+        blocker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold the write lock");
+
+        let exported = e
+            .store_export(&json!({}))
+            .expect("a read must not wait on a writer");
+        assert_eq!(exported["tasks"].as_array().expect("tasks").len(), 1);
+
+        blocker.execute_batch("ROLLBACK").expect("release");
+        drop(blocker);
+
+        e.task_add(&json!({ "title": "two" })).expect("add after export");
+        assert_eq!(exported_task_count(&e), 2);
     }
 }
