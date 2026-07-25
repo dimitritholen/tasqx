@@ -93,12 +93,7 @@ struct Report<'a> {
 
 impl<'a> Report<'a> {
     fn render(&self) -> String {
-        let tasks = self
-            .export
-            .get("tasks")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let tasks = array_at(self.export, "tasks");
 
         // Derived counts. All windows are measured against the injected `now`,
         // not the wall clock — rendering must stay a pure function of the
@@ -115,7 +110,7 @@ impl<'a> Report<'a> {
             .checked_sub(jiff::ToSpan::hours(168i64))
             .unwrap_or(now_ts);
 
-        for t in &tasks {
+        for t in tasks {
             let status = t.get("status").and_then(Value::as_str).unwrap_or("");
             if crate::render::status_is_open(status) {
                 open += 1;
@@ -169,7 +164,7 @@ impl<'a> Report<'a> {
 
         // Top tags across open tasks.
         let mut tag_counts: HashMap<String, u32> = HashMap::new();
-        for t in &tasks {
+        for t in tasks {
             let status = t.get("status").and_then(Value::as_str).unwrap_or("");
             if !crate::render::status_is_open(status) {
                 continue;
@@ -303,17 +298,12 @@ impl<'a> Report<'a> {
         // column of `(none)` under a heading that said "By project".
         let axis = self.group_by;
         let title = format!("By {axis}");
-        let groups = self
-            .summary
-            .get("groups")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let groups = array_at(self.summary, "groups");
         if groups.is_empty() {
             return section(&title, &format!("Nothing to report grouped by {axis}."), "");
         }
         let mut rows = String::new();
-        for g in &groups {
+        for g in groups {
             let name = g.get(axis).and_then(Value::as_str).unwrap_or("(none)");
             let count = g.get("count").and_then(Value::as_i64).unwrap_or(0);
             let est = humanize_iso(g.get("est_total").and_then(Value::as_str).unwrap_or("PT0S"));
@@ -354,12 +344,7 @@ impl<'a> Report<'a> {
     }
 
     fn actionable_section(&self) -> String {
-        let tasks = self
-            .actionable
-            .get("tasks")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let tasks = array_at(self.actionable, "tasks");
         if tasks.is_empty() {
             return section(
                 "Now actionable",
@@ -368,7 +353,7 @@ impl<'a> Report<'a> {
             );
         }
         let mut rows = String::new();
-        for t in &tasks {
+        for t in tasks {
             let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
             rows.push_str(&format!(
                 "<li><span class=\"id\">#{id}</span> <span class=\"ttl\">{title}</span> \
@@ -471,6 +456,28 @@ impl<'a> Report<'a> {
 }
 
 // ---- small HTML/format helpers ---------------------------------------------
+
+/// Borrow one array field out of a core payload, as a slice tied to the payload.
+///
+/// Every reader in this module is read-only, so nothing here may own its rows.
+/// The three call sites each used to `.cloned().unwrap_or_default()` the array
+/// and drop the copy at the end of the function — on a 2000-task store that
+/// duplicates the whole `store.export` document (every task with its tags,
+/// annotations, dependency ids and token rows) so the next ninety lines can read
+/// it once. The `&[Value]` return type is what forbids that: a cloning body
+/// cannot compile against it.
+///
+/// A missing key, a null, or a non-array yields an empty slice rather than an
+/// error, exactly as the `unwrap_or_default()` it replaces — the sections read
+/// `.is_empty()` and render their empty state, which is what a scoped export
+/// with no matching tasks must produce.
+fn array_at<'a>(payload: &'a Value, key: &str) -> &'a [Value] {
+    payload
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
 
 /// ASCII title-case for a group_by axis (`status` -> `Status`) — a table header,
 /// not prose, so the one-letter rule is all that is needed.
@@ -1045,5 +1052,46 @@ mod tests {
         let doc = render_with("mono");
         assert!(doc.contains("<linearGradient"));
         assert!(!doc.contains("http://"));
+    }
+
+    /// `store.export` is the largest structure the CLI ever holds — every task
+    /// with its tags, annotations, dependency ids and token rows. Every reader in
+    /// this module is read-only, so the array must be BORROWED out of the payload,
+    /// never deep-copied: the three sections used to `.cloned()` it and drop the
+    /// copy a few lines later, which on a 2000-task store duplicates the whole
+    /// document for nothing.
+    ///
+    /// Pointer identity is the only way to see that from a test — the rendered
+    /// HTML is byte-identical either way. `as_ptr()` equality proves the returned
+    /// slice IS the payload's buffer rather than a copy of it, and no cloning
+    /// implementation can even satisfy the `-> &[Value]` signature (E0515: it
+    /// would return a reference to a local).
+    #[test]
+    fn the_task_array_is_borrowed_out_of_the_payload_not_copied() {
+        let (summary, export, ..) = synthetic();
+
+        let tasks = array_at(&export, "tasks");
+        let inside = export["tasks"].as_array().unwrap();
+        // Guard the guard: two EMPTY slices share one dangling pointer, so an
+        // empty fixture would make the identity check below pass for free.
+        assert!(!tasks.is_empty(), "fixture must carry tasks to prove anything");
+        assert_eq!(tasks.len(), inside.len());
+        assert!(
+            std::ptr::eq(tasks.as_ptr(), inside.as_ptr()),
+            "the task array was copied, not borrowed"
+        );
+
+        let groups = array_at(&summary, "groups");
+        assert!(!groups.is_empty(), "fixture must carry groups");
+        assert!(
+            std::ptr::eq(groups.as_ptr(), summary["groups"].as_array().unwrap().as_ptr()),
+            "the group array was copied, not borrowed"
+        );
+
+        // The absent and wrong-typed cases must stay as forgiving as the
+        // `unwrap_or_default()` they replace: an export without `tasks` renders
+        // the empty-state sections, it does not panic.
+        assert!(array_at(&json!({}), "tasks").is_empty());
+        assert!(array_at(&json!({ "tasks": "not an array" }), "tasks").is_empty());
     }
 }
