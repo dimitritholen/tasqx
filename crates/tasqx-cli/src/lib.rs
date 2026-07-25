@@ -107,7 +107,7 @@ fn exit_on_parse_error(e: &clap::Error, filter_command: bool) -> ! {
 /// hand a machine when it finishes — three speak another protocol outright, one
 /// never terminates, one is prose for a human to read.
 ///
-/// This table is load-bearing, not documentation. [`Exit::self_framed`] is the
+/// This table is load-bearing, not documentation. `Exit::self_framed` is the
 /// only way to reach a terminal without consulting `--json`, and it refuses a
 /// name that is not listed here, so a future early `return` cannot invent a
 /// silent carve-out. `tests/json_contract.rs` closes the other direction: it

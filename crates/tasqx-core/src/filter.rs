@@ -12,7 +12,7 @@
 //! space is preserved. Per §12-D8 the grammar deliberately stops here: no
 //! arithmetic, computed expressions, or subqueries.
 //!
-//! **Grouping is bounded**: more than [`MAX_NESTING`] open `(` is a parse
+//! **Grouping is bounded**: more than `MAX_NESTING` open `(` is a parse
 //! error, on the same terms as an unclosed `(` or a stray `)`. Unbounded here
 //! did not mean "generous", it meant a filter string could abort the process —
 //! see that constant.

@@ -226,7 +226,7 @@ fn read_table_in(dir: &std::path::Path) -> Option<toml::Table> {
     text.parse::<toml::Table>().ok()
 }
 
-/// The loud counterpart of [`read_table_in`], for `tasqx config` only.
+/// The loud counterpart of `read_table_in`, for `tasqx config` only.
 ///
 /// Silent degradation is right on the path of every command — a malformed
 /// config must never block a task capture. It is indefensible for `config
