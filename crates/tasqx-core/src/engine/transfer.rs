@@ -132,7 +132,22 @@ impl Engine {
             .cloned()
             .collect();
         *dropped += (all.len() - kept.len()) as i64;
-        flag_unrecognized_status(
+        // Emitted only when non-zero. `IMPORT_TASK_KEYS` is a closed gate, so an
+        // always-present key would make every new export a `bad_request` in an
+        // older tasqx; conditioning it on non-zero keeps that true only for the
+        // tasks that actually carry time, and leaves the §3 shape of an untimed
+        // task — which is most of them — exactly as it was. The stored form is
+        // emitted verbatim (an i64 of seconds, like the column), not the ISO
+        // spelling `task.get` publishes: this is the restore path, and it must
+        // not gain a way to fail parsing.
+        let tracked = (t.tracked_seconds != 0).then_some(t.tracked_seconds);
+        // The open interval's anchor, present only while the task is `active`,
+        // and emitted for the same reason D12 exists: an export that drops it is
+        // not self-contained. The alternative — reconstructing an anchor at
+        // import from `created` — silently bills every second since the task was
+        // created to the next `stop`, which is the same class of fabricated
+        // total this key was added to prevent.
+        let mut out = flag_unrecognized_status(
             t,
             json!({
                 "id": t.id,
@@ -162,7 +177,14 @@ impl Engine {
                 "completed": t.completed,
                 "_rev": t.rev,
             }),
-        )
+        );
+        if let Some(secs) = tracked {
+            out["tracked_seconds"] = json!(secs);
+        }
+        if let Some(anchor) = &t.active_since {
+            out["active_since"] = json!(anchor);
+        }
+        out
     }
 
     // ---- store.import --------------------------------------------------------
@@ -473,22 +495,79 @@ impl Engine {
                 import_field(id, "modified", opt_when(tv, "modified", now_ts))?.unwrap_or_else(now);
             let completed = import_field(id, "completed", opt_when(tv, "completed", now_ts))?;
             let rev = import_field(id, "_rev", opt_i64(tv, "_rev"))?.unwrap_or(1);
+            // Stays `Option` all the way to the bind: absent is not zero. A
+            // negative total is refused rather than stored, because it would
+            // make `report.summary`'s `tracked_total` subtract time.
+            let tracked_seconds = import_field(
+                id,
+                "tracked_seconds",
+                opt_i64(tv, "tracked_seconds").and_then(|v| match v {
+                    Some(n) if n < 0 => Err(ApiError::bad_request(format!(
+                        "tracked_seconds must not be negative, got {n}"
+                    ))),
+                    other => Ok(other),
+                }),
+            )?;
+            // Through the same date gate as created/modified/completed, so a
+            // malformed anchor is named rather than stored.
+            let active_since =
+                import_field(id, "active_since", opt_when(tv, "active_since", now_ts))?;
             let urgency =
                 urgency::score(priority.and_then(Priority::parse), due.as_deref(), &created);
 
             // Upsert by id.
+            // Both timing columns are driven by the payload's STATUS, not
+            // written blindly:
+            //
+            // `active_since` — an open interval belongs to an `active` task and
+            // to no other. Importing a terminal status over a running task used
+            // to leave the live anchor in place (the SET list omitted the
+            // column), producing a `done` task with an open interval: a state no
+            // sequence of API calls can reach, that `task.reopen` does not
+            // clear, that `task.stop` refuses to touch, and that the active
+            // sweep never sees because it selects `WHERE status='active'`.
+            // COALESCE prefers the payload's anchor, falls back to the one
+            // already stored (so re-importing a store's own export while a timer
+            // runs is a no-op), and only then to now.
+            //
+            // `tracked_seconds` — COALESCE, never a plain bind: a legacy export
+            // has no such key, and reading absent as zero would wipe the live
+            // total on every merge-import.
             tx.execute(
                 "INSERT INTO tasks (id, short_id, title, status, priority, project, due, \
                  scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
                  rev, created, modified, completed, remind) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,0,?13,?14,?15,?16,?17) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12, \
+                 CASE WHEN ?4 = 'active' THEN COALESCE(?18,?19) ELSE NULL END, \
+                 COALESCE(?20,0),?13,?14,?15,?16,?17) \
                  ON CONFLICT(id) DO UPDATE SET \
                  short_id=?2, title=?3, status=?4, priority=?5, project=?6, due=?7, \
                  scheduled=?8, wait=?9, estimate=?10, recurrence=?11, urgency=?12, \
+                 active_since = CASE WHEN ?4 = 'active' \
+                 THEN COALESCE(?18, active_since, ?19) ELSE NULL END, \
+                 tracked_seconds = COALESCE(?20, tracked_seconds), \
                  rev=?13, created=?14, modified=?15, completed=?16, remind=?17",
                 params![
-                    id, short_id, title, status, priority, project, due, scheduled, wait, estimate,
-                    recurrence, urgency, rev, created, modified, completed, remind
+                    id,
+                    short_id,
+                    title,
+                    status,
+                    priority,
+                    project,
+                    due,
+                    scheduled,
+                    wait,
+                    estimate,
+                    recurrence,
+                    urgency,
+                    rev,
+                    created,
+                    modified,
+                    completed,
+                    remind,
+                    active_since,
+                    now(),
+                    tracked_seconds
                 ],
             )?;
 

@@ -1,0 +1,713 @@
+- generic [ref=f4e2]:
+  - banner [ref=f4e3]:
+    - generic [ref=f4e4]:
+      - generic [ref=f4e5]: tasqx review
+      - generic [ref=f4e6]:
+        - generic [ref=f4e7]:
+          - generic [ref=f4e8]: "9"
+          - generic [ref=f4e9]: open
+          - generic [ref=f4e10]: now
+        - generic [ref=f4e11]:
+          - generic [ref=f4e12]: "15"
+          - generic [ref=f4e13]: done
+          - generic [ref=f4e14]: in range
+        - generic [ref=f4e15]:
+          - generic [ref=f4e16]: 5h 10m
+          - generic [ref=f4e17]: tracked
+          - generic [ref=f4e18]: in range
+        - generic [ref=f4e19]:
+          - generic [ref=f4e20]: "0"
+          - generic [ref=f4e21]: overdue
+          - generic [ref=f4e22]: now
+  - generic [ref=f4e23]:
+    - generic [ref=f4e24]: range
+    - generic [ref=f4e25]: last 30 days
+    - generic [ref=f4e26]:
+      - text: completed after 2026-06-25 00:00 UTC ·
+      - code [ref=f4e27]: completed.after:-30d
+    - generic [ref=f4e28]: "open and overdue are as of NOW, not windowed: no completion bound can select a task that never completed (filter.rs::instant_cmp)"
+  - main [ref=f4e29]:
+    - status [ref=f4e30]: Task detail opened. Press Escape to close.
+    - generic [ref=f4e31]:
+      - heading "Completions, last 30 days" [level=2] [ref=f4e32]
+      - paragraph [ref=f4e33]: 3 of 15 completions in range carry a token measurement · 2 were never timed, 2 had a timer that recorded 0s.
+      - figure "One bar and one number per day; month starts are ruled." [ref=f4e34]:
+        - img "Tasks completed per day, 26 Jun 2026 to 25 Jul 2026; peak 10 in a day" [ref=f4e36]:
+          - generic [ref=f4e37]: "10"
+          - generic [ref=f4e38]: "0"
+          - generic [ref=f4e39]: Jun 2026
+          - generic [ref=f4e40]: Jul
+          - 'generic "2026-06-26: 0 done" [ref=f4e41]'
+          - 'generic "2026-06-27: 0 done" [ref=f4e42]'
+          - 'generic "2026-06-28: 0 done" [ref=f4e43]'
+          - 'generic "2026-06-29: 0 done" [ref=f4e44]'
+          - 'generic "2026-06-30: 0 done" [ref=f4e45]'
+          - 'generic "2026-07-01: 0 done" [ref=f4e46]'
+          - 'generic "2026-07-02: 0 done" [ref=f4e47]'
+          - 'generic "2026-07-03: 0 done" [ref=f4e48]'
+          - 'generic "2026-07-04: 0 done" [ref=f4e49]'
+          - 'generic "2026-07-05: 0 done" [ref=f4e50]'
+          - 'generic "2026-07-06: 0 done" [ref=f4e51]'
+          - 'generic "2026-07-07: 0 done" [ref=f4e52]'
+          - 'generic "2026-07-08: 0 done" [ref=f4e53]'
+          - 'generic "2026-07-09: 0 done" [ref=f4e54]'
+          - 'generic "2026-07-10: 0 done" [ref=f4e55]'
+          - 'generic "2026-07-11: 0 done" [ref=f4e56]'
+          - 'generic "2026-07-12: 0 done" [ref=f4e57]'
+          - 'generic "2026-07-13: 0 done" [ref=f4e58]'
+          - 'generic "2026-07-14: 0 done" [ref=f4e59]'
+          - 'generic "2026-07-15: 0 done" [ref=f4e60]'
+          - 'generic "2026-07-16: 0 done" [ref=f4e61]'
+          - 'generic "2026-07-17: 0 done" [ref=f4e62]'
+          - 'generic "2026-07-18: 0 done" [ref=f4e63]'
+          - 'generic "2026-07-19: 0 done" [ref=f4e64]'
+          - 'generic "2026-07-20: 0 done" [ref=f4e65]'
+          - 'generic "2026-07-21: 0 done" [ref=f4e66]'
+          - 'generic "2026-07-22: 0 done" [ref=f4e67]'
+          - 'generic "2026-07-23: 0 done" [ref=f4e68]'
+          - 'generic "2026-07-24: 10 done" [ref=f4e69]'
+          - 'generic "2026-07-25: 5 done" [ref=f4e70]'
+          - generic [ref=f4e71]: "26"
+          - generic [ref=f4e72]: "27"
+          - generic [ref=f4e73]: "28"
+          - generic [ref=f4e74]: "29"
+          - generic [ref=f4e75]: "30"
+          - generic [ref=f4e76]: "01"
+          - generic [ref=f4e77]: "02"
+          - generic [ref=f4e78]: "03"
+          - generic [ref=f4e79]: "04"
+          - generic [ref=f4e80]: "05"
+          - generic [ref=f4e81]: "06"
+          - generic [ref=f4e82]: "07"
+          - generic [ref=f4e83]: "08"
+          - generic [ref=f4e84]: "09"
+          - generic [ref=f4e85]: "10"
+          - generic [ref=f4e86]: "11"
+          - generic [ref=f4e87]: "12"
+          - generic [ref=f4e88]: "13"
+          - generic [ref=f4e89]: "14"
+          - generic [ref=f4e90]: "15"
+          - generic [ref=f4e91]: "16"
+          - generic [ref=f4e92]: "17"
+          - generic [ref=f4e93]: "18"
+          - generic [ref=f4e94]: "19"
+          - generic [ref=f4e95]: "20"
+          - generic [ref=f4e96]: "21"
+          - generic [ref=f4e97]: "22"
+          - generic [ref=f4e98]: "23"
+          - generic [ref=f4e99]: "24"
+          - generic [ref=f4e100]: "25"
+    - generic [ref=f4e102]:
+      - heading "Token burn by project · last 30 days" [level=2] [ref=f4e103]
+      - paragraph [ref=f4e104]: last 30 days. Tokens belong to the tasks that COMPLETED in this window — a task that closed here can carry a measurement created before it. Four buckets, never blended — cache read costs 0.1x input and cache write 1.25x, so one total would lie. Click a row to filter the timeline.
+      - generic [ref=f4e105]:
+        - generic [ref=f4e106]:
+          - generic [ref=f4e108]: 13.63M
+          - generic [ref=f4e109]: cache read
+          - generic [ref=f4e110]: 98.1% of volume
+        - generic [ref=f4e111]:
+          - generic [ref=f4e113]: 187.0k
+          - generic [ref=f4e114]: cache write
+          - generic [ref=f4e115]: 1.3% of volume
+        - generic [ref=f4e116]:
+          - generic [ref=f4e118]: "136"
+          - generic [ref=f4e119]: input
+          - generic [ref=f4e120]: 0.0% of volume
+        - generic [ref=f4e121]:
+          - generic [ref=f4e123]: 83.5k
+          - generic [ref=f4e124]: output
+          - generic [ref=f4e125]: 0.6% of volume
+      - group "Token buckets" [ref=f4e126]:
+        - button "cache read" [pressed] [ref=f4e127] [cursor=pointer]
+        - button "cache write" [pressed] [ref=f4e129] [cursor=pointer]
+        - button "input" [pressed] [ref=f4e131] [cursor=pointer]
+        - button "output" [pressed] [ref=f4e133] [cursor=pointer]
+      - 'button "tasqx-reporting-redesign volume cache read: 98.1% of this row''s volume cache write: 1.3% of this row''s volume input: 0.0% of this row''s volume output: 0.6% of this row''s volume 13.90M cost cache read: 67.7% of this row''s cost cache write: 11.6% of this row''s cost input: 0.0% of this row''s cost output: 20.7% of this row''s cost 100% cache read drives ~68% of it" [ref=f4e136] [cursor=pointer]':
+        - generic "tasqx-reporting-redesign" [ref=f4e137]
+        - generic [ref=f4e138]: volume
+        - generic [ref=f4e140]:
+          - 'generic "cache read: 98.1% of this row''s volume" [ref=f4e141]'
+          - 'generic "cache write: 1.3% of this row''s volume" [ref=f4e142]'
+          - 'generic "input: 0.0% of this row''s volume" [ref=f4e143]'
+          - 'generic "output: 0.6% of this row''s volume" [ref=f4e144]'
+        - generic [ref=f4e145]: 13.90M
+        - generic [ref=f4e146]: cost
+        - generic [ref=f4e148]:
+          - 'generic "cache read: 67.7% of this row''s cost" [ref=f4e149]'
+          - 'generic "cache write: 11.6% of this row''s cost" [ref=f4e150]'
+          - 'generic "input: 0.0% of this row''s cost" [ref=f4e151]'
+          - 'generic "output: 20.7% of this row''s cost" [ref=f4e152]'
+        - generic "share of this range's total weighted cost" [ref=f4e153]: 100%
+        - generic [ref=f4e154]: cache read drives ~68% of it
+      - paragraph [ref=f4e155]: "Each bar is scaled to the largest project on its own axis: the top bar in raw tokens, the bottom in tokens weighted by the published relative prices (cache read 0.1×, cache write 1.25×, input 1×, output ~5×). Lengths are comparable down a column, never between the two bars of one row — they count different things. The percentage on the right is this project's share of the range's weighted cost."
+    - generic [ref=f4e156]:
+      - heading "Cost per task · last 30 days" [level=2] [ref=f4e157]
+      - paragraph [ref=f4e158]: "Two currencies, never merged into one score — last 30 days. Rows are the tasks started, stopped or completed inside the range. Click a column header to sort. `tracked` says which of three things happened: a duration, `0s` (a timer ran and measured nothing — `tasqx start` on another task stops the running one silently), or `never timed` (no start event, ever). The confidence badge is the WEAKEST measurement folded into the row, not the best one."
+      - group "Token buckets" [ref=f4e159]:
+        - button "cache read" [pressed] [ref=f4e160] [cursor=pointer]
+        - button "cache write" [pressed] [ref=f4e162] [cursor=pointer]
+        - button "input" [pressed] [ref=f4e164] [cursor=pointer]
+        - button "output" [pressed] [ref=f4e166] [cursor=pointer]
+      - table [ref=f4e169]:
+        - rowgroup [ref=f4e170]:
+          - row [ref=f4e171]:
+            - columnheader [ref=f4e172]:
+              - button "id" [ref=f4e173] [cursor=pointer]:
+                - text: id
+                - generic [ref=f4e174]: ↕
+            - columnheader "task" [ref=f4e175]
+            - columnheader [ref=f4e176]:
+              - button "project" [ref=f4e177] [cursor=pointer]:
+                - text: project
+                - generic [ref=f4e178]: ↕
+            - columnheader [ref=f4e179]:
+              - button "tracked" [ref=f4e180] [cursor=pointer]:
+                - text: tracked
+                - generic [ref=f4e181]: ↕
+            - columnheader [ref=f4e182]:
+              - button "tokens" [ref=f4e183] [cursor=pointer]:
+                - text: tokens
+                - generic [ref=f4e184]: ↓
+            - columnheader "conf" [ref=f4e185]
+        - rowgroup [ref=f4e186]:
+          - row [ref=f4e187]:
+            - cell [ref=f4e188]:
+              - link "#21" [ref=f4e189] [cursor=pointer]:
+                - /url: "#task-21"
+            - 'cell "Design spec: widget inventory for the reporting page" [ref=f4e190]'
+            - cell "tasqx-reporting-redesign" [ref=f4e191]
+            - cell "0s ⚠" [ref=f4e192]
+            - 'cell "cache read: 8,945,074 cache write: 86,126 input: 76 output: 59,792 9.09M" [ref=f4e193]':
+              - generic [ref=f4e195]:
+                - 'generic "cache read: 8,945,074" [ref=f4e196]'
+                - 'generic "cache write: 86,126" [ref=f4e197]'
+                - 'generic "input: 76" [ref=f4e198]'
+                - 'generic "output: 59,792" [ref=f4e199]'
+              - generic [ref=f4e200]: 9.09M
+            - cell "high" [ref=f4e201]
+          - row [ref=f4e202]:
+            - cell [ref=f4e203]:
+              - link "#20" [ref=f4e204] [cursor=pointer]:
+                - /url: "#task-20"
+            - 'cell "Research: time-tracking and AI token reporting conventions" [ref=f4e205]'
+            - cell "tasqx-reporting-redesign" [ref=f4e206]
+            - cell "7m" [ref=f4e207]
+            - 'cell "cache read: 3,210,226 cache write: 87,153 input: 45 output: 15,538 3.31M" [ref=f4e208]':
+              - generic [ref=f4e210]:
+                - 'generic "cache read: 3,210,226" [ref=f4e211]'
+                - 'generic "cache write: 87,153" [ref=f4e212]'
+                - 'generic "input: 45" [ref=f4e213]'
+                - 'generic "output: 15,538" [ref=f4e214]'
+              - generic [ref=f4e215]: 3.31M
+            - cell "high" [ref=f4e216]
+          - row [ref=f4e217]:
+            - cell [ref=f4e218]:
+              - link "#22" [ref=f4e219] [cursor=pointer]:
+                - /url: "#task-22"
+            - 'cell "Framework choice: vendorable micro-lib vs vanilla JS" [ref=f4e220]'
+            - cell "tasqx-reporting-redesign" [ref=f4e221]
+            - cell "2m" [ref=f4e222]
+            - 'cell "cache read: 1,474,940 cache write: 13,686 input: 15 output: 8,149 1.50M" [ref=f4e223]':
+              - generic [ref=f4e225]:
+                - 'generic "cache read: 1,474,940" [ref=f4e226]'
+                - 'generic "cache write: 13,686" [ref=f4e227]'
+                - 'generic "input: 15" [ref=f4e228]'
+                - 'generic "output: 8,149" [ref=f4e229]'
+              - generic [ref=f4e230]: 1.50M
+            - cell "high" [ref=f4e231]
+          - row [ref=f4e232]:
+            - cell [ref=f4e233]:
+              - link "#11" [ref=f4e234] [cursor=pointer]:
+                - /url: "#task-11"
+            - 'cell "Datamodel: token-usage velden per taak (input/output/cache_read/cache_creation, tool, source, confidence)" [ref=f4e235]'
+            - cell "tasqx-token-accounting" [ref=f4e236]
+            - cell "44m" [ref=f4e237]
+            - cell "not attributed" [ref=f4e238]
+            - cell [ref=f4e240]
+          - row [ref=f4e241]:
+            - cell [ref=f4e242]:
+              - link "#18" [ref=f4e243] [cursor=pointer]:
+                - /url: "#task-18"
+            - 'cell "Optioneel: lokale OTLP-receiver in daemon + gedocumenteerde opt-in config voor Claude Code/Codex/Gemini" [ref=f4e244]'
+            - cell "tasqx-token-accounting" [ref=f4e245]
+            - cell "43m" [ref=f4e246]
+            - cell "not attributed" [ref=f4e247]
+            - cell [ref=f4e249]
+          - row [ref=f4e250]:
+            - cell [ref=f4e251]:
+              - link "#19" [ref=f4e252] [cursor=pointer]:
+                - /url: "#task-19"
+            - 'cell "Rapportage: token-metrics tonen in tasqx_summary en HTML-report" [ref=f4e253]'
+            - cell "tasqx-token-accounting" [ref=f4e254]
+            - cell "43m" [ref=f4e255]
+            - cell "not attributed" [ref=f4e256]
+            - cell [ref=f4e258]
+          - row [ref=f4e259]:
+            - cell [ref=f4e260]:
+              - link "#17" [ref=f4e261] [cursor=pointer]:
+                - /url: "#task-17"
+            - 'cell "Attributie-engine in daemon: async na complete, tijdvenster-bucketing + prompt_id-correlatie" [ref=f4e262]'
+            - cell "tasqx-token-accounting" [ref=f4e263]
+            - cell "43m" [ref=f4e264]
+            - cell "not attributed" [ref=f4e265]
+            - cell [ref=f4e267]
+          - row [ref=f4e268]:
+            - cell [ref=f4e269]:
+              - link "#15" [ref=f4e270] [cursor=pointer]:
+                - /url: "#task-15"
+            - 'cell "Parser: Codex rollout-JSONL (~/.codex/sessions), incl. pre-sept-2025 sessies overslaan" [ref=f4e271]'
+            - cell "tasqx-token-accounting" [ref=f4e272]
+            - cell "41m" [ref=f4e273]
+            - cell "not attributed" [ref=f4e274]
+            - cell [ref=f4e276]
+          - row [ref=f4e277]:
+            - cell [ref=f4e278]:
+              - link "#14" [ref=f4e279] [cursor=pointer]:
+                - /url: "#task-14"
+            - 'cell "Parser: Claude Code JSONL-transcripts (~/.claude/projects/*.jsonl) met versietolerantie" [ref=f4e280]'
+            - cell "tasqx-token-accounting" [ref=f4e281]
+            - cell "41m" [ref=f4e282]
+            - cell "not attributed" [ref=f4e283]
+            - cell [ref=f4e285]
+          - row [ref=f4e286]:
+            - cell [ref=f4e287]:
+              - link "#16" [ref=f4e288] [cursor=pointer]:
+                - /url: "#task-16"
+            - 'cell "Parsers: Gemini CLI (telemetry outfile) en Copilot CLI (~/.copilot/otel/*.jsonl)" [ref=f4e289]'
+            - cell "tasqx-token-accounting" [ref=f4e290]
+            - cell "41m" [ref=f4e291]
+            - cell "not attributed" [ref=f4e292]
+            - cell [ref=f4e294]
+          - row [ref=f4e295]:
+            - cell [ref=f4e296]:
+              - link "#10" [ref=f4e297] [cursor=pointer]:
+                - /url: "#task-10"
+            - 'cell "Spike: verifieer Codex token_count-semantiek (cumulatief vs per-turn) tegen echte rollout-files" [ref=f4e298]'
+            - cell "tasqx-token-accounting" [ref=f4e299]
+            - cell "1m" [ref=f4e300]
+            - cell "not attributed" [ref=f4e301]
+            - cell [ref=f4e303]
+          - row [ref=f4e304]:
+            - cell [ref=f4e305]:
+              - link "#24" [ref=f4e306] [cursor=pointer]:
+                - /url: "#task-24"
+            - cell "Write docs/reporting-redesign.md and D-numbered decision" [ref=f4e307]
+            - cell "tasqx-reporting-redesign" [ref=f4e308]
+            - cell "1s" [ref=f4e309]
+            - cell "not attributed" [ref=f4e310]
+            - cell [ref=f4e312]
+          - row [ref=f4e313]:
+            - cell [ref=f4e314]:
+              - link "#12" [ref=f4e315] [cursor=pointer]:
+                - /url: "#task-12"
+            - cell "Correlatie-metadata vastleggen bij task start/complete (timestamps, session_id, prompt_id, transcript_path, cwd, MCP clientInfo)" [ref=f4e316]
+            - cell "tasqx-token-accounting" [ref=f4e317]
+            - cell "never timed" [ref=f4e318]
+            - cell "not attributed" [ref=f4e319]
+            - cell [ref=f4e321]
+          - row [ref=f4e322]:
+            - cell [ref=f4e323]:
+              - link "#13" [ref=f4e324] [cursor=pointer]:
+                - /url: "#task-13"
+            - 'cell "Self-report fallback: optionele token-parameters op tasqx_complete_task" [ref=f4e325]'
+            - cell "tasqx-token-accounting" [ref=f4e326]
+            - cell "never timed" [ref=f4e327]
+            - cell "not attributed" [ref=f4e328]
+            - cell [ref=f4e330]
+          - row [ref=f4e331]:
+            - cell [ref=f4e332]:
+              - link "#23" [ref=f4e333] [cursor=pointer]:
+                - /url: "#task-23"
+            - 'cell "Prototype: standalone HTML report from real export data" [ref=f4e334]'
+            - cell "tasqx-reporting-redesign" [ref=f4e335]
+            - cell "0s ⚠" [ref=f4e336]
+            - cell "not attributed" [ref=f4e337]
+            - cell [ref=f4e339]
+    - generic [ref=f4e340]:
+      - heading "Completions with no attribution" [level=2] [ref=f4e341]
+      - paragraph [ref=f4e342]: last 30 days — these closed without recording a single token. Each one is a hole in the token panels above, so every total on this page is a LOWER BOUND until they are explained.
+      - generic [ref=f4e343]:
+        - paragraph [ref=f4e344]: 12of 15 completions in range
+        - generic [ref=f4e345]:
+          - generic [ref=f4e346]:
+            - heading "attribution never ran 10" [level=3] [ref=f4e347]
+            - paragraph [ref=f4e348]:
+              - text: "No"
+              - code [ref=f4e349]: tokens.attributed
+              - text: "event was ever appended for these, so nothing even tried. The attribution thread was not listening when they closed: no"
+              - code [ref=f4e350]: tasqx daemon
+              - text: running, or
+              - code [ref=f4e351]: tokens.enabled
+              - text: still false (
+              - code [ref=f4e352]: tasqx config set tokens.enabled true
+              - text: ).
+            - list [ref=f4e353]:
+              - listitem [ref=f4e354]:
+                - link "#19" [ref=f4e355] [cursor=pointer]:
+                  - /url: "#task-19"
+                - generic [ref=f4e356]: "Rapportage: token-metrics tonen in tasqx_summary en HTML-report"
+                - generic [ref=f4e357]: tasqx-token-accounting
+                - generic [ref=f4e358]: 2026-07-24 16:14 UTC
+              - listitem [ref=f4e359]:
+                - link "#18" [ref=f4e360] [cursor=pointer]:
+                  - /url: "#task-18"
+                - generic [ref=f4e361]: "Optioneel: lokale OTLP-receiver in daemon + gedocumenteerde opt-in config voor Claude Code/Codex/Gemini"
+                - generic [ref=f4e362]: tasqx-token-accounting
+                - generic [ref=f4e363]: 2026-07-24 16:14 UTC
+              - listitem [ref=f4e364]:
+                - link "#17" [ref=f4e365] [cursor=pointer]:
+                  - /url: "#task-17"
+                - generic [ref=f4e366]: "Attributie-engine in daemon: async na complete, tijdvenster-bucketing + prompt_id-correlatie"
+                - generic [ref=f4e367]: tasqx-token-accounting
+                - generic [ref=f4e368]: 2026-07-24 15:30 UTC
+              - listitem [ref=f4e369]:
+                - link "#16" [ref=f4e370] [cursor=pointer]:
+                  - /url: "#task-16"
+                - generic [ref=f4e371]: "Parsers: Gemini CLI (telemetry outfile) en Copilot CLI (~/.copilot/otel/*.jsonl)"
+                - generic [ref=f4e372]: tasqx-token-accounting
+                - generic [ref=f4e373]: 2026-07-24 14:45 UTC
+              - listitem [ref=f4e374]:
+                - link "#15" [ref=f4e375] [cursor=pointer]:
+                  - /url: "#task-15"
+                - generic [ref=f4e376]: "Parser: Codex rollout-JSONL (~/.codex/sessions), incl. pre-sept-2025 sessies overslaan"
+                - generic [ref=f4e377]: tasqx-token-accounting
+                - generic [ref=f4e378]: 2026-07-24 14:45 UTC
+              - listitem [ref=f4e379]:
+                - link "#14" [ref=f4e380] [cursor=pointer]:
+                  - /url: "#task-14"
+                - generic [ref=f4e381]: "Parser: Claude Code JSONL-transcripts (~/.claude/projects/*.jsonl) met versietolerantie"
+                - generic [ref=f4e382]: tasqx-token-accounting
+                - generic [ref=f4e383]: 2026-07-24 14:45 UTC
+              - listitem [ref=f4e384]:
+                - link "#13" [ref=f4e385] [cursor=pointer]:
+                  - /url: "#task-13"
+                - generic [ref=f4e386]: "Self-report fallback: optionele token-parameters op tasqx_complete_task"
+                - generic [ref=f4e387]: tasqx-token-accounting
+                - generic [ref=f4e388]: 2026-07-24 14:03 UTC
+              - listitem [ref=f4e389]:
+                - link "#12" [ref=f4e390] [cursor=pointer]:
+                  - /url: "#task-12"
+                - generic [ref=f4e391]: Correlatie-metadata vastleggen bij task start/complete (timestamps, session_id, prompt_id, transcript_path, cwd, MCP clientInfo)
+                - generic [ref=f4e392]: tasqx-token-accounting
+                - generic [ref=f4e393]: 2026-07-24 14:03 UTC
+              - listitem [ref=f4e394]:
+                - link "#11" [ref=f4e395] [cursor=pointer]:
+                  - /url: "#task-11"
+                - generic [ref=f4e396]: "Datamodel: token-usage velden per taak (input/output/cache_read/cache_creation, tool, source, confidence)"
+                - generic [ref=f4e397]: tasqx-token-accounting
+                - generic [ref=f4e398]: 2026-07-24 14:03 UTC
+              - listitem [ref=f4e399]:
+                - link "#10" [ref=f4e400] [cursor=pointer]:
+                  - /url: "#task-10"
+                - generic [ref=f4e401]: "Spike: verifieer Codex token_count-semantiek (cumulatief vs per-turn) tegen echte rollout-files"
+                - generic [ref=f4e402]: tasqx-token-accounting
+                - generic [ref=f4e403]: 2026-07-24 13:16 UTC
+          - generic [ref=f4e404]:
+            - heading "attribution ran, found nothing 2" [level=3] [ref=f4e405]
+            - paragraph [ref=f4e406]:
+              - text: A
+              - code [ref=f4e407]: tokens.attributed
+              - text: event exists carrying
+              - code [ref=f4e408]: "samples: 0"
+              - text: ". Worth checking in this order: the transcript had not flushed to disk when attribution fired; the"
+              - code [ref=f4e409]: done
+              - text: event carried no correlation (client / session_id / transcript_path), leaving only a fuzzy directory scan, which matched nothing; or the work genuinely happened outside any instrumented tool.
+            - list [ref=f4e410]:
+              - listitem [ref=f4e411]:
+                - link "#24" [ref=f4e412] [cursor=pointer]:
+                  - /url: "#task-24"
+                - generic [ref=f4e413]: Write docs/reporting-redesign.md and D-numbered decision
+                - generic [ref=f4e414]: tasqx-reporting-redesign
+                - generic [ref=f4e415]: 2026-07-25 10:02 UTC
+              - listitem [ref=f4e416]:
+                - link "#23" [ref=f4e417] [cursor=pointer]:
+                  - /url: "#task-23"
+                - generic [ref=f4e418]: "Prototype: standalone HTML report from real export data"
+                - generic [ref=f4e419]: tasqx-reporting-redesign
+                - generic [ref=f4e420]: 2026-07-25 10:02 UTC
+    - generic [ref=f4e421]:
+      - heading "Timeline · last 30 days" [level=2] [ref=f4e422]
+      - paragraph [ref=f4e423]: last 30 days. Started, stopped, completed — straight off the event log. Filtered by the project you select above.
+      - generic [ref=f4e424]:
+        - generic [ref=f4e425]: Filtered to
+        - button "clear" [ref=f4e426] [cursor=pointer]
+      - generic [ref=f4e427]:
+        - generic [ref=f4e428]:
+          - heading "Sat 25 Jul" [level=3] [ref=f4e429]
+          - list [ref=f4e430]:
+            - listitem [ref=f4e431]:
+              - generic [ref=f4e432]: 10:02
+              - generic [ref=f4e434]: tokens attributed
+              - link "#24" [ref=f4e435] [cursor=pointer]:
+                - /url: "#task-24"
+              - generic [ref=f4e436]: Write docs/reporting-redesign.md and D-numbered decision
+              - generic [ref=f4e437]: no spend found in window
+            - listitem [ref=f4e438]:
+              - generic [ref=f4e439]: 10:02
+              - generic [ref=f4e441]: completed
+              - link "#24" [ref=f4e442] [cursor=pointer]:
+                - /url: "#task-24"
+              - generic [ref=f4e443]: Write docs/reporting-redesign.md and D-numbered decision
+            - listitem [ref=f4e444]:
+              - generic [ref=f4e445]: 10:02
+              - generic [ref=f4e447]: started
+              - link "#24" [ref=f4e448] [cursor=pointer]:
+                - /url: "#task-24"
+              - generic [ref=f4e449]: Write docs/reporting-redesign.md and D-numbered decision
+            - listitem [ref=f4e450]:
+              - generic [ref=f4e451]: 10:02
+              - generic [ref=f4e453]: tokens attributed
+              - link "#23" [ref=f4e454] [cursor=pointer]:
+                - /url: "#task-23"
+              - generic [ref=f4e455]: "Prototype: standalone HTML report from real export data"
+              - generic [ref=f4e456]: no spend found in window
+            - listitem [ref=f4e457]:
+              - generic [ref=f4e458]: 10:02
+              - generic [ref=f4e460]: completed
+              - link "#23" [ref=f4e461] [cursor=pointer]:
+                - /url: "#task-23"
+              - generic [ref=f4e462]: "Prototype: standalone HTML report from real export data"
+            - listitem [ref=f4e463]:
+              - generic [ref=f4e464]: 10:02
+              - generic [ref=f4e466]: started
+              - link "#23" [ref=f4e467] [cursor=pointer]:
+                - /url: "#task-23"
+              - generic [ref=f4e468]: "Prototype: standalone HTML report from real export data"
+            - listitem [ref=f4e469]:
+              - generic [ref=f4e470]: 10:01
+              - generic [ref=f4e472]: tokens attributed
+              - link "#21" [ref=f4e473] [cursor=pointer]:
+                - /url: "#task-21"
+              - generic [ref=f4e474]: "Design spec: widget inventory for the reporting page"
+              - generic [ref=f4e475]: 9.09M tokens · 41 samples
+            - listitem [ref=f4e476]:
+              - generic [ref=f4e477]: 10:01
+              - generic [ref=f4e479]: completed
+              - link "#21" [ref=f4e480] [cursor=pointer]:
+                - /url: "#task-21"
+              - generic [ref=f4e481]: "Design spec: widget inventory for the reporting page"
+            - listitem [ref=f4e482]:
+              - generic [ref=f4e483]: 09:49
+              - generic [ref=f4e485]: tokens attributed
+              - link "#22" [ref=f4e486] [cursor=pointer]:
+                - /url: "#task-22"
+              - generic [ref=f4e487]: "Framework choice: vendorable micro-lib vs vanilla JS"
+              - generic [ref=f4e488]: 1.50M tokens · 8 samples
+            - listitem [ref=f4e489]:
+              - generic [ref=f4e490]: 09:49
+              - generic [ref=f4e492]: completed
+              - link "#22" [ref=f4e493] [cursor=pointer]:
+                - /url: "#task-22"
+              - generic [ref=f4e494]: "Framework choice: vendorable micro-lib vs vanilla JS"
+            - listitem [ref=f4e495]:
+              - generic [ref=f4e496]: 09:46
+              - generic [ref=f4e498]: started
+              - link "#22" [ref=f4e499] [cursor=pointer]:
+                - /url: "#task-22"
+              - generic [ref=f4e500]: "Framework choice: vendorable micro-lib vs vanilla JS"
+            - listitem [ref=f4e501]:
+              - generic [ref=f4e502]: 09:46
+              - generic [ref=f4e504]: stopped
+              - link "#21" [ref=f4e505] [cursor=pointer]:
+                - /url: "#task-21"
+              - generic [ref=f4e506]: "Design spec: widget inventory for the reporting page"
+            - listitem [ref=f4e507]:
+              - generic [ref=f4e508]: 09:46
+              - generic [ref=f4e510]: started
+              - link "#21" [ref=f4e511] [cursor=pointer]:
+                - /url: "#task-21"
+              - generic [ref=f4e512]: "Design spec: widget inventory for the reporting page"
+            - listitem [ref=f4e513]:
+              - generic [ref=f4e514]: 09:46
+              - generic [ref=f4e516]: tokens attributed
+              - link "#20" [ref=f4e517] [cursor=pointer]:
+                - /url: "#task-20"
+              - generic [ref=f4e518]: "Research: time-tracking and AI token reporting conventions"
+              - generic [ref=f4e519]: 3.31M tokens · 25 samples
+            - listitem [ref=f4e520]:
+              - generic [ref=f4e521]: 09:46
+              - generic [ref=f4e523]: completed
+              - link "#20" [ref=f4e524] [cursor=pointer]:
+                - /url: "#task-20"
+              - generic [ref=f4e525]: "Research: time-tracking and AI token reporting conventions"
+            - listitem [ref=f4e526]:
+              - generic [ref=f4e527]: 09:39
+              - generic [ref=f4e529]: started
+              - link "#20" [ref=f4e530] [cursor=pointer]:
+                - /url: "#task-20"
+              - generic [ref=f4e531]: "Research: time-tracking and AI token reporting conventions"
+        - generic [ref=f4e532]:
+          - heading "Fri 24 Jul" [level=3] [ref=f4e533]
+          - list [ref=f4e534]:
+            - listitem [ref=f4e535]:
+              - generic [ref=f4e536]: 16:14
+              - generic [ref=f4e538]: completed
+              - link "#19" [ref=f4e539] [cursor=pointer]:
+                - /url: "#task-19"
+              - generic [ref=f4e540]: "Rapportage: token-metrics tonen in tasqx_summary en HTML-report"
+            - listitem [ref=f4e541]:
+              - generic [ref=f4e542]: 16:14
+              - generic [ref=f4e544]: completed
+              - link "#18" [ref=f4e545] [cursor=pointer]:
+                - /url: "#task-18"
+              - generic [ref=f4e546]: "Optioneel: lokale OTLP-receiver in daemon + gedocumenteerde opt-in config voor Claude Code/Codex/Gemini"
+            - listitem [ref=f4e547]:
+              - generic [ref=f4e548]: 15:30
+              - generic [ref=f4e550]: started
+              - link "#19" [ref=f4e551] [cursor=pointer]:
+                - /url: "#task-19"
+              - generic [ref=f4e552]: "Rapportage: token-metrics tonen in tasqx_summary en HTML-report"
+            - listitem [ref=f4e553]:
+              - generic [ref=f4e554]: 15:30
+              - generic [ref=f4e556]: started
+              - link "#18" [ref=f4e557] [cursor=pointer]:
+                - /url: "#task-18"
+              - generic [ref=f4e558]: "Optioneel: lokale OTLP-receiver in daemon + gedocumenteerde opt-in config voor Claude Code/Codex/Gemini"
+            - listitem [ref=f4e559]:
+              - generic [ref=f4e560]: 15:30
+              - generic [ref=f4e562]: completed
+              - link "#17" [ref=f4e563] [cursor=pointer]:
+                - /url: "#task-17"
+              - generic [ref=f4e564]: "Attributie-engine in daemon: async na complete, tijdvenster-bucketing + prompt_id-correlatie"
+            - listitem [ref=f4e565]:
+              - generic [ref=f4e566]: 14:46
+              - generic [ref=f4e568]: started
+              - link "#17" [ref=f4e569] [cursor=pointer]:
+                - /url: "#task-17"
+              - generic [ref=f4e570]: "Attributie-engine in daemon: async na complete, tijdvenster-bucketing + prompt_id-correlatie"
+            - listitem [ref=f4e571]:
+              - generic [ref=f4e572]: 14:45
+              - generic [ref=f4e574]: completed
+              - link "#16" [ref=f4e575] [cursor=pointer]:
+                - /url: "#task-16"
+              - generic [ref=f4e576]: "Parsers: Gemini CLI (telemetry outfile) en Copilot CLI (~/.copilot/otel/*.jsonl)"
+            - listitem [ref=f4e577]:
+              - generic [ref=f4e578]: 14:45
+              - generic [ref=f4e580]: completed
+              - link "#15" [ref=f4e581] [cursor=pointer]:
+                - /url: "#task-15"
+              - generic [ref=f4e582]: "Parser: Codex rollout-JSONL (~/.codex/sessions), incl. pre-sept-2025 sessies overslaan"
+            - listitem [ref=f4e583]:
+              - generic [ref=f4e584]: 14:45
+              - generic [ref=f4e586]: completed
+              - link "#14" [ref=f4e587] [cursor=pointer]:
+                - /url: "#task-14"
+              - generic [ref=f4e588]: "Parser: Claude Code JSONL-transcripts (~/.claude/projects/*.jsonl) met versietolerantie"
+            - listitem [ref=f4e589]:
+              - generic [ref=f4e590]: 14:04
+              - generic [ref=f4e592]: started
+              - link "#16" [ref=f4e593] [cursor=pointer]:
+                - /url: "#task-16"
+              - generic [ref=f4e594]: "Parsers: Gemini CLI (telemetry outfile) en Copilot CLI (~/.copilot/otel/*.jsonl)"
+            - listitem [ref=f4e595]:
+              - generic [ref=f4e596]: 14:04
+              - generic [ref=f4e598]: started
+              - link "#15" [ref=f4e599] [cursor=pointer]:
+                - /url: "#task-15"
+              - generic [ref=f4e600]: "Parser: Codex rollout-JSONL (~/.codex/sessions), incl. pre-sept-2025 sessies overslaan"
+            - listitem [ref=f4e601]:
+              - generic [ref=f4e602]: 14:04
+              - generic [ref=f4e604]: started
+              - link "#14" [ref=f4e605] [cursor=pointer]:
+                - /url: "#task-14"
+              - generic [ref=f4e606]: "Parser: Claude Code JSONL-transcripts (~/.claude/projects/*.jsonl) met versietolerantie"
+            - listitem [ref=f4e607]:
+              - generic [ref=f4e608]: 14:03
+              - generic [ref=f4e610]: completed
+              - link "#13" [ref=f4e611] [cursor=pointer]:
+                - /url: "#task-13"
+              - generic [ref=f4e612]: "Self-report fallback: optionele token-parameters op tasqx_complete_task"
+            - listitem [ref=f4e613]:
+              - generic [ref=f4e614]: 14:03
+              - generic [ref=f4e616]: completed
+              - link "#12" [ref=f4e617] [cursor=pointer]:
+                - /url: "#task-12"
+              - generic [ref=f4e618]: Correlatie-metadata vastleggen bij task start/complete (timestamps, session_id, prompt_id, transcript_path, cwd, MCP clientInfo)
+            - listitem [ref=f4e619]:
+              - generic [ref=f4e620]: 14:03
+              - generic [ref=f4e622]: completed
+              - link "#11" [ref=f4e623] [cursor=pointer]:
+                - /url: "#task-11"
+              - generic [ref=f4e624]: "Datamodel: token-usage velden per taak (input/output/cache_read/cache_creation, tool, source, confidence)"
+            - listitem [ref=f4e625]:
+              - generic [ref=f4e626]: 13:18
+              - generic [ref=f4e628]: started
+              - link "#11" [ref=f4e629] [cursor=pointer]:
+                - /url: "#task-11"
+              - generic [ref=f4e630]: "Datamodel: token-usage velden per taak (input/output/cache_read/cache_creation, tool, source, confidence)"
+            - listitem [ref=f4e631]:
+              - generic [ref=f4e632]: 13:16
+              - generic [ref=f4e634]: completed
+              - link "#10" [ref=f4e635] [cursor=pointer]:
+                - /url: "#task-10"
+              - generic [ref=f4e636]: "Spike: verifieer Codex token_count-semantiek (cumulatief vs per-turn) tegen echte rollout-files"
+            - listitem [ref=f4e637]:
+              - generic [ref=f4e638]: 13:14
+              - generic [ref=f4e640]: started
+              - link "#10" [ref=f4e641] [cursor=pointer]:
+                - /url: "#task-10"
+              - generic [ref=f4e642]: "Spike: verifieer Codex token_count-semantiek (cumulatief vs per-turn) tegen echte rollout-files"
+    - region [active] [ref=f4e644]:
+      - generic [ref=f4e645]:
+        - generic [ref=f4e646]: "#20"
+        - 'heading "Research: time-tracking and AI token reporting conventions" [level=3] [ref=f4e647]'
+        - link "close task detail" [ref=f4e648] [cursor=pointer]:
+          - /url: "#cost"
+          - text: close
+          - generic [ref=f4e649]: task detail
+      - generic [ref=f4e650]:
+        - generic [ref=f4e651]:
+          - term [ref=f4e652]: status
+          - definition [ref=f4e653]: done
+        - generic [ref=f4e654]:
+          - term [ref=f4e655]: project
+          - definition [ref=f4e656]: tasqx-reporting-redesign
+        - generic [ref=f4e657]:
+          - term [ref=f4e658]: priority
+          - definition [ref=f4e659]: H
+        - generic [ref=f4e660]:
+          - term [ref=f4e661]: estimate
+          - definition [ref=f4e662]: 3h
+        - generic [ref=f4e663]:
+          - term [ref=f4e664]: tracked
+          - definition [ref=f4e665]: 7m
+        - generic [ref=f4e666]:
+          - term [ref=f4e667]: urgency
+          - definition [ref=f4e668]: "6.0"
+      - generic [ref=f4e669]:
+        - generic [ref=f4e670]: reporting
+        - generic [ref=f4e671]: research
+        - generic [ref=f4e672]: ux
+      - heading "Token cost" [level=4] [ref=f4e673]
+      - generic [ref=f4e674]:
+        - generic [ref=f4e675]:
+          - generic [ref=f4e677]: cache read
+          - generic [ref=f4e678]: 3,210,226
+        - generic [ref=f4e679]:
+          - generic [ref=f4e681]: cache write
+          - generic [ref=f4e682]: 87,153
+        - generic [ref=f4e683]:
+          - generic [ref=f4e685]: input
+          - generic [ref=f4e686]: "45"
+        - generic [ref=f4e687]:
+          - generic [ref=f4e689]: output
+          - generic [ref=f4e690]: 15,538
+      - paragraph [ref=f4e691]:
+        - text: measured via
+        - code [ref=f4e692]: log-parse
+        - text: from
+        - code [ref=f4e693]: claude-code
+        - text: · confidence high · 1 measurement(s)
+      - heading "Annotations" [level=4] [ref=f4e694]
+      - list [ref=f4e695]:
+        - listitem [ref=f4e696]:
+          - generic [ref=f4e697]: 2026-07-25 09:41 UTC
+          - checkbox "Show all 9 lines" [ref=f4e698]
+          - generic [ref=f4e699]: "FIELD TEST FINDING (blocking, found before research): token attribution cannot fire for CLI-driven work. attribution.rs:492-528 builds the pending-attribution candidate set ONLY from 'done' events whose payload carries at least one of client / transcript_path / session_id. The code comment says it outright: \"A human's `tasqx done 4` has none and is never attributed.\" The CLI's `tasqx start` / `tasqx done` expose no correlation flags (checked `tasqx done -h`). Only the MCP tool schemas add them, via mcp.rs:115 with_correlation(). Net effect: driving tasqx purely through the CLI guarantees an all-zero token report, regardless of tokens.enabled or otlp.enabled. Workaround used for this field test: `tasqx api` (stdio one-shot JSON envelope, same current binary, still not MCP) to send task.done with client/session_id/transcript_path. Proposed fix: add --client/--session-id/--transcript-path (and --token-* self-report) flags to `tasqx start` and `tasqx done`, or have the CLI auto-detect CLAUDE_* / agent env vars."
+          - generic [ref=f4e700] [cursor=pointer]: Show all 9 lines
+        - listitem [ref=f4e701]:
+          - generic [ref=f4e702]: 2026-07-25 09:46 UTC
+          - checkbox "Show all 20 lines" [ref=f4e703]
+          - generic [ref=f4e704]: "RESEARCH SUMMARY — two strands, and where they conflict. TIME-TRACKING CONVENTION (Toggl, Harvest, Clockify, Jira, Linear): - Three-view split is near-universal: Summary (aggregate + chart), Detailed (raw entry list), Weekly (grid). Toggl and Clockify both ship exactly these three. - Recurring charts: stacked bar over a time axis (Toggl bar chart, stackable by project/client/tag), proportional breakdown (Toggl pie), burndown + cumulative flow + velocity + throughput (Jira Scrum reports). - Universal control: a date-range selector with presets, top-left. Grouping selector next to the chart. - Evidence on what is actually used: Atlassian and practitioner guidance both say start with cycle time and burndown; CFD and velocity are for mature teams. Dashboard research (Bach et al., \"Dashboard Design Patterns\", IEEE VIS 2022 / TVCG 2023, n=144 dashboards) catalogues eight pattern groups; the practitioner literature converges on 5-7 primary KPIs per view and warns that vanity metrics (impressive totals nobody acts on) crowd out actionable ones. AI TOKEN CONVENTION (Anthropic Console/Usage API, Langfuse, LangSmith, Helicone): - Four buckets, always separate: uncached input, cached input, cache creation, output. Anthropic Usage API groups by model/workspace/service_tier over 1m/1h/1d time buckets. - Anthropic keeps USAGE and COST as two different endpoints. Cost is derived, not the same question. - Langfuse: buckets are mutually exclusive by contract; cost attributed per observation, rolled up per trace. - Cache economics: cache read = 0.1x input price, cache write = 1.25x input price. WHERE THEY CONFLICT: 1. Blending. Time reporting blends freely — hours are hours, so \"12h this week\" is a true headline. Token reporting must not blend: four buckets at 0.1x-1.25x relative price make one total meaningless. TOKEN CONVENTION WINS. tasqx already agrees in core (reports.rs:73) but violates it in the presentation layer (html.rs:273 renders one blended stat(\"AI tokens\")). 2. Time axis. Token dashboards are time-series first (bucket_width is a required-feeling param). Time-tracking reports are entity-first (per project/client/task) with time as a secondary axis. For tasqx the unit of work is the TASK, so ENTITY-FIRST WINS — tokens per task/project, with time as the secondary axis. This is also what the API supports: report.summary group_by is project|status|priority with no time axis at all. 3. Cost. Every AI tool shows currency. tasqx must NOT: it has no pricing table, no model-price feed, and prices change. Show tokens and time as the two costs; leave money out. TIME-TRACKING CONVENTION WINS (Harvest shows revenue only because the user entered rates). DECISION TAKEN (user, this session): adopt the docs.rs self-containment guard shape for html.rs — in-page #anchors and one inline <script> become legal; per-href assertion plus url(/<link>/@import bans are added. Self-containment is preserved, and net tightened."
+          - generic [ref=f4e705] [cursor=pointer]: Show all 20 lines
+  - contentinfo [ref=f4e706]: Generated 2026-07-25 11:16 UTC · range last 30 days (completed after 2026-06-25 00:00 UTC) · backlog figures are as of generation time · every panel is a pure read of the tasqx core API · prototype for docs/reporting-redesign.md
