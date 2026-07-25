@@ -36,6 +36,14 @@
 //! on both. Its spelling is the escaped one, `project:"My \"Big\" Project"`, and
 //! that is the same on both sides too.
 //!
+//! A key needs a value to be a key, and its colon must stand alone. `due:` with
+//! nothing after it is the word `due:`, and `recur::advance_once` is a Rust
+//! path, not the recurrence rule `:advance_once` — every one of these keys is
+//! also a plausible first segment of a module path, which is the vocabulary this
+//! project's own tasks are written in. A `+` naming no tag is likewise the
+//! character `+`, as in `Display + Error`. Sugar that declines a token LEAVES
+//! it, in the title, spelled as typed; it never consumes and discards one.
+//!
 //! Explicit flags win over inline sugar. Date/recurrence/reminder/estimate
 //! *values* are carried out verbatim (unparsed); the caller resolves them through
 //! the one core parser so sugar and flags share identical parsing.
@@ -94,21 +102,49 @@ pub struct AddFlags {
     pub estimate: Option<String>,
 }
 
+/// Which field a value key fills.
+///
+/// The key's *spelling* is data; the field it fills is a type. Dispatching on
+/// this rather than on the string is what makes the loop's arm list exhaustive
+/// — the compiler checks every key has a home, so an alias cannot be added to
+/// the table and then quietly go nowhere.
+/// `Copy` so the table can be read by value; the loop matches on patterns and
+/// needs no `PartialEq`.
+#[derive(Clone, Copy)]
+enum ValueKey {
+    Project,
+    Due,
+    Scheduled,
+    Wait,
+    /// The value IS the rule (`repeat:`/`recur:`).
+    Repeat,
+    /// The value is the rule's tail; `every ` is prepended (`every:`).
+    Every,
+    Remind,
+    Estimate,
+}
+
 /// Sugar keys that take a *value*, longest-first so `estimate:` is tested before
-/// `est:`. Used to spot an argv element the shell already quoted for us.
-const VALUE_KEYS: [&str; 12] = [
-    "scheduled:",
-    "estimate:",
-    "project:",
-    "remind:",
-    "repeat:",
-    "every:",
-    "recur:",
-    "sched:",
-    "proj:",
-    "wait:",
-    "due:",
-    "est:",
+/// `est:` and `project:` before `proj:`. Used to spot an argv element the shell
+/// already quoted for us, and — via [`split_key`] — to dispatch the parse loop,
+/// so the two cannot disagree about what counts as sugar (D30).
+///
+/// Longest-first is not cosmetic: it is the ONLY thing that stops `estimate:x`
+/// being read as the estimate `imate:x`, and it is load-bearing again now that a
+/// declined key must not fall through to its own shorter alias. See [`split_key`].
+const VALUE_KEYS: [(&str, ValueKey); 12] = [
+    ("scheduled:", ValueKey::Scheduled),
+    ("estimate:", ValueKey::Estimate),
+    ("project:", ValueKey::Project),
+    ("remind:", ValueKey::Remind),
+    ("repeat:", ValueKey::Repeat),
+    ("every:", ValueKey::Every),
+    ("recur:", ValueKey::Repeat),
+    ("sched:", ValueKey::Scheduled),
+    ("proj:", ValueKey::Project),
+    ("wait:", ValueKey::Wait),
+    ("due:", ValueKey::Due),
+    ("est:", ValueKey::Estimate),
 ];
 
 /// Parse argv words plus explicit flags into structured fields.
@@ -121,11 +157,13 @@ const VALUE_KEYS: [&str; 12] = [
 /// mis-parsed: `project:"my big project"` set the project to `my` and renamed
 /// the task to `big project`, with no error at all.
 ///
-/// So: an element that begins with a value key — or with `+`, which is a value
-/// key spelled without a colon (C2) — and carries spaces (and no embedded quotes
-/// of its own) is honored whole. Everything else is tokenized as
-/// before, which keeps the classic one-big-quoted-string capture form —
+/// So: an element that opens with a value key that OWNS a value — or with `+`,
+/// which is a value key spelled without a colon (C2) — and carries spaces (and
+/// no embedded quotes of its own) is honored whole. Everything else is tokenized
+/// as before, which keeps the classic one-big-quoted-string capture form —
 /// `add "Ship it due:friday +api"` — parsing exactly as it always has.
+/// "Owns a value" is [`split_key`]'s judgement and not `starts_with`'s: an
+/// element the loop will hand to the title must not first be honored whole here.
 ///
 /// The trade: `add "due:friday Ship it"` (a value key opening a quoted title)
 /// now reads the whole remainder as the date and fails with a clean
@@ -136,6 +174,14 @@ const VALUE_KEYS: [&str; 12] = [
 /// C6: an unusable token is refused, never dropped. `!urgent` used to be
 /// consumed by the `!` branch, fail `normalize_prio`, and vanish — not applied,
 /// not reported, not even left in the title. See [`normalize_prio`].
+///
+/// C6 has a quieter twin, and every arm below now obeys it: a token a sugar arm
+/// declines must reach the TITLE. The arms used to claim a token on its first
+/// character and then drop it on failing their own inner check, so a bare `+`
+/// and a valueless `due:` were deleted outright at exit 0. The claim and the
+/// check are now one decision — [`tag_of`] and [`split_key`] — so there is no
+/// longer a state between "claimed" and "used". Only `!` still refuses loudly
+/// instead, because a bang-word has no escape into title text.
 pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError> {
     let mut title_words: Vec<String> = Vec::new();
     let mut tags: Vec<String> = flags.tags;
@@ -158,47 +204,36 @@ pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError
     let last_tok = toks.len().saturating_sub(1);
 
     for (i, SugarTok { text: tok, quoted }) in toks.into_iter().enumerate() {
-        if let Some(tag) = tok.strip_prefix('+') {
-            if !tag.is_empty() && !tags.iter().any(|t| t == tag) {
+        if let Some(tag) = tag_of(&tok) {
+            if !tags.iter().any(|t| t == tag) {
                 tags.push(tag.to_string());
             }
-        } else if let Some(p) = tok
-            .strip_prefix("project:")
-            .or_else(|| tok.strip_prefix("proj:"))
-        {
-            if project.is_none() && !p.is_empty() {
-                project = Some(p.to_string());
-                // Unquoted AND something follows it: only then is there a word
-                // the tokenizer could have taken off the end of this name.
-                project_may_be_truncated = !quoted && i < last_tok;
+        } else if let Some((key, v)) = split_key(&tok) {
+            match key {
+                ValueKey::Project => {
+                    if project.is_none() {
+                        project = Some(v.to_string());
+                        // Unquoted AND something follows it: only then is there
+                        // a word the tokenizer could have taken off the end of
+                        // this name.
+                        project_may_be_truncated = !quoted && i < last_tok;
+                    }
+                }
+                ValueKey::Due => set_if_empty(&mut due, v),
+                ValueKey::Scheduled => set_if_empty(&mut scheduled, v),
+                ValueKey::Wait => set_if_empty(&mut wait, v),
+                ValueKey::Repeat => set_if_empty(&mut recurrence, v),
+                // `every:X` is the rule `every X`; the key carries the tail only.
+                // Not routed through `set_if_empty`, which would build the rule
+                // string before discovering an explicit `--repeat` already won.
+                ValueKey::Every => {
+                    if recurrence.is_none() {
+                        recurrence = Some(format!("every {v}"));
+                    }
+                }
+                ValueKey::Remind => set_if_empty(&mut remind, v),
+                ValueKey::Estimate => set_if_empty(&mut estimate, v),
             }
-        } else if let Some(v) = tok.strip_prefix("due:") {
-            set_if_empty(&mut due, v);
-        } else if let Some(v) = tok
-            .strip_prefix("scheduled:")
-            .or_else(|| tok.strip_prefix("sched:"))
-        {
-            set_if_empty(&mut scheduled, v);
-        } else if let Some(v) = tok.strip_prefix("wait:") {
-            set_if_empty(&mut wait, v);
-        } else if let Some(v) = tok
-            .strip_prefix("repeat:")
-            .or_else(|| tok.strip_prefix("recur:"))
-        {
-            if recurrence.is_none() && !v.is_empty() {
-                recurrence = Some(v.to_string());
-            }
-        } else if let Some(v) = tok.strip_prefix("every:") {
-            if recurrence.is_none() && !v.is_empty() {
-                recurrence = Some(format!("every {v}"));
-            }
-        } else if let Some(v) = tok.strip_prefix("remind:") {
-            set_if_empty(&mut remind, v);
-        } else if let Some(v) = tok
-            .strip_prefix("est:")
-            .or_else(|| tok.strip_prefix("estimate:"))
-        {
-            set_if_empty(&mut estimate, v);
         } else if let Some(p) = tok.strip_prefix('!') {
             // Validated even when an explicit --priority already won, so a typo
             // is never excused by the flag that happened to outrank it: the flag
@@ -233,6 +268,45 @@ fn set_if_empty(slot: &mut Option<String>, v: &str) {
     }
 }
 
+/// The tag a `+` token names, or `None` if it names none.
+///
+/// C6's rule for `+`: a token this declines must reach the TITLE. A bare `+`
+/// used to be claimed by the tag branch, fail the non-empty check, and then be
+/// unreachable by the title branch — pure deletion, at exit 0, with no warning.
+/// `tasqx add -- "Implement Display + std::error::Error"` stored a title with no
+/// `+` in it and created no tag. `+` is ordinary prose in a technical title
+/// ("Display + Error", "C++", "a + b"), so the loss is not exotic.
+fn tag_of(tok: &str) -> Option<&str> {
+    tok.strip_prefix('+').filter(|t| !t.is_empty())
+}
+
+/// The value key a token opens with, and the value after it — or `None` when the
+/// token is not sugar at all and belongs to the title.
+///
+/// Two refusals, both of which used to be silent corruption:
+///
+/// **`::` is a path separator, not a key.** Every value key is also a plausible
+/// first segment of a Rust module path, which is this project's own task
+/// vocabulary. A bare `strip_prefix` read `recur::advance_once` as the
+/// recurrence rule `":advance_once"` and refused the whole command, naming a
+/// rule the user never wrote; `project::config` was worse — accepted, project
+/// silently set to `:config`, and the word removed from the title.
+///
+/// **An empty value names nothing**, so `due:` alone is a word. It used to be
+/// claimed by its branch and then dropped, exactly like the bare `+`.
+///
+/// The key is resolved ONCE, by first prefix match against [`VALUE_KEYS`], and
+/// only then judged. Chaining `strip_prefix` per alias instead — the shape this
+/// replaced — re-tested the shorter alias against a token the longer one had
+/// already declined, so `project::config` failed `project:` and then matched
+/// `proj:`, setting the project to `ect::config`.
+fn split_key(tok: &str) -> Option<(ValueKey, &str)> {
+    let (key, value) = VALUE_KEYS
+        .iter()
+        .find_map(|&(spelling, key)| Some((key, tok.strip_prefix(spelling)?)))?;
+    (!value.is_empty() && !value.starts_with(':')).then_some((key, value))
+}
+
 /// Turn argv into sugar tokens, respecting boundaries the shell already drew.
 ///
 /// An element like `repeat:every 3 days` only exists because the user wrote
@@ -243,9 +317,14 @@ fn set_if_empty(slot: &mut Option<String>, v: &str) {
 fn tokenize_argv(args: &[String]) -> Result<Vec<SugarTok>, ApiError> {
     let mut out = Vec::new();
     for arg in args {
+        // `split_key`, not a bare `starts_with` over VALUE_KEYS: an element the
+        // parse loop will hand to the title must not first be honored whole as a
+        // "value". Otherwise `add "fix recur::advance_once and bound it"` became
+        // ONE title word carrying the whole element, since the value it was
+        // honored as was then declined downstream.
         let shell_quoted_value = !arg.contains('"')
             && arg.chars().any(char::is_whitespace)
-            && (VALUE_KEYS.iter().any(|k| arg.starts_with(k)) || is_spaced_tag(arg));
+            && (split_key(arg).is_some() || is_spaced_tag(arg));
         if shell_quoted_value {
             // The shell drew this boundary, so the value is quoted in every
             // sense that matters here — nothing about it was guessed.
@@ -276,8 +355,15 @@ fn tokenize_argv(args: &[String]) -> Result<Vec<SugarTok>, ApiError> {
             // An element that tokenizes to NOTHING (whitespace only) must keep
             // falling through: dropping it is what makes `tasqx add "   "`
             // reach `req_str` empty and be refused, which D36 requires.
+            //
+            // The element ITSELF is tested, not only its words, because it is
+            // the element that gets pushed. `+ foo` tokenizes to two innocent
+            // words (`+` names no tag, `foo` is a word) yet is sugar whole — the
+            // loop would read the pushed element as the tag `" foo"`, which is
+            // the very mint-a-space-tag outcome `is_spaced_tag` exists to stop.
             let is_pure_title = !arg.contains('"')
                 && !toks.is_empty()
+                && !is_sugar_token(arg)
                 && !toks.iter().any(|t| is_sugar_token(&t.text));
             if is_pure_title {
                 out.push(SugarTok {
@@ -303,31 +389,39 @@ struct SugarTok {
     quoted: bool,
 }
 
-/// `+tag` is a value key without the colon, so it obeys the same rule.
+/// Does this token reach a sugar branch of [`parse_add`]'s loop rather than the
+/// title branch?
+///
+/// Derived from the very functions the loop dispatches on — [`tag_of`],
+/// [`split_key`], and the colon-less `!` — so a new sugar key joins this answer
+/// by being added to [`VALUE_KEYS`], not by someone remembering a second list,
+/// and a token one of them DECLINES is title text here too. That is D30's rule
+/// ("when a fix can be spelled 'derive it' or 'keep a list in sync', derive it")
+/// at the one place where getting it wrong decides between storing an element
+/// verbatim and rejoining its words.
+///
+/// It matters in both directions. When this said `starts_with('+')` while the
+/// loop required a non-empty tag, `add "Display + Error"` was denied the
+/// verbatim path AND had its `+` eaten by the loop. When it said
+/// `starts_with("recur:")`, `add "fix recur::advance_once"` was likewise denied
+/// it and lost the word.
+fn is_sugar_token(t: &str) -> bool {
+    tag_of(t).is_some() || t.starts_with('!') || split_key(t).is_some()
+}
+
+/// `+tag` is a value key without the colon, so it obeys the same whole-element
+/// rule as one.
 ///
 /// `add "painting job" +"needs paint"` reaches us as the element `+needs paint`;
 /// re-splitting it stored the tag `needs` and, because the leftover word fell
 /// through to the title branch, silently renamed the task to `painting job
 /// paint`. On `modify` the same split rewrote the title to `job` outright.
 ///
-/// The `+` must be followed by actual content, not by the space itself: a bare
-/// `+ foo` names no tag, and honouring it whole would mint the tag `" foo"`.
-/// Does this token reach a sugar branch of [`parse_add`]'s loop rather than the
-/// title branch?
-///
-/// Derived from the same two facts the loop itself dispatches on — the
-/// [`VALUE_KEYS`] table and the two colon-less prefixes — so a new sugar key
-/// joins this answer by being added to the table, not by someone remembering a
-/// second list. That is D30's rule ("when a fix can be spelled 'derive it' or
-/// 'keep a list in sync', derive it") at the one place where getting it wrong
-/// would silently hand a sugar-bearing element to the title verbatim.
-fn is_sugar_token(t: &str) -> bool {
-    t.starts_with('+') || t.starts_with('!') || VALUE_KEYS.iter().any(|k| t.starts_with(k))
-}
-
+/// Stricter than [`tag_of`] on exactly one point: the `+` must be followed by
+/// actual content, not by the space itself. `+ foo` does name no tag either way,
+/// but honouring it WHOLE here would mint the tag `" foo"` instead.
 fn is_spaced_tag(arg: &str) -> bool {
-    arg.strip_prefix('+')
-        .is_some_and(|t| !t.starts_with(char::is_whitespace) && !t.is_empty())
+    tag_of(arg).is_some_and(|t| !t.starts_with(char::is_whitespace))
 }
 
 /// Whitespace-split, but keep double-quoted spans together and strip the quotes,
@@ -528,11 +622,17 @@ mod tests {
 
     /// A `+` that names nothing is not a tag, and must not become the tag
     /// `" foo"` just because the element happens to contain a space.
+    ///
+    /// The title now keeps the `+`. It used to read `foo`: the `+` was claimed
+    /// by the tag branch, failed the non-empty check, and was deleted — which is
+    /// the same defect as `add "Display + Error"`, just with the space on the
+    /// other side. Not naming a tag is a reason to leave a token alone, never a
+    /// reason to consume it.
     #[test]
     fn a_bare_plus_names_no_tag() {
         let p = parse_argv(&["+ foo"], AddFlags::default());
         assert_eq!(p.tags, Vec::<String>::new());
-        assert_eq!(p.title, "foo");
+        assert_eq!(p.title, "+ foo");
     }
 
     /// The classic one-argument capture form is untouched: there the user never
@@ -669,5 +769,71 @@ mod tests {
         // Quiet by default (§9): nothing infers a reminder from a due date.
         let p = parse1("Do it due:friday", AddFlags::default());
         assert_eq!(p.remind, None);
+    }
+
+    /// C6 again, for `+`: a token that names no tag must reach the title, not be
+    /// deleted. `add "Implement Display + std::error::Error"` stored the title
+    /// without its `+` and created no tag — a success, a correct-looking task,
+    /// and a quietly corrupted title.
+    #[test]
+    fn a_bare_plus_is_title_text_not_a_dropped_tag() {
+        let p = parse1("Display + Error", AddFlags::default());
+        assert_eq!(p.title, "Display + Error", "the + must survive verbatim");
+        assert_eq!(p.tags, Vec::<String>::new());
+
+        // …and in the shell-tokenized form, where the `+` is its own argv word.
+        let q = parse_argv(&["Display", "+", "Error"], AddFlags::default());
+        assert_eq!(q.title, "Display + Error");
+        assert_eq!(q.tags, Vec::<String>::new());
+    }
+
+    /// A Rust path is not sugar: the separator is `::`, and every value key is
+    /// also a plausible first module segment. `recur::advance_once` was read as
+    /// the recurrence rule `":advance_once"` and the whole command refused.
+    #[test]
+    fn a_rust_path_is_not_a_sugar_value() {
+        let p = parse1("fix recur::advance_once", AddFlags::default());
+        assert_eq!(p.title, "fix recur::advance_once");
+        assert_eq!(p.recurrence, None);
+
+        // Worse than a hard error: this one was ACCEPTED, set project=":config"
+        // and removed the word from the title.
+        let q = parse1("see project::config", AddFlags::default());
+        assert_eq!(q.title, "see project::config");
+        assert_eq!(q.project, None);
+
+        // The shorter alias must not pick up what the longer one just declined:
+        // `strip_prefix("proj:")` on `project::config` yields `ect::config`.
+        assert_ne!(q.project.as_deref(), Some("ect::config"));
+
+        for tok in [
+            "scheduled::at", "estimate::of", "remind::me", "repeat::forever",
+            "every::other", "sched::at", "proj::x", "wait::for", "due::soon",
+            "est::of",
+        ] {
+            let r = parse_argv(&["Task", tok], AddFlags::default());
+            assert_eq!(r.title, format!("Task {tok}"), "{tok} is title text");
+        }
+    }
+
+    /// One colon is still sugar — the fix must not cost the common spelling.
+    #[test]
+    fn a_single_colon_is_still_sugar() {
+        let p = parse_argv(&["due:friday", "ship", "it"], AddFlags::default());
+        assert_eq!(p.due.as_deref(), Some("friday"));
+        assert_eq!(p.title, "ship it");
+    }
+
+    /// A key with nothing after it names no value, so it is a word. It used to
+    /// be swallowed by its own branch and dropped — the `+` bug with a colon.
+    #[test]
+    fn a_valueless_key_stays_in_the_title() {
+        let p = parse1("meeting due: soon", AddFlags::default());
+        assert_eq!(p.title, "meeting due: soon");
+        assert_eq!(p.due, None);
+
+        let q = parse_argv(&["notes", "est:"], AddFlags::default());
+        assert_eq!(q.title, "notes est:");
+        assert_eq!(q.estimate, None);
     }
 }
