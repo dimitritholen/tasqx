@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tasqx report · redesign prototype</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1a1d23; --muted: #5b626e;
+  --card: #fcfcfb; --line: #e3e6ea;
+  --accent: #1a6e8c;
+  --ramp0: #4f7a3f; --ramp1: #9a7a1e; --ramp2: #a33b45;
+  --ok: #41762b; --danger: #a33b45;
+  --c-tokens_cache_read: #00688f;
+  --c-tokens_cache_creation: #a35d0a;
+  --c-tokens_in: #8e4b9c;
+  --c-tokens_out: #41762b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* The chart surface in dark mode is --bg, NOT the lighter --card the rest of
+       the page uses: measured against a #545962 card every four-bucket step
+       either left the OKLCH L 0.48-0.67 band or fell under 3:1 contrast. On
+       #2e3440 the same four steps pass all five checks. */
+    --bg: #2e3440; --fg: #d8dee9; --muted: #93a0b4;
+    --card: #363d4a; --line: #4c566a;
+    --accent: #88c0d0;
+    --ramp0: #a3be8c; --ramp1: #ebcb8b; --ramp2: #bf616a;
+    --ok: #a3be8c; --danger: #bf616a;
+  --c-tokens_cache_read: #2f9fc6;
+  --c-tokens_cache_creation: #c07a1e;
+  --c-tokens_in: #a962c0;
+  --c-tokens_out: #5fa036;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); line-height: 1.55;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+.id, .num, .tm, .bval, .tkv, code, .mono { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
+main { max-width: 92ch; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+a { color: var(--accent); }
+
+header.summary { position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--line);
+  background: var(--bg); padding: .85rem 1.25rem; display: flex; align-items: center;
+  justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 1.1rem; letter-spacing: -.01em; }
+.brand span { font-weight: 400; color: var(--muted); }
+.stats { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.stat { text-align: right; }
+.stat .n { font-size: 1.45rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, monospace; }
+.stat .l { font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.stat .s { font-size: .7rem; color: var(--muted); }
+.stat.flag .n { color: var(--danger); }
+
+section { margin-top: 2.4rem; scroll-margin-top: 5rem; }
+section > h2 { font-size: 1.05rem; margin: 0 0 .15rem; letter-spacing: -.01em; }
+section > .sub { color: var(--muted); font-size: .85rem; margin: 0 0 .9rem; max-width: 70ch; }
+h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 1.2rem 0 .4rem; }
+h4 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 1rem 0 .35rem; }
+.muted { color: var(--muted); } .small { font-size: .85rem; }
+
+.empty { border: 1px dashed var(--line); border-radius: 12px; padding: 1.4rem 1.2rem;
+  background: var(--card); text-align: center; }
+.empty p { margin: 0; }
+.empty .hint { margin-top: .4rem; color: var(--muted); font-size: .84rem; max-width: 62ch;
+  margin-left: auto; margin-right: auto; }
+
+.legend { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: .8rem; }
+.lg { display: inline-flex; align-items: center; gap: .4rem; font: inherit; font-size: .78rem;
+  color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+  padding: .2rem .7rem; cursor: pointer; }
+.sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.sw-tokens_cache_read, .seg-tokens_cache_read { background: var(--c-tokens_cache_read); }
+.sw-tokens_cache_creation, .seg-tokens_cache_creation { background: var(--c-tokens_cache_creation); }
+.sw-tokens_in, .seg-tokens_in { background: var(--c-tokens_in); }
+.sw-tokens_out, .seg-tokens_out { background: var(--c-tokens_out); }
+.page[data-off~="tokens_cache_read"] .seg-tokens_cache_read { display: none; }
+.page[data-off~="tokens_cache_read"] .lg[data-bucket="tokens_cache_read"] { opacity: .45; text-decoration: line-through; }
+.page[data-off~="tokens_cache_creation"] .seg-tokens_cache_creation { display: none; }
+.page[data-off~="tokens_cache_creation"] .lg[data-bucket="tokens_cache_creation"] { opacity: .45; text-decoration: line-through; }
+.page[data-off~="tokens_in"] .seg-tokens_in { display: none; }
+.page[data-off~="tokens_in"] .lg[data-bucket="tokens_in"] { opacity: .45; text-decoration: line-through; }
+.page[data-off~="tokens_out"] .seg-tokens_out { display: none; }
+.page[data-off~="tokens_out"] .lg[data-bucket="tokens_out"] { opacity: .45; text-decoration: line-through; }
+
+.bars { display: flex; flex-direction: column; gap: .35rem; }
+.brow { display: grid; grid-template-columns: 16ch 1fr 7ch; grid-template-areas: "n b v" ". note note";
+  gap: .1rem .7rem; align-items: center; width: 100%; text-align: left; font: inherit;
+  background: none; border: 0; border-radius: 8px; padding: .45rem .5rem; cursor: pointer; }
+.brow:hover { background: var(--card); }
+.brow[aria-pressed="true"] { background: var(--card); outline: 2px solid var(--accent); }
+.bname { grid-area: n; font-weight: 600; font-size: .87rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btrack { grid-area: b; background: var(--card); border-radius: 5px; overflow: hidden; }
+.bbar { display: flex; height: 20px; gap: 2px; }
+.btrack.mini .bbar { height: 12px; }
+.seg { min-width: 2px; }
+.seg:first-child { border-radius: 4px 0 0 4px; }
+.seg:last-child { border-radius: 0 4px 4px 0; }
+.bval { grid-area: v; text-align: right; font-size: .82rem; font-variant-numeric: tabular-nums; }
+.bnote { grid-area: note; font-size: .72rem; color: var(--muted); }
+
+.tablewrap { overflow-x: auto; }
+table.grid { width: 100%; border-collapse: collapse; font-size: .88rem; }
+table.grid th { text-align: left; color: var(--muted); font-weight: 600; font-size: .7rem;
+  text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--line); padding: .4rem .5rem; }
+table.grid td { padding: .45rem .5rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.grid td.num, table.grid th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.grid td.ttl { min-width: 22ch; }
+table.grid td.tok { display: flex; align-items: center; gap: .5rem; min-width: 16ch; }
+td.chip { color: var(--muted); font-size: .8rem; }
+.conf { font-size: .66rem; text-transform: uppercase; letter-spacing: .05em; border-radius: 999px;
+  padding: .05rem .45rem; border: 1px solid var(--line); }
+.conf-high { color: var(--ok); border-color: var(--ok); }
+
+.filterbar { display: flex; align-items: center; gap: .6rem; margin-bottom: .8rem;
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .35rem .7rem; font-size: .82rem; }
+.fclear { font: inherit; font-size: .78rem; background: none; border: 1px solid var(--line);
+  border-radius: 999px; padding: .05rem .6rem; cursor: pointer; color: var(--fg); }
+.timeline .day { margin-bottom: .4rem; }
+ul.events { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); }
+li.ev { display: flex; align-items: baseline; gap: .55rem; padding: .3rem .1rem .3rem .9rem;
+  position: relative; flex-wrap: wrap; font-size: .87rem; }
+li.ev .tm { color: var(--muted); font-size: .78rem; min-width: 4.5ch; }
+li.ev .dot { position: absolute; left: -5px; top: .75rem; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted); }
+li.ev-start .dot { background: var(--ok); }
+li.ev-done .dot { background: var(--ramp2); }
+li.ev-stop .dot { background: var(--accent); }
+li.ev .op { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); min-width: 9ch; }
+li.ev .ttl { flex: 1; min-width: 14ch; }
+li.ev .det { font-size: .76rem; color: var(--muted); }
+.page[data-filter] li.ev { display: none; }
+.page[data-filter] li.ev.match { display: flex; }
+
+.details .detail { display: none; }
+.details .detail:target { display: block; border: 1px solid var(--accent); border-radius: 12px;
+  background: var(--card); padding: 1rem 1.1rem; margin-top: 2rem; scroll-margin-top: 5rem; }
+.detail header { display: flex; align-items: baseline; gap: .6rem; }
+.detail header h3 { margin: 0; font-size: 1rem; text-transform: none; letter-spacing: 0; color: var(--fg); flex: 1; }
+.detail .close { font-size: .78rem; }
+dl.meta { display: flex; flex-wrap: wrap; gap: .3rem 1.5rem; margin: .8rem 0 0; }
+dl.meta dt { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+dl.meta dd { margin: 0; font-size: .9rem; }
+.tkgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .4rem; }
+.tk { display: flex; align-items: center; gap: .45rem; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: .35rem .6rem; }
+.tkl { font-size: .78rem; color: var(--muted); flex: 1; }
+.tkv { font-size: .84rem; font-variant-numeric: tabular-nums; }
+.prov { font-size: .76rem; color: var(--muted); margin: .5rem 0 0; }
+ul.anns { list-style: none; margin: 0; padding: 0; }
+ul.anns li { border-left: 2px solid var(--line); padding: .3rem 0 .6rem .8rem; margin-bottom: .3rem; }
+ul.anns .when { font-size: .72rem; color: var(--muted); }
+ul.anns .body { white-space: pre-wrap; font-size: .87rem; }
+.tags { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .6rem; }
+.tag { font-size: .74rem; border: 1px solid var(--line); border-radius: 999px; padding: .05rem .55rem; color: var(--muted); }
+
+figure.chart { margin: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); padding: .8rem; }
+figure.chart svg { display: block; width: 100%; height: auto; }
+text.ax { fill: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
+rect.zero { fill: var(--line); }
+
+footer { max-width: 92ch; margin: 0 auto; padding: 1rem 1.25rem 3rem; color: var(--muted); font-size: .8rem; }
+@media print { header.summary { position: static; } .details .detail { display: block; } }
+</style>
+</head>
+<body>
+<div class="page">
+<header class="summary"><div class="brand">tasqx <span>review</span></div><div class="stats"><div class="stat"><div class="n">3</div><div class="l">open</div></div><div class="stat"><div class="n">0</div><div class="l">done / 7d</div></div><div class="stat"><div class="n">—</div><div class="l">tracked</div></div><div class="stat"><div class="n">0</div><div class="l">overdue</div></div><div class="stat"><div class="n">—</div><div class="l">tokens</div><div class="s">not measured yet</div></div></div></header><main><section id="activity"><h2>Completions, last 21 days</h2><p class="sub">0 of 3 tasks carry a token measurement.</p><figure class="chart"><svg viewBox="0 0 720 96" role="img" aria-label="Tasks completed per day, last 21 days"><defs><linearGradient id="ramp" x1="0" y1="1" x2="0" y2="0"><stop offset="0%" stop-color="var(--ramp0)"/><stop offset="50%" stop-color="var(--ramp1)"/><stop offset="100%" stop-color="var(--ramp2)"/></linearGradient></defs><text class="ax" x="0" y="16.0">10</text><text class="ax" x="0" y="78.0">0</text><rect x="32.2" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="64.8" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="97.3" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="129.9" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="162.5" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="195.0" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="227.6" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="260.2" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="292.8" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="325.3" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="357.9" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="390.5" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="423.0" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="455.6" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="488.2" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="520.8" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="553.3" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="585.9" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="618.5" y="76.0" width="20.2" height="2" rx="1" class="zero"/><rect x="651.0" y="8.0" width="20.2" height="70.0" rx="4" fill="url(#ramp)"><title>2026-07-24: 10 done</title></rect><rect x="683.6" y="43.0" width="20.2" height="35.0" rx="4" fill="url(#ramp)"><title>2026-07-25: 5 done</title></rect><text class="ax" x="42.3" y="92.0" text-anchor="middle">05</text><text class="ax" x="140.0" y="92.0" text-anchor="middle">08</text><text class="ax" x="237.7" y="92.0" text-anchor="middle">11</text><text class="ax" x="335.4" y="92.0" text-anchor="middle">14</text><text class="ax" x="433.1" y="92.0" text-anchor="middle">17</text><text class="ax" x="530.9" y="92.0" text-anchor="middle">20</text><text class="ax" x="628.6" y="92.0" text-anchor="middle">23</text></svg></figure></section><section id="tokens"><h2>Token burn by project</h2><p class="sub">Where this range&#39;s tokens actually went.</p><div class="empty"><p>No token data in this range.</p><p class="hint">Token accounting is opt-in: `tasqx config set tokens.enabled true`, then run `tasqx daemon` so the attribution thread can reconstruct spend after each completion.</p></div></section><section id="cost"><h2>Cost per task</h2><p class="sub">Time and tokens, side by side.</p><div class="empty"><p>No measured work yet.</p><p class="hint">A task is measurable once it has a timer interval or an attributed measurement. Start one with `tasqx start &lt;id&gt;`.</p></div></section><section id="timeline"><h2>Timeline</h2><p class="sub">Started, stopped, completed — straight off the event log. Filtered by the project you select above.</p><div class="filterbar" id="filterbar" hidden><span class="fnote">Filtered to <b id="fname"></b></span><button type="button" id="fclear" class="fclear">clear</button></div><div class="timeline"><div class="day"><h3>Sat 25 Jul</h3><ul class="events"><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">no spend found in window</span></li><li class="ev ev-done" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">no spend found in window</span></li><li class="ev ev-done" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">10:02</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">10:01</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">9.09M tokens · 41 samples</span></li><li class="ev ev-done" data-project="none"><span class="tm">10:01</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">09:49</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">1.50M tokens · 8 samples</span></li><li class="ev ev-done" data-project="none"><span class="tm">09:49</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-stop" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">stopped</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-tokens-attributed" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">tokens attributed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span><span class="det">3.31M tokens · 25 samples</span></li><li class="ev ev-done" data-project="none"><span class="tm">09:46</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">09:39</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li></ul></div><div class="day"><h3>Fri 24 Jul</h3><ul class="events"><li class="ev ev-done" data-project="none"><span class="tm">16:14</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">16:14</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">15:30</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">15:30</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">15:30</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:46</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:45</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:45</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:45</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:04</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:04</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">14:04</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:03</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:03</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">14:03</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">13:18</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-done" data-project="none"><span class="tm">13:16</span><span class="dot"></span><span class="op">completed</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li><li class="ev ev-start" data-project="none"><span class="tm">13:14</span><span class="dot"></span><span class="op">started</span><span class="id muted">#—</span><span class="ttl">(task no longer in this scope)</span></li></ul></div></div></section><div class="details"><article class="detail" id="task-2"><header><span class="id">#2</span><h3>link-message 403-guard bouwen in AccessTokenService:66 + MR !6517 mergen</h3><a class="close" href="#cost" aria-label="Close">close</a></header><dl class="meta"><div><dt>status</dt><dd>pending</dd></div><div><dt>project</dt><dd>finly-next</dd></div><div><dt>priority</dt><dd>H</dd></div><div><dt>estimate</dt><dd>—</dd></div><div><dt>tracked</dt><dd>—</dd></div><div><dt>urgency</dt><dd>6.0</dd></div></dl><div class="tags"><span class="tag">bugfix</span><span class="tag">link-message</span></div><h4>Token cost</h4><p class="muted small">No token measurement. A task is only attributed when its <code>done</code> event carries correlation (client / session_id / transcript_path).</p><h4>Annotations</h4><ul class="anns"><li><span class="when">2026-07-24 09:51 UTC</span><div class="body">Context: memory-doc &quot;link-message 403 masked 500&quot; (link-message-403-masked-500.md). Lege 500 = verkapte abort(403) mailbox-toegang; guard nog te bouwen op AccessTokenService:66. Ook open: productvraag persoonlijke mailboxen.</div></li></ul></article><article class="detail" id="task-5"><header><span class="id">#5</span><h3>Staging webhook-401 fixen: PUT sub 5437d758 naar workflow f78b0665 + oude subs opruimen (wachten op klant-test / herinnering)</h3><a class="close" href="#cost" aria-label="Close">close</a></header><dl class="meta"><div><dt>status</dt><dd>pending</dd></div><div><dt>project</dt><dd>finly-next</dd></div><div><dt>priority</dt><dd>M</dd></div><div><dt>estimate</dt><dd>—</dd></div><div><dt>tracked</dt><dd>—</dd></div><div><dt>urgency</dt><dd>3.9</dd></div></dl><div class="tags"><span class="tag">qore</span><span class="tag">staging</span><span class="tag">webhook</span></div><h4>Token cost</h4><p class="muted small">No token measurement. A task is only attributed when its <code>done</code> event carries correlation (client / session_id / transcript_path).</p><h4>Annotations</h4><ul class="anns"><li><span class="when">2026-07-24 09:51 UTC</span><div class="body">Context: memory-doc &quot;Staging webhook 401 fix PENDING&quot; (qore-staging-webhook-401-fix-pending.md). Optie 1, geen env/redeploy nodig. Klant test eerst; uitvoeren zodra Dimitri het sein geeft.</div></li></ul></article><article class="detail" id="task-6"><header><span class="id">#6</span><h3>Qore MCP tools/list cycle-bug: develop-fix + Fix B bridge-vangnet</h3><a class="close" href="#cost" aria-label="Close">close</a></header><dl class="meta"><div><dt>status</dt><dd>pending</dd></div><div><dt>project</dt><dd>finly-next</dd></div><div><dt>priority</dt><dd>M</dd></div><div><dt>estimate</dt><dd>—</dd></div><div><dt>tracked</dt><dd>—</dd></div><div><dt>urgency</dt><dd>3.9</dd></div></dl><div class="tags"><span class="tag">bugfix</span><span class="tag">mcp</span><span class="tag">qore</span></div><h4>Token cost</h4><p class="muted small">No token measurement. A task is only attributed when its <code>done</code> event carries correlation (client / session_id / transcript_path).</p><h4>Annotations</h4><ul class="anns"><li><span class="when">2026-07-24 09:51 UTC</span><div class="body">Context: memory-doc &quot;Qore MCP tools/list cycle-bug&quot; (qore-mcp-toolslist-cycle-bug.md). Circulaire $ref Account↔OfficeLabel; staging gefixt via Chris&#39; MR !6481, develop nog kapot. Docs in finly-dev root.</div></li></ul></article></div></main><footer>Generated 2026-07-25 10:02 UTC · every panel is a pure read of the tasqx core API · prototype for docs/reporting-redesign.md</footer>
+</div>
+<script>
+// The entire interaction budget of this page, in vanilla JS.
+// The History API is deliberately untouched: its state-pushing methods throw
+// SecurityError on a file:// document (origin null), which is exactly how this
+// page is opened (DESIGN.md 8a). Drill-down is :target CSS instead.
+// Everything below is attribute flips; CSS does the rendering.
+(function () {
+  var page = document.querySelector('.page');
+
+  // 1. Legend toggles a bucket off across every stacked bar at once.
+  page.addEventListener('click', function (e) {
+    var lg = e.target.closest('.lg');
+    if (!lg) return;
+    var key = lg.dataset.bucket;
+    var off = (page.dataset.off || '').split(/\s+/).filter(Boolean);
+    var i = off.indexOf(key);
+    if (i < 0) { off.push(key); } else { off.splice(i, 1); }
+    page.dataset.off = off.join(' ');
+    // Keep every copy of the legend in sync - the page renders it twice.
+    var on = off.indexOf(key) < 0;
+    page.querySelectorAll('.lg[data-bucket="' + key + '"]').forEach(function (b) {
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  });
+
+  // 2. A project row filters the timeline. Clicking the active row clears it.
+  var bar = document.getElementById('filterbar');
+  var fname = document.getElementById('fname');
+  function applyFilter(slug, label) {
+    page.querySelectorAll('.brow').forEach(function (b) {
+      b.setAttribute('aria-pressed', b.dataset.project === slug ? 'true' : 'false');
+    });
+    if (slug) {
+      page.dataset.filter = slug;
+      fname.textContent = label;
+      bar.hidden = false;
+    } else {
+      delete page.dataset.filter;
+      bar.hidden = true;
+    }
+    page.querySelectorAll('li.ev').forEach(function (li) {
+      li.classList.toggle('match', !slug || li.dataset.project === slug);
+    });
+  }
+  page.addEventListener('click', function (e) {
+    var row = e.target.closest('.brow');
+    if (!row) return;
+    var active = row.getAttribute('aria-pressed') === 'true';
+    applyFilter(active ? null : row.dataset.project,
+                active ? '' : row.querySelector('.bname').textContent);
+  });
+  document.getElementById('fclear').addEventListener('click', function () {
+    applyFilter(null, '');
+  });
+})();
+</script>
+</body>
+</html>
