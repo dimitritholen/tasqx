@@ -5,6 +5,7 @@
 //! newline-delimited envelope transport, not a mock. Event-wait paths use a
 //! reader thread + `recv_timeout` so a regression fails fast instead of hanging.
 
+use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -115,6 +116,76 @@ fn start_daemon_with_options(
         thread::sleep(Duration::from_millis(10));
     }
     panic!("daemon never became connectable at {sock} within 20s");
+}
+
+/// [`start_daemon_with_options`], with `serve`'s result handed back over a
+/// channel instead of `expect`ed inside a detached thread.
+///
+/// A supervised background fault does not panic: `report_fatal` sends on the
+/// `fatal` channel and the accept loop turns that into an `Err` *return* from
+/// `serve` naming the component. A daemon started with `.expect("serve")` throws
+/// that return value away in a thread nobody joins, so such a test can only
+/// notice that the daemon vanished — never which of the four supervised
+/// components died, which is the whole contract. Every fatal-path test needs
+/// this variant.
+fn start_daemon_observing_failure(
+    db: &str,
+    sock: &str,
+    tokens_enabled: bool,
+) -> (
+    Arc<AtomicBool>,
+    mpsc::Receiver<io::Result<()>>,
+    thread::JoinHandle<()>,
+) {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let sd = shutdown.clone();
+    let owned_db = db.to_string();
+    let sk = sock.to_string();
+    let (result_tx, result_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let engine = Engine::open(&owned_db).expect("open server engine");
+        let options = daemon::DaemonOptions {
+            notifier: Arc::new(LogNotifier),
+            tokens_enabled,
+            otlp_port: None,
+        };
+        let result = daemon::serve_with_options(engine, &sk, sd, options);
+        let _ = result_tx.send(result);
+    });
+    // Same generous connect budget as `start_daemon_with_options`, for the same
+    // reason: an instrumented coverage build on a busy runner is slow, not broken.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
+        if let Some(c) = daemon::try_connect(sock) {
+            drop(c);
+            return (shutdown, result_rx, server);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("daemon never became connectable at {sock} within 20s");
+}
+
+/// Wait for `serve` to return, assert it returned a *failure*, and yield the
+/// message. Shared by the supervision tests so the shutdown/join bookkeeping is
+/// written once.
+fn fatal_message(
+    result_rx: &mpsc::Receiver<io::Result<()>>,
+    shutdown: &Arc<AtomicBool>,
+    server: thread::JoinHandle<()>,
+) -> String {
+    let observed = result_rx.recv_timeout(Duration::from_secs(10));
+    // Flagged only AFTER the recv: setting it first would let a daemon that
+    // ignored the fault still return `Ok`, and the test would read that as a
+    // pass. On the timeout path it is the only way to reap the thread.
+    shutdown.store(true, Ordering::Relaxed);
+    if observed.is_err() {
+        let _ = result_rx.recv_timeout(Duration::from_secs(2));
+    }
+    server.join().expect("server thread");
+    observed
+        .expect("daemon stayed alive after a supervised background component failed")
+        .expect_err("daemon reported a clean shutdown after a supervised component failed")
+        .to_string()
 }
 
 fn ok(env: &Value) -> &Value {
@@ -577,27 +648,7 @@ fn connect_to_absent_daemon_is_none_and_fast() {
 #[test]
 fn background_store_failure_stops_the_daemon_with_context() {
     let (db, sock) = unique_target();
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let server_shutdown = shutdown.clone();
-    let server_db = db.clone();
-    let server_sock = sock.clone();
-    let (result_tx, result_rx) = mpsc::channel();
-    let server = thread::spawn(move || {
-        let engine = Engine::open(&server_db).expect("open server engine");
-        let result = daemon::serve(engine, &server_sock, server_shutdown);
-        let _ = result_tx.send(result);
-    });
-
-    for _ in 0..200 {
-        if daemon::try_connect(&sock).is_some() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        daemon::try_connect(&sock).is_some(),
-        "daemon never became connectable"
-    );
+    let (shutdown, result_rx, server) = start_daemon_observing_failure(&db, &sock, false);
 
     let breaker = Engine::open(&db).expect("open breaker connection");
     breaker
@@ -606,19 +657,17 @@ fn background_store_failure_stops_the_daemon_with_context() {
         .expect("damage event schema");
     drop(breaker);
 
-    let observed = result_rx.recv_timeout(Duration::from_secs(3));
-    shutdown.store(true, Ordering::Relaxed);
-    if observed.is_err() {
-        let _ = result_rx.recv_timeout(Duration::from_secs(2));
-    }
-    server.join().expect("server thread");
-    let err = observed
-        .expect("daemon stayed alive after its event poller failed")
-        .expect_err("daemon reported a clean shutdown after its event poller failed");
-    let message = err.to_string();
+    let message = fatal_message(&result_rx, &shutdown, server);
+    // Deliberately an OR, not two tests. Losing `events` wholesale breaks the
+    // poller's `pump` AND every read the reminder tick makes (`max_event_rowid`,
+    // `reminded_keys` inside `rebuild`, its own `pump`); the two threads race for
+    // the single-slot fatal channel and either may win. The isolation trick used
+    // by the attribution test below — damage one *column* only one component
+    // reads — has no counterpart here: poller and scheduler read the same
+    // columns of the same two tables.
     assert!(
         message.contains("event poller") || message.contains("reminder scheduler"),
-        "failure must identify the background component: {err}"
+        "failure must identify the background component: {message}"
     );
     let _ = std::fs::remove_file(&db);
 }
@@ -709,22 +758,50 @@ fn a_correlated_completion_yields_a_stored_measurement_and_a_push() {
 }
 
 /// With the opt-in OFF (the default), the attribution thread is never spawned:
-/// a correlated completion is left un-attributed no matter how long we wait.
+/// a correlated completion is left un-attributed.
+///
+/// The barrier is a **positive control**, not a sleep. This assertion is
+/// negative — "nothing appeared" — so a stopwatch makes it pass for the wrong
+/// reason the moment the runner is slower than the budget, and the coverage job
+/// (`cargo llvm-cov --all-targets`) runs this very test under instrumentation.
+/// Raising the number cannot fix that class: on a negative assertion a bigger
+/// budget buys robustness, never soundness. So a *second* daemon with the opt-in
+/// ON, on its OWN store and socket, completes the same shaped task; its
+/// `tokens.attributed` push is the proof that a full attribution pass has
+/// happened here, now, under this machine's actual load. The stores must stay
+/// separate — sharing one would let the enabled daemon attribute the disabled
+/// daemon's task and turn this red for a reason unrelated to the gate.
 #[test]
 fn attribution_does_not_run_when_the_opt_in_is_off() {
     let (db, sock) = unique_target();
+    let (control_db, control_sock) = unique_target();
     let dir = unique_dir("off");
+    // One fixture, read by both daemons: it is an input file, not shared state.
     let path = dir.join("session.jsonl");
 
     let shutdown = start_daemon(&db, &sock); // tokens disabled by default
+    let control_shutdown =
+        start_daemon_with_options(&control_db, &control_sock, Arc::new(LogNotifier), true);
+    let rx = subscribe_events(&sock);
+    let control_rx = subscribe_events(&control_sock);
     let mut c = daemon::try_connect(&sock).expect("connect");
+    let mut cc = daemon::try_connect(&control_sock).expect("connect control");
 
     let add = c
         .request("task.add", &json!({ "title": "ship it" }))
         .unwrap();
     let id = ok(&add)["short_id"].as_i64().unwrap();
+    let control_add = cc
+        .request("task.add", &json!({ "title": "ship it" }))
+        .unwrap();
+    let control_id = ok(&control_add)["short_id"].as_i64().unwrap();
+
+    // Captured after both creations and before both completions => provably
+    // inside each task's [created, completed] window.
     let in_window = tasqx_core::util::now();
     std::fs::write(&path, transcript(&in_window)).unwrap();
+    // The opt-in-off completion goes FIRST, so the control's attribution tick
+    // cannot fire before this daemon has even seen its own `done` event.
     c.request(
         "task.done",
         &json!({
@@ -734,9 +811,28 @@ fn attribution_does_not_run_when_the_opt_in_is_off() {
         }),
     )
     .unwrap();
+    cc.request(
+        "task.done",
+        &json!({
+            "ref": control_id,
+            "client": "claude-code",
+            "transcript_path": path.to_string_lossy(),
+        }),
+    )
+    .unwrap();
 
-    // Well past several attribution ticks (500ms each): nothing may appear.
-    thread::sleep(Duration::from_millis(1500));
+    // Barrier 1: this daemon has broadcast the completion, so the event is
+    // committed to its store and its background loop is running.
+    wait_for_op(&rx, "done");
+    // Barrier 2: an attribution loop elsewhere has run a full pass over an
+    // equivalent task since then.
+    let attributed = wait_for_op(&control_rx, "tokens.attributed");
+    assert_eq!(
+        attributed["data"]["short_id"],
+        json!(control_id),
+        "the control's push must be for the control's own task"
+    );
+
     let got = c.request("task.get", &json!({ "ref": id })).unwrap();
     let tokens = ok(&got)["tokens"].as_array().expect("tokens array");
     assert!(
@@ -745,6 +841,75 @@ fn attribution_does_not_run_when_the_opt_in_is_off() {
     );
 
     shutdown.store(true, Ordering::Relaxed);
+    control_shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+    let _ = std::fs::remove_file(&control_db);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A fatal store fault inside the attribution thread must stop the daemon and
+/// name **that** component — the supervision contract for the third background
+/// thread, which no other test reaches (`serve`/`serve_with_notifier` leave
+/// `tokens_enabled` false, so the thread is never even spawned).
+///
+/// Two things make this deterministic:
+///
+/// 1. **Column-level damage.** `pending_attributions` prepares
+///    `SELECT entity_id, payload, ts, rowid FROM events`; the poller's `pump`
+///    selects `rowid, entity, entity_id, op` and the reminder tick reads
+///    `entity_id, payload` (`reminded_keys`) plus the `tasks` columns. So `ts`
+///    is read by attribution and by nothing else in the background — removing it
+///    kills exactly one thread, and at *prepare* time, so it cannot depend on
+///    which rows exist. Dropping a whole table instead would take the poller
+///    down first (it ticks every 400ms against attribution's 500ms) and the
+///    assertion below would name the wrong component.
+/// 2. **A pinned cursor.** A tick short-circuits when the event rowid has not
+///    moved, and no further event can be appended once `events` is damaged. The
+///    completion below therefore points at a transcript that will never exist:
+///    that is the *transient* branch, which leaves the task in the pending set
+///    and makes the tick return `-1`, so every subsequent tick rebuilds and
+///    reaches the damaged query.
+///
+/// Not covered on purpose: the `event pump` site in the connection handler. Its
+/// mutation is near-redundant — the poller runs the identical `pump` against the
+/// same store and reports fatal within ~400ms of any fault the pump can hit.
+#[test]
+fn attribution_store_failure_stops_the_daemon_naming_token_attribution() {
+    let (db, sock) = unique_target();
+    let dir = unique_dir("fatal");
+    // Deliberately never written: `compute_attribution` treats an absent explicit
+    // transcript as transient (it lags the completion hook in real runs) and
+    // retries for 24h, which is exactly the "stays pending" state we want.
+    let never_flushed = dir.join("never-flushed.jsonl");
+
+    let (shutdown, result_rx, server) = start_daemon_observing_failure(&db, &sock, true);
+    let mut c = daemon::try_connect(&sock).expect("connect");
+    let add = c
+        .request("task.add", &json!({ "title": "pin the pending set" }))
+        .unwrap();
+    let id = ok(&add)["short_id"].as_i64().unwrap();
+    c.request(
+        "task.done",
+        &json!({
+            "ref": id,
+            "client": "claude-code",
+            "transcript_path": never_flushed.to_string_lossy(),
+        }),
+    )
+    .unwrap();
+
+    let breaker = Engine::open(&db).expect("open breaker connection");
+    breaker
+        .conn()
+        .execute_batch("ALTER TABLE events DROP COLUMN ts")
+        .expect("damage the column only attribution reads");
+    drop(breaker);
+
+    let message = fatal_message(&result_rx, &shutdown, server);
+    assert!(
+        message.contains("token attribution"),
+        "the fatal must name the attribution component, got: {message}"
+    );
     let _ = std::fs::remove_file(&db);
     let _ = std::fs::remove_dir_all(&dir);
 }
