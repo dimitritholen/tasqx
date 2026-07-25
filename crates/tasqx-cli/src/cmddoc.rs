@@ -409,15 +409,17 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "— (registry + core.capabilities)",
         summary: "Read and change tasqx settings.",
-        usage: "tasqx config <list|get <key>|set <key> <value>|unset <key>|path|edit>",
+        usage: "tasqx config <list|get <key>|set <key> <value>|unset <key>|path|store|edit>",
         examples: &[
             ex("tasqx config list"),
             ex("tasqx config get theme.name"),
             ex("tasqx config path"),
+            ex("tasqx config store"),
             ex_norun("tasqx config set theme.name gruvbox", "writes config.toml, preserving your comments"),
             ex_norun("tasqx config edit", "full-screen editor; arrow through themes and watch them apply"),
         ],
         notes: &[
+            "`store` answers which store you are actually writing to — and says so when a running daemon owns it, because the remote path never consults $TASQX_DB, so a correct $TASQX_DB is silently inert whenever a daemon is listening.",
             "`list` shows both homes. Most settings live in `config.toml`; `default_project` lives in the store and is set with `tasqx use` (D21).",
             "Resolution order is `--flag`, then `$TASQX_*`, then `config.toml`, then the built-in default (D9). The SOURCE column names the layer that won.",
             "`edit` opens an interactive screen: up/down to move, enter to toggle a switch or open a theme picker, esc to leave. Moving through the theme list repaints the screen in that theme before anything is written.",
@@ -791,6 +793,40 @@ mod tests {
             missing.is_empty(),
             "topics used by commands but absent from Topic::ALL: {missing:?}"
         );
+    }
+
+    /// The top-level guard above covers VERBS. Nothing covered a verb's
+    /// SUB-subcommands, which are enumerated by hand inside a `usage` string —
+    /// so adding `config store` left the documented usage line silently wrong,
+    /// with every gate green. That is D30's rule (a list kept in sync by hand is
+    /// a list that will drift) at the one nesting level it had not reached.
+    ///
+    /// Derived from clap, not from a second list: a new sub-subcommand joins
+    /// this check the moment it exists.
+    #[test]
+    fn every_nested_subcommand_appears_in_its_verbs_usage_line() {
+        use clap::CommandFactory;
+        let cli = crate::Cli::command();
+        for sub in cli.get_subcommands() {
+            let nested: Vec<&str> = sub.get_subcommands().map(|c| c.get_name()).collect();
+            if nested.is_empty() {
+                continue;
+            }
+            let Some(doc) = COMMAND_REF.iter().find(|d| d.verb == sub.get_name()) else {
+                continue;
+            };
+            let missing: Vec<&&str> = nested
+                .iter()
+                .filter(|n| !doc.usage.contains(*n))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "`{}` has sub-subcommands its documented usage line never names: {missing:?}\n  \
+                 usage: {}",
+                sub.get_name(),
+                doc.usage
+            );
+        }
     }
 
     #[test]

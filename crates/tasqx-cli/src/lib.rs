@@ -622,7 +622,25 @@ type CmdOutcome = Result<(Value, String), tasqx_core::ApiError>;
 /// `run_*` renders the same regardless of transport.
 enum Backend {
     Local(Engine),
-    Remote(daemon::Conn),
+    /// The socket is kept alongside the connection because it is the only
+    /// honest answer to "where did this write go?" — `config store` reports it,
+    /// and recomputing it later would re-resolve the flag/env and could name a
+    /// different target than the one actually connected to.
+    Remote {
+        conn: daemon::Conn,
+        socket: String,
+    },
+}
+
+impl Backend {
+    /// The socket this process is routing through, or `None` when it holds the
+    /// store itself.
+    fn remote_socket(&self) -> Option<&str> {
+        match self {
+            Backend::Local(_) => None,
+            Backend::Remote { socket, .. } => Some(socket.as_str()),
+        }
+    }
 }
 
 impl Backend {
@@ -630,7 +648,7 @@ impl Backend {
     fn call(&mut self, method: &str, params: &Value) -> Result<Value, ApiError> {
         match self {
             Backend::Local(engine) => dispatch(engine, method, params),
-            Backend::Remote(conn) => {
+            Backend::Remote { conn, .. } => {
                 let env = conn
                     .request(method, params)
                     .map_err(|e| ApiError::internal(format!("daemon transport error: {e}")))?;
@@ -703,7 +721,10 @@ fn open_backend(socket_flag: Option<&str>, no_daemon: bool) -> Result<Backend, S
     if !no_daemon {
         let target = resolve_socket(socket_flag);
         if let Some(conn) = daemon::try_connect(&target) {
-            return Ok(Backend::Remote(conn));
+            return Ok(Backend::Remote {
+                conn,
+                socket: target,
+            });
         }
     }
     Ok(Backend::Local(open_engine()?))
@@ -1996,6 +2017,7 @@ fn run_config(
                 .unwrap_or_else(|| "(no config directory on this platform)".to_string());
             Ok((json!({ "path": p }), format!("{p}\n")))
         }
+        ConfigAction::Store => Ok(store_location(be.remote_socket(), db_path())),
         ConfigAction::Get { key } => {
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;
             let (value, _) = setting_value(&mut |k| store_value(be, k), s, flag_for(s))?;
@@ -2566,6 +2588,45 @@ fn open_engine_at(db: Option<&str>) -> Result<Engine, String> {
     }
 }
 
+/// Answer "which store does this process actually write to?".
+///
+/// Both inputs are passed rather than read here, so the daemon branch is
+/// reachable from a test without a listening socket.
+///
+/// The two cases are NOT variations on one sentence. In-process, the local file
+/// IS the store. Through a daemon, it is not: `open_backend` prefers a reachable
+/// daemon and the remote path never consults `TASQX_DB`, so the local path is
+/// inert and reporting it would restate the exact falsehood this surface exists
+/// to kill. `path` is therefore absent on the daemon branch — a client cannot
+/// know the daemon's file, and guessing it would be worse than saying so.
+fn store_location(remote_socket: Option<&str>, path: Result<PathBuf, String>) -> (Value, String) {
+    if let Some(socket) = remote_socket {
+        return (
+            json!({ "backend": "daemon", "socket": socket }),
+            format!(
+                "daemon at {socket}\n  the daemon owns the store; $TASQX_DB is NOT in effect here.\n  \
+                 Pass --no-daemon to work on your own store instead.\n"
+            ),
+        );
+    }
+    match path {
+        Ok(p) => {
+            let p = p.to_string_lossy().into_owned();
+            (
+                json!({ "backend": "local", "path": p }),
+                format!("{p}\n  in-process; this file is the store.\n"),
+            )
+        }
+        // A path this process could not resolve is a fact, not an omission: it
+        // is exactly the state in which every later command fails, and naming it
+        // here is cheaper than reading that failure off a write.
+        Err(e) => (
+            json!({ "backend": "local", "path": Value::Null, "error": e }),
+            format!("(no store path: {e})\n"),
+        ),
+    }
+}
+
 fn db_path() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("TASQX_DB") {
         if !p.is_empty() {
@@ -2585,6 +2646,51 @@ fn db_path() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The store path and the routing decision both drive every write and, until
+    /// now, appeared on no read surface — the invisible-field failure DESIGN.md
+    /// has already recorded six times (`remind`, `estimate`, the dependency
+    /// JOINs, `default_project`, `tracked_seconds`, `blocked`). `config path`
+    /// answered for `config.toml` and nothing answered for the store.
+    #[test]
+    fn store_location_names_the_file_when_the_command_runs_in_process() {
+        let (json, text) = store_location(None, Ok(PathBuf::from("/home/u/.local/tasqx/tasks.db")));
+        assert_eq!(json["backend"], "local");
+        assert_eq!(json["path"], "/home/u/.local/tasqx/tasks.db");
+        assert!(
+            text.contains("/home/u/.local/tasqx/tasks.db"),
+            "the human line must name the file being written: {text}"
+        );
+    }
+
+    /// The one that matters. `open_backend` prefers a reachable daemon and the
+    /// remote path never consults `TASQX_DB`, so a correct `TASQX_DB` is
+    /// silently not in effect whenever a daemon is listening. That cost this
+    /// project real data on 2026-07-25: an agent set a scratch store, a daemon
+    /// answered, and the writes landed in the user's live store with exit 0.
+    #[test]
+    fn store_location_says_the_local_db_is_not_in_effect_when_a_daemon_answers() {
+        let (json, text) = store_location(
+            Some("/run/user/1000/tasqx/tasqx.sock"),
+            Ok(PathBuf::from("/tmp/scratch.db")),
+        );
+        assert_eq!(json["backend"], "daemon");
+        assert_eq!(json["socket"], "/run/user/1000/tasqx/tasqx.sock");
+        assert!(
+            text.contains("/run/user/1000/tasqx/tasqx.sock"),
+            "name the socket actually being written through: {text}"
+        );
+        assert!(
+            text.contains("TASQX_DB"),
+            "the whole point is telling the reader their TASQX_DB is inert: {text}"
+        );
+        // The local path must not be presented as the store — that is the lie
+        // the incident was made of.
+        assert_ne!(
+            json["path"], "/tmp/scratch.db",
+            "the client's db_path is NOT the store a daemon writes to"
+        );
+    }
 
     #[test]
     fn command_declarations_do_not_execute_or_render() {

@@ -498,6 +498,8 @@ pub(super) enum ConfigAction {
     },
     /// Print the path of `config.toml` (it may not exist yet).
     Path,
+    /// Print which store this command would actually write to.
+    Store,
     /// Edit settings on an interactive screen, previewing themes live.
     Edit,
 }
