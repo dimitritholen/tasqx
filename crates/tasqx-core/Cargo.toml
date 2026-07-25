@@ -2,8 +2,17 @@
 name = "tasqx-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 description = "Headless task-manager engine: SQLite storage, domain model, and the stable JSON API dispatch layer."
+# Per-crate rather than inherited: these describe the CRATE, and the two members
+# are different things on crates.io — a headless library and a binary. Category
+# slugs are a closed vocabulary, so they cannot be invented here.
+keywords = ["task", "todo", "sqlite", "task-manager", "productivity"]
+categories = ["database", "data-structures"]
 
 [features]
 # OFF BY DEFAULT, deliberately (DESIGN.md §9). `notify-rust` pulls WinRT in on
@@ -14,7 +23,7 @@ notify-os = ["dep:notify-rust"]
 
 [dependencies]
 interprocess = "2.2"
-jiff = "0.2.32"
+jiff = { workspace = true }
 notify-rust = { version = "4", optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { workspace = true }

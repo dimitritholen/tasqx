@@ -2,8 +2,16 @@
 name = "tasqx-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 description = "The tasqx command-line client — a thin surface over tasqx-core's JSON API."
+# See the note in crates/tasqx-core/Cargo.toml: keywords and categories describe
+# the crate, not the workspace, and this one is the binary half.
+keywords = ["task", "todo", "cli", "task-manager", "productivity"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "tasqx"
@@ -15,7 +23,7 @@ serde_json = { workspace = true }
 clap = { version = "4.6.1", features = ["derive"] }
 ctrlc = "3.5"
 directories = "6.0.0"
-jiff = "0.2.32"
+jiff = { workspace = true }
 toml = "1.1.3"
 # Format-preserving TOML editing. A `toml::Table` round trip drops every
 # comment and reorders sections, which is data loss in a file the user
@@ -37,11 +45,12 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 # never sliced in half (its own algorithm, rather than a fourth hand-rolled copy
 # of the grapheme walk this project would then have to maintain).
 unicode-truncate = "2.0.1"
-unicode-width = "0.2.2"
-
-[dev-dependencies]
-# The end-to-end alignment guard measures the REAL binary's output in cells.
-# `render::width` is private and, more to the point, reusing it would make the
-# guard agree with the implementation by construction — a table misaligned by a
-# wrong width function would look aligned to a test that asked the same function.
+# tests/regressions.rs also names this one directly: the end-to-end alignment
+# guard measures the REAL binary's output in cells, and `render::width` is
+# private besides — reusing it would make the guard agree with the
+# implementation by construction, so a table misaligned by a wrong width
+# function would look aligned to a test that asked the same function. It needs
+# no `[dev-dependencies]` twin: cargo makes a regular dependency available to
+# the package's own test, example and bench targets, so the duplicate entry that
+# used to sit below was a third declaration site that could drift on its own.
 unicode-width = "0.2.2"

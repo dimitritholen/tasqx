@@ -1,16 +1,89 @@
 [workspace]
-resolver = "2"
+# Resolver 3 is MSRV-AWARE: given a choice it prefers a dependency version whose
+# `rust-version` the floor below still satisfies. Resolver 2 took the newest
+# semver-compatible version unconditionally, so every `cargo update` was free to
+# raise the real floor — which is how the declared one ended up fifteen minor
+# releases behind what the lockfile needs. Requires cargo 1.84+, comfortably
+# under the floor. Feature resolution is unchanged from resolver 2, so this does
+# not move the lockfile.
+#
+# A mitigation, not a guard. It only helps for crates that declare a
+# `rust-version`, and the constraint that actually binds here (libsqlite3-sys)
+# declares none — see the floor comment. Only a real compile on the floor
+# toolchain catches that class.
+resolver = "3"
 members = ["crates/tasqx-core", "crates/tasqx-cli"]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-# `std::sync::LazyLock` (crates/tasqx-cli/src/lib.rs) stabilised in 1.80, so this
-# is a real floor rather than a guess. Stated here so cargo enforces it instead
-# of the README claiming it.
-rust-version = "1.80"
+# MEASURED, not read off `cargo metadata`. `cargo check --workspace
+# --all-targets --locked` was run on 1.80, 1.87, 1.88, 1.91, 1.93, 1.94 and
+# 1.95; every toolchain below 1.95 fails. Three constraints stack, and only the
+# middle one is visible to a scan of declared `rust-version` fields:
+#   1.82  `Option::is_none_or` (crates/tasqx-cli/src/render.rs).
+#   1.88  ratatui 0.30 plus its darling / instability / time build-dependencies.
+#   1.95  libsqlite3-sys 0.38's BUILD SCRIPT expands `cfg_select!`, stabilised
+#         in 1.95 — and that crate declares no `rust-version`, so the failure is
+#         a hard compile error with no cargo-side diagnostic pointing at the
+#         floor. rusqlite's `bundled` feature is not optional here (the shipped
+#         binary must not dynamically link SQLite), so no configuration avoids
+#         it.
+# RE-MEASURE after any lockfile bump; do not reason about this number.
+#
+# Both members now say `rust-version.workspace = true`. That is load-bearing,
+# not tidiness: a `[workspace.package]` key is inert until a member inherits it,
+# so before this change cargo applied NO floor to tasqx-core or tasqx-cli at all
+# — the number here was documentation pretending to be a gate.
+rust-version = "1.95"
 license = "FSL-1.1-MIT"
+# `cargo package` warns "manifest has no documentation, homepage or repository"
+# without these, and D10 (Distribution) commits to a crates.io listing, which
+# renders from exactly these fields. `license` deliberately stays an SPDX
+# EXPRESSION rather than becoming `license-file = "LICENSE.md"`: FSL-1.1-MIT is
+# a real SPDX identifier (verified against the same `spdx` crate cargo-deny
+# uses), and switching to a license file would drop both workspace crates out of
+# cargo-deny's license matching and make the documented allow-entry in
+# deny.toml dead.
+repository = "https://github.com/dimitritholen/tasqx"
+homepage = "https://github.com/dimitritholen/tasqx"
+# Inherited `readme` paths resolve against the WORKSPACE root, not the crate
+# dir, so one entry covers both members and the file that ships in the .crate is
+# the same README the GitHub page shows.
+readme = "README.md"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Shared by BOTH crates, which is what puts it here and leaves interprocess,
+# rusqlite, clap and ratatui in their single owning manifest. jiff is not an
+# internal detail of either: crates/tasqx-cli/src/argv.rs passes a
+# CLI-constructed `jiff::Timestamp` straight into `tasqx_core::filter::Filter::
+# parse`, so the two version literals this replaces were one type-compatibility
+# constraint written twice. Break it with a major bump in one manifest only and
+# cargo links two copies, and the diagnostic is `expected struct
+# jiff::Timestamp, found struct jiff::Timestamp` pointing at neither file.
+jiff = "0.2.32"
+
+[profile.release]
+# release.yml builds the published archives with a plain `cargo build --release`
+# and no RUSTFLAGS, so stock cargo settings were what shipped: lto = false,
+# codegen-units = 16, symbols retained (`file target/release/tasqx` said "not
+# stripped"). The profile lives here rather than in the workflow so a local
+# release build and the released binary are the same build.
+lto = "thin"
+codegen-units = 1
+# Measured on this tree, stock profile -> this profile: 7,173,584 -> 5,777,240
+# bytes on disk, and 2,906,129 -> 2,614,038 through `gzip -9`, which is the
+# number that matters because release.yml ships tar.gz/zip. Symbol tables
+# compress well, so the win per download is ~285 KB (~10%), not the ~1.4 MB the
+# on-disk figure suggests — quote the compressed figure, not the other one.
+# Costless here: nothing in the repo symbolizes a backtrace — the daemon turns a
+# caught panic into a generic internal-error envelope, not a stack trace.
+strip = "symbols"
+# DELIBERATELY NO `panic = "abort"`, however standard it looks in a release
+# profile. crates/tasqx-core/src/daemon.rs uses `catch_unwind` so that one
+# connection handler's panic cannot kill the daemon serving every other client,
+# and crates/tasqx-cli/src/tui.rs uses it to restore the terminal out of raw
+# mode before re-raising. Aborting would convert both into immediate process
+# death: a dead daemon, and a shell left in raw mode with no echo.
