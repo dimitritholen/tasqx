@@ -3425,6 +3425,24 @@ fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
     let (bad, _) = store_with_an_unrecognized_status();
     emitted.extend(keys(&bad.store_export(&json!({})).unwrap()["tasks"][0]));
 
+    // The two timing keys are conditional in the same way: `tracked_seconds`
+    // appears only on a non-zero total and `active_since` only while a task is
+    // running. Elapsed wall-clock is 0s in a test and there is no public way to
+    // forge a total, so the store that emits both is seeded through `import` —
+    // which also makes this guard prove the round trip accepts what it emits.
+    let timed = engine();
+    timed
+        .store_import(&json!({ "tasks": [{
+            "id": "019f0000-0000-7000-8000-0000000000t1",
+            "short_id": 1,
+            "title": "running",
+            "status": "active",
+            "tracked_seconds": 60,
+            "active_since": "2020-01-01T00:00:00Z",
+        }]}))
+        .unwrap();
+    emitted.extend(keys(&timed.store_export(&json!({})).unwrap()["tasks"][0]));
+
     let declared: BTreeSet<String> = tasqx_core::engine::IMPORT_TASK_KEYS
         .iter()
         .map(|s| s.to_string())

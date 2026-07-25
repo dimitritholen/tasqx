@@ -554,6 +554,14 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     "completed",
     "_rev",
     "status_unrecognized",
+    // Absent on a legacy export and on any task that was never timed, so the
+    // import reads it as `Option` and an absent value PRESERVES the stored
+    // total rather than zeroing it (see the upsert's COALESCE).
+    "tracked_seconds",
+    // Present only while a task is `active`. Both timing columns are read
+    // through the same gate as every other field: a payload that names one is
+    // held to it, and one that does not keeps what the store already has.
+    "active_since",
 ];
 
 /// Every key an exported annotation object can carry. D34.
@@ -1178,6 +1186,142 @@ mod tests {
             g(json!({ "all": true, "metrics": ["tracked_total"] }))["tracked_total"],
             "PT1H30M",
             "`all` restores the cancelled task's tracked time"
+        );
+    }
+
+    /// Forge a task's stored tracked total. Elapsed wall-clock through
+    /// `task_start`/`task_stop` is 0s in a test, so every case below that needs
+    /// a non-zero total writes it directly — the same device as
+    /// `report_summary_tracked_total_drops_cancelled_but_keeps_done` above.
+    fn forge_tracked(e: &Engine, task: &Value, secs: i64) {
+        e.conn
+            .execute(
+                "UPDATE tasks SET tracked_seconds=?1 WHERE id=?2",
+                params![secs, task["id"].as_str().unwrap()],
+            )
+            .unwrap();
+    }
+
+    /// `export_task` emitted every §3 field except the two timing columns, and
+    /// the import upsert hardcoded `tracked_seconds=0`. So a full
+    /// `store.export` -> `store.import` — the only backup/restore path tasqx has
+    /// (D12: "an export is self-contained") — reported `ok` and the right
+    /// `imported` count while silently zeroing every task's tracked time.
+    #[test]
+    fn export_import_round_trip_preserves_tracked_time() {
+        let a = Engine::open_in_memory().unwrap();
+        let t = a.task_add(&json!({ "title": "timed" })).unwrap();
+        forge_tracked(&a, &t, 5445); // 1h30m45s
+
+        let doc = a.store_export(&json!({})).unwrap();
+        assert_eq!(
+            doc["tasks"][0]["tracked_seconds"], 5445,
+            "the export must carry the stored total verbatim"
+        );
+
+        let b = Engine::open_in_memory().unwrap();
+        b.store_import(&doc).unwrap();
+        let got = b.task_get(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(
+            got["tracked"], "PT1H30M45S",
+            "tracked time must survive a restore into a fresh store"
+        );
+    }
+
+    /// Emitted only when non-zero: a new export stays importable by an older
+    /// tasqx (whose `IMPORT_TASK_KEYS` gate is closed) for every task that was
+    /// never timed, which is most of them.
+    #[test]
+    fn export_omits_tracked_seconds_only_when_no_time_was_tracked() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "never timed" })).unwrap();
+        let timed = e.task_add(&json!({ "title": "timed" })).unwrap();
+        forge_tracked(&e, &timed, 60);
+
+        let doc = e.store_export(&json!({})).unwrap();
+        // Both halves, so the test cannot pass by the key being absent
+        // everywhere — which is exactly the bug it guards.
+        assert!(
+            doc["tasks"][0].get("tracked_seconds").is_none(),
+            "an untimed task must not carry the key: {}",
+            doc["tasks"][0]
+        );
+        assert_eq!(
+            doc["tasks"][1]["tracked_seconds"], 60,
+            "a timed task must carry it"
+        );
+    }
+
+    /// A legacy export has no `tracked_seconds` key at all. Merge-importing one
+    /// on top of a live store (DESIGN.md:364 calls that a normal workflow) must
+    /// not read "absent" as "zero" and wipe the tracked time already stored.
+    #[test]
+    fn import_without_tracked_seconds_preserves_the_stored_total() {
+        let e = Engine::open_in_memory().unwrap();
+        let t = e.task_add(&json!({ "title": "timed" })).unwrap();
+        forge_tracked(&e, &t, 3600);
+
+        let mut doc = e.store_export(&json!({})).unwrap();
+        doc["tasks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("tracked_seconds")
+            .expect("precondition: the export carries the key");
+
+        e.store_import(&doc).unwrap();
+        let got = e.task_get(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(
+            got["tracked"], "PT1H",
+            "an absent key must preserve the stored total, not zero it"
+        );
+    }
+
+    /// The upsert's SET list omitted `active_since`, so importing a payload
+    /// whose status is terminal over a task that is currently running left the
+    /// live anchor in place: a `done` task with an open timing interval, which
+    /// no sequence of API calls can reach and nothing sweeps back out (the
+    /// active sweep selects `WHERE status='active'`).
+    #[test]
+    fn import_of_a_terminal_status_over_a_running_task_clears_the_anchor() {
+        let e = Engine::open_in_memory().unwrap();
+        let t = e.task_add(&json!({ "title": "running" })).unwrap();
+        e.task_start(&json!({ "ref": t["short_id"].clone() }))
+            .unwrap();
+
+        let mut doc = e.store_export(&json!({})).unwrap();
+        assert_eq!(doc["tasks"][0]["status"], "active", "precondition");
+        doc["tasks"][0]["status"] = json!("done");
+
+        e.store_import(&doc).unwrap();
+        let got = e.task_get(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(got["status"], "done");
+        assert!(
+            got["active_since"].is_null(),
+            "a terminal status must leave no open interval: {}",
+            got["active_since"]
+        );
+    }
+
+    /// The mirror hole on the INSERT branch: `active_since` was hardcoded NULL,
+    /// so a payload claiming `status:"active"` landed in a fresh store with no
+    /// anchor. `seconds_between` reads a missing anchor as zero elapsed, so the
+    /// next `stop` answered `PT0S` and the interval was lost.
+    #[test]
+    fn import_of_an_active_status_into_a_fresh_store_sets_an_anchor() {
+        let a = Engine::open_in_memory().unwrap();
+        let t = a.task_add(&json!({ "title": "running" })).unwrap();
+        a.task_start(&json!({ "ref": t["short_id"].clone() }))
+            .unwrap();
+        let doc = a.store_export(&json!({})).unwrap();
+
+        let b = Engine::open_in_memory().unwrap();
+        b.store_import(&doc).unwrap();
+        let got = b.task_get(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(got["status"], "active");
+        assert!(
+            got["active_since"].is_string(),
+            "an active task must import with a usable anchor: {}",
+            got["active_since"]
         );
     }
 
