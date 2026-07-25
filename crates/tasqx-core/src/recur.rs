@@ -74,27 +74,22 @@ pub fn parse_rule(input: &str) -> Result<Recur, ApiError> {
                 // also accept a glued short form like `every 3d`
                 _ => return Err(err()),
             };
-            if n < 1 {
-                return Err(ApiError::bad_request("recurrence interval must be >= 1"));
-            }
-            match unit {
-                "d" | "day" | "days" => Ok(Recur::EveryDays(n)),
-                "w" | "wk" | "week" | "weeks" => Ok(Recur::EveryWeeks(n)),
-                "mo" | "month" | "months" => Ok(Recur::EveryMonths(n)),
-                other => {
-                    // `every 3d` style: unit glued to the count in a single token.
-                    if let Some((gn, gu)) = split_glued(other) {
-                        let n = gn;
-                        return match gu {
-                            "d" | "day" | "days" => Ok(Recur::EveryDays(n)),
-                            "w" | "wk" | "week" | "weeks" => Ok(Recur::EveryWeeks(n)),
-                            "mo" | "month" | "months" => Ok(Recur::EveryMonths(n)),
-                            _ => Err(err()),
-                        };
-                    }
-                    Err(err())
+            // `every 3d` glues the unit onto the count in a single token, and
+            // that token carries its **own** count — so resolve the glued form
+            // *before* the range check, and run one shared check afterwards.
+            // While the check sat above this point the glued branch skipped it
+            // entirely: `every 0d` stored a zero interval and `every 100000000d`
+            // stored a rule that panicked jiff at completion time (D17).
+            let (n, build) = match every_unit(unit) {
+                Some(build) => (n, build),
+                None => {
+                    let (gn, gu) = split_glued(unit).ok_or_else(err)?;
+                    (gn, every_unit(gu).ok_or_else(err)?)
                 }
-            }
+            };
+            let rule = build(n);
+            check_interval(&rule)?;
+            Ok(rule)
         }
         // weekly on mon,wed,fri
         ["weekly", "on", days @ ..] => {
@@ -130,6 +125,43 @@ pub fn parse_rule(input: &str) -> Result<Recur, ApiError> {
         }
         _ => Err(err()),
     }
+}
+
+/// Which `every N <unit>` variant a unit token names, or `None` if the token is
+/// not a unit at all (it may still be a glued `3d`, which the caller splits).
+fn every_unit(unit: &str) -> Option<fn(i64) -> Recur> {
+    Some(match unit {
+        "d" | "day" | "days" => Recur::EveryDays,
+        "w" | "wk" | "week" | "weeks" => Recur::EveryWeeks,
+        "mo" | "month" | "months" => Recur::EveryMonths,
+        _ => return None,
+    })
+}
+
+/// Reject an interval count that [`advance_once`] could never apply.
+///
+/// The lower bound is obvious; the upper bound is the D17 one. jiff's span
+/// builders cap each unit at a *different* magnitude (0.2.32: ±7,304,484 days,
+/// ±1,043,497 weeks, ±239,976 months) and those caps are free to move on a
+/// dependency bump — so the ceiling is **derived** by attempting the very same
+/// fallible constructor `advance_once` uses, and the `bad_request` quotes jiff's
+/// own message. A literal copied into this file would be a second source of
+/// truth that silently rots. Without this, `every 100000000 days` parsed, was
+/// durably stored, and then aborted the process on every later `tasqx done`.
+fn check_interval(rule: &Recur) -> Result<(), ApiError> {
+    let (n, span) = match rule {
+        Recur::EveryDays(n) => (*n, Span::new().try_days(*n)),
+        Recur::EveryWeeks(n) => (*n, Span::new().try_weeks(*n)),
+        Recur::EveryMonths(n) => (*n, Span::new().try_months(*n)),
+        // The calendar-search rules carry no free-form count; their own fields
+        // are already range-checked where they are parsed.
+        _ => return Ok(()),
+    };
+    if n < 1 {
+        return Err(ApiError::bad_request("recurrence interval must be >= 1"));
+    }
+    span.map_err(|e| ApiError::bad_request(format!("recurrence interval out of range: {e}")))?;
+    Ok(())
 }
 
 /// Split a glued offset token such as `3d` / `2wk` / `1mo` into (count, unit).
@@ -193,11 +225,20 @@ pub fn next_after(rule: &Recur, anchor: Timestamp, now: Timestamp) -> Result<Tim
 }
 
 /// One step of the rule: the next date strictly after `date`.
+///
+/// The **fallible** `try_days`/`try_weeks`/`try_months` builders are load-bearing
+/// here for the same reason they are in `datetime::add_units`: the plain
+/// `days`/`weeks`/`months` builders PANIC on an out-of-range count, and this
+/// function runs at *completion* time, so an absurd interval aborted the process
+/// on `tasqx done` — repeatedly, since the rule was already stored. `parse_rule`
+/// now bounds the count, but that is not enough on its own: `store.import`
+/// replays rules written by an older or foreign producer, and D17 is explicit
+/// that an absurd count is a `bad_request`, never a crash.
 fn advance_once(rule: &Recur, date: Date) -> Result<Date, ApiError> {
     let next = match rule {
-        Recur::EveryDays(n) => date.checked_add(Span::new().days(*n)),
-        Recur::EveryWeeks(n) => date.checked_add(Span::new().weeks(*n)),
-        Recur::EveryMonths(n) => date.checked_add(Span::new().months(*n)),
+        Recur::EveryDays(n) => Span::new().try_days(*n).and_then(|s| date.checked_add(s)),
+        Recur::EveryWeeks(n) => Span::new().try_weeks(*n).and_then(|s| date.checked_add(s)),
+        Recur::EveryMonths(n) => Span::new().try_months(*n).and_then(|s| date.checked_add(s)),
         Recur::WeeklyOn(days) => Ok(next_in_weekdays(date, days)),
         Recur::MonthlyOnDay(d) => Ok(next_month_day(date, *d)),
         Recur::MonthlyNthWeekday(n, w) => next_month_nth_weekday(date, *n, *w),
@@ -217,12 +258,21 @@ fn next_in_weekdays(date: Date, days: &[Weekday]) -> Date {
         }
         best = best.min(delta);
     }
-    date.checked_add(Span::new().days(best)).unwrap_or(date)
+    // `best` is 1..=7, so this could not panic — but the whole file sticks to
+    // the fallible `try_*` builders so that the panicking ones are simply not
+    // present to be copied onto a line where the count *is* user-supplied.
+    Span::new()
+        .try_days(best)
+        .and_then(|s| date.checked_add(s))
+        .unwrap_or(date)
 }
 
 /// Day `d` of the next month strictly after `date` (clamped to month length).
 fn next_month_day(date: Date, d: i8) -> Date {
-    let next_month = date.checked_add(Span::new().months(1)).unwrap_or(date);
+    let next_month = Span::new()
+        .try_months(1)
+        .and_then(|s| date.checked_add(s))
+        .unwrap_or(date);
     clamp_day(next_month, d)
 }
 
@@ -242,14 +292,14 @@ fn clamp_day(date: Date, d: i8) -> Date {
 /// occurrence. `nth` in 1..=4 and -1 exist in every month, so the loop returns
 /// on the first iteration for them.
 fn next_month_nth_weekday(date: Date, n: i8, w: Weekday) -> Result<Date, jiff::Error> {
-    let mut month = date.checked_add(Span::new().months(1))?;
+    let mut month = date.checked_add(Span::new().try_months(1)?)?;
     // A 5th weekday recurs at least a few times a year, so a small bound covers
     // every real case; the guard only prevents an unbounded loop on a surprise.
     for _ in 0..60 {
         if let Ok(d) = month.nth_weekday_of_month(n, w) {
             return Ok(d);
         }
-        month = month.checked_add(Span::new().months(1))?;
+        month = month.checked_add(Span::new().try_months(1)?)?;
     }
     // Unreachable for valid n (checked at parse time); surface the real error.
     month.nth_weekday_of_month(n, w)
@@ -328,6 +378,7 @@ fn nth_label(n: i8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorCode;
 
     fn ts(s: &str) -> Timestamp {
         s.parse().unwrap()
@@ -446,6 +497,55 @@ mod tests {
         // Feb 28 -> Mar 28 (stays on the 28th; does NOT jump back to the 31st).
         let mar = next_after(&r, feb, feb).unwrap();
         assert_eq!(mar.to_string(), "2027-03-28T09:00:00Z");
+    }
+
+    #[test]
+    fn out_of_range_interval_errors_instead_of_panicking() {
+        // The load-bearing half of the fix. jiff's *plain* `days`/`weeks`/
+        // `months` span builders panic above ±7,304,484 / ±1,043,497 / ±239,976
+        // (0.2.32), and the panic fires at completion time — long after the rule
+        // was durably stored — so every later `tasqx done` aborted the process.
+        // `store.import` and older builds can still hand us such a rule, so this
+        // must hold independently of any parse-time bound.
+        for r in [
+            Recur::EveryDays(100_000_000),
+            Recur::EveryWeeks(2_000_000),
+            Recur::EveryMonths(500_000),
+        ] {
+            let e = next_after(&r, ts("2026-07-01T09:00:00Z"), ts("2026-07-01T09:00:00Z"))
+                .expect_err("an unapplicable interval must be an error, not a panic");
+            assert_eq!(e.code, ErrorCode::BadRequest, "{r:?} -> {}", e.message);
+        }
+    }
+
+    #[test]
+    fn rejects_out_of_range_intervals_at_parse_time() {
+        // Parse-don't-validate: the count is bounded where the rule is built, so
+        // an absurd interval can never reach the store in the first place.
+        assert!(parse_rule("every 100000000 days").is_err());
+        assert!(parse_rule("every 2000000 weeks").is_err());
+        assert!(parse_rule("every 500000 months").is_err());
+        // ...and the bound is jiff's, not a tighter invented one: 7,000,000 days
+        // is a silly rule but jiff can hold it, so parsing still accepts it.
+        assert_eq!(
+            parse_rule("every 7000000 days").unwrap(),
+            Recur::EveryDays(7_000_000)
+        );
+    }
+
+    #[test]
+    fn glued_short_form_shares_the_interval_bounds() {
+        // `every 3d` is parsed by a second branch that binds its *own* count
+        // from `split_glued`. It used to sit below the `n < 1` guard, so it was
+        // the one way to store both a zero interval and a panic-inducing one.
+        assert!(parse_rule("every 0d").is_err());
+        assert!(parse_rule("every 100000000d").is_err());
+        assert!(parse_rule("every 2000000w").is_err());
+        assert!(parse_rule("every 500000mo").is_err());
+        // The sane glued forms keep working.
+        assert_eq!(parse_rule("every 3d").unwrap(), Recur::EveryDays(3));
+        assert_eq!(parse_rule("every 2wk").unwrap(), Recur::EveryWeeks(2));
+        assert_eq!(parse_rule("every 6mo").unwrap(), Recur::EveryMonths(6));
     }
 
     #[test]
