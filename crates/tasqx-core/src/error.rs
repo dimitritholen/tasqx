@@ -62,12 +62,21 @@ impl ErrorCode {
 /// `data` (e.g. the field errors, or the `short_id` that was not found).
 #[derive(Debug)]
 pub struct ApiError {
+    /// The stable, machine-first classification. This is the part a caller may
+    /// branch on; `message` is not.
     pub code: ErrorCode,
+    /// Human-readable explanation. Free text by design — it names the offending
+    /// value and, where there is one, the accepted set.
     pub message: String,
+    /// Optional machine-readable detail (the `short_id` that was not found, the
+    /// per-field errors). Absent from the serialized envelope when `None`, so a
+    /// client sees no key rather than a null.
     pub data: Option<Value>,
 }
 
 impl ApiError {
+    /// The general constructor. The four helpers below are the ones handlers
+    /// normally reach for; use this when the `data` payload is the point.
     pub fn new(code: ErrorCode, message: impl Into<String>, data: Option<Value>) -> Self {
         ApiError {
             code,
@@ -76,22 +85,32 @@ impl ApiError {
         }
     }
 
+    /// Malformed or invalid params (exit 2). The catch-all for "the caller asked
+    /// for something that is not a question this API accepts".
     pub fn bad_request(message: impl Into<String>) -> Self {
         ApiError::new(ErrorCode::BadRequest, message, None)
     }
 
+    /// A named entity does not exist (exit 4). Takes `data` because the caller
+    /// usually needs the ref back — `{"short_id": 12}` — to report it usefully.
     pub fn not_found(message: impl Into<String>, data: Option<Value>) -> Self {
         ApiError::new(ErrorCode::NotFound, message, data)
     }
 
+    /// The request is well-formed but collides with the store's current state
+    /// (exit 5): a stale `_rev`, a dependency cycle, a duplicate name.
     pub fn conflict(message: impl Into<String>) -> Self {
         ApiError::new(ErrorCode::Conflict, message, None)
     }
 
+    /// An engine bug or a storage failure (exit 1). Never used for anything the
+    /// caller could have done differently.
     pub fn internal(message: impl Into<String>) -> Self {
         ApiError::new(ErrorCode::Internal, message, None)
     }
 
+    /// This error's CLI exit code — [`ErrorCode::exit_code`] on `self.code`,
+    /// so the process status and the JSON `code` can never disagree.
     pub fn exit_code(&self) -> i32 {
         self.code.exit_code()
     }
@@ -125,8 +144,11 @@ impl std::error::Error for ApiError {}
 /// The serialized `error` object inside a response envelope.
 #[derive(Debug, Serialize)]
 pub struct ErrorBody {
+    /// The stable code, serialized `snake_case` (`bad_request`, `not_found`, …).
     pub code: ErrorCode,
+    /// The human-readable explanation, verbatim from the [`ApiError`].
     pub message: String,
+    /// The structured detail, omitted from the JSON entirely when there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
 }

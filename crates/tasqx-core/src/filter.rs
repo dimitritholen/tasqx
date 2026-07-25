@@ -108,7 +108,7 @@ use crate::util::parse_ts;
 /// The filter grammar, in one place, rendered verbatim by `tasqx docs`.
 ///
 /// `VALUE` is a *sequence* of chunks, not one alternative of the two, because
-/// quoting is lexical — resolved in [`tokenize`] before any production below
+/// quoting is lexical — resolved in `tokenize` before any production below
 /// sees the text — so a quoted run may cover a whole token or any part of one:
 /// `+"needs paint"`, `project:"Home Renovation"`, `"+api"` and
 /// `project:Home" "Renovation` all work and all mean what they look like. See
@@ -172,7 +172,10 @@ pub enum Pred {
     /// **open, runtime** vocabulary, so an unknown one legitimately matches no
     /// row rather than being refused — see the module comment's split.
     Project(String),
+    /// `+VALUE` — the row must carry this tag. A `String` for the same reason
+    /// `Project` is: tags are an open runtime vocabulary.
     TagInclude(String),
+    /// `-VALUE` — the row must NOT carry this tag.
     TagExclude(String),
     /// `due.before:VALUE`, with VALUE already resolved against the query's
     /// `now`. A `Timestamp` and not a `String` on purpose: while it was a
@@ -181,6 +184,8 @@ pub enum Pred {
     /// instant makes the first of those unrepresentable — the only way to build
     /// this variant is through a parse that already succeeded.
     DueBefore(Timestamp),
+    /// `due.after:VALUE`, the other side of the same bound and holding a
+    /// `Timestamp` for the same reason as [`Pred::DueBefore`].
     DueAfter(Timestamp),
     /// `completed.before:VALUE` / `completed.after:VALUE`, resolved exactly as
     /// the `due` pair is and holding a `Timestamp` for the same reason (D33).
@@ -191,6 +196,7 @@ pub enum Pred {
     /// API, and there was no way to ask about it. Answering "what did I finish
     /// this week" is the field's only purpose.
     CompletedBefore(Timestamp),
+    /// `completed.after:VALUE` — the bound the weekly report is built on.
     CompletedAfter(Timestamp),
     /// `@working`: pending|active AND not blocked.
     Working,
@@ -205,8 +211,13 @@ pub enum Pred {
 /// The parsed filter expression tree.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
+    /// Every child must match. Juxtaposition builds this as well as the literal
+    /// `and` keyword; it binds TIGHTER than `Or`, which is the precedence a
+    /// mutation sweep found inverted here once already.
     And(Vec<Expr>),
+    /// At least one child must match.
     Or(Vec<Expr>),
+    /// A leaf.
     Pred(Pred),
 }
 
@@ -217,14 +228,24 @@ pub struct MatchCtx<'a> {
     /// literals, so `Status` could not participate in its own matching rules and
     /// a renamed or added variant went unnoticed here.
     pub status: Status,
+    /// The row's project name, `None` when it belongs to none.
     pub project: Option<&'a str>,
+    /// Every tag on the row. Order is irrelevant; membership is the only
+    /// question asked of it.
     pub tags: &'a [String],
+    /// The row's `due` as stored (RFC3339). Still a string here because the
+    /// BOUND is what had to become a `Timestamp` — the row side is parsed once
+    /// per comparison and a task with no due date simply satisfies no bound.
     pub due: Option<&'a str>,
     /// The completion instant, `None` on anything not closed. `None` is a real
     /// answer here, not a missing one: a task that was never completed cannot
     /// satisfy any bound on when it was, which is the rule `due` already has
     /// for a task with no due date.
     pub completed: Option<&'a str>,
+    /// Whether the row has at least one dependency that is not yet `done`.
+    /// Precomputed by the caller: it needs a join, and re-deriving it per
+    /// predicate would run that join once for `@working` and again for
+    /// `@blocked` in the same expression.
     pub blocked: bool,
 }
 
@@ -428,7 +449,7 @@ const TOKEN_SHAPES: &str = "+tag, -tag, @working, @blocked, project:, status:, \
 ///
 /// So the ambiguity is handed to the user, who is the only one who knows which
 /// they meant, and the grammar already gives them a way to say it: LITERAL
-/// quotes, which survive the shell and reach [`tokenize`] intact.
+/// quotes, which survive the shell and reach `tokenize` intact.
 ///
 /// ```text
 /// tasqx list 'project:"Home Renovation"'   # the spaced value
@@ -439,7 +460,7 @@ const TOKEN_SHAPES: &str = "+tag, -tag, @working, @blocked, project:, status:, \
 /// The consequence, which is intended: `list project:Home Renovation` with the
 /// shell eating the quotes is `project:Home` plus a stray token `Renovation`,
 /// and is REFUSED. It fails loudly instead of answering wrongly, and
-/// [`spacing_hint`] makes that refusal name the literal-quote spelling.
+/// `spacing_hint` makes that refusal name the literal-quote spelling.
 pub fn from_argv(args: &[String]) -> String {
     args.join(" ")
 }
@@ -493,7 +514,12 @@ enum Parens {
 /// to know whether a project name it failed to resolve could have been cut at a
 /// space it never saw.
 pub struct Word {
+    /// The word with its quoting removed and its escapes resolved — what the
+    /// user meant, not what they typed.
     pub text: String,
+    /// True when ANY part of the word arrived inside `"…"`. A whole-word flag
+    /// because that is the granularity every caller asks at; a partially quoted
+    /// value like `project:"Home Renovation"` is still "the user delimited this".
     pub quoted: bool,
 }
 

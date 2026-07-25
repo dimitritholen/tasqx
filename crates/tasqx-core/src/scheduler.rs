@@ -40,8 +40,14 @@ use crate::storage::reminded_keys;
 /// One scheduled reminder: the task it belongs to plus the instant it ripens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pending {
+    /// The task's UUID. Half of the `(task, instant)` dedupe key that makes a
+    /// reminder fire exactly once across restarts.
     pub task_id: String,
+    /// The task's `short_id`, carried so the notification can name something the
+    /// user can act on, and used as the heap's tie-break for determinism.
     pub short_id: i64,
+    /// The task title at rebuild time. A snapshot: a title edited after the heap
+    /// was built shows the old text until the next rebuild.
     pub title: String,
     /// The task's `due` at rebuild time (carried for the notification body).
     pub due: Option<String>,
@@ -140,6 +146,9 @@ impl ReminderScheduler {
         self.heap.len()
     }
 
+    /// Whether nothing is scheduled. Present because clippy requires it
+    /// alongside [`ReminderScheduler::len`], and the daemon reads it to decide
+    /// whether it may block indefinitely instead of on a deadline.
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }

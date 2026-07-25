@@ -36,6 +36,12 @@ fn phrase_escape(query: &str) -> Result<String, ApiError> {
 impl Engine {
     // ---- memory.add ----------------------------------------------------------
 
+    /// `memory.add` — store one knowledge document. Params: `title`, `body`,
+    /// optional `source`. Returns its new id.
+    ///
+    /// A doc is standalone, not attached to a task: annotations already cover
+    /// "a note about this task", and [`Entity::Doc`] exists so the two stay
+    /// distinguishable in the event log.
     pub fn memory_add(&self, p: &Value) -> Result<Value, ApiError> {
         let title = req_str(p, "title")?;
         let body = req_str(p, "body")?;
@@ -115,6 +121,15 @@ impl Engine {
 
     // ---- memory.search -------------------------------------------------------
 
+    /// `memory.search` — ranked lexical retrieval over docs and annotations.
+    /// Params: `query`, `limit` (default 10), `scope` (one of [`MEMORY_SCOPES`],
+    /// default `all`), `raw`.
+    ///
+    /// `raw:false` (the default) escapes the query into FTS5 phrases, so
+    /// ordinary text containing `-` or `:` is a search rather than a syntax
+    /// error. `raw:true` hands the FTS5 operator grammar to the caller, who then
+    /// owns its errors — which is why a refused raw query is `bad_request` and
+    /// not `internal`.
     pub fn memory_search(&self, p: &Value) -> Result<Value, ApiError> {
         let query = req_str(p, "query")?;
         let raw = opt_bool(p, "raw")?.unwrap_or(false);
@@ -186,6 +201,9 @@ impl Engine {
 
     // ---- memory.remove -------------------------------------------------------
 
+    /// `memory.remove` — delete one doc by `id`. An id that matches nothing is
+    /// `not_found`, not a silent no-op: "I deleted it" and "there was nothing
+    /// there" are different answers to the caller.
     pub fn memory_remove(&self, p: &Value) -> Result<Value, ApiError> {
         let id = req_str(p, "id")?;
         let tx = self.begin_mutation()?;

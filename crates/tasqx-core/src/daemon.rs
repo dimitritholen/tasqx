@@ -36,7 +36,8 @@
 //!  * Reminders (§9): a third thread owns the [`ReminderScheduler`] min-heap and
 //!    the notifier. A ripe reminder writes its `reminded` event and is pumped
 //!    like any other — so the reminder's verification surface is the ordinary
-//!    event stream, not the OS notification. See [`reminder_loop`].
+//!    event stream, not the OS notification. See `reminder_loop` (private: the
+//!    thread body is an implementation detail of [`serve`], not a surface).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
@@ -1365,7 +1366,11 @@ impl Conn {
 
 /// A line read from the daemon: either an unsolicited event or a response.
 pub enum Frame {
+    /// An unsolicited push (a `task.changed` broadcast). Carries no request id,
+    /// which is exactly how the reader tells the two apart — correlating a push
+    /// with a pending request is what this enum exists to make impossible.
     Event(Value),
+    /// The correlated answer to a request this client sent.
     Response(Value),
 }
 

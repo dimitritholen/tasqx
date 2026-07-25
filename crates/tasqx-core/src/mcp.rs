@@ -49,6 +49,8 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// The scope name as an operator writes it on the command line and as
+    /// `initialize` reports it back.
     pub fn as_str(self) -> &'static str {
         match self {
             Scope::Read => "read",
@@ -424,10 +426,15 @@ pub struct McpServer<'e> {
 }
 
 impl<'e> McpServer<'e> {
+    /// Bind a session to one engine and one scope. The scope is fixed for the
+    /// life of the server — there is no per-message elevation, which is what
+    /// makes "a read-only process" a property of the process rather than of
+    /// every individual handler remembering to check.
     pub fn new(engine: &'e Engine, scope: Scope) -> Self {
         McpServer { engine, scope }
     }
 
+    /// The scope this session was created with.
     pub fn scope(&self) -> Scope {
         self.scope
     }

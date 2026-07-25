@@ -64,6 +64,15 @@ const _: () = assert!(SnapshotParts::EVERYTHING.statement_count() == SNAPSHOT_QU
 impl Engine {
     // ---- task.add ------------------------------------------------------------
 
+    /// `task.add` — create a task. Params: `title` (required), `project`,
+    /// `priority`, `due`, `scheduled`, `wait`, `estimate`, `tags`, `recurrence`,
+    /// `remind`.
+    ///
+    /// Every free-form spec (`estimate`, `recurrence`, `remind`, the three
+    /// dates) is parsed and NORMALIZED before the insert, so a bad spec fails
+    /// the add cleanly rather than landing in the store to be discovered later
+    /// by whatever reads it. A future `wait`/`scheduled` starts the task in
+    /// `backlog`; [`effective_status`] releases it without any further command.
     pub fn task_add(&self, p: &Value) -> Result<Value, ApiError> {
         let title = req_str(p, "title")?;
         // Gap fix A1: with no explicit project, inherit the default set by
@@ -196,6 +205,13 @@ impl Engine {
 
     // ---- task.start ----------------------------------------------------------
 
+    /// `task.start` — open a time interval. Params: `ref`, `keep`.
+    ///
+    /// `pending -> active` only; any other status is `conflict`, except an
+    /// already-`active` task, which is idempotent and returns the interval it is
+    /// already in. Without `keep`, D6's single-active rule auto-stops whatever
+    /// else was running — the alternative is two clocks and no way to tell which
+    /// one was the truth.
     pub fn task_start(&self, p: &Value) -> Result<Value, ApiError> {
         let command = commands::parse_start_task(p)?;
         let tx = self.begin_mutation()?;
@@ -279,6 +295,10 @@ impl Engine {
 
     // ---- task.stop -----------------------------------------------------------
 
+    /// `task.stop` — close the open interval and fold it into
+    /// [`Task::tracked_seconds`]. Param: `ref`. `active -> pending` only;
+    /// stopping anything else is `conflict` rather than a no-op, because there
+    /// is no interval to close and reporting success would say there was.
     pub fn task_stop(&self, p: &Value) -> Result<Value, ApiError> {
         let command = commands::parse_task_target(p)?;
         let tx = self.begin_mutation()?;
@@ -316,6 +336,13 @@ impl Engine {
 
     // ---- task.done -----------------------------------------------------------
 
+    /// `task.done` — complete a task. Param: `ref`. `pending|active -> done`;
+    /// an active task's open interval is closed on the way, so finishing
+    /// directly never silently loses the time already tracked.
+    ///
+    /// Also the point recurrence spawns the next instance and dependents may
+    /// become unblocked — both consequences of the same commit, so history and
+    /// state cannot disagree about them.
     pub fn task_done(&self, p: &Value) -> Result<Value, ApiError> {
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
@@ -540,6 +567,14 @@ impl Engine {
 
     // ---- task.modify ---------------------------------------------------------
 
+    /// `task.modify` — set fields on a task. Params: `ref`, `set` (a non-empty
+    /// object), `expected_rev`.
+    ///
+    /// `expected_rev` is the optimistic-concurrency guard: when supplied and it
+    /// does not match the row's current `rev`, the write is refused with
+    /// `conflict` instead of overwriting whatever landed in between. The check
+    /// runs after `BEGIN IMMEDIATE`, because the only authoritative row is the
+    /// one inside the write lock.
     pub fn task_modify(&self, p: &Value) -> Result<Value, ApiError> {
         // Preserve the public validation order without loading store state:
         // callers have always seen a missing `ref` before errors in `set`.
@@ -905,6 +940,13 @@ impl Engine {
         Ok((snapshots, statements))
     }
 
+    /// `task.list` — the main read. Params: `filter` (the [`crate::filter`]
+    /// grammar), `sort` (a key from [`SORT_KEYS`], `-` for descending, default
+    /// `-urgency`), `limit`, `fields` (a subset of [`TASK_FIELDS`]).
+    ///
+    /// Urgency is recomputed per row rather than read from the stored column:
+    /// the due-proximity and age terms both move with the clock, so the
+    /// persisted value is only as fresh as the last write.
     pub fn task_list(&self, p: &Value) -> Result<Value, ApiError> {
         // D35's one recorded exception, and it is a decision, not an oversight:
         // D27 ruled the empty filter matches everything — no filter means no
@@ -1065,6 +1107,9 @@ impl Engine {
 
     // ---- task.get ------------------------------------------------------------
 
+    /// `task.get` — one task in full. Param: `ref` (short_id or UUID). Adds the
+    /// three fields the row itself does not carry — `depends_on`, `annotations`,
+    /// `blocked` — and recomputes `urgency` for the same reason `task.list` does.
     pub fn task_get(&self, p: &Value) -> Result<Value, ApiError> {
         let task = self.resolve_ref(p)?;
         let tags = task_tags(&self.conn, &task.id)?;
@@ -1083,6 +1128,10 @@ impl Engine {
 
     // ---- task.cancel ---------------------------------------------------------
 
+    /// `task.cancel` — abandon a task. Param: `ref`. `backlog|pending|active ->
+    /// cancelled`. The row is retained, not deleted, which is what keeps the
+    /// event log and the short_id sequence honest; it simply stops counting in
+    /// reports ([`Status::counts_in_reports`]).
     pub fn task_cancel(&self, p: &Value) -> Result<Value, ApiError> {
         let command = commands::parse_task_target(p)?;
         let tx = self.begin_mutation()?;
@@ -1132,6 +1181,10 @@ impl Engine {
 
     // ---- task.reopen ---------------------------------------------------------
 
+    /// `task.reopen` — bring a closed task back. Param: `ref`. `done|cancelled
+    /// -> pending`, clearing [`Task::completed`] so the reopened task cannot
+    /// still answer a `completed.after:` query about a week it is no longer
+    /// finished in.
     pub fn task_reopen(&self, p: &Value) -> Result<Value, ApiError> {
         let command = commands::parse_task_target(p)?;
         let tx = self.begin_mutation()?;

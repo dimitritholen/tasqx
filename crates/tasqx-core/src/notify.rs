@@ -5,10 +5,14 @@
 //!    returns. This is the headless/CI-safe path §9 demands: with no
 //!    notification transport, delivery degrades to a logged line and exit 0,
 //!    never an error.
-//!  * [`OsNotifier`] — behind the **off-by-default `notify-os` feature**, using
+//!  * `OsNotifier` — behind the **off-by-default `notify-os` feature**, using
 //!    `notify-rust` (WinRT toast / `NSUserNotification` / D-Bus). It is gated
 //!    because `notify-rust` drags WinRT in on Windows and a visual toast is not
-//!    headlessly verifiable — neither belongs in the default build.
+//!    headlessly verifiable — neither belongs in the default build. A code span
+//!    and not an intra-doc link on purpose: the item is `cfg`-gated, so a link
+//!    resolves to nothing on a default-feature `cargo doc` and renders as bare
+//!    text anyway. The CI doc gate runs `--all-features` so the gated code below
+//!    is still documented; this one reference is what would break it.
 //!
 //! Two rules hold across every backend:
 //!  * **The log line is invariant.** `OsNotifier` logs *and then* attempts the
