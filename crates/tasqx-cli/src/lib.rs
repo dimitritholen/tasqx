@@ -2437,7 +2437,27 @@ fn run_mcp_serve(scope: Scope) {
     let server = McpServer::new(&engine, scope);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let mut reader = stdin.lock();
+    // Hold both locks for the whole session: this process writes nothing else
+    // to either handle while serving, and the guard is what keeps a stray
+    // `println!` from ever interleaving with a response frame on stdout.
+    mcp_stdio_loop(
+        &mut stdin.lock(),
+        &mut stdout.lock(),
+        &mut std::io::stderr(),
+        |msg| server.handle_message(msg),
+    );
+}
+
+/// The read/dispatch/write half of [`run_mcp_serve`], factored out so both the
+/// panic containment and the stdin-failure diagnostic can be driven from tests
+/// without a real process's stdio. `dispatch` is the injection seam: the server
+/// passes `McpServer::handle_message`, tests pass a closure that panics.
+fn mcp_stdio_loop(
+    reader: &mut impl BufRead,
+    out: &mut impl Write,
+    errs: &mut impl Write,
+    dispatch: impl Fn(&Value) -> Option<Value>,
+) {
     let mut line = String::new();
 
     loop {
@@ -2449,20 +2469,50 @@ fn run_mcp_serve(scope: Scope) {
                 if trimmed.is_empty() {
                     continue;
                 }
-                let out = match serde_json::from_str::<Value>(trimmed) {
-                    Ok(msg) => server.handle_message(&msg),
+                let resp = match serde_json::from_str::<Value>(trimmed) {
+                    // Contain a dispatch panic the way the daemon does
+                    // (daemon.rs, `handle_conn`): this server runs unsupervised
+                    // inside an agent's process, so a panic reachable from any
+                    // tool call — today the recurrence overflow, tomorrow
+                    // whatever a new verb introduces — must cost that one call,
+                    // not the whole session. `AssertUnwindSafe` is required
+                    // because rusqlite's `Connection` is not `RefUnwindSafe`,
+                    // and sufficient because `MutationContext` rolls its
+                    // `Transaction` back while unwinding and the `Engine` is
+                    // held bare (no lock to poison, hence no `lock_recover`
+                    // analogue here).
+                    Ok(msg) => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        dispatch(&msg)
+                    })) {
+                        Ok(v) => v,
+                        // Gate the envelope on a present, non-null `id`: a
+                        // notification is answered with silence by contract, and
+                        // an `id: null` error would put a frame nobody asked for
+                        // on the stdout channel reserved for responses.
+                        Err(_) => msg.get("id").filter(|id| !id.is_null()).map(|id| {
+                            json!({
+                                "jsonrpc": "2.0", "id": id.clone(),
+                                "error": { "code": -32603, "message": "internal error" }
+                            })
+                        }),
+                    },
                     Err(e) => Some(json!({
                         "jsonrpc": "2.0", "id": Value::Null,
                         "error": { "code": -32700, "message": format!("Parse error: {e}") }
                     })),
                 };
-                if let Some(resp) = out {
-                    let mut w = stdout.lock();
-                    let _ = writeln!(w, "{}", serde_json::to_string(&resp).unwrap_or_default());
-                    let _ = w.flush();
+                if let Some(resp) = resp {
+                    let _ = writeln!(out, "{}", serde_json::to_string(&resp).unwrap_or_default());
+                    let _ = out.flush();
                 }
             }
-            Err(_) => break,
+            // A read failure ends the session, so it is the operator's last
+            // chance to learn why: dropping `e` made an I/O fault or a non-UTF-8
+            // byte on stdin indistinguishable from the peer closing cleanly.
+            Err(e) => {
+                let _ = writeln!(errs, "tasqx mcp: stdin read failed: {e}");
+                break;
+            }
         }
     }
 }
@@ -2543,6 +2593,87 @@ mod tests {
                 _ => panic!("expected mcp serve"),
             }
         }
+    }
+
+    /// Run the stdio loop over a canned input, returning `(stdout, stderr)`.
+    fn drive_mcp_loop(
+        input: &str,
+        dispatch: impl Fn(&Value) -> Option<Value>,
+    ) -> (String, String) {
+        let mut reader = std::io::BufReader::new(input.as_bytes());
+        let (mut out, mut errs) = (Vec::new(), Vec::new());
+        mcp_stdio_loop(&mut reader, &mut out, &mut errs, dispatch);
+        (
+            String::from_utf8(out).expect("stdout frames are UTF-8"),
+            String::from_utf8(errs).expect("diagnostics are UTF-8"),
+        )
+    }
+
+    /// A panic in one tool call must cost that one call, not the session. The
+    /// MCP server runs unsupervised inside an agent's process, so it mirrors the
+    /// daemon's dispatch containment: without it the whole process dies and the
+    /// agent sees tasqx vanish mid-conversation with no JSON-RPC error to
+    /// explain it — indistinguishable from a transport fault.
+    #[test]
+    fn a_panicking_mcp_dispatch_becomes_an_internal_error_and_the_session_survives() {
+        let (out, _errs) = drive_mcp_loop(
+            "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\"}\n\
+             {\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"ping\"}\n",
+            |msg| {
+                if msg["id"] == json!(7) {
+                    panic!("simulated panic reachable from a tool call");
+                }
+                Some(json!({ "jsonrpc": "2.0", "id": msg["id"].clone(), "result": {} }))
+            },
+        );
+
+        let frames: Vec<Value> = out
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("every stdout frame is JSON"))
+            .collect();
+        assert_eq!(frames.len(), 2, "expected one frame per request, got {out:?}");
+        assert_eq!(frames[0]["id"], json!(7));
+        assert_eq!(frames[0]["error"]["code"], json!(-32603));
+        // The request after the panicking one is still answered: the loop kept
+        // reading rather than the process disappearing.
+        assert_eq!(frames[1]["id"], json!(8));
+        assert!(frames[1].get("result").is_some(), "id 8 should be a result");
+    }
+
+    /// The error envelope is gated on a present, non-null `id`: `handle_message`
+    /// returns `None` for notifications on purpose, and an unsolicited
+    /// `id: null` error would put a frame nobody asked for on the stdout channel
+    /// the module doc reserves for responses.
+    #[test]
+    fn a_panicking_mcp_notification_emits_nothing_on_stdout() {
+        for msg in [
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
+            "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"notifications/cancelled\"}",
+        ] {
+            let (out, _errs) = drive_mcp_loop(&format!("{msg}\n"), |_| {
+                panic!("simulated panic while handling a notification");
+            });
+            assert!(out.is_empty(), "notification produced a response: {out:?}");
+        }
+    }
+
+    /// A read failure ends the session, so it is the last thing the operator can
+    /// learn anything from: swallowing the error leaves an I/O fault or a
+    /// non-UTF-8 byte on stdin looking exactly like a clean EOF.
+    #[test]
+    fn a_failed_stdin_read_is_reported_on_stderr_before_the_loop_ends() {
+        let mut reader = std::io::BufReader::new(&b"\xff\xfe not utf-8\n"[..]);
+        let (mut out, mut errs) = (Vec::new(), Vec::new());
+        mcp_stdio_loop(&mut reader, &mut out, &mut errs, |_| {
+            panic!("dispatch must not be reached for an unreadable line")
+        });
+
+        let errs = String::from_utf8(errs).expect("diagnostics are UTF-8");
+        assert!(
+            errs.contains("tasqx mcp: stdin read failed:"),
+            "read failure went unreported: {errs:?}"
+        );
+        assert!(out.is_empty(), "nothing belongs on stdout: {out:?}");
     }
 
     #[test]
