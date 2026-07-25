@@ -28,12 +28,107 @@ fn fresh_config_dir(tag: &str) -> PathBuf {
 /// `default_project` happens to be set there. Both are passed per process
 /// rather than through `std::env::set_var`, which is process-global and racy
 /// under cargo's parallel threads.
+///
+/// `--no-daemon` is what makes those two env vars mean anything: `open_backend`
+/// prefers a reachable daemon and the remote path never reads `TASQX_DB`, so on
+/// a machine running `tasqx daemon` these tests drove the developer's real store
+/// — writing to it — while asserting against a scratch file nothing had touched.
+/// It rides on the fixture rather than on the call sites so a new test cannot
+/// forget it; clap declares the flag non-repeatable, so a call site that passes
+/// it too is a hard `cannot be used multiple times` error rather than a silent
+/// duplicate.
 fn bin(tag: &str, dir: &std::path::Path) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    c.env("TASQX_CONFIG_DIR", dir)
+        .env("TASQX_DB", db_path(tag))
+        .arg("--no-daemon");
+    c
+}
+
+/// The store `bin` hands the process for one tag. Named so a test can assert
+/// against the same file the binary was pointed at, rather than re-deriving the
+/// path formula and drifting from it.
+fn db_path(tag: &str) -> PathBuf {
     let mut db = std::env::temp_dir();
     db.push(format!("tasqx-reg-{tag}-{}.db", std::process::id()));
-    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
-    c.env("TASQX_CONFIG_DIR", dir).env("TASQX_DB", db);
-    c
+    db
+}
+
+/// Something listening on a socket address, which is the ENTIRE test
+/// `open_backend` applies before it routes a one-shot command over the wire
+/// (DESIGN.md §2): `try_connect` connects and returns a `Conn`, with no
+/// handshake and no probe of what is on the other end.
+///
+/// It accepts and hangs up immediately, so a command that routes here dies on
+/// `UnexpectedEof` instead of blocking a test run forever. That failure is the
+/// point: a fixture that reaches this stub at all is a fixture that would reach
+/// the developer's real daemon, and `TASQX_DB` is a local-only concept the
+/// remote path never sees.
+#[cfg(unix)]
+struct StubDaemon {
+    addr: PathBuf,
+}
+
+#[cfg(unix)]
+impl StubDaemon {
+    fn start(tag: &str) -> Self {
+        let mut addr = std::env::temp_dir();
+        addr.push(format!("tasqx-reg-{tag}-{}.sock", std::process::id()));
+        // A leftover file from a killed run makes `bind` fail with EADDRINUSE
+        // even though nobody is listening.
+        let _ = std::fs::remove_file(&addr);
+        let listener =
+            std::os::unix::net::UnixListener::bind(&addr).expect("bind the stub daemon socket");
+        std::thread::spawn(move || while listener.accept().is_ok() {});
+        Self { addr }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StubDaemon {
+    /// The socket is a real file; leaving it behind would poison the next run's
+    /// `bind` on the same per-process path.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.addr);
+    }
+}
+
+/// `bin()` must be daemon-proof, or most of this file is a lottery.
+///
+/// The config dir and `TASQX_DB` above only isolate the IN-PROCESS engine.
+/// `open_backend` prefers a reachable daemon, and the remote path never looks
+/// at `TASQX_DB` — so with a daemon on the default socket (the tool's own
+/// recommended mode) every `init`, `add` and `import` in this file wrote into
+/// the developer's live store, and the assertions afterwards judged that store
+/// instead of the fixture's. `json_contract.rs` and `required_strings.rs`
+/// already pass `--no-daemon` for exactly this reason; this file did not.
+///
+/// Asserted as an observable outcome rather than by inspecting the argv, so it
+/// keeps biting whatever spelling the isolation is eventually written in.
+#[cfg(unix)]
+#[test]
+fn the_fixture_ignores_a_reachable_daemon() {
+    let dir = fresh_config_dir("stub-daemon");
+    let db = db_path("stub-daemon");
+    let _ = std::fs::remove_file(&db);
+    let stub = StubDaemon::start("stub-daemon");
+
+    let out = bin("stub-daemon", &dir)
+        .env("TASQX_SOCK", &stub.addr)
+        .args(["init", "Kelder"])
+        .output()
+        .expect("run init");
+
+    assert!(
+        out.status.success(),
+        "`init` must not route to the daemon: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        db.exists(),
+        "the project went somewhere other than the fixture's own store at {}",
+        db.display()
+    );
 }
 
 /// `tasqx theme show <unknown>` printed the DEFAULT theme and exited 0.
@@ -1214,15 +1309,17 @@ fn report_html_honours_its_filter_in_both_argument_orders() {
         String::from_utf8_lossy(&out.stdout).to_string()
     };
 
-    ok(&["--no-daemon", "init", "Alpha"]);
-    ok(&["--no-daemon", "init", "Beta"]);
-    ok(&["--no-daemon", "add", "alpha work", "project:Alpha"]);
-    ok(&["--no-daemon", "add", "beta work", "project:Beta"]);
+    // `--no-daemon` is on `bin` now; repeating it here is a clap error, not a
+    // harmless duplicate.
+    ok(&["init", "Alpha"]);
+    ok(&["init", "Beta"]);
+    ok(&["add", "alpha work", "project:Alpha"]);
+    ok(&["add", "beta work", "project:Beta"]);
 
     let out_path = |name: &str| dir.join(name).to_string_lossy().to_string();
     let html = |name: &str, args: &[&str]| -> String {
         let p = out_path(name);
-        let mut full = vec!["--no-daemon", "report"];
+        let mut full = vec!["report"];
         full.extend_from_slice(args);
         full.extend_from_slice(&["--out", &p]);
         ok(&full);

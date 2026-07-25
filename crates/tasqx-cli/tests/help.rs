@@ -2,8 +2,18 @@ use std::process::Command;
 
 use tasqx_cli::cmddoc::{RunKind, COMMAND_REF};
 
+/// The binary, kept one-shot and in-process.
+///
+/// `--no-daemon` is not optional here: `open_backend` prefers a reachable
+/// daemon, and the remote path never reads `TASQX_DB`, so on a machine running
+/// `tasqx daemon` — the recommended mode — `safe_examples_all_exit_zero` would
+/// file its `init`/`add` examples into the developer's real store and then
+/// judge that store instead of the scratch one it set up. Global flag, so it
+/// rides in front of every subcommand these tests reach.
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_tasqx"))
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    c.arg("--no-daemon");
+    c
 }
 
 fn help_of(verb: &str) -> String {
@@ -33,6 +43,84 @@ fn fresh_db(tag: &str) -> std::path::PathBuf {
     p.push(format!("tasqx-help-{tag}-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&p);
     p
+}
+
+/// Something listening on a socket address, which is the ENTIRE test
+/// `open_backend` applies before it routes a one-shot command over the wire
+/// (DESIGN.md §2): `try_connect` connects and returns a `Conn`, with no
+/// handshake and no probe of what is on the other end.
+///
+/// It accepts and hangs up immediately, so a command that routes here dies on
+/// `UnexpectedEof` instead of blocking a test run forever. That failure is the
+/// point: a fixture that reaches this stub at all is a fixture that would reach
+/// the developer's real daemon, and `TASQX_DB` is a local-only concept the
+/// remote path never sees.
+#[cfg(unix)]
+struct StubDaemon {
+    addr: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl StubDaemon {
+    fn start(tag: &str) -> Self {
+        let mut addr = std::env::temp_dir();
+        addr.push(format!("tasqx-help-{tag}-{}.sock", std::process::id()));
+        // A leftover file from a killed run makes `bind` fail with EADDRINUSE
+        // even though nobody is listening.
+        let _ = std::fs::remove_file(&addr);
+        let listener =
+            std::os::unix::net::UnixListener::bind(&addr).expect("bind the stub daemon socket");
+        std::thread::spawn(move || while listener.accept().is_ok() {});
+        Self { addr }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StubDaemon {
+    /// The socket is a real file; leaving it behind would poison the next run's
+    /// `bind` on the same per-process path.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.addr);
+    }
+}
+
+/// `bin()` must be daemon-proof, or every test in this file is a lottery.
+///
+/// `safe_examples_all_exit_zero` runs `tasqx init keuken-verbouwen`, two `add`s
+/// and an `export` for real. With a daemon on the default socket those writes
+/// went to the developer's own store — `open_backend` prefers a reachable
+/// daemon, and the remote path never looks at `TASQX_DB` — so the fixture's
+/// scratch file stayed empty while live rows appeared in the user's task list.
+/// `json_contract.rs` and `required_strings.rs` already pass `--no-daemon` for
+/// exactly this reason; this file did not.
+///
+/// Asserted as an observable outcome rather than by inspecting the argv, so it
+/// keeps biting whatever spelling the isolation is eventually written in.
+#[cfg(unix)]
+#[test]
+fn the_fixture_ignores_a_reachable_daemon() {
+    let stub = StubDaemon::start("stub");
+    let db = fresh_db("stub");
+
+    let out = bin()
+        .env("TASQX_DB", &db)
+        .env("TASQX_SOCK", &stub.addr)
+        .env("TASQX_CONFIG_DIR", "")
+        .args(["add", "opdracht van de fixture"])
+        .output()
+        .expect("run add");
+
+    assert!(
+        out.status.success(),
+        "`add` must not route to the daemon: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        db.exists(),
+        "the task went somewhere other than the fixture's own store at {}",
+        db.display()
+    );
+    let _ = std::fs::remove_file(&db);
 }
 
 /// Split an example's command text the way a shell would: on whitespace, but

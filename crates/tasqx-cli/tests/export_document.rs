@@ -30,10 +30,95 @@ fn store(tag: &str, name: &str) -> (PathBuf, PathBuf) {
     (dir, db)
 }
 
+/// The binary pointed at one store, kept one-shot and in-process.
+///
+/// `--no-daemon` is what makes `TASQX_DB` mean anything: `open_backend` prefers
+/// a reachable daemon and the remote path never reads that variable, so on a
+/// machine running `tasqx daemon` the export store and the import store below
+/// collapsed into the developer's real one — the single arrangement in which a
+/// project row lost by `store.export` still shows up after `store.import`.
 fn bin(dir: &Path, db: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
-    c.env("TASQX_CONFIG_DIR", dir).env("TASQX_DB", db);
+    c.env("TASQX_CONFIG_DIR", dir)
+        .env("TASQX_DB", db)
+        .arg("--no-daemon");
     c
+}
+
+/// Something listening on a socket address, which is the ENTIRE test
+/// `open_backend` applies before it routes a one-shot command over the wire
+/// (DESIGN.md §2): `try_connect` connects and returns a `Conn`, with no
+/// handshake and no probe of what is on the other end.
+///
+/// It accepts and hangs up immediately, so a command that routes here dies on
+/// `UnexpectedEof` instead of blocking a test run forever. That failure is the
+/// point: a fixture that reaches this stub at all is a fixture that would reach
+/// the developer's real daemon, and `TASQX_DB` is a local-only concept the
+/// remote path never sees.
+#[cfg(unix)]
+struct StubDaemon {
+    addr: PathBuf,
+}
+
+#[cfg(unix)]
+impl StubDaemon {
+    fn start(tag: &str) -> Self {
+        let mut addr = std::env::temp_dir();
+        addr.push(format!("tasqx-doc-{tag}-{}.sock", std::process::id()));
+        // A leftover file from a killed run makes `bind` fail with EADDRINUSE
+        // even though nobody is listening.
+        let _ = std::fs::remove_file(&addr);
+        let listener =
+            std::os::unix::net::UnixListener::bind(&addr).expect("bind the stub daemon socket");
+        std::thread::spawn(move || while listener.accept().is_ok() {});
+        Self { addr }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StubDaemon {
+    /// The socket is a real file; leaving it behind would poison the next run's
+    /// `bind` on the same per-process path.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.addr);
+    }
+}
+
+/// `bin()` must be daemon-proof, or every case in this file is a lottery.
+///
+/// The two stores this file compares only exist because `TASQX_DB` names them,
+/// and `TASQX_DB` is a LOCAL concept: `open_backend` prefers a reachable daemon
+/// and the remote path never reads it. With a daemon on the default socket, the
+/// round trips below stopped being a round trip through the document and became
+/// a round trip through the developer's live store — both "stores" the same one,
+/// which is the one arrangement under which a lost project row cannot be seen.
+/// `json_contract.rs` and `required_strings.rs` already pass `--no-daemon` for
+/// exactly this reason; this file did not.
+///
+/// Asserted as an observable outcome rather than by inspecting the argv, so it
+/// keeps biting whatever spelling the isolation is eventually written in.
+#[cfg(unix)]
+#[test]
+fn the_fixture_ignores_a_reachable_daemon() {
+    let (dir, db) = store("stub-daemon", "isolated");
+    let stub = StubDaemon::start("stub-daemon");
+
+    let out = bin(&dir, &db)
+        .env("TASQX_SOCK", &stub.addr)
+        .args(["init", "Kelder"])
+        .output()
+        .expect("run init");
+
+    assert!(
+        out.status.success(),
+        "`init` must not route to the daemon: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        db.exists(),
+        "the project went somewhere other than the fixture's own store at {}",
+        db.display()
+    );
 }
 
 /// Run and return (exit code, stdout, stderr).
