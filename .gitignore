@@ -37,3 +37,9 @@ HANDOFF.md
 
 # Execution plans: agent task-checklists for work already shipped.
 docs/plans/
+
+# Console logs and page snapshots a browser agent writes while verifying a page.
+.playwright-mcp/
+
+# Bytecode from importing the doc generators under docs/.
+__pycache__/
