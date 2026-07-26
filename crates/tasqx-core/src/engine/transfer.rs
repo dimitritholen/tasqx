@@ -18,9 +18,13 @@ impl Engine {
     pub fn store_export(&self, p: &Value) -> Result<Value, ApiError> {
         let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default(), Timestamp::now())
             .map_err(ApiError::bad_request)?;
-        // ONE snapshot for the whole document. This function issues eight
-        // statements (SNAPSHOT_QUERY_COUNT in `load_task_snapshots`, plus
-        // projects, docs and the default), and in WAL each one otherwise takes
+        // ONE snapshot for the whole document. This function issues
+        // SNAPSHOT_QUERY_COUNT statements (`load_task_snapshots`) plus three
+        // more — projects, docs and the default. The total is deliberately not
+        // spelled as a literal here: it read "eight" until the token side table
+        // became a sixth snapshot query, and a count that drifts silently in
+        // prose is the failure this comment exists to warn about.
+        // In WAL each statement otherwise takes
         // its own snapshot — so a writer committing between two of them tears
         // the export: tasks read before a `done`, its annotations read after.
         // Every mutation in this engine keeps its state and its event row in one
@@ -157,24 +161,7 @@ impl Engine {
             .cloned()
             .collect();
         *dropped += (all.len() - kept.len()) as i64;
-        // Emitted only when non-zero. `IMPORT_TASK_KEYS` is a closed gate, so an
-        // always-present key would make every new export a `bad_request` in an
-        // older tasqx; conditioning it on non-zero keeps that true only for the
-        // tasks that actually carry time, and leaves the §3 shape of an untimed
-        // task — which is most of them — exactly as it was. The stored form is
-        // emitted verbatim (an i64 of seconds, like the column), not the ISO
-        // spelling `task.get` publishes: this is the restore path, and it must
-        // not gain a way to fail parsing.
-        let tracked = (t.tracked_seconds != 0).then_some(t.tracked_seconds);
-        // The open interval's anchor, present only while the task is `active`,
-        // and emitted for the same reason D12 exists: an export that drops it is
-        // not self-contained. The alternative — reconstructing an anchor at
-        // import from `created` — silently bills every second since the task was
-        // created to the next `stop`, which is the same class of fabricated
-        // total this key was added to prevent.
-        let mut out = flag_unrecognized_status(
-            t,
-            json!({
+        let mut out = json!({
                 "id": t.id,
                 "short_id": t.short_id,
                 "title": t.title,
@@ -201,15 +188,42 @@ impl Engine {
                 "modified": t.modified,
                 "completed": t.completed,
                 "_rev": t.rev,
-            }),
-        );
-        if let Some(secs) = tracked {
-            out["tracked_seconds"] = json!(secs);
+        });
+        // Three OPTIONAL keys follow, all conditional for one reason:
+        // `IMPORT_TASK_KEYS` is a closed gate, so an always-present key would
+        // make every new export a `bad_request` in an older tasqx — and the D12
+        // byte-identical round trip holds only while the §3 shape of a task
+        // that carries none of this is exactly what it always was. Each is
+        // emitted only for the tasks the fact is actually true of, which is the
+        // same rule `status_unrecognized` follows below.
+
+        // D42: emitted only when non-zero. The stored form is emitted verbatim
+        // (an i64 of seconds, like the column), not the ISO spelling `task.get`
+        // publishes: this is the restore path, and it must not gain a way to
+        // fail parsing.
+        if t.tracked_seconds != 0 {
+            out["tracked_seconds"] = json!(t.tracked_seconds);
         }
+        // D42: the open interval's anchor, present only while the task is
+        // `active`, and emitted for the same reason D12 exists: an export that
+        // drops it is not self-contained. The alternative — reconstructing an
+        // anchor at import from `created` — silently bills every second since
+        // the task was created to the next `stop`, which is the same class of
+        // fabricated total this key was added to prevent.
         if let Some(anchor) = &t.active_since {
             out["active_since"] = json!(anchor);
         }
-        out
+        // Absent, not `[]`, when a task has no measurements: an always-empty
+        // key on every task would change the §3 export shape for stores that
+        // never recorded a token.
+        if !snapshot.tokens.is_empty() {
+            out["tokens"] = json!(snapshot.tokens);
+        }
+        // Last, and exactly once. It only ever ADDS `status_unrecognized`, so
+        // wrapping the literal or the finished object is the same document —
+        // wrapping last is the spelling that stays correct as conditional keys
+        // are added above it.
+        flag_unrecognized_status(t, out)
     }
 
     // ---- store.import --------------------------------------------------------
@@ -708,6 +722,93 @@ impl Engine {
                 }
             }
 
+            // Replace token measurements, wholesale like tags and annotations:
+            // the payload's task object is authoritative about its own child
+            // rows. Each row passes the same closed-vocabulary gates
+            // `token.add` enforces, with `import_field` naming the task —
+            // carrying an unknown source/confidence verbatim would let one bad
+            // payload re-export the corruption to every downstream store (D16).
+            tx.execute("DELETE FROM token_usage WHERE task_id = ?1", params![id])?;
+            if let Some(measurements) = import_field(id, "tokens", opt_array(tv, "tokens"))? {
+                for m in measurements {
+                    import_keys(&format!("task {id}, "), "tokens[]", m, IMPORT_TOKEN_KEYS)?;
+                    let mid = import_field(id, "tokens[].id", opt_str_nonempty(m, "id"))?
+                        .unwrap_or_else(|| Uuid::now_v7().to_string());
+                    let tool = import_field(id, "tokens[].tool", req_str(m, "tool"))?;
+                    let source = import_field(id, "tokens[].source", req_str(m, "source"))?;
+                    import_field(
+                        id,
+                        "tokens[].source",
+                        crate::tokens::require_source(&source),
+                    )?;
+                    let confidence =
+                        import_field(id, "tokens[].confidence", req_str(m, "confidence"))?;
+                    import_field(
+                        id,
+                        "tokens[].confidence",
+                        crate::tokens::require_confidence(&confidence),
+                    )?;
+                    let model = import_field(id, "tokens[].model", opt_str_nonempty(m, "model"))?;
+                    let count = |key: &str| -> Result<i64, ApiError> {
+                        Ok(import_field(
+                            id,
+                            &format!("tokens[].{key}"),
+                            super::tokens::opt_token_count(m, key),
+                        )?
+                        .unwrap_or(0))
+                    };
+                    let mcreated =
+                        import_field(id, "tokens[].created", opt_str_nonempty(m, "created"))?
+                            .unwrap_or_else(now);
+                    // Plain INSERT, unlike the annotations upsert above: this
+                    // task's rows were just deleted, so a surviving row with
+                    // the same id means the payload reuses one measurement id
+                    // across tasks (or steals it from a task outside the
+                    // payload). An upsert would silently move the row to the
+                    // last claimant and the earlier task's spend would vanish
+                    // — refuse and name the id instead. No FTS index hangs off
+                    // token_usage, so the annotations' trigger reasoning does
+                    // not apply here.
+                    let taken: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM token_usage WHERE id = ?1)",
+                        params![mid],
+                        |r| r.get(0),
+                    )?;
+                    import_field(
+                        id,
+                        "tokens[].id",
+                        if taken {
+                            Err(ApiError::bad_request(format!(
+                                "measurement id {mid:?} appears more than once in the \
+                                 import (or belongs to a task outside it) — every \
+                                 tokens[].id must be unique"
+                            )))
+                        } else {
+                            Ok(())
+                        },
+                    )?;
+                    tx.execute(
+                        "INSERT INTO token_usage (id, task_id, tool, source, model, \
+                         input_tokens, output_tokens, cache_read_tokens, \
+                         cache_creation_tokens, confidence, created) \
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                        params![
+                            mid,
+                            id,
+                            tool,
+                            source,
+                            model,
+                            count("input_tokens")?,
+                            count("output_tokens")?,
+                            count("cache_read_tokens")?,
+                            count("cache_creation_tokens")?,
+                            confidence,
+                            mcreated
+                        ],
+                    )?;
+                }
+            }
+
             // Edges are deferred to pass 2: a payload may list a target *after*
             // its dependent, and the FOREIGN KEY would reject it here.
             tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
@@ -969,7 +1070,7 @@ mod tests {
         );
     }
 
-    /// `store_export` must read its nine statements from ONE snapshot: in WAL
+    /// `store_export` must read all of its statements from ONE snapshot: in WAL
     /// each statement otherwise takes its own, so a writer committing between
     /// them tears the document (tasks read before a `done`, annotations after).
     /// Structural, because the interleaving point is inside SQLite and rusqlite's

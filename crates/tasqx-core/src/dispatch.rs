@@ -62,14 +62,62 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ),
     ("task.list", &["filter", "sort", "limit", "fields"], false),
     ("task.get", &["ref"], false),
-    ("task.start", &["ref", "keep"], false),
+    // task.start/task.done also take the #12 correlation params: they are
+    // stored in the start/done event payloads, the durable per-occurrence
+    // record the async token-attribution engine reads later.
+    (
+        "task.start",
+        &[
+            "ref",
+            "keep",
+            "session_id",
+            "prompt_id",
+            "transcript_path",
+            "client",
+        ],
+        false,
+    ),
     ("task.stop", &["ref"], false),
-    ("task.done", &["ref"], false),
+    // task.done additionally takes the #13 self-report params: any present
+    // token count records one self-report measurement in the completing
+    // transaction, echoed in the done event payload.
+    (
+        "task.done",
+        &[
+            "ref",
+            "session_id",
+            "prompt_id",
+            "transcript_path",
+            "client",
+            "tool",
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+        ],
+        false,
+    ),
     ("task.modify", &["ref", "set", "expected_rev"], false),
     ("task.cancel", &["ref"], false),
     ("task.reopen", &["ref"], false),
     ("tag.add", &["ref", "tags"], false),
     ("annotation.add", &["ref", "body"], false),
+    (
+        "token.add",
+        &[
+            "ref",
+            "tool",
+            "source",
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "confidence",
+        ],
+        false,
+    ),
     ("dependency.add", &["ref", "depends_on"], false),
     ("dependency.remove", &["ref", "depends_on"], false),
     ("memory.add", &["title", "body", "source"], false),
@@ -169,6 +217,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "project.use" => engine.project_use(params),
         "project.archive" => engine.project_archive(params),
         "annotation.add" => engine.annotation_add(params),
+        "token.add" => engine.token_add(params),
         "dependency.add" => engine.dependency_add(params),
         "dependency.remove" => engine.dependency_remove(params),
         "memory.add" => engine.memory_add(params),
@@ -282,6 +331,7 @@ mod tests {
             include_str!("engine/relationships.rs"),
             include_str!("engine/reports.rs"),
             include_str!("engine/task.rs"),
+            include_str!("engine/tokens.rs"),
             include_str!("engine/transfer.rs"),
         ]
         .join("\n");

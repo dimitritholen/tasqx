@@ -106,6 +106,55 @@ fn ref_schema() -> Value {
     })
 }
 
+/// Add the #12 correlation properties to a lifecycle tool's schema.
+///
+/// One function, not two hand-typed copies, because `tasqx_start_timer` and
+/// `tasqx_complete_task` must describe the same four params identically
+/// (D30). They are deliberately agent-visible: the schema-equality test
+/// requires schema properties == PARAMS, and that is intended — an agent that
+/// knows its own session id or transcript path SHOULD pass them, and `client`
+/// is filled in server-side from the MCP handshake when omitted.
+fn with_correlation(mut schema: Value) -> Value {
+    let props = schema["properties"]
+        .as_object_mut()
+        .expect("tool schemas declare properties");
+    props.insert(
+        "session_id".to_string(),
+        json!({
+            "type": "string",
+            "description": "Correlation: your agent-session id, recorded on this task's \
+                event for later token attribution. Pass it if your runtime exposes one."
+        }),
+    );
+    props.insert(
+        "prompt_id".to_string(),
+        json!({
+            "type": "string",
+            "description": "Correlation: the id of the prompt/turn driving this call, \
+                recorded on this task's event for later token attribution."
+        }),
+    );
+    props.insert(
+        "transcript_path".to_string(),
+        json!({
+            "type": "string",
+            "description": "Correlation: absolute path to your session transcript/log \
+                file, recorded on this task's event so token usage can be attributed \
+                from it later."
+        }),
+    );
+    props.insert(
+        "client".to_string(),
+        json!({
+            "type": "string",
+            "description": "The calling tool as \"<name> <version>\". Filled in \
+                automatically from the MCP clientInfo handshake when omitted — only \
+                pass it to override that."
+        }),
+    );
+    schema
+}
+
 /// The full §7 tool surface. Each entry maps 1:1 onto a core dispatch method;
 /// the tool `arguments` object is passed straight through as the method params
 /// (argument names are identical to the core param names by design).
@@ -297,19 +346,58 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_complete_task",
             method: "task.done",
             write: true,
-            description: "Mark a task done. Returns any tasks newly unblocked by its completion.",
-            schema: json!({
+            description: "Mark a task done. Returns any tasks newly unblocked by its \
+                completion. Correlation params (session_id, prompt_id, transcript_path, \
+                client) are recorded on the completion event for token attribution. If \
+                you know the tokens this task cost, self-report them via the *_tokens \
+                params — any present count records a measurement.",
+            // The token-count fields carry no `minimum`: the numeric-minimum
+            // drift guard cannot probe a bound on a tool with required args,
+            // so the floor lives in the engine (opt_u64 refuses negatives)
+            // and the description says "0 or more".
+            schema: with_correlation(json!({
                 "type": "object",
-                "properties": { "ref": ref_schema() },
+                "properties": {
+                    "ref": ref_schema(),
+                    "tool": {
+                        "type": "string",
+                        "description": "Self-report: the AI tool that spent the tokens, \
+                            free-form (e.g. \"claude-code\"). Defaults to `client` when \
+                            token counts are present."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Self-report: the model that spent the tokens, \
+                            e.g. \"claude-fable-5\"."
+                    },
+                    "input_tokens": {
+                        "type": "integer",
+                        "description": "Self-reported input tokens this task cost (0 or more)."
+                    },
+                    "output_tokens": {
+                        "type": "integer",
+                        "description": "Self-reported output tokens this task cost (0 or more)."
+                    },
+                    "cache_read_tokens": {
+                        "type": "integer",
+                        "description": "Self-reported cache-read tokens this task cost (0 or more)."
+                    },
+                    "cache_creation_tokens": {
+                        "type": "integer",
+                        "description": "Self-reported cache-creation tokens this task cost (0 or more)."
+                    }
+                },
                 "required": ["ref"]
-            }),
+            })),
         },
         ToolSpec {
             name: "tasqx_start_timer",
             method: "task.start",
             write: true,
-            description: "Start the timer on a task (moves it to active).",
-            schema: json!({
+            description: "Start the timer on a task (moves it to active). Correlation \
+                params (session_id, prompt_id, transcript_path, client) are recorded on \
+                the start event for token attribution.",
+            schema: with_correlation(json!({
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
@@ -319,7 +407,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                     }
                 },
                 "required": ["ref"]
-            }),
+            })),
         },
         ToolSpec {
             name: "tasqx_stop_timer",
@@ -423,6 +511,13 @@ fn tool_specs() -> Vec<ToolSpec> {
 pub struct McpServer<'e> {
     engine: &'e Engine,
     scope: Scope,
+    /// `clientInfo` from the `initialize` handshake, kept so lifecycle calls
+    /// can be stamped with the calling tool (#12). `RefCell` rather than
+    /// `&mut self`: the stdio loop is single-threaded, and a signature change
+    /// would ripple through the CLI loop and every test call site for what is
+    /// one late-bound field of per-process session state — not state of
+    /// record, which stays in the store.
+    client_info: std::cell::RefCell<Option<Value>>,
 }
 
 impl<'e> McpServer<'e> {
@@ -431,7 +526,11 @@ impl<'e> McpServer<'e> {
     /// makes "a read-only process" a property of the process rather than of
     /// every individual handler remembering to check.
     pub fn new(engine: &'e Engine, scope: Scope) -> Self {
-        McpServer { engine, scope }
+        McpServer {
+            engine,
+            scope,
+            client_info: std::cell::RefCell::new(None),
+        }
     }
 
     /// The scope this session was created with.
@@ -472,6 +571,14 @@ impl<'e> McpServer<'e> {
     }
 
     fn initialize_result(&self, params: &Value) -> Value {
+        // #12: remember who is talking. clientInfo arrives exactly once, here,
+        // and each MCP client spawns its own `tasqx mcp serve` process, so the
+        // field is per-session by construction. It is injected into
+        // task.start/task.done calls below, never persisted on its own —
+        // per-task attribution belongs in those events, not in memory.
+        if let Some(info) = params.get("clientInfo") {
+            *self.client_info.borrow_mut() = Some(info.clone());
+        }
         // Negotiate: if the client asked for a revision we speak, echo it back;
         // otherwise report our own supported default (spec-compliant either way).
         let requested = params.get("protocolVersion").and_then(Value::as_str);
@@ -535,6 +642,23 @@ impl<'e> McpServer<'e> {
             }
         }
 
+        // #12, the expected_rev pattern again: lifecycle calls are stamped
+        // with the tool captured at initialize, so the start/done events name
+        // who did the work even when the agent passes nothing. A caller that
+        // supplies its own `client` is respected as-is — but an explicit
+        // `client: null` counts as absent, matching the engine's D32 read
+        // (clients that serialize unset optionals as null must not lose
+        // attribution).
+        if spec.method == "task.start" || spec.method == "task.done" {
+            if let Some(obj) = args.as_object_mut() {
+                if !obj.get("client").is_some_and(|v| !v.is_null()) {
+                    if let Some(label) = self.client_label() {
+                        obj.insert("client".to_string(), Value::String(label));
+                    }
+                }
+            }
+        }
+
         match dispatch(self.engine, spec.method, &args) {
             Ok(result) => tool_ok(&result),
             Err(e) => {
@@ -544,6 +668,22 @@ impl<'e> McpServer<'e> {
                     .unwrap_or_else(|| "internal".to_string());
                 tool_error(&code, e.message)
             }
+        }
+    }
+
+    /// The captured clientInfo as one display string, `"<name> <version>"`
+    /// (or just the name when the version is absent/empty). `None` until a
+    /// client introduces itself with a non-empty name — injecting an empty
+    /// string would trip the engine's D35 empty-string refusal.
+    fn client_label(&self) -> Option<String> {
+        let info = self.client_info.borrow();
+        let name = info.as_ref()?.get("name")?.as_str()?.trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+        match info.as_ref()?.get("version").and_then(Value::as_str) {
+            Some(v) if !v.trim().is_empty() => Some(format!("{name} {v}")),
+            _ => Some(name),
         }
     }
 

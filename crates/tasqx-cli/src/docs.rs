@@ -103,7 +103,7 @@ const VERBS: [(&str, &str, &str); 30] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 27] = [
+const METHODS: [(&str, &str, &str); 28] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -144,8 +144,9 @@ const METHODS: [(&str, &str, &str); 27] = [
     ),
     (
         "task.start",
-        "<code>ref</code>, <code>keep?</code>",
-        "The task, timer running.",
+        "<code>ref</code>, <code>keep?</code>, <code>session_id?</code>, \
+         <code>prompt_id?</code>, <code>transcript_path?</code>, <code>client?</code>",
+        "The task, timer running. Correlation params land in the start event.",
     ),
     (
         "task.stop",
@@ -154,8 +155,13 @@ const METHODS: [(&str, &str, &str); 27] = [
     ),
     (
         "task.done",
-        "<code>ref</code>",
-        "The task; plus the spawned next instance if recurring.",
+        "<code>ref</code>, <code>session_id?</code>, <code>prompt_id?</code>, \
+         <code>transcript_path?</code>, <code>client?</code>, <code>tool?</code>, \
+         <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
+         <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>",
+        "The task; plus the spawned next instance if recurring. Correlation params \
+         land in the done event; any present token count records a self-report \
+         measurement.",
     ),
     (
         "task.modify",
@@ -181,6 +187,14 @@ const METHODS: [(&str, &str, &str); 27] = [
         "annotation.add",
         "<code>ref</code>, <code>body</code>",
         "The annotation.",
+    ),
+    (
+        "token.add",
+        "<code>ref</code>, <code>tool</code>, <code>source</code>, <code>confidence</code>, \
+         <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
+         <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>",
+        "<code>{short_id, measurement}</code>. Records AI token spend; never bumps \
+         <code>_rev</code>.",
     ),
     (
         "dependency.add",
@@ -1722,12 +1736,12 @@ fn page_api() -> String {
     ));
     s.push_str(&snippet(
         "echo '{\"tasqx\":\"1\",\"id\":\"c1\",\"method\":\"core.capabilities\"}' | tasqx api",
-        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"dependency.add\",\"dependency.remove\",\"memory.add\",\"memory.search\",\"memory.remove\",\"memory.import\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"memory.add\":[\"title\",\"body\",\"source\"],\"memory.import\":[\"docs\"],\"memory.remove\":[\"id\"],\"memory.search\":[\"query\",\"limit\",\"scope\",\"raw\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\",\"projects\",\"default_project\",\"docs\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\"],\"task.stop\":[\"ref\"]}},\"tasqx\":\"1\"}",
+        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"token.add\",\"dependency.add\",\"dependency.remove\",\"memory.add\",\"memory.search\",\"memory.remove\",\"memory.import\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"memory.add\":[\"title\",\"body\",\"source\"],\"memory.import\":[\"docs\"],\"memory.remove\":[\"id\"],\"memory.search\":[\"query\",\"limit\",\"scope\",\"raw\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\",\"projects\",\"default_project\",\"docs\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\",\"tool\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\"],\"task.stop\":[\"ref\"],\"token.add\":[\"ref\",\"tool\",\"source\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\",\"confidence\"]}},\"tasqx\":\"1\"}",
     ));
 
     s.push_str(&h3("The methods"));
     s.push_str(&p(
-        "All twenty-seven — and this table is what the tests compare against \
+        "All twenty-eight — and this table is what the tests compare against \
          <code>core.capabilities</code>: the method names, and (D33) the Params column against its \
          <code>params</code> map, so it cannot describe a method — or a key — this build does not \
          have. A key not in the accepted set is refused, never ignored.",
@@ -1781,6 +1795,7 @@ fn page_api() -> String {
          \x20   \"release\"\n\
          \x20 ],\n\
          \x20 \"title\": \"Ship the v1 JSON API freeze\",\n\
+         \x20 \"tokens\": [],\n\
          \x20 \"urgency\": 17.5,\n\
          \x20 \"wait\": null\n\
          }",

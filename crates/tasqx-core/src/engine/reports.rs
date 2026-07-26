@@ -80,6 +80,13 @@ impl Engine {
             est_secs: i64,
             tracked_secs: i64,
             overdue: i64,
+            // The four token buckets stay separate all the way through (research
+            // rule #5: cache tokens cost a fraction, so a blended total would
+            // lie); `tokens_total` is derived from them only at emit time.
+            tokens_in: i64,
+            tokens_out: i64,
+            tokens_cache_read: i64,
+            tokens_cache_creation: i64,
         }
         let mut groups: BTreeMap<String, Agg> = BTreeMap::new();
 
@@ -126,6 +133,10 @@ impl Engine {
                 est_secs: 0,
                 tracked_secs: 0,
                 overdue: 0,
+                tokens_in: 0,
+                tokens_out: 0,
+                tokens_cache_read: 0,
+                tokens_cache_creation: 0,
             });
             agg.count += 1;
             // Saturating: a single estimate is bounded by `duration_secs`, but a
@@ -135,6 +146,22 @@ impl Engine {
                 agg.est_secs = agg.est_secs.saturating_add(e);
             }
             agg.tracked_secs = agg.tracked_secs.saturating_add(t.tracked_seconds);
+            // A task carries many measurements (#11); its contribution to the
+            // group is the sum of the four buckets across them. Saturating for
+            // the same reason as the duration roll-ups above. Scope is already
+            // handled: this runs only for tasks that survived the D24 skip and
+            // the filter, so cancelled work stays out unless `all:true`.
+            for m in &snapshot.tokens {
+                let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
+                agg.tokens_in = agg.tokens_in.saturating_add(bucket("input_tokens"));
+                agg.tokens_out = agg.tokens_out.saturating_add(bucket("output_tokens"));
+                agg.tokens_cache_read = agg
+                    .tokens_cache_read
+                    .saturating_add(bucket("cache_read_tokens"));
+                agg.tokens_cache_creation = agg
+                    .tokens_cache_creation
+                    .saturating_add(bucket("cache_creation_tokens"));
+            }
             if t.status.is_open() {
                 if let (Some(due), Some(n)) = (t.due.as_deref().and_then(parse_ts), now_ts) {
                     if due < n {
@@ -163,6 +190,29 @@ impl Engine {
                     }
                     "overdue" => {
                         obj.insert("overdue".into(), json!(agg.overdue));
+                    }
+                    "tokens_in" => {
+                        obj.insert("tokens_in".into(), json!(agg.tokens_in));
+                    }
+                    "tokens_out" => {
+                        obj.insert("tokens_out".into(), json!(agg.tokens_out));
+                    }
+                    "tokens_cache_read" => {
+                        obj.insert("tokens_cache_read".into(), json!(agg.tokens_cache_read));
+                    }
+                    "tokens_cache_creation" => {
+                        obj.insert(
+                            "tokens_cache_creation".into(),
+                            json!(agg.tokens_cache_creation),
+                        );
+                    }
+                    "tokens_total" => {
+                        let total = agg
+                            .tokens_in
+                            .saturating_add(agg.tokens_out)
+                            .saturating_add(agg.tokens_cache_read)
+                            .saturating_add(agg.tokens_cache_creation);
+                        obj.insert("tokens_total".into(), json!(total));
                     }
                     _ => {}
                 }

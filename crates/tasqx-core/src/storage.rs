@@ -143,6 +143,51 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         );
         CREATE INDEX IF NOT EXISTS idx_annotations_task ON annotations(task_id);
 
+        -- AI token measurements, many per task (docs/research/token-accounting.md).
+        -- Four separate counts by design — cache tokens cost a fraction of fresh
+        -- ones, so a blended total destroys what a cost report needs. `tool` is
+        -- free-form (new agents appear faster than releases); `source` and
+        -- `confidence` are the closed vocabularies in `crate::tokens`, enforced
+        -- at every write door. `extra` is reserved for per-tool oddities the
+        -- later parser phases may need to carry (nothing writes it yet).
+        CREATE TABLE IF NOT EXISTS token_usage (
+            id                    TEXT PRIMARY KEY,
+            task_id               TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            tool                  TEXT NOT NULL,
+            source                TEXT NOT NULL,
+            model                 TEXT,
+            input_tokens          INTEGER NOT NULL DEFAULT 0,
+            output_tokens         INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            extra                 TEXT,
+            confidence            TEXT NOT NULL,
+            created               TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_token_usage_task ON token_usage(task_id);
+
+        -- Raw per-request OTLP samples buffered by the opt-in local receiver
+        -- (#18, docs/research/token-accounting.md). Deliberately NOT joined to a
+        -- task: these arrive over telemetry *before* any attribution and are
+        -- matched to a task later by `session_id` + time window, so there is no
+        -- `task_id` and no foreign key. `session_id` is nullable because a tool
+        -- may emit a record without one. Bounded retention is enforced by the
+        -- writer (`Engine::otlp_ingest`), not the schema.
+        CREATE TABLE IF NOT EXISTS otlp_samples (
+            id                    TEXT PRIMARY KEY,
+            session_id            TEXT,
+            tool                  TEXT NOT NULL,
+            ts                    TEXT NOT NULL,
+            model                 TEXT,
+            input_tokens          INTEGER NOT NULL DEFAULT 0,
+            output_tokens         INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            created               TEXT NOT NULL
+        );
+        -- Attribution looks samples up by the completing task's session id.
+        CREATE INDEX IF NOT EXISTS idx_otlp_samples_session ON otlp_samples(session_id);
+
         CREATE TABLE IF NOT EXISTS events (
             id        TEXT PRIMARY KEY,
             entity    TEXT NOT NULL,
@@ -837,5 +882,122 @@ mod tests {
             .collect();
         assert_eq!(tags, vec!["work".to_string()], "the tag row is reused");
         assert_eq!(task_tags(&conn, "task-2").unwrap(), vec!["work".to_string()]);
+    }
+
+    /// A store created before token accounting has no `token_usage` table, and
+    /// `CREATE TABLE IF NOT EXISTS` is the whole migration for a brand-new
+    /// table. This seeds the legacy shape directly (the same recipe as the
+    /// dependency-FK test above), proves the upgrade creates the table with a
+    /// LIVE foreign key and its task index, and proves a second migrate is a
+    /// no-op that keeps existing measurement rows.
+    #[test]
+    fn migration_creates_the_token_usage_table_on_a_legacy_store() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        // Hand-build a pre-token-accounting store: tasks exist, token_usage
+        // does not.
+        conn.execute_batch(
+            "CREATE TABLE tasks (id TEXT PRIMARY KEY, short_id INTEGER NOT NULL UNIQUE, \
+               title TEXT NOT NULL, status TEXT NOT NULL, priority TEXT, project TEXT, \
+               due TEXT, scheduled TEXT, wait TEXT, estimate TEXT, recurrence TEXT, \
+               urgency REAL NOT NULL DEFAULT 0, active_since TEXT, \
+               tracked_seconds INTEGER NOT NULL DEFAULT 0, rev INTEGER NOT NULL DEFAULT 0, \
+               created TEXT NOT NULL, modified TEXT NOT NULL, completed TEXT);
+             INSERT INTO tasks (id, short_id, title, status, created, modified)
+                VALUES ('a', 1, 'carrier', 'pending', 't', 't');",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let table_count = |name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(table_count("token_usage"), 1, "the table must exist");
+        assert_eq!(table_count("idx_token_usage_task"), 1, "and its index");
+
+        // The FOREIGN KEY is live, not merely declared: a measurement against
+        // a task that is not there must be refused by SQLite itself.
+        conn.execute(
+            "INSERT INTO token_usage (id, task_id, tool, source, confidence, created) \
+             VALUES ('m1', 'a', 'claude-code', 'self-report', 'medium', 't')",
+            [],
+        )
+        .unwrap();
+        let err = conn.execute(
+            "INSERT INTO token_usage (id, task_id, tool, source, confidence, created) \
+             VALUES ('m2', 'gone', 'claude-code', 'self-report', 'medium', 't')",
+            [],
+        );
+        assert!(err.is_err(), "a dangling task_id must be rejected");
+
+        // Idempotent, and it does not eat data: a second migrate keeps the row.
+        migrate(&conn).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM token_usage", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "a re-run migration must not touch measurements");
+    }
+
+    /// A store created before the OTLP receiver (#18) has no `otlp_samples`
+    /// table; `CREATE TABLE IF NOT EXISTS` is the whole migration for it. Model a
+    /// pre-#18 store as an otherwise-current one with exactly that table dropped,
+    /// prove the upgrade re-creates the table + its session index, and prove a
+    /// second migrate is a no-op that keeps buffered rows.
+    #[test]
+    fn migration_creates_the_otlp_samples_table_on_a_legacy_store() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        let object_count = |name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        // Simulate a pre-#18 store: drop exactly the table this migration adds
+        // (dropping the table drops its index with it).
+        conn.execute_batch("DROP TABLE otlp_samples;").unwrap();
+        assert_eq!(
+            object_count("otlp_samples"),
+            0,
+            "precondition: table absent"
+        );
+
+        // The upgrade re-creates the table and its session index.
+        migrate(&conn).unwrap();
+        assert_eq!(object_count("otlp_samples"), 1, "the table must exist");
+        assert_eq!(
+            object_count("idx_otlp_samples_session"),
+            1,
+            "and its session index"
+        );
+
+        // A buffered row (no task foreign key: raw telemetry, not attributed).
+        conn.execute(
+            "INSERT INTO otlp_samples (id, session_id, tool, ts, created) \
+             VALUES ('s1', 'sess-x', 'claude_code', 't', 't')",
+            [],
+        )
+        .unwrap();
+
+        // Idempotent, and it does not eat data: a second migrate keeps the row.
+        migrate(&conn).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM otlp_samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            rows, 1,
+            "a re-run migration must not touch buffered samples"
+        );
     }
 }

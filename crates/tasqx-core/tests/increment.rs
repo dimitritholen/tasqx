@@ -554,6 +554,103 @@ fn report_summary_aggregates_count_est_and_overdue() {
     assert_eq!(q["overdue"], 0);
 }
 
+/// Attach one token measurement to a task via `token.add`. Source/confidence
+/// come from the closed vocabularies; the four bucket counts are the payload.
+fn add_tokens(e: &Engine, r: &str, input: i64, output: i64, cache_read: i64, cache_creation: i64) {
+    e.token_add(&json!({
+        "ref": r,
+        "tool": "claude-code",
+        "source": "self-report",
+        "confidence": "high",
+        "input_tokens": input,
+        "output_tokens": output,
+        "cache_read_tokens": cache_read,
+        "cache_creation_tokens": cache_creation,
+    }))
+    .unwrap();
+}
+
+/// #19: a group's token metrics are the sum of the four buckets across every
+/// measurement of every task in the group — many measurements per task, many
+/// tasks per group — and `tokens_total` is their combined total. Emitted as
+/// JSON integers, never ISO durations (that type is frozen from day one).
+#[test]
+fn report_summary_sums_token_measurements_per_group() {
+    let e = engine();
+    e.project_create(&json!({ "name": "P" })).unwrap(); // D23
+    e.task_add(&json!({ "title": "a", "project": "P" }))
+        .unwrap(); // ref 1
+    e.task_add(&json!({ "title": "b", "project": "P" }))
+        .unwrap(); // ref 2
+                   // Task 1 has two measurements, task 2 has one: the roll-up must cross both
+                   // the per-task and the per-group boundary.
+    add_tokens(&e, "1", 100, 10, 5, 1);
+    add_tokens(&e, "1", 200, 20, 0, 2);
+    add_tokens(&e, "2", 300, 30, 7, 0);
+
+    let g = report(
+        &e,
+        json!({
+            "group_by": "project",
+            "metrics": [
+                "tokens_in", "tokens_out", "tokens_cache_read",
+                "tokens_cache_creation", "tokens_total"
+            ]
+        }),
+    );
+    assert_eq!(g["tokens_in"], 600); // 100 + 200 + 300
+    assert_eq!(g["tokens_out"], 60); // 10 + 20 + 30
+    assert_eq!(g["tokens_cache_read"], 12); // 5 + 0 + 7
+    assert_eq!(g["tokens_cache_creation"], 3); // 1 + 2 + 0
+    assert_eq!(g["tokens_total"], 675); // 600 + 60 + 12 + 3
+                                        // The JSON type is an integer, not a string — the type contract, not a value
+                                        // spot-check, is what breaks a client if it ever regresses to iso_duration.
+    for m in [
+        "tokens_in",
+        "tokens_out",
+        "tokens_cache_read",
+        "tokens_cache_creation",
+        "tokens_total",
+    ] {
+        assert!(g[m].is_i64(), "{m} must be a JSON integer, got {}", g[m]);
+    }
+}
+
+/// #19 + D24: token measurements attributed to a cancelled task were still
+/// genuinely spent, but a report is an aggregation, so they must not inflate the
+/// default roll-up any more than the task's own count does. `all:true` is the
+/// one way to see abandoned spend.
+#[test]
+fn report_summary_token_metrics_follow_the_d24_cancelled_scope() {
+    let e = engine();
+    e.project_create(&json!({ "name": "P" })).unwrap(); // D23
+    e.task_add(&json!({ "title": "keep", "project": "P" }))
+        .unwrap(); // ref 1
+    e.task_add(&json!({ "title": "drop", "project": "P" }))
+        .unwrap(); // ref 2
+    add_tokens(&e, "1", 100, 0, 0, 0);
+    add_tokens(&e, "2", 500, 0, 0, 0); // spent, then abandoned
+    e.task_cancel(&json!({ "ref": "2" })).unwrap();
+
+    let g = report(
+        &e,
+        json!({ "group_by": "project", "metrics": ["tokens_total"] }),
+    );
+    assert_eq!(
+        g["tokens_total"], 100,
+        "cancelled work's tokens must stay out of the default roll-up (D24)"
+    );
+
+    let g = report(
+        &e,
+        json!({ "group_by": "project", "all": true, "metrics": ["tokens_total"] }),
+    );
+    assert_eq!(
+        g["tokens_total"], 600,
+        "all:true reveals the cancelled task's spend"
+    );
+}
+
 // ---- D24: report aggregations exclude cancelled by default -------------------
 
 /// Seed one project `P` with one task per interesting status, each carrying a
@@ -3416,6 +3513,13 @@ fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
     let sid = t["short_id"].clone();
     e.annotation_add(&json!({ "ref": sid, "body": "note" }))
         .unwrap();
+    // `tokens` is emitted only when a task has measurements (the
+    // status_unrecognized rule), so the maximal fixture needs one.
+    e.token_add(&json!({
+        "ref": sid, "tool": "claude-code", "source": "log-parse",
+        "model": "claude-fable-5", "input_tokens": 1, "confidence": "high"
+    }))
+    .unwrap();
     e.task_done(&json!({ "ref": sid })).unwrap();
 
     let exported = e.store_export(&json!({})).unwrap()["tasks"][0].clone();
@@ -3462,6 +3566,19 @@ fn the_import_key_table_matches_the_keys_an_export_actually_emits() {
         ann_declared,
         keys(&exported["annotations"][0]),
         "IMPORT_ANNOTATION_KEYS drifted"
+    );
+
+    // Same contract one child table over. `extra` is deliberately outside the
+    // gate until something writes it (see IMPORT_TOKEN_KEYS), so this stays an
+    // equality against what an export actually emits.
+    let tok_declared: BTreeSet<String> = tasqx_core::engine::IMPORT_TOKEN_KEYS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        tok_declared,
+        keys(&exported["tokens"][0]),
+        "IMPORT_TOKEN_KEYS drifted"
     );
 }
 
