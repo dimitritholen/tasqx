@@ -56,6 +56,7 @@
 // matters, while a local `cargo check` mid-refactor still compiles.
 #![warn(missing_docs)]
 
+pub mod attribution;
 pub mod daemon;
 pub mod datetime;
 pub mod dispatch;
@@ -64,10 +65,12 @@ pub mod error;
 pub mod filter;
 pub mod mcp;
 pub mod notify;
+pub mod otlp;
 pub mod recur;
 pub mod remind;
 pub mod scheduler;
 pub mod storage;
+pub mod tokens;
 pub mod types;
 pub mod urgency;
 pub mod util;

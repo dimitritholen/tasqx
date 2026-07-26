@@ -30,6 +30,15 @@ pub(super) struct SnapshotParts {
     depends_on: bool,
     /// Each task's annotations, as the exported `[{id, body, created}]`.
     annotations: bool,
+    /// Each task's token measurements, as the exported `[{id, tool, …}]`.
+    ///
+    /// Gated for the same reason `annotations` is, and it is the same cost
+    /// shape: `token_usage` grows with every attributed turn while the page a
+    /// caller asked for does not, and `TASK_FIELDS` has no key sourced from it,
+    /// so `task.list` built one `serde_json` object per measurement in the
+    /// store and dropped the lot. Both readers that ask for the whole relation
+    /// — `store.export` and `report.summary` — do consume it.
+    tokens: bool,
 }
 
 impl SnapshotParts {
@@ -40,19 +49,25 @@ impl SnapshotParts {
     pub(super) const FILTERS_ONLY: Self = Self {
         depends_on: false,
         annotations: false,
+        tokens: false,
     };
 
-    /// The whole task relation — `store.export`, which emits both gated parts.
+    /// The whole task relation — `store.export` and `report.summary`, which
+    /// between them emit every gated part.
     pub(super) const EVERYTHING: Self = Self {
         depends_on: true,
         annotations: true,
+        tokens: true,
     };
 
     /// How many statements a load with these parts runs. Kept next to the
     /// gates themselves so adding a part cannot silently leave the O(1)
     /// statement contract unpinned.
     pub(super) const fn statement_count(self) -> usize {
-        Self::BASE_STATEMENTS + self.depends_on as usize + self.annotations as usize
+        Self::BASE_STATEMENTS
+            + self.depends_on as usize
+            + self.annotations as usize
+            + self.tokens as usize
     }
 }
 
@@ -277,13 +292,12 @@ impl Engine {
             "UPDATE tasks SET status='active', active_since=?1, rev=?2, modified=?3 WHERE id=?4",
             params![ts, task.rev + 1, ts, task.id],
         )?;
-        insert_event(
-            &tx,
-            Entity::Task,
-            &task.id,
-            "start",
-            &json!({ "interval_started": ts }),
-        )?;
+        // #12: the start event is the durable half of the correlation record —
+        // the attribution engine later pairs it with the done event to know
+        // which session/transcript covered this interval.
+        let mut start_payload = json!({ "interval_started": ts });
+        command.correlation.apply(&mut start_payload);
+        insert_event(&tx, Entity::Task, &task.id, "start", &start_payload)?;
         tx.commit()?;
 
         Ok(commands::TaskStarted {
@@ -344,6 +358,11 @@ impl Engine {
     /// become unblocked — both consequences of the same commit, so history and
     /// state cannot disagree about them.
     pub fn task_done(&self, p: &Value) -> Result<Value, ApiError> {
+        // Pure params first (#12/#13): correlation metadata and any
+        // self-reported token usage are validated before the write lock,
+        // exactly like every other parse-then-lock mutation.
+        let correlation = commands::parse_correlation(p)?;
+        let usage = commands::parse_self_report(p)?.into_usage(&correlation)?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
@@ -373,13 +392,20 @@ impl Engine {
              tracked_seconds=?2, rev=?3, modified=?4 WHERE id=?5",
             params![ts, total, task.rev + 1, ts, task.id],
         )?;
-        insert_event(
-            &tx,
-            Entity::Task,
-            &task.id,
-            "done",
-            &json!({ "completed": ts }),
-        )?;
+        // #12: the done event carries the correlation record for this
+        // completion — see `commands::Correlation` for why it lives in the
+        // event payload rather than on the task row.
+        let mut done_payload = json!({ "completed": ts });
+        correlation.apply(&mut done_payload);
+        // #13: a self-report is one measurement row in the SAME transaction,
+        // echoed in this done event's payload — NOT a second `token.add`
+        // event, because one mutation writes exactly one event (the invariant
+        // tests/engine.rs pins), and the completion is the occurrence the
+        // measurement belongs to.
+        if let Some(u) = &usage {
+            done_payload["tokens"] = tokens::record_token_usage(&tx, &task.id, u)?;
+        }
+        insert_event(&tx, Entity::Task, &task.id, "done", &done_payload)?;
 
         // Spawn the next recurring instance in the SAME transaction: if this
         // fails, the whole completion rolls back — no orphan spawn, no event.
@@ -924,6 +950,29 @@ impl Engine {
             }
         }
 
+        // Same gate, same reason as annotations above: `token_usage` is written
+        // once per attributed turn and never pruned, so an ungated read here
+        // put the growth of the telemetry log on the critical path of every
+        // `tasqx list` — the exact cost this whole type exists to keep off it.
+        let mut token_rows: HashMap<String, Vec<Value>> = HashMap::new();
+        if parts.tokens {
+            statements += 1;
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT task_id, {} FROM token_usage ORDER BY task_id, created, id",
+                tokens::TOKEN_COLS
+            ))?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    tokens::measurement_from_row(row, 1)?,
+                ))
+            })?;
+            for row in rows {
+                let (task_id, measurement) = row?;
+                token_rows.entry(task_id).or_default().push(measurement);
+            }
+        }
+
         let snapshots = tasks
             .into_iter()
             .map(|task| {
@@ -933,6 +982,7 @@ impl Engine {
                     blocked: blocked.contains(id),
                     depends_on: dependencies.remove(id).unwrap_or_default(),
                     annotations: annotations.remove(id).unwrap_or_default(),
+                    tokens: token_rows.remove(id).unwrap_or_default(),
                     task,
                 }
             })
@@ -1122,6 +1172,7 @@ impl Engine {
         ));
         obj["depends_on"] = json!(self.depends_on_short_ids(&task.id)?);
         obj["annotations"] = json!(self.annotations_of(&task.id)?);
+        obj["tokens"] = json!(self.tokens_of(&task.id)?);
         obj["blocked"] = json!(self.is_blocked(&task.id)?);
         Ok(obj)
     }
@@ -1224,8 +1275,11 @@ impl Engine {
 mod tests {
     use super::*;
 
-    /// Two tasks — #2 blocked by #1 — plus one annotation and one tag, so every
-    /// side table the bulk loader can read has at least one row to find.
+    /// Two tasks — #2 blocked by #1 — plus one annotation and one tag. It seeds
+    /// no `token_usage` row: the third gated side table is covered by
+    /// `report_summary_sums_token_measurements_per_group` (tests/increment.rs)
+    /// and by the `EVERYTHING.statement_count() == SNAPSHOT_QUERY_COUNT` const
+    /// assert above, not from here.
     fn seeded() -> Engine {
         let e = Engine::open_in_memory().unwrap();
         e.task_add(&json!({ "title": "blocker", "tags": ["shared"] }))
@@ -1258,11 +1312,29 @@ mod tests {
     }
 
     #[test]
+    fn task_list_never_touches_the_token_usage_table() {
+        let e = seeded();
+        // The same proof as for annotations, for the gate added when token
+        // accounting merged — and the stake is higher: `token_usage` gains a
+        // row per attributed turn and is never pruned, so a `tasqx list` that
+        // scanned it would get slower with every agent turn ever recorded.
+        // `seeded()` deliberately writes no measurement, so counting rows here
+        // would pass on a broken gate; dropping the table makes the read
+        // impossible instead of merely cheap.
+        e.conn().execute_batch("DROP TABLE token_usage").unwrap();
+
+        let out = e.task_list(&json!({ "sort": ["short_id"] })).unwrap();
+        assert_eq!(out["count"], 2);
+    }
+
+    #[test]
     fn snapshot_parts_gate_the_optional_side_tables() {
         let e = seeded();
 
-        // Filter-only: tasks + tags + blocked, three statements, and the two
-        // gated collections come back empty rather than half-populated.
+        // Filter-only: tasks + tags + blocked, three statements, and the gated
+        // collections come back empty rather than half-populated. Three gates
+        // exist (`depends_on`, `annotations`, `tokens`); the two seeded here
+        // are the two asserted below.
         let (narrow, statements) = e
             .load_task_snapshots_counted_for(SnapshotParts::FILTERS_ONLY)
             .unwrap();
@@ -1274,7 +1346,8 @@ mod tests {
         assert!(narrow.iter().all(|s| s.tags == ["shared"]));
         assert_eq!(narrow.iter().filter(|s| s.blocked).count(), 1);
 
-        // Everything: the two extra statements run and their rows arrive.
+        // Everything: all three gated statements run (hence
+        // `SNAPSHOT_QUERY_COUNT`, not `3 + 2`) and the seeded rows arrive.
         let (full, statements) = e.load_task_snapshots_counted().unwrap();
         assert_eq!(statements, SNAPSHOT_QUERY_COUNT);
         assert_eq!(full.iter().filter(|s| !s.depends_on.is_empty()).count(), 1);

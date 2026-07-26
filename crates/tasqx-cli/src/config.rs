@@ -33,6 +33,10 @@ pub enum Home {
 pub enum Kind {
     Str,
     Bool,
+    /// An unsigned integer in the TCP-port range `1..=65535`. Introduced for
+    /// `otlp.port` (#18); a value outside the range is a type mismatch and falls
+    /// to the default, exactly like a bool written as a quoted string.
+    Uint,
 }
 
 /// Which layer supplied the value a user is looking at. Reported by
@@ -128,6 +132,38 @@ pub const SETTINGS: &[Setting] = &[
         summary: "Allow the daemon to raise native OS notifications for reminders.",
     },
     Setting {
+        key: "tokens.enabled",
+        home: Home::Toml,
+        kind: Kind::Bool,
+        default: "false",
+        env: None,
+        flag: None,
+        choices: Choices::Free,
+        summary:
+            "Allow the daemon to attribute AI token usage by parsing local tool transcripts (#17).",
+    },
+    Setting {
+        key: "otlp.enabled",
+        home: Home::Toml,
+        kind: Kind::Bool,
+        default: "false",
+        env: None,
+        flag: None,
+        choices: Choices::Free,
+        summary:
+            "Run a local OTLP/HTTP receiver in the daemon to ingest token telemetry from AI tools (#18).",
+    },
+    Setting {
+        key: "otlp.port",
+        home: Home::Toml,
+        kind: Kind::Uint,
+        default: "4318",
+        env: None,
+        flag: None,
+        choices: Choices::Free,
+        summary: "TCP port the OTLP receiver binds on 127.0.0.1 (OTLP/HTTP convention: 4318).",
+    },
+    Setting {
         key: "default_project",
         home: Home::Store,
         kind: Kind::Str,
@@ -207,6 +243,10 @@ fn coerce(kind: Kind, v: toml::Value) -> Option<String> {
     match (kind, v) {
         (Kind::Str, toml::Value::String(x)) => Some(x),
         (Kind::Bool, toml::Value::Boolean(b)) => Some(b.to_string()),
+        // A port is a TOML integer within the valid range; anything else (a
+        // string "4318", or an out-of-range number) is not a value and falls to
+        // the default.
+        (Kind::Uint, toml::Value::Integer(n)) if is_valid_port(n) => Some(n.to_string()),
         // A value of the wrong type is not a value. It falls through to the
         // default, exactly as it did before the registry existed: the old
         // reader used `toml::Value::as_bool`, so `enabled = "true"` (a quoted
@@ -259,8 +299,16 @@ impl Kind {
         match self {
             Kind::Str => "string",
             Kind::Bool => "boolean",
+            Kind::Uint => "integer",
         }
     }
+}
+
+/// A TCP port a listener can actually bind: `1..=65535` (0 asks the OS to pick
+/// one, which is never what a fixed telemetry endpoint wants). Shared by the
+/// silent coercion and the `config set` validator so both agree.
+fn is_valid_port(n: i64) -> bool {
+    (1..=65535).contains(&n)
 }
 
 /// The file names a key, but with a value of a type the setting does not
@@ -496,6 +544,15 @@ pub fn write_value_in(
             _ => {
                 return Err(ApiError::bad_request(format!(
                     "{} takes true or false, got {value:?}",
+                    s.key
+                )))
+            }
+        },
+        Kind::Uint => match value.parse::<i64>() {
+            Ok(n) if is_valid_port(n) => n.into(),
+            _ => {
+                return Err(ApiError::bad_request(format!(
+                    "{} takes a port in 1..=65535, got {value:?}",
                     s.key
                 )))
             }

@@ -14,6 +14,7 @@ mod projects;
 mod relationships;
 mod reports;
 mod task;
+mod tokens;
 mod transfer;
 
 pub use memory::MEMORY_SCOPES;
@@ -63,7 +64,21 @@ pub const SUMMARY_GROUP_BY: [&str; 3] = ["project", "status", "priority"];
 /// Source of truth for the same reason as [`SUMMARY_GROUP_BY`]: the MCP schema's
 /// `enum` is built from this, and a test drives every entry through the engine
 /// to prove the name still produces a field.
-pub const SUMMARY_METRICS: [&str; 4] = ["count", "est_total", "overdue", "tracked_total"];
+///
+/// The `tokens_*` metrics roll up the per-task token measurements (#11) and are
+/// emitted as JSON integers, never ISO durations: a token count is a cardinal
+/// number, and the JSON type of a metric is frozen from its first release.
+pub const SUMMARY_METRICS: [&str; 9] = [
+    "count",
+    "est_total",
+    "overdue",
+    "tracked_total",
+    "tokens_in",
+    "tokens_out",
+    "tokens_cache_read",
+    "tokens_cache_creation",
+    "tokens_total",
+];
 
 /// The keys `task.list` can sort by. A `-` prefix on any of them sorts
 /// descending; the default when `sort` is omitted is `-urgency`.
@@ -152,7 +167,7 @@ impl MutationContext<'_> {
     }
 }
 
-const SNAPSHOT_QUERY_COUNT: usize = 5;
+const SNAPSHOT_QUERY_COUNT: usize = 6;
 
 struct TaskSnapshot {
     task: Task,
@@ -160,6 +175,10 @@ struct TaskSnapshot {
     blocked: bool,
     depends_on: Vec<String>,
     annotations: Vec<Value>,
+    /// Token measurements in the canonical object shape, oldest first. Loaded
+    /// set-based like every other side table — a per-task point query here is
+    /// the N+1 the statement-count test exists to forbid.
+    tokens: Vec<Value>,
 }
 
 impl Engine {
@@ -573,6 +592,7 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     "remind",
     "depends_on",
     "annotations",
+    "tokens",
     "urgency",
     "created",
     "modified",
@@ -591,6 +611,25 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
 
 /// Every key an exported annotation object can carry. D34.
 pub const IMPORT_ANNOTATION_KEYS: &[&str] = &["id", "body", "created"];
+
+/// Every key an exported token measurement object can carry. D34.
+///
+/// Deliberately NOT `extra`: the column is reserved for later parser phases,
+/// nothing writes it yet, so no export can emit it — and the day something
+/// does, this gate makes forgetting the import half a loud failure instead of
+/// a silently dropped field.
+pub const IMPORT_TOKEN_KEYS: &[&str] = &[
+    "id",
+    "tool",
+    "source",
+    "model",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "confidence",
+    "created",
+];
 
 /// Every key an exported memory doc object can carry. D41, held to D34's gate.
 pub const IMPORT_DOC_KEYS: &[&str] = &["id", "source", "title", "body", "created", "modified"];
@@ -1011,6 +1050,7 @@ mod tests {
             include_str!("engine/relationships.rs"),
             include_str!("engine/reports.rs"),
             include_str!("engine/task.rs"),
+            include_str!("engine/tokens.rs"),
             include_str!("engine/transfer.rs"),
         ]
         .join("\n");
@@ -1034,6 +1074,8 @@ mod tests {
             "memory_import",
             "store_import",
             "reminder_fire",
+            "token_add",
+            "token_attribute",
         ];
 
         for handler in handlers {

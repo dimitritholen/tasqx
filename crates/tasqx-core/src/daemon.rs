@@ -59,10 +59,12 @@ use interprocess::local_socket::{
     Listener, ListenerNonblockingMode, ListenerOptions, RecvHalf, SendHalf, Stream,
 };
 
+use crate::attribution;
 use crate::dispatch::handle_envelope;
 use crate::engine::Engine;
 use crate::error::ApiError;
 use crate::notify::{LogNotifier, Notifier};
+use crate::otlp;
 use crate::scheduler::{self, ReminderScheduler};
 
 /// Poll interval for detecting external (out-of-daemon) writes.
@@ -71,6 +73,12 @@ const POLL_MS: u64 = 400;
 /// Reminder scheduler tick. Reminders are human-scale, so ~200 ms of latency is
 /// imperceptible while keeping the idle thread essentially free.
 const REMINDER_TICK_MS: u64 = 200;
+
+/// Token-attribution tick (#17). Attribution is post-hoc bookkeeping, not
+/// interactive, so a slower cadence than reminders keeps the idle thread cheap;
+/// a transient failure (a transcript that has not flushed yet) simply retries on
+/// the next tick.
+const ATTRIBUTION_TICK_MS: u64 = 500;
 
 /// Per-connection outbound queue depth. Responses *and* event pushes share this
 /// bounded channel, so a subscriber that stops reading its socket can never make
@@ -552,18 +560,73 @@ fn pump(sh: &Shared) -> Result<(), ApiError> {
 /// and neither should ever grow an OS-notification dependency. A caller that
 /// wants native toasts opts in explicitly via [`serve_with_notifier`].
 pub fn serve(engine: Engine, socket: &str, shutdown: Arc<AtomicBool>) -> io::Result<()> {
-    serve_with_notifier(engine, socket, shutdown, Arc::new(LogNotifier))
+    serve_with_options(engine, socket, shutdown, DaemonOptions::default())
 }
 
-/// [`serve`], with the reminder [`Notifier`] injected — the seam the CLI uses to
-/// honour `[notify] enabled` (§9) and tests use to observe delivery without an
-/// OS transport.
+/// [`serve`], with the reminder [`Notifier`] injected — the seam the CLI used to
+/// call to honour `[notify] enabled` (§9) and tests use to observe delivery
+/// without an OS transport. Retained as a thin wrapper over
+/// [`serve_with_options`]; token attribution stays off on this path.
 pub fn serve_with_notifier(
     engine: Engine,
     socket: &str,
     shutdown: Arc<AtomicBool>,
     notifier: Arc<dyn Notifier>,
 ) -> io::Result<()> {
+    serve_with_options(
+        engine,
+        socket,
+        shutdown,
+        DaemonOptions {
+            notifier,
+            tokens_enabled: false,
+            otlp_port: None,
+        },
+    )
+}
+
+/// Optional daemon behaviours bundled into one struct so the entry point keeps a
+/// stable arity as features are added (#17 token attribution, #18 OTLP): the
+/// alternative — a positional argument or yet another `serve_with_*` variant per
+/// feature — is exactly the churn this avoids.
+pub struct DaemonOptions {
+    /// Reminder notification transport (§9). Defaults to the always-safe log
+    /// backend so tests and CI never grow an OS-notification dependency.
+    pub notifier: Arc<dyn Notifier>,
+    /// Spawn the async token-attribution thread (#17). Off by default
+    /// (DESIGN §10): the daemon parses AI tool transcripts only when the user
+    /// opts in via `[tokens] enabled`.
+    pub tokens_enabled: bool,
+    /// Run the local OTLP/HTTP receiver on `127.0.0.1:<port>` (#18). `None`
+    /// (default) means no listener thread — the receiver is opt-in via
+    /// `[otlp] enabled`, off by default (DESIGN §10).
+    pub otlp_port: Option<u16>,
+}
+
+impl Default for DaemonOptions {
+    fn default() -> Self {
+        DaemonOptions {
+            notifier: Arc::new(LogNotifier),
+            tokens_enabled: false,
+            otlp_port: None,
+        }
+    }
+}
+
+/// [`serve`], with all optional behaviours injected via [`DaemonOptions`] — the
+/// seam the CLI uses to honour both `[notify] enabled` (§9) and `[tokens]
+/// enabled` (#17).
+pub fn serve_with_options(
+    engine: Engine,
+    socket: &str,
+    shutdown: Arc<AtomicBool>,
+    options: DaemonOptions,
+) -> io::Result<()> {
+    let DaemonOptions {
+        notifier,
+        tokens_enabled,
+        otlp_port,
+    } = options;
     let listener = bind(socket)?;
     // Non-blocking accept so the loop can observe `shutdown`; accepted streams
     // stay blocking, which the thread-per-connection model wants.
@@ -612,6 +675,28 @@ pub fn serve_with_notifier(
         let sh = shared.clone();
         let sd = shutdown.clone();
         thread::spawn(move || reminder_loop(sh, notifier, sd));
+    }
+
+    // Token attribution (#17): a third supervised thread, spawned only when the
+    // user opted in. It keeps its OWN event-rowid cursor — never `Shared.watermark`,
+    // which is the broadcast-dedupe cursor — and does all transcript parsing off
+    // the engine lock.
+    if tokens_enabled {
+        let sh = shared.clone();
+        let sd = shutdown.clone();
+        thread::spawn(move || attribution_loop(sh, sd));
+    }
+
+    // Local OTLP/HTTP receiver (#18): a supervised thread on its own std
+    // TcpListener, spawned only when the user opted in via `[otlp] enabled`.
+    // Independent of `tokens_enabled` — it buffers telemetry regardless; the
+    // attribution thread (when on) then prefers that buffer over log-parsing. A
+    // bind failure inside the receiver is logged and non-fatal (it is auxiliary),
+    // so no `fatal` channel is wired to it.
+    if let Some(port) = otlp_port {
+        let engine = shared.engine.clone();
+        let sd = shutdown.clone();
+        thread::spawn(move || otlp::run_receiver(engine, port, sd));
     }
 
     let result = loop {
@@ -845,6 +930,168 @@ fn reminder_tick(
         pump(sh)?;
     }
     Ok(seen)
+}
+
+// ---- token attribution (DESIGN.md §10, docs/research/token-accounting.md) ----
+
+/// How one attribution is recorded. Only ever [`attribution::attribute_one`] in
+/// production; the indirection mirrors [`FireFn`] so a test can inject a failing
+/// write and pin the retry path (otherwise reachable only through disk/lock
+/// faults that cannot be provoked from a test).
+type AttributeFn = dyn Fn(
+        &Engine,
+        &attribution::PendingAttribution,
+        &attribution::AttributionResult,
+    ) -> Result<bool, ApiError>
+    + Send
+    + Sync;
+
+/// The daemon's token-attribution thread (#17): watch the event log for
+/// completions, reconstruct each task's tokens from the AI tool's transcript,
+/// and store them as measured `token_usage` rows.
+///
+/// Sibling of [`reminder_loop`], and deliberately the same shape: a cursor over
+/// the append-only `events` rowid, a rebuild-on-change pending set derived from
+/// the store (so a task completed while no daemon ran is caught up for free on
+/// the next tick, exactly like a reminder missed while down), and its own
+/// clock. It keeps its OWN cursor — never `Shared.watermark`, which gates the
+/// broadcast dedupe — following [`reminder_tick`]'s "only adopt a rowid you
+/// built from" invariant.
+fn attribution_loop(sh: Shared, shutdown: Arc<AtomicBool>) {
+    // -1 can't be a real rowid, so the first tick always rebuilds — this is the
+    // catch-up-on-start scan over the whole store (§10).
+    let mut seen_rowid: i64 = -1;
+    let mut errors = ErrorTransition::default();
+
+    while !shutdown.load(Ordering::Relaxed) {
+        match attribution_tick(
+            &sh,
+            seen_rowid,
+            jiff::Timestamp::now(),
+            &attribution::attribute_one,
+            &mut errors,
+        ) {
+            Ok(next) => seen_rowid = next,
+            // A tick returns Err ONLY for a genuinely fatal store fault (the
+            // event-rowid read, the pending query, or the pump). A missing or
+            // drifted transcript is transient and handled per-task inside the
+            // tick — it must NEVER reach report_fatal, or a routine
+            // rotated/renamed transcript would take the whole daemon down.
+            Err(e) => {
+                report_fatal(&sh, "token attribution", &e);
+                return;
+            }
+        }
+
+        // Sleep in small steps so shutdown stays responsive.
+        for _ in 0..(ATTRIBUTION_TICK_MS / 50).max(1) {
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// One tick of [`attribution_loop`]: if the event log moved, rebuild the pending
+/// set from the store, parse each task's transcript OFF the engine lock, and
+/// write the result through the idempotent [`Engine::token_attribute`] under a
+/// short lock. Returns the watermark to carry into the next tick.
+///
+/// `now` is injected (matching the [`reminder_tick`] seam) and used only to
+/// decide when an absent explicit transcript has been retried long enough to
+/// give up; the attribution window itself is reconstructed entirely from event
+/// timestamps.
+///
+/// The returned watermark obeys the same invariant as [`reminder_tick`]: it may
+/// only be a rowid the pending set was actually built from. A transient per-task
+/// failure (a not-yet-flushed transcript) leaves no `tokens.attributed` row, so
+/// the rowid has not moved for that task — returning `-1` forces the next tick to
+/// rebuild and retry rather than adopting `cur` and skipping it forever.
+fn attribution_tick(
+    sh: &Shared,
+    seen_rowid: i64,
+    now: jiff::Timestamp,
+    attribute: &AttributeFn,
+    errors: &mut ErrorTransition,
+) -> Result<i64, ApiError> {
+    let cur = {
+        let g = lock_recover(&sh.engine);
+        max_event_rowid(&g)?
+    };
+    if cur == seen_rowid {
+        return Ok(seen_rowid);
+    }
+
+    // Build the pending set under a SHORT lock, then release it: transcripts can
+    // be large and must never be parsed while holding the engine mutex.
+    let pending = {
+        let g = lock_recover(&sh.engine);
+        attribution::pending_attributions(&g)?
+    };
+
+    let mut wrote_any = false;
+    let mut failed_any = false;
+    // One pass over the pending set is one tick for log-throttling purposes, the
+    // same contract [`reminder_tick`] uses: every message below embeds the task's
+    // short_id, so a throttle keyed on one global string would see two failing
+    // tasks alternate and count every line as a transition.
+    errors.begin_tick();
+    for pa in &pending {
+        // Heavy transcript parse, OFF the lock.
+        let result = match attribution::compute_attribution(pa, now) {
+            Ok(r) => r,
+            Err(e) => {
+                errors.report(
+                    pa.short_id,
+                    format!(
+                        "could not read transcript for #{}: {}",
+                        pa.short_id, e.message
+                    ),
+                );
+                failed_any = true;
+                continue;
+            }
+        };
+        // Re-lock briefly to write via the idempotent method.
+        let written = {
+            let g = lock_recover(&sh.engine);
+            attribute(&g, pa, &result)
+        };
+        match written {
+            // Recovery needs no call: not reporting a failure for this task in
+            // this tick *is* the recovery signal, and — unlike the old global
+            // `recovered()` — one task's success cannot re-arm another task's
+            // suppressed log line.
+            Ok(did_write) => {
+                if did_write {
+                    wrote_any = true;
+                }
+            }
+            Err(e) => {
+                errors.report(
+                    pa.short_id,
+                    format!(
+                        "could not record token attribution for #{}: {}",
+                        pa.short_id, e.message
+                    ),
+                );
+                failed_any = true;
+            }
+        }
+    }
+
+    // Push `tokens.attributed` rows to subscribers immediately (the headless
+    // verification surface, mirroring the reminder path).
+    if wrote_any {
+        pump(sh)?;
+    }
+
+    if failed_any {
+        Ok(-1)
+    } else {
+        Ok(cur)
+    }
 }
 
 /// One connection: a reader loop (this thread) + a writer thread draining a
@@ -1523,6 +1770,18 @@ mod tests {
         cleanup(&socket);
     }
 
+    /// Opt-in default-off (DESIGN §10): with no explicit `otlp_port`, the serve
+    /// loop's `if let Some(port)` guard spawns no receiver thread. Encoding the
+    /// default here pins "disabled config => no listener" at the one seam the CLI
+    /// wires (`config_otlp_enabled().then(config_otlp_port)` yields `None`).
+    #[test]
+    fn otlp_receiver_is_off_by_default() {
+        assert!(
+            DaemonOptions::default().otlp_port.is_none(),
+            "a default daemon must not open a telemetry port"
+        );
+    }
+
     #[test]
     fn admission_never_exceeds_its_limit_and_release_reopens_a_slot() {
         let admission = Arc::new(Admission::new(2));
@@ -2037,6 +2296,419 @@ mod tests {
         assert!(
             fired.contains(&2),
             "a reminder created during the fire window must still fire, got {fired:?}",
+        );
+    }
+
+    // ---- token attribution (#17) --------------------------------------------
+
+    fn attr_test_dir(label: &str) -> std::path::PathBuf {
+        let n = CLIENT_TEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("tasqx-attr-{label}-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A Claude Code transcript with two in-window assistant lines (110 input,
+    /// 220 output between them) and one far-future line that any real window
+    /// excludes.
+    fn transcript(in_window_ts: &str) -> String {
+        [
+            format!(
+                r#"{{"timestamp":"{in_window_ts}","message":{{"id":"a","model":"claude-opus-4-8","usage":{{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":3,"cache_creation_input_tokens":4}}}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{in_window_ts}","message":{{"id":"b","model":"claude-opus-4-8","usage":{{"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+            ),
+            r#"{"timestamp":"2099-01-01T00:00:00Z","message":{"id":"c","usage":{"input_tokens":9999,"output_tokens":9999}}}"#.to_string(),
+        ]
+        .join("\n")
+    }
+
+    fn add_task(sh: &Shared, title: &str) -> i64 {
+        let g = lock_recover(&sh.engine);
+        g.task_add(&json!({ "title": title }))
+            .unwrap()
+            .get("short_id")
+            .and_then(Value::as_i64)
+            .unwrap()
+    }
+
+    fn complete(sh: &Shared, params: Value) {
+        let g = lock_recover(&sh.engine);
+        g.task_done(&params).unwrap();
+    }
+
+    fn count(sh: &Shared, sql: &str) -> i64 {
+        let g = lock_recover(&sh.engine);
+        g.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    const N_MEASUREMENTS: &str = "SELECT COUNT(*) FROM token_usage";
+    const N_ATTRIBUTED: &str = "SELECT COUNT(*) FROM events WHERE op = 'tokens.attributed'";
+
+    #[test]
+    fn attribution_tick_measures_a_completed_task_from_its_transcript() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let dir = attr_test_dir("happy");
+        // Claude Code names each transcript `<session-id>.jsonl`; naming the file
+        // for the completion's session id is a verified correlation => HIGH.
+        let path = dir.join("sess-1.jsonl");
+
+        let id = add_task(&sh, "ship it");
+        // Capture an instant AFTER creation and write the transcript at it; the
+        // completion below closes the window at a later `now()`, so the sample is
+        // provably inside [created, completed].
+        let in_window = jiff::Timestamp::now().to_string();
+        std::fs::write(&path, transcript(&in_window)).unwrap();
+        complete(
+            &sh,
+            json!({
+                "ref": id,
+                "client": "claude-code",
+                "session_id": "sess-1",
+                "transcript_path": path.to_string_lossy(),
+            }),
+        );
+
+        let mut errors = ErrorTransition::default();
+        let seen = attribution_tick(
+            &sh,
+            -1,
+            jiff::Timestamp::now(),
+            &attribution::attribute_one,
+            &mut errors,
+        )
+        .unwrap();
+        assert_ne!(seen, -1, "a clean tick adopts a real watermark");
+
+        assert_eq!(count(&sh, N_MEASUREMENTS), 1, "one measurement stored");
+        assert_eq!(count(&sh, N_ATTRIBUTED), 1, "one tokens.attributed marker");
+        let (source, input, output, conf) = {
+            let g = lock_recover(&sh.engine);
+            g.conn()
+                .query_row(
+                    "SELECT source, input_tokens, output_tokens, confidence FROM token_usage",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        assert_eq!(source, "log-parse");
+        assert_eq!(input, 110, "only the two in-window lines counted");
+        assert_eq!(output, 220);
+        assert_eq!(
+            conf, "high",
+            "explicit path + session id => high confidence"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reopen_and_re_complete_is_attributed_again_not_suppressed_by_the_old_marker() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let dir = attr_test_dir("reopen");
+
+        let id = add_task(&sh, "ship it");
+
+        // First completion + attribution: one measurement, one marker.
+        let first_path = dir.join("sess-1.jsonl");
+        std::fs::write(&first_path, transcript(&jiff::Timestamp::now().to_string())).unwrap();
+        complete(
+            &sh,
+            json!({
+                "ref": id,
+                "client": "claude-code",
+                "session_id": "sess-1",
+                "transcript_path": first_path.to_string_lossy(),
+            }),
+        );
+        let mut errors = ErrorTransition::default();
+        attribution_tick(
+            &sh,
+            -1,
+            jiff::Timestamp::now(),
+            &attribution::attribute_one,
+            &mut errors,
+        )
+        .unwrap();
+        assert_eq!(count(&sh, N_MEASUREMENTS), 1, "first completion attributed");
+        assert_eq!(count(&sh, N_ATTRIBUTED), 1);
+
+        // Reopen (bug found), do more work, complete again with a fresh session.
+        {
+            let g = lock_recover(&sh.engine);
+            g.task_reopen(&json!({ "ref": id })).unwrap();
+        }
+        let second_path = dir.join("sess-2.jsonl");
+        std::fs::write(
+            &second_path,
+            transcript(&jiff::Timestamp::now().to_string()),
+        )
+        .unwrap();
+        complete(
+            &sh,
+            json!({
+                "ref": id,
+                "client": "claude-code",
+                "session_id": "sess-2",
+                "transcript_path": second_path.to_string_lossy(),
+            }),
+        );
+
+        // The stale marker must NOT suppress the post-reopen session: the new
+        // `done` sits past the old marker, so the tick re-attributes.
+        attribution_tick(
+            &sh,
+            -1,
+            jiff::Timestamp::now(),
+            &attribution::attribute_one,
+            &mut errors,
+        )
+        .unwrap();
+        assert_eq!(
+            count(&sh, N_MEASUREMENTS),
+            2,
+            "the post-reopen session is attributed, not silently lost"
+        );
+        assert_eq!(count(&sh, N_ATTRIBUTED), 2, "a fresh marker per completion");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_tick_is_an_idempotent_no_op() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let dir = attr_test_dir("idem");
+        let path = dir.join("session.jsonl");
+        let id = add_task(&sh, "ship it");
+        let in_window = jiff::Timestamp::now().to_string();
+        std::fs::write(&path, transcript(&in_window)).unwrap();
+        complete(
+            &sh,
+            json!({ "ref": id, "client": "claude-code", "transcript_path": path.to_string_lossy() }),
+        );
+
+        let mut errors = ErrorTransition::default();
+        let now = jiff::Timestamp::now();
+        let seen =
+            attribution_tick(&sh, -1, now, &attribution::attribute_one, &mut errors).unwrap();
+        assert_eq!(count(&sh, N_MEASUREMENTS), 1);
+        // A second tick must not duplicate the row or the marker.
+        let seen2 =
+            attribution_tick(&sh, seen, now, &attribution::attribute_one, &mut errors).unwrap();
+        assert_eq!(count(&sh, N_MEASUREMENTS), 1, "no duplicate measurement");
+        assert_eq!(count(&sh, N_ATTRIBUTED), 1, "no duplicate marker");
+        // Once everything settles the tick is a pure no-op.
+        assert_eq!(
+            attribution_tick(&sh, seen2, now, &attribution::attribute_one, &mut errors).unwrap(),
+            seen2,
+            "a settled tick neither rebuilds nor writes"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unknown_client_terminates_with_a_zero_sample_marker() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let id = add_task(&sh, "cursor work");
+        // Cursor has no local logs and no parser: a correlation is present, so
+        // the task is a candidate, but attribution finds nothing to store.
+        complete(&sh, json!({ "ref": id, "client": "cursor" }));
+
+        let mut errors = ErrorTransition::default();
+        attribution_tick(
+            &sh,
+            -1,
+            jiff::Timestamp::now(),
+            &attribution::attribute_one,
+            &mut errors,
+        )
+        .unwrap();
+
+        assert_eq!(
+            count(&sh, N_MEASUREMENTS),
+            0,
+            "no measurement for an unknown tool"
+        );
+        assert_eq!(
+            count(&sh, N_ATTRIBUTED),
+            1,
+            "but a marker so the task terminates"
+        );
+        // The marker records samples:0, not spend.
+        let payload: String = {
+            let g = lock_recover(&sh.engine);
+            g.conn()
+                .query_row(
+                    "SELECT payload FROM events WHERE op = 'tokens.attributed'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert!(payload.contains("\"samples\":0"), "{payload}");
+    }
+
+    #[test]
+    fn a_missing_transcript_is_transient_and_retried_not_fatal() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let dir = attr_test_dir("missing");
+        let path = dir.join("late.jsonl");
+        let id = add_task(&sh, "ship it");
+        // Capture the in-window instant BEFORE completing — the window closes at
+        // completion, so the eventual sample must predate it.
+        let in_window = jiff::Timestamp::now().to_string();
+        complete(
+            &sh,
+            json!({ "ref": id, "client": "claude-code", "transcript_path": path.to_string_lossy() }),
+        );
+
+        let mut errors = ErrorTransition::default();
+        let now = jiff::Timestamp::now();
+        // Tick 1: the transcript has not been flushed yet. This is transient —
+        // no marker, no fatal (fatal is None here; the tick must still return Ok),
+        // and the watermark is invalidated so the next tick retries.
+        let seen =
+            attribution_tick(&sh, -1, now, &attribution::attribute_one, &mut errors).unwrap();
+        assert_eq!(seen, -1, "a not-yet-available transcript forces a retry");
+        assert_eq!(count(&sh, N_ATTRIBUTED), 0, "no premature marker");
+        assert_eq!(count(&sh, N_MEASUREMENTS), 0);
+
+        // The transcript appears; the retry attributes it.
+        std::fs::write(&path, transcript(&in_window)).unwrap();
+        attribution_tick(&sh, seen, now, &attribution::attribute_one, &mut errors).unwrap();
+        assert_eq!(
+            count(&sh, N_MEASUREMENTS),
+            1,
+            "the retry lands the measurement"
+        );
+        assert_eq!(count(&sh, N_ATTRIBUTED), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_write_is_retried_on_the_next_tick() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let dir = attr_test_dir("flaky");
+        let path = dir.join("session.jsonl");
+        let id = add_task(&sh, "ship it");
+        let in_window = jiff::Timestamp::now().to_string();
+        std::fs::write(&path, transcript(&in_window)).unwrap();
+        complete(
+            &sh,
+            json!({ "ref": id, "client": "claude-code", "transcript_path": path.to_string_lossy() }),
+        );
+
+        // The parse succeeds; only the store write fails the first time, the way
+        // a busy-timeout would. The measurement must not be lost.
+        let calls = AtomicUsize::new(0);
+        let flaky = move |e: &Engine,
+                          pa: &attribution::PendingAttribution,
+                          res: &attribution::AttributionResult|
+              -> Result<bool, ApiError> {
+            if calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Err(ApiError::internal("db busy"));
+            }
+            attribution::attribute_one(e, pa, res)
+        };
+
+        let mut errors = ErrorTransition::default();
+        let now = jiff::Timestamp::now();
+        let seen = attribution_tick(&sh, -1, now, &flaky, &mut errors).unwrap();
+        assert_eq!(seen, -1, "a failed write forces a rebuild next tick");
+        assert_eq!(count(&sh, N_ATTRIBUTED), 0, "nothing recorded yet");
+
+        attribution_tick(&sh, seen, now, &flaky, &mut errors).unwrap();
+        assert_eq!(
+            count(&sh, N_MEASUREMENTS),
+            1,
+            "the retry lands the measurement"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_first_tick_catches_up_tasks_completed_before_the_loop_started() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let dir = attr_test_dir("catchup");
+        // Two tasks completed with correlation while no daemon (no tick) ran.
+        let a = add_task(&sh, "task a");
+        let b = add_task(&sh, "task b");
+        let in_window = jiff::Timestamp::now().to_string();
+        let pa = dir.join("a.jsonl");
+        let pb = dir.join("b.jsonl");
+        std::fs::write(&pa, transcript(&in_window)).unwrap();
+        std::fs::write(&pb, transcript(&in_window)).unwrap();
+        complete(
+            &sh,
+            json!({ "ref": a, "client": "claude-code", "transcript_path": pa.to_string_lossy() }),
+        );
+        complete(
+            &sh,
+            json!({ "ref": b, "client": "claude-code", "transcript_path": pb.to_string_lossy() }),
+        );
+
+        // The very first tick (seen = -1) is the whole-store catch-up scan.
+        let mut errors = ErrorTransition::default();
+        attribution_tick(
+            &sh,
+            -1,
+            jiff::Timestamp::now(),
+            &attribution::attribute_one,
+            &mut errors,
+        )
+        .unwrap();
+        assert_eq!(
+            count(&sh, N_MEASUREMENTS),
+            2,
+            "both backlog tasks attributed"
+        );
+        assert_eq!(count(&sh, N_ATTRIBUTED), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_human_completion_without_correlation_is_never_attributed() {
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let id = add_task(&sh, "just done");
+        // `tasqx done 1` — no client, no session, no transcript.
+        complete(&sh, json!({ "ref": id }));
+
+        let mut errors = ErrorTransition::default();
+        let seen = attribution_tick(
+            &sh,
+            -1,
+            jiff::Timestamp::now(),
+            &attribution::attribute_one,
+            &mut errors,
+        )
+        .unwrap();
+        assert_ne!(seen, -1, "nothing failed");
+        assert_eq!(
+            count(&sh, N_ATTRIBUTED),
+            0,
+            "no correlation => not a candidate"
+        );
+    }
+
+    #[test]
+    fn attribution_is_off_by_default_in_daemon_options() {
+        assert!(
+            !DaemonOptions::default().tokens_enabled,
+            "token attribution must be opt-in (DESIGN §10)"
         );
     }
 }

@@ -495,6 +495,28 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
             out.push_str(&format!("  depends_on {}\n", refs.join(" ")));
         }
     }
+    // D39: AI token spend renders here or it is data nobody reported.
+    // Conditional like `tracked`: most tasks never get a measurement, and four
+    // zeroes on every one of them is noise. Totals, not per-measurement rows —
+    // the detail view answers "what did this task cost", and `--json` carries
+    // the individual measurements for anyone who needs them.
+    if let Some(tokens) = result.get("tokens").and_then(Value::as_array) {
+        if !tokens.is_empty() {
+            let sum = |key: &str| -> u64 {
+                tokens
+                    .iter()
+                    .filter_map(|m| m.get(key).and_then(Value::as_u64))
+                    .fold(0u64, u64::saturating_add)
+            };
+            out.push_str(&format!(
+                "  tokens     in {} · out {} · cacheR {} · cacheW {}\n",
+                sum("input_tokens"),
+                sum("output_tokens"),
+                sum("cache_read_tokens"),
+                sum("cache_creation_tokens")
+            ));
+        }
+    }
     if let Some(anns) = result.get("annotations").and_then(Value::as_array) {
         for a in anns {
             out.push_str(&format!(
@@ -685,15 +707,21 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
         return "No matching tasks.\n".to_string();
     }
     let mut out = String::new();
+    // The terminal report carries only `tokens_total`: the full four-bucket
+    // breakdown (in/out/cache_read/cache_creation) would blow past a usable
+    // width, so it lives on the HTML report and the MCP surface instead, while
+    // the one number that answers "how much did this cost in tokens?" stays
+    // visible here.
     out.push_str(&ctx.paint(
         "header",
         &format!(
-            "{:<20}  {:>5}  {:>10}  {:>7}  {:>10}",
+            "{:<20}  {:>5}  {:>10}  {:>7}  {:>10}  {:>12}",
             group_by.to_uppercase(),
             "COUNT",
             "EST",
             "OVERDUE",
-            "TRACKED"
+            "TRACKED",
+            "TOKENS"
         ),
     ));
     out.push('\n');
@@ -706,6 +734,7 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
             .get("tracked_total")
             .and_then(Value::as_str)
             .unwrap_or("-");
+        let tokens = g.get("tokens_total").and_then(Value::as_i64).unwrap_or(0);
         let overdue_cell = format!("{overdue:>7}");
         let overdue_p = if overdue > 0 {
             ctx.paint("warn", &overdue_cell)
@@ -713,7 +742,7 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
             ctx.paint("muted", &overdue_cell)
         };
         out.push_str(&format!(
-            "{}  {count:>5}  {est:>10}  {overdue_p}  {tracked:>10}\n",
+            "{}  {count:>5}  {est:>10}  {overdue_p}  {tracked:>10}  {tokens:>12}\n",
             ctx.paint("project", &pad(&key, 20))
         ));
     }
@@ -1289,7 +1318,7 @@ mod tests {
             .iter()
             .map(|k| {
                 json!({ "project": k, "count": 1, "est_total": "PT1H", "overdue": 0,
-                             "tracked_total": "PT2H" })
+                             "tracked_total": "PT2H", "tokens_total": 123456 })
             })
             .collect();
         let out = report(&ctx, &json!({ "groups": groups }), "project");
@@ -1302,6 +1331,27 @@ mod tests {
                 "report group {k:?} broke alignment: {row:?}"
             );
         }
+    }
+
+    /// #19/D39: the terminal report carries the one token number that answers
+    /// "how much did this cost?" — `tokens_total` — under a TOKENS header. The
+    /// full breakdown lives on the HTML/MCP surfaces; here width is the budget.
+    #[test]
+    fn report_shows_a_tokens_total_column() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = report(
+            &ctx,
+            &json!({ "groups": [
+                { "project": "P", "count": 1, "est_total": "PT1H", "overdue": 0,
+                  "tracked_total": "PT2H", "tokens_total": 4242 }
+            ] }),
+            "project",
+        );
+        assert!(out.contains("TOKENS"), "TOKENS header missing: {out:?}");
+        assert!(
+            out.lines().nth(1).unwrap().contains("4242"),
+            "the group's tokens_total is not rendered: {out:?}"
+        );
     }
 
     /// Truncation has to cut on a GRAPHEME boundary and budget in cells. Half a
