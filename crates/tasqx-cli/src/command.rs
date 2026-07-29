@@ -3,9 +3,50 @@
 //! This module owns clap parsing only. Execution, transport selection, and
 //! rendering remain in the parent orchestration module.
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 use super::{CLEARABLE, VERSION};
+
+/// The correlation facts `task.start` / `task.done` accept (#12), declared once
+/// and flattened into both so the two verbs cannot drift apart.
+///
+/// These exist because the attribution engine builds its candidate set only from
+/// events carrying `client`, `session_id` or `transcript_path`
+/// (`attribution.rs:608`): without them a CLI-driven task is never attributed and
+/// silently measures zero. Every one is optional and none is read from the
+/// environment — `tasqx done 4` must stay a one-word command, and what lands on
+/// the event must stay readable off the command line.
+///
+/// `--session-id` and `--transcript-path` REQUIRE `--client`, enforced here by
+/// clap rather than discovered later. The engine selects its transcript parser
+/// from `client` alone (`attribution.rs:367`); given the other two without it,
+/// attribution takes that early return and stores a zero-sample marker, which
+/// `has_attributed_event` then makes permanent. So the clientless form is not a
+/// weaker measurement, it is a silent refusal to measure that also poisons the
+/// task against a later, correct attempt — the D33 shape: a value that changes
+/// nothing must not answer `ok`. `--prompt-id` is exempt: it is pure correlation
+/// metadata and drives no parser selection.
+#[derive(Args, Clone, Default)]
+pub(super) struct CorrelationArgs {
+    /// Calling tool as "<name> <version>", e.g. "claude-code 2.1". Selects the
+    /// transcript parser; without it no transcript is ever read.
+    #[arg(long, value_name = "TOOL")]
+    pub(super) client: Option<String>,
+
+    /// Agent session id, verified against the transcript to earn high confidence.
+    /// Requires --client.
+    #[arg(long, value_name = "ID", requires = "client")]
+    pub(super) session_id: Option<String>,
+
+    /// Id of the prompt/turn driving this call.
+    #[arg(long, value_name = "ID")]
+    pub(super) prompt_id: Option<String>,
+
+    /// Absolute path to the session transcript the tokens will be found in.
+    /// Requires --client.
+    #[arg(long, value_name = "PATH", requires = "client")]
+    pub(super) transcript_path: Option<String>,
+}
 
 #[derive(Parser)]
 #[command(
@@ -183,6 +224,8 @@ pub(super) enum Command {
         /// Keep other active tasks running (opt out of single-active).
         #[arg(long)]
         keep: bool,
+        #[command(flatten)]
+        correlation: CorrelationArgs,
     },
     /// Stop the task timer (maps to task.stop).
     #[command(alias = "st", after_help = crate::cmddoc::after_help("stop"))]
@@ -195,6 +238,8 @@ pub(super) enum Command {
     Done {
         /// short_id or UUID.
         r#ref: String,
+        #[command(flatten)]
+        correlation: CorrelationArgs,
     },
     /// Show a task's full detail incl. tags/annotations/deps (maps to task.get).
     #[command(alias = "get", after_help = crate::cmddoc::after_help("show"))]
