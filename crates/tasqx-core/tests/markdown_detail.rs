@@ -5,8 +5,9 @@
 //! for everyone", and a test that checks a substring cannot tell the difference
 //! between that promise and a near-miss.
 
-use serde_json::json;
+use serde_json::{json, Value};
 use tasqx_core::markdown::{task_detail, DetailOpts, TimeFormat};
+use tasqx_core::{dispatch, Engine, McpServer, Scope};
 
 /// A fixed instant so relative formatting is testable. Nothing here calls the
 /// clock: the renderer takes `now` as a parameter precisely so this is possible.
@@ -308,4 +309,49 @@ fn an_unparseable_instant_falls_back_to_the_raw_value_rather_than_panicking() {
     });
     let out = task_detail(&task, &opts(TimeFormat::Relative));
     assert!(out.contains("| created | not-a-timestamp |"), "got:\n{out}");
+}
+
+// ---- the view on the wire ----------------------------------------------------
+
+/// Drive one `tools/call` against a scratch engine and return its result.
+///
+/// The entrypoint is `handle_message`, which returns `Option<Value>` — `None`
+/// for a notification, which a `tools/call` never is. `crates/tasqx-core/tests/mcp.rs`
+/// drives the server the same way; this mirrors it rather than inventing a
+/// second style.
+fn call_tool(server: &McpServer, name: &str, args: Value) -> Value {
+    let req = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": name, "arguments": args }
+    });
+    server
+        .handle_message(&req)
+        .expect("tools/call always answers")
+        .get("result")
+        .cloned()
+        .expect("a successful call carries result")
+}
+
+#[test]
+fn get_task_returns_the_rendered_view_first_and_the_json_second() {
+    let engine = Engine::open_in_memory().expect("engine");
+    dispatch(&engine, "task.add", &json!({ "title": "measure me" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let result = call_tool(&server, "tasqx_get_task", json!({ "ref": 1 }));
+    let content = result["content"].as_array().expect("content array");
+
+    assert_eq!(content.len(), 2, "got: {content:#?}");
+    let view = content[0]["text"].as_str().expect("markdown block");
+    assert!(view.starts_with("## #1 · measure me"), "got:\n{view}");
+    let raw = content[1]["text"].as_str().expect("json block");
+    assert!(raw.trim_start().starts_with('{'), "got:\n{raw}");
+}
+
+#[test]
+fn every_other_tool_still_returns_exactly_one_block() {
+    let engine = Engine::open_in_memory().expect("engine");
+    let server = McpServer::new(&engine, Scope::Read);
+    let result = call_tool(&server, "tasqx_list_tasks", json!({}));
+    assert_eq!(result["content"].as_array().expect("content").len(), 1);
 }
