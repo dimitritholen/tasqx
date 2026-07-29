@@ -416,6 +416,28 @@ pub fn compute_attribution(
 
     let (totals, n) = totals_in_window(&samples, &pa.window_start, &pa.window_end);
     let found = totals.total() > 0;
+
+    // #73: an EXPLICIT transcript that parsed but holds nothing in the window is
+    // "not yet", not "nothing". `tasqx done` runs inside the agent turn whose
+    // usage it wants to count, and that turn's usage line is not written until the
+    // turn ends — so for any task living entirely inside one turn, this is the
+    // normal state at the only moment we look, not an edge case. Storing `found:
+    // false` here made `has_attributed_event` terminal on a zero the real numbers
+    // could never replace; in the field two of five tasks were lost that way
+    // inside a single 500 ms tick.
+    //
+    // Same deadline as absent and unreadable, and for the same reason: a task
+    // that genuinely cost nothing must still leave the pending set, or every tick
+    // rebuilds it forever. Only the explicit-path branch qualifies —
+    // `transcript_parsed` is false for discovery, which has no named file to wait
+    // on and whose empty result means "no candidate carried anything".
+    if transcript_parsed && !found && !transcript_gave_up(now, &pa.window_end) {
+        return Err(ApiError::internal(format!(
+            "no usage in window yet: {}",
+            pa.transcript_path.as_deref().unwrap_or_default()
+        )));
+    }
+
     Ok(AttributionResult {
         totals,
         samples: n,
@@ -947,6 +969,102 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #73: a transcript that parses fine but holds nothing in the window yet is
+    /// TRANSIENT, on the same deadline as absent and unreadable.
+    ///
+    /// This is the case task #38 left open, and it is the common one rather than
+    /// the exotic one. `tasqx done` runs *inside* the agent turn whose usage it
+    /// wants to count, and that turn's usage line is not written until the turn
+    /// ends — so for any task that lives entirely inside one turn, the transcript
+    /// exists, parses, and is simply empty in the window at the only moment the
+    /// old code looked. It then wrote `found: false`, and `has_attributed_event`
+    /// made that marker terminal, so the real numbers could never replace it.
+    /// Observed in the field: two of five tasks got `samples: 0` within one tick.
+    #[test]
+    fn a_transcript_with_nothing_in_the_window_yet_retries_then_gives_up() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-empty-window-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess-1.jsonl");
+        // A readable, parseable transcript whose only usage line predates the
+        // window — exactly the shape of a log the current turn has not flushed to
+        // yet. Not empty and not malformed: the parser succeeds and returns a
+        // sample, `totals_in_window` just excludes it.
+        std::fs::write(
+            &path,
+            r#"{"timestamp":"2026-07-24T09:00:00.000Z","message":{"id":"old","usage":{"input_tokens":10,"output_tokens":20}}}"#,
+        )
+        .unwrap();
+
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some(path.to_string_lossy().into_owned()),
+            session_id: Some("sess-1".into()),
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+        };
+
+        // Minutes after completion: the turn may still be writing. Retry rather
+        // than burn the task's only chance on a zero that cannot be revised.
+        let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
+        assert!(
+            err.message.contains("no usage in window"),
+            "expected a transient empty-window error, got: {}",
+            err.message
+        );
+
+        // Two days later nothing is coming: terminate with the empty marker, the
+        // same deadline the other two unusable-transcript cases honour. Without
+        // this the task never leaves the pending set and every tick rebuilds it.
+        let r = compute_attribution(&pa, ts("2026-07-26T11:05:00Z")).unwrap();
+        assert!(!r.found);
+        assert_eq!(r.samples, 0);
+        assert_eq!(r.tool, "claude-code");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of #73's boundary: DISCOVERY finding nothing stays
+    /// terminal. Only an explicit `transcript_path` earns the retry.
+    ///
+    /// The flush race is a property of a named file we were told to read: we know
+    /// which log the tokens will land in, so "not yet" is a real answer. A
+    /// discovery scan that came back empty has no such anchor — it means no
+    /// candidate file in the tool's default roots carried anything for this
+    /// window, and retrying that on every tick would keep every unattributable
+    /// task in the pending set until the deadline for no gain.
+    #[test]
+    fn discovery_finding_nothing_stays_terminal_rather_than_retrying() {
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            // No explicit path: this is the discovery branch.
+            transcript_path: None,
+            session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+        };
+        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z"))
+            .expect("discovery must terminate, not retry");
+        assert!(!r.found);
+        assert_eq!(r.samples, 0);
     }
 
     #[test]
