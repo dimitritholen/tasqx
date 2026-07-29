@@ -245,3 +245,67 @@ fn a_task_without_annotations_or_tokens_emits_neither_section() {
     assert!(!out.contains("Annotations"), "got:\n{out}");
     assert!(!out.contains("Tokens"), "got:\n{out}");
 }
+
+fn opts(time: TimeFormat) -> DetailOpts {
+    DetailOpts {
+        time,
+        now: at("2026-07-29T11:00:00Z"),
+    }
+}
+
+#[test]
+fn relative_formatting_replaces_the_instant_and_the_duration() {
+    let task = json!({
+        "short_id": 76, "title": "Papercuts", "status": "pending",
+        "priority": "L", "urgency": 1.8, "project": "p",
+        "estimate": "PT2H",
+        "created": "2026-07-29T09:00:58Z", "modified": "2026-07-29T09:00:58Z",
+        "_rev": 1
+    });
+    let out = task_detail(&task, &opts(TimeFormat::Relative));
+    assert!(out.contains("| created | 2 hours ago |"), "got:\n{out}");
+    assert!(out.contains("| estimate | 2h |"), "got:\n{out}");
+    assert!(!out.contains("2026-07-29T09:00:58Z"), "got:\n{out}");
+}
+
+#[test]
+fn both_shows_the_exact_value_with_the_readable_one_in_parentheses() {
+    let task = json!({
+        "short_id": 76, "title": "Papercuts", "status": "pending",
+        "priority": "L", "urgency": 1.8, "project": "p",
+        "estimate": "PT2H",
+        "created": "2026-07-29T09:00:58Z", "modified": "2026-07-29T09:00:58Z",
+        "_rev": 1
+    });
+    let out = task_detail(&task, &opts(TimeFormat::Both));
+    assert!(
+        out.contains("| created | 2026-07-29T09:00:58Z (2 hours ago) |"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("| estimate | PT2H (2h) |"), "got:\n{out}");
+}
+
+#[test]
+fn a_future_instant_reads_as_in_rather_than_ago() {
+    let task = json!({
+        "short_id": 9, "title": "Due soon", "status": "pending",
+        "priority": "H", "urgency": 18.0, "project": "p",
+        "due": "2026-07-30T11:00:00Z",
+        "created": "2026-07-29T11:00:00Z", "modified": "2026-07-29T11:00:00Z",
+        "_rev": 1
+    });
+    let out = task_detail(&task, &opts(TimeFormat::Relative));
+    assert!(out.contains("| due | in 1 day |"), "got:\n{out}");
+}
+
+#[test]
+fn an_unparseable_instant_falls_back_to_the_raw_value_rather_than_panicking() {
+    let task = json!({
+        "short_id": 1, "title": "Broken", "status": "pending",
+        "priority": null, "urgency": 0.0, "project": null,
+        "created": "not-a-timestamp", "modified": "not-a-timestamp",
+        "_rev": 1
+    });
+    let out = task_detail(&task, &opts(TimeFormat::Relative));
+    assert!(out.contains("| created | not-a-timestamp |"), "got:\n{out}");
+}
