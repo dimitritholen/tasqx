@@ -20,6 +20,22 @@ fn tool_text(result: &Value) -> Value {
     serde_json::from_str(text).unwrap_or(Value::String(text.to_string()))
 }
 
+/// Parse the machine-readable JSON block of a tools/call result.
+///
+/// `tasqx_get_task` leads with the rendered markdown view and carries its JSON
+/// behind it, so for that one tool the JSON is the LAST block, not the first.
+/// Every other tool returns a single block, where first and last coincide —
+/// which is why this is a separate helper and `tool_text` still pins "block
+/// zero is the JSON" for all of them.
+fn tool_json(result: &Value) -> Value {
+    let text = result["result"]["content"]
+        .as_array()
+        .and_then(|c| c.last())
+        .and_then(|b| b["text"].as_str())
+        .expect("tools/call result carries text content");
+    serde_json::from_str(text).unwrap_or(Value::String(text.to_string()))
+}
+
 fn is_error(result: &Value) -> bool {
     result["result"]["isError"].as_bool().unwrap_or(false)
 }
@@ -342,7 +358,7 @@ fn annotate_tool_round_trips_multiline_markdown() {
 
     // The annotation is readable back through tasqx_get_task, unmangled.
     let got = call(&server, 3, "tasqx_get_task", json!({ "ref": short_id }));
-    assert_eq!(tool_text(&got)["annotations"][0]["body"], body);
+    assert_eq!(tool_json(&got)["annotations"][0]["body"], body);
 }
 
 #[test]
@@ -561,7 +577,7 @@ fn complete_task_with_token_args_records_a_self_report() {
     assert!(!is_error(&done), "complete failed: {done}");
     assert_eq!(tool_text(&done)["status"], "done");
 
-    let got = tool_text(&call(&server, 4, "tasqx_get_task", json!({ "ref": sid })));
+    let got = tool_json(&call(&server, 4, "tasqx_get_task", json!({ "ref": sid })));
     let m = &got["tokens"][0];
     assert_eq!(m["tool"], "cursor 1.3");
     assert_eq!(m["source"], "self-report");

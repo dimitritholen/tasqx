@@ -660,7 +660,22 @@ impl<'e> McpServer<'e> {
         }
 
         match dispatch(self.engine, spec.method, &args) {
-            Ok(result) => tool_ok(&result),
+            Ok(result) => {
+                // The one rendered surface. Keyed on the method rather than the
+                // tool name to match the `task.modify`/`task.start` checks
+                // above; exactly one tool maps to `task.get`, so this is the
+                // same set either way.
+                if spec.method == "task.get" {
+                    let opts = crate::markdown::DetailOpts {
+                        time: crate::markdown::TimeFormat::Both,
+                        // Stamped HERE, never inside the renderer: that is what
+                        // keeps `task_detail` pure and its golden tests stable.
+                        now: jiff::Timestamp::now(),
+                    };
+                    return tool_ok_with_view(crate::markdown::task_detail(&result, &opts), &result);
+                }
+                tool_ok(&result)
+            }
             Err(e) => {
                 let code = serde_json::to_value(e.code)
                     .ok()
@@ -728,6 +743,26 @@ fn tools_list(scope: Scope) -> Vec<Value> {
 fn tool_ok(result: &Value) -> Value {
     json!({
         "content": [
+            { "type": "text", "text": serde_json::to_string_pretty(result).unwrap_or_default() }
+        ],
+        "isError": false
+    })
+}
+
+/// A successful `tools/call` result carrying a rendered human view ahead of the
+/// machine-readable JSON.
+///
+/// Order is deliberate. Clients that surface only the first block prominently
+/// then surface the readable one, and a model reading in order takes its cue
+/// from what leads. An empty view degrades to [`tool_ok`]: presentation must
+/// never be able to make a working call look broken.
+fn tool_ok_with_view(view: String, result: &Value) -> Value {
+    if view.is_empty() {
+        return tool_ok(result);
+    }
+    json!({
+        "content": [
+            { "type": "text", "text": view },
             { "type": "text", "text": serde_json::to_string_pretty(result).unwrap_or_default() }
         ],
         "isError": false
