@@ -1,7 +1,10 @@
 # MCP task-detail rendering — design
 
 **Date:** 2026-07-29
-**Status:** designed, not implemented
+**Status:** implemented as **D49** on `feat/mcp-task-detail`, with four departures from
+this document — see [Divergences](#divergences-from-what-landed) at the end. The
+decision, the rendering rules and the config surface all landed as written; the
+wiring and two of the test claims did not.
 **Scope:** `tasqx_get_task` only. No other MCP tool, no CLI surface, no protocol change.
 
 ## Problem
@@ -225,3 +228,43 @@ holds an unlanded proposal that must be renumbered to D48 — so check both befo
 claiming one. That branch's doc still calls itself D27, a number DESIGN.md had
 already assigned to "an unrecognised filter token is an error" before the branch
 was cut; do not repeat the mistake by hard-coding a number here.
+
+**Landed as D49.** D48 is left free for the `feat/reporting-redesign` proposal,
+which was audited as the rightful next claimant.
+
+## Divergences from what landed
+
+Recorded rather than edited into the prose above, so the design stays readable as
+what was *decided* and this section carries what was *built* differently.
+
+1. **The setting reaches the server through a builder, not `McpServer::new`.**
+   "Wiring" above says `run_mcp_serve` passes the value to `McpServer::new`.
+   `new(&engine, scope)` is unchanged; the value arrives via a new
+   `McpServer::with_time_format` (`mcp.rs`), because widening `new` would have
+   edited every call site in the test suite to hand the default straight back.
+
+2. **A closed `choices` list needed a new variant, not just an entry.** The
+   design assumed `SETTINGS` could carry one. `Choices` had only `Free` and
+   `Themes`, neither of which the writer consults, so `Choices::OneOf(&[…])` was
+   added along with the refusal in `write_value_in` — and the two exhaustive
+   `match`es outside `config.rs` (`cli/lib.rs`'s `build_row`, `tui/settings.rs`)
+   had to grow an arm.
+
+3. **The byte-for-byte goldens cover `Iso` only.** "Testing" promises three
+   whole-output fixtures, one per `TimeFormat`. Four landed
+   (`tests/markdown_detail.rs`) and all four use `TimeFormat::Iso`; `Relative`
+   and `Both` are asserted by substring on the rows that differ. The
+   byte-identical promise is therefore pinned for one format and sampled for the
+   other two.
+
+4. **"Every other tool still returns one block" is sampled, not swept.** One
+   test checks `tasqx_list_tasks`. The rest of the coverage is incidental:
+   `tests/mcp.rs`'s `tool_text` helper reads block zero and parses it as JSON for
+   every other tool, so a second block appearing anywhere else would fail there.
+
+Two smaller notes. The drift guard reads the task back **twice** — once running,
+once finished — and unions the keys, because `active_since` and `completed`
+cannot both hold a value on one task and a single snapshot would leave whichever
+field it cannot hold permanently unchecked. And rule 1 above lists neither
+`estimate` nor `tracked` among the always-present or the optional fields, though
+its own example shows them; both are rendered only when set.
