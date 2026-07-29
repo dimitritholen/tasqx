@@ -225,13 +225,131 @@ fn priority_cell(result: &Value) -> String {
     }
 }
 
-/// Format one instant. Task 4 replaces the body; ISO is the only branch that
-/// exists yet, and returning the raw value keeps this honest in the meantime.
-fn fmt_instant(iso: &str, _opts: &DetailOpts) -> String {
-    iso.to_string()
+/// Format one instant per `opts.time`.
+///
+/// An unparseable value falls back to itself. The store holds RFC-3339 strings,
+/// so this should not happen — but "should not" is not "cannot", and a detail
+/// view is the wrong place to discover that by panicking.
+fn fmt_instant(iso: &str, opts: &DetailOpts) -> String {
+    if iso.is_empty() {
+        return String::new();
+    }
+    let Ok(then) = iso.parse::<Timestamp>() else {
+        return iso.to_string();
+    };
+    let rel = humanize_ago(then, opts.now);
+    match opts.time {
+        TimeFormat::Iso => iso.to_string(),
+        TimeFormat::Relative => rel,
+        TimeFormat::Both => format!("{iso} ({rel})"),
+    }
 }
 
-/// Format one duration. Task 4 replaces the body; ISO is the only branch yet.
-fn fmt_duration(iso: &str, _opts: &DetailOpts) -> String {
-    iso.to_string()
+/// Format one ISO-8601 duration per `opts.time`. Only the shapes tasqx itself
+/// writes are recognised (`PT1H30M`, `PT0S`, `P2D`); anything else falls back
+/// to the raw string.
+fn fmt_duration(iso: &str, opts: &DetailOpts) -> String {
+    if iso.is_empty() {
+        return String::new();
+    }
+    let Some(secs) = iso_duration_secs(iso) else {
+        return iso.to_string();
+    };
+    let human = humanize_secs(secs);
+    match opts.time {
+        TimeFormat::Iso => iso.to_string(),
+        TimeFormat::Relative => human,
+        TimeFormat::Both => format!("{iso} ({human})"),
+    }
+}
+
+/// Seconds in an ISO-8601 duration, or `None` when the shape is not one tasqx
+/// emits. Hand-rolled rather than pulled from `jiff`: this accepts exactly the
+/// subset the store writes, and silently accepting more would mean rendering
+/// values the rest of the system cannot round-trip.
+fn iso_duration_secs(iso: &str) -> Option<i64> {
+    let rest = iso.strip_prefix('P')?;
+    let (days, rest) = match rest.split_once('T') {
+        Some((d, t)) => (d, t),
+        None => (rest, ""),
+    };
+    let mut total: i64 = 0;
+    if !days.is_empty() {
+        total += days.strip_suffix('D')?.parse::<i64>().ok()? * 86_400;
+    }
+    let mut num = String::new();
+    for c in rest.chars() {
+        match c {
+            '0'..='9' => num.push(c),
+            'H' => total += num.parse::<i64>().ok()? * 3600,
+            'M' => total += num.parse::<i64>().ok()? * 60,
+            'S' => total += num.parse::<i64>().ok()?,
+            _ => return None,
+        }
+        if !c.is_ascii_digit() {
+            num.clear();
+        }
+    }
+    Some(total)
+}
+
+/// "2 hours ago" / "in 1 day". Coarse on purpose: a detail view answers "roughly
+/// when", and the exact instant is one `TimeFormat` away for anyone who needs it.
+fn humanize_ago(then: Timestamp, now: Timestamp) -> String {
+    let secs = now.as_second() - then.as_second();
+    if secs.abs() < 60 {
+        return "just now".to_string();
+    }
+    let span = humanize_span(secs.abs());
+    if secs > 0 {
+        format!("{span} ago")
+    } else {
+        format!("in {span}")
+    }
+}
+
+/// A duration as one compact unit: `45s`, `12m`, `2h`, `3d`.
+///
+/// Compact because durations are what a reader compares at a glance — an
+/// estimate against a tracked time, one task against the next — and prose
+/// makes that scan slower, not clearer. Elapsed time gets [`humanize_span`]
+/// instead, which reads as a sentence because that is how it is read.
+///
+/// The unit count is ROUNDED, not truncated. Truncation reads as a lie at the
+/// top of a bucket — an hour and fifty-nine minutes is "2 hours" to anyone
+/// glancing at it, and calling it "1 hour" makes the view look stale rather
+/// than coarse.
+fn humanize_secs(secs: i64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", round_div(s, 60)),
+        s if s < 86_400 => format!("{}h", round_div(s, 3600)),
+        s => format!("{}d", round_div(s, 86_400)),
+    }
+}
+
+/// The same span written as prose: `45 seconds`, `1 hour`, `3 days`. Feeds the
+/// `… ago` / `in …` sentence, where `3d ago` would read as a typo.
+fn humanize_span(secs: i64) -> String {
+    match secs {
+        s if s < 60 => plural(s, "second"),
+        s if s < 3600 => plural(round_div(s, 60), "minute"),
+        s if s < 86_400 => plural(round_div(s, 3600), "hour"),
+        s => plural(round_div(s, 86_400), "day"),
+    }
+}
+
+/// `1 hour` / `2 hours`. English only, and only for the four units above.
+fn plural(n: i64, unit: &str) -> String {
+    if n == 1 {
+        format!("1 {unit}")
+    } else {
+        format!("{n} {unit}s")
+    }
+}
+
+/// `secs / unit`, rounded to nearest rather than toward zero. Both arguments are
+/// non-negative here — `humanize_ago` takes the absolute value before calling.
+fn round_div(secs: i64, unit: i64) -> i64 {
+    (secs + unit / 2) / unit
 }
