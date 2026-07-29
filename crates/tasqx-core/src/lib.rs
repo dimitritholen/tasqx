@@ -63,6 +63,7 @@ pub mod dispatch;
 pub mod engine;
 pub mod error;
 pub mod filter;
+pub mod markdown;
 pub mod mcp;
 pub mod notify;
 pub mod otlp;
