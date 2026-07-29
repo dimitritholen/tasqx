@@ -157,3 +157,91 @@ fn a_blocked_task_with_dates_and_dependencies_shows_them() {
 
     assert_eq!(task_detail(&task, &iso_opts()), expected);
 }
+
+#[test]
+fn annotation_bodies_survive_verbatim_including_their_own_markdown() {
+    let task = json!({
+        "short_id": 76,
+        "title": "Papercuts",
+        "status": "pending",
+        "priority": "L",
+        "urgency": 1.8,
+        "project": "tasqx-field-test-2026-07",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 2,
+        "annotations": [
+            { "id": "a1", "created": "2026-07-29T09:01:45Z",
+              "body": "## Problem\n\nA list:\n\n- one\n- two\n" }
+        ]
+    });
+
+    let expected = "\
+## #76 · Papercuts
+
+| | |
+|---|---|
+| status | pending |
+| priority | L (urgency 1.8) |
+| project | tasqx-field-test-2026-07 |
+| created | 2026-07-29T09:00:58Z |
+| modified | 2026-07-29T09:01:45Z |
+| rev | 2 |
+
+### Annotations (1)
+
+---
+**2026-07-29T09:01:45Z**
+
+## Problem
+
+A list:
+
+- one
+- two
+";
+
+    assert_eq!(task_detail(&task, &iso_opts()), expected);
+}
+
+#[test]
+fn measurements_render_as_their_own_table() {
+    let task = json!({
+        "short_id": 72,
+        "title": "Correlation flags",
+        "status": "done",
+        "priority": "H",
+        "urgency": 6.0,
+        "project": "tasqx-field-test-2026-07",
+        "created": "2026-07-29T09:00:45Z",
+        "modified": "2026-07-29T09:35:30Z",
+        "_rev": 6,
+        "tokens": [
+            { "input_tokens": 1200, "output_tokens": 340,
+              "cache_read_tokens": 8000, "cache_creation_tokens": 150,
+              "source": "log-parse", "confidence": "high",
+              "tool": "claude-code 2.1", "model": null,
+              "created": "2026-07-29T09:34:56Z" }
+        ]
+    });
+
+    let out = task_detail(&task, &iso_opts());
+    assert!(out.contains("### Tokens (1)"), "got:\n{out}");
+    assert!(
+        out.contains("| claude-code 2.1 | 1200 | 340 | 8000 | 150 | log-parse | high |"),
+        "got:\n{out}"
+    );
+}
+
+#[test]
+fn a_task_without_annotations_or_tokens_emits_neither_section() {
+    let task = json!({
+        "short_id": 1, "title": "Bare", "status": "pending",
+        "priority": null, "urgency": 0.0, "project": null,
+        "created": "2026-07-29T09:00:00Z", "modified": "2026-07-29T09:00:00Z",
+        "_rev": 1, "annotations": [], "tokens": []
+    });
+    let out = task_detail(&task, &iso_opts());
+    assert!(!out.contains("Annotations"), "got:\n{out}");
+    assert!(!out.contains("Tokens"), "got:\n{out}");
+}
