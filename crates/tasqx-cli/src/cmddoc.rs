@@ -233,12 +233,23 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["s"],
         method: "task.start",
         summary: "Mark a task active.",
-        usage: "tasqx start <ref> [--keep]",
+        usage: "tasqx start <ref> [--keep] [--client TOOL] [--session-id ID] [--prompt-id ID] [--transcript-path PATH]",
         examples: &[
             ex_norun("tasqx start 1", "single-active by default"),
             ex_norun("tasqx start 1 --keep", "keep others running"),
+            ex_norun(
+                "tasqx start 1 --client 'claude-code 2.1' --session-id $SID",
+                "record who is working, for token attribution",
+            ),
         ],
-        notes: &[],
+        notes: &[
+            "The correlation flags are for AI agents: they tell the attribution \
+             engine which session and transcript to measure this interval from. \
+             Without them a task is never attributed and reports zero tokens.",
+            "--session-id and --transcript-path require --client, which is what \
+             selects the transcript parser. Given without it, attribution would \
+             store a permanent zero instead of a measurement.",
+        ],
         see_also: &["stop", "done", "next"],
         topic: Topic::Capturing,
     },
@@ -258,9 +269,19 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["d", "x", "complete"],
         method: "task.done",
         summary: "Complete a task.",
-        usage: "tasqx done <ref>",
-        examples: &[ex_norun("tasqx done 1", "completes; spawns the next recurrence if any")],
-        notes: &[],
+        usage: "tasqx done <ref> [--client TOOL] [--session-id ID] [--prompt-id ID] [--transcript-path PATH]",
+        examples: &[
+            ex_norun("tasqx done 1", "completes; spawns the next recurrence if any"),
+            ex_norun(
+                "tasqx done 1 --client 'claude-code 2.1' --session-id $SID",
+                "close the interval an agent opened with the same ids",
+            ),
+        ],
+        notes: &[
+            "The correlation flags carry the same meaning as on `start`, and are \
+             recorded per occurrence: a task can start and finish many times, and \
+             attribution pairs the two events of one interval.",
+        ],
         see_also: &["cancel", "reopen", "start"],
         topic: Topic::Capturing,
     },

@@ -435,9 +435,15 @@ fn execute(cli: Cli) -> Exit {
             expected_rev,
         ),
         Some(Command::List { filter }) => run_list(&mut backend, &ctx, &filter),
-        Some(Command::Start { r#ref, keep }) => run_start(&mut backend, &ctx, r#ref, keep),
+        Some(Command::Start {
+            r#ref,
+            keep,
+            correlation,
+        }) => run_start(&mut backend, &ctx, r#ref, keep, &correlation),
         Some(Command::Stop { r#ref }) => run_stop(&mut backend, &ctx, r#ref),
-        Some(Command::Done { r#ref }) => run_done(&mut backend, &ctx, r#ref),
+        Some(Command::Done { r#ref, correlation }) => {
+            run_done(&mut backend, &ctx, r#ref, &correlation)
+        }
         Some(Command::Show { r#ref }) => run_show(&mut backend, &ctx, r#ref),
         Some(Command::Cancel { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.cancel", r#ref),
         Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),
@@ -1012,8 +1018,35 @@ fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
     Ok((result, text))
 }
 
-fn run_start(be: &mut Backend, ctx: &Ctx, r#ref: String, keep: bool) -> CmdOutcome {
-    let params = json!({ "ref": r#ref, "keep": keep });
+/// Widen a `task.start` / `task.done` params object with whichever correlation
+/// facts were given on the command line (#12, #72).
+///
+/// Mirrors `Correlation::apply` on the engine side deliberately: present keys
+/// only, so a flagless `tasqx done 4` sends byte-for-byte the object it sent
+/// before these flags existed, and the engine's `opt_str_nonempty` never has to
+/// distinguish "absent" from "explicitly null".
+fn apply_correlation(params: &mut Value, c: &command::CorrelationArgs) {
+    for (key, value) in [
+        ("client", &c.client),
+        ("session_id", &c.session_id),
+        ("prompt_id", &c.prompt_id),
+        ("transcript_path", &c.transcript_path),
+    ] {
+        if let Some(v) = value {
+            params[key] = json!(v);
+        }
+    }
+}
+
+fn run_start(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    keep: bool,
+    correlation: &command::CorrelationArgs,
+) -> CmdOutcome {
+    let mut params = json!({ "ref": r#ref, "keep": keep });
+    apply_correlation(&mut params, correlation);
     let result = be.call("task.start", &params)?;
     let text = render::started(ctx, &result);
     Ok((result, text))
@@ -1026,8 +1059,14 @@ fn run_stop(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
     Ok((result, text))
 }
 
-fn run_done(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
-    let params = json!({ "ref": r#ref });
+fn run_done(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    correlation: &command::CorrelationArgs,
+) -> CmdOutcome {
+    let mut params = json!({ "ref": r#ref });
+    apply_correlation(&mut params, correlation);
     let result = be.call("task.done", &params)?;
     let text = render::done(ctx, &result);
     Ok((result, text))
