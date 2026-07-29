@@ -1,10 +1,13 @@
 # MCP task-detail rendering — design
 
 **Date:** 2026-07-29
-**Status:** implemented as **D49** on `feat/mcp-task-detail`, with four departures from
+**Status:** implemented as **D49** on `feat/mcp-task-detail`, with six departures from
 this document — see [Divergences](#divergences-from-what-landed) at the end. The
 decision, the rendering rules and the config surface all landed as written; the
-wiring and two of the test claims did not.
+wiring and two of the test claims did not. Departures 5 and 6 are of a different
+kind from the first four: they are not wiring, they are two defects an adversarial
+review found after D49 was already written down — a duplicated duration reader, and
+a drift guard that was the substring search it promised never to be.
 **Scope:** `tasqx_get_task` only. No other MCP tool, no CLI surface, no protocol change.
 
 ## Problem
@@ -232,6 +235,19 @@ was cut; do not repeat the mistake by hard-coding a number here.
 **Landed as D49.** D48 is left free for the `feat/reporting-redesign` proposal,
 which was audited as the rightful next claimant.
 
+**Open question — the gap that reservation leaves.** DESIGN.md §12 now reads
+D47 → D49, and nothing in the repository says why. The reservation is written
+down in exactly one place, `HANDOFF.md`, which is gitignored: a reader who clones
+this repository and opens DESIGN.md sees a missing number with no explanation,
+and the next author looking for a free D-number has nothing tracked telling them
+48 is spoken for. Three ways out, none of them chosen: leave the gap and accept
+that the record is only complete once the reporting proposal lands; put a
+one-line reserved-for placeholder in §12 so the number is claimed in tracked
+text; or drop the reservation and let that proposal take whatever number is free
+when it actually lands. This is stated as an open question, not a decision —
+nobody has made one. It is recorded here because the only note that currently
+carries it is the one file guaranteed not to survive a clone.
+
 ## Divergences from what landed
 
 Recorded rather than edited into the prose above, so the design stays readable as
@@ -262,9 +278,67 @@ what was *decided* and this section carries what was *built* differently.
    `tests/mcp.rs`'s `tool_text` helper reads block zero and parses it as JSON for
    every other tool, so a second block appearing anywhere else would fail there.
 
-Two smaller notes. The drift guard reads the task back **twice** — once running,
-once finished — and unions the keys, because `active_since` and `completed`
-cannot both hold a value on one task and a single snapshot would leave whichever
-field it cannot hold permanently unchecked. And rule 1 above lists neither
+5. **The renderer wrote its own duration reader instead of using the one in the
+   same crate.** "Failure is not an option the renderer has" above, and the
+   configuration table's promise that `relative` turns `PT2H` into `2h`, were
+   both implemented by a private `iso_duration_secs` in `markdown.rs` — the
+   implementation plan prescribed it, and nobody asked why `crate::util::duration_secs`,
+   public and one module over, was not enough. The copy diverged the two ways a
+   copy always diverges. It knew less: only `D/H/M/S`, while `datetime::parse_duration`
+   validates against `duration_secs` and therefore accepts and stores `Y`, `W`
+   and date-position `M` verbatim — so a stored `estimate:P2W` reached the
+   renderer, failed to parse, and `TimeFormat::Relative` handed back the raw ISO
+   string it exists to replace. And it was less careful: `* 86_400`, `* 3600`,
+   `* 60` and `+=` unchecked, against seven `checked_*` calls in the original,
+   whose doc comment records that unchecked arithmetic there once made `report`
+   panic in debug and print a wrapped total in release. That defect was rebuilt
+   one module over, under a public function whose stated contract is that it
+   never panics: `PT999999999999999999H` panicked, `P999999999999999999D`
+   printed `-4549241255539855744`. Removed; `fmt_duration` now calls
+   `crate::util::duration_secs`, no golden expectation changed, and the plan is
+   annotated in place so the listing is not copied again. **Not fully closed:**
+   `round_div`'s `secs + unit / 2` is still unchecked, and `parse_duration` puts
+   no ceiling on an estimate, so `estimate:PT9223372036854775807S` is storable
+   and still panics `task_detail`. The reader is shared now; the overflow moved
+   one function down.
+
+6. **The drift guard was the substring search it says here it is not.** The
+   section above states that "accounted for" is a declared key→row mapping "not
+   a substring search for the key name", and DESIGN.md's D49 entry repeated the
+   claim. What shipped declared nine keys and, for every other key, *generated*
+   the needle `| {key} |` — a substring search for the key name, taken by
+   roughly fifteen of the keys `task.get` returns. The needles matched the row's
+   **label**, which `row()` writes from a literal, so they stayed satisfied after
+   the cell stopped arriving: emitting `row("project", "")` left the guard green.
+   That is exactly the drift the mapping exists to catch, which makes the cost
+   worse than a missing test — the guard, and the design entry vouching for it,
+   were both reassuring. A guard that passes for the wrong reason is worse than
+   no guard, and this one shipped that way. The `status_unrecognized` mapping was
+   dead on top of that: its declared needle `| status |` was satisfied by the
+   always-present status row, and the fixture only ever drove
+   pending→active→done, so the flag was never emitted and rule 4 could be deleted
+   from `status_cell` outright with everything green. Fixed: the fallback arm is
+   gone, so a key in neither table fails naming itself; needles carry fixture
+   **values** (`Shows::Cell` a literal containing one, `Shows::Row` a
+   `| label | value |` built from that snapshot's own JSON), so a row that keeps
+   its label and loses its cell fails, and a key the fixture leaves null
+   everywhere is reported rather than passed; and a third snapshot, whose status
+   is written straight through the connection the way `tests/increment.rs`
+   reaches the same D28 state, makes the unrecognized-status mapping fire against
+   the suffix the flag actually produces.
+
+Two smaller notes. The drift guard reads the task back **three times** — running,
+finished, and once more from a store whose status was written behind the API —
+and unions the keys, because `active_since` and `completed` cannot both hold a
+value on one task, `status_unrecognized` can be produced by no writer of this
+build at all, and a single snapshot would leave whichever field it cannot hold
+permanently unchecked. And rule 1 above lists neither
 `estimate` nor `tracked` among the always-present or the optional fields, though
 its own example shows them; both are rendered only when set.
+
+Checked while recording the above, since a rewrite of the guard is the obvious
+place for an escape hatch to widen: the `OMITTED` list still holds exactly one
+entry, `id` (`crates/tasqx-core/tests/markdown_detail.rs:431`), unchanged from
+the day it was written. Every other key `task.get` returns is now declared in
+`RENDERED_AS` with a needle, which is the opposite of widening — before the fix
+only nine keys were declared at all.
