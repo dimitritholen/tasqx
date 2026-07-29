@@ -82,6 +82,12 @@ pub enum Choices {
     Free,
     /// The installed themes: the built-ins plus the user's theme files.
     Themes,
+    /// A closed vocabulary. Unlike `Free` and `Themes`, this one is ENFORCED at
+    /// write time rather than merely offered by an editor: the values are right
+    /// here, so nothing outside this module has to be asked. Without that, a
+    /// typo is persisted and then read as the default on every run — a write
+    /// that answers `ok` and changes nothing.
+    OneOf(&'static [&'static str]),
 }
 
 /// One setting. The `[section] key` form in `config.toml` is derived by
@@ -173,6 +179,16 @@ pub const SETTINGS: &[Setting] = &[
         choices: Choices::Free,
         summary:
             "Project a bare `tasqx add` files into. Lives in the store; set it with `tasqx use`.",
+    },
+    Setting {
+        key: "detail.time_format",
+        home: Home::Toml,
+        kind: Kind::Str,
+        default: "both",
+        env: None,
+        flag: None,
+        choices: Choices::OneOf(&["iso", "relative", "both"]),
+        summary: "How the MCP task-detail view writes timestamps and durations.",
     },
 ];
 
@@ -557,7 +573,20 @@ pub fn write_value_in(
                 )))
             }
         },
-        Kind::Str => value.into(),
+        // A `Str` is free text unless the registry closed the set for it, in
+        // which case the list is the validator — the same shape as the `Bool`
+        // and `Uint` arms above, just with the vocabulary carried in `choices`
+        // instead of implied by the type.
+        Kind::Str => match s.choices {
+            Choices::OneOf(allowed) if !allowed.contains(&value) => {
+                return Err(ApiError::bad_request(format!(
+                    "{} takes one of {}, got {value:?}",
+                    s.key,
+                    allowed.join(", ")
+                )))
+            }
+            _ => value.into(),
+        },
     };
     let path = dir.join("config.toml");
     let mut doc = read_document(&path)?;
@@ -1143,10 +1172,40 @@ name = \"nord\"
     /// leaves `config edit` with no theme picker — and the live theme preview is
     /// the whole reason that screen exists.
     #[test]
-    fn only_the_theme_setting_declares_a_closed_value_set() {
+    fn each_setting_declares_the_value_set_an_editor_can_offer() {
         assert_eq!(find("theme.name").unwrap().choices, Choices::Themes);
         assert_eq!(find("notify.enabled").unwrap().choices, Choices::Free);
         assert_eq!(find("default_project").unwrap().choices, Choices::Free);
+        assert_eq!(
+            find("detail.time_format").unwrap().choices,
+            Choices::OneOf(&["iso", "relative", "both"])
+        );
+    }
+
+    /// `Choices::OneOf` is the one variant the WRITER consults, not just an
+    /// editor: `Themes` is a filesystem question this module cannot answer, but
+    /// a fixed list is one it can, so a value outside it is refused at the point
+    /// of writing rather than persisted and then silently ignored on every run.
+    ///
+    /// The error must name the alternatives. A refusal that says only "no" leaves
+    /// the user guessing at a vocabulary the binary already knows.
+    #[test]
+    fn a_one_of_setting_refuses_a_value_outside_its_list() {
+        let s = find("detail.time_format").expect("detail.time_format is registered");
+        assert_eq!(s.default, "both");
+
+        let dir = temp_dir("one-of");
+        let err = write_value_in(&dir, s, "xyz").unwrap_err();
+        assert!(
+            err.message.contains("iso, relative, both"),
+            "the refusal must list the valid values: {}",
+            err.message
+        );
+        // Refused before any filesystem work, like every other rejected write.
+        assert!(!dir.exists(), "a refused write created {}", dir.display());
+
+        write_value_in(&dir, s, "relative").expect("a listed value is accepted");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Two `config set` processes shared ONE scratch filename

@@ -35,6 +35,7 @@ use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::Parser;
 use serde_json::{json, Value};
 
+use tasqx_core::markdown::TimeFormat;
 use tasqx_core::{
     daemon, datetime, dispatch, handle_envelope, notify, ApiError, Engine, ErrorCode, McpServer,
     Scope,
@@ -627,6 +628,24 @@ fn config_tokens_enabled() -> bool {
     let s = config::find("tokens.enabled").expect("tokens.enabled is a registered setting");
     let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
     v == "true"
+}
+
+/// Read `[detail] time_format` from `config.toml`.
+///
+/// Falls back to `Both` on every failure — no config dir, no file, malformed
+/// TOML, or a value the registry would have refused had it come through
+/// `config set` — matching how [`config_tokens_enabled`] treats its own failure
+/// modes. A hand-edited `config.toml` is the one path that reaches the writer's
+/// validation, so this side must not trust what it reads.
+fn config_detail_time_format() -> TimeFormat {
+    let s =
+        config::find("detail.time_format").expect("detail.time_format is a registered setting");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    match v.as_str() {
+        "iso" => TimeFormat::Iso,
+        "relative" => TimeFormat::Relative,
+        _ => TimeFormat::Both,
+    }
 }
 
 /// Read `[otlp] enabled` from `config.toml` (#18, DESIGN §10).
@@ -2216,6 +2235,7 @@ fn build_row(
         choices: match s.choices {
             config::Choices::Themes => themes.to_vec(),
             config::Choices::Free => Vec::new(),
+            config::Choices::OneOf(values) => values.iter().map(|v| (*v).to_string()).collect(),
         },
     }
 }
@@ -2572,7 +2592,7 @@ fn run_mcp_serve(scope: Scope) {
     };
     eprintln!("tasqx mcp: serving over stdio (scope={})", scope.as_str());
 
-    let server = McpServer::new(&engine, scope);
+    let server = McpServer::new(&engine, scope).with_time_format(config_detail_time_format());
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     // Hold both locks for the whole session: this process writes nothing else

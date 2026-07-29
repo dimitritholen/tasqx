@@ -2430,3 +2430,33 @@ fn the_config_table_stays_aligned_when_a_value_is_not_ascii() {
         "the value must still be shown whole:\n{stdout}"
     );
 }
+
+/// `detail.time_format` has three meanings and no more. A fourth value would
+/// persist happily and then be read as the default on every run — the config
+/// equivalent of answering `ok` to a write that changes nothing — so the refusal
+/// belongs at `config set`, and it has to name the vocabulary it is holding the
+/// user to.
+///
+/// End-to-end because the registry check and the exit code are two different
+/// facts: validation that returns an error nothing surfaces still exits 0.
+#[test]
+fn config_set_refuses_an_unknown_detail_time_format() {
+    let dir = fresh_config_dir("timefmt");
+    let out = bin("timefmt", &dir)
+        .args(["config", "set", "detail.time_format", "xyz"])
+        .output()
+        .expect("config set");
+    assert!(!out.status.success(), "an unknown value must be refused");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("iso"),
+        "the error must list the valid values, got: {stderr}"
+    );
+
+    // And a valid one still works.
+    assert!(bin("timefmt", &dir)
+        .args(["config", "set", "detail.time_format", "relative"])
+        .status()
+        .expect("config set")
+        .success());
+}
