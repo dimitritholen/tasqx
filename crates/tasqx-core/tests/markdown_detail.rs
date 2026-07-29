@@ -366,6 +366,44 @@ fn an_overflowing_duration_falls_back_rather_than_panicking_or_wrapping() {
     }
 }
 
+/// The case the test above does NOT reach, and the one that actually shipped
+/// broken.
+///
+/// All four inputs there are ones `util::duration_secs` refuses, so they never
+/// touch the arithmetic. A bare seconds count does: `PT9223372036854775807S`
+/// parses to `Some(i64::MAX)` — the store's own validator accepts it — and then
+/// `round_div`'s old `(secs + unit / 2) / unit` overflowed. Debug builds
+/// panicked, so `tasqx_get_task` answered `{"error":{"code":-32603}}` instead of
+/// the task; the release profile ships without `overflow-checks`, so it wrapped
+/// silently and rendered `| estimate | -106751991167300d |`.
+///
+/// The silent wrap is the worse half: a panic at least announces itself, and a
+/// view that degrades to an error envelope is exactly what D49 forbids by making
+/// it worse than the plain JSON it replaced.
+#[test]
+fn a_duration_at_the_integer_ceiling_neither_panics_nor_wraps() {
+    // Not a hypothetical: `tasqx add x --estimate PT9223372036854775807S` is
+    // accepted today, and `store.import` reaches the same value through
+    // `tracked_seconds`, which no user ever types.
+    assert_eq!(
+        tasqx_core::util::duration_secs("PT9223372036854775807S"),
+        Some(i64::MAX),
+        "this test is only meaningful while the shared reader ACCEPTS this input"
+    );
+
+    for time in [TimeFormat::Iso, TimeFormat::Relative, TimeFormat::Both] {
+        let out = task_detail(&with_estimate("PT9223372036854775807S"), &opts(time));
+        assert!(
+            !out.contains("| estimate | -") && !out.contains(" (-"),
+            "a wrapped negative total must never reach the view, got:\n{out}"
+        );
+        assert!(
+            out.contains("| estimate |"),
+            "the row must still render, got:\n{out}"
+        );
+    }
+}
+
 #[test]
 fn an_unparseable_instant_falls_back_to_the_raw_value_rather_than_panicking() {
     let task = json!({
@@ -551,6 +589,21 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
         }),
     );
 
+    // `pending` and `backlog` are read too, and that is not padding: an
+    // adversarial review found that snapshotting only active/done/anomalous let a
+    // key emitted ONLY for a pending task slip past this guard green — and
+    // `pending` is the status every task tasqx creates starts in. The probe that
+    // proved it (`if status is pending { v["probe"] = ... }` in
+    // `flag_unrecognized_status`) passed before this snapshot existed and fails
+    // now. `backlog` needs its own task: it is what a future `wait` produces, and
+    // a task in it cannot be started, so task 2 can never visit both.
+    let pending = d("task.get", &json!({ "ref": 2 }));
+    d(
+        "task.add",
+        &json!({ "title": "waiting", "wait": "2099-01-01T00:00:00Z" }),
+    );
+    let waiting = d("task.get", &json!({ "ref": 3 }));
+
     d("task.start", &json!({ "ref": 2 }));
     let running = d("task.get", &json!({ "ref": 2 }));
     d("task.done", &json!({ "ref": 2 }));
@@ -568,7 +621,7 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
         .expect("a store from a newer build");
     let anomalous = d("task.get", &json!({ "ref": 2 }));
 
-    let snapshots: Vec<(Value, String)> = [running, finished, anomalous]
+    let snapshots: Vec<(Value, String)> = [pending, waiting, running, finished, anomalous]
         .into_iter()
         .map(|task| {
             let view = task_detail(&task, &iso_opts());

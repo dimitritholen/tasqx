@@ -1,13 +1,15 @@
 # MCP task-detail rendering — design
 
 **Date:** 2026-07-29
-**Status:** implemented as **D49** on `feat/mcp-task-detail`, with six departures from
-this document — see [Divergences](#divergences-from-what-landed) at the end. The
-decision, the rendering rules and the config surface all landed as written; the
-wiring and two of the test claims did not. Departures 5 and 6 are of a different
-kind from the first four: they are not wiring, they are two defects an adversarial
-review found after D49 was already written down — a duplicated duration reader, and
-a drift guard that was the substring search it promised never to be.
+**Status:** implemented as **D49** on `feat/mcp-task-detail`, with seven departures
+from this document — see [Divergences](#divergences-from-what-landed) at the end.
+The decision, the rendering rules and the config surface all landed as written; the
+wiring and two of the test claims did not. Departures 5–7 are of a different kind
+from the first four: they are not wiring, they are defects two adversarial reviews
+found after D49 was already written down — a duplicated duration reader, a drift
+guard that was the substring search it promised never to be, and an overflow that
+survived the first fix by moving one function down. Every one of them was found by
+an agent asked to refute the work, and none by an agent asked to build or test it.
 **Scope:** `tasqx_get_task` only. No other MCP tool, no CLI surface, no protocol change.
 
 ## Problem
@@ -296,11 +298,28 @@ what was *decided* and this section carries what was *built* differently.
    never panics: `PT999999999999999999H` panicked, `P999999999999999999D`
    printed `-4549241255539855744`. Removed; `fmt_duration` now calls
    `crate::util::duration_secs`, no golden expectation changed, and the plan is
-   annotated in place so the listing is not copied again. **Not fully closed:**
-   `round_div`'s `secs + unit / 2` is still unchecked, and `parse_duration` puts
-   no ceiling on an estimate, so `estimate:PT9223372036854775807S` is storable
-   and still panics `task_detail`. The reader is shared now; the overflow moved
-   one function down.
+   annotated in place so the listing is not copied again.
+
+   **Removing the fork did not close the panic — it moved it one function down**,
+   and a second adversarial pass caught that. `round_div`'s `secs + unit / 2` was
+   still unchecked, and `parse_duration` puts no ceiling on an estimate, so
+   `estimate:PT9223372036854775807S` was storable and then aborted `task_detail`.
+   Two things made that worse than the first round. In debug, `tasqx_get_task`
+   answered `{"error":{"code":-32603}}` instead of the task — the view degrading
+   to strictly less than the JSON it replaced, which is what this design forbids.
+   In the **release profile the binaries actually ship as**, `[profile.release]`
+   sets no `overflow-checks`, so there was no panic at all: it wrapped and
+   rendered `| estimate | -106751991167300d |`. And the trigger was never limited
+   to a hand-typed absurd estimate — `store.import` reaches the same value through
+   `tracked_seconds`, a key on `IMPORT_TASK_KEYS` that no user ever types.
+
+   The test written alongside the first fix did not catch this, and the reason is
+   worth keeping: all four of its inputs were ones `duration_secs` *refuses*, so
+   none reached the arithmetic. It asserted the property on the half of the input
+   space that could not violate it. `round_div` now divides first and decides on
+   the remainder — overflow-free for any non-negative input, rather than checked
+   arithmetic with a fallback, which would have left "what do we print when it
+   overflows" live forever on a path whose contract is that it cannot fail.
 
 6. **The drift guard was the substring search it says here it is not.** The
    section above states that "accounted for" is a declared key→row mapping "not
@@ -342,3 +361,21 @@ entry, `id` (`crates/tasqx-core/tests/markdown_detail.rs:431`), unchanged from
 the day it was written. Every other key `task.get` returns is now declared in
 `RENDERED_AS` with a needle, which is the opposite of widening — before the fix
 only nine keys were declared at all.
+
+7. **The drift guard's state coverage, found only by attacking it from the
+   unused direction.** Every check on the guard so far had removed something and
+   watched it fail. Nobody had *added* a field and watched it fail — which is the
+   guard's actual purpose. Doing that exposed a hole the value-needle fix did not
+   touch: the fixture read the task in `active`, `done` and the anomalous `Done`
+   state, so a key `task.get` emits **only** for a `pending` or `backlog` task
+   escaped entirely. `pending` is the status every task tasqx creates starts in.
+   A probe emitting a field for pending tasks only passed the guard green; the
+   same probe emitted unconditionally failed it, so the gap was state coverage,
+   not the mapping. Fixed by snapshotting the task before it is started, plus a
+   second task parked in `backlog` behind a future `wait` — a state task 2 can
+   never visit, since a backlog task cannot be started.
+
+   Worth stating plainly, because it generalises past this feature: the guard was
+   verified three times by deletion and zero times by addition, and deletion was
+   the direction that could not find this. A test's blind spot tends to sit in
+   whichever direction nobody exercised, not in the one everyone re-ran.
