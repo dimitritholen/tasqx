@@ -430,26 +430,89 @@ fn every_other_tool_still_returns_exactly_one_block() {
 /// is the accident this test exists to prevent.
 const OMITTED: &[(&str, &str)] = &[("id", "the UUID; short_id is the handle users type")];
 
-/// Keys rendered under a different label or folded into another row. This is a
-/// declared key-to-row mapping, NOT a substring search for the key name: `_rev`
-/// renders as `rev` and `urgency` sits inside the priority cell, so a text
-/// search would both miss those and match by accident on values.
+/// How one key proves it reached the view.
+///
+/// There is no fallback arm and no generated needle: a key absent from
+/// [`RENDERED_AS`] and from [`OMITTED`] fails the guard by name. A fallback that
+/// guessed `| {key} |` would have been the substring search this mapping exists
+/// to replace — it matches the row's LABEL, which `row()` writes from a literal,
+/// so it stays true after the VALUE stops arriving.
+enum Shows {
+    /// The key renders as its own `| label | value |` row. The needle is built
+    /// from the declared label and the task's OWN value, so a row that kept its
+    /// label and lost its cell fails. The value is read per snapshot: a key that
+    /// is null everywhere yields no needle at all and is reported unaccounted,
+    /// which is the right answer — the fixture must populate it or declare it.
+    Row(&'static str),
+    /// The key does not render as one labelled row — it is folded into another
+    /// cell, shares a heading, or lands in a section table. The literal needle
+    /// carries the fixture's value wherever the shape allows.
+    Cell(&'static str),
+}
+
+/// Every key `task.get` returns, and what proves it reached the view.
+///
+/// This is a declared key-to-row mapping, NOT a substring search for the key
+/// name: `_rev` renders as `rev`, `urgency` sits inside the priority cell and
+/// `status_unrecognized` turns into a suffix on the status cell, so a text
+/// search would miss all three and match by accident on values.
 ///
 /// The needles carry content, not just structure. `short_id` and `title` share
 /// one heading, and a needle of `## #` would be satisfied by a heading that had
-/// lost the title — a guard that passes on the fault it exists to catch. Both
-/// therefore point at the fixture's own values below.
-const RENDERED_AS: &[(&str, &str)] = &[
-    ("_rev", "| rev |"),
-    ("urgency", "(urgency "),
-    ("status_unrecognized", "| status |"),
-    ("short_id", "## #2 ·"),
-    ("title", "· fully populated"),
-    ("depends_on", "| depends on |"),
-    ("active_since", "| active since |"),
-    ("annotations", "### Annotations"),
-    ("tokens", "### Tokens"),
+/// lost the title — a guard that passes on the fault it exists to catch. Every
+/// entry here therefore points at a fixture value: literally for [`Shows::Cell`],
+/// and through the task's own JSON for [`Shows::Row`].
+const RENDERED_AS: &[(&str, Shows)] = &[
+    ("short_id", Shows::Cell("## #2 ·")),
+    ("title", Shows::Cell("· fully populated")),
+    ("status", Shows::Row("status")),
+    // The flag is a boolean, and the only trace it leaves is this suffix. A
+    // needle of `| status |` would be satisfied by the always-present status
+    // row, which is how rule 4 could be deleted outright with this guard still
+    // green.
+    (
+        "status_unrecognized",
+        Shows::Cell("| status | Done (unrecognized — "),
+    ),
+    ("priority", Shows::Cell("| priority | H (urgency 6) |")),
+    ("urgency", Shows::Cell("(urgency 6)")),
+    ("project", Shows::Row("project")),
+    ("tags", Shows::Cell("| tags | a, b |")),
+    ("estimate", Shows::Row("estimate")),
+    ("tracked", Shows::Row("tracked")),
+    ("due", Shows::Row("due")),
+    ("scheduled", Shows::Row("scheduled")),
+    ("wait", Shows::Row("wait")),
+    ("remind", Shows::Row("remind")),
+    ("recurrence", Shows::Row("recurrence")),
+    ("active_since", Shows::Row("active since")),
+    ("completed", Shows::Row("completed")),
+    ("blocked", Shows::Cell("| blocked | yes |")),
+    ("depends_on", Shows::Cell("| depends on | #1 |")),
+    ("created", Shows::Row("created")),
+    ("modified", Shows::Row("modified")),
+    ("_rev", Shows::Row("rev")),
+    // The count is what this view derives from the array. That the BODIES land
+    // verbatim is pinned by
+    // `annotation_bodies_survive_verbatim_including_their_own_markdown`, which
+    // compares the whole output.
+    ("annotations", Shows::Cell("### Annotations (1)")),
+    (
+        "tokens",
+        Shows::Cell("| claude-code | 12 | 0 | 0 | 0 | self-report | medium |"),
+    ),
 ];
+
+/// The scalar a `Shows::Row` needle interpolates, or `None` when the snapshot
+/// does not carry one. Strings and numbers only: those are the JSON shapes the
+/// view writes into a cell unchanged.
+fn cell_value(task: &Value, key: &str) -> Option<String> {
+    match task.get(key)? {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
 
 #[test]
 fn every_field_task_get_returns_is_accounted_for_in_the_view() {
@@ -458,10 +521,9 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
     //
     // `active_since` and `completed` cannot both hold a value on one task —
     // starting sets the first, completing clears it and sets the second — so
-    // the task is read TWICE, once running and once finished, and a key counts
-    // as accounted for when either view shows it. Rendering one snapshot would
-    // otherwise leave whichever field the snapshot cannot hold permanently
-    // unchecked.
+    // the task is read MORE THAN ONCE, and a key counts as accounted for when
+    // any snapshot shows it. Rendering one snapshot would otherwise leave
+    // whichever field the snapshot cannot hold permanently unchecked.
     let engine = Engine::open_in_memory().expect("engine");
     let d = |m: &str, p: &Value| dispatch(&engine, m, p).expect("dispatch");
     d("project.create", &json!({ "name": "p" }));
@@ -491,13 +553,31 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
 
     d("task.start", &json!({ "ref": 2 }));
     let running = d("task.get", &json!({ "ref": 2 }));
-    let running_view = task_detail(&running, &iso_opts());
     d("task.done", &json!({ "ref": 2 }));
     let finished = d("task.get", &json!({ "ref": 2 }));
-    let finished_view = task_detail(&finished, &iso_opts());
+    // `status_unrecognized` is emitted for a status no writer of THIS build
+    // could have produced (D28), so a fixture that only drives the state
+    // machine can never carry it — and a mapping that can never fire is a
+    // mapping nobody is checking. A store written by a newer build is what
+    // produces it in the field; `crates/tasqx-core/tests/increment.rs` reaches
+    // that state the same way, by writing the status through the connection
+    // rather than through the API that refuses it.
+    engine
+        .conn()
+        .execute("UPDATE tasks SET status = 'Done' WHERE short_id = 2", [])
+        .expect("a store from a newer build");
+    let anomalous = d("task.get", &json!({ "ref": 2 }));
+
+    let snapshots: Vec<(Value, String)> = [running, finished, anomalous]
+        .into_iter()
+        .map(|task| {
+            let view = task_detail(&task, &iso_opts());
+            (task, view)
+        })
+        .collect();
 
     let mut keys: Vec<String> = Vec::new();
-    for task in [&running, &finished] {
+    for (task, _) in &snapshots {
         for key in task.as_object().expect("task.get returns an object").keys() {
             if !keys.contains(key) {
                 keys.push(key.clone());
@@ -505,27 +585,51 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
         }
     }
 
-    let mut unaccounted: Vec<&str> = Vec::new();
+    let mut unaccounted: Vec<(&str, String)> = Vec::new();
     for key in &keys {
         if OMITTED.iter().any(|(k, _)| k == key) {
             continue;
         }
-        let needle = RENDERED_AS
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, n)| (*n).to_string())
-            .unwrap_or_else(|| format!("| {} |", key.replace('_', " ")));
-        if !running_view.contains(&needle) && !finished_view.contains(&needle) {
-            unaccounted.push(key);
+        let Some((_, shows)) = RENDERED_AS.iter().find(|(k, _)| k == key) else {
+            unaccounted.push((key, "not in RENDERED_AS or OMITTED".to_string()));
+            continue;
+        };
+        // A needle per snapshot, checked against THAT snapshot's view: a `Row`
+        // needle carries the value the very task being rendered holds, so it
+        // cannot be satisfied by a different snapshot's cell.
+        let mut needles: Vec<String> = Vec::new();
+        let mut found = false;
+        for (task, view) in &snapshots {
+            let needle = match shows {
+                Shows::Cell(literal) => (*literal).to_string(),
+                Shows::Row(label) => match cell_value(task, key) {
+                    Some(value) => format!("| {label} | {value} |"),
+                    None => continue,
+                },
+            };
+            found |= view.contains(&needle);
+            if !needles.contains(&needle) {
+                needles.push(needle);
+            }
+        }
+        if !found {
+            let tried = if needles.is_empty() {
+                "no snapshot carried a value to look for".to_string()
+            } else {
+                format!("looked for {needles:?}")
+            };
+            unaccounted.push((key, tried));
         }
     }
 
+    let views: Vec<&str> = snapshots.iter().map(|(_, v)| v.as_str()).collect();
     assert!(
         unaccounted.is_empty(),
-        "fields task.get returns that the detail view neither renders nor \
-         declares as omitted: {unaccounted:?}\n\nAdd each to the view, to \
+        "fields task.get returns whose VALUE the detail view neither renders \
+         nor declares as omitted: {unaccounted:#?}\n\nAdd each to the view, to \
          RENDERED_AS with the row it lands in, or to OMITTED with a reason.\n\n\
-         running view was:\n{running_view}\nfinished view was:\n{finished_view}"
+         views were:\n{}",
+        views.join("\n----\n")
     );
 }
 
