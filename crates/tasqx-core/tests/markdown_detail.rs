@@ -299,6 +299,73 @@ fn a_future_instant_reads_as_in_rather_than_ago() {
     assert!(out.contains("| due | in 1 day |"), "got:\n{out}");
 }
 
+/// Build a task whose only interesting field is `estimate`.
+fn with_estimate(estimate: &str) -> Value {
+    json!({
+        "short_id": 1, "title": "Estimated", "status": "pending",
+        "priority": null, "urgency": 0.0, "project": null,
+        "estimate": estimate,
+        "created": "2026-07-29T09:00:00Z", "modified": "2026-07-29T09:00:00Z",
+        "_rev": 1
+    })
+}
+
+/// The view must read every duration the STORE accepts, not a subset of it.
+///
+/// `datetime::parse_duration` validates an ISO estimate with
+/// `util::duration_secs` and stores it verbatim, so `estimate:P2W` reaches the
+/// renderer as the literal `P2W`. A second, narrower reader that knew only
+/// D/H/M/S answered `None` for it, and `TimeFormat::Relative` — which promises
+/// the readable form INSTEAD of the ISO one — silently handed back the raw ISO
+/// string it was asked to replace. The two readers are now one.
+#[test]
+fn a_calendar_unit_estimate_humanizes_instead_of_leaking_its_iso_string() {
+    for (estimate, human) in [
+        ("P2W", "14d"),
+        ("P1Y", "365d"),
+        ("P1M", "30d"),
+        ("P1WT12H", "8d"),
+    ] {
+        let out = task_detail(&with_estimate(estimate), &opts(TimeFormat::Relative));
+        assert!(
+            out.contains(&format!("| estimate | {human} |")),
+            "{estimate} must render as {human}, got:\n{out}"
+        );
+        assert!(
+            !out.contains(estimate),
+            "{estimate} must not survive into a relative view, got:\n{out}"
+        );
+    }
+}
+
+/// Presentation may not fail (DESIGN.md), and `task_detail` is public API — so
+/// "no store writes a duration this big" is not a defence. It reached the
+/// renderer before this test existed, through a reader whose `* 86_400` and
+/// `+=` were unchecked: this panicked in debug and printed a wrapped, negative
+/// total in release. `util::duration_secs` is checked throughout and answers
+/// `None`, which lands in the raw-string fallback.
+#[test]
+fn an_overflowing_duration_falls_back_rather_than_panicking_or_wrapping() {
+    for absurd in [
+        "PT999999999999999999H",
+        "P999999999999999999D",
+        "P9223372036854775807Y",
+        "P9223372036854775807W",
+    ] {
+        for time in [TimeFormat::Iso, TimeFormat::Relative, TimeFormat::Both] {
+            let out = task_detail(&with_estimate(absurd), &opts(time));
+            assert!(
+                out.contains(&format!("| estimate | {absurd} |")),
+                "{absurd} must fall back to itself, got:\n{out}"
+            );
+            assert!(
+                !out.contains("| estimate | -") && !out.contains(" (-"),
+                "a wrapped negative total must never reach the view, got:\n{out}"
+            );
+        }
+    }
+}
+
 #[test]
 fn an_unparseable_instant_falls_back_to_the_raw_value_rather_than_panicking() {
     let task = json!({
