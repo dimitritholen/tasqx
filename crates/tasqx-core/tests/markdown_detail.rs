@@ -355,3 +355,126 @@ fn every_other_tool_still_returns_exactly_one_block() {
     let result = call_tool(&server, "tasqx_list_tasks", json!({}));
     assert_eq!(result["content"].as_array().expect("content").len(), 1);
 }
+
+// ---- the drift guard ---------------------------------------------------------
+
+/// Keys `task_detail` deliberately does not render, each with its reason.
+/// Adding to this list is a decision; leaving a key off it and out of the view
+/// is the accident this test exists to prevent.
+const OMITTED: &[(&str, &str)] = &[("id", "the UUID; short_id is the handle users type")];
+
+/// Keys rendered under a different label or folded into another row. This is a
+/// declared key-to-row mapping, NOT a substring search for the key name: `_rev`
+/// renders as `rev` and `urgency` sits inside the priority cell, so a text
+/// search would both miss those and match by accident on values.
+///
+/// The needles carry content, not just structure. `short_id` and `title` share
+/// one heading, and a needle of `## #` would be satisfied by a heading that had
+/// lost the title — a guard that passes on the fault it exists to catch. Both
+/// therefore point at the fixture's own values below.
+const RENDERED_AS: &[(&str, &str)] = &[
+    ("_rev", "| rev |"),
+    ("urgency", "(urgency "),
+    ("status_unrecognized", "| status |"),
+    ("short_id", "## #2 ·"),
+    ("title", "· fully populated"),
+    ("depends_on", "| depends on |"),
+    ("active_since", "| active since |"),
+    ("annotations", "### Annotations"),
+    ("tokens", "### Tokens"),
+];
+
+#[test]
+fn every_field_task_get_returns_is_accounted_for_in_the_view() {
+    // A task with EVERY field populated, so no key can be missing merely
+    // because this fixture left it null.
+    //
+    // `active_since` and `completed` cannot both hold a value on one task —
+    // starting sets the first, completing clears it and sets the second — so
+    // the task is read TWICE, once running and once finished, and a key counts
+    // as accounted for when either view shows it. Rendering one snapshot would
+    // otherwise leave whichever field the snapshot cannot hold permanently
+    // unchecked.
+    let engine = Engine::open_in_memory().expect("engine");
+    let d = |m: &str, p: &Value| dispatch(&engine, m, p).expect("dispatch");
+    d("project.create", &json!({ "name": "p" }));
+    d("task.add", &json!({ "title": "blocker" }));
+    d(
+        "task.add",
+        &json!({
+            "title": "fully populated",
+            "project": "p", "priority": "H", "tags": ["a", "b"],
+            "estimate": "PT3H", "due": "2030-01-01T00:00:00Z",
+            // Both in the past: a future `wait`/`scheduled` would land the task
+            // in `backlog`, which cannot be started, and this fixture needs an
+            // `active_since`.
+            "scheduled": "2020-01-02T00:00:00Z", "wait": "2020-01-01T00:00:00Z",
+            "remind": "-1h", "recurrence": "weekly on mon"
+        }),
+    );
+    d("dependency.add", &json!({ "ref": 2, "depends_on": 1 }));
+    d("annotation.add", &json!({ "ref": 2, "body": "note" }));
+    d(
+        "token.add",
+        &json!({
+            "ref": 2, "tool": "claude-code", "source": "self-report",
+            "confidence": "medium", "input_tokens": 12
+        }),
+    );
+
+    d("task.start", &json!({ "ref": 2 }));
+    let running = d("task.get", &json!({ "ref": 2 }));
+    let running_view = task_detail(&running, &iso_opts());
+    d("task.done", &json!({ "ref": 2 }));
+    let finished = d("task.get", &json!({ "ref": 2 }));
+    let finished_view = task_detail(&finished, &iso_opts());
+
+    let mut keys: Vec<String> = Vec::new();
+    for task in [&running, &finished] {
+        for key in task.as_object().expect("task.get returns an object").keys() {
+            if !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+    }
+
+    let mut unaccounted: Vec<&str> = Vec::new();
+    for key in &keys {
+        if OMITTED.iter().any(|(k, _)| k == key) {
+            continue;
+        }
+        let needle = RENDERED_AS
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, n)| (*n).to_string())
+            .unwrap_or_else(|| format!("| {} |", key.replace('_', " ")));
+        if !running_view.contains(&needle) && !finished_view.contains(&needle) {
+            unaccounted.push(key);
+        }
+    }
+
+    assert!(
+        unaccounted.is_empty(),
+        "fields task.get returns that the detail view neither renders nor \
+         declares as omitted: {unaccounted:?}\n\nAdd each to the view, to \
+         RENDERED_AS with the row it lands in, or to OMITTED with a reason.\n\n\
+         running view was:\n{running_view}\nfinished view was:\n{finished_view}"
+    );
+}
+
+#[test]
+fn a_malformed_value_yields_a_thin_view_rather_than_a_panic() {
+    for bad in [
+        json!({}),
+        json!(null),
+        json!([1, 2, 3]),
+        json!({ "short_id": "not-a-number", "title": 42, "tags": "not-an-array" }),
+    ] {
+        let out = task_detail(&bad, &iso_opts());
+        assert!(
+            !out.is_empty(),
+            "renderer must never return an empty string for {bad:?}"
+        );
+        assert!(out.starts_with("## #"), "got:\n{out}");
+    }
+}
