@@ -245,14 +245,21 @@ fn fmt_instant(iso: &str, opts: &DetailOpts) -> String {
     }
 }
 
-/// Format one ISO-8601 duration per `opts.time`. Only the shapes tasqx itself
-/// writes are recognised (`PT1H30M`, `PT0S`, `P2D`); anything else falls back
-/// to the raw string.
+/// Format one ISO-8601 duration per `opts.time`. Anything the shared reader
+/// cannot read falls back to the raw string.
+///
+/// The reader is [`crate::util::duration_secs`] — the same one `parse_duration`
+/// validates against and `report` sums with — and NOT a local one. A private
+/// copy here recognised only D/H/M/S, so `estimate:P2W` (which the store's
+/// validator accepts verbatim) rendered as the literal `P2W` under
+/// `TimeFormat::Relative`, and its unchecked arithmetic reintroduced the very
+/// overflow panic `duration_secs`' checked form exists to prevent. One
+/// vocabulary, one overflow policy, one place to change either.
 fn fmt_duration(iso: &str, opts: &DetailOpts) -> String {
     if iso.is_empty() {
         return String::new();
     }
-    let Some(secs) = iso_duration_secs(iso) else {
+    let Some(secs) = crate::util::duration_secs(iso) else {
         return iso.to_string();
     };
     let human = humanize_secs(secs);
@@ -261,36 +268,6 @@ fn fmt_duration(iso: &str, opts: &DetailOpts) -> String {
         TimeFormat::Relative => human,
         TimeFormat::Both => format!("{iso} ({human})"),
     }
-}
-
-/// Seconds in an ISO-8601 duration, or `None` when the shape is not one tasqx
-/// emits. Hand-rolled rather than pulled from `jiff`: this accepts exactly the
-/// subset the store writes, and silently accepting more would mean rendering
-/// values the rest of the system cannot round-trip.
-fn iso_duration_secs(iso: &str) -> Option<i64> {
-    let rest = iso.strip_prefix('P')?;
-    let (days, rest) = match rest.split_once('T') {
-        Some((d, t)) => (d, t),
-        None => (rest, ""),
-    };
-    let mut total: i64 = 0;
-    if !days.is_empty() {
-        total += days.strip_suffix('D')?.parse::<i64>().ok()? * 86_400;
-    }
-    let mut num = String::new();
-    for c in rest.chars() {
-        match c {
-            '0'..='9' => num.push(c),
-            'H' => total += num.parse::<i64>().ok()? * 3600,
-            'M' => total += num.parse::<i64>().ok()? * 60,
-            'S' => total += num.parse::<i64>().ok()?,
-            _ => return None,
-        }
-        if !c.is_ascii_digit() {
-            num.clear();
-        }
-    }
-    Some(total)
 }
 
 /// "2 hours ago" / "in 1 day". Coarse on purpose: a detail view answers "roughly

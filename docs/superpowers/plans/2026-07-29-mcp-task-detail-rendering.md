@@ -777,6 +777,16 @@ fn fmt_instant(iso: &str, opts: &DetailOpts) -> String {
     }
 }
 
+// CORRECTED AFTER THE FACT — do not copy the `iso_duration_secs` listing below.
+// Calling for a local duration reader was a mistake in this plan:
+// `crate::util::duration_secs` already does the job, in the same crate, and is
+// public. The copy shipped two defects — it knew only D/H/M/S, so a stored
+// `P2W` estimate leaked its raw ISO string through `TimeFormat::Relative`, and
+// its unchecked `*`/`+=` panicked in debug and wrapped in release, which is the
+// exact defect `duration_secs`' checked arithmetic exists to prevent.
+// `fmt_duration` now calls `crate::util::duration_secs` and the local reader is
+// deleted; see `markdown.rs` for the shipped form.
+
 /// Format one ISO-8601 duration per `opts.time`. Only the shapes tasqx itself
 /// writes are recognised (`PT1H30M`, `PT0S`, `P2D`); anything else falls back
 /// to the raw string.
