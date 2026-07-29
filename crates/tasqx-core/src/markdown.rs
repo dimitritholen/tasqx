@@ -51,6 +51,47 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
     row(&mut out, "status", &status_cell(result));
     row(&mut out, "priority", &priority_cell(result));
     row(&mut out, "project", &str_of(result, "project"));
+
+    if let Some(tags) = result.get("tags").and_then(Value::as_array) {
+        let names: Vec<&str> = tags.iter().filter_map(Value::as_str).collect();
+        if !names.is_empty() {
+            row(&mut out, "tags", &names.join(", "));
+        }
+    }
+    opt_duration(&mut out, result, "estimate", "estimate", opts);
+    opt_duration(&mut out, result, "tracked", "tracked", opts);
+    for (key, label) in [
+        ("due", "due"),
+        ("scheduled", "scheduled"),
+        ("wait", "wait"),
+        ("remind", "remind"),
+    ] {
+        opt_instant(&mut out, result, key, label, opts);
+    }
+    if let Some(r) = result.get("recurrence").and_then(Value::as_str) {
+        if !r.is_empty() {
+            row(&mut out, "recurrence", r);
+        }
+    }
+    for (key, label) in [("active_since", "active since"), ("completed", "completed")] {
+        opt_instant(&mut out, result, key, label, opts);
+    }
+    // Only when true: "not blocked" is the norm, and a `no` on every task is
+    // noise that pushes the rows a reader wants further down.
+    if result.get("blocked").and_then(Value::as_bool) == Some(true) {
+        row(&mut out, "blocked", "yes");
+    }
+    if let Some(deps) = result.get("depends_on").and_then(Value::as_array) {
+        let refs: Vec<String> = deps
+            .iter()
+            .filter_map(Value::as_i64)
+            .map(|n| format!("#{n}"))
+            .collect();
+        if !refs.is_empty() {
+            row(&mut out, "depends on", &refs.join(", "));
+        }
+    }
+
     row(
         &mut out,
         "created",
@@ -72,6 +113,25 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
 /// useful if there is one place to fix.
 fn row(out: &mut String, label: &str, value: &str) {
     out.push_str(&format!("| {label} | {value} |\n"));
+}
+
+/// An instant row, emitted only when the field holds a non-empty string. A
+/// JSON `null` and an absent key are the same thing to a reader.
+fn opt_instant(out: &mut String, result: &Value, key: &str, label: &str, opts: &DetailOpts) {
+    if let Some(v) = result.get(key).and_then(Value::as_str) {
+        if !v.is_empty() {
+            row(out, label, &fmt_instant(v, opts));
+        }
+    }
+}
+
+/// As `opt_instant`, for ISO-8601 durations (`PT3H`).
+fn opt_duration(out: &mut String, result: &Value, key: &str, label: &str, opts: &DetailOpts) {
+    if let Some(v) = result.get(key).and_then(Value::as_str) {
+        if !v.is_empty() {
+            row(out, label, &fmt_duration(v, opts));
+        }
+    }
 }
 
 /// A string field, or an empty string. Never panics on a non-string.
@@ -107,5 +167,10 @@ fn priority_cell(result: &Value) -> String {
 /// Format one instant. Task 4 replaces the body; ISO is the only branch that
 /// exists yet, and returning the raw value keeps this honest in the meantime.
 fn fmt_instant(iso: &str, _opts: &DetailOpts) -> String {
+    iso.to_string()
+}
+
+/// Format one duration. Task 4 replaces the body; ISO is the only branch yet.
+fn fmt_duration(iso: &str, _opts: &DetailOpts) -> String {
     iso.to_string()
 }
