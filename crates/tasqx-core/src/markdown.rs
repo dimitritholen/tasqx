@@ -327,6 +327,25 @@ fn plural(n: i64, unit: &str) -> String {
 
 /// `secs / unit`, rounded to nearest rather than toward zero. Both arguments are
 /// non-negative here — `humanize_ago` takes the absolute value before calling.
+///
+/// Divide first, then decide on the remainder. The obvious spelling,
+/// `(secs + unit / 2) / unit`, overflows for `secs` near `i64::MAX` — and it did:
+/// an `estimate` of `PT9223372036854775807S`, which the store's own validator
+/// accepts, panicked here in debug and printed `-106751991167300d` in the release
+/// profile the binaries actually ship as. This form cannot overflow for any
+/// non-negative input: `q` is no larger than `secs`, and `rem` is bounded by
+/// `unit`, which is at most 86_400.
+///
+/// Checked arithmetic with a fallback was the other option and is worse. It would
+/// leave a "what do we print when it overflows" question live forever, on a path
+/// whose whole contract (markdown.rs's module doc, DESIGN.md D49) is that
+/// presentation may not fail.
 fn round_div(secs: i64, unit: i64) -> i64 {
-    (secs + unit / 2) / unit
+    let q = secs / unit;
+    let rem = secs % unit;
+    if rem * 2 >= unit {
+        q + 1
+    } else {
+        q
+    }
 }
