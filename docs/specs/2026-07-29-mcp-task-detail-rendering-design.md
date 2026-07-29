@@ -234,21 +234,15 @@ claiming one. That branch's doc still calls itself D27, a number DESIGN.md had
 already assigned to "an unrecognised filter token is an error" before the branch
 was cut; do not repeat the mistake by hard-coding a number here.
 
-**Landed as D49.** D48 is left free for the `feat/reporting-redesign` proposal,
-which was audited as the rightful next claimant.
-
-**Open question — the gap that reservation leaves.** DESIGN.md §12 now reads
-D47 → D49, and nothing in the repository says why. The reservation is written
-down in exactly one place, `HANDOFF.md`, which is gitignored: a reader who clones
-this repository and opens DESIGN.md sees a missing number with no explanation,
-and the next author looking for a free D-number has nothing tracked telling them
-48 is spoken for. Three ways out, none of them chosen: leave the gap and accept
-that the record is only complete once the reporting proposal lands; put a
-one-line reserved-for placeholder in §12 so the number is claimed in tracked
-text; or drop the reservation and let that proposal take whatever number is free
-when it actually lands. This is stated as an open question, not a decision —
-nobody has made one. It is recorded here because the only note that currently
-carries it is the one file guaranteed not to survive a clone.
+**Landed as D49, and the gap it left is closed.** D48 was held free for the
+`feat/reporting-redesign` proposal, which the audit found was the rightful next
+claimant — but that reservation lived only in `HANDOFF.md`, which is gitignored,
+so §12 read D47 → D49 with nothing tracked saying why. The reporting decision
+landed as **D48** on 2026-07-29, in the same session, which resolves the open
+question by making the reservation moot rather than by choosing between the three
+options this section used to list. The lesson survives the resolution: a number
+reserved in an untracked file is not reserved, and the only reason this one held
+is that the claimant arrived within the day.
 
 ## Divergences from what landed
 

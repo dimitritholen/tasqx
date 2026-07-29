@@ -43,3 +43,4 @@ docs/plans/
 
 # Bytecode from importing the doc generators under docs/.
 __pycache__/
+*.pyc
