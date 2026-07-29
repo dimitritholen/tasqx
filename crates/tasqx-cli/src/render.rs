@@ -707,11 +707,17 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
         return "No matching tasks.\n".to_string();
     }
     let mut out = String::new();
-    // The terminal report carries only `tokens_total`: the full four-bucket
-    // breakdown (in/out/cache_read/cache_creation) would blow past a usable
-    // width, so it lives on the HTML report and the MCP surface instead, while
-    // the one number that answers "how much did this cost in tokens?" stays
-    // visible here.
+    // D48a: the four buckets are never blended on any output surface, and this
+    // column used to be the blend. `tokens_total` answered "how much did this
+    // cost?" with a number that cannot mean that — cache read is 98% of this
+    // project's own volume and 68% of its cost, so the blend is wrong in the
+    // flattering direction.
+    //
+    // Four columns is what the HTML report gets; here they would take the row
+    // from 74 characters to ~104, past any usable terminal. So the terminal
+    // names the largest bucket and its own count instead: no blend, no derived
+    // figure, same width. `tasqx report --json` and the HTML page carry all four
+    // for anyone who needs the split.
     out.push_str(&ctx.paint(
         "header",
         &format!(
@@ -734,7 +740,7 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
             .get("tracked_total")
             .and_then(Value::as_str)
             .unwrap_or("-");
-        let tokens = g.get("tokens_total").and_then(Value::as_i64).unwrap_or(0);
+        let tokens = crate::tokens::dominant_cell(g);
         let overdue_cell = format!("{overdue:>7}");
         let overdue_p = if overdue > 0 {
             ctx.paint("warn", &overdue_cell)
@@ -1333,25 +1339,56 @@ mod tests {
         }
     }
 
-    /// #19/D39: the terminal report carries the one token number that answers
-    /// "how much did this cost?" — `tokens_total` — under a TOKENS header. The
-    /// full breakdown lives on the HTML/MCP surfaces; here width is the budget.
+    /// D48a: the TOKENS column names the largest bucket, and the blend it used to
+    /// print is gone from this surface.
+    ///
+    /// This test replaces `report_shows_a_tokens_total_column`, which asserted
+    /// the opposite and was correct until D48. The fixture's `tokens_total` is
+    /// deliberately present and deliberately unrendered: a store carrying the
+    /// field is exactly the case where the old behaviour could creep back, and a
+    /// fixture that omitted it could not tell the difference.
     #[test]
-    fn report_shows_a_tokens_total_column() {
+    fn report_names_the_largest_bucket_instead_of_blending() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let out = report(
             &ctx,
             &json!({ "groups": [
                 { "project": "P", "count": 1, "est_total": "PT1H", "overdue": 0,
-                  "tracked_total": "PT2H", "tokens_total": 4242 }
+                  "tracked_total": "PT2H",
+                  "tokens_in": 136, "tokens_out": 83_479,
+                  "tokens_cache_read": 13_630_240, "tokens_cache_creation": 186_965,
+                  "tokens_total": 13_900_820 }
             ] }),
             "project",
         );
         assert!(out.contains("TOKENS"), "TOKENS header missing: {out:?}");
+        let row = out.lines().nth(1).unwrap();
         assert!(
-            out.lines().nth(1).unwrap().contains("4242"),
-            "the group's tokens_total is not rendered: {out:?}"
+            row.contains("cacheR 13.6M"),
+            "the dominant bucket is not named: {row:?}"
         );
+        assert!(
+            !row.contains("13900820") && !row.contains("13.9M"),
+            "the blended total reached the terminal: {row:?}"
+        );
+    }
+
+    /// A group with no measurement must read as "nothing to report", not as a
+    /// bucket that spent zero — the difference between an unmeasured project and
+    /// a free one.
+    #[test]
+    fn report_shows_a_dash_for_a_group_that_spent_no_tokens() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = report(
+            &ctx,
+            &json!({ "groups": [
+                { "project": "P", "count": 1, "est_total": "PT1H", "overdue": 0,
+                  "tracked_total": "PT2H" }
+            ] }),
+            "project",
+        );
+        let row = out.lines().nth(1).unwrap();
+        assert!(row.trim_end().ends_with('-'), "expected a dash: {row:?}");
     }
 
     /// Truncation has to cut on a GRAPHEME boundary and budget in cells. Half a

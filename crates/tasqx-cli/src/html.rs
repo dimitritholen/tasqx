@@ -191,26 +191,37 @@ impl<'a> Report<'a> {
         let css = self.css();
         let mut body = String::new();
 
-        // Report-wide token total, summed across the summary's groups (which
-        // already carry core's D24 scope — cancelled work is excluded unless the
-        // caller asked for `all`). Saturating, like the per-group roll-up.
-        let total_tokens: i64 = self
+        // Report-wide token totals, one per bucket, summed across the summary's
+        // groups (which already carry core's D24 scope — cancelled work is
+        // excluded unless the caller asked for `all`). Saturating, like the
+        // per-group roll-up.
+        //
+        // D48a: four sums, not one. This used to fold `tokens_total` into a
+        // single headline tile, which is the number core deliberately keeps apart
+        // until emit — and the one that cannot mean what its label said.
+        let groups = self
             .summary
             .get("groups")
             .and_then(Value::as_array)
-            .map(|gs| {
-                gs.iter()
-                    .map(|g| g.get("tokens_total").and_then(Value::as_i64).unwrap_or(0))
-                    .fold(0i64, i64::saturating_add)
+            .cloned()
+            .unwrap_or_default();
+        let bucket_totals: Vec<(&str, i64)> = crate::tokens::BUCKETS
+            .iter()
+            .map(|(key, _, long)| {
+                let sum = groups
+                    .iter()
+                    .map(|g| g.get(key).and_then(Value::as_i64).unwrap_or(0))
+                    .fold(0i64, i64::saturating_add);
+                (*long, sum)
             })
-            .unwrap_or(0);
+            .collect();
 
         body.push_str(&self.header(
             open,
             completed_recent.len(),
             velocity,
             overdue,
-            total_tokens,
+            &bucket_totals,
         ));
         body.push_str("<main>");
 
@@ -248,24 +259,35 @@ impl<'a> Report<'a> {
         )
     }
 
+    /// The header tiles. `buckets` is one `(label, total)` per token bucket, in
+    /// `tokens::BUCKETS` order — cheapest per token first, so the row reads across
+    /// the price gradient in one direction.
+    ///
+    /// D48a: four tiles rather than one blended "AI tokens". They are rendered
+    /// even when every bucket is zero: a report whose token tiles vanish on an
+    /// unmeasured store would leave a reader guessing whether the work was free
+    /// or simply never measured, and those are different answers.
     fn header(
         &self,
         open: usize,
         done: usize,
         velocity: usize,
         overdue: usize,
-        tokens: i64,
+        buckets: &[(&str, i64)],
     ) -> String {
+        let token_tiles: String = buckets
+            .iter()
+            .map(|(label, n)| stat(&crate::tokens::compact(*n), label))
+            .collect();
         format!(
             "<header class=\"summary\">\
                <div class=\"brand\">tasqx <span class=\"muted\">weekly review</span></div>\
-               <div class=\"stats\">{}{}{}{}{}</div>\
+               <div class=\"stats\">{}{}{}{}{token_tiles}</div>\
              </header>",
             stat(&open.to_string(), "open"),
             stat(&done.to_string(), "done this week"),
             stat(&velocity.to_string(), "velocity /wk"),
             stat_flag(&overdue.to_string(), "overdue", overdue > 0),
-            stat(&tokens.to_string(), "AI tokens"),
         )
     }
 
@@ -346,19 +368,24 @@ impl<'a> Report<'a> {
             } else {
                 "<td class=\"muted\">0</td>".to_string()
             };
-            // The full four-bucket breakdown plus its total. The buckets are kept
-            // apart on purpose (research rule #5) — cache tokens cost a fraction —
-            // so the HTML report, unlike the terminal one, shows all of them.
-            let tok = |name: &str| g.get(name).and_then(Value::as_i64).unwrap_or(0);
-            let tokens_cells = format!(
-                "<td>{}</td><td class=\"muted\">{}</td><td class=\"muted\">{}</td>\
-                 <td class=\"muted\">{}</td><td class=\"muted\">{}</td>",
-                tok("tokens_total"),
-                tok("tokens_in"),
-                tok("tokens_out"),
-                tok("tokens_cache_read"),
-                tok("tokens_cache_creation"),
-            );
+            // The four buckets, and only the four. The `tokens_total` column that
+            // used to lead them is gone (D48a): sitting first and unmuted, it read
+            // as the answer and the four as its footnotes, when it is the one
+            // number of the five that cannot mean what its header said.
+            //
+            // Column order follows `tokens::BUCKETS` so the table, the header
+            // tiles and the terminal's tie-break cannot disagree about which
+            // bucket is which.
+            let tokens_cells: String = crate::tokens::BUCKETS
+                .iter()
+                .map(|(key, _, _)| {
+                    let n = g.get(key).and_then(Value::as_i64).unwrap_or(0);
+                    // Compacted, like the header tiles. Rendering 13720240 here
+                    // under a tile reading 13.7M put two formats for one quantity
+                    // on one page, which only opening it showed.
+                    format!("<td class=\"muted\">{}</td>", crate::tokens::compact(n))
+                })
+                .collect();
             rows.push_str(&format!(
                 "<tr><td class=\"proj\">{name}</td><td>{count}</td><td>{est}</td><td>{tracked}</td>{od}{tokens_cells}</tr>",
                 name = esc(name),
@@ -366,7 +393,7 @@ impl<'a> Report<'a> {
         }
         let table = format!(
             "<table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
-             <th>Tokens</th><th>In</th><th>Out</th><th>Cache read</th><th>Cache create</th></tr></thead><tbody>{rows}</tbody></table>",
+             <th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th></tr></thead><tbody>{rows}</tbody></table>",
             // The axis name, title-cased — `esc` because it reaches markup, even
             // though core has already restricted it to SUMMARY_GROUP_BY.
             head = esc(&title_case(axis)),
@@ -379,7 +406,7 @@ impl<'a> Report<'a> {
         section(
             &title,
             &format!(
-                "Task count (cancelled excluded), estimate vs. tracked time, overdue, and AI tokens per {axis}."
+                "Task count (cancelled excluded), estimate vs. tracked time, overdue, and the four AI token buckets per {axis}. The buckets are never summed: cache tokens cost a fraction of input and output, so one blended figure would misprice any mix."
             ),
             &table,
         )
@@ -1000,21 +1027,44 @@ mod tests {
 
         assert!(
             doc.contains(
-                "<th>Tokens</th><th>In</th><th>Out</th><th>Cache read</th><th>Cache create</th>"
+                "<th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th>"
             ),
             "token columns missing from the By-project table: {doc}"
         );
+        // Fixture: in 1000, out 200, cacheR 50, cacheW 5, total 1255. Columns run
+        // in `tokens::BUCKETS` order — cacheR, cacheW, in, out.
         assert!(
             doc.contains(
-                "<td>1255</td><td class=\"muted\">1000</td><td class=\"muted\">200</td>\
-                 <td class=\"muted\">50</td><td class=\"muted\">5</td>"
+                "<td class=\"muted\">50</td><td class=\"muted\">5</td>\
+                 <td class=\"muted\">1.0K</td><td class=\"muted\">200</td>"
             ),
             "token cells missing or mis-ordered: {doc}"
         );
+        // D48a, from the other direction: the blend must not survive anywhere on
+        // the page. `1255` is the fixture's `tokens_total` and appears in no
+        // other field, so its absence is the assertion — a column-shape check
+        // alone would pass if the total merely moved.
         assert!(
-            doc.contains("<div class=\"n\">1255</div><div class=\"l\">AI tokens</div>"),
-            "the report-wide AI tokens header tile is missing: {doc}"
+            !doc.contains("1255"),
+            "the blended total is still on the page: {doc}"
         );
+        assert!(
+            !doc.contains("AI tokens"),
+            "the blended header tile is still on the page: {doc}"
+        );
+        // The four tiles that replaced it, compacted.
+        for (n, label) in [
+            ("50", "cache read"),
+            ("5", "cache write"),
+            ("1000", "input"),
+            ("200", "output"),
+        ] {
+            let expected = format!(
+                "<div class=\"n\">{}</div><div class=\"l\">{label}</div>",
+                crate::tokens::compact(n.parse().unwrap())
+            );
+            assert!(doc.contains(&expected), "missing tile {label}: {doc}");
+        }
     }
 
     #[test]

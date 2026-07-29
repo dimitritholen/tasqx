@@ -23,6 +23,7 @@ mod manual;
 mod render;
 mod sugar;
 mod theme;
+mod tokens;
 mod tui;
 
 use std::io::{BufRead, IsTerminal, Read, Write};
