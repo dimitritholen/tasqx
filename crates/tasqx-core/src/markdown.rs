@@ -105,7 +105,68 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
     let rev = result.get("_rev").and_then(Value::as_i64).unwrap_or(0);
     row(&mut out, "rev", &rev.to_string());
 
+    tokens(&mut out, result);
+    annotations(&mut out, result, opts);
+
     out
+}
+
+/// Measurements as a table. Only rendered when there is at least one: a
+/// "Tokens (0)" heading on every unmeasured task is a heading that teaches
+/// nothing.
+///
+/// The four buckets are NEVER summed into one number here. They are priced
+/// differently and a single total silently misprices the mix — the design's
+/// first rule, and the reason the table has four columns rather than one.
+fn tokens(out: &mut String, result: &Value) {
+    let Some(rows) = result.get("tokens").and_then(Value::as_array) else {
+        return;
+    };
+    if rows.is_empty() {
+        return;
+    }
+    out.push_str(&format!("\n### Tokens ({})\n\n", rows.len()));
+    out.push_str("| tool | in | out | cache read | cache write | source | confidence |\n");
+    out.push_str("|---|---:|---:|---:|---:|---|---|\n");
+    for m in rows {
+        let n = |k: &str| m.get(k).and_then(Value::as_i64).unwrap_or(0);
+        let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} |\n",
+            s("tool"),
+            n("input_tokens"),
+            n("output_tokens"),
+            n("cache_read_tokens"),
+            n("cache_creation_tokens"),
+            s("source"),
+            s("confidence"),
+        ));
+    }
+}
+
+/// Annotations, bodies untouched.
+///
+/// The header line is BOLD TEXT, not a markdown heading, on purpose: bodies in
+/// this project carry their own `##` headings, and a heading here would put the
+/// renderer's structure and the author's structure in the same hierarchy,
+/// competing. A blockquote was the other option and is worse — it breaks tables
+/// and fenced code inside the body.
+fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
+    let Some(rows) = result.get("annotations").and_then(Value::as_array) else {
+        return;
+    };
+    if rows.is_empty() {
+        return;
+    }
+    out.push_str(&format!("\n### Annotations ({})\n\n", rows.len()));
+    for a in rows {
+        let when = fmt_instant(a.get("created").and_then(Value::as_str).unwrap_or(""), opts);
+        let body = a.get("body").and_then(Value::as_str).unwrap_or("");
+        out.push_str(&format!("---\n**{when}**\n\n{body}"));
+        if !body.ends_with('\n') {
+            out.push('\n');
+        }
+    }
 }
 
 /// One table row. Central so every row is spaced identically — a golden test
