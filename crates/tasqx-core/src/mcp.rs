@@ -518,6 +518,11 @@ pub struct McpServer<'e> {
     /// one late-bound field of per-process session state — not state of
     /// record, which stays in the store.
     client_info: std::cell::RefCell<Option<Value>>,
+    /// How the rendered detail view writes time. Session state, fixed at
+    /// construction: the CLI resolves the setting once per process, and a value
+    /// that could change mid-session would mean two `get_task` calls in one
+    /// conversation disagreeing about the same task.
+    time_format: crate::markdown::TimeFormat,
 }
 
 impl<'e> McpServer<'e> {
@@ -530,7 +535,17 @@ impl<'e> McpServer<'e> {
             engine,
             scope,
             client_info: std::cell::RefCell::new(None),
+            time_format: crate::markdown::TimeFormat::Both,
         }
+    }
+
+    /// Choose how the detail view writes time. A builder rather than a third
+    /// parameter on [`McpServer::new`]: only `run_mcp_serve` has a setting to
+    /// supply, and widening `new` would edit every call site in the test suite
+    /// to pass the default back in.
+    pub fn with_time_format(mut self, time: crate::markdown::TimeFormat) -> Self {
+        self.time_format = time;
+        self
     }
 
     /// The scope this session was created with.
@@ -667,7 +682,7 @@ impl<'e> McpServer<'e> {
                 // same set either way.
                 if spec.method == "task.get" {
                     let opts = crate::markdown::DetailOpts {
-                        time: crate::markdown::TimeFormat::Both,
+                        time: self.time_format,
                         // Stamped HERE, never inside the renderer: that is what
                         // keeps `task_detail` pure and its golden tests stable.
                         now: jiff::Timestamp::now(),

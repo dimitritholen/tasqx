@@ -410,6 +410,7 @@ mod tests {
                 choices: match s.choices {
                     Choices::Themes => theme::BUILTINS.iter().map(|t| t.to_string()).collect(),
                     Choices::Free => Vec::new(),
+                    Choices::OneOf(values) => values.iter().map(|v| (*v).to_string()).collect(),
                 },
             })
             .collect();
