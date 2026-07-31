@@ -1606,6 +1606,28 @@ fn a_due_bound_takes_the_dates_the_tool_advertises_and_refuses_the_rest() {
         "add failed: {}",
         String::from_utf8_lossy(&add.stderr)
     );
+    // A task due tomorrow is NOT inside every advertised bound on every
+    // calendar day: on the last day of a month, tomorrow is next month and
+    // `due.before:eom` correctly matches nothing (observed 2026-07-31). Seed a
+    // second task whose due — the first of the current month, in the UTC
+    // calendar the date grammar resolves against — is strictly before `eom`,
+    // `"in 2 weeks"`, and every fixed future spelling, whatever day the suite
+    // runs, so a bound failing to FIND it can only mean the bound was
+    // mis-parsed, never that the calendar disagreed.
+    let first_of_month = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date()
+        .first_of_month()
+        .to_string();
+    let add = bin("due-bound", &dir)
+        .args(["add", "close the books", &format!("due:{first_of_month}")])
+        .output()
+        .expect("run add");
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
 
     // Every spelling the date-error message recommends, in the widest form so
     // the answer cannot depend on which day the suite runs.
@@ -1629,8 +1651,8 @@ fn a_due_bound_takes_the_dates_the_tool_advertises_and_refuses_the_rest() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(
-            stdout.contains("ship it"),
-            "`due.before:{bound}` must find a task due tomorrow, got: {stdout}"
+            stdout.contains("close the books"),
+            "`due.before:{bound}` must find a task due on the first of this month, got: {stdout}"
         );
     }
 
