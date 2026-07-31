@@ -1934,6 +1934,110 @@ mod tests {
         );
     }
 
+    /// The TOCTOU half of "one task never mixes channels": the pending set is
+    /// built, the tick drops the lock to parse the transcript, and the agent's
+    /// self-report lands via `token.add` in that gap — exactly the flow the
+    /// `tokens_hint` nudge encourages. The stale `PendingAttribution` still
+    /// says `self_reported: false`, so the write seam itself must re-check
+    /// inside its transaction and suppress the log-parse row.
+    #[test]
+    fn a_self_report_landing_mid_tick_suppresses_the_log_parse_write() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-selfreport-race-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join("sess-1.jsonl");
+        let path = transcript.to_string_lossy().into_owned();
+
+        let engine = Engine::open_in_memory().unwrap();
+        let sid = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        engine.task_start(&json!({ "ref": sid })).unwrap();
+        // Completed with correlation but WITHOUT done-time token counts.
+        engine
+            .task_done(&json!({ "ref": sid, "client": "claude-code", "transcript_path": path }))
+            .unwrap();
+        let id: String = engine
+            .conn()
+            .query_row("SELECT id FROM tasks WHERE short_id = ?1", [sid], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        engine
+            .conn()
+            .execute(
+                "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+                (r#"{"interval_started":"2026-07-25T10:00:00Z"}"#, &id),
+            )
+            .unwrap();
+        engine
+            .conn()
+            .execute(
+                "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+                (
+                    format!(
+                        r#"{{"completed":"2026-07-25T10:30:00Z","client":"claude-code","transcript_path":"{path}"}}"#
+                    ),
+                    &id,
+                ),
+            )
+            .unwrap();
+        std::fs::write(
+            &transcript,
+            r#"{"timestamp":"2026-07-25T10:10:00.000Z","message":{"id":"m","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+        )
+        .unwrap();
+
+        // Tick: pending set and result built BEFORE the self-report exists.
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(!pending[0].self_reported, "flag captured before the race");
+        let r = compute_attribution(&pending[0], ts("2026-07-25T10:35:00Z")).unwrap();
+        assert!(r.found, "log-parse found the spend");
+
+        // The self-report lands while the tick is off parsing the file.
+        engine
+            .token_add(&json!({
+                "ref": sid,
+                "source": SOURCE_SELF_REPORT,
+                "tool": "claude-code",
+                "confidence": "medium",
+                "input_tokens": 1000,
+                "output_tokens": 2000,
+            }))
+            .unwrap();
+
+        // The tick resumes with its stale result: the write seam must refuse
+        // the second channel — marker written, measurement suppressed.
+        assert!(attribute_one(&engine, &pending[0], &r).unwrap());
+        assert_eq!(
+            count_rows(&engine, "SELECT COUNT(*) FROM token_usage"),
+            1,
+            "exactly one measurement survives the race"
+        );
+        let source: String = engine
+            .conn()
+            .query_row("SELECT source FROM token_usage", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source, SOURCE_SELF_REPORT, "and it is the self-report");
+        assert_eq!(
+            count_rows(
+                &engine,
+                "SELECT COUNT(*) FROM events WHERE op = 'tokens.attributed'"
+            ),
+            1,
+            "the task still terminates with its marker"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The adversary's cross-tick theft: banked decisions are final, but
     /// contestedness used to be re-judged each tick against re-parsed stamps —
     /// and the Claude Code parser keeps the LAST occurrence's timestamp for a
