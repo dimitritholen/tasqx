@@ -167,6 +167,7 @@ fn sample_from_record(value: &Value) -> Option<UsageSample> {
         .map(str::to_owned);
 
     Some(UsageSample {
+        id: None,
         ts,
         model,
         input_tokens: input,

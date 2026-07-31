@@ -100,6 +100,14 @@ pub fn require_confidence(value: &str) -> Result<(), ApiError> {
 /// samples can be bucketed into a task's time window later.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UsageSample {
+    /// The tool's own stable identity for the request this sample measures —
+    /// Claude Code's assistant `message.id` — when the transcript carries one;
+    /// `None` for parsers and receivers with no such anchor. Identity, not
+    /// time: a streamed re-emission can move a deduped sample's *timestamp*
+    /// across a window edge between daemon reads, but its id never changes, so
+    /// attribution records the ids it consumed and refuses a sample another
+    /// task already banked no matter what its current stamp says.
+    pub id: Option<String>,
     /// When the measured request happened, RFC3339. Whatever a tool writes,
     /// every producer here re-emits it through jiff, so timestamps from
     /// different tools are comparable byte-for-byte. `attribution` re-parses

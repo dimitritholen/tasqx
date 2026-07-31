@@ -188,8 +188,30 @@ pub fn totals_in_window_excluding(
     done: &str,
     foreign: &[(String, String)],
 ) -> (TokenTotals, usize, usize) {
+    let (totals, counted, contested, _) =
+        totals_in_window_refusing(samples, start, done, foreign, &HashSet::new());
+    (totals, counted, contested)
+}
+
+/// [`totals_in_window_excluding`] plus the identity half of the refusal rule:
+/// an in-window sample whose [`UsageSample::id`] is in `consumed` — already
+/// banked by another task on an earlier tick — is contested *regardless of what
+/// its current stamp says*, because a streamed re-emission can move a deduped
+/// stamp across a window edge between reads while the id never changes.
+/// Samples with no id keep the window-only contest semantics (only the Claude
+/// Code parser observes moving stamps, and it always has ids).
+///
+/// The fourth return is the ids of the samples actually summed, so the caller
+/// can persist which samples this measurement consumed.
+pub fn totals_in_window_refusing(
+    samples: &[UsageSample],
+    start: &str,
+    done: &str,
+    foreign: &[(String, String)],
+    consumed: &HashSet<String>,
+) -> (TokenTotals, usize, usize, Vec<String>) {
     let Some((lo, hi)) = parse_window(start, done) else {
-        return (TokenTotals::default(), 0, 0);
+        return (TokenTotals::default(), 0, 0, Vec::new());
     };
     let foreign: Vec<(Timestamp, Timestamp)> = foreign
         .iter()
@@ -199,6 +221,7 @@ pub fn totals_in_window_excluding(
     let mut totals = TokenTotals::default();
     let mut counted = 0;
     let mut contested = 0;
+    let mut counted_ids = Vec::new();
     for s in samples {
         let Ok(ts) = s.ts.parse::<Timestamp>() else {
             continue;
@@ -206,14 +229,18 @@ pub fn totals_in_window_excluding(
         if ts < lo || ts > hi {
             continue;
         }
-        if foreign.iter().any(|&(flo, fhi)| ts >= flo && ts <= fhi) {
+        let already_banked = s.id.as_deref().is_some_and(|id| consumed.contains(id));
+        if already_banked || foreign.iter().any(|&(flo, fhi)| ts >= flo && ts <= fhi) {
             contested += 1;
         } else {
             totals.add_sample(s);
             counted += 1;
+            if let Some(id) = &s.id {
+                counted_ids.push(id.clone());
+            }
         }
     }
-    (totals, counted, contested)
+    (totals, counted, contested, counted_ids)
 }
 
 /// The confidence to stamp on a measurement, per the module's confidence rule.
@@ -302,6 +329,14 @@ pub struct PendingAttribution {
     /// would be race-dependent: a task attributed last tick has left the queue,
     /// but its window still claims the same samples.
     pub foreign_windows: Vec<(String, String)>,
+    /// The union of sample ids already consumed by OTHER tasks sharing this
+    /// task's sample source, read from their `tokens.attributed` payloads. A
+    /// banked decision is final: a sample whose id is in here is contested no
+    /// matter where its re-parsed stamp currently lands, because the Claude
+    /// Code parser keeps the LAST occurrence's timestamp for a deduped message
+    /// id and a mid-write re-emission can move that stamp across a window edge
+    /// between ticks.
+    pub consumed_sample_ids: HashSet<String>,
 }
 
 /// The outcome of attributing one task: the four-way totals, how many samples
@@ -338,6 +373,11 @@ pub struct AttributionResult {
     /// should be written. When false only the terminating `tokens.attributed`
     /// marker is written.
     pub found: bool,
+    /// The ids of the samples summed into [`totals`](Self::totals), for the
+    /// samples that carried one. Persisted in the `tokens.attributed` payload
+    /// so later ticks can refuse these samples by identity, whatever their
+    /// re-parsed stamps then say. Empty when no counted sample had an id.
+    pub sample_ids: Vec<String>,
 }
 
 impl AttributionResult {
@@ -352,6 +392,7 @@ impl AttributionResult {
             source: SOURCE_LOG_PARSE,
             confidence: CONFIDENCE_LOW,
             found: false,
+            sample_ids: Vec::new(),
         }
     }
 }
@@ -401,11 +442,12 @@ pub fn compute_attribution(
     // two tasks with overlapping windows over one session would double-count
     // identically to the log-parse case. Contested telemetry banks for no one.
     if !pa.otel_samples.is_empty() {
-        let (totals, n, _) = totals_in_window_excluding(
+        let (totals, n, _, sample_ids) = totals_in_window_refusing(
             &pa.otel_samples,
             &pa.window_start,
             &pa.window_end,
             &pa.foreign_windows,
+            &pa.consumed_sample_ids,
         );
         if totals.total() > 0 {
             let otel_tool = pa
@@ -420,6 +462,7 @@ pub fn compute_attribution(
                 source: SOURCE_OTEL,
                 confidence: CONFIDENCE_HIGH,
                 found: true,
+                sample_ids,
             });
         }
     }
@@ -475,11 +518,12 @@ pub fn compute_attribution(
         _ => (discover_samples(parser, pa), false, false),
     };
 
-    let (totals, n, contested) = totals_in_window_excluding(
+    let (totals, n, contested, sample_ids) = totals_in_window_refusing(
         &samples,
         &pa.window_start,
         &pa.window_end,
         &pa.foreign_windows,
+        &pa.consumed_sample_ids,
     );
     let found = totals.total() > 0;
 
@@ -524,6 +568,7 @@ pub fn compute_attribution(
         source: SOURCE_LOG_PARSE,
         confidence: confidence_for(transcript_parsed, session_correlated),
         found,
+        sample_ids,
     })
 }
 
@@ -619,6 +664,7 @@ pub fn attribute_one(
         "tool": result.tool,
         "confidence": result.confidence,
         "samples": result.samples,
+        "sample_ids": result.sample_ids,
         "input_tokens": result.totals.input,
         "output_tokens": result.totals.output,
         "cache_read_tokens": result.totals.cache_read,
@@ -675,6 +721,42 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
         for r in rows {
             let (id, rowid) = r?;
             map.insert(id, rowid);
+        }
+        map
+    };
+
+    // 1a. The sample ids each task's attribution(s) consumed, read from every
+    //     `tokens.attributed` payload (all markers, not just the latest: a
+    //     reopen + re-complete can bank twice, and each banked id stays
+    //     consumed forever). Feeds `consumed_sample_ids` below, so a sample
+    //     banked on an earlier tick is refused by identity even after its
+    //     re-parsed stamp moves out of the banked task's window.
+    let consumed_by_task: HashMap<String, Vec<String>> = {
+        let mut stmt = conn.prepare(
+            "SELECT entity_id, payload FROM events \
+             WHERE op = 'tokens.attributed' AND payload LIKE '%sample_ids%'",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for r in rows {
+            let (task_id, payload) = r?;
+            let ids: Vec<String> = payload
+                .as_deref()
+                .and_then(|p| serde_json::from_str::<Value>(p).ok())
+                .and_then(|v| {
+                    v.get("sample_ids").and_then(Value::as_array).map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
+            if !ids.is_empty() {
+                map.entry(task_id).or_default().extend(ids);
+            }
         }
         map
     };
@@ -861,6 +943,20 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             })
             .map(|(_, ws, we)| (ws.clone(), we.clone()))
             .collect();
+        // And the sample ids those same neighbours already consumed: banked by
+        // identity, refused by identity — whatever the samples' re-parsed
+        // stamps say on this tick.
+        let consumed_sample_ids: HashSet<String> = correlated
+            .iter()
+            .filter(|(other_id, other)| *other_id != task_id && shares_sample_source(info, other))
+            .flat_map(|(other_id, _)| {
+                consumed_by_task
+                    .get(other_id)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+            })
+            .collect();
         out.push(PendingAttribution {
             task_id: task_id.clone(),
             short_id,
@@ -873,6 +969,7 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             otel_tool,
             self_reported: info.self_reported,
             foreign_windows,
+            consumed_sample_ids,
         });
     }
     // Deterministic order for tests and for stable log lines.
@@ -891,6 +988,7 @@ mod tests {
 
     fn sample(ts: &str, input: u64, output: u64) -> UsageSample {
         UsageSample {
+            id: None,
             ts: ts.to_string(),
             model: None,
             input_tokens: input,
@@ -1031,6 +1129,7 @@ mod tests {
             otel_tool: None,
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(!r.found);
@@ -1052,6 +1151,7 @@ mod tests {
             otel_tool: None,
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
         // Minutes after completion: still transient (the file may yet be flushed).
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
@@ -1072,6 +1172,7 @@ mod tests {
             otel_tool: None,
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
         // Two days later the file is never coming: terminate with an empty marker
         // (found == false) rather than retrying — and forcing a rebuild — forever.
@@ -1111,6 +1212,7 @@ mod tests {
             otel_tool: None,
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
 
         // Minutes after completion: still transient. A file being written right
@@ -1164,6 +1266,7 @@ mod tests {
             otel_tool: None,
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
@@ -1225,6 +1328,7 @@ mod tests {
             otel_tool: None,
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
 
         // Minutes after completion: the turn may still be writing. Retry rather
@@ -1285,6 +1389,7 @@ mod tests {
                 "2026-07-24T09:50:00Z".to_string(),
                 "2026-07-24T11:30:00Z".to_string(),
             )],
+            consumed_sample_ids: HashSet::new(),
         };
 
         // Minutes after completion: transient — the contest may look different
@@ -1342,6 +1447,7 @@ mod tests {
                 "2026-07-24T10:05:00Z".to_string(),
                 "2026-07-24T10:15:00Z".to_string(),
             )],
+            consumed_sample_ids: HashSet::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found, "the uncontested remainder still banks");
@@ -1380,6 +1486,7 @@ mod tests {
                 "2026-07-24T10:10:00Z".to_string(),
                 "2026-07-24T10:20:00Z".to_string(),
             )],
+            consumed_sample_ids: HashSet::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert_eq!(r.source, SOURCE_OTEL);
@@ -1413,6 +1520,7 @@ mod tests {
             otel_tool: None,
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z"))
             .expect("discovery must terminate, not retry");
@@ -1450,6 +1558,7 @@ mod tests {
             otel_tool: None,
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found, "the transcript was parsed and had in-window spend");
@@ -1482,6 +1591,7 @@ mod tests {
             otel_tool: Some("claude-code".into()),
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
@@ -1512,6 +1622,7 @@ mod tests {
             otel_tool: Some("claude-code".into()),
             self_reported: false,
             foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
         };
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
         assert!(
@@ -1542,6 +1653,7 @@ mod tests {
                 tool: "claude-code".into(),
                 session_id: Some("sess-42".into()),
                 sample: UsageSample {
+                    id: None,
                     ts: created,
                     model: Some("claude-opus-4-8".into()),
                     input_tokens: 111,
@@ -1820,6 +1932,129 @@ mod tests {
             pending[0].foreign_windows.is_empty(),
             "no shared transcript or session: nothing contests"
         );
+    }
+
+    /// The adversary's cross-tick theft: banked decisions are final, but
+    /// contestedness used to be re-judged each tick against re-parsed stamps —
+    /// and the Claude Code parser keeps the LAST occurrence's timestamp for a
+    /// deduped message id, so a streamed re-emission can move a sample out of
+    /// the banked task's window and into a neighbour's. Identity must decide:
+    /// once B banked message `m`, A may never bank it, whatever its stamp
+    /// currently reads.
+    #[test]
+    fn a_sample_banked_on_an_earlier_tick_is_refused_even_when_its_stamp_moves() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-moving-stamp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join("sess-1.jsonl");
+        let path = transcript.to_string_lossy().into_owned();
+
+        // Two tasks on one transcript: A [10:00, 10:05], B [10:04, 10:30].
+        let engine = Engine::open_in_memory().unwrap();
+        let a = engine.task_add(&json!({ "title": "A" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        let b = engine.task_add(&json!({ "title": "B" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        for sid in [a, b] {
+            engine.task_start(&json!({ "ref": sid })).unwrap();
+            engine
+                .task_done(&json!({ "ref": sid, "client": "claude-code", "transcript_path": path }))
+                .unwrap();
+        }
+        let task_id = |sid: i64| -> String {
+            engine
+                .conn()
+                .query_row("SELECT id FROM tasks WHERE short_id = ?1", [sid], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        for (id, started, completed) in [
+            (task_id(a), "2026-07-25T10:00:00Z", "2026-07-25T10:05:00Z"),
+            (task_id(b), "2026-07-25T10:04:00Z", "2026-07-25T10:30:00Z"),
+        ] {
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+                    (format!(r#"{{"interval_started":"{started}"}}"#), &id),
+                )
+                .unwrap();
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+                    (
+                        format!(
+                            r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{path}"}}"#
+                        ),
+                        &id,
+                    ),
+                )
+                .unwrap();
+        }
+        let now = ts("2026-07-25T10:35:00Z");
+
+        // Tick N: message `m` reads stamp 10:06 — inside B only, uncontested,
+        // so B banks it; A is transient ("no usage in window yet").
+        std::fs::write(
+            &transcript,
+            r#"{"timestamp":"2026-07-25T10:06:00.000Z","message":{"id":"m","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+        )
+        .unwrap();
+        let mut banked = 0;
+        for pa in &pending_attributions(&engine).unwrap() {
+            if let Ok(r) = compute_attribution(pa, now) {
+                assert_eq!(pa.short_id, b, "only B can bank at tick N");
+                assert!(r.found);
+                banked += 1;
+                attribute_one(&engine, pa, &r).unwrap();
+            }
+        }
+        assert_eq!(banked, 1, "B banked m at tick N");
+
+        // Between ticks: streaming re-emits `m` stamped EARLIER (10:03 — the
+        // non-monotonic mid-write case). Dedupe keeps the last occurrence, so
+        // the deduped stamp now reads inside A's window and outside B's.
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        writeln!(f).unwrap();
+        writeln!(
+            f,
+            r#"{{"timestamp":"2026-07-25T10:03:00.000Z","message":{{"id":"m","usage":{{"input_tokens":1000,"output_tokens":2000}}}}}}"#
+        )
+        .unwrap();
+
+        // Tick N+1: A must NOT bank m — B already consumed it, by identity.
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(pending.len(), 1, "only A is still pending");
+        assert_eq!(pending[0].short_id, a);
+        if let Ok(r) = compute_attribution(&pending[0], now) {
+            assert!(
+                !r.found,
+                "A banked the spend B already holds: input={}",
+                r.totals.input
+            );
+            attribute_one(&engine, &pending[0], &r).unwrap();
+        }
+        let tasks_billed = count_rows(
+            &engine,
+            "SELECT COUNT(DISTINCT task_id) FROM token_usage WHERE source='log-parse'",
+        );
+        assert_eq!(tasks_billed, 1, "one spend is never billed to two tasks");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn count_rows(engine: &Engine, sql: &str) -> i64 {

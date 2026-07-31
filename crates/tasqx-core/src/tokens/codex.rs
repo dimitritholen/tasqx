@@ -231,6 +231,7 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
 
                 let (input_tokens, cache_read_tokens, output_tokens) = map_fields(usage);
                 samples.push(UsageSample {
+                    id: None,
                     ts: ts.to_string(),
                     model: current_model.clone(),
                     input_tokens,
