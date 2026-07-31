@@ -157,25 +157,63 @@ impl Parser {
 /// counted), and if either window bound fails to parse the window is empty — a
 /// bad window must never silently attribute *everything*.
 pub fn totals_in_window(samples: &[UsageSample], start: &str, done: &str) -> (TokenTotals, usize) {
-    let (Ok(lo), Ok(hi)) = (start.parse::<Timestamp>(), done.parse::<Timestamp>()) else {
-        return (TokenTotals::default(), 0);
+    let (totals, counted, _) = totals_in_window_excluding(samples, start, done, &[]);
+    (totals, counted)
+}
+
+/// Parse one `[start, end]` window's bounds. `None` when either bound fails to
+/// parse — an unusable window must never match anything. An inverted pair is
+/// normalized rather than treated as "everything is out of range in a confusing
+/// way".
+fn parse_window(start: &str, end: &str) -> Option<(Timestamp, Timestamp)> {
+    let (Ok(lo), Ok(hi)) = (start.parse::<Timestamp>(), end.parse::<Timestamp>()) else {
+        return None;
     };
-    // A window whose start is after its end has no interior; treat it as empty
-    // rather than as "everything is out of range in a confusing way".
-    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+    Some(if lo <= hi { (lo, hi) } else { (hi, lo) })
+}
+
+/// [`totals_in_window`] with the D50 refusal rule: an in-window sample that ALSO
+/// falls inside at least one `foreign` window — another task's `[window_start,
+/// window_end]` over the same sample source — is *contested* and banked for no
+/// one. Returns `(totals, counted, contested)` where `counted` covers only the
+/// uncontested in-window samples summed into `totals`.
+///
+/// Foreign windows use the same inclusive-bounds semantics as the task's own
+/// window, and an unparseable foreign bound makes THAT window empty (it contests
+/// nothing) — symmetrical with the main window, where a bad bound attributes
+/// nothing.
+pub fn totals_in_window_excluding(
+    samples: &[UsageSample],
+    start: &str,
+    done: &str,
+    foreign: &[(String, String)],
+) -> (TokenTotals, usize, usize) {
+    let Some((lo, hi)) = parse_window(start, done) else {
+        return (TokenTotals::default(), 0, 0);
+    };
+    let foreign: Vec<(Timestamp, Timestamp)> = foreign
+        .iter()
+        .filter_map(|(s, e)| parse_window(s, e))
+        .collect();
 
     let mut totals = TokenTotals::default();
-    let mut n = 0;
+    let mut counted = 0;
+    let mut contested = 0;
     for s in samples {
         let Ok(ts) = s.ts.parse::<Timestamp>() else {
             continue;
         };
-        if ts >= lo && ts <= hi {
+        if ts < lo || ts > hi {
+            continue;
+        }
+        if foreign.iter().any(|&(flo, fhi)| ts >= flo && ts <= fhi) {
+            contested += 1;
+        } else {
             totals.add_sample(s);
-            n += 1;
+            counted += 1;
         }
     }
-    (totals, n)
+    (totals, counted, contested)
 }
 
 /// The confidence to stamp on a measurement, per the module's confidence rule.
@@ -783,6 +821,68 @@ mod tests {
         assert_eq!(n, 3, "only the three in-window samples count");
         assert_eq!(totals.input, 1110);
         assert_eq!(totals.output, 2220);
+    }
+
+    #[test]
+    fn a_sample_inside_two_windows_is_banked_for_neither() {
+        let samples = vec![sample("2026-07-25T09:47:00Z", 1000, 2000)];
+        let foreign = vec![(
+            "2026-07-25T09:46:53Z".to_string(),
+            "2026-07-25T10:01:44Z".to_string(),
+        )];
+        let (totals, counted, contested) = totals_in_window_excluding(
+            &samples,
+            "2026-07-25T09:46:53Z",
+            "2026-07-25T09:49:37Z",
+            &foreign,
+        );
+        assert_eq!(counted, 0);
+        assert_eq!(contested, 1);
+        assert_eq!(totals.input, 0);
+    }
+
+    #[test]
+    fn a_sample_outside_every_foreign_window_is_counted_normally() {
+        let samples = vec![sample("2026-07-25T09:47:00Z", 1000, 2000)];
+        let foreign = vec![(
+            "2026-07-25T10:30:00Z".to_string(),
+            "2026-07-25T10:45:00Z".to_string(),
+        )];
+        let (totals, counted, contested) = totals_in_window_excluding(
+            &samples,
+            "2026-07-25T09:46:53Z",
+            "2026-07-25T09:49:37Z",
+            &foreign,
+        );
+        assert_eq!((counted, contested), (1, 0));
+        assert_eq!(totals.input, 1000);
+    }
+
+    #[test]
+    fn an_unparseable_foreign_window_contests_nothing() {
+        let samples = vec![sample("2026-07-25T09:47:00Z", 1000, 2000)];
+        let foreign = vec![("not-a-time".to_string(), "2026-07-25T10:01:44Z".to_string())];
+        let (_, counted, contested) = totals_in_window_excluding(
+            &samples,
+            "2026-07-25T09:46:53Z",
+            "2026-07-25T09:49:37Z",
+            &foreign,
+        );
+        assert_eq!((counted, contested), (1, 0));
+    }
+
+    #[test]
+    fn no_foreign_windows_matches_totals_in_window_exactly() {
+        let samples = vec![sample("2026-07-25T09:47:00Z", 1000, 2000)];
+        let plain = totals_in_window(&samples, "2026-07-25T09:46:53Z", "2026-07-25T09:49:37Z");
+        let (totals, counted, contested) = totals_in_window_excluding(
+            &samples,
+            "2026-07-25T09:46:53Z",
+            "2026-07-25T09:49:37Z",
+            &[],
+        );
+        assert_eq!((totals, counted), plain);
+        assert_eq!(contested, 0);
     }
 
     #[test]
