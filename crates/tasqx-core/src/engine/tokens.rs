@@ -9,7 +9,7 @@ use rusqlite::Row;
 
 use super::*;
 use crate::otlp::OtlpSample;
-use crate::tokens::{require_confidence, require_source};
+use crate::tokens::{require_confidence, require_source, SOURCE_LOG_PARSE, SOURCE_SELF_REPORT};
 
 /// How long a buffered OTLP sample is kept before opportunistic pruning (#18).
 /// The buffer is a short-lived staging area between telemetry arriving and a task
@@ -244,9 +244,27 @@ impl Engine {
             return Ok(false);
         }
 
+        // TOCTOU guard for "one task never mixes channels" (D50): the pending
+        // set captured `self_reported` under an earlier lock, and the tick then
+        // parsed the transcript UNLOCKED — a self-report landing via
+        // `token.add` in that gap would otherwise be joined by a log-parse row
+        // for the identical spend. Re-check inside THIS transaction, exactly
+        // like `has_attributed_event` above: the self-report is authoritative,
+        // so suppress the usage-row insert but still write the terminating
+        // marker — the task IS measured, by the caller.
+        let self_reported_meanwhile = source == SOURCE_LOG_PARSE && {
+            let n: i64 = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM token_usage \
+                 WHERE task_id = ?1 AND source = ?2 LIMIT 1)",
+                params![task.id, SOURCE_SELF_REPORT],
+                |r| r.get(0),
+            )?;
+            n > 0
+        };
+
         // A measurement row only when there is real spend to record; otherwise
         // just the marker. Either way, exactly one event.
-        let payload = if total > 0 {
+        let payload = if total > 0 && !self_reported_meanwhile {
             let usage = NewTokenUsage {
                 tool: tool.clone(),
                 source: source.clone(),
