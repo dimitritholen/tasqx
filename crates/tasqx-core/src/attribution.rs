@@ -442,7 +442,7 @@ pub fn compute_attribution(
     // two tasks with overlapping windows over one session would double-count
     // identically to the log-parse case. Contested telemetry banks for no one.
     if !pa.otel_samples.is_empty() {
-        let (totals, n, _, sample_ids) = totals_in_window_refusing(
+        let (totals, n, contested, sample_ids) = totals_in_window_refusing(
             &pa.otel_samples,
             &pa.window_start,
             &pa.window_end,
@@ -464,6 +464,17 @@ pub fn compute_attribution(
                 found: true,
                 sample_ids,
             });
+        }
+        // D50 symmetry: telemetry whose every in-window sample is claimed by
+        // another task's window is contested, banked for no one — and stays
+        // TRANSIENT on the shared give-up deadline, exactly like a contested
+        // transcript. Falling through here would reach the terminal empty
+        // paths and turn the contest into a permanent zero.
+        if n == 0 && contested > 0 && !transcript_gave_up(now, &pa.window_end) {
+            return Err(ApiError::internal(format!(
+                "otlp usage in window is contested: session {}",
+                pa.session_id.as_deref().unwrap_or_default()
+            )));
         }
     }
 
@@ -1552,6 +1563,48 @@ mod tests {
         assert_eq!(r.samples, 1, "the contested telemetry sample is refused");
         assert_eq!(r.totals.input, 100);
         assert_eq!(r.totals.output, 200);
+    }
+
+    /// D50 symmetry: contested TELEMETRY stays transient like contested
+    /// transcripts. The OTLP arm used to discard its contested count, so a
+    /// fully-contested telemetry window fell through to the terminal empty
+    /// paths — a permanent zero where the transcript path would have retried
+    /// until the give-up deadline.
+    #[test]
+    fn a_fully_contested_otlp_window_retries_then_gives_up_like_a_transcript() {
+        // Client with no parser: if the OTLP arm falls through, the result is
+        // deterministically the terminal empty marker — which is exactly the
+        // wrong outcome this test pins against.
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("cursor".into()),
+            transcript_path: None,
+            session_id: Some("sess-1".into()),
+            otel_samples: vec![sample("2026-07-24T10:15:00Z", 1000, 2000)],
+            otel_tool: Some("cursor".into()),
+            self_reported: false,
+            foreign_windows: vec![(
+                "2026-07-24T10:10:00Z".to_string(),
+                "2026-07-24T10:20:00Z".to_string(),
+            )],
+            consumed_sample_ids: HashSet::new(),
+        };
+
+        // Minutes after completion: transient, with the distinct message.
+        let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
+        assert!(
+            err.message.contains("contested"),
+            "expected the contested-transient error, got: {}",
+            err.message
+        );
+
+        // Two days later: give up and terminate with the empty marker.
+        let r = compute_attribution(&pa, ts("2026-07-26T11:05:00Z")).unwrap();
+        assert!(!r.found);
+        assert_eq!(r.samples, 0);
     }
 
     /// The other half of #73's boundary: DISCOVERY finding nothing stays
