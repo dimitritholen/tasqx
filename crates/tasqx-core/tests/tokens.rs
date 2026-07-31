@@ -1522,3 +1522,167 @@ fn recompute_keeps_the_whole_row_when_part_of_the_evidence_drifts_uncontested() 
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The replay must follow the order live ticks BANKED measurements — the
+/// earliest marker that recorded a measurement — not the earliest marker of
+/// any kind. A task's first marker can be an EMPTY one (found=false, no row)
+/// from before a reopen; ordering on it replays a reopened thief before the
+/// task that actually banked first, handing the thief the spend
+/// (rc_order_winner).
+#[test]
+fn recompute_replays_banks_in_the_order_they_banked_not_first_marker_order() {
+    let dir = scratch_dir("bank-order");
+    let copy_a = dir.join("copyA.jsonl");
+    let copy_b = dir.join("copyB.jsonl");
+    let line = r#"{"timestamp":"2026-07-25T10:10:00.000Z","message":{"id":"m","usage":{"input_tokens":1000,"output_tokens":2000}}}"#;
+    std::fs::write(&copy_a, line).unwrap();
+    std::fs::write(&copy_b, line).unwrap();
+    let path_a = copy_a.to_string_lossy().into_owned();
+    let path_b = copy_b.to_string_lossy().into_owned();
+
+    let e = engine();
+    let a = e.task_add(&json!({ "title": "A" })).unwrap()["short_id"].clone();
+    let b = e.task_add(&json!({ "title": "B" })).unwrap()["short_id"].clone();
+
+    // A: first completion, attributed EMPTY (marker M1, no measurement row).
+    e.task_done(&json!({ "ref": a, "client": "claude-code", "transcript_path": path_a }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": a, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 0,
+    }))
+    .unwrap();
+
+    // B: banks "m" from its own byte-copy, pre-upgrade marker (M2, no ids) —
+    // the LIVE owner of the spend.
+    e.task_done(&json!({ "ref": b, "client": "claude-code", "transcript_path": path_b }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": b, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+    }))
+    .unwrap();
+
+    // A: reopen + redone, post-upgrade theft of the same id (M3, with ids).
+    e.task_reopen(&json!({ "ref": a })).unwrap();
+    e.task_done(&json!({ "ref": a, "client": "claude-code", "transcript_path": path_a }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": a, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000, "sample_ids": ["m"],
+    }))
+    .unwrap();
+
+    // Pin windows so both cover the 10:10 stamp in their own files.
+    let (a_id, b_id) = (task_uuid(&e, &a), task_uuid(&e, &b));
+    pin_created(&e, &a_id, "2026-07-25T10:00:00Z");
+    pin_created(&e, &b_id, "2026-07-25T10:05:00Z");
+    pin_done(&e, &a_id, "2026-07-25T10:45:00Z", &path_a);
+    pin_done(&e, &b_id, "2026-07-25T10:30:00Z", &path_b);
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let tasks = r["tasks"].as_array().unwrap();
+    // B banked FIRST (its measuring marker precedes A's; A's earlier marker
+    // was empty), so B is replayed first and re-earns the claim on "m"...
+    assert_eq!(tasks[0]["task"], b, "{r}");
+    assert_eq!(
+        tasks[0]["after"],
+        b4(1000, 2000),
+        "the live owner keeps: {r}"
+    );
+    // ...and the reopened thief finds "m" contested and is zeroed.
+    assert_eq!(tasks[1]["task"], a, "{r}");
+    assert_eq!(tasks[1]["action"], "recomputed", "{r}");
+    assert_eq!(tasks[1]["after"], b4(0, 0), "the thief is zeroed: {r}");
+
+    let owners: Vec<(i64, i64)> = {
+        let mut stmt = e
+            .conn()
+            .prepare(
+                "SELECT t.short_id, u.input_tokens FROM token_usage u \
+                 JOIN tasks t ON t.id = u.task_id WHERE u.source='log-parse'",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(
+        owners,
+        vec![(b.as_i64().unwrap(), 1000)],
+        "one row, owned by the live owner"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The channel_conflict arm removes a task's log-parse rows because its real
+/// spend is the self-report — but the samples its bank CONSUMED stay consumed:
+/// the banked ids must enter the in-pass claim set exactly like the downgrade
+/// arm's, or a later task's recompute re-earns the same spend and the
+/// double-count reappears across channels.
+#[test]
+fn channel_conflict_keeps_the_tasks_banked_claims_contesting_later_tasks() {
+    let dir = scratch_dir("conflict-claims");
+    let copy = dir.join("copy.jsonl");
+    std::fs::write(
+        &copy,
+        r#"{"timestamp":"2026-07-25T10:10:00.000Z","message":{"id":"m","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+    )
+    .unwrap();
+    let copy_path = copy.to_string_lossy().into_owned();
+    let gone_path = dir.join("gone.jsonl").to_string_lossy().into_owned();
+
+    let e = engine();
+    let c = e.task_add(&json!({ "title": "C" })).unwrap()["short_id"].clone();
+    let d = e.task_add(&json!({ "title": "D" })).unwrap()["short_id"].clone();
+    // C banked "m" first, WITH its id persisted — then also self-reported
+    // (pre-TOCTOU-fix history), which makes it a channel conflict.
+    e.task_done(&json!({ "ref": c, "client": "claude-code", "transcript_path": gone_path }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": c, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000, "sample_ids": ["m"],
+    }))
+    .unwrap();
+    e.token_add(&json!({
+        "ref": c, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+        "input_tokens": 111, "output_tokens": 222,
+    }))
+    .unwrap();
+    // D banked the same id later from its own byte-copy, in a disjoint window.
+    e.task_done(&json!({ "ref": d, "client": "claude-code", "transcript_path": copy_path }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": d, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+    }))
+    .unwrap();
+    let (c_id, d_id) = (task_uuid(&e, &c), task_uuid(&e, &d));
+    pin_created(&e, &c_id, "2026-07-25T09:00:00Z");
+    pin_done(&e, &c_id, "2026-07-25T09:10:00Z", &gone_path);
+    pin_created(&e, &d_id, "2026-07-25T10:00:00Z");
+    pin_done(&e, &d_id, "2026-07-25T10:30:00Z", &copy_path);
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let tasks = r["tasks"].as_array().unwrap();
+    assert_eq!(tasks[0]["task"], c, "{r}");
+    assert_eq!(tasks[0]["action"], "channel_conflict", "{r}");
+    assert_eq!(tasks[1]["task"], d, "{r}");
+    assert_eq!(
+        tasks[1]["after"],
+        b4(0, 0),
+        "sample `m` stays consumed by C's bank even though C's rows moved \
+         aside for its self-report — D must not re-earn it: {r}"
+    );
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source='log-parse'"
+        ),
+        0
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

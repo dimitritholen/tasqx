@@ -163,6 +163,31 @@ struct StoredLogParse {
     confidence: String,
 }
 
+/// Whether one `tokens.attributed` marker payload recorded a MEASUREMENT —
+/// the bank instant [`Engine::token_recompute`]'s replay orders on — as
+/// opposed to an empty (found=false) `{"samples": 0}` marker or a recompute
+/// downgrade note. Every current banking shape carries the measurement row id
+/// in `measurement`; older shapes at least carried non-zero `totals`, so both
+/// spellings count.
+fn marker_banked_measurement(payload: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(payload) else {
+        return false;
+    };
+    if v.get("measurement").is_some_and(|m| !m.is_null()) {
+        return true;
+    }
+    v.get("totals").is_some_and(|t| {
+        [
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+        ]
+        .iter()
+        .any(|k| t.get(k).and_then(Value::as_i64).unwrap_or(0) > 0)
+    })
+}
+
 /// The four-bucket object the recompute report speaks — the same four keys as
 /// a measurement row, never a blended total (D48).
 fn buckets(input: i64, output: i64, cache_read: i64, cache_creation: i64) -> Value {
@@ -447,16 +472,21 @@ impl Engine {
     /// refusal rule, repairing history the pre-refusal ticks double-counted.
     ///
     /// Scope: EVERY task holding at least one `source=log-parse` measurement
-    /// row — not only overlap-contested ones — processed in ascending order of
-    /// its original (first) `tokens.attributed` marker rowid, REBUILDING the
-    /// identity-claim set as it goes. The full ordered pass is load-bearing:
-    /// markers banked before sample ids were persisted carry no claims, so a
-    /// moved-stamp theft against a pre-upgrade bank is precisely NOT
-    /// window-contested — replaying history in bank order closes that upgrade
-    /// window, and backfills `sample_ids` on surviving measurements' (new)
-    /// markers as a side effect. A row that never had a marker (hand-recorded
-    /// via `token.add`) sorts last, by task id, so it can never displace a
-    /// banked claim.
+    /// row — not only overlap-contested ones — processed in the order live
+    /// ticks BANKED measurements: ascending rowid of the earliest
+    /// `tokens.attributed` marker that RECORDED A MEASUREMENT for the task
+    /// (empty found=false markers do not count — a task's first marker can be
+    /// an empty one from before a reopen, and ordering on it would replay a
+    /// reopened thief before the task that actually banked first), REBUILDING
+    /// the identity-claim set as it goes. The full ordered pass is
+    /// load-bearing: markers banked before sample ids were persisted carry no
+    /// claims, so a moved-stamp theft against a pre-upgrade bank is precisely
+    /// NOT window-contested — replaying history in bank order closes that
+    /// upgrade window, and backfills `sample_ids` on surviving measurements'
+    /// (new) markers as a side effect. A task with only empty markers keeps
+    /// its earliest marker of any kind as the fallback; a row that never had
+    /// a marker at all (hand-recorded via `token.add`) sorts last, by task
+    /// id, so it can never displace a banked claim.
     ///
     /// Per task, one of four actions, reported as
     /// `{ "task": short_id, "action", "before": {four buckets},
@@ -533,26 +563,49 @@ impl Engine {
             }
         }
 
-        // The order live ticks banked these measurements in: first marker
-        // rowid per task, so the claim rebuild replays history instead of
-        // inventing a new one.
+        // The order live ticks banked these measurements in: the earliest
+        // marker that RECORDED A MEASUREMENT per task, so the claim rebuild
+        // replays history instead of inventing a new one. NOT the earliest
+        // marker of any kind — an empty (found=false) marker from before a
+        // reopen predates the bank without being one, and ordering on it
+        // would replay a reopened thief before the live owner. Tasks with
+        // only empty markers fall back to their earliest marker, then task
+        // id. Decided in Rust, not by a payload LIKE: a substring guard over
+        // JSON is unsound.
+        let mut first_bank: HashMap<String, i64> = HashMap::new();
         let mut first_marker: HashMap<String, i64> = HashMap::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT entity_id, MIN(rowid) FROM events \
-                 WHERE op = 'tokens.attributed' GROUP BY entity_id",
+                "SELECT entity_id, rowid, payload FROM events \
+                 WHERE op = 'tokens.attributed' ORDER BY rowid",
             )?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })?;
             for r in rows {
-                let (task_id, rowid) = r?;
-                first_marker.insert(task_id, rowid);
+                let (task_id, rowid, payload) = r?;
+                first_marker.entry(task_id.clone()).or_insert(rowid);
+                if payload.as_deref().is_some_and(marker_banked_measurement) {
+                    first_bank.entry(task_id).or_insert(rowid);
+                }
             }
         }
+        let bank_order = |task: &String| {
+            (
+                first_bank
+                    .get(task)
+                    .or_else(|| first_marker.get(task))
+                    .copied()
+                    .unwrap_or(i64::MAX),
+                task.clone(),
+            )
+        };
         let mut order: Vec<String> = stored.keys().cloned().collect();
-        order.sort_by(|a, b| {
-            (first_marker.get(a).copied().unwrap_or(i64::MAX), a)
-                .cmp(&(first_marker.get(b).copied().unwrap_or(i64::MAX), b))
-        });
+        order.sort_by_key(bank_order);
 
         let mut short_ids: HashMap<String, i64> = HashMap::new();
         {
@@ -625,6 +678,15 @@ impl Engine {
 
             let (action, after, after_total);
             if self_reported.contains(task_id) {
+                // The rows move aside for the self-report, but the samples
+                // the bank CONSUMED stay consumed — the banked ids enter the
+                // in-pass claim set exactly like the downgrade arm's, so a
+                // later task cannot re-earn the same spend and reopen the
+                // double-count across channels. Conservative on purpose:
+                // cross-channel claims still contest.
+                if let Some(ids) = banked.get(task_id) {
+                    claims.extend(ids.iter().cloned());
+                }
                 if !dry_run {
                     self.recompute_replace(task_id, "channel_conflict", None, 0, &[])?;
                 }
