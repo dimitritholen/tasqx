@@ -26,6 +26,11 @@ mod theme;
 mod tokens;
 mod tui;
 
+/// The built-in theme names, re-exported for the README drift guard
+/// (`tests/readme.rs`): the README claims a built-in theme count, and a count
+/// nothing binds is the "Twenty-six verbs" bug waiting to happen again.
+pub use theme::BUILTINS as THEME_BUILTINS;
+
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::exit;
@@ -1494,7 +1499,7 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
     let events = dispatch(engine, "event.list", &json!({ "limit": 100000 }))?;
     let anchor = chart::today();
     Ok(match kind {
-        ChartKind::Throughput { weeks, .. } => {
+        ChartKind::Throughput { weeks } => {
             let weeks = chart::default_weeks(false, weeks);
             let series = chart::throughput(&events, weeks, anchor);
             let data = series

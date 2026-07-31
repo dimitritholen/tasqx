@@ -483,10 +483,9 @@ fn window_parser(max: u64) -> clap::builder::RangedU64ValueParser<usize> {
 pub(super) enum ChartKind {
     /// Tasks added vs done per ISO week (from the events table).
     Throughput {
-        /// Weekly buckets (default view; kept for parity with the spec).
-        #[arg(long)]
-        weekly: bool,
         /// Number of weeks to show (1-520; default 12).
+        // Weekly is the only bucketing — the spec's `--weekly` flag was parsed
+        // and dropped for two releases, so it is gone rather than documented.
         #[arg(long, value_parser = window_parser(MAX_CHART_WEEKS))]
         weeks: Option<usize>,
     },

@@ -509,6 +509,17 @@ fn tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
+/// The tool roster as `(name, is_write)` pairs, in `tools/list` order.
+///
+/// Public for the doc-drift guards, not for callers: the HTML guide and the
+/// README both restate this roster, and each binds itself to this list — a
+/// tool added to `tool_specs` without reaching those surfaces (or a tool
+/// they name that no longer exists) fails their tests instead of shipping as
+/// a quiet disagreement between the server and its documentation.
+pub fn tool_roster() -> Vec<(&'static str, bool)> {
+    tool_specs().iter().map(|s| (s.name, s.write)).collect()
+}
+
 /// A long-lived MCP session over one [`Engine`], fenced to one [`Scope`]. It is
 /// a pure message mapper — all state of record lives in the engine's store.
 pub struct McpServer<'e> {
