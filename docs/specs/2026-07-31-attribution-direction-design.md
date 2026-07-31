@@ -42,6 +42,20 @@ of a token spend.** Ownership is provenance, and only the caller has it.
 
 - Contestedness is decided purely by window overlap among open tasks: a sample
   falling inside more than one open task's window is banked for **no one**.
+- Window overlap alone is not cross-tick coherent, so a second rule composes
+  with it: **global identity claims**. A banked measurement records the sample
+  ids it consumed in its `tokens.attributed` payload, and a claimed id is
+  refused store-wide on every later tick regardless of what its current
+  timestamp says. Identity is the backbone: transcript stamps move between
+  mid-write reads, so a banked decision is final only when pinned to sample
+  identity, not to the stamp of the hour. The claim set is deliberately global —
+  not joined through path or session equality — because source identity
+  re-derived from a live filesystem dissolves when a path stops resolving
+  (dangling symlink, deleted transcript). Samples without an id (parsers other
+  than Claude Code, plus the undocumented Claude Code line shape without
+  `message.id`) keep window-only semantics; their stamps were verified stable
+  across re-reads, so identity adds nothing there — recorded as an assumption,
+  not a guarantee.
 - Affected tasks stay **transient** on the existing #73 give-up deadline. No
   terminal marker of any kind — a terminal state is what sank the parked attempt,
   because mid-write transcript timestamps are not monotonic (38 of 192 real
@@ -67,6 +81,13 @@ fix, and the tool contract now says so.
 
 A migration re-runs attribution over the stored windows under the refusal rule:
 
+- It recomputes **every** log-parse measurement, not only those from overlapping
+  windows, in deterministic order, rebuilding the identity-claim set as it goes.
+  This is load-bearing: measurements banked before the identity fix carry no
+  `sample_ids`, so a moved-stamp theft against a pre-upgrade bank is precisely
+  *not* window-contested — only a full recompute with claims rebuilt closes that
+  upgrade window, and it backfills `sample_ids` on surviving rows as a side
+  effect.
 - Contested samples drop out; uncontested measurements survive unchanged.
 - Rows whose transcript is no longer readable cannot be recomputed. Those are
   downgraded — `confidence` set to `low` — never deleted blind.
