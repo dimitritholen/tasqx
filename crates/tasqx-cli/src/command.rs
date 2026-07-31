@@ -361,6 +361,12 @@ pub(super) enum Command {
         #[command(subcommand)]
         action: MemoryAction,
     },
+    /// Token accounting maintenance (DESIGN.md §12-D50).
+    #[command(after_help = crate::cmddoc::after_help("tokens"))]
+    Tokens {
+        #[command(subcommand)]
+        action: TokensAction,
+    },
     /// Export tasks as canonical JSON (maps to store.export).
     #[command(after_help = crate::cmddoc::after_help("export"))]
     Export {
@@ -588,6 +594,22 @@ pub(super) enum MemoryAction {
     Import {
         /// A file, or a directory whose *.md files are imported (non-recursive).
         path: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(super) enum TokensAction {
+    /// Re-run log-parse attribution over stored history under the D50 refusal
+    /// rule (maps to tokens.recompute): samples claimed by more than one task's
+    /// window drop out, and a task whose transcript is gone keeps its counts
+    /// with confidence downgraded to low. Dry-run by default: prints the
+    /// per-task delta and writes nothing.
+    Recompute {
+        /// Actually write the repair. The dry-run default is not a convenience
+        /// but the safety: this is the one verb in the API built to delete
+        /// measurement rows, so destruction must be asked for by name.
+        #[arg(long)]
+        apply: bool,
     },
 }
 

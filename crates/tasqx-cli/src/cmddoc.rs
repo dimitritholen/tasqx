@@ -476,6 +476,26 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Automation,
     },
     CmdDoc {
+        verb: "tokens",
+        aliases: &[],
+        method: "tokens.recompute",
+        summary: "Repair stored token attribution — dry-run by default (D50).",
+        usage: "tasqx tokens recompute [--apply]",
+        examples: &[
+            ex("tasqx tokens recompute"),
+            ex_norun(
+                "tasqx tokens recompute --apply",
+                "write the repair, after reviewing the dry-run delta",
+            ),
+        ],
+        notes: &[
+            "A bare `tasqx tokens recompute` prints the per-task delta and writes NOTHING; `--apply` is the explicit opt-in for the one verb in the API built to delete measurement rows.",
+            "Scope is `source=log-parse` measurements only: samples claimed by more than one task's window drop out, a task whose transcript is gone keeps its counts at confidence `low`, and self-reported/OTLP rows are never rewritten.",
+        ],
+        see_also: &["report", "done", "api"],
+        topic: Topic::Automation,
+    },
+    CmdDoc {
         verb: "export",
         aliases: &[],
         method: "store.export",

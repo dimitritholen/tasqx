@@ -107,6 +107,9 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("cancel", &["cancel", "2"]),
         c("reopen", &["reopen", "2"]),
         c("report", &["report"]),
+        // Dry-run by design: this guard only judges the --json shape, and the
+        // shared store carries no log-parse measurement to repair anyway.
+        c("tokens", &["tokens", "recompute"]),
         c("export", &["export"]),
         c("config", &["config", "list"]),
         c("theme", &["theme", "list"]),
