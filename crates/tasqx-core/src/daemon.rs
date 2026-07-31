@@ -1264,6 +1264,18 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
                     }
                     continue;
                 }
+                // `tokens.recompute` parses transcripts, which must never
+                // happen under the daemon's global engine lock (one hung
+                // `open()` would wedge every client) — refused HERE, before
+                // the lock is even taken, naming the in-process invocation
+                // (D50 Decision 3).
+                if let Some(refusal) = recompute_refusal_envelope(trimmed) {
+                    let out = format!("{refusal}\n");
+                    if out_tx.send(out).is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 // Lock ONLY around dispatch; never across the socket write. A
                 // panic inside dispatch is caught and turned into a per-client
                 // `internal` error — it must never take down the daemon (and the
@@ -1420,6 +1432,40 @@ fn is_read_method(line: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+/// The transport-level refusal for `tokens.recompute` (D50 Decision 3): the
+/// verb parses transcripts, and transcript I/O under the daemon's global
+/// engine lock would let one hung `open()` wedge every client — so the daemon
+/// never dispatches it. A correlated `bad_request` (unlike
+/// [`unavailable_envelope`], the request WAS answered — with the invocation
+/// that works) so the CLI surfaces the message verbatim; in-process dispatch
+/// is untouched.
+///
+/// `None` for every other method — including a line that fails to parse,
+/// which must keep flowing to `handle_envelope` for its own malformed-request
+/// answer.
+fn recompute_refusal_envelope(line: &str) -> Option<Value> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v.get("method").and_then(Value::as_str) != Some("tokens.recompute") {
+        return None;
+    }
+    let id = v.get("id").cloned().unwrap_or(Value::Null);
+    let mut m = Map::new();
+    m.insert("tasqx".into(), json!(crate::API_VERSION));
+    if !id.is_null() {
+        m.insert("id".into(), id);
+    }
+    m.insert("ok".into(), json!(false));
+    m.insert(
+        "error".into(),
+        json!({
+            "code": "bad_request",
+            "message": "tokens.recompute parses transcripts and must run in-process: \
+                        stop the daemon and run `tasqx --no-daemon tokens recompute`",
+        }),
+    );
+    Some(Value::Object(m))
 }
 
 /// A well-formed `internal` error envelope for a request whose dispatch panicked,

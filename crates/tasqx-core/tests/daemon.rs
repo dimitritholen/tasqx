@@ -913,3 +913,49 @@ fn attribution_store_failure_stops_the_daemon_naming_token_attribution() {
     let _ = std::fs::remove_file(&db);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// D50 Decision 3: `tokens.recompute` parses transcripts, which must never
+/// happen under the daemon's global engine lock — the daemon refuses the
+/// method at the transport, BEFORE dispatch, naming the in-process
+/// invocation. The refusal is a correlated `bad_request` (not a transport
+/// drop), and the connection keeps serving normal methods afterwards.
+#[test]
+fn tokens_recompute_is_refused_over_the_socket_naming_the_in_process_invocation() {
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+    let mut c = daemon::try_connect(&sock).expect("connect");
+
+    let env = c.request("tokens.recompute", &json!({})).unwrap();
+    assert_eq!(
+        env.get("ok"),
+        Some(&Value::Bool(false)),
+        "the daemon must refuse tokens.recompute: {env}"
+    );
+    assert_eq!(
+        env.get("id"),
+        Some(&json!(1)),
+        "the refusal correlates the request id: {env}"
+    );
+    let error = env.get("error").expect("error body");
+    assert_eq!(error.get("code"), Some(&json!("bad_request")), "{env}");
+    let message = error.get("message").and_then(Value::as_str).unwrap_or("");
+    assert!(
+        message.contains("in-process") && message.contains("--no-daemon"),
+        "the refusal must name the in-process invocation, got: {message}"
+    );
+
+    // `--apply` polarity makes no difference: the refusal is method-level.
+    let env = c
+        .request("tokens.recompute", &json!({ "dry_run": false }))
+        .unwrap();
+    assert_eq!(env.get("ok"), Some(&Value::Bool(false)), "{env}");
+
+    // The connection is still healthy: a normal method dispatches fine.
+    let added = c
+        .request("task.add", &json!({ "title": "still serving" }))
+        .unwrap();
+    assert!(ok(&added)["short_id"].as_i64().unwrap() >= 1);
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}

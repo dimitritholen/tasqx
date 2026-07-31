@@ -235,7 +235,8 @@ const METHODS: [(&str, &str, &str); 29] = [
         "<code>{dry_run, tasks, totals}</code>. Re-runs log-parse attribution over stored \
          windows under the refusal rule (D50). <code>dry_run</code> defaults to \
          <em>true</em> — report the per-task delta, write nothing; send \
-         <code>false</code> to apply.",
+         <code>false</code> to apply. In-process only: a daemon refuses this \
+         method over the socket, so stop any daemon on the store first.",
     ),
     (
         "report.summary",

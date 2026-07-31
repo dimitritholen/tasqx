@@ -275,3 +275,69 @@ fn help_text_pins_the_dry_run_default() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A daemon-routed `tasqx tokens recompute` is REFUSED by the daemon (the verb
+/// parses transcripts and must never run under the daemon's engine lock), and
+/// the CLI surfaces the daemon's refusal message verbatim — naming the
+/// `--no-daemon` invocation — instead of swallowing it. Unix-only for the
+/// same reason as the stub-daemon regression: a portable path socket.
+#[cfg(unix)]
+#[test]
+fn a_daemon_routed_recompute_surfaces_the_in_process_refusal_verbatim() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let dir = scratch("refused");
+    let sock = dir.join("scratch.sock").to_string_lossy().into_owned();
+    let db = dir.join("daemon-store.db").to_string_lossy().into_owned();
+
+    // A REAL daemon on a scratch socket + scratch store: the routed command
+    // below never sees `TASQX_DB`, so the daemon must own an isolated store.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let sd = shutdown.clone();
+    let sk = sock.clone();
+    let server = std::thread::spawn(move || {
+        let engine = tasqx_core::Engine::open(&db).expect("open scratch daemon store");
+        tasqx_core::daemon::serve(engine, &sk, sd).expect("serve scratch daemon");
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(c) = tasqx_core::daemon::try_connect(&sock) {
+            drop(c);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "scratch daemon never became connectable"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Deliberately WITHOUT `--no-daemon`: `TASQX_SOCK` routes the command to
+    // the scratch daemon, which must refuse it before dispatch.
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &dir)
+        .env("TASQX_SOCK", &sock)
+        .args(["tokens", "recompute"])
+        .output()
+        .expect("run tasqx");
+    assert!(
+        !out.status.success(),
+        "a daemon-routed recompute must fail, got: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(out.status.code(), Some(2), "bad_request maps to exit 2");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "tokens.recompute parses transcripts and must run in-process: \
+             stop the daemon and run `tasqx --no-daemon tokens recompute`"
+        ),
+        "the daemon's message must surface verbatim: {stderr}"
+    );
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = server.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
