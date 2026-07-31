@@ -15,7 +15,7 @@ tasqx list "status:pending" --json | jq '[.tasks[] | select(.blocked)]'
 ## The weekly view
 
 ```console
-tasqx report                     # per-project: count, estimates, overdue, tracked
+tasqx report                     # per-project: count, estimates, overdue, tracked, tokens
 tasqx report status              # the same, grouped by lifecycle state
 tasqx chart throughput           # added vs done per ISO week
 tasqx chart heatmap              # completion density, calendar-style
@@ -35,6 +35,8 @@ tasqx report --html --out review.html
 One self-contained file: inline CSS and SVG, no external requests, both light and
 dark schemes. Open it in a browser, attach it to a mail, drop it in a channel.
 Five built-in themes (`--theme nord`, `gruvbox`, `dracula`, `solarized`, `mono`).
+The header's stat row ends with four token tiles — cache read, cache write,
+input, output — one per bucket, never blended into a single total.
 
 ## Time tracking honesty
 

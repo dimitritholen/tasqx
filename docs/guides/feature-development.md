@@ -50,7 +50,10 @@ tasqx done 1                     # prints: unblocked #2
 
 `done` announces what its completion released — you never have to work out what is
 next by hand. `tasqx list project:myapp.checkout` shows the whole feature;
-`tasqx report project:myapp.checkout` totals the remaining estimates.
+`tasqx report project:myapp.checkout` totals the feature's estimates — done work
+included, since a plain report skips only cancelled tasks. Name a status when
+you want less: `tasqx report "project:myapp.checkout status:pending"` totals
+what you have not started yet.
 
 ## Where this stops
 

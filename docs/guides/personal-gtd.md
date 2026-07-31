@@ -47,6 +47,6 @@ way. There is no destructive path in daily use.
 
 ```console
 tasqx list "status:done completed.after:-7d"    # what got finished
-tasqx report status                             # open vs done vs cancelled
+tasqx report status                             # open vs done; cancelled stays out
 tasqx chart heatmap                             # completion density, calendar-style
 ```

@@ -35,6 +35,11 @@ The tool surface is designed around one loop — work the backlog one task at a 
 1. `tasqx_list_tasks` with `"project:myapp.checkout"` — see the feature, blocked
    tasks marked.
 2. `tasqx_get_task` — read the annotations: acceptance criteria, links, context.
+   The answer is two content blocks: tasqx-rendered markdown first, then the raw
+   JSON. The markdown is the intended reading — layout is tasqx's job, so the
+   agent uses it as-is rather than recomposing the detail from JSON — and the
+   `detail.time_format` config key (`iso`, `relative` or `both`) decides how it
+   writes timestamps.
 3. `tasqx_start_timer`, do the work, `tasqx_complete_task` — the completion result
    names any tasks it unblocked, which is the agent's cue for what to pick up next.
    Pass the turn's token counts on completion (`input_tokens`, `output_tokens`,
@@ -50,9 +55,11 @@ with `tasqx_add_task`, wire the order, then work the chain.
 
 ## Give the agent memory
 
-`tasqx memory import docs/` turns your markdown docs — ADRs, runbooks, company
-patterns — into a searchable knowledge store, and `tasqx_search_memory` lets the
-agent consult it mid-task (it works even read-only, deliberately). Task
+`tasqx memory import docs/` turns a directory of markdown docs — ADRs, runbooks,
+company patterns — into a searchable knowledge store, and `tasqx_search_memory`
+lets the agent consult it mid-task (it works even read-only, deliberately). The
+import is not recursive: a directory means its own `*.md` files, so run it once
+per folder that holds docs rather than pointing it at the root of a tree. Task
 annotations are searchable through the same tool, so decisions written down
 during one task resurface during the next:
 
@@ -62,8 +69,12 @@ during one task resurface during the next:
 
 ## Safety properties you get for free
 
-- Every mutation is optimistic-concurrency-checked: if you edited a task in another
-  shell mid-flight, the agent gets a `conflict` and re-reads instead of clobbering.
+- `tasqx_modify_task` is optimistic-concurrency-checked: the server pins the
+  task's revision before writing, so if you edited the task in another shell
+  mid-flight the agent gets a `conflict` and re-reads instead of clobbering.
+  The other writes — complete, tag, annotate, timers, dependencies — carry no
+  revision guard and are last-write-wins, which is why field edits belong on
+  modify.
 - There is deliberately no bulk-delete tool. Cancelling goes through the same
   reversible, logged path as everything else.
 - Every agent action lands in the append-only event log, so `tasqx chart` and the
