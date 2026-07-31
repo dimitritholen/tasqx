@@ -600,6 +600,47 @@ fn one_spend_is_never_billed_to_two_tasks() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The `sample_ids` array lands verbatim in the event log and is re-parsed on
+/// every pending build, so an unbounded one is a permanent per-tick tax. No
+/// real transcript window approaches thousands of samples (the store's biggest
+/// banked window held 41), so more than 4096 ids is a caller error, refused
+/// before anything is written.
+#[test]
+fn token_attribute_refuses_an_oversized_sample_ids_array() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    let ids: Vec<String> = (0..4097).map(|i| format!("msg-{i}")).collect();
+
+    let err = e
+        .token_attribute(&json!({
+            "ref": sid, "source": "log-parse", "tool": "claude-code",
+            "confidence": "medium", "input_tokens": 10, "sample_ids": ids,
+        }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("sample_ids"), "{}", err.message);
+    assert!(err.message.contains("4096"), "{}", err.message);
+
+    // A refusal writes nothing: no measurement, no marker.
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 0);
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM events WHERE op='tokens.attributed'"
+        ),
+        0
+    );
+
+    // Exactly the cap is accepted — the bound refuses, it does not truncate.
+    let ids: Vec<String> = (0..4096).map(|i| format!("msg-{i}")).collect();
+    assert!(e
+        .token_attribute(&json!({
+            "ref": sid, "source": "log-parse", "tool": "claude-code",
+            "confidence": "medium", "input_tokens": 10, "sample_ids": ids,
+        }))
+        .unwrap());
+}
+
 // ---- OTLP buffer (#18) --------------------------------------------------------
 
 /// Buffered OTLP samples (#18) are raw telemetry, not attributed to any task:
