@@ -34,7 +34,7 @@
 //! matching is not available; discovery therefore stays low-confidence and may
 //! legitimately attribute nothing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
@@ -44,7 +44,7 @@ use crate::engine::Engine;
 use crate::error::ApiError;
 use crate::tokens::{
     self, codex, TokenTotals, UsageSample, CONFIDENCE_HIGH, CONFIDENCE_LOW, CONFIDENCE_MEDIUM,
-    SOURCE_LOG_PARSE, SOURCE_OTEL,
+    SOURCE_LOG_PARSE, SOURCE_OTEL, SOURCE_SELF_REPORT,
 };
 
 /// Upper bound on transcript files inspected during discovery (no
@@ -280,10 +280,12 @@ pub struct PendingAttribution {
     /// The tool that emitted the buffered OTLP samples, used only to label the
     /// stored measurement when the completion carried no `client`.
     pub otel_tool: Option<String>,
-    /// True when this completion already self-reported its token spend (#13): a
-    /// `token_usage` row was written in the SAME transaction as `task.done` and
-    /// echoed as the `tokens` key of the done payload. That self-report is the
-    /// authoritative measurement for the task, so async attribution must NOT
+    /// True when this task already self-reported its token spend — either on
+    /// `task.done` (#13: a `token_usage` row written in the SAME transaction and
+    /// echoed as the done payload's `tokens` key) or via a later `token.add`
+    /// with `source=self-report` (D50: one task never mixes channels). That
+    /// self-report is the authoritative measurement for the task, so async
+    /// attribution must NOT
     /// reconstruct a second measurement for the same window — doing so would
     /// double-count identical spend in every report. Such a task is still carried
     /// through the pending set so it receives a terminating `tokens.attributed`
@@ -677,6 +679,24 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
         map
     };
 
+    // 1b. Tasks that already carry a stored self-report measurement. The
+    //     done-payload `tokens` key only covers a self-report made ON
+    //     `task.done`; a `token.add` with `source=self-report` after the
+    //     completion is the same claim through the other door, and log-parse
+    //     reconstructing a second measurement for it would double-count the
+    //     identical spend. One indexed query (idx_token_usage_task's table,
+    //     filtered on source) per pending build.
+    let self_report_rows: HashSet<String> = {
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT task_id FROM token_usage WHERE source = ?1")?;
+        let rows = stmt.query_map([SOURCE_SELF_REPORT], |r| r.get::<_, String>(0))?;
+        let mut set = HashSet::new();
+        for r in rows {
+            set.insert(r?);
+        }
+        set
+    };
+
     // 2. Latest `done` per task carrying correlation. Rowid order so a
     //    reopened-then-redone task's most recent completion wins — and a `done`
     //    is "not yet attributed" when no `tokens.attributed` marker exists
@@ -721,8 +741,11 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             // A self-report on `task.done` (#13) echoes its measurement into the
             // done payload's `tokens` key. Its presence means the spend is already
             // recorded, so this task must terminate with a marker only — never a
-            // second, double-counting measurement.
-            let self_reported = v.get("tokens").is_some_and(|t| !t.is_null());
+            // second, double-counting measurement. A stored self-report row
+            // (`token.add` after the done) means exactly the same thing (D50:
+            // one task never mixes channels).
+            let self_reported = v.get("tokens").is_some_and(|t| !t.is_null())
+                || self_report_rows.contains(&task_id);
             let completed = field("completed").unwrap_or(ts);
             let is_attributed = attributed
                 .get(&task_id)
@@ -1627,6 +1650,48 @@ mod tests {
         );
         // A second tick is a clean no-op: the marker now sits past the done.
         assert!(pending_attributions(&engine).unwrap().is_empty());
+    }
+
+    /// #13's gap, closed by D50's "one task never mixes channels": a
+    /// self-report that arrives via `token.add` AFTER the completion (not in
+    /// the done payload) must exclude log-parse exactly like a done-time
+    /// self-report — otherwise async attribution reconstructs a second
+    /// measurement for spend the caller already reported.
+    #[test]
+    fn a_token_add_self_report_after_done_also_excludes_log_parse() {
+        let engine = Engine::open_in_memory().unwrap();
+        let sid = engine.task_add(&json!({ "title": "t" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        // Completed with correlation but WITHOUT done-time token counts, so the
+        // done payload carries no `tokens` key.
+        engine
+            .task_done(&json!({ "ref": sid, "client": "claude-code", "session_id": "sess-9" }))
+            .unwrap();
+        engine
+            .token_add(&json!({
+                "ref": sid,
+                "source": SOURCE_SELF_REPORT,
+                "tool": "claude-code",
+                "confidence": "medium",
+                "input_tokens": 500,
+                "output_tokens": 100,
+            }))
+            .unwrap();
+
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "still carried through the queue so it receives its marker"
+        );
+        assert!(
+            pending[0].self_reported,
+            "a stored self-report row excludes log-parse like a done-time one"
+        );
+        // And compute honours the flag: marker only, no second measurement.
+        let r = compute_attribution(&pending[0], ts("2026-07-24T11:05:00Z")).unwrap();
+        assert!(!r.found);
     }
 
     #[test]
