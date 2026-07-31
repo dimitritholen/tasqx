@@ -491,6 +491,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "A bare `tasqx tokens recompute` prints the per-task delta and writes NOTHING; `--apply` is the explicit opt-in for the one verb in the API built to delete measurement rows.",
             "Scope is `source=log-parse` measurements only: samples claimed by more than one task's window drop out, a task whose transcript is gone keeps its counts at confidence `low`, and self-reported/OTLP rows are never rewritten.",
+            "Stop any daemon on the store before `--apply`: the verb parses transcripts and runs in-process only (a daemon refuses it over the socket), and applying beside a live daemon is two writers — convergence on rerun is the safety net, not a license.",
         ],
         see_also: &["report", "done", "api"],
         topic: Topic::Automation,
