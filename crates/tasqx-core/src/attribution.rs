@@ -329,13 +329,20 @@ pub struct PendingAttribution {
     /// would be race-dependent: a task attributed last tick has left the queue,
     /// but its window still claims the same samples.
     pub foreign_windows: Vec<(String, String)>,
-    /// The union of sample ids already consumed by OTHER tasks sharing this
-    /// task's sample source, read from their `tokens.attributed` payloads. A
-    /// banked decision is final: a sample whose id is in here is contested no
-    /// matter where its re-parsed stamp currently lands, because the Claude
-    /// Code parser keeps the LAST occurrence's timestamp for a deduped message
-    /// id and a mid-write re-emission can move that stamp across a window edge
-    /// between ticks.
+    /// The union of sample ids already consumed by ALL other tasks in the
+    /// store, read from their `tokens.attributed` payloads. A banked decision
+    /// is final: a sample whose id is in here is contested no matter where its
+    /// re-parsed stamp currently lands, because the Claude Code parser keeps
+    /// the LAST occurrence's timestamp for a deduped message id and a
+    /// mid-write re-emission can move that stamp across a window edge between
+    /// ticks.
+    ///
+    /// Unlike [`foreign_windows`](Self::foreign_windows) this is NOT joined
+    /// through `shares_sample_source` (D50 Decision 2): that join re-derives
+    /// source identity from the live filesystem, so a claim banked under a
+    /// spelling that stops resolving (dangling symlink deleted between ticks)
+    /// would silently dissolve. Identity contest is exact — message ids are
+    /// unique per API response — so global is strictly safer.
     pub consumed_sample_ids: HashSet<String>,
 }
 
@@ -790,7 +797,11 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
     //     reopen + re-complete can bank twice, and each banked id stays
     //     consumed forever). Feeds `consumed_sample_ids` below, so a sample
     //     banked on an earlier tick is refused by identity even after its
-    //     re-parsed stamp moves out of the banked task's window.
+    //     re-parsed stamp moves out of the banked task's window. Markers
+    //     written before sample ids were persisted carry no claim here; that
+    //     residual is accepted until the D50 Decision 3 recompute
+    //     (docs/specs/2026-07-31-attribution-direction-design.md) rebuilds the
+    //     claim set and backfills them.
     let consumed_by_task: HashMap<String, Vec<String>> = {
         let mut stmt = conn.prepare(
             "SELECT entity_id, payload FROM events \
@@ -1019,19 +1030,23 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             })
             .map(|(_, ws, we)| (ws.clone(), we.clone()))
             .collect();
-        // And the sample ids those same neighbours already consumed: banked by
+        // And the sample ids ALL other tasks already consumed: banked by
         // identity, refused by identity — whatever the samples' re-parsed
-        // stamps say on this tick.
-        let consumed_sample_ids: HashSet<String> = correlated
+        // stamps say on this tick. Deliberately GLOBAL, with no
+        // `shares_sample_source` join (D50 Decision 2): source identity is
+        // re-derived from the live filesystem each build, so a claim joined
+        // through it dissolves when the banked spelling stops resolving (a
+        // dangling symlink, a deleted transcript) — and a message id is unique
+        // per API response, so a byte-copied transcript sharing ids SHOULD be
+        // refused as the same spend. Residual, accepted until slice 3: a
+        // marker banked before sample ids were persisted carries no claim, so
+        // a moved-stamp theft against a pre-upgrade bank is closed only by the
+        // full ordered recompute D50 Decision 3 mandates
+        // (docs/specs/2026-07-31-attribution-direction-design.md).
+        let consumed_sample_ids: HashSet<String> = consumed_by_task
             .iter()
-            .filter(|(other_id, other)| *other_id != task_id && shares_sample_source(info, other))
-            .flat_map(|(other_id, _)| {
-                consumed_by_task
-                    .get(other_id)
-                    .into_iter()
-                    .flatten()
-                    .cloned()
-            })
+            .filter(|(other_id, _)| *other_id != task_id)
+            .flat_map(|(_, ids)| ids.iter().cloned())
             .collect();
         out.push(PendingAttribution {
             task_id: task_id.clone(),
@@ -2433,6 +2448,157 @@ mod tests {
         assert_eq!(tasks_billed, 1, "one spend is never billed to two tasks");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The symlink-vanish theft: B banks message `m` under a symlink spelling
+    /// of the transcript; the symlink is deleted between ticks; streaming
+    /// re-emits `m` with an earlier stamp inside A's window. If the consumed-id
+    /// set is joined through source identity, B's claim dissolves with the
+    /// symlink (canonicalize fails, the lexical fallback yields a different
+    /// identity) and A re-banks the claimed spend. Identity claims must be
+    /// GLOBAL: a claimed sample id is refused store-wide, whatever the current
+    /// filesystem says about the path it was banked under.
+    #[cfg(unix)]
+    #[test]
+    fn a_claimed_sample_id_is_refused_store_wide_even_when_its_source_path_dissolves() {
+        let base = std::env::temp_dir().join(format!(
+            "tasqx-attr-symlink-vanish-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let lnk = base.join("lnk");
+        std::os::unix::fs::symlink(&real, &lnk).unwrap();
+
+        let transcript = real.join("sess-1.jsonl");
+        let a_path = transcript.to_string_lossy().into_owned();
+        let b_path = lnk.join("sess-1.jsonl").to_string_lossy().into_owned();
+
+        let engine = Engine::open_in_memory().unwrap();
+        let a = engine.task_add(&json!({ "title": "A" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        let b = engine.task_add(&json!({ "title": "B" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        for (sid, p) in [(a, &a_path), (b, &b_path)] {
+            engine.task_start(&json!({ "ref": sid })).unwrap();
+            engine
+                .task_done(&json!({ "ref": sid, "client": "claude-code", "transcript_path": p }))
+                .unwrap();
+        }
+        let task_id = |sid: i64| -> String {
+            engine
+                .conn()
+                .query_row("SELECT id FROM tasks WHERE short_id = ?1", [sid], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        // A [10:00, 10:05] on the real spelling, B [10:04, 10:30] on the
+        // symlink spelling.
+        for (id, started, completed, p) in [
+            (
+                task_id(a),
+                "2026-07-25T10:00:00Z",
+                "2026-07-25T10:05:00Z",
+                &a_path,
+            ),
+            (
+                task_id(b),
+                "2026-07-25T10:04:00Z",
+                "2026-07-25T10:30:00Z",
+                &b_path,
+            ),
+        ] {
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+                    (format!(r#"{{"interval_started":"{started}"}}"#), &id),
+                )
+                .unwrap();
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+                    (
+                        format!(
+                            r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{p}"}}"#
+                        ),
+                        &id,
+                    ),
+                )
+                .unwrap();
+        }
+        let now = ts("2026-07-25T10:35:00Z");
+
+        // Tick N: `m` reads stamp 10:06 — inside B only, so B banks it (with
+        // its sample id persisted in the marker); A is transient.
+        std::fs::write(
+            &transcript,
+            r#"{"timestamp":"2026-07-25T10:06:00.000Z","message":{"id":"m","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+        )
+        .unwrap();
+        let mut banked = 0;
+        for pa in &pending_attributions(&engine).unwrap() {
+            if let Ok(r) = compute_attribution(pa, now) {
+                assert_eq!(pa.short_id, b, "only B can bank at tick N");
+                assert!(r.found);
+                banked += 1;
+                attribute_one(&engine, pa, &r).unwrap();
+            }
+        }
+        assert_eq!(banked, 1, "B banked m at tick N");
+
+        // Between ticks: the symlink vanishes (B's banked spelling no longer
+        // resolves) and streaming re-emits `m` stamped earlier, inside A's
+        // window and outside B's.
+        std::fs::remove_file(&lnk).unwrap();
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        writeln!(f).unwrap();
+        writeln!(
+            f,
+            r#"{{"timestamp":"2026-07-25T10:03:00.000Z","message":{{"id":"m","usage":{{"input_tokens":1000,"output_tokens":2000}}}}}}"#
+        )
+        .unwrap();
+
+        // Tick N+1: A must NOT bank m — B's identity claim is global and does
+        // not dissolve with the dangling symlink.
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(pending.len(), 1, "only A is still pending");
+        assert_eq!(pending[0].short_id, a);
+        assert!(
+            pending[0].consumed_sample_ids.contains("m"),
+            "A must carry B's claim on m even though B's spelling stopped resolving"
+        );
+        if let Ok(r) = compute_attribution(&pending[0], now) {
+            assert!(
+                !r.found,
+                "A banked the spend B already holds: input={}",
+                r.totals.input
+            );
+            attribute_one(&engine, &pending[0], &r).unwrap();
+        }
+        let tasks_billed = count_rows(
+            &engine,
+            "SELECT COUNT(DISTINCT task_id) FROM token_usage WHERE source='log-parse'",
+        );
+        assert_eq!(
+            tasks_billed, 1,
+            "a dangling symlink dissolved the banked claim"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn count_rows(engine: &Engine, sql: &str) -> i64 {
