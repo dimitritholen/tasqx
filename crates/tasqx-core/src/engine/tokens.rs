@@ -462,16 +462,23 @@ impl Engine {
     /// `{ "task": short_id, "action", "before": {four buckets},
     ///    "after": {four buckets}|null }`:
     /// - `"recomputed"` — the transcript is readable and the re-derived
-    ///   measurement differs: the task's log-parse rows are deleted and the
-    ///   recomputed row inserted (none when the recomputed total is 0, which
-    ///   is how a fully-contested window ends with `after` all zeros).
+    ///   measurement differs FOR A CONTEST REASON (or only its shape differs:
+    ///   duplicate-row collapse, sample-id backfill, confidence re-earn): the
+    ///   task's log-parse rows are deleted and the recomputed row inserted
+    ///   (none when the recomputed total is 0, which is how a fully-contested
+    ///   window ends with `after` all zeros). ONLY CONTEST REMOVES TOKENS:
+    ///   a shrink or deletion happens on this arm exclusively, and only when
+    ///   at least one of the task's samples was contested away.
     /// - `"channel_conflict"` — the task ALSO carries a self-report row
     ///   (pre-TOCTOU-fix history; Decision 1 says one task never mixes
     ///   channels): its log-parse rows are removed outright and `after` is
     ///   `null` — the task's real spend is the self-report, which this verb
     ///   never restates.
-    /// - `"downgraded"` — the transcript is missing or unreadable, so the
-    ///   counts cannot be re-derived: they are kept (`after` == `before`) with
+    /// - `"downgraded"` — the transcript is missing or unreadable, OR it is
+    ///   readable but re-reads to different uncontested totals (evidence
+    ///   drift: a moved stamp, a truncated file, a re-emission past the
+    ///   window edge — mixed drift included, so a row never silently
+    ///   shrinks): the counts are kept (`after` == `before`) with
     ///   `confidence` stripped to `low`, never deleted blind.
     /// - `"unchanged"` — readable, identical, already claimed: no writes.
     ///
@@ -607,14 +614,41 @@ impl Engine {
                 .saturating_add(sums.2)
                 .saturating_add(sums.3);
 
+            let clamp = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+            // The sample ids this task's OWN markers banked (empty for a
+            // pre-upgrade bank): they scope the out-of-window contest check
+            // inside `recompute_measurement` to the task's actual evidence.
+            let own_claims: HashSet<String> = banked
+                .get(task_id)
+                .map(|ids| ids.iter().cloned().collect())
+                .unwrap_or_default();
+
             let (action, after, after_total);
             if self_reported.contains(task_id) {
                 if !dry_run {
                     self.recompute_replace(task_id, "channel_conflict", None, 0, &[])?;
                 }
                 (action, after, after_total) = ("channel_conflict", Value::Null, 0);
-            } else if let Some(rc) = recompute_measurement(&scan, task_id, &claims) {
-                let clamp = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+            } else if let Some(rc) = recompute_measurement(&scan, task_id, &claims, &own_claims)
+                .filter(|rc| {
+                    // ONLY CONTEST REMOVES TOKENS (D50 Decision 3 as amended):
+                    // with nothing contested, a re-read that no longer matches
+                    // the banked evidence is drift — a moved stamp, a truncated
+                    // file, a re-emission past the window edge — and falls
+                    // through to the keep-and-downgrade arm below, exactly like
+                    // an unreadable transcript. Matching is per stored row, so
+                    // a reopen duplicate (every row equal to the re-derived
+                    // measurement) still collapses, and the equal-totals
+                    // sample-id backfill still rewrites.
+                    rc.contested > 0
+                        || rows.iter().all(|row| {
+                            row.input == clamp(rc.totals.input)
+                                && row.output == clamp(rc.totals.output)
+                                && row.cache_read == clamp(rc.totals.cache_read)
+                                && row.cache_creation == clamp(rc.totals.cache_creation)
+                        })
+                })
+            {
                 let found = rc.totals.total() > 0;
                 let tool = rc.tool.clone().unwrap_or_else(|| rows[0].tool.clone());
                 let unchanged = found
@@ -664,9 +698,10 @@ impl Engine {
                 // this pass, exactly as its live-tick bank would have.
                 claims.extend(rc.sample_ids.iter().cloned());
             } else {
-                // Missing/unreadable transcript (or no explicit one): the
-                // counts cannot be re-derived, so they are kept — and so are
-                // the task's banked claims, which is what keeps a dissolved
+                // Missing/unreadable transcript (or no explicit one), or
+                // uncontested evidence drift: the banked counts cannot be
+                // honestly re-derived, so they are kept — and so are the
+                // task's banked claims, which is what keeps a dissolved
                 // source from silently releasing the samples it consumed.
                 if let Some(ids) = banked.get(task_id) {
                     claims.extend(ids.iter().cloned());
