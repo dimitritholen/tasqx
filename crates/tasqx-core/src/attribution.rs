@@ -1081,6 +1081,13 @@ pub(crate) struct RecomputedMeasurement {
     /// The ids of the samples summed, for the samples that carried one — the
     /// claims this measurement re-establishes.
     pub(crate) sample_ids: Vec<String>,
+    /// How many of the transcript's samples were CONTESTED away from this
+    /// task: in-window samples refused by claim or foreign-window overlap,
+    /// plus samples whose current stamp left this task's window but landed
+    /// inside another task's window (or under another task's claim) — taken,
+    /// not lost. The caller's keep-vs-rewrite policy hangs off this count
+    /// (D50 Decision 3 as amended: only contest removes tokens).
+    pub(crate) contested: usize,
 }
 
 /// Re-evaluate one banked task against its transcript as it reads today.
@@ -1092,10 +1099,15 @@ pub(crate) struct RecomputedMeasurement {
 /// caller's terminal *downgrade* signal, never a retry. Discovery-sourced
 /// measurements also land on `None` deliberately: a root scan is not
 /// re-runnable deterministically, so their counts are kept, not re-derived.
+/// `own_claims` is the set of sample ids the task's own banked markers
+/// recorded (empty for a pre-upgrade bank): it scopes the out-of-window
+/// contest check below to the samples that were actually this task's
+/// evidence, when that is knowable.
 pub(crate) fn recompute_measurement(
     scan: &WindowScan,
     task_id: &str,
     claims: &HashSet<String>,
+    own_claims: &HashSet<String>,
 ) -> Option<RecomputedMeasurement> {
     let info = scan.correlated.get(task_id)?;
     let (window_start, window_end) = scan.window_for(task_id)?;
@@ -1109,14 +1121,48 @@ pub(crate) fn recompute_measurement(
         .filter(|s| !s.is_empty())
         .is_some_and(|sid| parser.session_matches(file, sid));
     let foreign = scan.foreign_windows_for(task_id);
-    let (totals, counted, _contested, sample_ids) =
+    let (totals, counted, mut contested, sample_ids) =
         totals_in_window_refusing(&samples, window_start, window_end, &foreign, claims);
+    // The other half of the contest count: a sample whose CURRENT stamp sits
+    // outside this task's window is invisible to the window sum above, but
+    // when that stamp lands inside another task's window — or its id is under
+    // another task's claim — the spend was TAKEN by that task, not lost to
+    // drift, and the caller must be allowed to remove it here (single-count).
+    // A stamp that drifted outside every window and every claim stays out of
+    // this count: that is evidence drift, which never deletes (D50 Decision 3
+    // as amended). When the task's own bank recorded which samples it
+    // consumed, only those samples can testify to a taking; a bank with no
+    // recorded identity (pre-upgrade marker) gets the broad reading — closing
+    // exactly the upgrade window the full replay exists for.
+    if let Some((lo, hi)) = parse_window(window_start, window_end) {
+        let foreign: Vec<(Timestamp, Timestamp)> = foreign
+            .iter()
+            .filter_map(|(s, e)| parse_window(s, e))
+            .collect();
+        for s in &samples {
+            let Ok(ts) = s.ts.parse::<Timestamp>() else {
+                continue;
+            };
+            if ts >= lo && ts <= hi {
+                continue; // already settled by the window sum above
+            }
+            if !own_claims.is_empty() && !s.id.as_deref().is_some_and(|id| own_claims.contains(id))
+            {
+                continue; // provably never this task's evidence
+            }
+            let claimed_elsewhere = s.id.as_deref().is_some_and(|id| claims.contains(id));
+            if claimed_elsewhere || foreign.iter().any(|&(flo, fhi)| ts >= flo && ts <= fhi) {
+                contested += 1;
+            }
+        }
+    }
     Some(RecomputedMeasurement {
         totals,
         samples: counted,
         tool: info.client.clone(),
         confidence: confidence_for(true, correlated),
         sample_ids,
+        contested,
     })
 }
 

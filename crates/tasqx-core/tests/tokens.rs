@@ -1089,19 +1089,24 @@ fn recompute_never_touches_self_report_or_otel_rows() {
     let tasks = r["tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 1, "only the log-parse task is in scope: {r}");
     assert_eq!(tasks[0]["task"], a);
-    assert_eq!(tasks[0]["action"], "recomputed");
-    assert_eq!(tasks[0]["after"], b4(100, 200));
+    // The bank no longer matches the transcript and nothing is contested:
+    // only contest removes tokens (D50 as amended), so the wrong counts are
+    // kept and distrusted rather than rewritten.
+    assert_eq!(tasks[0]["action"], "downgraded");
+    assert_eq!(tasks[0]["after"], b4(999, 999));
 
-    // The log-parse row was repaired...
-    let (input, output): (i64, i64) = e
+    // The log-parse row was kept, confidence-stripped...
+    let (input, output, confidence): (i64, i64, String) = e
         .conn()
         .query_row(
-            "SELECT input_tokens, output_tokens FROM token_usage WHERE source = 'log-parse'",
+            "SELECT input_tokens, output_tokens, confidence FROM token_usage \
+             WHERE source = 'log-parse'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!((input, output), (100, 200));
+    assert_eq!((input, output), (999, 999));
+    assert_eq!(confidence, "low");
     // ...while the otel and self-report rows survive untouched.
     let otel_input: i64 = e
         .conn()
@@ -1364,4 +1369,156 @@ fn recompute_refuses_a_non_boolean_dry_run() {
     let err = dispatch(&e, "tokens.recompute", &json!({ "apply": true })).unwrap_err();
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(err.message.contains("apply"), "{}", err.message);
+}
+
+/// Bank one task's spend through the REAL tick path (pending set → compute →
+/// attribute), so the marker carries whatever the live tick would persist —
+/// including `sample_ids`. The window is pinned to [10:00, 10:30] on
+/// 2026-07-25 and the tick runs at 10:35.
+fn bank_live(e: &Engine, sid: &serde_json::Value, transcript: &std::path::Path) {
+    use tasqx_core::attribution::{attribute_one, compute_attribution, pending_attributions};
+
+    e.task_start(&json!({ "ref": sid })).unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+    e.task_done(&json!({ "ref": sid, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    let id = task_uuid(e, sid);
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+            (r#"{"interval_started":"2026-07-25T10:00:00Z"}"#, &id),
+        )
+        .unwrap();
+    pin_done(e, &id, "2026-07-25T10:30:00Z", &path);
+
+    let now: jiff::Timestamp = "2026-07-25T10:35:00Z".parse().unwrap();
+    let pending = pending_attributions(e).unwrap();
+    let pa = pending
+        .iter()
+        .find(|p| p.task_id == id)
+        .expect("the completed task is pending attribution");
+    let r = compute_attribution(pa, now).unwrap();
+    assert!(r.found, "the live bank must succeed");
+    attribute_one(e, pa, &r).unwrap();
+}
+
+/// D50 Decision 3 as amended: ONLY CONTEST REMOVES TOKENS. An honestly banked,
+/// uncontested measurement whose sample is later re-emitted with a stamp past
+/// the window's end (the documented mid-write drift; dedupe keeps the last
+/// stamp) re-reads as zero — with no contest, that is evidence drift, and the
+/// row must be kept and downgraded exactly like an unreadable transcript,
+/// never deleted.
+#[test]
+fn recompute_keeps_and_downgrades_an_uncontested_drift_to_zero() {
+    let dir = scratch_dir("drift-zero");
+    let transcript = dir.join("sess-1.jsonl");
+    std::fs::write(
+        &transcript,
+        r#"{"timestamp":"2026-07-25T10:10:00.000Z","message":{"id":"m","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+    )
+    .unwrap();
+
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    bank_live(&e, &t, &transcript);
+
+    // The tool re-emits "m" stamped past the window's end. Nothing else
+    // changes, and no other task exists — the measurement is uncontested.
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    writeln!(f).unwrap();
+    writeln!(
+        f,
+        r#"{{"timestamp":"2026-07-25T10:45:00.000Z","message":{{"id":"m","usage":{{"input_tokens":1000,"output_tokens":2000}}}}}}"#
+    )
+    .unwrap();
+
+    let dry = dispatch(&e, "tokens.recompute", &json!({})).unwrap();
+    assert_eq!(dry["tasks"][0]["action"], "downgraded", "{dry}");
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let entry = &r["tasks"][0];
+    assert_eq!(entry["action"], "downgraded", "{r}");
+    assert_eq!(entry["before"], b4(1000, 2000));
+    assert_eq!(entry["after"], b4(1000, 2000), "counts kept, not deleted");
+
+    let (input, confidence): (i64, String) = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens, confidence FROM token_usage WHERE source = 'log-parse'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the uncontested row must survive the recompute");
+    assert_eq!(input, 1000);
+    assert_eq!(confidence, "low");
+
+    // Convergence: a second apply reports the already-low row as unchanged.
+    let again = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    assert_eq!(again["tasks"][0]["action"], "unchanged", "{again}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The partial variant of the same policy, decided as: NEVER SILENTLY SHRINK.
+/// One banked sample drifts past the window edge, the other still reads fine,
+/// and nothing is contested — the recompute cannot tell drift from theft at
+/// sample granularity here, so the WHOLE row is kept and downgraded rather
+/// than quietly rewritten to the smaller remainder.
+#[test]
+fn recompute_keeps_the_whole_row_when_part_of_the_evidence_drifts_uncontested() {
+    let dir = scratch_dir("drift-part");
+    let transcript = dir.join("sess-1.jsonl");
+    std::fs::write(
+        &transcript,
+        concat!(
+            r#"{"timestamp":"2026-07-25T10:10:00.000Z","message":{"id":"m1","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-25T10:20:00.000Z","message":{"id":"m2","usage":{"input_tokens":500,"output_tokens":600}}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    bank_live(&e, &t, &transcript);
+
+    // Only "m1" is re-emitted past the window's end; "m2" stays put.
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    writeln!(
+        f,
+        r#"{{"timestamp":"2026-07-25T10:45:00.000Z","message":{{"id":"m1","usage":{{"input_tokens":1000,"output_tokens":2000}}}}}}"#
+    )
+    .unwrap();
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let entry = &r["tasks"][0];
+    assert_eq!(entry["action"], "downgraded", "{r}");
+    assert_eq!(entry["before"], b4(1500, 2600));
+    assert_eq!(
+        entry["after"],
+        b4(1500, 2600),
+        "no silent shrink to 500/600"
+    );
+
+    let (input, output, confidence): (i64, i64, String) = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens, output_tokens, confidence FROM token_usage \
+             WHERE source = 'log-parse'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((input, output), (1500, 2600));
+    assert_eq!(confidence, "low");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
