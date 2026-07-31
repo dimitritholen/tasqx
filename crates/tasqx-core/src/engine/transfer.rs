@@ -986,7 +986,9 @@ mod tests {
     #[test]
     fn store_import_refuses_a_short_id_another_task_already_holds() {
         let e = Engine::open_in_memory().expect("open");
-        let mine = e.task_add(&json!({ "title": "already here" })).expect("add");
+        let mine = e
+            .task_add(&json!({ "title": "already here" }))
+            .expect("add");
         let mine_id = mine["id"].as_str().expect("id").to_string();
         let taken = mine["short_id"].as_i64().expect("short_id");
         let taken_text = taken.to_string();
@@ -1061,7 +1063,9 @@ mod tests {
         e.task_add(&json!({ "title": "two" })).expect("add");
         let document = e.store_export(&json!({})).expect("export");
 
-        let again = e.store_import(&document).expect("re-import must still work");
+        let again = e
+            .store_import(&document)
+            .expect("re-import must still work");
         assert_eq!(again["imported"], 2);
         assert_eq!(
             e.store_export(&json!({})).expect("export"),
@@ -1150,7 +1154,8 @@ mod tests {
         blocker.execute_batch("ROLLBACK").expect("release");
         drop(blocker);
 
-        e.task_add(&json!({ "title": "two" })).expect("add after export");
+        e.task_add(&json!({ "title": "two" }))
+            .expect("add after export");
         assert_eq!(exported_task_count(&e), 2);
     }
 }

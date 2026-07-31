@@ -137,7 +137,7 @@ impl Admission {
 
     fn try_acquire(self: &Arc<Self>) -> Option<ClientPermit> {
         self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < self.limit).then_some(active + 1)
             })
             .ok()
@@ -370,11 +370,7 @@ impl Hub {
     }
     fn register(&self, tx: mpsc::SyncSender<String>) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        lock_recover(&self.subs).push(Subscriber {
-            id,
-            tx,
-            dropped: 0,
-        });
+        lock_recover(&self.subs).push(Subscriber { id, tx, dropped: 0 });
         id
     }
     fn unregister(&self, id: u64) {
@@ -1159,8 +1155,7 @@ fn send_cancel_due(
     write_timed_out: bool,
     now: Instant,
 ) -> bool {
-    idle
-        || write_timed_out
+    idle || write_timed_out
         || shutdown_since.is_some_and(|since| now.duration_since(since) >= CLIENT_SEND_TIMEOUT)
 }
 
@@ -1247,8 +1242,9 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
                 // "not applied". Refusing up front makes the answer true: this
                 // request did not run, retry against the next daemon.
                 if sh.shutdown.load(Ordering::Relaxed) {
-                    let refusal =
-                        unavailable_envelope("daemon is shutting down; the request was not applied");
+                    let refusal = unavailable_envelope(
+                        "daemon is shutting down; the request was not applied",
+                    );
                     // Queued, not written here: the writer owns the send half.
                     // It drains what is already queued before exiting, so this
                     // frame still reaches the socket. A send error only means

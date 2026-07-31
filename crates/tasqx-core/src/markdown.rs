@@ -212,13 +212,19 @@ fn status_cell(result: &Value) -> String {
     if result.get("status_unrecognized").and_then(Value::as_bool) != Some(true) {
         return status;
     }
-    format!("{status} (unrecognized — not one of {})", Status::accepted())
+    format!(
+        "{status} (unrecognized — not one of {})",
+        Status::accepted()
+    )
 }
 
 /// Priority with urgency folded in: two numbers that only mean something
 /// together, and a reader comparing tasks wants both without a second row.
 fn priority_cell(result: &Value) -> String {
-    let p = result.get("priority").and_then(Value::as_str).unwrap_or("-");
+    let p = result
+        .get("priority")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
     match result.get("urgency").and_then(Value::as_f64) {
         Some(u) => format!("{p} (urgency {u})"),
         None => p.to_string(),

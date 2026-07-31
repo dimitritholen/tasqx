@@ -807,8 +807,15 @@ mod tests {
         assert_ne!(q.project.as_deref(), Some("ect::config"));
 
         for tok in [
-            "scheduled::at", "estimate::of", "remind::me", "repeat::forever",
-            "every::other", "sched::at", "proj::x", "wait::for", "due::soon",
+            "scheduled::at",
+            "estimate::of",
+            "remind::me",
+            "repeat::forever",
+            "every::other",
+            "sched::at",
+            "proj::x",
+            "wait::for",
+            "due::soon",
             "est::of",
         ] {
             let r = parse_argv(&["Task", tok], AddFlags::default());

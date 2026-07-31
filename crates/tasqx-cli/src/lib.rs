@@ -642,8 +642,7 @@ fn config_tokens_enabled() -> bool {
 /// modes. A hand-edited `config.toml` is the one path that reaches the writer's
 /// validation, so this side must not trust what it reads.
 fn config_detail_time_format() -> TimeFormat {
-    let s =
-        config::find("detail.time_format").expect("detail.time_format is a registered setting");
+    let s = config::find("detail.time_format").expect("detail.time_format is a registered setting");
     let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
     match v.as_str() {
         "iso" => TimeFormat::Iso,
@@ -2859,10 +2858,7 @@ mod tests {
     }
 
     /// Run the stdio loop over a canned input, returning `(stdout, stderr)`.
-    fn drive_mcp_loop(
-        input: &str,
-        dispatch: impl Fn(&Value) -> Option<Value>,
-    ) -> (String, String) {
+    fn drive_mcp_loop(input: &str, dispatch: impl Fn(&Value) -> Option<Value>) -> (String, String) {
         let mut reader = std::io::BufReader::new(input.as_bytes());
         let (mut out, mut errs) = (Vec::new(), Vec::new());
         mcp_stdio_loop(&mut reader, &mut out, &mut errs, dispatch);
@@ -2894,7 +2890,11 @@ mod tests {
             .lines()
             .map(|l| serde_json::from_str(l).expect("every stdout frame is JSON"))
             .collect();
-        assert_eq!(frames.len(), 2, "expected one frame per request, got {out:?}");
+        assert_eq!(
+            frames.len(),
+            2,
+            "expected one frame per request, got {out:?}"
+        );
         assert_eq!(frames[0]["id"], json!(7));
         assert_eq!(frames[0]["error"]["code"], json!(-32603));
         // The request after the panicking one is still answered: the loop kept

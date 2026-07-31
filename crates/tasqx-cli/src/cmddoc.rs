@@ -857,10 +857,7 @@ mod tests {
             let Some(doc) = COMMAND_REF.iter().find(|d| d.verb == sub.get_name()) else {
                 continue;
             };
-            let missing: Vec<&&str> = nested
-                .iter()
-                .filter(|n| !doc.usage.contains(*n))
-                .collect();
+            let missing: Vec<&&str> = nested.iter().filter(|n| !doc.usage.contains(*n)).collect();
             assert!(
                 missing.is_empty(),
                 "`{}` has sub-subcommands its documented usage line never names: {missing:?}\n  \

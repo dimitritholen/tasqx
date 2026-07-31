@@ -1124,7 +1124,9 @@ pub fn load_reporting(name: &str, themes_dir: Option<&std::path::Path>) -> Loade
         }
     }
     for (role, spec) in &user.roles {
-        let Some(fg) = spec.fg.as_deref() else { continue };
+        let Some(fg) = spec.fg.as_deref() else {
+            continue;
+        };
         if Rgb::parse_hex(fg).is_none() && !merged.palette.contains_key(fg) {
             // Note this is worse than "ignored": `merge` writes the unresolved
             // `None` over the base role's color, so the role ends up with no
@@ -1665,7 +1667,11 @@ urgency.ramp = ["#000000", "#ffffff"]
         // The 8 existing call sites keep the old signature; only the two that can
         // print anything need the richer one.
         let dir = scratch_themes_dir("delegates");
-        write_theme(&dir, "mine", "extends = \"nord\"\n[roles]\ntag = { fg = \"#123456\" }\n");
+        write_theme(
+            &dir,
+            "mine",
+            "extends = \"nord\"\n[roles]\ntag = { fg = \"#123456\" }\n",
+        );
         assert_eq!(
             load("mine", Some(&dir)).role("tag").fg,
             load_reporting("mine", Some(&dir)).theme.role("tag").fg
