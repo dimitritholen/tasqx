@@ -5,11 +5,16 @@
 //! deliberate difference: recording a measurement does NOT bump the task's
 //! `rev`/`modified`. See [`Engine::token_add`].
 
+use std::collections::{HashMap, HashSet};
+
 use rusqlite::Row;
 
 use super::*;
+use crate::attribution::{consumed_sample_ids_by_task, recompute_measurement, WindowScan};
 use crate::otlp::OtlpSample;
-use crate::tokens::{require_confidence, require_source, SOURCE_LOG_PARSE, SOURCE_SELF_REPORT};
+use crate::tokens::{
+    require_confidence, require_source, CONFIDENCE_LOW, SOURCE_LOG_PARSE, SOURCE_SELF_REPORT,
+};
 
 /// How long a buffered OTLP sample is kept before opportunistic pruning (#18).
 /// The buffer is a short-lived staging area between telemetry arriving and a task
@@ -146,6 +151,28 @@ pub(super) fn measurement_from_row(row: &Row, base: usize) -> rusqlite::Result<V
 /// `map_task_row`.
 pub(super) const TOKEN_COLS: &str = "id, tool, source, model, input_tokens, output_tokens, \
      cache_read_tokens, cache_creation_tokens, confidence, created";
+
+/// One stored log-parse measurement row, as [`Engine::token_recompute`] reads
+/// it back for the before/after report and the unchanged check.
+struct StoredLogParse {
+    tool: String,
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_creation: i64,
+    confidence: String,
+}
+
+/// The four-bucket object the recompute report speaks — the same four keys as
+/// a measurement row, never a blended total (D48).
+fn buckets(input: i64, output: i64, cache_read: i64, cache_creation: i64) -> Value {
+    json!({
+        "input_tokens": input,
+        "output_tokens": output,
+        "cache_read_tokens": cache_read,
+        "cache_creation_tokens": cache_creation,
+    })
+}
 
 impl Engine {
     // ---- token.add -----------------------------------------------------------
@@ -412,6 +439,328 @@ impl Engine {
             samples.push(s);
         }
         Ok((samples, tool))
+    }
+
+    // ---- tokens.recompute (D50 Decision 3: one-shot history repair) ----------
+
+    /// Re-run log-parse attribution over the stored windows under the D50
+    /// refusal rule, repairing history the pre-refusal ticks double-counted.
+    ///
+    /// Scope: EVERY task holding at least one `source=log-parse` measurement
+    /// row — not only overlap-contested ones — processed in ascending order of
+    /// its original (first) `tokens.attributed` marker rowid, REBUILDING the
+    /// identity-claim set as it goes. The full ordered pass is load-bearing:
+    /// markers banked before sample ids were persisted carry no claims, so a
+    /// moved-stamp theft against a pre-upgrade bank is precisely NOT
+    /// window-contested — replaying history in bank order closes that upgrade
+    /// window, and backfills `sample_ids` on surviving measurements' (new)
+    /// markers as a side effect. A row that never had a marker (hand-recorded
+    /// via `token.add`) sorts last, by task id, so it can never displace a
+    /// banked claim.
+    ///
+    /// Per task, one of four actions, reported as
+    /// `{ "task": short_id, "action", "before": {four buckets},
+    ///    "after": {four buckets}|null }`:
+    /// - `"recomputed"` — the transcript is readable and the re-derived
+    ///   measurement differs: the task's log-parse rows are deleted and the
+    ///   recomputed row inserted (none when the recomputed total is 0, which
+    ///   is how a fully-contested window ends with `after` all zeros).
+    /// - `"channel_conflict"` — the task ALSO carries a self-report row
+    ///   (pre-TOCTOU-fix history; Decision 1 says one task never mixes
+    ///   channels): its log-parse rows are removed outright and `after` is
+    ///   `null` — the task's real spend is the self-report, which this verb
+    ///   never restates.
+    /// - `"downgraded"` — the transcript is missing or unreadable, so the
+    ///   counts cannot be re-derived: they are kept (`after` == `before`) with
+    ///   `confidence` stripped to `low`, never deleted blind.
+    /// - `"unchanged"` — readable, identical, already claimed: no writes.
+    ///
+    /// Writes go per task in ONE IMMEDIATE transaction through this module's
+    /// own doors ([`Engine::recompute_replace`] / a confidence UPDATE) —
+    /// deliberately NOT [`Engine::token_attribute`], whose
+    /// `has_attributed_event` guard no-ops on every already-attributed task,
+    /// which is every task this migration exists to repair. Old markers stay
+    /// in the append-only log as provenance.
+    ///
+    /// `dry_run` (default **true** — the safe direction for the one verb in
+    /// the API built to delete measurement rows) computes the identical report
+    /// and writes nothing. The result also carries
+    /// `{ "totals": { "before": n, "after": n } }`, the blended grand total of
+    /// the scoped log-parse spend — a migration delta, not a report surface.
+    pub fn token_recompute(&self, p: &Value) -> Result<Value, ApiError> {
+        let dry_run = match p.get("dry_run") {
+            None => true,
+            Some(Value::Bool(b)) => *b,
+            Some(other) => {
+                return Err(ApiError::bad_request(format!(
+                    "`dry_run` must be a boolean, but {other} was given — omit it for the safe \
+                     default (report the delta, write nothing) or send false to apply"
+                )))
+            }
+        };
+
+        // Every task's stored log-parse rows, oldest first per task.
+        let mut stored: HashMap<String, Vec<StoredLogParse>> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT task_id, tool, input_tokens, output_tokens, cache_read_tokens, \
+                 cache_creation_tokens, confidence FROM token_usage \
+                 WHERE source = ?1 ORDER BY created, id",
+            )?;
+            let rows = stmt.query_map(params![SOURCE_LOG_PARSE], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    StoredLogParse {
+                        tool: r.get(1)?,
+                        input: r.get(2)?,
+                        output: r.get(3)?,
+                        cache_read: r.get(4)?,
+                        cache_creation: r.get(5)?,
+                        confidence: r.get(6)?,
+                    },
+                ))
+            })?;
+            for r in rows {
+                let (task_id, row) = r?;
+                stored.entry(task_id).or_default().push(row);
+            }
+        }
+
+        // The order live ticks banked these measurements in: first marker
+        // rowid per task, so the claim rebuild replays history instead of
+        // inventing a new one.
+        let mut first_marker: HashMap<String, i64> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT entity_id, MIN(rowid) FROM events \
+                 WHERE op = 'tokens.attributed' GROUP BY entity_id",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            for r in rows {
+                let (task_id, rowid) = r?;
+                first_marker.insert(task_id, rowid);
+            }
+        }
+        let mut order: Vec<String> = stored.keys().cloned().collect();
+        order.sort_by(|a, b| {
+            (first_marker.get(a).copied().unwrap_or(i64::MAX), a)
+                .cmp(&(first_marker.get(b).copied().unwrap_or(i64::MAX), b))
+        });
+
+        let mut short_ids: HashMap<String, i64> = HashMap::new();
+        {
+            let mut stmt = self.conn.prepare("SELECT id, short_id FROM tasks")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            for r in rows {
+                let (id, short_id) = r?;
+                if stored.contains_key(&id) {
+                    short_ids.insert(id, short_id);
+                }
+            }
+        }
+
+        // Tasks that also self-reported: Decision 1's channel-conflict set.
+        let self_reported: HashSet<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT DISTINCT task_id FROM token_usage WHERE source = ?1")?;
+            let rows = stmt.query_map(params![SOURCE_SELF_REPORT], |r| r.get::<_, String>(0))?;
+            let mut set = HashSet::new();
+            for r in rows {
+                set.insert(r?);
+            }
+            set
+        };
+
+        let scan = WindowScan::build(self)?;
+        let banked = consumed_sample_ids_by_task(self)?;
+        // The rebuilt claim set starts from every task OUTSIDE the recompute
+        // scope (their banks are not re-derived here, so their claims stand);
+        // in-scope tasks re-earn theirs in bank order below.
+        let mut claims: HashSet<String> = banked
+            .iter()
+            .filter(|(task_id, _)| !stored.contains_key(*task_id))
+            .flat_map(|(_, ids)| ids.iter().cloned())
+            .collect();
+
+        let mut report = Vec::new();
+        let (mut total_before, mut total_after) = (0i64, 0i64);
+        for task_id in &order {
+            let rows = &stored[task_id];
+            // A scoped row without a task row is impossible (FK), but a
+            // migration must tolerate a strange store rather than die halfway.
+            let Some(short_id) = short_ids.get(task_id).copied() else {
+                continue;
+            };
+            let sums = rows.iter().fold((0i64, 0i64, 0i64, 0i64), |acc, row| {
+                (
+                    acc.0.saturating_add(row.input),
+                    acc.1.saturating_add(row.output),
+                    acc.2.saturating_add(row.cache_read),
+                    acc.3.saturating_add(row.cache_creation),
+                )
+            });
+            let before = buckets(sums.0, sums.1, sums.2, sums.3);
+            let before_total = sums
+                .0
+                .saturating_add(sums.1)
+                .saturating_add(sums.2)
+                .saturating_add(sums.3);
+
+            let (action, after, after_total);
+            if self_reported.contains(task_id) {
+                if !dry_run {
+                    self.recompute_replace(task_id, "channel_conflict", None, 0, &[])?;
+                }
+                (action, after, after_total) = ("channel_conflict", Value::Null, 0);
+            } else if let Some(rc) = recompute_measurement(&scan, task_id, &claims) {
+                let clamp = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+                let found = rc.totals.total() > 0;
+                let tool = rc.tool.clone().unwrap_or_else(|| rows[0].tool.clone());
+                let unchanged = found
+                    && rows.len() == 1
+                    && rows[0].input == clamp(rc.totals.input)
+                    && rows[0].output == clamp(rc.totals.output)
+                    && rows[0].cache_read == clamp(rc.totals.cache_read)
+                    && rows[0].cache_creation == clamp(rc.totals.cache_creation)
+                    && rows[0].confidence == rc.confidence
+                    && rows[0].tool == tool
+                    && rc
+                        .sample_ids
+                        .iter()
+                        .all(|id| banked.get(task_id).is_some_and(|ids| ids.contains(id)));
+                if unchanged {
+                    action = "unchanged";
+                } else {
+                    if !dry_run {
+                        let usage = found.then(|| NewTokenUsage {
+                            tool,
+                            source: SOURCE_LOG_PARSE.to_string(),
+                            model: None,
+                            input_tokens: clamp(rc.totals.input),
+                            output_tokens: clamp(rc.totals.output),
+                            cache_read_tokens: clamp(rc.totals.cache_read),
+                            cache_creation_tokens: clamp(rc.totals.cache_creation),
+                            confidence: rc.confidence.to_string(),
+                        });
+                        self.recompute_replace(
+                            task_id,
+                            "recomputed",
+                            usage,
+                            rc.samples,
+                            &rc.sample_ids,
+                        )?;
+                    }
+                    action = "recomputed";
+                }
+                after = buckets(
+                    clamp(rc.totals.input),
+                    clamp(rc.totals.output),
+                    clamp(rc.totals.cache_read),
+                    clamp(rc.totals.cache_creation),
+                );
+                after_total = clamp(rc.totals.total());
+                // This task's re-earned claims contest every later task in
+                // this pass, exactly as its live-tick bank would have.
+                claims.extend(rc.sample_ids.iter().cloned());
+            } else {
+                // Missing/unreadable transcript (or no explicit one): the
+                // counts cannot be re-derived, so they are kept — and so are
+                // the task's banked claims, which is what keeps a dissolved
+                // source from silently releasing the samples it consumed.
+                if let Some(ids) = banked.get(task_id) {
+                    claims.extend(ids.iter().cloned());
+                }
+                if rows.iter().all(|row| row.confidence == CONFIDENCE_LOW) {
+                    action = "unchanged";
+                } else {
+                    if !dry_run {
+                        self.recompute_downgrade(task_id)?;
+                    }
+                    action = "downgraded";
+                }
+                (after, after_total) = (before.clone(), before_total);
+            }
+
+            total_before = total_before.saturating_add(before_total);
+            total_after = total_after.saturating_add(after_total);
+            report.push(json!({
+                "task": short_id,
+                "action": action,
+                "before": before,
+                "after": after,
+            }));
+        }
+
+        Ok(json!({
+            "dry_run": dry_run,
+            "tasks": report,
+            "totals": { "before": total_before, "after": total_after },
+        }))
+    }
+
+    /// The recompute's row-replacing write door: inside ONE IMMEDIATE
+    /// transaction, delete the task's log-parse rows, insert the recomputed
+    /// survivor (when there is one), and append the recompute's
+    /// `tokens.attributed` marker — the mutation's one event, carrying the
+    /// recomputed `sample_ids` so pre-upgrade claims are backfilled. The old
+    /// marker stays in the append-only log as provenance. Deliberately NOT
+    /// [`Engine::token_attribute`]: that door's idempotency guard no-ops on
+    /// every already-attributed task, and its one-event shape belongs to the
+    /// live tick.
+    fn recompute_replace(
+        &self,
+        task_id: &str,
+        action: &str,
+        usage: Option<NewTokenUsage>,
+        samples: usize,
+        sample_ids: &[String],
+    ) -> Result<(), ApiError> {
+        let tx = self.begin_mutation()?;
+        tx.execute(
+            "DELETE FROM token_usage WHERE task_id = ?1 AND source = ?2",
+            params![task_id, SOURCE_LOG_PARSE],
+        )?;
+        let mut payload = json!({ "recompute": true, "action": action, "samples": samples });
+        if let Some(usage) = &usage {
+            let measurement = record_token_usage(&tx, task_id, usage)?;
+            payload["source"] = json!(usage.source);
+            payload["tool"] = json!(usage.tool);
+            payload["confidence"] = json!(usage.confidence);
+            payload["totals"] = json!({
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_creation_tokens": usage.cache_creation_tokens,
+            });
+            payload["measurement"] = measurement.get("id").cloned().unwrap_or(Value::Null);
+        }
+        if !sample_ids.is_empty() {
+            payload["sample_ids"] = json!(sample_ids);
+        }
+        insert_event(&tx, Entity::Task, task_id, "tokens.attributed", &payload)?;
+        tx.commit()
+    }
+
+    /// The recompute's keep-but-distrust write door: strip the task's
+    /// log-parse rows to `confidence=low` (counts untouched) and append the
+    /// downgrade marker, in one transaction. No `sample_ids` here — an
+    /// unreadable transcript is exactly the case where they cannot be
+    /// re-derived; the task's OLD markers keep whatever claims they held.
+    fn recompute_downgrade(&self, task_id: &str) -> Result<(), ApiError> {
+        let tx = self.begin_mutation()?;
+        tx.execute(
+            "UPDATE token_usage SET confidence = ?1 WHERE task_id = ?2 AND source = ?3",
+            params![CONFIDENCE_LOW, task_id, SOURCE_LOG_PARSE],
+        )?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            task_id,
+            "tokens.attributed",
+            &json!({ "recompute": true, "action": "downgraded" }),
+        )?;
+        tx.commit()
     }
 
     /// Measurements of a task as canonical objects, oldest first (the

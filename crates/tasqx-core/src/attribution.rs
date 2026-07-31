@@ -761,15 +761,52 @@ fn lexical_normalize(p: &Path) -> PathBuf {
     out
 }
 
-/// The durable pending queue (store-as-queue, reminder precedent): every task
-/// with a `done` event carrying correlation but no `tokens.attributed` event
-/// yet. Reads the store; call it under a short engine lock and drop the lock
-/// before parsing any transcript.
-///
-/// Catch-up after daemon downtime is free: because the queue is derived from the
-/// store on every call, a task completed by a one-shot CLI while no daemon ran is
-/// picked up on the next tick exactly like a reminder missed while down.
-pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, ApiError> {
+/// The sample ids each task's attribution(s) consumed, read from every
+/// `tokens.attributed` payload (all markers, not just the latest: a reopen +
+/// re-complete can bank twice, and each banked id stays consumed forever).
+/// Shared by the live pending build ([`pending_attributions`], where it feeds
+/// `consumed_sample_ids`) and the D50 Decision 3 recompute
+/// (`Engine::token_recompute`, which rebuilds these claims in marker order) —
+/// both must read the same record or the migration and the live tick disagree
+/// about what is banked. Markers written before sample ids were persisted
+/// carry no claim here; that residual is exactly what the recompute closes.
+pub(crate) fn consumed_sample_ids_by_task(
+    engine: &Engine,
+) -> Result<HashMap<String, Vec<String>>, ApiError> {
+    let mut stmt = engine.conn().prepare(
+        "SELECT entity_id, payload FROM events \
+         WHERE op = 'tokens.attributed' AND payload LIKE '%sample_ids%'",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    })?;
+    let mut consumed: HashMap<String, Vec<String>> = HashMap::new();
+    for r in rows {
+        let (task_id, payload) = r?;
+        let ids: Vec<String> = payload
+            .as_deref()
+            .and_then(|p| serde_json::from_str::<Value>(p).ok())
+            .and_then(|v| {
+                v.get("sample_ids").and_then(Value::as_array).map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        if !ids.is_empty() {
+            consumed.entry(task_id).or_default().extend(ids);
+        }
+    }
+    Ok(consumed)
+}
+
+/// Every task with a correlated `done` event, keyed by task id — the first
+/// half of the window scan, cheap enough to run per tick so
+/// [`pending_attributions`] can return early on an all-attributed store
+/// before any path canonicalization or window assembly happens.
+fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, ApiError> {
     let conn = engine.conn();
 
     // 1. The latest `tokens.attributed` rowid per task — the dedupe record
@@ -788,46 +825,6 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
         for r in rows {
             let (id, rowid) = r?;
             map.insert(id, rowid);
-        }
-        map
-    };
-
-    // 1a. The sample ids each task's attribution(s) consumed, read from every
-    //     `tokens.attributed` payload (all markers, not just the latest: a
-    //     reopen + re-complete can bank twice, and each banked id stays
-    //     consumed forever). Feeds `consumed_sample_ids` below, so a sample
-    //     banked on an earlier tick is refused by identity even after its
-    //     re-parsed stamp moves out of the banked task's window. Markers
-    //     written before sample ids were persisted carry no claim here; that
-    //     residual is accepted until the D50 Decision 3 recompute
-    //     (docs/specs/2026-07-31-attribution-direction-design.md) rebuilds the
-    //     claim set and backfills them.
-    let consumed_by_task: HashMap<String, Vec<String>> = {
-        let mut stmt = conn.prepare(
-            "SELECT entity_id, payload FROM events \
-             WHERE op = 'tokens.attributed' AND payload LIKE '%sample_ids%'",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-        })?;
-        let mut map: HashMap<String, Vec<String>> = HashMap::new();
-        for r in rows {
-            let (task_id, payload) = r?;
-            let ids: Vec<String> = payload
-                .as_deref()
-                .and_then(|p| serde_json::from_str::<Value>(p).ok())
-                .and_then(|v| {
-                    v.get("sample_ids").and_then(Value::as_array).map(|a| {
-                        a.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                })
-                .unwrap_or_default();
-            if !ids.is_empty() {
-                map.entry(task_id).or_default().extend(ids);
-            }
         }
         map
     };
@@ -917,101 +914,242 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             );
         }
     }
+    Ok(correlated)
+}
+
+/// The correlated-window map: every task with a correlated `done` event, its
+/// `[window_start, window_end]`, and which OTHER tasks share its sample
+/// source. ONE builder, shared by the live pending build
+/// ([`pending_attributions`]) and the D50 Decision 3 recompute
+/// (`Engine::token_recompute`), so the migration can never disagree with the
+/// live tick about what a window is or who contests it.
+pub(crate) struct WindowScan {
+    correlated: HashMap<String, DoneInfo>,
+    /// Earliest `start` instant per correlated task.
+    starts: HashMap<String, String>,
+    /// task_id -> (short_id, created) — `created` is the window-start fallback.
+    meta: HashMap<String, (i64, String)>,
+    /// Every correlated task's `(task_id, window_start, window_end)`, sorted
+    /// for stable foreign-window order.
+    windows: Vec<(String, String, String)>,
+}
+
+impl WindowScan {
+    /// The full scan. [`pending_attributions`] runs the two halves itself so
+    /// it can return early on an all-attributed store; everyone else takes
+    /// this one door.
+    pub(crate) fn build(engine: &Engine) -> Result<Self, ApiError> {
+        Self::finish(engine, correlated_done_scan(engine)?)
+    }
+
+    /// The second half: canonicalize paths and assemble the windows for an
+    /// already-scanned correlated map.
+    fn finish(
+        engine: &Engine,
+        mut correlated: HashMap<String, DoneInfo>,
+    ) -> Result<Self, ApiError> {
+        let conn = engine.conn();
+
+        // 2b. Canonicalize each DISTINCT transcript path string once (a stat per
+        //     path, memoized — never per pair), so `shares_sample_source` compares
+        //     file identity instead of spelling.
+        {
+            let mut canon_memo: HashMap<String, PathBuf> = HashMap::new();
+            for info in correlated.values_mut() {
+                if let Some(tp) = &info.transcript_path {
+                    let canon = canon_memo
+                        .entry(tp.clone())
+                        .or_insert_with(|| canonical_path(tp));
+                    info.canon_path = Some(canon.clone());
+                }
+            }
+        }
+
+        // 3. Earliest `start` instant per correlated task (window start) — attributed
+        //    neighbours included, their windows are needed as foreign. First by rowid
+        //    wins, so a start/stop/start task uses the beginning of its first interval.
+        let mut starts: HashMap<String, String> = HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT entity_id, payload, ts FROM events WHERE op = 'start' ORDER BY rowid",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for r in rows {
+                let (task_id, payload, ts) = r?;
+                if !correlated.contains_key(&task_id) {
+                    continue;
+                }
+                let started = payload
+                    .as_deref()
+                    .and_then(|p| serde_json::from_str::<Value>(p).ok())
+                    .and_then(|v| {
+                        v.get("interval_started")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .unwrap_or(ts);
+                starts.entry(task_id).or_insert(started);
+            }
+        }
+
+        // 4. short_id + created for the window-start fallback. One query, mapped.
+        let mut meta: HashMap<String, (i64, String)> = HashMap::new();
+        {
+            let mut stmt = conn.prepare("SELECT id, short_id, created FROM tasks")?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for r in rows {
+                let (id, short_id, created) = r?;
+                if correlated.contains_key(&id) {
+                    meta.insert(id, (short_id, created));
+                }
+            }
+        }
+
+        // 5. Every correlated task's window, pending or not, sorted for stable
+        //    foreign_windows order: `(task_id, window_start, window_end)`.
+        let mut windows: Vec<(String, String, String)> = correlated
+            .keys()
+            .filter_map(|task_id| {
+                let (_, created) = meta.get(task_id)?;
+                let window_start = starts.get(task_id).unwrap_or(created).clone();
+                let window_end = correlated[task_id].completed.clone();
+                Some((task_id.clone(), window_start, window_end))
+            })
+            .collect();
+        windows.sort();
+
+        Ok(WindowScan {
+            correlated,
+            starts,
+            meta,
+            windows,
+        })
+    }
+
+    /// The `(window_start, window_end)` of one correlated task; `None` when
+    /// the task has no correlated `done` (or, degenerately, no task row).
+    pub(crate) fn window_for(&self, task_id: &str) -> Option<(&str, &str)> {
+        self.windows
+            .iter()
+            .find(|(id, _, _)| id == task_id)
+            .map(|(_, ws, we)| (ws.as_str(), we.as_str()))
+    }
+
+    /// The windows of every OTHER task drawing samples from the same
+    /// transcript or session — contested-sample refusal needs them all,
+    /// attributed neighbours included (D50).
+    pub(crate) fn foreign_windows_for(&self, task_id: &str) -> Vec<(String, String)> {
+        let Some(info) = self.correlated.get(task_id) else {
+            return Vec::new();
+        };
+        self.windows
+            .iter()
+            .filter(|(other_id, _, _)| {
+                other_id != task_id && shares_sample_source(info, &self.correlated[other_id])
+            })
+            .map(|(_, ws, we)| (ws.clone(), we.clone()))
+            .collect()
+    }
+}
+
+/// One task's log-parse measurement, re-derived from today's transcript under
+/// the refusal rule — the compute half of the D50 Decision 3 recompute.
+pub(crate) struct RecomputedMeasurement {
+    /// The four buckets summed over the surviving (in-window, uncontested,
+    /// unclaimed) samples.
+    pub(crate) totals: TokenTotals,
+    /// How many samples survived into `totals`.
+    pub(crate) samples: usize,
+    /// The completing `client` from the done event, when it carried one; the
+    /// caller falls back to the stored row's tool label.
+    pub(crate) tool: Option<String>,
+    /// Re-earned per the module's confidence rule (explicit path parsed;
+    /// session verified or not).
+    pub(crate) confidence: &'static str,
+    /// The ids of the samples summed, for the samples that carried one — the
+    /// claims this measurement re-establishes.
+    pub(crate) sample_ids: Vec<String>,
+}
+
+/// Re-evaluate one banked task against its transcript as it reads today.
+/// Mirrors [`compute_attribution`]'s explicit-path branch — same parser
+/// selection, same session verification, same refusal via
+/// [`totals_in_window_refusing`] — minus the transient retry machinery: the
+/// recompute is a one-shot pass over history, so `None` (no correlated
+/// window, no parser, no explicit path, or an unreadable file) is the
+/// caller's terminal *downgrade* signal, never a retry. Discovery-sourced
+/// measurements also land on `None` deliberately: a root scan is not
+/// re-runnable deterministically, so their counts are kept, not re-derived.
+pub(crate) fn recompute_measurement(
+    scan: &WindowScan,
+    task_id: &str,
+    claims: &HashSet<String>,
+) -> Option<RecomputedMeasurement> {
+    let info = scan.correlated.get(task_id)?;
+    let (window_start, window_end) = scan.window_for(task_id)?;
+    let parser = info.client.as_deref().and_then(parser_for)?;
+    let path = info.transcript_path.as_deref().filter(|s| !s.is_empty())?;
+    let file = Path::new(path);
+    let samples = parser.samples_from_file(file).ok()?;
+    let correlated = info
+        .session_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .is_some_and(|sid| parser.session_matches(file, sid));
+    let foreign = scan.foreign_windows_for(task_id);
+    let (totals, counted, _contested, sample_ids) =
+        totals_in_window_refusing(&samples, window_start, window_end, &foreign, claims);
+    Some(RecomputedMeasurement {
+        totals,
+        samples: counted,
+        tool: info.client.clone(),
+        confidence: confidence_for(true, correlated),
+        sample_ids,
+    })
+}
+
+/// The durable pending queue (store-as-queue, reminder precedent): every task
+/// with a `done` event carrying correlation but no `tokens.attributed` event
+/// yet. Reads the store; call it under a short engine lock and drop the lock
+/// before parsing any transcript.
+///
+/// Catch-up after daemon downtime is free: because the queue is derived from the
+/// store on every call, a task completed by a one-shot CLI while no daemon ran is
+/// picked up on the next tick exactly like a reminder missed while down.
+pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, ApiError> {
+    let correlated = correlated_done_scan(engine)?;
     if correlated.values().all(|info| info.attributed) {
         return Ok(Vec::new());
     }
-
-    // 2b. Canonicalize each DISTINCT transcript path string once (a stat per
-    //     path, memoized — never per pair), so `shares_sample_source` compares
-    //     file identity instead of spelling.
-    {
-        let mut canon_memo: HashMap<String, PathBuf> = HashMap::new();
-        for info in correlated.values_mut() {
-            if let Some(tp) = &info.transcript_path {
-                let canon = canon_memo
-                    .entry(tp.clone())
-                    .or_insert_with(|| canonical_path(tp));
-                info.canon_path = Some(canon.clone());
-            }
-        }
-    }
-
-    // 3. Earliest `start` instant per correlated task (window start) — attributed
-    //    neighbours included, their windows are needed as foreign. First by rowid
-    //    wins, so a start/stop/start task uses the beginning of its first interval.
-    let mut starts: HashMap<String, String> = HashMap::new();
-    {
-        let mut stmt = conn.prepare(
-            "SELECT entity_id, payload, ts FROM events WHERE op = 'start' ORDER BY rowid",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        for r in rows {
-            let (task_id, payload, ts) = r?;
-            if !correlated.contains_key(&task_id) {
-                continue;
-            }
-            let started = payload
-                .as_deref()
-                .and_then(|p| serde_json::from_str::<Value>(p).ok())
-                .and_then(|v| {
-                    v.get("interval_started")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .unwrap_or(ts);
-            starts.entry(task_id).or_insert(started);
-        }
-    }
-
-    // 4. short_id + created for the window-start fallback. One query, mapped.
-    let mut meta: HashMap<String, (i64, String)> = HashMap::new();
-    {
-        let mut stmt = conn.prepare("SELECT id, short_id, created FROM tasks")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        for r in rows {
-            let (id, short_id, created) = r?;
-            if correlated.contains_key(&id) {
-                meta.insert(id, (short_id, created));
-            }
-        }
-    }
-
-    // 5. Every correlated task's window, pending or not, sorted for stable
-    //    foreign_windows order: `(task_id, window_start, window_end)`.
-    let mut windows: Vec<(String, String, String)> = correlated
-        .keys()
-        .filter_map(|task_id| {
-            let (_, created) = meta.get(task_id)?;
-            let window_start = starts.get(task_id).unwrap_or(created).clone();
-            let window_end = correlated[task_id].completed.clone();
-            Some((task_id.clone(), window_start, window_end))
-        })
-        .collect();
-    windows.sort();
+    // Feeds `consumed_sample_ids` below, so a sample banked on an earlier tick
+    // is refused by identity even after its re-parsed stamp moves out of the
+    // banked task's window.
+    let consumed_by_task = consumed_sample_ids_by_task(engine)?;
+    let scan = WindowScan::finish(engine, correlated)?;
 
     let mut out = Vec::new();
-    for (task_id, info) in correlated.iter() {
+    for (task_id, info) in scan.correlated.iter() {
         if info.attributed {
             continue;
         }
         // A candidate with no task row is impossible (the done event references
         // it), but tolerate it rather than panicking a background thread.
-        let Some((short_id, created)) = meta.get(task_id).cloned() else {
+        let Some((short_id, created)) = scan.meta.get(task_id).cloned() else {
             continue;
         };
-        let window_start = starts.get(task_id).cloned().unwrap_or(created);
+        let window_start = scan.starts.get(task_id).cloned().unwrap_or(created);
         // Buffered OTLP telemetry (#18) for this session, read here under the
         // short engine lock (a cheap indexed query — no file I/O) so the compute
         // step can prefer it over log-parsing. An absent session id matches
@@ -1020,16 +1158,7 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             Some(sid) => engine.otlp_samples_for_session(sid)?,
             None => (Vec::new(), None),
         };
-        // The windows of every OTHER task drawing samples from the same
-        // transcript or session — contested-sample refusal needs them all,
-        // attributed neighbours included (D50).
-        let foreign_windows = windows
-            .iter()
-            .filter(|(other_id, _, _)| {
-                other_id != task_id && shares_sample_source(info, &correlated[other_id])
-            })
-            .map(|(_, ws, we)| (ws.clone(), we.clone()))
-            .collect();
+        let foreign_windows = scan.foreign_windows_for(task_id);
         // And the sample ids ALL other tasks already consumed: banked by
         // identity, refused by identity — whatever the samples' re-parsed
         // stamps say on this tick. Deliberately GLOBAL, with no

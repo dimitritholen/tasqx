@@ -103,7 +103,7 @@ const VERBS: [(&str, &str, &str); 30] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 28] = [
+const METHODS: [(&str, &str, &str); 29] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -227,6 +227,14 @@ const METHODS: [(&str, &str, &str); 28] = [
         "memory.import",
         "<code>docs</code>",
         "<code>{imported, docs}</code>. One transaction; same <code>source</code> replaces.",
+    ),
+    (
+        "tokens.recompute",
+        "<code>dry_run?</code>",
+        "<code>{dry_run, tasks, totals}</code>. Re-runs log-parse attribution over stored \
+         windows under the refusal rule (D50). <code>dry_run</code> defaults to \
+         <em>true</em> — report the per-task delta, write nothing; send \
+         <code>false</code> to apply.",
     ),
     (
         "report.summary",
@@ -1738,12 +1746,12 @@ fn page_api() -> String {
     ));
     s.push_str(&snippet(
         "echo '{\"tasqx\":\"1\",\"id\":\"c1\",\"method\":\"core.capabilities\"}' | tasqx api",
-        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"token.add\",\"dependency.add\",\"dependency.remove\",\"memory.add\",\"memory.search\",\"memory.remove\",\"memory.import\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"memory.add\":[\"title\",\"body\",\"source\"],\"memory.import\":[\"docs\"],\"memory.remove\":[\"id\"],\"memory.search\":[\"query\",\"limit\",\"scope\",\"raw\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\",\"projects\",\"default_project\",\"docs\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\",\"tool\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\"],\"task.stop\":[\"ref\"],\"token.add\":[\"ref\",\"tool\",\"source\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\",\"confidence\"]}},\"tasqx\":\"1\"}",
+        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"token.add\",\"dependency.add\",\"dependency.remove\",\"memory.add\",\"memory.search\",\"memory.remove\",\"memory.import\",\"tokens.recompute\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"memory.add\":[\"title\",\"body\",\"source\"],\"memory.import\":[\"docs\"],\"memory.remove\":[\"id\"],\"memory.search\":[\"query\",\"limit\",\"scope\",\"raw\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\",\"projects\",\"default_project\",\"docs\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\",\"tool\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\"],\"task.stop\":[\"ref\"],\"token.add\":[\"ref\",\"tool\",\"source\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\",\"confidence\"],\"tokens.recompute\":[\"dry_run\"]}},\"tasqx\":\"1\"}",
     ));
 
     s.push_str(&h3("The methods"));
     s.push_str(&p(
-        "All twenty-eight — and this table is what the tests compare against \
+        "All twenty-nine — and this table is what the tests compare against \
          <code>core.capabilities</code>: the method names, and (D33) the Params column against its \
          <code>params</code> map, so it cannot describe a method — or a key — this build does not \
          have. A key not in the accepted set is refused, never ignored.",
@@ -2653,8 +2661,8 @@ mod tests {
     ///
     /// Partial by construction, and worth naming precisely: this only covers the
     /// methods callable with no arguments, because those are the ones a
-    /// doc-drift test can invoke without inventing fixture data. That is six of
-    /// the twenty-seven rows. The write methods' return shapes, and every prose
+    /// doc-drift test can invoke without inventing fixture data. That is seven
+    /// of the twenty-nine rows. The write methods' return shapes, and every prose
     /// `returns` cell that describes rather than enumerates ("The task, timer
     /// running."), stay unguarded — asserting on English is not a thing a test
     /// can do, and asserting on the write shapes needs a fixture store per
@@ -2700,8 +2708,8 @@ mod tests {
         // Pin the coverage claim itself. If a future edit makes this loop skip
         // everything, the test would pass while guarding nothing.
         assert_eq!(
-            checked, 6,
-            "expected to check all 6 bare-callable return shapes; a row that stopped being \
+            checked, 7,
+            "expected to check all 7 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }
