@@ -89,6 +89,21 @@ A migration re-runs attribution over the stored windows under the refusal rule:
   upgrade window, and it backfills `sample_ids` on surviving rows as a side
   effect.
 - Contested samples drop out; uncontested measurements survive unchanged.
+- **Only contest removes tokens.** A recompute that finds smaller (or zero)
+  uncontested totals than the banked row — evidence drift from a moved stamp,
+  a truncated file, a re-emission past the window edge — keeps the banked
+  counts and downgrades confidence to `low`, exactly like an unreadable
+  transcript. One bad read at apply time must never be terminal and
+  destructive; that is the same defect class the live tick fixed twice.
+- The verb is **in-process only**: it parses transcripts, which must never
+  happen under the daemon's global engine lock (one hung `open()` would wedge
+  every client). A daemon receiving `tokens.recompute` refuses it, naming the
+  `--no-daemon` invocation; running it while a daemon serves the same store is
+  documented as unsupported (two writers), and convergence-on-rerun is the
+  safety net, not a license.
+- Replay order is the order live ticks *banked* measurements: ascending rowid
+  of the earliest marker that recorded a measurement for the task (empty
+  markers do not count), so a pre-upgrade owner is replayed before its thief.
 - Rows whose transcript is no longer readable cannot be recomputed. Those are
   downgraded — `confidence` set to `low` — never deleted blind.
 - **Dry-run mode first**: print the per-task delta (who loses what, who keeps
