@@ -289,6 +289,17 @@ pub struct PendingAttribution {
     /// through the pending set so it receives a terminating `tokens.attributed`
     /// marker, but with no measurement.
     pub self_reported: bool,
+    /// The `(window_start, window_end)` pair of every OTHER task that shares
+    /// this task's sample source — an equal non-null `transcript_path` in the
+    /// done payload, or an equal non-null `session_id` (D50). A sample inside
+    /// this task's window that also falls inside any of these is *contested*
+    /// and banked for no one ([`totals_in_window_excluding`]).
+    ///
+    /// Built from a scan of ALL correlated `done` events in the store —
+    /// including tasks attributed on an earlier tick. Co-pending entries alone
+    /// would be race-dependent: a task attributed last tick has left the queue,
+    /// but its window still claims the same samples.
+    pub foreign_windows: Vec<(String, String)>,
 }
 
 /// The outcome of attributing one task: the four-way totals, how many samples
@@ -592,6 +603,19 @@ struct DoneInfo {
     transcript_path: Option<String>,
     session_id: Option<String>,
     self_reported: bool,
+    /// True when a `tokens.attributed` marker already sits past this task's
+    /// latest correlated `done`: the task is no longer pending, but its window
+    /// still contests samples on a shared source, so it is retained in the scan
+    /// as a foreign window rather than dropped.
+    attributed: bool,
+}
+
+/// Whether two completions draw their samples from the same source: an equal
+/// non-null `transcript_path`, or an equal non-null `session_id`. Two `None`s
+/// are NOT a match — an absent key identifies nothing.
+fn shares_sample_source(a: &DoneInfo, b: &DoneInfo) -> bool {
+    (a.transcript_path.is_some() && a.transcript_path == b.transcript_path)
+        || (a.session_id.is_some() && a.session_id == b.session_id)
 }
 
 /// The durable pending queue (store-as-queue, reminder precedent): every task
@@ -625,12 +649,15 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
         map
     };
 
-    // 2. Latest `done` per task carrying correlation, not yet attributed. Rowid
-    //    order so a reopened-then-redone task's most recent completion wins — and
-    //    a `done` is "not yet attributed" when no `tokens.attributed` marker
-    //    exists *after* it (rowid strictly greater), so tokens spent between a
-    //    reopen and the next completion are attributed rather than silently lost.
-    let mut candidates: HashMap<String, DoneInfo> = HashMap::new();
+    // 2. Latest `done` per task carrying correlation. Rowid order so a
+    //    reopened-then-redone task's most recent completion wins — and a `done`
+    //    is "not yet attributed" when no `tokens.attributed` marker exists
+    //    *after* it (rowid strictly greater), so tokens spent between a reopen
+    //    and the next completion are attributed rather than silently lost.
+    //    Already-attributed tasks are RETAINED (flagged, not skipped): they are
+    //    no longer pending, but their windows still contest samples on a shared
+    //    transcript or session (D50), so every pending entry needs them.
+    let mut correlated: HashMap<String, DoneInfo> = HashMap::new();
     {
         let mut stmt = conn.prepare(
             "SELECT entity_id, payload, ts, rowid FROM events WHERE op = 'done' ORDER BY rowid",
@@ -645,12 +672,6 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
         })?;
         for r in rows {
             let (task_id, payload, ts, done_rowid) = r?;
-            if attributed
-                .get(&task_id)
-                .is_some_and(|&attr_rowid| attr_rowid > done_rowid)
-            {
-                continue;
-            }
             let v = payload
                 .as_deref()
                 .and_then(|p| serde_json::from_str::<Value>(p).ok())
@@ -675,7 +696,10 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             // second, double-counting measurement.
             let self_reported = v.get("tokens").is_some_and(|t| !t.is_null());
             let completed = field("completed").unwrap_or(ts);
-            candidates.insert(
+            let is_attributed = attributed
+                .get(&task_id)
+                .is_some_and(|&attr_rowid| attr_rowid > done_rowid);
+            correlated.insert(
                 task_id,
                 DoneInfo {
                     completed,
@@ -683,15 +707,17 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
                     transcript_path,
                     session_id,
                     self_reported,
+                    attributed: is_attributed,
                 },
             );
         }
     }
-    if candidates.is_empty() {
+    if correlated.values().all(|info| info.attributed) {
         return Ok(Vec::new());
     }
 
-    // 3. Earliest `start` instant per candidate (window start). First by rowid
+    // 3. Earliest `start` instant per correlated task (window start) — attributed
+    //    neighbours included, their windows are needed as foreign. First by rowid
     //    wins, so a start/stop/start task uses the beginning of its first interval.
     let mut starts: HashMap<String, String> = HashMap::new();
     {
@@ -707,7 +733,7 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
         })?;
         for r in rows {
             let (task_id, payload, ts) = r?;
-            if !candidates.contains_key(&task_id) {
+            if !correlated.contains_key(&task_id) {
                 continue;
             }
             let started = payload
@@ -736,20 +762,36 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
         })?;
         for r in rows {
             let (id, short_id, created) = r?;
-            if candidates.contains_key(&id) {
+            if correlated.contains_key(&id) {
                 meta.insert(id, (short_id, created));
             }
         }
     }
 
+    // 5. Every correlated task's window, pending or not, sorted for stable
+    //    foreign_windows order: `(task_id, window_start, window_end)`.
+    let mut windows: Vec<(String, String, String)> = correlated
+        .keys()
+        .filter_map(|task_id| {
+            let (_, created) = meta.get(task_id)?;
+            let window_start = starts.get(task_id).unwrap_or(created).clone();
+            let window_end = correlated[task_id].completed.clone();
+            Some((task_id.clone(), window_start, window_end))
+        })
+        .collect();
+    windows.sort();
+
     let mut out = Vec::new();
-    for (task_id, info) in candidates {
+    for (task_id, info) in correlated.iter() {
+        if info.attributed {
+            continue;
+        }
         // A candidate with no task row is impossible (the done event references
         // it), but tolerate it rather than panicking a background thread.
-        let Some((short_id, created)) = meta.get(&task_id).cloned() else {
+        let Some((short_id, created)) = meta.get(task_id).cloned() else {
             continue;
         };
-        let window_start = starts.get(&task_id).cloned().unwrap_or(created);
+        let window_start = starts.get(task_id).cloned().unwrap_or(created);
         // Buffered OTLP telemetry (#18) for this session, read here under the
         // short engine lock (a cheap indexed query — no file I/O) so the compute
         // step can prefer it over log-parsing. An absent session id matches
@@ -758,17 +800,28 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
             Some(sid) => engine.otlp_samples_for_session(sid)?,
             None => (Vec::new(), None),
         };
+        // The windows of every OTHER task drawing samples from the same
+        // transcript or session — contested-sample refusal needs them all,
+        // attributed neighbours included (D50).
+        let foreign_windows = windows
+            .iter()
+            .filter(|(other_id, _, _)| {
+                other_id != task_id && shares_sample_source(info, &correlated[other_id])
+            })
+            .map(|(_, ws, we)| (ws.clone(), we.clone()))
+            .collect();
         out.push(PendingAttribution {
-            task_id,
+            task_id: task_id.clone(),
             short_id,
             window_start,
-            window_end: info.completed,
-            client: info.client,
-            transcript_path: info.transcript_path,
-            session_id: info.session_id,
+            window_end: info.completed.clone(),
+            client: info.client.clone(),
+            transcript_path: info.transcript_path.clone(),
+            session_id: info.session_id.clone(),
             otel_samples,
             otel_tool,
             self_reported: info.self_reported,
+            foreign_windows,
         });
     }
     // Deterministic order for tests and for stable log lines.
@@ -926,6 +979,7 @@ mod tests {
             otel_samples: Vec::new(),
             otel_tool: None,
             self_reported: false,
+            foreign_windows: vec![],
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(!r.found);
@@ -946,6 +1000,7 @@ mod tests {
             otel_samples: Vec::new(),
             otel_tool: None,
             self_reported: false,
+            foreign_windows: vec![],
         };
         // Minutes after completion: still transient (the file may yet be flushed).
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
@@ -965,6 +1020,7 @@ mod tests {
             otel_samples: Vec::new(),
             otel_tool: None,
             self_reported: false,
+            foreign_windows: vec![],
         };
         // Two days later the file is never coming: terminate with an empty marker
         // (found == false) rather than retrying — and forcing a rebuild — forever.
@@ -1003,6 +1059,7 @@ mod tests {
             otel_samples: Vec::new(),
             otel_tool: None,
             self_reported: false,
+            foreign_windows: vec![],
         };
 
         // Minutes after completion: still transient. A file being written right
@@ -1055,6 +1112,7 @@ mod tests {
             otel_samples: Vec::new(),
             otel_tool: None,
             self_reported: false,
+            foreign_windows: vec![],
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
@@ -1115,6 +1173,7 @@ mod tests {
             otel_samples: Vec::new(),
             otel_tool: None,
             self_reported: false,
+            foreign_windows: vec![],
         };
 
         // Minutes after completion: the turn may still be writing. Retry rather
@@ -1160,6 +1219,7 @@ mod tests {
             otel_samples: Vec::new(),
             otel_tool: None,
             self_reported: false,
+            foreign_windows: vec![],
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z"))
             .expect("discovery must terminate, not retry");
@@ -1196,6 +1256,7 @@ mod tests {
             otel_samples: Vec::new(),
             otel_tool: None,
             self_reported: false,
+            foreign_windows: vec![],
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found, "the transcript was parsed and had in-window spend");
@@ -1227,6 +1288,7 @@ mod tests {
             ],
             otel_tool: Some("claude-code".into()),
             self_reported: false,
+            foreign_windows: vec![],
         };
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
         assert!(r.found);
@@ -1256,6 +1318,7 @@ mod tests {
             otel_samples: vec![sample("2026-07-24T12:30:00Z", 100, 200)],
             otel_tool: Some("claude-code".into()),
             self_reported: false,
+            foreign_windows: vec![],
         };
         let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
         assert!(
@@ -1394,6 +1457,134 @@ mod tests {
         );
         // A second tick is a clean no-op: the marker now sits past the done.
         assert!(pending_attributions(&engine).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_pending_task_carries_the_windows_of_attributed_neighbours_on_the_same_transcript() {
+        // Task A: started 09:46:53, done 10:01:44, transcript /tmp/t.jsonl,
+        // ALREADY attributed (its `tokens.attributed` marker landed on an
+        // earlier tick, so it has left the queue). Task B: started 09:46:53,
+        // done 09:49:37, same transcript, unattributed. B must still see A's
+        // window as foreign — co-pending entries alone are race-dependent.
+        let engine = Engine::open_in_memory().unwrap();
+        let a = engine.task_add(&json!({ "title": "a" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        let b = engine.task_add(&json!({ "title": "b" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        engine.task_start(&json!({ "ref": a })).unwrap();
+        engine
+            .task_done(&json!({
+                "ref": a, "client": "claude-code", "transcript_path": "/tmp/t.jsonl"
+            }))
+            .unwrap();
+        engine.task_start(&json!({ "ref": b })).unwrap();
+        engine
+            .task_done(&json!({
+                "ref": b, "client": "claude-code", "transcript_path": "/tmp/t.jsonl"
+            }))
+            .unwrap();
+        engine
+            .token_attribute(&json!({
+                "ref": a, "source": SOURCE_LOG_PARSE, "tool": "claude-code", "confidence": "low"
+            }))
+            .unwrap();
+
+        // Pin the windows to the field-observed instants so the assertion is
+        // exact rather than clock-dependent.
+        let a_id: String = engine
+            .conn()
+            .query_row("SELECT id FROM tasks WHERE short_id = ?1", [a], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let b_id: String = engine
+            .conn()
+            .query_row("SELECT id FROM tasks WHERE short_id = ?1", [b], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        for (id, started, done_payload) in [
+            (
+                &a_id,
+                "2026-07-25T09:46:53Z",
+                r#"{"completed":"2026-07-25T10:01:44Z","client":"claude-code","transcript_path":"/tmp/t.jsonl"}"#,
+            ),
+            (
+                &b_id,
+                "2026-07-25T09:46:53Z",
+                r#"{"completed":"2026-07-25T09:49:37Z","client":"claude-code","transcript_path":"/tmp/t.jsonl"}"#,
+            ),
+        ] {
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+                    (format!(r#"{{"interval_started":"{started}"}}"#), id),
+                )
+                .unwrap();
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+                    (done_payload, id),
+                )
+                .unwrap();
+        }
+
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(pending.len(), 1, "A is attributed; only B is pending");
+        let pa = &pending[0];
+        assert_eq!(pa.short_id, b);
+        assert_eq!(
+            pa.foreign_windows,
+            vec![(
+                "2026-07-25T09:46:53Z".to_string(),
+                "2026-07-25T10:01:44Z".to_string()
+            )],
+            "B carries A's window even though A already left the queue"
+        );
+    }
+
+    #[test]
+    fn tasks_on_different_transcripts_and_sessions_do_not_contest_each_other() {
+        let engine = Engine::open_in_memory().unwrap();
+        let a = engine.task_add(&json!({ "title": "a" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        let b = engine.task_add(&json!({ "title": "b" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        engine
+            .task_done(&json!({
+                "ref": a,
+                "client": "claude-code",
+                "transcript_path": "/tmp/a.jsonl",
+                "session_id": "sess-a",
+            }))
+            .unwrap();
+        engine
+            .task_done(&json!({
+                "ref": b,
+                "client": "claude-code",
+                "transcript_path": "/tmp/b.jsonl",
+                "session_id": "sess-b",
+            }))
+            .unwrap();
+        engine
+            .token_attribute(&json!({
+                "ref": a, "source": SOURCE_LOG_PARSE, "tool": "claude-code", "confidence": "low"
+            }))
+            .unwrap();
+
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].short_id, b);
+        assert!(
+            pending[0].foreign_windows.is_empty(),
+            "no shared transcript or session: nothing contests"
+        );
     }
 
     fn count_rows(engine: &Engine, sql: &str) -> i64 {
