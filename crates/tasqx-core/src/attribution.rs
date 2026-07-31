@@ -544,7 +544,14 @@ pub fn compute_attribution(
     // timestamps are non-monotonic mid-write, so an uncontested line can still
     // arrive, and a terminal marker would permanently suppress it. The distinct
     // message keeps daemon stderr diagnosable ("contested" versus "no usage").
-    if n == 0 && contested > 0 && !transcript_gave_up(now, &pa.window_end) {
+    //
+    // Explicit-transcript path ONLY (`transcript_parsed`): discovery keeps its
+    // deliberate terminal-on-first-tick doctrine — an empty discovery result
+    // means "no candidate carried anything", and a contested one means the
+    // same spend is already spoken for; neither has a named file to wait on,
+    // so retrying for 24h would keep the task in the pending set for no gain.
+    // (Contested TELEMETRY stays transient via the OTLP arm above.)
+    if transcript_parsed && n == 0 && contested > 0 && !transcript_gave_up(now, &pa.window_end) {
         return Err(ApiError::internal(format!(
             "usage in window is contested: {}",
             pa.transcript_path.as_deref().unwrap_or_default()
@@ -1636,6 +1643,70 @@ mod tests {
         let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z"))
             .expect("discovery must terminate, not retry");
         assert!(!r.found);
+        assert_eq!(r.samples, 0);
+    }
+
+    /// Discovery doctrine holds even under contest: a DISCOVERY scan whose
+    /// only in-window samples are contested terminates on the first tick, like
+    /// every other discovery outcome. The contested-transient retry belongs to
+    /// the explicit-transcript path alone — without the gate, one contested
+    /// discovery sample flipped discovery from terminal-on-first-tick to a 24h
+    /// retry, keeping the task in the pending set for a day against the
+    /// deliberate one-shot doctrine.
+    #[test]
+    fn contested_discovery_samples_stay_terminal_rather_than_retrying() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-contested-discovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // A transcript under a CLAUDE_CONFIG_DIR override, so discovery finds
+        // it. The window is in 2020 — no real transcript can hold samples
+        // there, so the planted (contested) sample is the only in-window one.
+        let proj = dir.join("projects").join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(
+            proj.join("sess-1.jsonl"),
+            r#"{"timestamp":"2020-01-01T10:10:00.000Z","message":{"id":"m","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+        )
+        .unwrap();
+
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2020-01-01T10:00:00Z".into(),
+            window_end: "2020-01-01T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            // No explicit path: this is the discovery branch.
+            transcript_path: None,
+            session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+            foreign_windows: vec![(
+                "2020-01-01T10:05:00Z".to_string(),
+                "2020-01-01T10:15:00Z".to_string(),
+            )],
+            consumed_sample_ids: HashSet::new(),
+        };
+
+        // SAFETY: restored below; the only concurrent readers are discovery
+        // scans, which tolerate an extra root (see the codex env-test pattern).
+        let prev = std::env::var_os("CLAUDE_CONFIG_DIR");
+        unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
+        // Minutes after completion — where the explicit path would retry.
+        let r = compute_attribution(&pa, ts("2020-01-01T11:05:00Z"));
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let r = r.expect("contested discovery must terminate, not retry");
+        assert!(!r.found, "the contested sample banks for no one");
         assert_eq!(r.samples, 0);
     }
 
