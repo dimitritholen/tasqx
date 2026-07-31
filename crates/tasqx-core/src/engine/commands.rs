@@ -73,10 +73,10 @@ pub(super) fn parse_correlation(p: &Value) -> Result<Correlation, ApiError> {
     })
 }
 
-/// Self-reported token usage on `task.done` (#13) — the fallback channel for
-/// tools with neither parseable local logs nor telemetry (research doc: e.g.
-/// Cursor). Everything optional: a completion without counts is the normal
-/// case and must stay exactly what it was.
+/// Self-reported token usage on `task.done` (#13) — since D50 the primary
+/// channel: the caller is the only party that knows which task a turn's spend
+/// served, so log-parse and telemetry are fallbacks. Everything optional: a
+/// completion without counts is still accepted (it earns a `tokens_hint`).
 pub(super) struct SelfReport {
     pub(super) tool: Option<String>,
     pub(super) model: Option<String>,
