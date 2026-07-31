@@ -42,7 +42,9 @@ use tasqx_core::{
     Scope,
 };
 
-use command::{ChartKind, Cli, Command, ConfigAction, McpAction, MemoryAction, ThemeAction};
+use command::{
+    ChartKind, Cli, Command, ConfigAction, McpAction, MemoryAction, ThemeAction, TokensAction,
+};
 use theme::{Caps, Ctx};
 
 /// The real reference instant handed to the natural-language date parser.
@@ -463,6 +465,7 @@ fn execute(cli: Cli) -> Exit {
             run_config(&mut backend, &ctx, &action, theme_flag.as_deref())
         }
         Some(Command::Memory { action }) => run_memory(&mut backend, &action),
+        Some(Command::Tokens { action }) => run_tokens(&mut backend, &ctx, &action),
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, file),
         Some(Command::Next) => run_next(&mut backend, &ctx),
@@ -1244,6 +1247,23 @@ fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome {
             Ok((result, text))
         }
         MemoryAction::Import { path } => run_memory_import(be, path),
+    }
+}
+
+/// `tasqx tokens recompute [--apply]` (DESIGN.md §12-D50, Decision 3).
+///
+/// The polarity flip happens here and nowhere else: the CLI speaks opt-in
+/// destruction (`--apply`) while the engine speaks opt-out safety
+/// (`dry_run`, defaulting true). Sending `dry_run` explicitly rather than
+/// omitting it keeps this command's behaviour pinned to its own flag instead
+/// of to whatever default a future engine revision ships.
+fn run_tokens(be: &mut Backend, ctx: &Ctx, action: &TokensAction) -> CmdOutcome {
+    match action {
+        TokensAction::Recompute { apply } => {
+            let result = be.call("tokens.recompute", &json!({ "dry_run": !apply }))?;
+            let text = render::tokens_recompute(ctx, &result);
+            Ok((result, text))
+        }
     }
 }
 

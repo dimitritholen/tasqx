@@ -755,6 +755,123 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     out
 }
 
+/// The four buckets as `tokens.recompute` spells them in `before`/`after`,
+/// in the same reading order `task_detail`'s tokens line uses. NOT
+/// `crate::tokens::BUCKETS`: those are `report.summary`'s aggregate keys
+/// (`tokens_in`, …) ordered by price for picking a dominant bucket, and this
+/// is a per-task delta over the measurement-row keys, where the plan's own
+/// example reads input-first.
+const RECOMPUTE_BUCKETS: [(&str, &str); 4] = [
+    ("input_tokens", "in"),
+    ("output_tokens", "out"),
+    ("cache_read_tokens", "cacheR"),
+    ("cache_creation_tokens", "cacheW"),
+];
+
+/// `tasqx tokens recompute` — the migration delta a user reads before granting
+/// `--apply` (D50 Decision 3).
+///
+/// One line per CHANGED task; `unchanged` tasks are counted in the totals line
+/// but not listed, because the list exists to answer "who loses what" and a
+/// task losing nothing would bury the ones that do. Counts are printed raw,
+/// never `tokens::compact`ed: this is the one surface whose numbers someone
+/// must be able to audit against `--json` before approving a deletion.
+///
+/// The totals line carries the engine's blended before/after — a migration
+/// delta, deliberately not a report surface (the D48 no-blend rule is about
+/// reporting spend, and labelling this pair as the delta is what keeps it from
+/// reading as one).
+pub fn tokens_recompute(ctx: &Ctx, result: &Value) -> String {
+    let empty = Vec::new();
+    let tasks = result
+        .get("tasks")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let dry_run = result
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    if tasks.is_empty() {
+        return "No log-parse measurements to recompute.\n".to_string();
+    }
+
+    let mut out = String::new();
+    out.push_str(&ctx.paint(
+        "header",
+        &format!(
+            "Token recompute ({})",
+            if dry_run { "dry-run" } else { "applied" }
+        ),
+    ));
+    out.push('\n');
+
+    let mut unchanged = 0usize;
+    for t in tasks {
+        let sid = t.get("task").and_then(Value::as_i64).unwrap_or(0);
+        let action = t.get("action").and_then(Value::as_str).unwrap_or("");
+        let cell = |side: &str| -> &Value { t.get(side).unwrap_or(&Value::Null) };
+        let line = match action {
+            "unchanged" => {
+                unchanged += 1;
+                continue;
+            }
+            "recomputed" => format!(
+                "recomputed   {}",
+                bucket_delta(cell("before"), cell("after"))
+            ),
+            "downgraded" => {
+                // The result carries counts, not confidences; the engine only
+                // ever downgrades TO low, so the destination is safe to name
+                // and the origin is not restated.
+                "downgraded   confidence -> low (transcript unreadable; counts kept)".to_string()
+            }
+            "channel_conflict" => {
+                "conflict     log-parse rows removed; the self-report is the measurement"
+                    .to_string()
+            }
+            // A verb action this build has not heard of: show it rather than
+            // silently dropping a task from a report about deletions.
+            other => format!("{other}   {}", bucket_delta(cell("before"), cell("after"))),
+        };
+        out.push_str(&format!(
+            "  {:>5}  {line}\n",
+            ctx.paint("accent", &format!("#{sid}"))
+        ));
+    }
+
+    let before = result["totals"]["before"].as_i64().unwrap_or(0);
+    let after = result["totals"]["after"].as_i64().unwrap_or(0);
+    out.push_str(&format!(
+        "totals  {before} -> {after} tokens (blended migration delta)  ·  {} task(s) in scope, {unchanged} unchanged\n",
+        tasks.len()
+    ));
+    if dry_run {
+        out.push_str("Dry-run: nothing was written. Run `tasqx tokens recompute --apply` to perform this repair.\n");
+    }
+    out
+}
+
+/// `in 1500->500 · out 2600->600` — only the buckets that carry a number on
+/// either side; a bucket at 0->0 is noise on every line it would join. `after`
+/// may be the null a `channel_conflict` reports, which reads as 0.
+fn bucket_delta(before: &Value, after: &Value) -> String {
+    let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_i64).unwrap_or(0);
+    let cells: Vec<String> = RECOMPUTE_BUCKETS
+        .iter()
+        .filter_map(|(key, label)| {
+            let (b, a) = (n(before, key), n(after, key));
+            (b != 0 || a != 0).then(|| format!("{label} {b}->{a}"))
+        })
+        .collect();
+    if cells.is_empty() {
+        // All-zero rows exist only in strange stores, but a blank cell would
+        // read as a rendering bug rather than an empty measurement.
+        return "empty".to_string();
+    }
+    cells.join(" · ")
+}
+
 pub fn next_task(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
     let tasks = result
@@ -1517,6 +1634,88 @@ mod tests {
             "a real negative lost its sign: {out:?}"
         );
         assert!(out.contains("4.5"), "the total must still net out: {out:?}");
+    }
+
+    /// D50: the recompute delta lists every CHANGED task with auditable raw
+    /// numbers, counts the unchanged ones instead of listing them, and names
+    /// `--apply` only while nothing has been written yet.
+    #[test]
+    fn tokens_recompute_lists_changes_and_names_apply_only_on_dry_run() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let b4 = |i: i64, o: i64| {
+            json!({ "input_tokens": i, "output_tokens": o,
+                    "cache_read_tokens": 0, "cache_creation_tokens": 0 })
+        };
+        let mut result = json!({
+            "dry_run": true,
+            "tasks": [
+                { "task": 3, "action": "recomputed", "before": b4(1500, 2600), "after": b4(500, 600) },
+                { "task": 4, "action": "downgraded", "before": b4(800, 900), "after": b4(800, 900) },
+                { "task": 5, "action": "channel_conflict", "before": b4(70, 0), "after": serde_json::Value::Null },
+                { "task": 6, "action": "unchanged", "before": b4(1, 1), "after": b4(1, 1) },
+            ],
+            "totals": { "before": 7101, "after": 1101 },
+        });
+
+        let out = tokens_recompute(&ctx, &result);
+        assert!(out.contains("#3"), "{out:?}");
+        assert!(
+            out.contains("in 1500->500") && out.contains("out 2600->600"),
+            "raw auditable numbers, no compaction: {out:?}"
+        );
+        assert!(
+            out.contains("confidence -> low"),
+            "the downgrade must say what happens to the label: {out:?}"
+        );
+        assert!(
+            out.contains("self-report"),
+            "a channel conflict must say which measurement stands: {out:?}"
+        );
+        assert!(
+            !out.contains("#6"),
+            "an unchanged task earns no line of its own: {out:?}"
+        );
+        assert!(out.contains("1 unchanged"), "{out:?}");
+        assert!(
+            out.contains("7101 -> 1101"),
+            "the totals line must carry the delta: {out:?}"
+        );
+        assert!(
+            out.contains("--apply"),
+            "a dry-run must name the flag that makes it real: {out:?}"
+        );
+
+        result["dry_run"] = json!(false);
+        let out = tokens_recompute(&ctx, &result);
+        assert!(
+            !out.contains("--apply"),
+            "an applied run advertising --apply invites running it twice: {out:?}"
+        );
+        assert!(out.contains("applied"), "{out:?}");
+    }
+
+    /// Nothing in scope is an answer, not an empty table — and an action this
+    /// build has never heard of still reaches the reader, because this report
+    /// is the approval surface for a deletion.
+    #[test]
+    fn tokens_recompute_answers_when_empty_and_shows_unknown_actions() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = tokens_recompute(&ctx, &json!({ "dry_run": true, "tasks": [] }));
+        assert!(out.contains("No log-parse measurements"), "{out:?}");
+
+        let out = tokens_recompute(
+            &ctx,
+            &json!({
+                "dry_run": true,
+                "tasks": [ { "task": 9, "action": "quarantined",
+                             "before": { "input_tokens": 5 }, "after": { "input_tokens": 5 } } ],
+                "totals": { "before": 5, "after": 5 },
+            }),
+        );
+        assert!(
+            out.contains("quarantined") && out.contains("#9"),
+            "an unknown action may not drop its task from the report: {out:?}"
+        );
     }
 
     #[test]
