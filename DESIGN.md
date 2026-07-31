@@ -863,7 +863,7 @@ All charts are pure clients of `report.summary` and `task.list` — the core ret
        ▸ 148 done · current streak 6 days · best 14
 ```
 
-**Throughput** — `tasqx chart throughput --weekly` (added vs. done, braille sparkbars)
+**Throughput** — `tasqx chart throughput` (weekly added vs. done, braille sparkbars; the window is `--weeks N`, and the inert `--weekly` flag this line once showed was removed)
 
 ```
  Weekly throughput                              added ▁▂▃  done ▁▂▃
