@@ -960,6 +960,34 @@ mod tests {
         assert!(!task_detail(&ctx, &bare).contains("remind"));
     }
 
+    /// D50: `tokens_hint` targets machine callers who see raw JSON. The CLI
+    /// `done` verb has no token flags, so printing the hint would recommend
+    /// the impossible. The fixture carries the key deliberately — present and
+    /// deliberately unrendered, the same shape as the D48a tokens_total guard:
+    /// a payload without it could not tell rendering from absence.
+    #[test]
+    fn done_never_renders_the_tokens_hint() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = done(
+            &ctx,
+            &json!({
+                "status": "done",
+                "completed": "2026-07-31T10:00:00Z",
+                "unblocked": [],
+                "tokens_hint": "no token counts were self-reported; log-parse \
+                    attribution is a best-effort fallback"
+            }),
+        );
+        assert!(
+            out.contains("Done"),
+            "the completion line itself went missing: {out:?}"
+        );
+        assert!(
+            !out.contains("tokens_hint") && !out.contains("self-reported"),
+            "the machine-only hint reached the terminal: {out:?}"
+        );
+    }
+
     /// B1: `tasqx list` prints no status column, so a row the store could not
     /// read would flow through the default view looking like ordinary open work.
     /// The core flags it; the table has to say so, and name the way out — the

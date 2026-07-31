@@ -423,6 +423,19 @@ impl Engine {
         if let Some(sp) = spawned {
             out["spawned"] = sp;
         }
+        // D50: a completion with no self-report nudges the machine caller
+        // toward the primary channel. Response key only — built after the
+        // commit, so it can never leak into the done event — and it asserts
+        // nothing about ownership or spend: whether tokens were spent at all
+        // is exactly what nobody but the caller knows.
+        if usage.is_none() {
+            out["tokens_hint"] = json!(
+                "no token counts were self-reported; log-parse attribution is \
+                 a best-effort fallback — pass input_tokens/output_tokens/\
+                 cache_read_tokens/cache_creation_tokens on completion for a \
+                 reliable measurement"
+            );
+        }
         Ok(out)
     }
 

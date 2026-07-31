@@ -602,6 +602,58 @@ fn complete_task_with_token_args_records_a_self_report() {
     assert_eq!(token_add_events, 0);
 }
 
+/// D50: a completion with no self-report answers with a `tokens_hint` nudging
+/// the machine caller toward the primary channel. Response key only — never an
+/// event key, and it asserts nothing about ownership or spend.
+#[test]
+fn complete_task_without_token_args_carries_the_self_report_hint() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let added = call(&server, 1, "tasqx_add_task", json!({ "title": "quiet" }));
+    let sid = tool_text(&added)["short_id"].as_i64().expect("short_id");
+
+    let done = call(&server, 2, "tasqx_complete_task", json!({ "ref": sid }));
+    assert!(!is_error(&done), "complete failed: {done}");
+    assert_eq!(
+        tool_text(&done)["tokens_hint"],
+        "no token counts were self-reported; log-parse attribution is a \
+         best-effort fallback — pass input_tokens/output_tokens/\
+         cache_read_tokens/cache_creation_tokens on completion for a \
+         reliable measurement",
+        "the unmeasured completion must nudge toward self-report"
+    );
+    // The hint is a response key, never an event: the done event payload
+    // stays exactly the shape the one-event-per-mutation invariant pins.
+    assert!(
+        event_payload(&engine, "done").get("tokens_hint").is_none(),
+        "tokens_hint leaked into the done event payload"
+    );
+}
+
+/// The counterpart: a completion that DID self-report gets no hint — it would
+/// recommend what already happened.
+#[test]
+fn complete_task_with_token_args_carries_no_hint() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let added = call(&server, 1, "tasqx_add_task", json!({ "title": "measured" }));
+    let sid = tool_text(&added)["short_id"].as_i64().expect("short_id");
+
+    let done = call(
+        &server,
+        2,
+        "tasqx_complete_task",
+        json!({ "ref": sid, "tool": "claude-code", "input_tokens": 12, "output_tokens": 3 }),
+    );
+    assert!(!is_error(&done), "complete failed: {done}");
+    assert!(
+        tool_text(&done).get("tokens_hint").is_none(),
+        "a self-reported completion must not carry the hint"
+    );
+}
+
 // ---- memory over MCP (D41) ---------------------------------------------------
 
 #[test]
