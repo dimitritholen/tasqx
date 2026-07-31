@@ -1491,7 +1491,9 @@ mod tests {
     /// the opposite and was correct until D48. The fixture's `tokens_total` is
     /// deliberately present and deliberately unrendered: a store carrying the
     /// field is exactly the case where the old behaviour could creep back, and a
-    /// fixture that omitted it could not tell the difference.
+    /// fixture that omitted it could not tell the difference. Since D50 the
+    /// engine no longer emits the field at all; the fixture stands in for a
+    /// pre-D50 payload, so keep it.
     #[test]
     fn report_names_the_largest_bucket_instead_of_blending() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);

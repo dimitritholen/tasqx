@@ -68,7 +68,9 @@ pub const SUMMARY_GROUP_BY: [&str; 3] = ["project", "status", "priority"];
 /// The `tokens_*` metrics roll up the per-task token measurements (#11) and are
 /// emitted as JSON integers, never ISO durations: a token count is a cardinal
 /// number, and the JSON type of a metric is frozen from its first release.
-pub const SUMMARY_METRICS: [&str; 9] = [
+/// There are exactly four: the blended `tokens_total` left the vocabulary with
+/// D50, so a downstream sum is an explicit choice, never an ambient default.
+pub const SUMMARY_METRICS: [&str; 8] = [
     "count",
     "est_total",
     "overdue",
@@ -77,7 +79,6 @@ pub const SUMMARY_METRICS: [&str; 9] = [
     "tokens_out",
     "tokens_cache_read",
     "tokens_cache_creation",
-    "tokens_total",
 ];
 
 /// The keys `task.list` can sort by. A `-` prefix on any of them sorts

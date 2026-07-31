@@ -16,7 +16,7 @@ Every claim below was read out of the tree at `dee2c48`, not inferred.
 
 | Claim | Verified | Where |
 |---|---|---|
-| `report.summary` aggregates four separate token buckets | ✅ | `engine/reports.rs:73-141` — `Agg` keeps `tokens_in/out/cache_read/cache_creation` apart, `tokens_total` derived only at emit (`:186`) |
+| `report.summary` aggregates four separate token buckets | ✅ | `engine/reports.rs:73-141` — `Agg` keeps `tokens_in/out/cache_read/cache_creation` apart; `tokens_total` was derived only at emit (`:186`) until D50 removed it from the metric vocabulary |
 | The core comments that a blended total would lie | ✅ | `engine/reports.rs:73-75` |
 | Charts are pure clients of `report.summary` / `task.list` | ✅ | DESIGN.md §8; `html.rs:42-57` issues four reads and templates the result |
 | Theming is semantic roles with light/dark and 5 built-ins | ✅ | DESIGN.md §8; `theme.rs:577-605` |
@@ -798,7 +798,8 @@ is the exact class of defect this part exists to fix.
 **Why (a):** `engine/reports.rs:73` already carries the comment — "cache tokens
 cost a fraction, so a blended total would lie" — and keeps `tokens_in`,
 `tokens_out`, `tokens_cache_read` and `tokens_cache_creation` apart through the
-entire aggregation, deriving `tokens_total` only at emit. Both presentation layers
+entire aggregation, deriving `tokens_total` only at emit — the `--json`/API
+exception D50 later closed by removing the field outright. Both presentation layers
 then took that derived field and rendered it as **the** headline number, which
 discards the exact care the core took. Measured on this project's own store during
 the field test that produced this document: `in 136 · out 83 479 · cacheR 13 630 240

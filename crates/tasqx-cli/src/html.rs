@@ -995,9 +995,9 @@ mod tests {
     }
 
     /// #19/D39: the token metrics core rolls up must be rendered on a human
-    /// surface. The HTML report carries the full four-bucket breakdown plus the
-    /// total in the per-group table, and a report-wide total in a header tile —
-    /// all as escaped integers, no external references.
+    /// surface. The HTML report carries the full four-bucket breakdown in the
+    /// per-group table and four per-bucket header tiles — never a blended
+    /// total (D48a) — all as escaped integers, no external references.
     #[test]
     fn per_group_table_and_header_render_token_metrics() {
         let summary = json!({
