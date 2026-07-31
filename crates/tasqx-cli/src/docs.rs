@@ -308,6 +308,137 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 8] = [
     "estimate",
 ];
 
+/// The MCP tool table the MCP page renders: `(tool, is_write, what it does)`.
+///
+/// Single source, same reason as [`VERBS`] — and unlike [`VERBS`] the truth it
+/// is bound to lives in another crate: `tasqx_core::mcp::tool_roster()`, the
+/// list `tools/list` actually serves. Until this table existed the page was
+/// free-prose rows nothing compared, which is the same shape the verb table was
+/// in before the drift guards: a tool could be added, renamed, or moved across
+/// the read/write fence with every gate green.
+const MCP_TOOLS: [(&str, bool, &str); 15] = [
+    (
+        "tasqx_list_tasks",
+        false,
+        "List tasks by <a href=\"#filters\">filter</a>.",
+    ),
+    ("tasqx_get_task", false, "One task's full detail."),
+    (
+        "tasqx_summary",
+        false,
+        "Aggregate report by project/status/priority.",
+    ),
+    ("tasqx_list_projects", false, "List projects."),
+    (
+        "tasqx_search_memory",
+        false,
+        "Search docs + annotations (D41).",
+    ),
+    ("tasqx_add_task", true, "Capture a task."),
+    ("tasqx_modify_task", true, "Change fields."),
+    (
+        "tasqx_complete_task",
+        true,
+        "Complete a task; self-report its token cost (the primary channel).",
+    ),
+    ("tasqx_start_timer", true, "Start the timer."),
+    ("tasqx_stop_timer", true, "Stop the timer."),
+    ("tasqx_tag_task", true, "Add tags."),
+    (
+        "tasqx_annotate_task",
+        true,
+        "Attach a note (markdown-friendly).",
+    ),
+    ("tasqx_add_dependency", true, "Block one task on another."),
+    ("tasqx_add_memory", true, "Store a knowledge doc."),
+    ("tasqx_create_project", true, "Create a project."),
+];
+
+/// The global-flags table the Commands page renders: `(flag, effect)`.
+///
+/// Single source, same reason as [`VERBS`]. These four hang off the top-level
+/// `Cli`, so `cmddoc`'s per-verb flag guard is structurally blind to them —
+/// this table is their one documented home, and the sibling guard in `cmddoc`
+/// binds it to clap's own global argument list, both directions.
+pub(crate) const GLOBAL_FLAGS: [(&str, &str); 5] = [
+    (
+        "<code>--json</code>",
+        "Print the raw JSON API result instead of the human table.",
+    ),
+    (
+        "<code>--theme &lt;name&gt;</code>",
+        "Override the theme (<code>nord</code>, <code>gruvbox</code>, <code>dracula</code>, <code>solarized</code>, <code>mono</code>, or a user file). Beats <code>$TASQX_THEME</code> and the config.",
+    ),
+    (
+        "<code>--socket &lt;addr&gt;</code>",
+        "Socket / named pipe of a daemon. Overrides <code>$TASQX_SOCK</code>.",
+    ),
+    (
+        "<code>--no-daemon</code>",
+        "Never route through a daemon; always run in-process. The escape hatch for scripts.",
+    ),
+    (
+        "<code>--help</code>, <code>--version</code>",
+        "The source of truth for this page.",
+    ),
+];
+
+/// The `add` flag/sugar table the Commands page renders: `(flag, sugar, notes)`.
+///
+/// Single source, same reason as [`VERBS`]. The sugar column is the one place
+/// a reader learns every colon-key alias, and it is bound to the parser's own
+/// key table (`sugar::VALUE_KEYS`) the same way the `--clear` list is bound to
+/// `main::CLEARABLE` — because an alias the parser gains and no page names is
+/// invisible, and one the parser drops leaves the page teaching a spelling
+/// that silently lands in the title.
+const ADD_FIELDS: [(&str, &str, &str); 9] = [
+    (
+        "<code>--project &lt;p&gt;</code>",
+        "<code>project:</code>, <code>proj:</code>",
+        "Free-form dotted name.",
+    ),
+    (
+        "<code>--priority &lt;p&gt;</code> / <code>-p</code>",
+        "<code>!high</code>, <code>!h</code>",
+        "<code>H</code>, <code>M</code>, <code>L</code> (or high/medium/low).",
+    ),
+    (
+        "<code>--tag &lt;t&gt;</code> / <code>-t</code>",
+        "<code>+tag</code>",
+        "Repeatable.",
+    ),
+    (
+        "<code>--due &lt;d&gt;</code>",
+        "<code>due:</code>",
+        "<a href=\"#scheduling\">Natural language</a>.",
+    ),
+    (
+        "<code>--scheduled &lt;d&gt;</code>",
+        "<code>scheduled:</code>, <code>sched:</code>",
+        "When you plan to start.",
+    ),
+    (
+        "<code>--wait &lt;d&gt;</code>",
+        "<code>wait:</code>",
+        "Hide in the backlog until then.",
+    ),
+    (
+        "<code>--repeat &lt;r&gt;</code>",
+        "<code>repeat:</code>, <code>every:</code>, <code>recur:</code>",
+        "<a href=\"#scheduling\">Recurrence rule</a>.",
+    ),
+    (
+        "<code>--remind &lt;r&gt;</code>",
+        "<code>remind:</code>",
+        "<a href=\"#reminders\">Offset or absolute</a>.",
+    ),
+    (
+        "<code>--estimate &lt;e&gt;</code> / <code>-e</code>",
+        "<code>est:</code>, <code>estimate:</code>",
+        "<code>4h</code>, <code>90m</code>, <code>1h30m</code>, <code>2d</code>, or ISO <code>PT4H</code>.",
+    ),
+];
+
 /// The guide's pages, in nav order: `(anchor id, nav label, page title)`.
 const PAGES: [(&str, &str, &str); 11] = [
     ("overview", "Overview", "What tasqx is"),
@@ -451,7 +582,7 @@ fn page_overview() -> String {
     s.push_str(&table(
         &["What", "Where"],
         &[
-            &["Store", "<code>$TASQX_DB</code> if set, else the platform data dir (<code>%APPDATA%\\tasqx\\tasqx\\data\\tasks.db</code> on Windows — the doubled segment is what the <code>directories</code> crate produces from organization + application)"],
+            &["Store", "<code>$TASQX_DB</code> if set, else the platform data dir: <code>%APPDATA%\\tasqx\\tasqx\\data\\tasks.db</code> on Windows (the doubled segment is what the <code>directories</code> crate produces from organization + application), <code>~/.local/share/tasqx/tasks.db</code> on Linux, <code>~/Library/Application Support/dev.tasqx.tasqx/tasks.db</code> on macOS"],
             &["Config", "<code>$TASQX_CONFIG_DIR/config.toml</code>, else the platform config dir"],
             &["Themes", "<code>$TASQX_CONFIG_DIR/themes/*.toml</code>"],
             &["Socket", "<code>$TASQX_SOCK</code>, else a platform default (see <a href=\"#daemon\">Daemon</a>)"],
@@ -671,16 +802,13 @@ fn page_commands() -> String {
 
     s.push_str(&h3("Global flags"));
     s.push_str(&p("These work on every subcommand."));
-    s.push_str(&table(
-        &["Flag", "Effect"],
-        &[
-            &["<code>--json</code>", "Print the raw JSON API result instead of the human table."],
-            &["<code>--theme &lt;name&gt;</code>", "Override the theme (<code>nord</code>, <code>gruvbox</code>, <code>dracula</code>, <code>solarized</code>, <code>mono</code>, or a user file). Beats <code>$TASQX_THEME</code> and the config."],
-            &["<code>--socket &lt;addr&gt;</code>", "Socket / named pipe of a daemon. Overrides <code>$TASQX_SOCK</code>."],
-            &["<code>--no-daemon</code>", "Never route through a daemon; always run in-process. The escape hatch for scripts."],
-            &["<code>--help</code>, <code>--version</code>", "The source of truth for this page."],
-        ],
-    ));
+    // Rendered from GLOBAL_FLAGS, which the cmddoc guard binds to clap's own
+    // global argument list — the per-verb usage guard never sees these.
+    let global_rows: Vec<Vec<String>> = GLOBAL_FLAGS
+        .iter()
+        .map(|(flag, effect)| vec![(*flag).to_string(), (*effect).to_string()])
+        .collect();
+    s.push_str(&table_owned(&["Flag", "Effect"], &global_rows));
 
     s.push_str(&h3("The verb table"));
     // The count is counted, not spelled out. It was written as "Twenty-six" and
@@ -732,20 +860,19 @@ fn page_commands() -> String {
     s.push_str(&p(
         "Capture a task. Flags win over inline sugar when both name the same field.",
     ));
-    s.push_str(&table(
-        &["Flag", "Sugar", "Notes"],
-        &[
-            &["<code>--project &lt;p&gt;</code>", "<code>project:</code>, <code>proj:</code>", "Free-form dotted name."],
-            &["<code>--priority &lt;p&gt;</code> / <code>-p</code>", "<code>!high</code>, <code>!h</code>", "<code>H</code>, <code>M</code>, <code>L</code> (or high/medium/low)."],
-            &["<code>--tag &lt;t&gt;</code> / <code>-t</code>", "<code>+tag</code>", "Repeatable."],
-            &["<code>--due &lt;d&gt;</code>", "<code>due:</code>", "<a href=\"#scheduling\">Natural language</a>."],
-            &["<code>--scheduled &lt;d&gt;</code>", "<code>scheduled:</code>, <code>sched:</code>", "When you plan to start."],
-            &["<code>--wait &lt;d&gt;</code>", "<code>wait:</code>", "Hide in the backlog until then."],
-            &["<code>--repeat &lt;r&gt;</code>", "<code>repeat:</code>, <code>every:</code>", "<a href=\"#scheduling\">Recurrence rule</a>."],
-            &["<code>--remind &lt;r&gt;</code>", "<code>remind:</code>", "<a href=\"#reminders\">Offset or absolute</a>."],
-            &["<code>--estimate &lt;e&gt;</code> / <code>-e</code>", "<code>est:</code>, <code>estimate:</code>", "<code>4h</code>, <code>90m</code>, <code>1h30m</code>, <code>2d</code>, or ISO <code>PT4H</code>."],
-        ],
-    ));
+    // Rendered from ADD_FIELDS; the sugar column is bound to the parser's own
+    // key table by `documented_sugar_keys_match_the_parser`.
+    let add_rows: Vec<Vec<String>> = ADD_FIELDS
+        .iter()
+        .map(|(flag, sugar, notes)| {
+            vec![
+                (*flag).to_string(),
+                (*sugar).to_string(),
+                (*notes).to_string(),
+            ]
+        })
+        .collect();
+    s.push_str(&table_owned(&["Flag", "Sugar", "Notes"], &add_rows));
     s.push_str(&p(
         "A <code>project:</code> must be one you created — <code>init</code> it first, and every \
          task is somewhere <code>projects</code> lists:",
@@ -1545,71 +1672,28 @@ fn page_mcp() -> String {
     ));
 
     s.push_str(&h3("The tools"));
-    s.push_str(&p(
-        "Five read tools always; ten write tools only with write scope. Each carries MCP \
+    // The split is counted, not spelled out — the "Twenty-six verbs" lesson,
+    // one page over.
+    let reads = MCP_TOOLS.iter().filter(|(_, write, _)| !write).count();
+    s.push_str(&p(&format!(
+        "{reads} read tools always; {writes} write tools only with write scope. Each carries MCP \
          annotations (<code>readOnlyHint</code>, <code>destructiveHint</code>) so a client can reason \
          about them before calling.",
-    ));
-    s.push_str(&table(
-        &["Tool", "Scope", "Does"],
-        &[
-            &[
-                "<code>tasqx_list_tasks</code>",
-                "read",
-                "List tasks by <a href=\"#filters\">filter</a>.",
-            ],
-            &[
-                "<code>tasqx_get_task</code>",
-                "read",
-                "One task's full detail.",
-            ],
-            &[
-                "<code>tasqx_summary</code>",
-                "read",
-                "Aggregate report by project/status/priority.",
-            ],
-            &["<code>tasqx_list_projects</code>", "read", "List projects."],
-            &[
-                "<code>tasqx_search_memory</code>",
-                "read",
-                "Search docs + annotations (D41).",
-            ],
-            &["<code>tasqx_add_task</code>", "write", "Capture a task."],
-            &["<code>tasqx_modify_task</code>", "write", "Change fields."],
-            &[
-                "<code>tasqx_complete_task</code>",
-                "write",
-                "Complete a task; self-report its token cost (the primary channel).",
-            ],
-            &[
-                "<code>tasqx_start_timer</code>",
-                "write",
-                "Start the timer.",
-            ],
-            &["<code>tasqx_stop_timer</code>", "write", "Stop the timer."],
-            &["<code>tasqx_tag_task</code>", "write", "Add tags."],
-            &[
-                "<code>tasqx_annotate_task</code>",
-                "write",
-                "Attach a note (markdown-friendly).",
-            ],
-            &[
-                "<code>tasqx_add_dependency</code>",
-                "write",
-                "Block one task on another.",
-            ],
-            &[
-                "<code>tasqx_add_memory</code>",
-                "write",
-                "Store a knowledge doc.",
-            ],
-            &[
-                "<code>tasqx_create_project</code>",
-                "write",
-                "Create a project.",
-            ],
-        ],
-    ));
+        writes = MCP_TOOLS.len() - reads,
+    )));
+    // Rendered from MCP_TOOLS, which the drift test binds to the server's own
+    // roster — name and read/write fence both.
+    let tool_rows: Vec<Vec<String>> = MCP_TOOLS
+        .iter()
+        .map(|(name, write, does)| {
+            vec![
+                format!("<code>{name}</code>"),
+                if *write { "write" } else { "read" }.to_string(),
+                (*does).to_string(),
+            ]
+        })
+        .collect();
+    s.push_str(&table_owned(&["Tool", "Scope", "Does"], &tool_rows));
 
     s.push_str(&h3("Talking to it"));
     s.push_str(&p(
@@ -2029,6 +2113,15 @@ fn page_themes() -> String {
          away; on a terminal without Unicode the block glyphs degrade to ASCII rather than \
          emitting mojibake. <code>mono</code> is there for when you want that unconditionally.",
     ));
+    s.push_str(&p("Three environment variables override the detection:"));
+    s.push_str(&table(
+        &["Variable", "Effect"],
+        &[
+            &["<code>NO_COLOR</code>", "Set to anything: drop all colour, keep bold/underline. Wins over everything below."],
+            &["<code>CLICOLOR_FORCE</code>", "Set to anything but <code>0</code>: force colour even through a pipe — for <code>less -R</code> and CI logs."],
+            &["<code>TASQX_FORCE_COLOR</code>", "Set to anything: same as <code>CLICOLOR_FORCE</code>, scoped to tasqx."],
+        ],
+    ));
 
     s.push_str(&h3("Reports"));
     s.push_str(&p(
@@ -2047,13 +2140,19 @@ fn page_themes() -> String {
     ));
     s.push_str(&snippet(
         "tasqx report",
-        "PROJECT               COUNT         EST  OVERDUE     TRACKED\n\
-         home                      1        PT0S        1        PT0S\n\
-         work.tasqx                3     PT5H30M        1        PT0S",
+        "PROJECT               COUNT         EST  OVERDUE     TRACKED        TOKENS\n\
+         home                      1        PT0S        1        PT0S             -\n\
+         work.tasqx                3     PT5H30M        1        PT0S   cacheR 1.2M",
     ));
     s.push_str(&snippet(
         "tasqx report status",
-        "STATUS                COUNT         EST  OVERDUE     TRACKED\npending                   4     PT5H30M        2        PT0S",
+        "STATUS                COUNT         EST  OVERDUE     TRACKED        TOKENS\npending                   4     PT5H30M        2        PT0S   cacheR 1.2M",
+    ));
+    s.push_str(&p(
+        "TOKENS names the group's largest bucket with that bucket's own count — \
+         <code>cacheR 1.2M</code>, or <code>-</code> when nothing was spent. The four buckets are \
+         never blended into one figure; <code>--json</code> and the HTML report carry the full \
+         split (D48/D50).",
     ));
 
     s.push_str(&h3("Charts"));
@@ -2093,7 +2192,7 @@ fn page_themes() -> String {
         &[
             &[
                 "<code>throughput</code>",
-                "<code>--weeks &lt;n&gt;</code> (default 12), <code>--weekly</code>",
+                "<code>--weeks &lt;n&gt;</code> (default 12)",
             ],
             &[
                 "<code>heatmap</code>",
@@ -2820,6 +2919,63 @@ mod tests {
         }
     }
 
+    /// The MCP page's tool table against the roster `tools/list` actually
+    /// serves. Until [`MCP_TOOLS`] existed the table was free-prose rows
+    /// nothing compared — the one documented surface an MCP operator reads
+    /// before wiring an agent up, unbound to the server it describes.
+    ///
+    /// Three claims, each checked: the names (both directions, so a tool can
+    /// neither ship undocumented nor survive on the page after removal), the
+    /// read/write fence per tool (a read documented as a write scares an
+    /// operator off a safe tool; the reverse teaches that a mutation is safe),
+    /// and the counted split sentence the page opens with.
+    #[test]
+    fn documented_mcp_tools_match_the_servers_roster() {
+        let real = tasqx_core::mcp::tool_roster();
+        // Floor: an empty roster would green both loops below while guarding
+        // nothing. Fifteen tools shipped; going below that is a decision.
+        assert!(
+            real.len() >= 15,
+            "the MCP roster shrank below the shipped tool set: {}",
+            real.len()
+        );
+
+        for (name, write) in &real {
+            let (_, documented_write, _) = MCP_TOOLS
+                .iter()
+                .find(|(n, ..)| n == name)
+                .unwrap_or_else(|| panic!("MCP tool `{name}` is missing from the guide's table"));
+            assert_eq!(
+                documented_write, write,
+                "read/write drift on `{name}`: the guide and the server disagree \
+                 about which side of the scope fence it is on"
+            );
+        }
+        for (name, ..) in MCP_TOOLS {
+            assert!(
+                real.iter().any(|(n, _)| *n == name),
+                "the guide documents MCP tool `{name}`, which the server does not serve"
+            );
+        }
+
+        // The table and the counted split must actually reach the page.
+        let doc = generate();
+        for (name, ..) in MCP_TOOLS {
+            assert!(
+                doc.contains(&format!("<code>{name}</code>")),
+                "tool `{name}` is in MCP_TOOLS but never rendered onto the page"
+            );
+        }
+        let reads = real.iter().filter(|(_, write)| !write).count();
+        assert!(
+            doc.contains(&format!(
+                "{reads} read tools always; {} write tools",
+                real.len() - reads
+            )),
+            "the MCP page's read/write split sentence is not counted from the roster"
+        );
+    }
+
     /// A smoke test on the settings section, and deliberately not more.
     ///
     /// Read this before trusting it: the table is GENERATED from
@@ -2853,6 +3009,15 @@ mod tests {
     /// listed here as a deliberate exception. Without this, an env var that
     /// overrides behaviour can exist with nothing documenting it — which is
     /// exactly the state TASQX_FORCE_COLOR was in when this guard was written.
+    ///
+    /// Widened since, because the prefix was doing the guarding and the prefix
+    /// is not the property that matters: `NO_COLOR` and `CLICOLOR_FORCE`
+    /// override behaviour with exactly the same force as any `TASQX_*`
+    /// variable, and both escaped this scan for the sole reason that they do
+    /// not spell `TASQX_` — the guide documented them only after a human
+    /// noticed. A non-prefixed variable the code reads must now be documented
+    /// on the page or named an exception here. The scan also covers `tui.rs`
+    /// and `tokens.rs`, which did not exist when the source list was drawn up.
     #[test]
     fn every_env_var_is_either_a_registered_setting_or_a_named_exception() {
         // Not settings: these select a whole store/transport rather than tuning
@@ -2869,11 +3034,23 @@ mod tests {
             // is not "out of scope" but meaningless.
             "TASQX_BUILD_ID",
         ];
+        // Read by the capability detector but deliberately not documented as
+        // switches: they describe what the terminal IS (set by the terminal,
+        // not by a user aiming at tasqx), so a row for them in the override
+        // table would invite exactly the hand-tuning the detector exists to
+        // make unnecessary.
+        const TERMINAL_IDENTITY: &[&str] = &["TERM", "COLORTERM"];
         let sources = [
             include_str!("lib.rs"),
             include_str!("theme.rs"),
             include_str!("config.rs"),
+            include_str!("tui.rs"),
+            include_str!("tokens.rs"),
         ];
+
+        // TASQX_* rule: a textual scan, comments included — a prefixed mention
+        // is either a real variable or documentation of one, and both must
+        // resolve to something registered or excepted.
         let mut found: Vec<String> = Vec::new();
         for src in sources {
             let mut rest = src;
@@ -2904,6 +3081,46 @@ mod tests {
             orphans.is_empty(),
             "env vars with no setting and no exception: {orphans:?}"
         );
+
+        // Non-prefixed rule: only real reads count — `env::var("X")` /
+        // `env::var_os("X")` with a literal — because prose mentions a
+        // variable in order to explain it, and comments are where NO_COLOR
+        // appears most.
+        let mut read_vars: Vec<String> = Vec::new();
+        for src in sources {
+            for pat in ["env::var(\"", "env::var_os(\""] {
+                let mut rest = src;
+                while let Some(i) = rest.find(pat) {
+                    let tail = &rest[i + pat.len()..];
+                    if let Some(end) = tail.find('"') {
+                        read_vars.push(tail[..end].to_string());
+                    }
+                    rest = tail;
+                }
+            }
+        }
+        read_vars.sort();
+        read_vars.dedup();
+        // Floor: the scan must actually see the colour pair, or an edit to the
+        // read pattern leaves this half of the guard green and empty.
+        for known in ["NO_COLOR", "CLICOLOR_FORCE"] {
+            assert!(
+                read_vars.iter().any(|v| v == known),
+                "the env-read scan no longer finds {known} — pattern rot in this test"
+            );
+        }
+        let doc = generate();
+        let undocumented: Vec<&String> = read_vars
+            .iter()
+            // Prefixed vars answer to the registered-or-excepted rule above.
+            .filter(|v| !v.starts_with("TASQX_"))
+            .filter(|v| !TERMINAL_IDENTITY.contains(&v.as_str()))
+            .filter(|v| !doc.contains(&format!("<code>{v}</code>")))
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "non-TASQX env vars the code reads but the guide never documents: {undocumented:?}"
+        );
     }
 
     /// `modify --clear` takes a closed set; the page prints it. If `main::CLEARABLE`
@@ -2918,6 +3135,56 @@ mod tests {
         let doc = generate();
         for f in DOCUMENTED_CLEAR_FIELDS {
             assert!(doc.contains(f), "clearable field `{f}` is not on the page");
+        }
+    }
+
+    /// The sugar column of the `add` table against the parser's own key table —
+    /// the same binding [`documented_clear_fields_match_the_parser`] gives
+    /// `--clear`. The rot this stops has already happened once: `recur:`
+    /// shipped as a `VALUE_KEYS` alias that no documented surface named, so the
+    /// alias class could grow (or shrink, leaving the page teaching a spelling
+    /// that silently lands in the title) with every gate green.
+    ///
+    /// Both directions via set equality, and the keys must reach the rendered
+    /// page — a table constant nothing renders documents nothing.
+    #[test]
+    fn documented_sugar_keys_match_the_parser() {
+        let mut real: Vec<String> = crate::sugar::value_key_spellings()
+            .iter()
+            .map(|k| k.to_string())
+            .collect();
+        real.sort();
+        // Floor: an emptied parser table must not green the equality below by
+        // meeting an emptied doc column halfway.
+        assert!(
+            real.len() >= 12,
+            "the parser's sugar key table shrank: {real:?}"
+        );
+
+        // The colon keys of the sugar column. `+tag` and `!high` are sugar too,
+        // but not VALUE_KEYS sugar — they have no colon and are skipped.
+        let mut documented: Vec<String> = Vec::new();
+        for (_, sugar, _) in ADD_FIELDS {
+            for chunk in sugar.split("<code>").skip(1) {
+                let key = chunk.split("</code>").next().unwrap_or_default().trim();
+                if key.ends_with(':') {
+                    documented.push(key.to_string());
+                }
+            }
+        }
+        documented.sort();
+        documented.dedup();
+        assert_eq!(
+            documented, real,
+            "the add table's sugar column has drifted from sugar::VALUE_KEYS"
+        );
+
+        let doc = generate();
+        for key in &real {
+            assert!(
+                doc.contains(&format!("<code>{key}</code>")),
+                "sugar key `{key}` never reaches the rendered page"
+            );
         }
     }
 
@@ -3046,6 +3313,43 @@ mod tests {
         assert!(
             doc.contains(&tail),
             "the guide does not print the real store path ({tail})"
+        );
+    }
+
+    /// The unix sibling of the guard above, for the same reason: the page used
+    /// to spell only the Windows path, so a Linux or macOS reader had nothing
+    /// to check theirs against — and `ProjectDirs` flattens differently per
+    /// platform (one plain `tasqx` segment on Linux, `dev.tasqx.tasqx` on
+    /// macOS), which is exactly the kind of fact prose gets wrong.
+    #[cfg(unix)]
+    #[test]
+    fn documented_store_path_matches_the_real_one() {
+        let proj = directories::ProjectDirs::from("dev", "tasqx", "tasqx")
+            .expect("a data dir on this platform");
+        let base = directories::BaseDirs::new().expect("a home dir on this platform");
+        let real = proj.data_dir().join("tasks.db");
+        // Compare the tail below the platform data root. `$XDG_DATA_HOME` moves
+        // the root, never the project-specific part, so this stays true on a
+        // machine that relocates its data dir.
+        let tail = real
+            .strip_prefix(base.data_dir())
+            .expect("the project dir lives under the platform data dir")
+            .to_string_lossy()
+            .into_owned();
+        let documented = if cfg!(target_os = "macos") {
+            "~/Library/Application Support/dev.tasqx.tasqx/tasks.db"
+        } else {
+            "~/.local/share/tasqx/tasks.db"
+        };
+        assert!(
+            documented.ends_with(&tail),
+            "db_path()'s shape changed: the real path ends in {tail:?}, the page prints {documented:?}"
+        );
+
+        let doc = generate();
+        assert!(
+            doc.contains(documented),
+            "the guide does not print the real store path ({documented})"
         );
     }
 

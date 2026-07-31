@@ -147,6 +147,14 @@ const VALUE_KEYS: [(&str, ValueKey); 12] = [
     ("est:", ValueKey::Estimate),
 ];
 
+/// The key spellings alone, for the docs drift guard: the guide's `add` table
+/// restates these, and a restated list nothing compares is how `recur:` shipped
+/// as a parser alias no documentation named.
+#[cfg(test)]
+pub(crate) fn value_key_spellings() -> Vec<&'static str> {
+    VALUE_KEYS.iter().map(|(k, _)| *k).collect()
+}
+
 /// Parse argv words plus explicit flags into structured fields.
 ///
 /// Taking the argv **slice** rather than a pre-joined string is load-bearing.

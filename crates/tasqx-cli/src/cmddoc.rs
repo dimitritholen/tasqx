@@ -401,7 +401,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "event.list",
         summary: "Render throughput, heatmap, or burndown charts.",
-        usage: "tasqx chart <throughput|heatmap|burndown> [opts]",
+        usage: "tasqx chart <throughput [--weeks n]|heatmap [--weeks n] [--year]|burndown [--days n] [--project p]>",
         examples: &[
             ex("tasqx chart throughput"),
             ex("tasqx chart heatmap --year"),
@@ -454,7 +454,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "memory.search + add/remove",
         summary: "Store and search knowledge: docs, patterns, and your task annotations (D41).",
-        usage: "tasqx memory <add|search|rm|import> ...",
+        usage: "tasqx memory <add <title> <body> [--source s]|search <words…> [--limit n] [--scope s] [--raw]|rm <id>|import <path>>",
         examples: &[
             ex("tasqx memory add \"Deploy runbook\" \"deploys go through the blue-green pipeline\""),
             ex("tasqx memory search blue-green"),
@@ -784,6 +784,59 @@ mod tests {
         );
     }
 
+    /// The guard above walks SUBCOMMANDS, so the four global flags — declared
+    /// on the top-level `Cli` and accepted by every verb — sat structurally
+    /// outside it: `--no-daemon` could vanish, or gain a sibling, with every
+    /// gate green. Their documented home is the guide's "Global flags" table
+    /// (`docs::GLOBAL_FLAGS`, which the Commands page renders); this binds
+    /// that table to clap's own top-level argument list, both directions, so
+    /// the table can neither omit a real global nor keep advertising a dead one.
+    ///
+    /// `--help`/`--version` are clap's own and carry no documentation
+    /// obligation; the table names them anyway, and they are skipped on both
+    /// sides rather than asserted.
+    #[test]
+    fn every_global_flag_is_documented_in_the_guides_global_table() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let real: Vec<String> = cmd
+            .get_arguments()
+            .filter_map(|a| a.get_long())
+            .filter(|l| !matches!(*l, "help" | "version"))
+            .map(String::from)
+            .collect();
+        // Floor: the top-level surface is four flags today. Zero would mean
+        // this guard is comparing nothing against nothing.
+        assert!(
+            real.len() >= 4,
+            "the top-level Cli lost its global flags: {real:?}"
+        );
+
+        let documented: Vec<&str> = crate::docs::GLOBAL_FLAGS
+            .iter()
+            .flat_map(|(flag, _)| usage_flags(flag))
+            .map(|tok| tok.trim_start_matches('-'))
+            .filter(|l| !matches!(*l, "help" | "version"))
+            .collect();
+
+        let missing: Vec<&String> = real
+            .iter()
+            .filter(|l| !documented.contains(&l.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "global flags the CLI accepts but the guide's Global flags table never names: {missing:?}"
+        );
+        let stale: Vec<&&str> = documented
+            .iter()
+            .filter(|l| !real.contains(&l.to_string()))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "the Global flags table documents flags the top-level Cli does not declare: {stale:?}"
+        );
+    }
+
     /// `see_also` is a cross-reference the reader is invited to follow, and
     /// nothing has ever checked that it names a real verb. A dangling entry
     /// renders as a normal suggestion in `-h` and in `tasqx manual`, so the
@@ -866,6 +919,73 @@ mod tests {
                 doc.usage
             );
         }
+    }
+
+    /// The name guard above reaches one level down; nothing reached the FLAGS
+    /// at that level. `every_clap_flag_is_documented_in_its_verbs_usage` walks
+    /// `get_subcommands()` and never descends, so a flag on a sub-subcommand —
+    /// `chart heatmap --year`, `memory search --raw`, `tokens recompute
+    /// --apply` — carried no documentation obligation at all, which is the
+    /// exact gap that let `--all` ship undocumented at the top level. Same
+    /// rule, one nesting deeper: the flag must appear in the parent verb's
+    /// usage line, the only place `tasqx <verb> -h` will show it. Recursive,
+    /// so a third nesting level joins the moment it exists.
+    #[test]
+    fn every_nested_subcommand_flag_is_documented_in_its_verbs_usage() {
+        use clap::CommandFactory;
+
+        // (long, short) of every --flag on `cmd`'s descendants, help/version
+        // excluded — clap's own, as in the top-level guard.
+        fn nested_flags(cmd: &clap::Command, out: &mut Vec<(String, Option<char>)>) {
+            for sub in cmd.get_subcommands() {
+                for arg in sub.get_arguments() {
+                    let Some(long) = arg.get_long() else { continue };
+                    if matches!(long, "help" | "version") {
+                        continue;
+                    }
+                    out.push((long.to_string(), arg.get_short()));
+                }
+                nested_flags(sub, out);
+            }
+        }
+
+        let cli = crate::Cli::command();
+        let mut seen = 0;
+        let mut undocumented: Vec<String> = Vec::new();
+        for sub in cli.get_subcommands() {
+            let Some(doc) = find(sub.get_name()) else {
+                continue; // covered by the verb guard
+            };
+            let mut flags = Vec::new();
+            nested_flags(sub, &mut flags);
+            seen += flags.len();
+            for (long, short) in flags {
+                // Token-matched with either spelling, same contract as the
+                // top-level guard.
+                let documented = usage_flags(doc.usage).iter().any(|tok| {
+                    tok.trim_start_matches('-') == long
+                        || short.is_some_and(|c| {
+                            tok.len() == 2 && tok.starts_with('-') && tok.ends_with(c)
+                        })
+                });
+                if !documented {
+                    undocumented.push(format!("{} … --{long}", sub.get_name()));
+                }
+            }
+        }
+
+        // Floor: chart/memory/tokens/mcp carry eleven nested flags today. An
+        // iteration that finds none is the guard silently unplugged, not a CLI
+        // that lost its nesting.
+        assert!(
+            seen >= 10,
+            "the nested-flag walk found only {seen} flags — did the recursion break?"
+        );
+        assert!(
+            undocumented.is_empty(),
+            "sub-subcommand flags no usage line mentions:\n  {}",
+            undocumented.join("\n  ")
+        );
     }
 
     #[test]
