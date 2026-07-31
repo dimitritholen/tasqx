@@ -359,9 +359,10 @@ impl AttributionResult {
 ///
 /// Returns `Err` only for a *transient* condition — an explicit `transcript_path`
 /// that is not present yet (transcripts are written asynchronously and lag the
-/// completion hook, research doc) or that is present but could not be read this
-/// time. The daemon treats that as a retry, never a fatal error and never a
-/// stored marker. An unknown client or a discovery scan that finds nothing is
+/// completion hook, research doc), one that is present but could not be read this
+/// time, or a window whose every in-window sample is contested by another task's
+/// window (D50 — banked for no one). The daemon treats that as a retry, never a
+/// fatal error and never a stored marker. An unknown client or a discovery scan that finds nothing is
 /// `Ok` with `found == false`: those terminate. So does EITHER transcript
 /// failure — absent or unreadable — once the completion is more than
 /// `TRANSCRIPT_GIVE_UP_SECS` old (`now` is used only for that cutoff): the two
@@ -393,8 +394,17 @@ pub fn compute_attribution(
     // was matched by `session_id` during the pending-set build, so a hit is a
     // verified correlation => HIGH confidence. This runs even for a client tasqx
     // has no transcript parser for (telemetry needs none).
+    //
+    // The D50 refusal applies here too: OTLP samples are keyed by session, so
+    // two tasks with overlapping windows over one session would double-count
+    // identically to the log-parse case. Contested telemetry banks for no one.
     if !pa.otel_samples.is_empty() {
-        let (totals, n) = totals_in_window(&pa.otel_samples, &pa.window_start, &pa.window_end);
+        let (totals, n, _) = totals_in_window_excluding(
+            &pa.otel_samples,
+            &pa.window_start,
+            &pa.window_end,
+            &pa.foreign_windows,
+        );
         if totals.total() > 0 {
             let otel_tool = pa
                 .client
@@ -463,8 +473,26 @@ pub fn compute_attribution(
         _ => (discover_samples(parser, pa), false, false),
     };
 
-    let (totals, n) = totals_in_window(&samples, &pa.window_start, &pa.window_end);
+    let (totals, n, contested) = totals_in_window_excluding(
+        &samples,
+        &pa.window_start,
+        &pa.window_end,
+        &pa.foreign_windows,
+    );
     let found = totals.total() > 0;
+
+    // D50: the window held samples, but every one is also claimed by at least
+    // one other task's window — contested, banked for no one. Transient on the
+    // SAME give-up deadline as the empty-window case below: transcript
+    // timestamps are non-monotonic mid-write, so an uncontested line can still
+    // arrive, and a terminal marker would permanently suppress it. The distinct
+    // message keeps daemon stderr diagnosable ("contested" versus "no usage").
+    if n == 0 && contested > 0 && !transcript_gave_up(now, &pa.window_end) {
+        return Err(ApiError::internal(format!(
+            "usage in window is contested: {}",
+            pa.transcript_path.as_deref().unwrap_or_default()
+        )));
+    }
 
     // #73: an EXPLICIT transcript that parsed but holds nothing in the window is
     // "not yet", not "nothing". `tasqx done` runs inside the agent turn whose
@@ -1194,6 +1222,148 @@ mod tests {
         assert_eq!(r.tool, "claude-code");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D50: in-window samples exist, but every one is also claimed by another
+    /// task's window — banked for no one, TRANSIENT on the same give-up
+    /// deadline as the empty-window case. A distinct message ("contested", not
+    /// "no usage") so daemon stderr tells the two apart.
+    #[test]
+    fn a_fully_contested_window_retries_then_gives_up_like_an_empty_one() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-contested-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess-1.jsonl");
+        // One usage line inside pa's window — and inside the foreign window too.
+        std::fs::write(
+            &path,
+            r#"{"timestamp":"2026-07-24T10:10:00.000Z","message":{"id":"a","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+        )
+        .unwrap();
+
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some(path.to_string_lossy().into_owned()),
+            session_id: Some("sess-1".into()),
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+            foreign_windows: vec![(
+                "2026-07-24T09:50:00Z".to_string(),
+                "2026-07-24T11:30:00Z".to_string(),
+            )],
+        };
+
+        // Minutes after completion: transient — the contest may look different
+        // once late-arriving lines land (mid-write timestamps are not monotonic).
+        let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
+        assert!(
+            err.message.contains("contested"),
+            "expected the distinct contested message, got: {}",
+            err.message
+        );
+
+        // Two days later: give up exactly like the empty-window case — an empty
+        // marker, never a measurement built from contested samples.
+        let r = compute_attribution(&pa, ts("2026-07-26T11:05:00Z")).unwrap();
+        assert!(!r.found);
+        assert_eq!(r.samples, 0);
+        assert_eq!(r.tool, "claude-code");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn uncontested_samples_still_bank_when_a_neighbour_contests_others() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-partial-contest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess-1.jsonl");
+        // Two in-window lines: the 10:10 one is also inside the foreign window
+        // (dropped), the 10:40 one is only in pa's window (banks).
+        let content = [
+            r#"{"timestamp":"2026-07-24T10:10:00.000Z","message":{"id":"a","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+            r#"{"timestamp":"2026-07-24T10:40:00.000Z","message":{"id":"b","usage":{"input_tokens":100,"output_tokens":200}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&path, content).unwrap();
+
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some(path.to_string_lossy().into_owned()),
+            session_id: Some("sess-1".into()),
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+            foreign_windows: vec![(
+                "2026-07-24T10:05:00Z".to_string(),
+                "2026-07-24T10:15:00Z".to_string(),
+            )],
+        };
+        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
+        assert!(r.found, "the uncontested remainder still banks");
+        assert_eq!(r.samples, 1, "the contested line is never counted");
+        assert_eq!(r.totals.input, 100);
+        assert_eq!(r.totals.output, 200);
+        assert_eq!(
+            r.confidence, CONFIDENCE_HIGH,
+            "an uncontested remainder keeps its earned confidence"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn otel_samples_claimed_by_a_foreign_window_are_refused_too() {
+        // Refusal applies to the OTLP path with the same mechanism: OTLP samples
+        // are keyed by session, so overlapping windows over one session would
+        // double-count identically. The contested 10:15 sample drops; only the
+        // uncontested 10:40 one banks.
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: None,
+            session_id: Some("sess-1".into()),
+            otel_samples: vec![
+                sample("2026-07-24T10:15:00Z", 1000, 2000),
+                sample("2026-07-24T10:40:00Z", 100, 200),
+            ],
+            otel_tool: Some("claude-code".into()),
+            self_reported: false,
+            foreign_windows: vec![(
+                "2026-07-24T10:10:00Z".to_string(),
+                "2026-07-24T10:20:00Z".to_string(),
+            )],
+        };
+        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
+        assert_eq!(r.source, SOURCE_OTEL);
+        assert!(r.found);
+        assert_eq!(r.samples, 1, "the contested telemetry sample is refused");
+        assert_eq!(r.totals.input, 100);
+        assert_eq!(r.totals.output, 200);
     }
 
     /// The other half of #73's boundary: DISCOVERY finding nothing stays
