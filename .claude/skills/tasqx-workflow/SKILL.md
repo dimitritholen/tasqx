@@ -29,7 +29,7 @@ For each task the loop is:
 2. **Start the timer**: `tasqx_start_timer`. This moves the task to `active` and makes tracked time honest.
 3. Do the work.
 4. **Record the outcome** as an annotation before completing: what was done, what was measured, what a future reader needs. This matters more than it looks — annotations feed the same search index as memory docs (`scope: "annotations"`, source `task:#N`), so every completed task becomes retrievable knowledge automatically.
-5. **Complete**: `tasqx_complete_task`. Its response includes `unblocked` — the tasks this completion released. That field is the loop's engine: pick the next task from it directly instead of re-querying. Completing an `active` task is fine; the timer stops implicitly.
+5. **Complete**: `tasqx_complete_task`. Its response includes `unblocked` — the tasks this completion released. That field is the loop's engine: pick the next task from it directly instead of re-querying. Completing an `active` task is fine; the timer stops implicitly. **Self-report token counts when you know them** (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`): you are the only party that knows which task this turn's spend served, so self-report is the primary measurement channel (D50) — a completion without counts gets a `tokens_hint` back saying so, and the log-parse fallback refuses samples claimed by more than one task rather than guess.
 
 ## Memory
 
