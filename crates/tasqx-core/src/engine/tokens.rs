@@ -513,7 +513,7 @@ impl Engine {
     /// - `"unchanged"` — readable, identical, already claimed: no writes.
     ///
     /// Writes go per task in ONE IMMEDIATE transaction through this module's
-    /// own doors ([`Engine::recompute_replace`] / a confidence UPDATE) —
+    /// own doors (`Engine::recompute_replace` / a confidence UPDATE) —
     /// deliberately NOT [`Engine::token_attribute`], whose
     /// `has_attributed_event` guard no-ops on every already-attributed task,
     /// which is every task this migration exists to repair. Old markers stay

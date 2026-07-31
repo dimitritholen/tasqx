@@ -830,7 +830,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(n, 1, "upgrading an existing store must create idx_events_op");
+        assert_eq!(
+            n, 1,
+            "upgrading an existing store must create idx_events_op"
+        );
     }
 
     /// A `tags` row this function cannot *read* is a store fault, not "no such
@@ -881,7 +884,10 @@ mod tests {
             .map(Result::unwrap)
             .collect();
         assert_eq!(tags, vec!["work".to_string()], "the tag row is reused");
-        assert_eq!(task_tags(&conn, "task-2").unwrap(), vec!["work".to_string()]);
+        assert_eq!(
+            task_tags(&conn, "task-2").unwrap(),
+            vec!["work".to_string()]
+        );
     }
 
     /// A store created before token accounting has no `token_usage` table, and

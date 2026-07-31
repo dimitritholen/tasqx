@@ -81,13 +81,11 @@ fn latest_payload(cfg: &std::path::Path, db: &std::path::Path, op: &str) -> serd
 #[test]
 fn start_and_done_record_the_correlation_they_were_given() {
     let (cfg, db) = scratch("records");
-    assert!(
-        bin(&cfg, &db)
-            .args(["add", "measure something"])
-            .status()
-            .expect("add")
-            .success()
-    );
+    assert!(bin(&cfg, &db)
+        .args(["add", "measure something"])
+        .status()
+        .expect("add")
+        .success());
 
     let ok = bin(&cfg, &db)
         .args([
@@ -110,24 +108,25 @@ fn start_and_done_record_the_correlation_they_were_given() {
     assert_eq!(start["client"], "claude-code 2.1");
     assert_eq!(start["session_id"], "sess-abc");
     assert_eq!(start["prompt_id"], "turn-7");
-    assert_eq!(start["transcript_path"], "/tmp/does-not-need-to-exist.jsonl");
+    assert_eq!(
+        start["transcript_path"],
+        "/tmp/does-not-need-to-exist.jsonl"
+    );
 
     // `done` carries its own copy: a task can start and finish many times, and
     // the attribution engine pairs the two events per occurrence.
-    assert!(
-        bin(&cfg, &db)
-            .args([
-                "done",
-                "1",
-                "--client",
-                "claude-code 2.1",
-                "--session-id",
-                "sess-abc",
-            ])
-            .status()
-            .expect("done")
-            .success()
-    );
+    assert!(bin(&cfg, &db)
+        .args([
+            "done",
+            "1",
+            "--client",
+            "claude-code 2.1",
+            "--session-id",
+            "sess-abc",
+        ])
+        .status()
+        .expect("done")
+        .success());
     let done = latest_payload(&cfg, &db, "done");
     assert_eq!(done["client"], "claude-code 2.1");
     assert_eq!(done["session_id"], "sess-abc");
@@ -136,20 +135,16 @@ fn start_and_done_record_the_correlation_they_were_given() {
 #[test]
 fn a_flagless_completion_sends_no_correlation_keys_at_all() {
     let (cfg, db) = scratch("flagless");
-    assert!(
-        bin(&cfg, &db)
-            .args(["add", "a human task"])
-            .status()
-            .expect("add")
-            .success()
-    );
-    assert!(
-        bin(&cfg, &db)
-            .args(["done", "1"])
-            .status()
-            .expect("done")
-            .success()
-    );
+    assert!(bin(&cfg, &db)
+        .args(["add", "a human task"])
+        .status()
+        .expect("add")
+        .success());
+    assert!(bin(&cfg, &db)
+        .args(["done", "1"])
+        .status()
+        .expect("done")
+        .success());
 
     // Absent, not null. The engine reads payloads tolerantly, but a `null` on
     // every human-issued done would be noise the attribution engine then has to
@@ -167,13 +162,11 @@ fn a_flagless_completion_sends_no_correlation_keys_at_all() {
 #[test]
 fn correlation_without_a_client_is_refused_before_it_reaches_the_store() {
     let (cfg, db) = scratch("requires");
-    assert!(
-        bin(&cfg, &db)
-            .args(["add", "unmeasurable"])
-            .status()
-            .expect("add")
-            .success()
-    );
+    assert!(bin(&cfg, &db)
+        .args(["add", "unmeasurable"])
+        .status()
+        .expect("add")
+        .success());
 
     // Without `client` the engine cannot select a parser (attribution.rs:367),
     // so it terminates with a zero-sample marker that `has_attributed_event`

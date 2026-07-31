@@ -168,7 +168,10 @@ mod doc_gate_tests {
         // Only the part of the file above this module: the assertions below
         // quote the attribute they look for, so searching the whole source would
         // find the test's own text and pass with the attribute absent.
-        let head = SRC.split("#[cfg(test)]").next().expect("split yields a head");
+        let head = SRC
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split yields a head");
         assert!(
             head.contains("#![warn(missing_docs)]"),
             "tasqx-core is a library DESIGN.md tells clients to link \

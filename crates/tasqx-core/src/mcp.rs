@@ -690,7 +690,10 @@ impl<'e> McpServer<'e> {
                         // keeps `task_detail` pure and its golden tests stable.
                         now: jiff::Timestamp::now(),
                     };
-                    return tool_ok_with_view(crate::markdown::task_detail(&result, &opts), &result);
+                    return tool_ok_with_view(
+                        crate::markdown::task_detail(&result, &opts),
+                        &result,
+                    );
                 }
                 tool_ok(&result)
             }

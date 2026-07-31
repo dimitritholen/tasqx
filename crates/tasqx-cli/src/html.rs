@@ -1026,9 +1026,7 @@ mod tests {
         .render();
 
         assert!(
-            doc.contains(
-                "<th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th>"
-            ),
+            doc.contains("<th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th>"),
             "token columns missing from the By-project table: {doc}"
         );
         // Fixture: in 1000, out 200, cacheR 50, cacheW 5, total 1255. Columns run
@@ -1216,7 +1214,10 @@ mod tests {
         let inside = export["tasks"].as_array().unwrap();
         // Guard the guard: two EMPTY slices share one dangling pointer, so an
         // empty fixture would make the identity check below pass for free.
-        assert!(!tasks.is_empty(), "fixture must carry tasks to prove anything");
+        assert!(
+            !tasks.is_empty(),
+            "fixture must carry tasks to prove anything"
+        );
         assert_eq!(tasks.len(), inside.len());
         assert!(
             std::ptr::eq(tasks.as_ptr(), inside.as_ptr()),
@@ -1226,7 +1227,10 @@ mod tests {
         let groups = array_at(&summary, "groups");
         assert!(!groups.is_empty(), "fixture must carry groups");
         assert!(
-            std::ptr::eq(groups.as_ptr(), summary["groups"].as_array().unwrap().as_ptr()),
+            std::ptr::eq(
+                groups.as_ptr(),
+                summary["groups"].as_array().unwrap().as_ptr()
+            ),
             "the group array was copied, not borrowed"
         );
 

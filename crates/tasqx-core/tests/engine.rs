@@ -956,7 +956,9 @@ fn a_repeated_dependency_add_logs_a_second_event_and_bumps_rev() {
         .as_i64()
         .expect("_rev is an integer");
 
-    let again = e.dependency_add(&edge).expect("a duplicate add is accepted");
+    let again = e
+        .dependency_add(&edge)
+        .expect("a duplicate add is accepted");
 
     // The graph did not change: one edge, still exactly one blocker.
     assert_eq!(count(&e, "SELECT COUNT(*) FROM dependencies"), 1);

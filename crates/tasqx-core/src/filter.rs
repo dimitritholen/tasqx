@@ -725,8 +725,8 @@ impl Parser {
     fn parse_term(&mut self) -> Result<Expr, String> {
         if self.is_sym("(") {
             self.pos += 1; // consume '('
-            // Checked before the increment, so `depth` is only ever raised on a
-            // path that also lowers it again — the two halves cannot drift.
+                           // Checked before the increment, so `depth` is only ever raised on a
+                           // path that also lowers it again — the two halves cannot drift.
             if self.depth == MAX_NESTING {
                 return Err(format!(
                     "filter nests more than {MAX_NESTING} '(' groups deep"
