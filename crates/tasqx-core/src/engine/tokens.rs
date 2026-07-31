@@ -19,6 +19,14 @@ use crate::tokens::{require_confidence, require_source, SOURCE_LOG_PARSE, SOURCE
 /// thread is needed.
 const OTLP_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
 
+/// Upper bound on the `sample_ids` array [`Engine::token_attribute`] accepts.
+/// The array lands verbatim in the `tokens.attributed` event payload and is
+/// re-parsed on every pending-set build, so an unbounded one becomes a
+/// permanent per-tick tax on the daemon. No real transcript window approaches
+/// this (the store's biggest banked window held 41 samples); anything past it
+/// is a caller error, not data.
+const MAX_SAMPLE_IDS: usize = 4096;
+
 /// An `opt_u64` whose value must also fit the INTEGER column it is stored in.
 /// Without the bound, a count above `i64::MAX` would fail at the SQL binding
 /// and surface as `internal` — a caller mistake reported as a tasqx bug.
@@ -215,16 +223,21 @@ impl Engine {
         // payload so later ticks can refuse a consumed sample by id even after
         // a streamed re-emission moves its re-parsed timestamp across a window
         // edge (banked decisions are final; stamps are not).
-        let sample_ids: Vec<String> = p
-            .get("sample_ids")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let sample_ids: Vec<String> = match p.get("sample_ids").and_then(Value::as_array) {
+            Some(a) if a.len() > MAX_SAMPLE_IDS => {
+                return Err(ApiError::bad_request(format!(
+                    "`sample_ids` holds {} entries — send at most {MAX_SAMPLE_IDS} \
+                     (no real transcript window approaches that many samples)",
+                    a.len()
+                )));
+            }
+            Some(a) => a
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
+            None => Vec::new(),
+        };
         let input = opt_token_count(p, "input_tokens")?.unwrap_or(0);
         let output = opt_token_count(p, "output_tokens")?.unwrap_or(0);
         let cache_read = opt_token_count(p, "cache_read_tokens")?.unwrap_or(0);
