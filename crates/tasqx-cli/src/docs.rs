@@ -160,8 +160,10 @@ const METHODS: [(&str, &str, &str); 28] = [
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
          <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>",
         "The task; plus the spawned next instance if recurring. Correlation params \
-         land in the done event; any present token count records a self-report \
-         measurement.",
+         land in the done event. Any present token count records a self-report \
+         measurement — the primary channel: only the caller knows which task a \
+         turn's spend served, and the log-parse fallback refuses samples claimed \
+         by more than one task's window.",
     ),
     (
         "task.modify",
@@ -1567,7 +1569,7 @@ fn page_mcp() -> String {
             &[
                 "<code>tasqx_complete_task</code>",
                 "write",
-                "Complete a task.",
+                "Complete a task; self-report its token cost (the primary channel).",
             ],
             &[
                 "<code>tasqx_start_timer</code>",
