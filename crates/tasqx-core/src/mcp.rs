@@ -347,10 +347,13 @@ fn tool_specs() -> Vec<ToolSpec> {
             method: "task.done",
             write: true,
             description: "Mark a task done. Returns any tasks newly unblocked by its \
-                completion. Correlation params (session_id, prompt_id, transcript_path, \
-                client) are recorded on the completion event for token attribution. If \
-                you know the tokens this task cost, self-report them via the *_tokens \
-                params — any present count records a measurement.",
+                completion. Report the tokens this task cost via the *_tokens params — \
+                the caller is the only party that knows which task a turn's spend \
+                served, so self-report is the primary measurement channel; any present \
+                count records a measurement. Correlation params (session_id, prompt_id, \
+                transcript_path, client) are recorded on the completion event; without \
+                a self-report, log-parse attribution is a fallback that refuses \
+                samples claimed by more than one task's window.",
             // The token-count fields carry no `minimum`: the numeric-minimum
             // drift guard cannot probe a bound on a tool with required args,
             // so the floor lives in the engine (opt_u64 refuses negatives)
