@@ -124,6 +124,11 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("memory.search", &["query", "limit", "scope", "raw"], false),
     ("memory.remove", &["id"], false),
     ("memory.import", &["docs"], false),
+    // The D50 Decision 3 one-shot history repair. `dry_run` defaults to TRUE —
+    // report the per-task delta, write nothing — and must be explicitly false
+    // to apply; it is the one method in this table built to delete
+    // measurement rows.
+    ("tokens.recompute", &["dry_run"], false),
     (
         "report.summary",
         &["group_by", "filter", "metrics", "all"],
@@ -218,6 +223,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "project.archive" => engine.project_archive(params),
         "annotation.add" => engine.annotation_add(params),
         "token.add" => engine.token_add(params),
+        "tokens.recompute" => engine.token_recompute(params),
         "dependency.add" => engine.dependency_add(params),
         "dependency.remove" => engine.dependency_remove(params),
         "memory.add" => engine.memory_add(params),

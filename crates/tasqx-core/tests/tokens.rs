@@ -769,3 +769,599 @@ fn otlp_ingest_prunes_samples_past_the_retention_window() {
     // The ingest's own row, plus the survivor.
     assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 2);
 }
+
+// ---- tokens.recompute (D50 Decision 3: one-shot history repair) -----------------
+
+use std::path::PathBuf;
+
+fn scratch_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "tasqx-recompute-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn task_uuid(e: &Engine, sid: &serde_json::Value) -> String {
+    e.conn()
+        .query_row(
+            "SELECT id FROM tasks WHERE short_id = ?1",
+            [sid.as_i64().unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// Pin every `done` payload of one task to a fixed completion instant and
+/// transcript path — the seeded shape of pre-D50 history (engine timestamps
+/// are wall-clock, so field-observed windows must be written in afterwards).
+fn pin_done(e: &Engine, task_uuid: &str, completed: &str, path: &str) {
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+            (
+                format!(
+                    r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{path}"}}"#
+                ),
+                task_uuid,
+            ),
+        )
+        .unwrap();
+}
+
+fn pin_created(e: &Engine, task_uuid: &str, created: &str) {
+    e.conn()
+        .execute(
+            "UPDATE tasks SET created = ?1 WHERE id = ?2",
+            (created, task_uuid),
+        )
+        .unwrap();
+}
+
+/// The four-bucket object the recompute report speaks.
+fn b4(input: i64, output: i64) -> serde_json::Value {
+    json!({
+        "input_tokens": input,
+        "output_tokens": output,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+    })
+}
+
+/// The live store's `019f98a4` shape: Y's window is a strict subset of X's
+/// over one transcript, and pre-D50 ticks banked the same 1000/2000 line on
+/// BOTH tasks (X also caught line "b", which only its window covers). The
+/// seeded markers carry NO sample_ids — the pre-upgrade marker shape whose
+/// claims the recompute must rebuild and backfill.
+fn seeded_double_count() -> (Engine, PathBuf, serde_json::Value, serde_json::Value) {
+    let dir = scratch_dir("pair");
+    let transcript = dir.join("sess-1.jsonl");
+    std::fs::write(
+        &transcript,
+        concat!(
+            r#"{"timestamp":"2026-07-25T09:47:00.000Z","message":{"id":"a","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-25T09:55:00.000Z","message":{"id":"b","usage":{"input_tokens":500,"output_tokens":600}}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let x = e.task_add(&json!({ "title": "X" })).unwrap()["short_id"].clone();
+    let y = e.task_add(&json!({ "title": "Y" })).unwrap()["short_id"].clone();
+    // Y is started; X never is — X's window_start falls back to `created`.
+    e.task_start(&json!({ "ref": y })).unwrap();
+    e.task_done(&json!({ "ref": y, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    e.task_done(&json!({ "ref": x, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    let (x_id, y_id) = (task_uuid(&e, &x), task_uuid(&e, &y));
+    pin_created(&e, &x_id, "2026-07-25T09:40:00Z");
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+            (r#"{"interval_started":"2026-07-25T09:46:53Z"}"#, &y_id),
+        )
+        .unwrap();
+    pin_done(&e, &x_id, "2026-07-25T10:01:44Z", &path);
+    pin_done(&e, &y_id, "2026-07-25T09:49:37Z", &path);
+
+    // The pre-D50 double-count, X banked first: both windows summed line "a"
+    // at full value, neither marker carries sample_ids.
+    e.token_attribute(&json!({
+        "ref": x, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 2, "input_tokens": 1500, "output_tokens": 2600,
+    }))
+    .unwrap();
+    e.token_attribute(&json!({
+        "ref": y, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+    }))
+    .unwrap();
+    (e, dir, x, y)
+}
+
+#[test]
+fn recompute_dry_run_reports_the_delta_and_writes_nothing() {
+    let (e, dir, x, y) = seeded_double_count();
+    let rows_before = count(&e, "SELECT COUNT(*) FROM token_usage");
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    // No params at all: dry-run is the DEFAULT — the safe direction for the
+    // one verb in the API built to delete measurement rows.
+    let r = dispatch(&e, "tokens.recompute", &json!({})).unwrap();
+    assert_eq!(r["dry_run"], true, "{r}");
+
+    let tasks = r["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2, "{r}");
+    // Deterministic order: ascending original marker rowid — X banked first.
+    assert_eq!(tasks[0]["task"], x);
+    assert_eq!(tasks[1]["task"], y);
+    assert_eq!(tasks[0]["action"], "recomputed");
+    assert_eq!(tasks[0]["before"], b4(1500, 2600));
+    assert_eq!(
+        tasks[0]["after"],
+        b4(500, 600),
+        "X keeps only the uncontested line"
+    );
+    assert_eq!(tasks[1]["action"], "recomputed");
+    assert_eq!(tasks[1]["before"], b4(1000, 2000));
+    assert_eq!(
+        tasks[1]["after"],
+        b4(0, 0),
+        "the subset window loses everything"
+    );
+    assert_eq!(r["totals"], json!({ "before": 7100, "after": 1100 }));
+
+    // Dry-run writes NOTHING: same rows, same events.
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), rows_before);
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), events_before);
+
+    // And because nothing was written, a second dry-run reports the SAME delta.
+    let again = dispatch(&e, "tokens.recompute", &json!({})).unwrap();
+    assert_eq!(again, r);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recompute_removes_the_double_counted_subset_window() {
+    let (e, dir, x, y) = seeded_double_count();
+
+    let dry = dispatch(&e, "tokens.recompute", &json!({})).unwrap();
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    assert_eq!(r["dry_run"], false);
+    // Apply performs exactly the plan the dry-run printed.
+    assert_eq!(r["tasks"], dry["tasks"]);
+    assert_eq!(r["totals"], dry["totals"]);
+
+    // The subset window (Y) lost its rows; the superset (X) keeps only the
+    // uncontested remainder.
+    let (x_id, y_id) = (task_uuid(&e, &x), task_uuid(&e, &y));
+    let x_rows = count(
+        &e,
+        &format!("SELECT COUNT(*) FROM token_usage WHERE task_id='{x_id}' AND source='log-parse'"),
+    );
+    assert_eq!(x_rows, 1);
+    let (input, output, confidence): (i64, i64, String) = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens, output_tokens, confidence FROM token_usage \
+             WHERE task_id = ?1 AND source = 'log-parse'",
+            [&x_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((input, output), (500, 600));
+    assert_eq!(confidence, "medium");
+    assert_eq!(
+        count(
+            &e,
+            &format!(
+                "SELECT COUNT(*) FROM token_usage WHERE task_id='{y_id}' AND source='log-parse'"
+            )
+        ),
+        0
+    );
+
+    // The NEW marker backfills the sample ids the surviving measurement
+    // consumed; the pre-upgrade marker stays in the append-only log.
+    let markers_of_x = count(
+        &e,
+        &format!("SELECT COUNT(*) FROM events WHERE entity_id='{x_id}' AND op='tokens.attributed'"),
+    );
+    assert_eq!(
+        markers_of_x, 2,
+        "old marker kept as provenance, new one added"
+    );
+    let payload: String = e
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE entity_id = ?1 AND op = 'tokens.attributed' \
+             ORDER BY rowid DESC LIMIT 1",
+            [&x_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(v["sample_ids"], json!(["b"]), "{v}");
+
+    // A third pass over the repaired store changes nothing: X is unchanged,
+    // Y — no log-parse rows left — is out of scope entirely.
+    let after = dispatch(&e, "tokens.recompute", &json!({})).unwrap();
+    let tasks = after["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1, "{after}");
+    assert_eq!(tasks[0]["task"], x);
+    assert_eq!(tasks[0]["action"], "unchanged");
+    assert_eq!(after["totals"], json!({ "before": 1100, "after": 1100 }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recompute_downgrades_when_the_transcript_is_gone() {
+    let dir = scratch_dir("gone");
+    let transcript = dir.join("sess-9.jsonl");
+    std::fs::write(
+        &transcript,
+        r#"{"timestamp":"2026-07-25T09:47:00.000Z","message":{"id":"g","usage":{"input_tokens":800,"output_tokens":900}}}"#,
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": t, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "high",
+        "samples": 1, "input_tokens": 800, "output_tokens": 900,
+    }))
+    .unwrap();
+    // The transcript is deleted before the recompute runs: the stored counts
+    // cannot be re-derived, so they are kept — confidence-stripped, never
+    // deleted blind.
+    std::fs::remove_file(&transcript).unwrap();
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let entry = &r["tasks"][0];
+    assert_eq!(entry["action"], "downgraded", "{r}");
+    assert_eq!(entry["before"], b4(800, 900));
+    assert_eq!(entry["after"], b4(800, 900), "counts are kept, not deleted");
+    assert_eq!(r["totals"], json!({ "before": 1700, "after": 1700 }));
+
+    let (input, confidence): (i64, String) = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens, confidence FROM token_usage WHERE source = 'log-parse'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(input, 800, "counts untouched");
+    assert_eq!(confidence, "low", "the high label is stripped");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recompute_never_touches_self_report_or_otel_rows() {
+    let dir = scratch_dir("sources");
+    let transcript = dir.join("sess-2.jsonl");
+    std::fs::write(
+        &transcript,
+        r#"{"timestamp":"2026-07-25T09:47:00.000Z","message":{"id":"c","usage":{"input_tokens":100,"output_tokens":200}}}"#,
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let a = e.task_add(&json!({ "title": "A" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": a, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    let a_id = task_uuid(&e, &a);
+    pin_created(&e, &a_id, "2026-07-25T09:40:00Z");
+    pin_done(&e, &a_id, "2026-07-25T10:00:00Z", &path);
+    // A wrong pre-D50 bank, plus an otel measurement on the same task.
+    e.token_attribute(&json!({
+        "ref": a, "source": "log-parse", "tool": "claude-code", "confidence": "high",
+        "samples": 1, "input_tokens": 999, "output_tokens": 999,
+    }))
+    .unwrap();
+    e.token_add(&json!({
+        "ref": a, "tool": "claude-code", "source": "otel", "confidence": "high",
+        "input_tokens": 42, "output_tokens": 7,
+    }))
+    .unwrap();
+    // A second task measured purely by self-report: out of scope entirely.
+    let b = e.task_add(&json!({ "title": "B" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": b, "tool": "cursor", "input_tokens": 5, "output_tokens": 5 }))
+        .unwrap();
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let tasks = r["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1, "only the log-parse task is in scope: {r}");
+    assert_eq!(tasks[0]["task"], a);
+    assert_eq!(tasks[0]["action"], "recomputed");
+    assert_eq!(tasks[0]["after"], b4(100, 200));
+
+    // The log-parse row was repaired...
+    let (input, output): (i64, i64) = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens, output_tokens FROM token_usage WHERE source = 'log-parse'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((input, output), (100, 200));
+    // ...while the otel and self-report rows survive untouched.
+    let otel_input: i64 = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens FROM token_usage WHERE source = 'otel'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(otel_input, 42);
+    let self_report_input: i64 = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens FROM token_usage WHERE source = 'self-report'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(self_report_input, 5);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Decision 1: one task never mixes channels. Pre-TOCTOU-fix history can hold
+/// BOTH a log-parse and a self-report row for one task; the recompute resolves
+/// the conflict toward the caller's own report. The result shape choice: this
+/// is the distinct `channel_conflict` action with `after: null` — the task's
+/// log-parse rows are removed outright, and its real spend is the self-report,
+/// which is not this verb's to restate.
+#[test]
+fn recompute_resolves_a_channel_conflict_toward_the_self_report() {
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": t, "client": "claude-code",
+                 "transcript_path": "/no/such/transcript.jsonl" }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+    }))
+    .unwrap();
+    // The same task later self-reports through the other door (token.add).
+    e.token_add(&json!({
+        "ref": t, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+        "input_tokens": 111, "output_tokens": 222,
+    }))
+    .unwrap();
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let entry = &r["tasks"][0];
+    assert_eq!(entry["action"], "channel_conflict", "{r}");
+    assert_eq!(entry["before"], b4(1000, 2000));
+    assert!(entry["after"].is_null(), "{r}");
+    assert_eq!(r["totals"], json!({ "before": 3000, "after": 0 }));
+
+    // The log-parse rows are gone outright — not recomputed, not downgraded —
+    // and the self-report row is untouched.
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source='log-parse'"
+        ),
+        0
+    );
+    let self_report_input: i64 = e
+        .conn()
+        .query_row(
+            "SELECT input_tokens FROM token_usage WHERE source = 'self-report'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(self_report_input, 111);
+}
+
+/// Task #81's shape: a reopen + re-complete banked the same window twice, so
+/// one task holds two log-parse rows for one spend. The per-task
+/// delete-all-then-reinsert collapses them to the one recomputed survivor.
+#[test]
+fn recompute_collapses_reopen_duplicates_to_one_row() {
+    let dir = scratch_dir("dup");
+    let transcript = dir.join("sess-3.jsonl");
+    std::fs::write(
+        &transcript,
+        r#"{"timestamp":"2026-07-25T09:47:00.000Z","message":{"id":"a","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": t, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    let t_id = task_uuid(&e, &t);
+    pin_created(&e, &t_id, "2026-07-25T09:40:00Z");
+    pin_done(&e, &t_id, "2026-07-25T10:00:00Z", &path);
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+    }))
+    .unwrap();
+    // Reopen + re-complete: a fresh done past the old marker re-enters the
+    // attribution queue, and the second bank duplicates the first.
+    e.task_reopen(&json!({ "ref": t })).unwrap();
+    e.task_done(&json!({ "ref": t, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    pin_done(&e, &t_id, "2026-07-25T10:00:00Z", &path);
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+    }))
+    .unwrap();
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source='log-parse'"
+        ),
+        2,
+        "the seeded duplicate must exist for this test to prove anything"
+    );
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let entry = &r["tasks"][0];
+    assert_eq!(entry["action"], "recomputed", "{r}");
+    assert_eq!(
+        entry["before"],
+        b4(2000, 4000),
+        "both duplicate rows summed"
+    );
+    assert_eq!(entry["after"], b4(1000, 2000), "one survivor");
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source='log-parse'"
+        ),
+        1
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An accurate, uncontested, already-claimed measurement is left alone: no
+/// row churn, no new marker, action `unchanged`.
+#[test]
+fn recompute_leaves_an_accurate_uncontested_measurement_alone() {
+    let dir = scratch_dir("same");
+    let transcript = dir.join("sess-4.jsonl");
+    std::fs::write(
+        &transcript,
+        r#"{"timestamp":"2026-07-25T09:47:00.000Z","message":{"id":"a","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": t, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    let t_id = task_uuid(&e, &t);
+    pin_created(&e, &t_id, "2026-07-25T09:40:00Z");
+    pin_done(&e, &t_id, "2026-07-25T10:00:00Z", &path);
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000, "sample_ids": ["a"],
+    }))
+    .unwrap();
+    let row_id_before: String = e
+        .conn()
+        .query_row("SELECT id FROM token_usage", [], |row| row.get(0))
+        .unwrap();
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    assert_eq!(r["tasks"][0]["action"], "unchanged", "{r}");
+    assert_eq!(r["totals"], json!({ "before": 3000, "after": 3000 }));
+
+    // No writes at all: the row was not even rewritten in place.
+    let row_id_after: String = e
+        .conn()
+        .query_row("SELECT id FROM token_usage", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(row_id_after, row_id_before);
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM events"), events_before);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The claim set is REBUILT in marker order as the recompute walks history:
+/// a task whose transcript no longer resolves keeps its banked claim
+/// (downgraded, not dissolved), and that claim still contests the same sample
+/// id in a LATER task's recompute even across a different transcript file and
+/// no window overlap — identity is global (D50 Decision 2, as amended).
+#[test]
+fn recompute_rebuilt_claims_contest_by_identity_across_sources() {
+    let dir = scratch_dir("claims");
+    let copy = dir.join("copy.jsonl");
+    std::fs::write(
+        &copy,
+        r#"{"timestamp":"2026-07-25T09:47:00.000Z","message":{"id":"a","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+    )
+    .unwrap();
+    let copy_path = copy.to_string_lossy().into_owned();
+    let gone_path = dir.join("gone.jsonl").to_string_lossy().into_owned();
+
+    let e = engine();
+    let x = e.task_add(&json!({ "title": "X" })).unwrap()["short_id"].clone();
+    let y = e.task_add(&json!({ "title": "Y" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": x, "client": "claude-code", "transcript_path": gone_path }))
+        .unwrap();
+    e.task_done(&json!({ "ref": y, "client": "claude-code", "transcript_path": copy_path }))
+        .unwrap();
+    let (x_id, y_id) = (task_uuid(&e, &x), task_uuid(&e, &y));
+    // Disjoint windows, different files, no session ids: nothing but the
+    // sample's identity connects the two banks.
+    pin_created(&e, &x_id, "2026-07-25T09:00:00Z");
+    pin_done(&e, &x_id, "2026-07-25T09:10:00Z", &gone_path);
+    pin_created(&e, &y_id, "2026-07-25T09:40:00Z");
+    pin_done(&e, &y_id, "2026-07-25T10:00:00Z", &copy_path);
+    // X banked "a" first, WITH its id persisted; Y's bank of the same id is
+    // the theft the recompute must refuse.
+    e.token_attribute(&json!({
+        "ref": x, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000, "sample_ids": ["a"],
+    }))
+    .unwrap();
+    e.token_attribute(&json!({
+        "ref": y, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+    }))
+    .unwrap();
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let tasks = r["tasks"].as_array().unwrap();
+    assert_eq!(tasks[0]["task"], x);
+    assert_eq!(
+        tasks[0]["action"], "downgraded",
+        "X's transcript is gone; its counts and its claim survive: {r}"
+    );
+    assert_eq!(tasks[1]["task"], y);
+    assert_eq!(tasks[1]["action"], "recomputed", "{r}");
+    assert_eq!(
+        tasks[1]["after"],
+        b4(0, 0),
+        "sample `a` is already claimed by X — banked for no one else: {r}"
+    );
+    assert_eq!(r["totals"], json!({ "before": 6000, "after": 3000 }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `dry_run` guards the one destructive verb in the API, so a value that is
+/// not a boolean is refused — never coerced, never silently defaulted.
+#[test]
+fn recompute_refuses_a_non_boolean_dry_run() {
+    let e = engine();
+    let err = dispatch(&e, "tokens.recompute", &json!({ "dry_run": "false" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("dry_run"), "{}", err.message);
+    // The params gate applies like everywhere else.
+    let err = dispatch(&e, "tokens.recompute", &json!({ "apply": true })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("apply"), "{}", err.message);
+}
