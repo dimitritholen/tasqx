@@ -98,6 +98,8 @@ Any other MCP client takes the same shape:
 
 Fifteen tools, one verb each. Five reads: `list_tasks`, `get_task`, `summary`, `list_projects`, `search_memory`. Ten writes: `add_task`, `modify_task`, `complete_task`, `start_timer`, `stop_timer`, `tag_task`, `annotate_task`, `add_dependency`, `add_memory`, `create_project` (all prefixed `tasqx_`). The interesting ones for agent work: `complete_task` returns which tasks its completion unblocked, `annotate_task` stores long-form markdown context verbatim, `add_dependency` lets an agent decompose a feature into an ordered chain, and `search_memory` gives even a read-only agent bm25-ranked retrieval over imported docs and task annotations — company patterns and past decisions surface while the agent works (`tasqx memory import docs/` to feed it).
 
+`complete_task` also takes optional token counts (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`). Pass them: the agent is the only party that knows which task a turn's spend served, so self-report is the primary measurement channel, and completing without counts gets a `tokens_hint` in the response saying so. Log-parse attribution exists as a fallback, but it refuses any sample claimed by more than one task's window rather than guess an owner.
+
 A read-only session never sees the write tools in its tool list, so an agent can't call what it isn't allowed to call. Scope configures this local stdio child process; it is not an authentication credential. There's no bulk-delete tool on purpose. Cancelling goes through the same reversible, logged path everything else does, so an agent can't quietly destroy a week of work.
 
 The MCP server tells an agent what it can call. The skill in [`.claude/skills/tasqx-workflow/`](.claude/skills/tasqx-workflow/SKILL.md) tells it how to work: what deserves a backlog entry, the search-memory-first work loop, and why an annotation goes on before `complete_task` — annotations feed the same search index as imported docs, so an agent that completes tasks well is building the knowledge base as a side effect. Claude Code picks the skill up automatically when working inside this repo; for your own projects, copy the folder into `~/.claude/skills/`, or paste `SKILL.md` into whatever instructions file your client reads.
@@ -122,7 +124,7 @@ A good chunk of the suite is drift guards: tests that break the build when the d
 
 `cargo mutants` is the interesting one. It breaks the code on purpose and checks whether any test notices. It found a bug where deleting one line made `(a or b) and c` silently parse as `a or (b and c)`, which would have returned a perfectly normal-looking table full of the rows you filtered out. 316 passing tests hadn't caught it.
 
-`DESIGN.md` is the spec and carries the decision log, D1 through D40, explaining why things are the way they are.
+`DESIGN.md` is the spec and carries the decision log, D1 through D50, explaining why things are the way they are.
 
 ## License
 

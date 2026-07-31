@@ -37,6 +37,11 @@ The tool surface is designed around one loop — work the backlog one task at a 
 2. `tasqx_get_task` — read the annotations: acceptance criteria, links, context.
 3. `tasqx_start_timer`, do the work, `tasqx_complete_task` — the completion result
    names any tasks it unblocked, which is the agent's cue for what to pick up next.
+   Pass the turn's token counts on completion (`input_tokens`, `output_tokens`,
+   `cache_read_tokens`, `cache_creation_tokens`): the agent is the only party
+   that knows which task the spend served, so self-report is the primary
+   measurement channel — completing without counts earns a `tokens_hint` in the
+   response saying exactly that.
 4. `tasqx_annotate_task` — write back what was done, decisions made, anything the
    next session needs.
 
