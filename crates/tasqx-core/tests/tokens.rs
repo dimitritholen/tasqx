@@ -473,6 +473,133 @@ fn task_done_without_token_params_writes_no_measurement() {
     assert!(event_payload(&e, "done").get("tokens").is_none());
 }
 
+// ---- D50 refusal, end to end (#79 / ATTACK 3) -----------------------------------
+
+/// The #79 mechanism, driven through the real store and the real attribution
+/// pipeline (`pending_attributions` → `compute_attribution` → `attribute_one`),
+/// in the exact shape of `attack78.sh` ATTACK 3: task X is completed WITHOUT
+/// ever being started (its window falls back to `tasks.created`), task Y is
+/// started and completed entirely inside X's span, both name the same
+/// transcript, and that transcript holds ONE 1000/2000 usage line inside Y's
+/// window. Before D50 both windows summed the same line at full confidence —
+/// ~1.5M tokens were double-counted in the live store this way. Under the
+/// refusal rule the sample is contested and banked for NO ONE while both tasks
+/// are unresolved: the store must never end with the same spend on two tasks.
+#[test]
+fn one_spend_is_never_billed_to_two_tasks() {
+    use tasqx_core::attribution::{attribute_one, compute_attribution, pending_attributions};
+
+    let dir = std::env::temp_dir().join(format!(
+        "tasqx-attack3-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let transcript = dir.join("sess-1.jsonl");
+    // The one spend: a single usage line inside Y's window (and therefore
+    // inside X's superset window too).
+    std::fs::write(
+        &transcript,
+        r#"{"timestamp":"2026-07-25T09:47:00.000Z","message":{"id":"a","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let x = e.task_add(&json!({ "title": "X" })).unwrap()["short_id"].clone();
+    let y = e.task_add(&json!({ "title": "Y" })).unwrap()["short_id"].clone();
+    // Y is started; X never is — X's window_start falls back to `created`.
+    e.task_start(&json!({ "ref": y })).unwrap();
+    e.task_done(&json!({ "ref": y, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    e.task_done(&json!({ "ref": x, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+
+    // Pin the field-observed instants (engine timestamps are wall-clock):
+    // X spans [09:40:00, 10:01:44], Y spans [09:46:53, 09:49:37] ⊂ X.
+    let task_id = |sid: &serde_json::Value| -> String {
+        e.conn()
+            .query_row(
+                "SELECT id FROM tasks WHERE short_id = ?1",
+                [sid.as_i64().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let (x_id, y_id) = (task_id(&x), task_id(&y));
+    e.conn()
+        .execute(
+            "UPDATE tasks SET created = '2026-07-25T09:40:00Z' WHERE id = ?1",
+            [&x_id],
+        )
+        .unwrap();
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+            (r#"{"interval_started":"2026-07-25T09:46:53Z"}"#, &y_id),
+        )
+        .unwrap();
+    for (id, completed) in [
+        (&x_id, "2026-07-25T10:01:44Z"),
+        (&y_id, "2026-07-25T09:49:37Z"),
+    ] {
+        e.conn()
+            .execute(
+                "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+                (
+                    format!(
+                        r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{path}"}}"#
+                    ),
+                    id,
+                ),
+            )
+            .unwrap();
+    }
+
+    // One attribution pass, minutes after the completions (well inside the
+    // give-up deadline), exactly as the daemon's tick drives it.
+    let pending = pending_attributions(&e).unwrap();
+    assert_eq!(pending.len(), 2, "both completions are pending");
+    let now: jiff::Timestamp = "2026-07-25T10:05:00Z".parse().unwrap();
+    for pa in &pending {
+        match compute_attribution(pa, now) {
+            Ok(r) => {
+                attribute_one(&e, pa, &r).unwrap();
+            }
+            // The refusal: while both windows claim the sample, the task stays
+            // transient with the distinct contested message.
+            Err(err) => assert!(
+                err.message.contains("contested"),
+                "expected the contested transient, got: {}",
+                err.message
+            ),
+        }
+    }
+
+    // The invariant #79 violated: the same spend must never sit on two tasks.
+    let log_parse_rows = count(
+        &e,
+        "SELECT COUNT(*) FROM token_usage WHERE source='log-parse'",
+    );
+    assert!(
+        log_parse_rows <= 1,
+        "one usage line produced {log_parse_rows} log-parse measurements"
+    );
+    let distinct_tasks = count(
+        &e,
+        "SELECT COUNT(DISTINCT task_id) FROM token_usage WHERE source='log-parse'",
+    );
+    assert_eq!(
+        distinct_tasks, log_parse_rows,
+        "a banked spend belongs to exactly one task"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- OTLP buffer (#18) --------------------------------------------------------
 
 /// Buffered OTLP samples (#18) are raw telemetry, not attributed to any task:
