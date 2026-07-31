@@ -684,14 +684,56 @@ struct DoneInfo {
     /// still contests samples on a shared source, so it is retained in the scan
     /// as a foreign window rather than dropped.
     attributed: bool,
+    /// [`transcript_path`](Self::transcript_path) canonicalized (filesystem
+    /// identity when the file exists, lexical normalization when it does not),
+    /// filled in one memoized pass after the done-event scan. Sharing a sample
+    /// source is a question about the FILE, so `dir/t.jsonl` and
+    /// `dir/./t.jsonl` — or a symlink spelling — must compare equal; a string
+    /// comparison of the raw path let two spellings of one file bank the same
+    /// spend twice.
+    canon_path: Option<PathBuf>,
 }
 
-/// Whether two completions draw their samples from the same source: an equal
-/// non-null `transcript_path`, or an equal non-null `session_id`. Two `None`s
-/// are NOT a match — an absent key identifies nothing.
+/// Whether two completions draw their samples from the same source: the same
+/// transcript FILE (canonicalized paths, so two spellings of one file match),
+/// or an equal non-null `session_id`. Two `None`s are NOT a match — an absent
+/// key identifies nothing.
 fn shares_sample_source(a: &DoneInfo, b: &DoneInfo) -> bool {
-    (a.transcript_path.is_some() && a.transcript_path == b.transcript_path)
+    (a.canon_path.is_some() && a.canon_path == b.canon_path)
         || (a.session_id.is_some() && a.session_id == b.session_id)
+}
+
+/// One path string's identity for [`shares_sample_source`]:
+/// `std::fs::canonicalize` when the file exists (resolves symlinks and dot
+/// segments against the real filesystem), falling back to a purely lexical
+/// normalization when it does not — a transcript that has not been flushed yet
+/// must still contest its own other spellings.
+fn canonical_path(raw: &str) -> PathBuf {
+    let p = Path::new(raw);
+    std::fs::canonicalize(p).unwrap_or_else(|_| lexical_normalize(p))
+}
+
+/// Resolve `.` and `..` segments without touching the filesystem. `..` pops a
+/// preceding normal component; at a root it is dropped (`/..` is `/`), and in
+/// a relative path with nothing left to pop it is kept, so distinct locations
+/// stay distinct.
+fn lexical_normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let popped =
+                    matches!(out.components().next_back(), Some(Component::Normal(_))) && out.pop();
+                if !popped && !out.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// The durable pending queue (store-as-queue, reminder precedent): every task
@@ -841,12 +883,28 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
                     session_id,
                     self_reported,
                     attributed: is_attributed,
+                    canon_path: None,
                 },
             );
         }
     }
     if correlated.values().all(|info| info.attributed) {
         return Ok(Vec::new());
+    }
+
+    // 2b. Canonicalize each DISTINCT transcript path string once (a stat per
+    //     path, memoized — never per pair), so `shares_sample_source` compares
+    //     file identity instead of spelling.
+    {
+        let mut canon_memo: HashMap<String, PathBuf> = HashMap::new();
+        for info in correlated.values_mut() {
+            if let Some(tp) = &info.transcript_path {
+                let canon = canon_memo
+                    .entry(tp.clone())
+                    .or_insert_with(|| canonical_path(tp));
+                info.canon_path = Some(canon.clone());
+            }
+        }
     }
 
     // 3. Earliest `start` instant per correlated task (window start) — attributed
@@ -1932,6 +1990,98 @@ mod tests {
             pending[0].foreign_windows.is_empty(),
             "no shared transcript or session: nothing contests"
         );
+    }
+
+    /// Two spellings of one file — `dir/t.jsonl` and `dir/./t.jsonl` — parse
+    /// the same bytes, but a string comparison of `transcript_path` said they
+    /// shared nothing, so fully overlapping windows banked the same spend
+    /// twice in one tick. Paths must be compared by identity, not spelling.
+    #[test]
+    fn an_aliased_transcript_path_still_contests_the_same_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attr-alias-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join("sess-1.jsonl");
+        let canonical = transcript.to_string_lossy().into_owned();
+        let aliased = format!("{}/./sess-1.jsonl", dir.to_string_lossy());
+        std::fs::write(
+            &transcript,
+            r#"{"timestamp":"2026-07-25T10:10:00.000Z","message":{"id":"m","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+        )
+        .unwrap();
+
+        let engine = Engine::open_in_memory().unwrap();
+        let a = engine.task_add(&json!({ "title": "A" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        let b = engine.task_add(&json!({ "title": "B" })).unwrap()["short_id"]
+            .as_i64()
+            .unwrap();
+        for (sid, p) in [(a, &canonical), (b, &aliased)] {
+            engine.task_start(&json!({ "ref": sid })).unwrap();
+            engine
+                .task_done(&json!({ "ref": sid, "client": "claude-code", "transcript_path": p }))
+                .unwrap();
+        }
+        let task_id = |sid: i64| -> String {
+            engine
+                .conn()
+                .query_row("SELECT id FROM tasks WHERE short_id = ?1", [sid], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        // Fully overlapping windows [10:00, 10:30] on both tasks.
+        for (id, p) in [(task_id(a), &canonical), (task_id(b), &aliased)] {
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+                    (r#"{"interval_started":"2026-07-25T10:00:00Z"}"#, &id),
+                )
+                .unwrap();
+            engine
+                .conn()
+                .execute(
+                    "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
+                    (
+                        format!(
+                            r#"{{"completed":"2026-07-25T10:30:00Z","client":"claude-code","transcript_path":"{p}"}}"#
+                        ),
+                        &id,
+                    ),
+                )
+                .unwrap();
+        }
+
+        let now = ts("2026-07-25T10:35:00Z");
+        for pa in &pending_attributions(&engine).unwrap() {
+            assert_eq!(
+                pa.foreign_windows.len(),
+                1,
+                "task #{} must see its alias-spelled neighbour as foreign",
+                pa.short_id
+            );
+            if let Ok(r) = compute_attribution(pa, now) {
+                attribute_one(&engine, pa, &r).unwrap();
+            }
+        }
+        let tasks_billed = count_rows(
+            &engine,
+            "SELECT COUNT(DISTINCT task_id) FROM token_usage WHERE source='log-parse'",
+        );
+        assert!(
+            tasks_billed < 2,
+            "one spend was billed to {tasks_billed} tasks via path spelling"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The TOCTOU half of "one task never mixes channels": the pending set is
