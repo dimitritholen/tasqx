@@ -210,6 +210,21 @@ impl Engine {
         require_confidence(&confidence)?;
         let tool = req_str(p, "tool")?;
         let samples = opt_u64(p, "samples")?.unwrap_or(0);
+        // The identities of the samples this measurement consumed, when the
+        // parser had any (Claude Code message ids). Persisted in the marker
+        // payload so later ticks can refuse a consumed sample by id even after
+        // a streamed re-emission moves its re-parsed timestamp across a window
+        // edge (banked decisions are final; stamps are not).
+        let sample_ids: Vec<String> = p
+            .get("sample_ids")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         let input = opt_token_count(p, "input_tokens")?.unwrap_or(0);
         let output = opt_token_count(p, "output_tokens")?.unwrap_or(0);
         let cache_read = opt_token_count(p, "cache_read_tokens")?.unwrap_or(0);
@@ -243,7 +258,7 @@ impl Engine {
                 confidence: confidence.clone(),
             };
             let measurement = record_token_usage(&tx, &task.id, &usage)?;
-            json!({
+            let mut payload = json!({
                 "source": source,
                 "tool": tool,
                 "confidence": confidence,
@@ -255,7 +270,14 @@ impl Engine {
                     "cache_creation_tokens": cache_creation,
                 },
                 "measurement": measurement.get("id").cloned().unwrap_or(Value::Null),
-            })
+            });
+            // Only when banking a measurement, and only when there are ids to
+            // record: an empty array would say "consumed nothing" as loudly as
+            // omission, and every payload byte lives in the event log forever.
+            if !sample_ids.is_empty() {
+                payload["sample_ids"] = json!(sample_ids);
+            }
+            payload
         } else {
             json!({ "samples": 0 })
         };
@@ -339,6 +361,7 @@ impl Engine {
             Ok((
                 r.get::<_, String>(0)?,
                 crate::tokens::UsageSample {
+                    id: None,
                     ts: r.get::<_, String>(1)?,
                     model: r.get::<_, Option<String>>(2)?,
                     input_tokens: r.get::<_, i64>(3)?.max(0) as u64,

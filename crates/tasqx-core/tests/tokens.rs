@@ -616,6 +616,7 @@ fn otlp_ingest_buffers_samples_without_task_events_or_measurements() {
                 tool: "claude-code".into(),
                 session_id: Some("sess-1".into()),
                 sample: UsageSample {
+                    id: None,
                     ts: "2026-07-24T10:00:00Z".into(),
                     model: Some("claude-opus-4-8".into()),
                     input_tokens: 10,
@@ -628,6 +629,7 @@ fn otlp_ingest_buffers_samples_without_task_events_or_measurements() {
                 tool: "codex".into(),
                 session_id: Some("sess-2".into()),
                 sample: UsageSample {
+                    id: None,
                     ts: "2026-07-24T10:05:00Z".into(),
                     model: None,
                     input_tokens: 5,
@@ -700,6 +702,7 @@ fn otlp_ingest_prunes_samples_past_the_retention_window() {
         tool: "codex".into(),
         session_id: Some("sess-new".into()),
         sample: UsageSample {
+            id: None,
             ts: "2026-07-24T10:00:00Z".into(),
             model: None,
             input_tokens: 1,

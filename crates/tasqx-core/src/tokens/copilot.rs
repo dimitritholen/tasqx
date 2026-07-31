@@ -180,6 +180,7 @@ impl ResponseAcc {
             .raw_input
             .saturating_sub(self.raw_input.min(self.cache_read));
         UsageSample {
+            id: None,
             ts: self.ts,
             model: self.model,
             input_tokens: input,

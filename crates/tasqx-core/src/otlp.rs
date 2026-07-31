@@ -507,6 +507,7 @@ fn sample_from_record(record: &Value) -> Option<OtlpSample> {
         tool: tool.to_string(),
         session_id,
         sample: UsageSample {
+            id: None,
             ts,
             model,
             input_tokens: input,

@@ -152,6 +152,9 @@ fn parse_samples(content: &str) -> Vec<UsageSample> {
         };
 
         let sample = UsageSample {
+            // The message id doubles as the sample's cross-tick identity: the
+            // stamp of a streamed message can move between reads, the id cannot.
+            id: message.id.clone(),
             ts,
             model: message.model,
             input_tokens: usage.input_tokens,
