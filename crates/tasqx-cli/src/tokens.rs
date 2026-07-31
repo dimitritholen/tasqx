@@ -2,10 +2,10 @@
 //!
 //! `engine/reports.rs` keeps `tokens_in`, `tokens_out`, `tokens_cache_read` and
 //! `tokens_cache_creation` apart through the entire aggregation — its own comment
-//! says why: "cache tokens cost a fraction, so a blended total would lie" — and
-//! derives `tokens_total` only at emit. Both presentation layers then picked that
-//! derived field up and made it *the* headline number, throwing away the exact
-//! care the core took.
+//! says why: "cache tokens cost a fraction, so a blended total would lie" — and,
+//! until D50 removed the metric outright, derived `tokens_total` only at emit.
+//! Both presentation layers then picked that derived field up and made it *the*
+//! headline number, throwing away the exact care the core took.
 //!
 //! Measured on this project's own store: `in 136 · out 83 479 · cacheR 13 630 240
 //! · cacheW 186 965`. The blend is 13.9 M. Weighted by published relative prices,

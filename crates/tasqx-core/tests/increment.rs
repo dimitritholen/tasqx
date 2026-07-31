@@ -572,8 +572,9 @@ fn add_tokens(e: &Engine, r: &str, input: i64, output: i64, cache_read: i64, cac
 
 /// #19: a group's token metrics are the sum of the four buckets across every
 /// measurement of every task in the group — many measurements per task, many
-/// tasks per group — and `tokens_total` is their combined total. Emitted as
-/// JSON integers, never ISO durations (that type is frozen from day one).
+/// tasks per group — four separate fields, never a blend (D48a, closed for the
+/// API by D50). Emitted as JSON integers, never ISO durations (that type is
+/// frozen from day one).
 #[test]
 fn report_summary_sums_token_measurements_per_group() {
     let e = engine();
@@ -594,7 +595,7 @@ fn report_summary_sums_token_measurements_per_group() {
             "group_by": "project",
             "metrics": [
                 "tokens_in", "tokens_out", "tokens_cache_read",
-                "tokens_cache_creation", "tokens_total"
+                "tokens_cache_creation"
             ]
         }),
     );
@@ -602,18 +603,25 @@ fn report_summary_sums_token_measurements_per_group() {
     assert_eq!(g["tokens_out"], 60); // 10 + 20 + 30
     assert_eq!(g["tokens_cache_read"], 12); // 5 + 0 + 7
     assert_eq!(g["tokens_cache_creation"], 3); // 1 + 2 + 0
-    assert_eq!(g["tokens_total"], 675); // 600 + 60 + 12 + 3
-                                        // The JSON type is an integer, not a string — the type contract, not a value
-                                        // spot-check, is what breaks a client if it ever regresses to iso_duration.
+                                               // The JSON type is an integer, not a string — the type contract, not a
+                                               // value spot-check, is what breaks a client if it ever regresses to
+                                               // iso_duration.
     for m in [
         "tokens_in",
         "tokens_out",
         "tokens_cache_read",
         "tokens_cache_creation",
-        "tokens_total",
     ] {
         assert!(g[m].is_i64(), "{m} must be a JSON integer, got {}", g[m]);
     }
+
+    // D50: `tokens_total` left the metric vocabulary. Asking for it must be a
+    // refusal, not a silently absent column — the fail-loud rule the G1 cluster
+    // already pinned for every other unknown metric.
+    let err = e
+        .report_summary(&json!({ "group_by": "project", "metrics": ["tokens_total"] }))
+        .expect_err("tokens_total is no longer a metric (D50); it must be refused");
+    assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
 /// #19 + D24: token measurements attributed to a cancelled task were still
@@ -628,25 +636,25 @@ fn report_summary_token_metrics_follow_the_d24_cancelled_scope() {
         .unwrap(); // ref 1
     e.task_add(&json!({ "title": "drop", "project": "P" }))
         .unwrap(); // ref 2
-    add_tokens(&e, "1", 100, 0, 0, 0);
-    add_tokens(&e, "2", 500, 0, 0, 0); // spent, then abandoned
+    add_tokens(&e, "1", 0, 100, 0, 0);
+    add_tokens(&e, "2", 0, 500, 0, 0); // spent, then abandoned
     e.task_cancel(&json!({ "ref": "2" })).unwrap();
 
     let g = report(
         &e,
-        json!({ "group_by": "project", "metrics": ["tokens_total"] }),
+        json!({ "group_by": "project", "metrics": ["tokens_out"] }),
     );
     assert_eq!(
-        g["tokens_total"], 100,
+        g["tokens_out"], 100,
         "cancelled work's tokens must stay out of the default roll-up (D24)"
     );
 
     let g = report(
         &e,
-        json!({ "group_by": "project", "all": true, "metrics": ["tokens_total"] }),
+        json!({ "group_by": "project", "all": true, "metrics": ["tokens_out"] }),
     );
     assert_eq!(
-        g["tokens_total"], 600,
+        g["tokens_out"], 600,
         "all:true reveals the cancelled task's spend"
     );
 }

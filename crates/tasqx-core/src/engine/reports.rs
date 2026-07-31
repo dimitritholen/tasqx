@@ -82,7 +82,8 @@ impl Engine {
             overdue: i64,
             // The four token buckets stay separate all the way through (research
             // rule #5: cache tokens cost a fraction, so a blended total would
-            // lie); `tokens_total` is derived from them only at emit time.
+            // lie). Since D50 they stay separate past emit too: the blended
+            // `tokens_total` is no longer a metric at all.
             tokens_in: i64,
             tokens_out: i64,
             tokens_cache_read: i64,
@@ -205,14 +206,6 @@ impl Engine {
                             "tokens_cache_creation".into(),
                             json!(agg.tokens_cache_creation),
                         );
-                    }
-                    "tokens_total" => {
-                        let total = agg
-                            .tokens_in
-                            .saturating_add(agg.tokens_out)
-                            .saturating_add(agg.tokens_cache_read)
-                            .saturating_add(agg.tokens_cache_creation);
-                        obj.insert("tokens_total".into(), json!(total));
                     }
                     _ => {}
                 }
