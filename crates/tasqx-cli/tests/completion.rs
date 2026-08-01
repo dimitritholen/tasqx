@@ -87,29 +87,156 @@ fn every_supported_shell_emits_a_registration_naming_the_binary() {
     }
 }
 
-/// A `$COMPLETE` naming something clap has no completer for must not become a
-/// clap error on stderr and a non-zero exit. `CompleteEnv::complete()` does
-/// exactly that (it calls `Error::exit`), which is why `intercept()` uses
-/// `try_complete` and swallows the error instead.
+/// A temp store path unique to this process and call site.
+fn temp_db(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "tasqx-completion-{label}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the fixture dir");
+    dir.join("tasks.db")
+}
+
+static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A `$COMPLETE` naming a shell clap has no completer for must let the command
+/// RUN. It is not a callback and cannot be one.
+///
+/// This test previously asserted the opposite, and the opposite was a bug. The
+/// discriminator used to be "argv contains `--`", but `--` is the documented way
+/// to pass a leading-dash value (`tasqx add -- "-not a flag"`), so an ordinary
+/// command was classified as a callback and the error arm swallowed it. Measured
+/// against a real store before the fix: `COMPLETE=nushell tasqx add -- "a real
+/// task"` printed nothing, exited 0, and **the task was never added** — while the
+/// comment above that arm claimed to be protecting against exactly this.
+///
+/// `nushell` is not a strawman. `complete.rs`'s design doc names it as a known
+/// gap, so a user who reads the docs and tries it anyway is the expected way to
+/// arrive here, and losing their writes is the expected cost.
+///
+/// The assertion is on the STORE, not on stdout: a command that printed its
+/// usual line but wrote nothing would be the same defect wearing a disguise.
 #[test]
-fn an_unrecognised_shell_name_is_silent_rather_than_a_clap_error() {
-    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+fn an_unrecognised_shell_name_lets_the_command_run() {
+    let db = temp_db("unrecognised");
+
+    let added = Command::new(env!("CARGO_BIN_EXE_tasqx"))
         .env("COMPLETE", "nushell")
-        .arg("--")
-        .arg("tasqx")
-        .arg("li")
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "add", "--", "a real task"])
         .output()
-        .expect("run the binary with an unsupported COMPLETE");
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "an unsupported shell must still exit 0 on the callback path"
-    );
+        .expect("run add with an unsupported COMPLETE");
+
     assert!(
-        out.stdout.is_empty() && out.stderr.is_empty(),
-        "an unsupported shell must produce nothing at all, got stdout {:?} stderr {:?}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        added.status.success(),
+        "an unrecognised $COMPLETE must not stop the command, got {:?} stderr {:?}",
+        added.status.code(),
+        String::from_utf8_lossy(&added.stderr)
+    );
+
+    let listed = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "list"])
+        .output()
+        .expect("list the store back");
+    let text = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        text.contains("a real task"),
+        "the task must actually be in the store; an unrecognised $COMPLETE \
+         swallowed the write. got:\n{text}"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// The same property for a READ command, and for the spelling that carries no
+/// `--` at all — the two halves of the old heuristic, so neither can come back.
+///
+/// A read is worth its own case because its failure is quieter than a write's:
+/// `list` swallowed into exit 0 prints nothing, which is indistinguishable from
+/// an empty store to anyone not looking at the store.
+#[test]
+fn an_unrecognised_shell_name_does_not_suppress_a_read_either() {
+    let db = temp_db("unrecognised-read");
+    let seed = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "add", "seeded task"])
+        .output()
+        .expect("seed the store");
+    assert!(seed.status.success());
+
+    for args in [
+        &["--no-daemon", "list"][..],
+        &["--no-daemon", "list", "--", "@working"][..],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("COMPLETE", "nushell")
+            .env("TASQX_DB", &db)
+            .args(args)
+            .output()
+            .expect("run a read with an unsupported COMPLETE");
+        assert!(out.status.success(), "`{args:?}` must still run");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("seeded task"),
+            "`{args:?}` produced no output under an unrecognised $COMPLETE"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// The discriminator is read out of `Shells::builtins()`, so every name clap
+/// recognises must still be treated as a callback rather than falling through to
+/// the dispatcher. This is the other side of the test above: widening "let it
+/// run" until it swallowed the real callbacks would trade one bug for its mirror.
+///
+/// `COMPLETE=<shell>` with a `--` and words is the callback protocol, and the
+/// proof it was served is that candidates come back rather than the command's own
+/// output.
+#[test]
+fn every_recognised_shell_is_still_served_as_a_callback() {
+    for shell in SHELLS {
+        let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("COMPLETE", shell)
+            .env("_CLAP_COMPLETE_INDEX", "1")
+            .args(["--", "tasqx", "lis"])
+            .output()
+            .unwrap_or_else(|e| panic!("run the {shell} callback: {e}"));
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the {shell} callback must exit 0"
+        );
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains("list"),
+            "the {shell} callback must have been served candidates, not run a \
+             command; got:\n{text}"
+        );
+    }
+}
+
+/// `$SHELL`-shaped values resolve too: `Shells::completer_for_path` takes the
+/// `file_stem`, so `/usr/bin/zsh` is `zsh`. Our discriminator must agree with it
+/// exactly — a value we accepted but clap then rejected would take the late-error
+/// arm and exit 0 on a real command, which is the fixed bug one layer down.
+#[test]
+fn a_shell_path_is_recognised_the_way_clap_recognises_it() {
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("COMPLETE", "/usr/bin/bash")
+        .env("_CLAP_COMPLETE_INDEX", "1")
+        .env("_CLAP_IFS", SEP.to_string())
+        .args(["--", "tasqx", "lis"])
+        .output()
+        .expect("run the callback with a $SHELL-shaped COMPLETE");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        candidates(&out).iter().any(|c| c == "list"),
+        "a path-shaped $COMPLETE must resolve to its shell, got {:?}",
+        candidates(&out)
     );
 }
 
