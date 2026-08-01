@@ -139,7 +139,7 @@ pub fn prepass<I: IntoIterator<Item = OsString>>(raw: I) -> Prepass {
                 j += 1;
             }
         } else if is_tag_exclusion(&tok) {
-            argv[j] = OsString::from(format!("{ESCAPED_DASH}{}", &tok[1..]));
+            argv[j] = OsString::from(escaped(&tok));
         }
         j += 1;
     }
@@ -161,6 +161,27 @@ fn long_value_follows(cmd: &clap::Command, long: &str) -> bool {
             a.get_long() == Some(long) || a.get_all_aliases().is_some_and(|v| v.contains(&long))
         })
         .is_some_and(|a| takes_value(a) && !a.is_require_equals_set())
+}
+
+/// Hide the leading dash of ONE filter token: the inverse of [`unescaped`].
+///
+/// Lifted out of [`prepass`]'s loop for the reason [`unescaped`] gives for being
+/// one function with two callers — the sentinel rule exists once, so nothing can
+/// drift away from [`ESCAPED_DASH`]. The second caller is `complete`'s
+/// `escaping_drift` guard, which drives every completer attached to a filter
+/// positional with an escaped word and checks the dash came back. A guard that
+/// spelled the escaped form itself would agree with a broken [`ESCAPED_DASH`] by
+/// construction and prove nothing.
+///
+/// Tokens [`is_tag_exclusion`] rejects are returned unchanged. Escaping a `--`
+/// flag or a bare `-` would hand it a sentinel that [`unescape`] never strips
+/// back off, which is the failure mode the caller's `else if` already avoids;
+/// stating it here keeps a second caller from having to know that.
+pub fn escaped(tok: &str) -> String {
+    match is_tag_exclusion(tok) {
+        true => format!("{ESCAPED_DASH}{}", &tok[1..]),
+        false => tok.to_string(),
+    }
 }
 
 /// Restore the dash [`prepass`] hid on ONE token.

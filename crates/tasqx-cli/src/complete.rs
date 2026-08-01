@@ -379,6 +379,11 @@ fn prepassed(raw: Vec<OsString>) -> Vec<OsString> {
 /// work (no escape applies, nothing starts with a dash) while every tag
 /// EXCLUSION quietly returned nothing. A completer that serves four of five
 /// prefixes is worse than one that serves none, because it looks finished.
+///
+/// The claim in the second paragraph — that a completer not built with this
+/// fails the build — is enforced by [`escaping_drift`], which recognises one of
+/// these by ANSWERING [`RESTORE_PROBE`] rather than by any label it wears. See
+/// that constant for why the recognition has to be behavioural.
 // Dead until Tasks 6-7 attach the sugar and filter providers, in the shape
 // `theme.rs`'s `FileOutcome` uses: landed with the defect it fixes rather than
 // held back, because the tests below are what prove the two properties hold, and
@@ -390,8 +395,78 @@ where
     F: Fn(&str) -> Vec<CompletionCandidate> + Send + Sync + 'static,
 {
     ArgValueCompleter::new(move |current: &OsStr| {
-        candidates(&crate::argv::unescaped(&current.to_string_lossy()))
+        let word = crate::argv::unescaped(&current.to_string_lossy());
+        // Answered before `candidates` is consulted, so the probe never reaches
+        // a provider and never costs a store lookup. See `RESTORE_PROBE`.
+        if word == RESTORE_PROBE {
+            return vec![CompletionCandidate::new(RESTORE_PROBE_ANSWER)];
+        }
+        candidates(&word)
     })
+}
+
+/// The word [`escaping_drift`] hands every attached completer, in its RESTORED
+/// spelling: the guard sends `argv::escaped(RESTORE_PROBE)` and a completer
+/// built by [`escaped_word_completer`] sees this.
+///
+/// # Why the guard cannot just look for a marker
+///
+/// The obvious guard is structural — tag the arg when the wrapper is attached,
+/// then assert the tag is there. It was rejected because the tag and the
+/// completer are two separate `ArgExt`s (`clap::Arg`'s extensions are keyed by
+/// `TypeId`, and the engine looks up `ArgValueCompleter` and nothing else), so
+/// they can only ever be attached as two independent acts. A guard on the tag
+/// then checks that somebody remembered to write the tag, which is a different
+/// proposition from "the dash is restored" and fails in the same silent
+/// direction the whole seam exists to prevent.
+///
+/// # Why it cannot compare candidate sets either
+///
+/// The other obvious guard is `complete(escaped) == complete(raw)`, which needs
+/// no cooperation from the code under test. It is vacuous here: every provider
+/// this seam will carry answers `-tag` out of the user's live store, the guard
+/// runs in-process with no store, and both sides come back empty. A bare
+/// completer would pass it.
+///
+/// # So the completer answers
+///
+/// What is left is a word the wrapper recognises AFTER restoring, whose answer
+/// is therefore proof the restore ran inside the shipped closure. It costs one
+/// string comparison per Tab press, on a path that is about to spend up to
+/// 150 ms reading a database, and it is the only shape measured to fail for a
+/// bare `ArgValueCompleter` — the mistake Task 7 is most likely to make, which
+/// compiles, reads correctly, and leaves `list -ne<TAB>` empty.
+///
+/// U+007F for the same reason [`crate::argv`] picked U+0001 for its sentinel: a
+/// control character no shell produces by accident, so no real completion can
+/// collide with it. A user who somehow types it gets one nonsense candidate
+/// instead of a wrong one.
+const RESTORE_PROBE: &str = "-\u{7f}restore-probe";
+
+/// What a completer built by [`escaped_word_completer`] answers [`RESTORE_PROBE`]
+/// with. Distinct from the probe so a completer that merely echoes its input
+/// cannot pass by accident.
+const RESTORE_PROBE_ANSWER: &str = "\u{7f}restored";
+
+/// Did the completer attached to `pos` restore the escaped dash before its
+/// provider saw the word? `None` when nothing is attached.
+///
+/// Separate from the guard that calls it so the guard's own failure mode is
+/// testable: `the_restore_probe_tells_a_wrapped_completer_from_a_bare_one`
+/// drives this both ways, because a guard that has only ever returned `true` is
+/// a guard nobody has checked can return `false`.
+#[cfg(test)]
+fn restores_the_escaped_dash(pos: &clap::Arg) -> Option<bool> {
+    let completer = pos.get::<ArgValueCompleter>()?;
+    let probe = OsString::from(crate::argv::escaped(RESTORE_PROBE));
+    let answered =
+        |got: Vec<CompletionCandidate>| got.iter().any(|c| c.get_value() == RESTORE_PROBE_ANSWER);
+    // `complete_at` is the entry point the engine actually uses
+    // (`engine/complete.rs:360`), so it is the one that must hold. `complete` is
+    // probed too: `ValueCompleter`'s default `complete_at` delegates to it, but a
+    // hand-written impl can override one and not the other, and this seam is
+    // exactly where that asymmetry would go unnoticed.
+    Some(answered(completer.complete_at(0, &probe)) && answered(completer.complete(&probe)))
 }
 
 #[cfg(test)]
@@ -407,9 +482,32 @@ mod tests {
     /// candidates the provider eventually returns. `words` is the command line
     /// the shell passes (program name included) and `index` is the cursor word,
     /// both exactly as `clap_complete`'s registrations supply them.
+    ///
+    /// # The fixture must never stand in for a shipped completer
+    ///
+    /// `Arg::add` REPLACES: extensions are keyed by `TypeId`, so installing this
+    /// wrapper over a completer `command.rs` already attached silently discards
+    /// it and every test below then measures the fixture. That is not
+    /// hypothetical — it was measured. With a bare `ArgValueCompleter` attached
+    /// to `List::filter`, the two `a_partial_tag_exclusion_*` tests below stayed
+    /// green across three forced rebuilds while the real binary offered nothing
+    /// at all for `list -ne<TAB>` and `list -needs<TAB>`.
+    ///
+    /// So the fixture refuses to mask. The shipped surface is
+    /// [`escaping_drift`]'s job; these tests own the seam, and the assertion is
+    /// the line between the two. When Task 7 attaches the live provider this
+    /// fires, and the right answer then is to drive it against a seeded store
+    /// rather than to delete the assertion.
     fn candidates_for(words: &[&str], index: usize) -> Vec<String> {
         let mut cmd = Cli::command().mut_subcommand("list", |sc| {
             sc.mut_arg("filter", |a| {
+                assert!(
+                    a.get::<ArgValueCompleter>().is_none()
+                        && a.get::<ArgValueCandidates>().is_none(),
+                    "`list filter` already carries a completer, and `Arg::add` \
+                     would replace it with this fixture — leaving these tests \
+                     measuring themselves. Drive the shipped one instead."
+                );
                 a.add(escaped_word_completer(|current| {
                     ["-needs", "+home", "project:work"]
                         .iter()
@@ -492,16 +590,31 @@ mod tests {
 
     /// Drift guard, read out of clap's own arg table rather than a list kept
     /// here: no positional that [`crate::argv::prepass`] can escape into may
-    /// carry a bare `ArgValueCandidates`.
+    /// carry a provider that never sees the dash.
     ///
-    /// That combination compiles, reads correctly, and silently returns nothing
-    /// for every tag exclusion, because the engine prefix-filters its output
-    /// against the still-escaped word (see [`escaped_word_completer`]). It is the
-    /// silent-drop shape, so it is a build failure rather than a comment. The
-    /// commands come from the same set `argv` derives its escaping from, so a
+    /// Two shapes fail, and only the first used to be checked.
+    ///
+    /// **`ArgValueCandidates`** yields a fixed list the ENGINE prefix-filters
+    /// (`complete_custom_arg_value`: `retain(|c| c.starts_with(value))`) against
+    /// the word as the engine holds it — still escaped. Nothing the provider does
+    /// can reach that filter, so every `-tag` comes back empty.
+    ///
+    /// **A bare `ArgValueCompleter`** is the likelier mistake, because it is the
+    /// right TYPE: it is handed the word and filters itself, and it is what Task
+    /// 7 will reach for. Without [`escaped_word_completer`] around it, the word
+    /// it filters against is `\u{1}ne` and it matches nothing. This is not a
+    /// worry, it is a measurement — attaching one to `List::filter` left the four
+    /// tests in this module green across three forced rebuilds while the real
+    /// binary answered `list -ne<TAB>` and `list -needs<TAB>` with nothing, and
+    /// answered `list +<TAB>` correctly. Four of five prefixes working is the
+    /// worst version of this defect: it looks finished.
+    ///
+    /// The second shape is caught by [`restores_the_escaped_dash`], which asks
+    /// the completer to prove the restore rather than to carry a label saying so.
+    /// The commands come from the same set `argv` derives its escaping from, so a
     /// filter command added tomorrow is covered the day it is declared.
     #[test]
-    fn no_escapable_positional_uses_an_engine_filtered_provider() {
+    fn escaping_drift() {
         let mut cmd = Cli::command();
         cmd.build();
         let mut checked = 0;
@@ -520,12 +633,73 @@ mod tests {
                     sc.get_name(),
                     pos.get_id()
                 );
+                // `None` is no completer at all, which is the state today and is
+                // not a defect: the positional simply offers clap's own flags.
+                if let Some(restored) = restores_the_escaped_dash(pos) {
+                    assert!(
+                        restored,
+                        "`{} {}` carries an ArgValueCompleter that did not restore \
+                         the escaped dash — it will be handed `\\u{{1}}ne` where the \
+                         user typed `-ne` and match nothing, silently, for every tag \
+                         exclusion while `+tag` and `project:x` keep working. Build \
+                         it with `complete::escaped_word_completer`.",
+                        sc.get_name(),
+                        pos.get_id()
+                    );
+                }
             }
         }
         assert!(
             checked >= crate::argv::FILTER_COMMANDS.len(),
             "every filter command declares a positional; the guard matched {checked} \
              and would otherwise be vacuous"
+        );
+    }
+
+    /// The guard's own guard: [`restores_the_escaped_dash`] must answer `false`
+    /// for the shape it exists to catch, not merely `true` for the good one.
+    ///
+    /// The previous version of [`escaping_drift`] asserted
+    /// `get::<ArgValueCandidates>().is_none()` and nothing else, which is a
+    /// condition the tree satisfies whether or not anyone is paying attention —
+    /// it had never failed, and when the failing case was constructed by hand it
+    /// still did not fail. A guard nobody has watched fail is a comment with a
+    /// `#[test]` on it, so the failure is exercised here rather than trusted.
+    ///
+    /// The `bare` arm is the mutation verbatim: an `ArgValueCompleter` that
+    /// filters against the word it was handed, which is the correct and obvious
+    /// way to write one and is wrong only because of the pre-pass.
+    #[test]
+    fn the_restore_probe_tells_a_wrapped_completer_from_a_bare_one() {
+        let wrapped = clap::Arg::new("filter").add(escaped_word_completer(|_| {
+            Vec::<CompletionCandidate>::new()
+        }));
+        assert_eq!(
+            restores_the_escaped_dash(&wrapped),
+            Some(true),
+            "a completer built by `escaped_word_completer` must answer the probe"
+        );
+
+        let bare = clap::Arg::new("filter").add(ArgValueCompleter::new(|current: &OsStr| {
+            let current = current.to_string_lossy().into_owned();
+            ["-needs", "+home"]
+                .iter()
+                .filter(|c| c.starts_with(&current))
+                .map(|c| CompletionCandidate::new(*c))
+                .collect::<Vec<_>>()
+        }));
+        assert_eq!(
+            restores_the_escaped_dash(&bare),
+            Some(false),
+            "a bare ArgValueCompleter must NOT answer the probe; if it does, the \
+             guard cannot tell the two apart and passes on the defect"
+        );
+
+        assert_eq!(
+            restores_the_escaped_dash(&clap::Arg::new("filter")),
+            None,
+            "an unattached positional is not a defect and must be distinguishable \
+             from a failing one"
         );
     }
 }
