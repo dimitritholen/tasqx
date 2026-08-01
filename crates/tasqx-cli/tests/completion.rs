@@ -1,0 +1,280 @@
+//! Guards for the shell-completion surface.
+//!
+//! Two halves, and they break for different reasons.
+//!
+//! The registration half is the pin's guard. `clap_complete`'s
+//! `unstable-dynamic` feature is semver-exempt, so the version in Cargo.toml is
+//! pinned with `=` and these tests are what makes moving that pin an act with
+//! consequences: they run the REAL binary with `$COMPLETE` set, for every shell
+//! clap claims to support, and read what comes back. An upstream template or
+//! engine change shows up here as a red build instead of as a shell that
+//! quietly stops completing.
+//!
+//! The behaviour half is the promise that this feature is invisible when it is
+//! not wanted. `complete::intercept()` is the first statement of `run()`, ahead
+//! of the argv pre-pass, so it sits in front of every command tasqx has. Without
+//! `$COMPLETE` it must be a single environment lookup and a return, which is
+//! only provable by driving ordinary commands through the same entry point and
+//! finding them unchanged.
+
+use std::process::Command;
+
+/// The binary, one-shot and in-process.
+///
+/// `--no-daemon` for the same reason `tests/help.rs` gives: `open_backend`
+/// prefers a reachable daemon and the remote path never reads `TASQX_DB`, so on
+/// a developer machine running `tasqx daemon` an unguarded fixture would talk to
+/// the real store. It is not needed on the `$COMPLETE` path — that path never
+/// reaches `open_backend` at all — but the no-`$COMPLETE` tests here run real
+/// commands, and one helper for both keeps the difference from mattering.
+fn bin() -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    c.arg("--no-daemon");
+    c
+}
+
+/// Every shell `clap_complete` 4.6.7 has a built-in `EnvCompleter` for
+/// (`env/mod.rs`: `Shells::builtins()`), spelled the way it spells them.
+///
+/// Listed here rather than derived because it is the OTHER side of the pin: if
+/// upstream drops a shell or renames one, this list stopping to match is the
+/// signal. Deriving it from the same table that produces the output would make
+/// the guard agree with the implementation by construction.
+const SHELLS: [&str; 5] = ["bash", "elvish", "fish", "powershell", "zsh"];
+
+/// `COMPLETE=<shell> tasqx` with no further words must print a registration
+/// script naming the binary — that script is the entire integration, and if it
+/// comes back empty or errors, completion is dead in that shell with no other
+/// symptom.
+#[test]
+fn every_supported_shell_emits_a_registration_naming_the_binary() {
+    for shell in SHELLS {
+        let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("COMPLETE", shell)
+            .output()
+            .unwrap_or_else(|e| panic!("run the binary with COMPLETE={shell}: {e}"));
+
+        assert!(
+            out.status.success(),
+            "COMPLETE={shell} must exit 0, got {:?} with stderr {:?}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let script = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !script.trim().is_empty(),
+            "COMPLETE={shell} produced no registration script"
+        );
+        assert!(
+            script.contains("tasqx"),
+            "the {shell} registration must name the binary it completes, got:\n{script}"
+        );
+        // The registration exists to make the shell call BACK into the binary
+        // with the variable set; a script that never mentions it is a script
+        // that registers nothing.
+        assert!(
+            script.contains("COMPLETE"),
+            "the {shell} registration must set $COMPLETE on the callback, got:\n{script}"
+        );
+        // The callback path is silent by policy (see `complete.rs`), and that
+        // includes the registration branch: anything on stderr here lands in
+        // the user's shell startup output.
+        assert!(
+            out.stderr.is_empty(),
+            "COMPLETE={shell} wrote to stderr: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// A `$COMPLETE` naming something clap has no completer for must not become a
+/// clap error on stderr and a non-zero exit. `CompleteEnv::complete()` does
+/// exactly that (it calls `Error::exit`), which is why `intercept()` uses
+/// `try_complete` and swallows the error instead.
+#[test]
+fn an_unrecognised_shell_name_is_silent_rather_than_a_clap_error() {
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("COMPLETE", "nushell")
+        .arg("--")
+        .arg("tasqx")
+        .arg("li")
+        .output()
+        .expect("run the binary with an unsupported COMPLETE");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an unsupported shell must still exit 0 on the callback path"
+    );
+    assert!(
+        out.stdout.is_empty() && out.stderr.is_empty(),
+        "an unsupported shell must produce nothing at all, got stdout {:?} stderr {:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Drive one bash completion callback and hand back its raw stdout.
+///
+/// `words` is the command line as the shell sees it, program name included —
+/// bash's registration passes `words=("${COMP_WORDS[@]}")` after a `--`, and
+/// `cursor` is the `COMP_CWORD` index of the word being completed. Both are part
+/// of the protocol rather than incidental: with the index left at its default of
+/// 0, clap completes the PROGRAM NAME and every candidate assertion below would
+/// pass or fail for the wrong reason.
+fn complete_bash(cursor: usize, words: &[&str]) -> std::process::Output {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    c.env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", cursor.to_string())
+        // The registration sets `IFS=$'\013'` and forwards it as `_CLAP_IFS`,
+        // and the separator between candidates is read back out of that
+        // variable. Set here so the fixture reproduces the real protocol rather
+        // than the newline fallback a bare invocation happens to take.
+        .env("_CLAP_IFS", SEP.to_string())
+        .arg("--")
+        .args(words);
+    c.output().expect("run the completion callback")
+}
+
+/// The candidate separator bash's registration installs: vertical tab, chosen
+/// upstream because no candidate can contain it.
+const SEP: char = '\u{b}';
+
+/// Split bash candidate output into individual candidates.
+fn candidates(out: &std::process::Output) -> Vec<String> {
+    String::from_utf8_lossy(&out.stdout)
+        .split(SEP)
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
+/// The completion callback parses the words it is given against the same
+/// `clap::Command` the argv pre-pass exists for, so it inherits the same
+/// problem: `-needs` is filter grammar that looks exactly like a flag.
+///
+/// This is the test the pre-pass fix exists for, and the numbers in it are
+/// MEASURED against a build with the pre-pass removed, not imagined. Without it,
+/// completing `-needs` in `list`'s filter position offers `-needsh` and
+/// `-needsV`: clap reads the word as an unknown short-flag cluster and helpfully
+/// suggests appending the short flags it does know. Those two strings are
+/// unusable — neither is a tag exclusion and neither is a flag — so their
+/// absence is the assertion, and it is one no other guard in the suite makes,
+/// because every existing guard exercises the parse path rather than the
+/// completion path.
+#[test]
+fn a_filter_token_beginning_with_a_dash_does_not_derail_the_completer() {
+    let out = complete_bash(2, &["tasqx", "list", "-needs"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the callback must exit 0 mid-filter"
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "the callback must never write to stderr, got {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for junk in candidates(&out) {
+        assert!(
+            !junk.starts_with("-needs"),
+            "`-needs` was read as a short-flag cluster and grew into {junk:?} — \
+             the argv pre-pass is not reaching the completion engine"
+        );
+    }
+
+    // And the word after it: the engine must still be inside `list`, which it
+    // shows by offering `list`'s flags rather than erroring out.
+    let after = complete_bash(3, &["tasqx", "list", "-needs", ""]);
+    assert_eq!(after.status.code(), Some(0));
+    assert!(
+        candidates(&after).iter().any(|c| c == "--json"),
+        "after a tag exclusion the engine must still be completing `list`, got {:?}",
+        candidates(&after)
+    );
+}
+
+/// Subcommand completion is the free win the whole feature rides on: no value
+/// providers are attached yet, and `tasqx lis<TAB>` must already offer `list`.
+#[test]
+fn a_partial_subcommand_completes_from_claps_own_tree() {
+    let out = complete_bash(1, &["tasqx", "lis"]);
+    assert!(
+        candidates(&out).iter().any(|c| c == "list"),
+        "`tasqx lis<TAB>` must offer `list`, got {:?}",
+        candidates(&out)
+    );
+}
+
+/// Thirty-odd aliases come free from clap's tree, and they behave in a way
+/// worth pinning because it is not the obvious one and the README must not
+/// over-promise it.
+///
+/// `#[command(alias = "…")]` declares a HIDDEN alias, and clap's engine emits
+/// those with `hide(true)`, which means they surface only when no VISIBLE
+/// candidate matches the partial word. Measured on this tree: `tasqx x<TAB>`
+/// offers `x` (nothing visible starts with x), `tasqx ls<TAB>` offers `ls`, and
+/// `tasqx mod<TAB>` offers `modify` rather than `mod` — because the canonical
+/// name matched first. Every one of those completes to something that runs,
+/// which is the property that matters; "every alias is listed" is not true and
+/// must not be claimed.
+#[test]
+fn aliases_complete_when_no_canonical_name_claims_the_prefix() {
+    for (typed, want) in [("x", "x"), ("ls", "ls"), ("mod", "modify")] {
+        let got = candidates(&complete_bash(1, &["tasqx", typed]));
+        assert!(
+            got.iter().any(|c| c == want),
+            "`tasqx {typed}<TAB>` must offer {want:?}, got {got:?}"
+        );
+    }
+    // The bare prompt lists the canonical surface only — hidden aliases stay
+    // hidden while anything visible matches, which is what keeps the first Tab
+    // from printing seventy entries.
+    let bare = candidates(&complete_bash(1, &["tasqx", ""]));
+    assert!(bare.iter().any(|c| c == "list"), "got {bare:?}");
+    assert!(
+        !bare.iter().any(|c| c == "ls"),
+        "the bare prompt must not list hidden aliases, got {bare:?}"
+    );
+}
+
+/// The whole feature is a no-op without the variable, and that is a property of
+/// the entry point of EVERY command — `intercept()` runs before the argv
+/// pre-pass, so a mistake here breaks the tool rather than the feature.
+#[test]
+fn without_the_variable_the_binary_behaves_exactly_as_before() {
+    let version = bin().arg("--version").output().expect("run --version");
+    assert!(version.status.success());
+    let text = String::from_utf8_lossy(&version.stdout);
+    assert!(text.contains("tasqx"), "got {text:?}");
+
+    // A filter command with a leading-dash token: the pre-pass still runs on the
+    // ordinary path, unchanged, and `intercept()` returned without touching it.
+    let db = std::env::temp_dir().join(format!("tasqx-complete-off-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db);
+    let listed = bin()
+        .env("TASQX_DB", &db)
+        .args(["list", "-needs"])
+        .output()
+        .expect("run list with a tag exclusion");
+    assert!(
+        listed.status.success(),
+        "`list -needs` must still parse, got stderr {:?}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+
+    // And an ordinary parse error is still a parse error, on stderr, non-zero:
+    // the silence policy belongs to the callback path and must not have leaked
+    // onto the command path.
+    let bad = bin()
+        .env("TASQX_DB", &db)
+        .args(["list", "--bogus"])
+        .output()
+        .expect("run list with an unknown flag");
+    assert!(!bad.status.success(), "an unknown flag must still fail");
+    assert!(
+        !bad.stderr.is_empty(),
+        "an unknown flag must still be reported on stderr"
+    );
+
+    let _ = std::fs::remove_file(&db);
+}
