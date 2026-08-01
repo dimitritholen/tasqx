@@ -3033,6 +3033,29 @@ mod tests {
             // binary and cannot be set by a user at all. A config layer for it
             // is not "out of scope" but meaningless.
             "TASQX_BUILD_ID",
+            // The shell-completion pair, and neither can be a setting.
+            //
+            // `TASQX_COMPLETE` selects a transport in the same sense TASQX_SOCK
+            // does — it is written by the activation line a shell sources, not
+            // by a human tuning behaviour, and `complete::intercept` reads it
+            // before argv exists, let alone a config file.
+            //
+            // `TASQX_NO_COMPLETE_LOOKUP` looks like a setting and deliberately
+            // is not: it disables opening the store on a keystroke, and reading
+            // `config.toml` to discover that would do the very work being
+            // disabled. A switch that can only be honoured after performing the
+            // thing it turns off is a switch that does not work. Both are
+            // user-facing and belong on the guide page — Task 10 of the
+            // completion plan owns that; this list is about the SETTINGS
+            // registry, which is a different question.
+            "TASQX_COMPLETE",
+            "TASQX_NO_COMPLETE_LOOKUP",
+            // Test scaffolding, not a switch: `complete.rs`'s panic-silencing
+            // guard re-runs itself as a child process and this is how the child
+            // knows which side of the fork it is on. Named here rather than
+            // spelled without the prefix to dodge the scan, because dodging a
+            // drift guard is how the things it hunts get in.
+            "TASQX_PANIC_PROBE_CHILD",
         ];
         // Read by the capability detector but deliberately not documented as
         // switches: they describe what the terminal IS (set by the terminal,
@@ -3040,12 +3063,21 @@ mod tests {
         // table would invite exactly the hand-tuning the detector exists to
         // make unnecessary.
         const TERMINAL_IDENTITY: &[&str] = &["TERM", "COLORTERM"];
+        // Hand-kept, and that is the guard's own weak spot: `complete.rs` was
+        // absent until the completion feature added two variables to it, and
+        // for the length of that branch `TASQX_NO_COMPLETE_LOOKUP` existed with
+        // nothing documenting it and nothing noticing — the exact state
+        // TASQX_FORCE_COLOR was in when this test was written. It surfaced only
+        // because a comment in `lib.rs` came to mention `$TASQX_COMPLETE`. A
+        // file added tomorrow has the same hole; the list is here rather than
+        // derived because `include_str!` needs a literal path.
         let sources = [
             include_str!("lib.rs"),
             include_str!("theme.rs"),
             include_str!("config.rs"),
             include_str!("tui.rs"),
             include_str!("tokens.rs"),
+            include_str!("complete.rs"),
         ];
 
         // TASQX_* rule: a textual scan, comments included — a prefixed mention

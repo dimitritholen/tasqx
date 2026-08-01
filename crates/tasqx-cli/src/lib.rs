@@ -234,7 +234,7 @@ fn emit(text: &str) {
 
 pub fn run() {
     // FIRST, before anything reads argv or writes a byte of stdout. Unless
-    // `$COMPLETE` is set this is one environment lookup and a return; when it is
+    // `$TASQX_COMPLETE` is set this is one environment lookup and a return; when it is
     // set, the process serves the shell's Tab press and exits without ever
     // reaching the parse below, the backend, or the dispatcher. The completion
     // words get their own `argv::prepass` inside — see `complete::prepassed` for
@@ -2771,10 +2771,39 @@ fn store_location(remote_socket: Option<&str>, path: Result<PathBuf, String>) ->
 }
 
 fn db_path() -> Result<PathBuf, String> {
+    db_path_resolved(true)
+}
+
+/// The store path a command WOULD open, resolved without touching the disk.
+///
+/// The completion callback (`complete::lookup`) needs the same answer
+/// [`db_path`] gives and none of its side effects. That is not a preference:
+/// the whole promise of the `$TASQX_COMPLETE` path is that pressing Tab creates
+/// nothing, and [`db_path`] creates the parent directory of `$TASQX_DB` and the
+/// platform data directory before it returns. A Tab press on a machine that has
+/// never run tasqx would therefore author `%APPDATA%\tasqx\tasqx\data\`, and
+/// `tests/completion.rs` asserts against the filesystem that it does not.
+///
+/// Split off [`db_path`] rather than written beside it, because the two must
+/// agree about WHERE the store is or completion offers ids from a store no
+/// command reads. A second copy of the `$TASQX_DB`-then-`ProjectDirs` rule is
+/// exactly the parallel-copy drift this repository keeps paying for; the
+/// difference between the two callers is one boolean and nothing else.
+fn db_path_read_only() -> Result<PathBuf, String> {
+    db_path_resolved(false)
+}
+
+/// `$TASQX_DB` if set and non-empty, else the platform data dir. `create_dirs`
+/// decides whether the containing directory is brought into existence on the
+/// way — see [`db_path_read_only`] for why that is a caller's choice rather
+/// than a fixed behaviour.
+fn db_path_resolved(create_dirs: bool) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("TASQX_DB") {
         if !p.is_empty() {
-            if let Some(parent) = PathBuf::from(&p).parent() {
-                let _ = std::fs::create_dir_all(parent);
+            if create_dirs {
+                if let Some(parent) = PathBuf::from(&p).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
             }
             return Ok(PathBuf::from(p));
         }
@@ -2782,7 +2811,9 @@ fn db_path() -> Result<PathBuf, String> {
     let dirs = directories::ProjectDirs::from("dev", "tasqx", "tasqx")
         .ok_or_else(|| "cannot determine a data directory".to_string())?;
     let dir = dirs.data_dir();
-    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create data dir: {e}"))?;
+    if create_dirs {
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create data dir: {e}"))?;
+    }
     Ok(dir.join("tasks.db"))
 }
 
