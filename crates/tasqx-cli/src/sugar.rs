@@ -53,7 +53,7 @@
 //! — for `add` it means "no value", for `modify` it means "leave this field
 //! alone". Clearing is therefore not expressible here; it is `--clear <field>`.
 
-use tasqx_core::ApiError;
+use tasqx_core::{ApiError, Priority};
 
 pub struct ParsedAdd {
     pub title: String,
@@ -469,13 +469,14 @@ fn bad_priority(s: &str) -> ApiError {
 /// `None` is a *rejection*, not a shrug — the caller must turn it into
 /// [`bad_priority`]. Returning the token to the title instead would be the
 /// quieter failure: the user asked for a priority and would get a renamed task.
+///
+/// Delegates to `Priority::parse` rather than restating its table. It used to
+/// carry its own copy of the vocabulary, which meant `!medium` and
+/// `--priority medium` were two independent promises that happened to agree;
+/// a spelling added to one and not the other would have been accepted here and
+/// rejected by the engine one call later, or the reverse.
 fn normalize_prio(s: &str) -> Option<String> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "h" | "high" => Some("H".into()),
-        "m" | "medium" | "med" => Some("M".into()),
-        "l" | "low" => Some("L".into()),
-        _ => None,
-    }
+    Priority::parse(s).map(|p| p.as_str().to_string())
 }
 
 #[cfg(test)]

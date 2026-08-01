@@ -237,6 +237,73 @@ fn aliases_complete_when_no_canonical_name_claims_the_prefix() {
     );
 }
 
+/// A closed value set declared to clap is the only thing a completion engine can
+/// offer for a flag, and this is the end of that wire: through the real binary,
+/// into the real shell protocol.
+///
+/// The hidden-spelling behaviour in the middle assertion is measured, not
+/// assumed. clap's engine filters possible values with a case-SENSITIVE
+/// `starts_with`, so `--priority m<TAB>` matches `medium` and `med` but not `M`,
+/// and the hidden pair surfaces because nothing visible matched. Every candidate
+/// that comes back parses, which is the property that matters; "you always get
+/// the canonical letter" is not true and should not be promised.
+#[test]
+fn closed_value_sets_reach_the_shell() {
+    assert_eq!(
+        candidates(&complete_bash(4, &["tasqx", "add", "x", "--priority", ""])),
+        ["H", "M", "L"],
+        "the bare prompt offers the canonical letters only"
+    );
+    assert_eq!(
+        candidates(&complete_bash(
+            4,
+            &["tasqx", "add", "x", "--priority", "hi"]
+        )),
+        ["high"],
+        "a partial word no canonical letter matches surfaces the long spelling"
+    );
+    assert_eq!(
+        candidates(&complete_bash(
+            5,
+            &["tasqx", "memory", "search", "q", "--scope", ""]
+        )),
+        ["all", "docs", "annotations"],
+        "the scope vocabulary comes from the engine's MEMORY_SCOPES"
+    );
+}
+
+/// A `ValueHint` is the only thing that makes a path arg completable: without
+/// one, clap's engine takes the `ValueHint::Unknown` arm and offers NOTHING —
+/// not a wrong answer, no answer. `command.rs`'s drift guard keeps the hints
+/// attached; this proves a hint actually produces filenames through the binary.
+#[test]
+fn a_path_arg_completes_real_filenames() {
+    let dir = std::env::temp_dir().join(format!("tasqx-complete-path-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the fixture dir");
+    std::fs::write(dir.join("report-target.html"), b"").expect("write a file to find");
+
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    let out = c
+        .env("COMPLETE", "bash")
+        .env("_CLAP_COMPLETE_INDEX", "3")
+        .env("_CLAP_IFS", SEP.to_string())
+        // `complete_path` resolves a relative partial word against the working
+        // directory clap is handed, which is this process's cwd.
+        .current_dir(&dir)
+        .args(["--", "tasqx", "docs", "--out", "report-"])
+        .output()
+        .expect("run the completion callback");
+
+    assert!(
+        candidates(&out).iter().any(|c| c == "report-target.html"),
+        "`docs --out report-<TAB>` must offer the file, got {:?}",
+        candidates(&out)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The whole feature is a no-op without the variable, and that is a property of
 /// the entry point of EVERY command — `intercept()` runs before the argv
 /// pre-pass, so a mistake here breaks the tool rather than the feature.
