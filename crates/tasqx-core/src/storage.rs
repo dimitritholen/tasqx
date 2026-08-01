@@ -60,10 +60,18 @@ pub fn open(path: &str) -> Result<Connection, ApiError> {
 ///    (`tasqx-cli/src/complete.rs`), which runs on a Tab press. A keystroke that
 ///    did not run a command must not leave a database and a schema behind on a
 ///    machine that has never run tasqx, so an absent path is an `Err` here.
-///  * **No migration.** [`migrate`] is DDL. Running it from a read path would
+///  * **No migration.** `migrate` is DDL. Running it from a read path would
 ///    fail on the read-only connection anyway, but the deeper reason is that
 ///    upgrading a store's schema is a decision a command makes, never something
 ///    a completion lookup does on the user's behalf.
+///
+///    A code span and not a `[link]`, unlike [`open`] above, because `migrate`
+///    is private: rustdoc resolves such a link only under
+///    `--document-private-items` and 404s it for everyone who reads the
+///    published page, so `-D rustdoc::private_intra_doc_links` rejects it. Naming
+///    a private item in public prose is fine; linking to one is not. The repo
+///    fixes this with the span rather than an `#[allow]` — see `ci.yml`'s rustdoc
+///    step, which says so for the three earlier instances.
 ///  * **No `journal_mode = WAL`.** That pragma is a write to the database
 ///    header. Issuing it on a read-only connection fails, and "fixing" that by
 ///    dropping the read-only flag would undo the first two properties. WAL is
