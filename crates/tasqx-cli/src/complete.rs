@@ -55,6 +55,17 @@
 //! `tests/completion.rs` asserts that an unknown flag is still a stderr message
 //! and a non-zero exit, so the silence cannot leak sideways unnoticed.
 //!
+//! # How a value ever reaches a candidate
+//!
+//! Everything above is structure — subcommands, flags, closed value sets — and
+//! needs no store. The half that does is [`lookup`], and it is the only way any
+//! provider in `complete/candidates.rs` may reach the user's data. It prefers a
+//! reachable daemon, falls back to a strictly read-only open that cannot create
+//! or migrate anything, runs the whole thing inside [`LOOKUP_BUDGET`], catches
+//! panics, and answers `None` for every one of those failures. `$`[`NO_LOOKUP_VAR`]
+//! turns it off entirely for anyone who does not want a shell reading a database
+//! on a keystroke.
+//!
 //! # What was verified against `clap_complete` 4.6.7 before building on it
 //!
 //! Two upstream facts this module depends on, checked in the vendored source
@@ -448,6 +459,253 @@ const RESTORE_PROBE: &str = "-\u{7f}restore-probe";
 /// cannot pass by accident.
 const RESTORE_PROBE_ANSWER: &str = "\u{7f}restored";
 
+// ---- the guarded lookup ----------------------------------------------------
+//
+// Everything below is *how* a candidate is fetched safely. *What* the
+// candidates are lives in `complete/candidates.rs`, and the split is the point:
+// a provider author should not be able to reach the store except through
+// [`lookup`], because every property the failure-policy table promises — no
+// creation, no migration, no stderr, no hang, exit 0 — is enforced here and
+// nowhere else.
+
+/// Turn every store lookup off, leaving the structural completion (subcommands,
+/// aliases, flags, closed value sets, path hints) working.
+///
+/// The escape hatch exists because the value half of this feature reads a
+/// database on a keystroke, and there is no shortage of ways for that to be the
+/// wrong trade for someone: a store on a slow network mount, a machine where
+/// the 150 ms budget is spent every time and Tab feels broken, or an operator
+/// who simply does not want a shell able to open the file. Set it to anything
+/// non-empty and `lookup` answers `None` before it resolves a socket or a path.
+///
+/// Deliberately NOT wired to a config setting. `config.toml` is read by opening
+/// the store's neighbourhood and parsing a file, which is work on the very path
+/// this variable exists to make free — and a setting that can only be honoured
+/// after doing the thing it disables is a setting that does not work.
+const NO_LOOKUP_VAR: &str = "TASQX_NO_COMPLETE_LOOKUP";
+
+/// Wall-clock budget for a WHOLE lookup: resolving the socket, connecting or
+/// opening the store, running the provider, and handing the rows back.
+///
+/// Measured against the human threshold rather than against this machine. A Tab
+/// press that answers inside ~100 ms reads as instant; past a couple hundred
+/// milliseconds the shell appears to have hung, and the user has already started
+/// typing over whatever eventually arrives. 150 ms is chosen to sit above a
+/// local SQLite read of a normal store (single-digit milliseconds) and a daemon
+/// round trip (likewise), and below the point where the terminal feels stuck.
+///
+/// It is a budget for the WHOLE lookup and not a per-step timeout on purpose:
+/// three steps that are each "fast enough" still add up to a stall, and the user
+/// experiences the sum. `storage::open_read_only`'s 30 ms busy timeout is sized
+/// to fit underneath this rather than the other way round.
+const LOOKUP_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Run `f` against a read-only view of the user's store, or answer `None`.
+///
+/// `None` is the answer for every failure without exception — the escape hatch,
+/// an unreachable daemon AND an absent store, a locked database, a provider that
+/// blew the budget, a provider that panicked. See this module's failure-policy
+/// section for why silence is correct here and nowhere else in the codebase.
+///
+/// The backend is built inside the worker thread rather than by the caller, so
+/// that connecting and opening are inside the budget too. A daemon that accepts
+/// the connection and then never answers is the failure this buys protection
+/// from, and it is not hypothetical: `try_connect` returning `Some` proves a
+/// listener exists, not that it is healthy.
+// Dead until Task 5 attaches the first provider, in the same shape
+// `escaped_word_completer` above uses: landed with its tests rather than held
+// back, because the properties it promises — a budget, a caught panic, a store
+// that is never created — are only demonstrable against real machinery. Marking
+// the ROOT of the cluster is enough; rustc treats an allowed item as live and
+// stops warning about everything reachable from it, so `read_only_backend`,
+// `guarded`, `SilencedPanics` and `crate::db_path_read_only` need no attribute
+// of their own and get none. The `allow` comes off with the first attachment.
+#[allow(dead_code)]
+pub(crate) fn lookup<T>(
+    f: impl FnOnce(&mut crate::Backend) -> Option<T> + Send + 'static,
+) -> Option<T>
+where
+    T: Send + 'static,
+{
+    // Before the socket is resolved and before any path is computed, so the
+    // escape hatch really is free rather than merely quiet.
+    if std::env::var_os(NO_LOOKUP_VAR).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    guarded(move || {
+        let mut backend = read_only_backend()?;
+        f(&mut backend)
+    })
+}
+
+/// A read-only view of whatever the user's store currently is: the daemon if one
+/// answers, else the file, opened so it cannot be created or written.
+///
+/// **The daemon is preferred for the same reason `open_backend` prefers it**
+/// (`lib.rs`), and the reuse is deliberate rather than incidental: a running
+/// daemon is the single writer, so asking it is both the freshest answer and the
+/// one that leaves the file completely untouched — no second connection, no
+/// `-shm`/`-wal` sidecars, nothing. `resolve_socket(None)` is the same
+/// resolution every command performs (`--socket` is not available here, but
+/// `$TASQX_SOCK` and the platform default are), so completion offers ids from
+/// the store a command would actually write to. `try_connect` never spawns a
+/// daemon and returns `None` immediately on a missing or stale socket, which is
+/// exactly the behaviour a keystroke needs.
+///
+/// The fallback is [`crate::db_path_read_only`] plus
+/// [`tasqx_core::Engine::open_read_only`], and both halves matter: the path
+/// resolution must not create the data directory and the open must not create
+/// the database. An absent store is an `Err` here, becomes `None`, and becomes
+/// zero candidates — the correct answer to "what ids exist?" on a machine with
+/// no store.
+fn read_only_backend() -> Option<crate::Backend> {
+    let socket = crate::resolve_socket(None);
+    if let Some(conn) = crate::daemon::try_connect(&socket) {
+        return Some(crate::Backend::Remote { conn, socket });
+    }
+    local_backend_at(&crate::db_path_read_only().ok()?)
+}
+
+/// The file half of [`read_only_backend`], split out so the never-create
+/// property is testable without mutating `$TASQX_DB` — which is process-global
+/// state that the rest of this test binary's threads are reading concurrently.
+fn local_backend_at(path: &std::path::Path) -> Option<crate::Backend> {
+    crate::Engine::open_read_only(&path.to_string_lossy())
+        .ok()
+        .map(crate::Backend::Local)
+}
+
+/// Run `work` under the two guarantees the callback path cannot do without: it
+/// returns within [`LOOKUP_BUDGET`], and a panic inside it neither escapes nor
+/// reaches stderr.
+///
+/// Separate from [`lookup`] because these are the properties that must hold for
+/// ANY provider, including ones that never touch a store, and because a test can
+/// then drive a slow or panicking closure without needing a database.
+/// Deliberately reads no environment: [`lookup`] owns the escape hatch, so this
+/// function's behaviour is a pure function of its argument and the tests that
+/// assert `None` here cannot be made vacuous by a stray variable.
+///
+/// # The detached thread, and why the exception is acceptable HERE
+///
+/// On timeout this returns without joining, so a worker that is still blocked on
+/// a lock, a socket read or a slow disk is simply left running. Nothing else in
+/// this codebase leaks a thread, and the exception needs its reason attached
+/// rather than being inferred from the absence of a `join`:
+///
+///  * **The process is about to exit.** This runs only under
+///    `$TASQX_COMPLETE`, and [`intercept`] calls `std::process::exit(0)` the
+///    moment the candidates are written. The thread's remaining lifetime is
+///    microseconds of a process that the operating system is about to reclaim
+///    in full — file handles, the SQLite connection and the socket included.
+///  * **Joining is the failure being avoided.** The budget exists because a Tab
+///    press must answer promptly. Waiting for the worker to notice is precisely
+///    the stall, and there is nothing to wait FOR: whatever it eventually
+///    produces is discarded, because the receiver is gone.
+///  * **Cancelling it is not available.** Rust has no safe thread cancellation,
+///    and the blocking calls underneath (`rusqlite`, the pipe/socket read) are
+///    not interruptible from outside. A cooperative cancellation flag would only
+///    be checked between steps, which are exactly the places the worker is not
+///    stuck.
+///
+/// The one thing the detached worker can still do is panic after this function
+/// has restored the panic hook, and print. In the real process that window is
+/// the microseconds before `exit(0)`; in the test binary it is reachable only by
+/// writing a closure that both outlives the budget and then panics, which no
+/// test here does. It is named rather than papered over because the alternative
+/// — never restoring the hook — silently swallows every assertion message in
+/// this crate's test binary, which is a far worse trade.
+fn guarded<T>(work: impl FnOnce() -> Option<T> + Send + 'static) -> Option<T>
+where
+    T: Send + 'static,
+{
+    // Installed BEFORE the worker starts, so there is no window in which an
+    // early panic takes the default hook.
+    let silence = SilencedPanics::install();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // `AssertUnwindSafe` because `work` is `FnOnce` and is consumed here:
+        // there is no state it could leave observably half-updated, since
+        // nothing else holds a reference to anything it owns. A panic yields
+        // `Err`, which collapses to `None` exactly like a provider that found
+        // nothing — the failure-policy table's "panic -> caught, [], exit 0".
+        let produced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+            .ok()
+            .flatten();
+        // The receiver may be gone already (the budget expired). Sending into a
+        // dropped channel is an `Err` and nothing more, which is the whole
+        // reason the timeout path needs no cooperation from this thread.
+        let _ = tx.send(produced);
+    });
+    let produced = rx.recv_timeout(LOOKUP_BUDGET).ok().flatten();
+    drop(silence);
+    produced
+}
+
+/// What [`std::panic::take_hook`] hands back. Aliased because the full spelling
+/// trips `clippy::type_complexity` in a struct field.
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
+
+/// Serialises [`SilencedPanics`] against itself.
+///
+/// The panic hook is process-global, so two concurrent installs can interleave
+/// into a permanent silence: A takes the default and installs silence, B takes
+/// SILENCE and installs silence, A restores the default, B restores silence —
+/// and every later panic in the process prints nothing. In the shipped binary
+/// there is one lookup at a time and the race cannot happen; in this crate's
+/// test binary the tests run in parallel threads and it can, so the lock is
+/// here for the same reason a guard is: the failure it prevents is invisible.
+static HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Silence the panic hook for as long as this value lives, then put back
+/// whatever was there before.
+///
+/// [`std::panic::catch_unwind`] catches the unwind but does NOT suppress the
+/// hook, and the default hook writes `thread '…' panicked at …` to stderr. On a
+/// Tab press that lands in the middle of the command line the user is looking
+/// at — the exact corruption this module's failure policy exists to prevent — so
+/// catching without silencing would satisfy the "exit 0" half of the promise and
+/// break the "nothing on stderr" half.
+///
+/// Scoped rather than installed once for the process, which would be simpler and
+/// is wrong: this code is compiled into the test binary too, and a process-wide
+/// silent hook means every failing `assert!` in `tasqx-cli` reports as a bare
+/// FAILED with no message. A guard that blinds the test suite to buy a property
+/// only the callback path needs is a bad bargain.
+struct SilencedPanics {
+    /// `None` after [`Drop`] has restored it. An `Option` only because `drop`
+    /// takes `&mut self` and the hook must be moved out of it.
+    previous: Option<PanicHook>,
+    /// Held for the lifetime of the silence. Declared last so it is released
+    /// after `drop` has restored the hook — struct fields drop in declaration
+    /// order and `Drop::drop` runs before all of them, so the ordering is
+    /// guaranteed rather than incidental.
+    _serialised: std::sync::MutexGuard<'static, ()>,
+}
+
+impl SilencedPanics {
+    fn install() -> Self {
+        // A poisoned lock means some other test panicked while holding it. The
+        // data is `()`, so there is nothing to be corrupted and refusing here
+        // would turn one failed test into every later lookup failing.
+        let serialised = HOOK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        Self {
+            previous: Some(previous),
+            _serialised: serialised,
+        }
+    }
+}
+
+impl Drop for SilencedPanics {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            std::panic::set_hook(previous);
+        }
+    }
+}
+
 /// Did the completer attached to `pos` restore the escaped dash before its
 /// provider saw the word? `None` when nothing is attached.
 ///
@@ -654,6 +912,166 @@ mod tests {
             "every filter command declares a positional; the guard matched {checked} \
              and would otherwise be vacuous"
         );
+    }
+
+    /// The budget machinery must be able to SUCCEED, or every `None` assertion
+    /// below is satisfied by a [`guarded`] that always answers `None`.
+    ///
+    /// First rather than last on purpose: it is the test that makes the other
+    /// three mean anything.
+    #[test]
+    fn a_lookup_that_finishes_inside_the_budget_hands_its_value_back() {
+        assert_eq!(guarded(|| Some(7u32)), Some(7));
+        // And a provider that legitimately found nothing is not a failure — it
+        // must be indistinguishable from one, since both are "no candidates".
+        assert_eq!(guarded(|| Option::<u32>::None), None);
+    }
+
+    /// A provider that blows the budget produces nothing, and — the half that
+    /// matters — the CALLER is back promptly rather than waiting for it.
+    ///
+    /// Asserting only `None` would pass for an implementation that joined the
+    /// worker and returned its result an hour later, which is the stall the
+    /// budget exists to prevent, so the elapsed time is asserted too. The margin
+    /// is wide (the closure sleeps twenty times the budget, the assertion allows
+    /// four times it) because this runs on loaded CI machines and a flaky timing
+    /// guard gets deleted rather than fixed.
+    #[test]
+    fn a_lookup_that_blows_the_budget_yields_nothing_promptly() {
+        let started = std::time::Instant::now();
+        let got = guarded(|| {
+            std::thread::sleep(LOOKUP_BUDGET * 20);
+            Some(7u32)
+        });
+        let elapsed = started.elapsed();
+        assert_eq!(got, None, "a lookup past its budget must produce nothing");
+        assert!(
+            elapsed < LOOKUP_BUDGET * 4,
+            "the caller waited {elapsed:?} for a {LOOKUP_BUDGET:?} budget — it \
+             is joining the worker instead of abandoning it"
+        );
+    }
+
+    /// A panicking provider is caught and becomes zero candidates, exactly as
+    /// the failure-policy table promises. Without [`guarded`]'s `catch_unwind`
+    /// the panic would unwind out of the worker, and the caller would see the
+    /// channel hang up and wait out the full budget for nothing.
+    #[test]
+    fn a_panicking_lookup_yields_nothing() {
+        assert_eq!(
+            guarded(|| -> Option<u32> { panic!("a provider blew up") }),
+            None
+        );
+    }
+
+    /// The other half of that promise, and the half a same-process assertion
+    /// cannot make: the panic must not reach STDERR, because on a Tab press
+    /// stderr is the user's half-typed command line.
+    ///
+    /// Driven as a subprocess of this very test binary, because "wrote nothing
+    /// to stderr" is only observable from outside the process. The child runs
+    /// this same `#[test]`, takes the first branch, and its stderr is inspected
+    /// here. `--nocapture` is required: without it libtest swallows the child's
+    /// stderr and the assertion would pass against a binary that printed
+    /// loudly — the test would be measuring the harness.
+    ///
+    /// The assertion is on the panic's signature rather than on emptiness,
+    /// because the harness itself is entitled to write to stderr and a stricter
+    /// assertion would be pinning libtest's output rather than ours.
+    ///
+    /// The `1 passed` check is not belt-and-braces. The first version of this
+    /// test passed the bare function name as the filter, libtest matches on the
+    /// FULL path (`complete::tests::…`), the child therefore ran zero tests and
+    /// exited 0 — and the whole thing was vacuous. It was caught by removing
+    /// [`SilencedPanics`] and finding the test still green, which is the only
+    /// reason it is not still vacuous now. So the filter is derived from
+    /// [`module_path!`] rather than typed, and the child is required to say it
+    /// ran something.
+    #[test]
+    fn a_panicking_lookup_writes_nothing_to_stderr() {
+        const CHILD: &str = "TASQX_PANIC_PROBE_CHILD";
+        const NAME: &str = "a_panicking_lookup_writes_nothing_to_stderr";
+        const MESSAGE: &str = "a-provider-blew-up-and-must-not-be-printed";
+
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(guarded(|| -> Option<u32> { panic!("{MESSAGE}") }), None);
+            return;
+        }
+
+        // libtest names a test by its path with the crate root removed:
+        // `module_path!()` is `tasqx_cli::complete::tests`, the filter wants
+        // `complete::tests::<name>`.
+        let module = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .unwrap_or(module_path!());
+        let filter = format!("{module}::{NAME}");
+
+        let exe = std::env::current_exe().expect("locate this test binary");
+        let out = std::process::Command::new(exe)
+            // `--nocapture` is required: without it libtest swallows the
+            // child's stderr and this would pass against a binary that printed
+            // loudly.
+            .args([filter.as_str(), "--exact", "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("re-run this test as a child process");
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "the child must pass; stdout {stdout:?} stderr {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test, so this proves nothing — the filter {filter:?} \
+             matched nothing. got:\n{stdout}"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains(MESSAGE) && !stderr.contains("panicked"),
+            "the default panic hook printed a caught provider panic; on a Tab \
+             press that lands in the middle of the user's command line. got:\n{stderr}"
+        );
+    }
+
+    /// The never-create promise at the seam that makes it: an absent store is
+    /// `None` and the path is still absent afterwards, sidecars included.
+    ///
+    /// Driven through [`local_backend_at`] rather than [`lookup`] because
+    /// `$TASQX_DB` is process-global and this test binary runs its tests in
+    /// parallel threads — setting it here would change the store under whatever
+    /// else is running. The end-to-end version, through the real binary with its
+    /// own environment, is `tests/completion.rs`.
+    #[test]
+    fn an_absent_store_yields_no_backend_and_creates_nothing() {
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-complete-absent-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the fixture dir");
+        let db = dir.join("tasks.db");
+
+        assert!(
+            local_backend_at(&db).is_none(),
+            "an absent store must not yield a backend"
+        );
+
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read the fixture dir")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            left.is_empty(),
+            "a completion lookup against a machine with no store must leave \
+             nothing behind, found {left:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The guard's own guard: [`restores_the_escaped_dash`] must answer `false`
