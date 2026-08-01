@@ -407,6 +407,31 @@ upgrade. Moving it is an act with tests attached, not a `cargo update`.
   Same technique as `no_declared_short_flag_is_ever_escaped`, which reads clap's
   arg table rather than a hand-kept list, and for the same reason.
 
+**`complete::tests::escaping_drift`** guards the other end of the pre-pass, and
+it must test BEHAVIOUR rather than a type. Every provider on a positional the
+pre-pass escapes into has to be built with `escaped_word_completer`; the two ways
+to get that wrong are an `ArgValueCandidates` (the engine prefix-filters it
+against the still-escaped word) and a bare `ArgValueCompleter` (it filters
+against the sentinel itself). The second is the likelier one, because it is the
+right *type* and the obvious way to write a completer.
+
+Checking `get::<ArgValueCandidates>().is_none()` catches only the first, which
+was measured: with a bare `ArgValueCompleter` on `List::filter`, `cargo test -p
+tasqx-cli --lib complete::` stayed green across three forced rebuilds while the
+real binary answered `list -ne<TAB>` and `list -needs<TAB>` with nothing and
+`list +<TAB>` correctly.
+
+Neither a marker extension nor a candidate-set comparison closes it. A marker is
+a second, independent `ArgExt` — `clap::Arg`'s extensions are keyed by `TypeId`
+and the engine reads `ArgValueCompleter` and nothing else — so the guard would
+only be checking that somebody remembered to write the marker. Comparing
+`complete(escaped)` against `complete(raw)` is vacuous, because every provider
+here answers `-tag` out of the user's store and the guard runs without one, so
+both sides come back empty. What works is a probe word the wrapper recognises
+*after* restoring: answering it is proof the restore ran inside the shipped
+closure, and the guard's own failure direction is exercised by a test that drives
+a bare completer through it and requires a `false`.
+
 **Out of scope, deliberately:** real PTY round-trip tests against installed
 shells (`completest-pty`). They would need five shells installed on three CI
 platforms. The registration-emission test plus the candidate test cover the two
