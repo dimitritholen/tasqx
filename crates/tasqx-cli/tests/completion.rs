@@ -5,27 +5,41 @@
 //! The registration half is the pin's guard. `clap_complete`'s
 //! `unstable-dynamic` feature is semver-exempt, so the version in Cargo.toml is
 //! pinned with `=` and these tests are what makes moving that pin an act with
-//! consequences: they run the REAL binary with `$COMPLETE` set, for every shell
-//! clap claims to support, and read what comes back. An upstream template or
-//! engine change shows up here as a red build instead of as a shell that
+//! consequences: they run the REAL binary with `$TASQX_COMPLETE` set, for every
+//! shell clap claims to support, and read what comes back. An upstream template
+//! or engine change shows up here as a red build instead of as a shell that
 //! quietly stops completing.
 //!
 //! The behaviour half is the promise that this feature is invisible when it is
 //! not wanted. `complete::intercept()` is the first statement of `run()`, ahead
 //! of the argv pre-pass, so it sits in front of every command tasqx has. Without
-//! `$COMPLETE` it must be a single environment lookup and a return, which is
-//! only provable by driving ordinary commands through the same entry point and
-//! finding them unchanged.
+//! `$TASQX_COMPLETE` it must be a single environment lookup and a return, which
+//! is only provable by driving ordinary commands through the same entry point
+//! and finding them unchanged.
 
 use std::process::Command;
+
+/// The variable that activates the callback path.
+///
+/// Spelled here once and asserted against the registration scripts, because it
+/// is not `clap_complete`'s default (`COMPLETE`) and the divergence is the whole
+/// mitigation for the residual hazard `complete.rs` documents: a recognised
+/// shell name in this variable plus a `--` in argv swallows a real command,
+/// silently, exit 0. A generic `COMPLETE` is a name a stale export can plausibly
+/// carry; `TASQX_COMPLETE` is not. If `CompleteEnv::var` is ever dropped, the
+/// registrations start naming `COMPLETE`, `the_generic_variable_is_not_ours`
+/// starts finding a swallowed command, and both fail here rather than in a
+/// user's shell.
+const VAR: &str = "TASQX_COMPLETE";
 
 /// The binary, one-shot and in-process.
 ///
 /// `--no-daemon` for the same reason `tests/help.rs` gives: `open_backend`
 /// prefers a reachable daemon and the remote path never reads `TASQX_DB`, so on
 /// a developer machine running `tasqx daemon` an unguarded fixture would talk to
-/// the real store. It is not needed on the `$COMPLETE` path — that path never
-/// reaches `open_backend` at all — but the no-`$COMPLETE` tests here run real
+/// the real store. It is not needed on the `$TASQX_COMPLETE` path — that path
+/// never reaches `open_backend` at all — but the no-`$TASQX_COMPLETE` tests
+/// here run real
 /// commands, and one helper for both keeps the difference from mattering.
 fn bin() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
@@ -42,7 +56,8 @@ fn bin() -> Command {
 /// the guard agree with the implementation by construction.
 const SHELLS: [&str; 5] = ["bash", "elvish", "fish", "powershell", "zsh"];
 
-/// `COMPLETE=<shell> tasqx` with no further words must print a registration
+/// `TASQX_COMPLETE=<shell> tasqx` with no further words must print a
+/// registration
 /// script naming the binary — that script is the entire integration, and if it
 /// comes back empty or errors, completion is dead in that shell with no other
 /// symptom.
@@ -50,20 +65,20 @@ const SHELLS: [&str; 5] = ["bash", "elvish", "fish", "powershell", "zsh"];
 fn every_supported_shell_emits_a_registration_naming_the_binary() {
     for shell in SHELLS {
         let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
-            .env("COMPLETE", shell)
+            .env(VAR, shell)
             .output()
-            .unwrap_or_else(|e| panic!("run the binary with COMPLETE={shell}: {e}"));
+            .unwrap_or_else(|e| panic!("run the binary with TASQX_COMPLETE={shell}: {e}"));
 
         assert!(
             out.status.success(),
-            "COMPLETE={shell} must exit 0, got {:?} with stderr {:?}",
+            "TASQX_COMPLETE={shell} must exit 0, got {:?} with stderr {:?}",
             out.status.code(),
             String::from_utf8_lossy(&out.stderr)
         );
         let script = String::from_utf8_lossy(&out.stdout);
         assert!(
             !script.trim().is_empty(),
-            "COMPLETE={shell} produced no registration script"
+            "TASQX_COMPLETE={shell} produced no registration script"
         );
         assert!(
             script.contains("tasqx"),
@@ -73,15 +88,15 @@ fn every_supported_shell_emits_a_registration_naming_the_binary() {
         // with the variable set; a script that never mentions it is a script
         // that registers nothing.
         assert!(
-            script.contains("COMPLETE"),
-            "the {shell} registration must set $COMPLETE on the callback, got:\n{script}"
+            script.contains(VAR),
+            "the {shell} registration must set ${VAR} on the callback, got:\n{script}"
         );
         // The callback path is silent by policy (see `complete.rs`), and that
         // includes the registration branch: anything on stderr here lands in
         // the user's shell startup output.
         assert!(
             out.stderr.is_empty(),
-            "COMPLETE={shell} wrote to stderr: {:?}",
+            "TASQX_COMPLETE={shell} wrote to stderr: {:?}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
@@ -101,7 +116,8 @@ fn temp_db(label: &str) -> std::path::PathBuf {
 
 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// A `$COMPLETE` naming a shell clap has no completer for must let the command
+/// A `$TASQX_COMPLETE` naming a shell clap has no completer for must let the
+/// command
 /// RUN. It is not a callback and cannot be one.
 ///
 /// This test previously asserted the opposite, and the opposite was a bug. The
@@ -123,15 +139,15 @@ fn an_unrecognised_shell_name_lets_the_command_run() {
     let db = temp_db("unrecognised");
 
     let added = Command::new(env!("CARGO_BIN_EXE_tasqx"))
-        .env("COMPLETE", "nushell")
+        .env(VAR, "nushell")
         .env("TASQX_DB", &db)
         .args(["--no-daemon", "add", "--", "a real task"])
         .output()
-        .expect("run add with an unsupported COMPLETE");
+        .expect("run add with an unsupported TASQX_COMPLETE");
 
     assert!(
         added.status.success(),
-        "an unrecognised $COMPLETE must not stop the command, got {:?} stderr {:?}",
+        "an unrecognised $TASQX_COMPLETE must not stop the command, got {:?} stderr {:?}",
         added.status.code(),
         String::from_utf8_lossy(&added.stderr)
     );
@@ -144,7 +160,7 @@ fn an_unrecognised_shell_name_lets_the_command_run() {
     let text = String::from_utf8_lossy(&listed.stdout);
     assert!(
         text.contains("a real task"),
-        "the task must actually be in the store; an unrecognised $COMPLETE \
+        "the task must actually be in the store; an unrecognised $TASQX_COMPLETE \
          swallowed the write. got:\n{text}"
     );
 
@@ -172,15 +188,15 @@ fn an_unrecognised_shell_name_does_not_suppress_a_read_either() {
         &["--no-daemon", "list", "--", "@working"][..],
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
-            .env("COMPLETE", "nushell")
+            .env(VAR, "nushell")
             .env("TASQX_DB", &db)
             .args(args)
             .output()
-            .expect("run a read with an unsupported COMPLETE");
+            .expect("run a read with an unsupported TASQX_COMPLETE");
         assert!(out.status.success(), "`{args:?}` must still run");
         assert!(
             String::from_utf8_lossy(&out.stdout).contains("seeded task"),
-            "`{args:?}` produced no output under an unrecognised $COMPLETE"
+            "`{args:?}` produced no output under an unrecognised $TASQX_COMPLETE"
         );
     }
 
@@ -192,14 +208,15 @@ fn an_unrecognised_shell_name_does_not_suppress_a_read_either() {
 /// the dispatcher. This is the other side of the test above: widening "let it
 /// run" until it swallowed the real callbacks would trade one bug for its mirror.
 ///
-/// `COMPLETE=<shell>` with a `--` and words is the callback protocol, and the
+/// `TASQX_COMPLETE=<shell>` with a `--` and words is the callback protocol, and
+/// the
 /// proof it was served is that candidates come back rather than the command's own
 /// output.
 #[test]
 fn every_recognised_shell_is_still_served_as_a_callback() {
     for shell in SHELLS {
         let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
-            .env("COMPLETE", shell)
+            .env(VAR, shell)
             .env("_CLAP_COMPLETE_INDEX", "1")
             .args(["--", "tasqx", "lis"])
             .output()
@@ -219,6 +236,110 @@ fn every_recognised_shell_is_still_served_as_a_callback() {
     }
 }
 
+/// `clap_complete`'s default variable is NOT ours: `COMPLETE=bash` must leave
+/// the binary completely alone.
+///
+/// This is the mitigation for the residual hazard, asserted rather than
+/// described. A recognised shell name in the ACTIVE variable plus a `--` in argv
+/// swallows a real command — see the test below and `complete.rs`'s module doc —
+/// and nothing in `clap_complete`'s protocol lets that be told apart from a
+/// genuine callback. What can be changed is how easily the environment reaches
+/// that state, and the answer is the variable's name: `COMPLETE` is generic
+/// enough that a half-run activation line, another clap-based tool's profile
+/// entry, or an old export leaves it set, while `TASQX_COMPLETE` is a name
+/// nothing else writes.
+///
+/// The spec's own PowerShell activation line is the concrete way it used to
+/// happen: `$env:COMPLETE = "powershell"; tasqx | Out-String | Invoke-Expression;
+/// Remove-Item Env:\COMPLETE` sets and clears in one statement, so an
+/// interrupted paste — or a profile that throws between the two — left every
+/// later `tasqx … -- …` silently dropped for the rest of the session.
+///
+/// Dropping `CompleteEnv::var` restores exactly that, so the assertion is on the
+/// STORE: the write must land.
+#[test]
+fn the_generic_variable_is_not_ours() {
+    let db = temp_db("generic-var");
+
+    let added = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("COMPLETE", "bash")
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "add", "--", "a real task"])
+        .output()
+        .expect("run add with clap's default COMPLETE set");
+    assert!(
+        added.status.success(),
+        "COMPLETE=bash must not stop the command, got {:?} stderr {:?}",
+        added.status.code(),
+        String::from_utf8_lossy(&added.stderr)
+    );
+
+    let listed = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "list"])
+        .output()
+        .expect("list the store back");
+    let text = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        text.contains("a real task"),
+        "clap's default $COMPLETE reached `intercept` and swallowed the write; \
+         `CompleteEnv::var` is what keeps it from mattering. got:\n{text}"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// The residual hazard, PINNED as observed rather than claimed absent: a
+/// recognised shell name in `$TASQX_COMPLETE` plus a `--` drops a real command,
+/// silently, exit 0.
+///
+/// This test asserts a defect on purpose, and that needs its reason attached.
+/// `complete.rs`'s module doc states the behaviour as the residual hazard the
+/// variable rename reduces and does not remove; a doc claim with no guard under
+/// it is precisely what went wrong here before. The previous version of that
+/// section called the no-`--` case "the one accepted edge" and described it as
+/// LOUD, while this spelling was silent and nothing was measuring it. So the
+/// claim and the code are tied together: if a future clap, or a future
+/// discriminator, makes this command run, this test fails and sends whoever
+/// fixed it to the paragraph that must stop saying it is broken.
+///
+/// The assertions are the three observable facts (nothing on stdout, nothing on
+/// stderr, exit 0) plus the one that hurts (the task is absent), so the pin
+/// records the full shape of what a user loses rather than just the exit code.
+#[test]
+fn a_recognised_shell_name_with_a_separator_still_drops_the_command() {
+    let db = temp_db("residual-hazard");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env(VAR, "bash")
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "add", "--", "a real task"])
+        .output()
+        .expect("run add with a recognised shell in the completion variable");
+
+    assert_eq!(out.status.code(), Some(0), "the drop is silent, exit 0");
+    assert!(
+        out.stdout.is_empty() && out.stderr.is_empty(),
+        "the drop writes nothing at all, which is what makes it silent; got \
+         stdout {:?} stderr {:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let listed = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "list"])
+        .output()
+        .expect("list the store back");
+    assert!(
+        !String::from_utf8_lossy(&listed.stdout).contains("a real task"),
+        "the task was added, so the hazard `complete.rs` documents no longer \
+         exists — update that section rather than deleting this test"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
 /// `$SHELL`-shaped values resolve too: `Shells::completer_for_path` takes the
 /// `file_stem`, so `/usr/bin/zsh` is `zsh`. Our discriminator must agree with it
 /// exactly — a value we accepted but clap then rejected would take the late-error
@@ -226,16 +347,16 @@ fn every_recognised_shell_is_still_served_as_a_callback() {
 #[test]
 fn a_shell_path_is_recognised_the_way_clap_recognises_it() {
     let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
-        .env("COMPLETE", "/usr/bin/bash")
+        .env(VAR, "/usr/bin/bash")
         .env("_CLAP_COMPLETE_INDEX", "1")
         .env("_CLAP_IFS", SEP.to_string())
         .args(["--", "tasqx", "lis"])
         .output()
-        .expect("run the callback with a $SHELL-shaped COMPLETE");
+        .expect("run the callback with a $SHELL-shaped TASQX_COMPLETE");
     assert_eq!(out.status.code(), Some(0));
     assert!(
         candidates(&out).iter().any(|c| c == "list"),
-        "a path-shaped $COMPLETE must resolve to its shell, got {:?}",
+        "a path-shaped $TASQX_COMPLETE must resolve to its shell, got {:?}",
         candidates(&out)
     );
 }
@@ -250,7 +371,7 @@ fn a_shell_path_is_recognised_the_way_clap_recognises_it() {
 /// pass or fail for the wrong reason.
 fn complete_bash(cursor: usize, words: &[&str]) -> std::process::Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
-    c.env("COMPLETE", "bash")
+    c.env(VAR, "bash")
         .env("_CLAP_COMPLETE_INDEX", cursor.to_string())
         // The registration sets `IFS=$'\013'` and forwards it as `_CLAP_IFS`,
         // and the separator between candidates is read back out of that
@@ -412,7 +533,7 @@ fn a_path_arg_completes_real_filenames() {
 
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     let out = c
-        .env("COMPLETE", "bash")
+        .env(VAR, "bash")
         .env("_CLAP_COMPLETE_INDEX", "3")
         .env("_CLAP_IFS", SEP.to_string())
         // `complete_path` resolves a relative partial word against the working

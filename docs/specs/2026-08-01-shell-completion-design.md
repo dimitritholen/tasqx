@@ -66,17 +66,45 @@ breakage is a red build rather than a shipped regression. See
 
 ```rust
 pub fn run() {
-    complete::intercept();   // returns immediately unless $COMPLETE is set
+    complete::intercept();   // returns immediately unless $TASQX_COMPLETE is set
     let pre = argv::prepass(std::env::args_os());
     ...
 }
 ```
 
-`CompleteEnv` reads `$COMPLETE`. Unset — the ordinary case, every real
-invocation — it costs one environment lookup and returns. Set, it writes
-candidates and exits the process, so the completion path never reaches
-`open_backend`, never opens the ordinary read-write store, and never runs the
-dispatcher.
+`CompleteEnv` is pointed at `$TASQX_COMPLETE` via `CompleteEnv::var`, **not** at
+its default `$COMPLETE`. Unset — the ordinary case, every real invocation — it
+costs one environment lookup and returns. Set, it writes candidates and exits the
+process, so the completion path never reaches `open_backend`, never opens the
+ordinary read-write store, and never runs the dispatcher.
+
+### Why the variable is tasqx-specific
+
+`clap_complete`'s protocol offers no way to tell a genuine callback from a human
+running a command with the variable left in the environment. Once it names a
+shell clap can complete, argv containing a `--` takes `shell.write_complete` and
+the command is dropped: **zero bytes out, exit 0, nothing done** — measured
+against the built binary when the variable was still clap's `COMPLETE`, with
+`COMPLETE=bash tasqx --no-daemon add -- "a real task"`, which added no task, and
+`COMPLETE=zsh tasqx --no-daemon done 1`, which printed the zsh registration and
+left task 1 open. Argv without a `--` always takes the registration branch and
+prints a page of shell script instead of running the verb.
+
+`_CLAP_COMPLETE_INDEX` is not a stronger discriminator. Only bash, elvish and zsh
+set it; fish (`clap_complete-4.6.7/src/env/shells.rs:231`) and PowerShell
+(`:381`) compute `index = args.len() - 1` from the words and never export it, so
+requiring it would kill completion outright in two of the five shells.
+
+What is left is the name. `COMPLETE` is generic — a half-run activation line, a
+stale export, or another clap-based tool's profile entry can leave it set, and
+the PowerShell activation line below sets and unsets it in a single statement, so
+an interrupted paste leaves it set for the session. `TASQX_COMPLETE` is a name
+nothing else writes.
+
+**This reduces the hazard; it does not remove it.** A user who sets
+`TASQX_COMPLETE` by hand still loses the next `tasqx … -- …` silently. The
+divergence from clap's convention is free because tasqx prints its own activation
+lines (`tasqx completions <shell>`), so nobody types the variable name.
 
 ### The pre-pass applies to completion words too
 
@@ -249,7 +277,7 @@ than decorative.
 
 ## Failure policy — D33 inverted, on purpose
 
-On the `$COMPLETE` callback path, **every** failure produces zero candidates,
+On the `$TASQX_COMPLETE` callback path, **every** failure produces zero candidates,
 exit 0, and nothing on stderr:
 
 | Condition | Behaviour |
@@ -291,15 +319,23 @@ friendly, unsurprising behaviour.
 
 | Shell | Platforms | Activation line | Profile `--install` targets |
 |---|---|---|---|
-| bash | Linux, macOS, Git Bash | `source <(COMPLETE=bash tasqx)` | `~/.bashrc` |
-| zsh | macOS (default shell), Linux | `source <(COMPLETE=zsh tasqx)` | `~/.zshrc` |
-| fish | all three | `COMPLETE=fish tasqx \| source` | `~/.config/fish/completions/tasqx.fish` |
-| PowerShell | Windows, plus pwsh on macOS/Linux | `$env:COMPLETE = "powershell"; tasqx \| Out-String \| Invoke-Expression; Remove-Item Env:\COMPLETE` | `$PROFILE`, created with parents if absent |
-| elvish | all three | `eval (E:COMPLETE=elvish tasqx \| slurp)` | `~/.elvish/rc.elv` |
+| bash | Linux, macOS, Git Bash | `source <(TASQX_COMPLETE=bash tasqx)` | `~/.bashrc` |
+| zsh | macOS (default shell), Linux | `source <(TASQX_COMPLETE=zsh tasqx)` | `~/.zshrc` |
+| fish | all three | `TASQX_COMPLETE=fish tasqx \| source` | `~/.config/fish/completions/tasqx.fish` |
+| PowerShell | Windows, plus pwsh on macOS/Linux | `$env:TASQX_COMPLETE = "powershell"; tasqx \| Out-String \| Invoke-Expression; Remove-Item Env:\TASQX_COMPLETE` | `$PROFILE`, created with parents if absent |
+| elvish | all three | `eval (E:TASQX_COMPLETE=elvish tasqx \| slurp)` | `~/.elvish/rc.elv` |
 
-The activation lines are `clap_complete`'s own, verified against
-`clap_complete-4.6.7/src/env/mod.rs:38-63`; they are not reproduced from memory
-and must be re-verified if the pin moves.
+The activation lines are `clap_complete`'s own shapes, verified against
+`clap_complete-4.6.7/src/env/mod.rs:38-63`, with the variable substituted for the
+tasqx-specific one above; they are not reproduced from memory and must be
+re-verified if the pin moves.
+
+The PowerShell line is the reason the variable name matters: it sets and removes
+the variable in a single statement, so an interrupted paste or a profile that
+throws between the two leaves it set for the rest of the session. With
+`TASQX_COMPLETE` that state is reachable only by pasting tasqx's own line and
+having it die halfway; with `COMPLETE` any other clap-based tool's line does it
+too.
 
 **cmd.exe is unsupported.** It has no completion protocol to hook. `tasqx
 completions cmd` exits 2 saying so, rather than silently succeeding at nothing —
@@ -345,9 +381,15 @@ upgrade. Moving it is an act with tests attached, not a `cargo update`.
 
 **`crates/tasqx-cli/tests/completion.rs`:**
 
-- For each of the five shells, `COMPLETE=<shell> tasqx` emits a non-empty
-  registration naming the binary. This is what catches an upstream API or
-  template change at the pin.
+- For each of the five shells, `TASQX_COMPLETE=<shell> tasqx` emits a non-empty
+  registration naming the binary, and the registration names `TASQX_COMPLETE`
+  rather than clap's default. This is what catches an upstream API or template
+  change at the pin, and what catches `CompleteEnv::var` being dropped.
+- `COMPLETE=bash tasqx add -- "…"` still adds the task: clap's default variable
+  is not ours, which is the whole mitigation above.
+- `TASQX_COMPLETE=bash tasqx add -- "…"` still drops it. The residual hazard is
+  **pinned as observed**, not asserted as absent, so a future fix fails the build
+  and sends whoever wrote it to the paragraph that has to stop saying it.
 - With a temp store seeded with a project, a tag and a task, the callback emits
   the seeded values — the feature works, tested through the real binary.
 - With `TASQX_DB` pointing at a nonexistent path, the callback exits 0, prints
