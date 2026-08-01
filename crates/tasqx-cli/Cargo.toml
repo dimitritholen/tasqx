@@ -21,6 +21,29 @@ path = "src/main.rs"
 tasqx-core = { path = "../tasqx-core", version = "0.2.0" }
 serde_json = { workspace = true }
 clap = { version = "4.6.1", features = ["derive"] }
+# PINNED EXACTLY, and the `=` is the guard, not a style choice.
+#
+# `unstable-dynamic` is semver-EXEMPT: clap_complete's own docs say the API
+# behind it may change in a patch release, so cargo's ordinary `^` compatibility
+# rules protect nothing here — a `cargo update` could swap the surface out from
+# under `src/complete.rs` with no version bump anyone would notice. The pin turns
+# that from a silently shipped regression into a deliberate act: moving this
+# number is a change with tests attached (`tests/completion.rs` drives real
+# registration output through the real binary, which is what fails when upstream
+# changes the template or the engine).
+#
+# Chosen over static `clap_complete::aot` generation, which IS stable API,
+# because every value this feature exists to supply — the user's projects, tags
+# and open task ids — is knowable only at Tab time. See
+# docs/specs/2026-08-01-shell-completion-design.md for the two rejected
+# alternatives and why five hand-maintained shell scripts is the same drift shape
+# this repo has been bitten by before.
+#
+# It does NOT raise the measured MSRV: clap_complete 4.6.7 declares
+# rust-version 1.85, well under the workspace's 1.95 floor. `unstable-dynamic`
+# turns on `clap/unstable-ext` itself, so the `clap` line above needs no change
+# for `#[arg(add = ...)]` to work.
+clap_complete = { version = "=4.6.7", features = ["unstable-dynamic"] }
 ctrlc = "3.5"
 directories = "6.0.0"
 jiff = { workspace = true }

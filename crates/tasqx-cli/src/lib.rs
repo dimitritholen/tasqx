@@ -16,6 +16,7 @@ mod argv;
 mod chart;
 pub mod cmddoc;
 mod command;
+mod complete;
 pub mod config;
 mod docs;
 mod html;
@@ -232,6 +233,14 @@ fn emit(text: &str) {
 }
 
 pub fn run() {
+    // FIRST, before anything reads argv or writes a byte of stdout. Unless
+    // `$COMPLETE` is set this is one environment lookup and a return; when it is
+    // set, the process serves the shell's Tab press and exits without ever
+    // reaching the parse below, the backend, or the dispatcher. The completion
+    // words get their own `argv::prepass` inside — see `complete::prepassed` for
+    // why it cannot simply reuse the one on the next line.
+    complete::intercept();
+
     // Not `Cli::parse()`: filter tokens like `-needs` must reach the grammar,
     // and the only way to keep that from disarming clap's flag handling is to
     // hide the dash before clap looks. See `argv`.
