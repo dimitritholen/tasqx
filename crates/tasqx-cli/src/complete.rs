@@ -95,6 +95,7 @@
 use std::ffi::{OsStr, OsString};
 
 use clap::CommandFactory;
+use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
 use clap_complete::env::Shells;
 use clap_complete::CompleteEnv;
 
@@ -230,6 +231,43 @@ fn names_a_shell_clap_can_complete(value: &OsStr) -> bool {
 /// The tail is a complete argv in its own right: the shell passes the command
 /// line starting at the program name (bash's `words=("${COMP_WORDS[@]}")`), and
 /// [`crate::argv::prepass`] expects exactly that shape, scanning from index 1.
+///
+/// # The word being completed is escaped too, and that is deliberate
+///
+/// The obvious reading of this function is that escaping the *partial* word is
+/// an accident — the pre-pass exists to keep clap's PARSE honest, and the engine
+/// never parses the current word (`complete()` returns the moment its cursor
+/// reaches the target, so words at and after it are never classified). Leaving
+/// it raw was tried and MEASURED, against the real engine with a provider
+/// attached to `list`'s filter positional:
+///
+/// ```text
+///   current word escaped (this code)   raw (the "obvious fix")
+///   -ne      -> []                     -> [-needs, -neh, -neV]
+///   -needs   -> []                     -> [-needs, -needsh, -needsV]
+/// ```
+///
+/// Both columns are wrong, in opposite directions. Raw reaches the provider but
+/// drags in junk: `complete_arg` calls `complete_option` for the current word
+/// whenever no `--` has been seen, `complete_option` sends anything matching
+/// `-x…` down its short-flag branch, and `parse_shortflags` does not check that
+/// the letters name real flags — it just prefixes every short the command
+/// declares, so `-needs` grows `-needsh` and `-needsV`. Neither is a flag and
+/// neither is a tag exclusion; they are unusable strings.
+///
+/// The escape is what makes that branch unreachable, and it is not a trick: it
+/// states tasqx's grammar to the engine. A single-dash token longer than one
+/// character IS a tag exclusion and can never be a flag (`argv.rs`), so flags
+/// are not candidates for it, and the sentinel is how the engine is told.
+///
+/// So the escape stays and the missing half is the RESTORE. The command path
+/// already has one — `run()` calls [`crate::argv::unescape`] on the parsed
+/// filter tail before any value is used — and the Tab path needs the same thing
+/// at its own boundary: [`escaped_word_completer`], which restores the dash
+/// before a candidate provider ever sees the word. Escape and restore are
+/// symmetric on both paths or they are broken on one; this is the second half of
+/// that pair, and its absence is what made a provider on a filter positional
+/// return nothing.
 fn prepassed(raw: Vec<OsString>) -> Vec<OsString> {
     let Some(sep) = raw.iter().position(|a| a == "--") else {
         return raw;
@@ -237,4 +275,178 @@ fn prepassed(raw: Vec<OsString>) -> Vec<OsString> {
     let mut out: Vec<OsString> = raw[..=sep].to_vec();
     out.extend(crate::argv::prepass(raw[sep + 1..].iter().cloned()).argv);
     out
+}
+
+/// Wrap a candidate provider for a positional whose words [`prepassed`] escapes,
+/// restoring the leading dash before the provider sees the partial word.
+///
+/// **Every completer on a filter or capture-sugar positional must be built with
+/// this**, and the drift guard below fails the build for one that is not. The
+/// reason is [`prepassed`]'s: by the time the engine asks "what can follow
+/// `-ne`?", the word is `\u{1}ne`, and a provider handed that matches nothing.
+/// It is the completion-path twin of [`crate::argv::unescape`].
+///
+/// Deliberately an `ArgValueCompleter` rather than an `ArgValueCandidates`, and
+/// the two are not interchangeable here. `ArgValueCandidates` yields a fixed list
+/// that the ENGINE then prefix-filters (`complete_custom_arg_value`:
+/// `retain(|c| c.starts_with(value))`) against the word as the engine holds it —
+/// still escaped, and nothing this seam does can reach that filter, because it
+/// runs after the provider has returned. `ArgValueCompleter` is handed the word
+/// and filters itself, which is the only shape where restoring the dash first
+/// can have any effect at all.
+///
+/// That difference is invisible at the call site and fails in exactly the
+/// direction this codebase keeps getting hurt by: `+home` and `project:x` would
+/// work (no escape applies, nothing starts with a dash) while every tag
+/// EXCLUSION quietly returned nothing. A completer that serves four of five
+/// prefixes is worse than one that serves none, because it looks finished.
+// Dead until Tasks 6-7 attach the sugar and filter providers, in the shape
+// `theme.rs`'s `FileOutcome` uses: landed with the defect it fixes rather than
+// held back, because the tests below are what prove the two properties hold, and
+// they can only prove them against a real seam. The `allow` comes off with the
+// first live attachment.
+#[allow(dead_code)]
+pub(crate) fn escaped_word_completer<F>(candidates: F) -> ArgValueCompleter
+where
+    F: Fn(&str) -> Vec<CompletionCandidate> + Send + Sync + 'static,
+{
+    ArgValueCompleter::new(move |current: &OsStr| {
+        candidates(&crate::argv::unescaped(&current.to_string_lossy()))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap_complete::engine::ArgValueCandidates;
+
+    /// Drive the REAL engine over the REAL command tree, through [`prepassed`],
+    /// with a test-only provider on `list`'s filter positional.
+    ///
+    /// Test-only because Task 7 has not attached the live one yet, and the
+    /// property under test belongs to the seam rather than to whichever
+    /// candidates the provider eventually returns. `words` is the command line
+    /// the shell passes (program name included) and `index` is the cursor word,
+    /// both exactly as `clap_complete`'s registrations supply them.
+    fn candidates_for(words: &[&str], index: usize) -> Vec<String> {
+        let mut cmd = Cli::command().mut_subcommand("list", |sc| {
+            sc.mut_arg("filter", |a| {
+                a.add(escaped_word_completer(|current| {
+                    ["-needs", "+home", "project:work"]
+                        .iter()
+                        .filter(|c| c.starts_with(current))
+                        .map(|c| CompletionCandidate::new(*c))
+                        .collect()
+                }))
+            })
+        });
+
+        // The framing `try_complete_` strips before the engine sees anything:
+        // argv[0] is the completer path and everything through the first `--` is
+        // the callback's own envelope. Reproduced rather than hand-writing the
+        // tail, so the test exercises `prepassed` on the shape it really gets.
+        let mut raw: Vec<OsString> = vec![OsString::from("tasqx"), OsString::from("--")];
+        raw.extend(words.iter().map(OsString::from));
+        let tail = prepassed(raw).split_off(2);
+
+        clap_complete::engine::complete(&mut cmd, tail, index, None)
+            .expect("the engine must not fail")
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The defect: a partial tag exclusion reached the provider as `\u{1}ne`, so
+    /// nothing matched and Tab produced an empty list. Task 7 attaches the live
+    /// filter provider to this exact positional and would have inherited it.
+    ///
+    /// Asserted at every length, because the old behaviour was length-dependent
+    /// and so looked like it worked: the pre-pass only escapes tokens longer than
+    /// one character, so a bare `-` matched and a two-character `-ne` did not.
+    #[test]
+    fn a_partial_tag_exclusion_reaches_the_provider_with_its_dash_intact() {
+        for typed in ["-", "-n", "-ne", "-need", "-needs"] {
+            let got = candidates_for(&["tasqx", "list", typed], 2);
+            assert!(
+                got.iter().any(|c| c == "-needs"),
+                "`list {typed}<TAB>` must reach the filter provider with {typed:?} \
+                 as the prefix and offer `-needs`, got {got:?}"
+            );
+        }
+    }
+
+    /// The other half, and the one the obvious fix breaks: restoring the dash for
+    /// the PROVIDER must not restore it for the ENGINE, which would send the word
+    /// down `complete_option`'s short-flag branch and grow it into strings that
+    /// are neither flags nor filter tokens (`-needsh`, `-needsV`).
+    #[test]
+    fn a_partial_tag_exclusion_offers_no_short_flag_junk() {
+        for typed in ["-n", "-ne", "-need", "-needs"] {
+            for got in candidates_for(&["tasqx", "list", typed], 2) {
+                assert!(
+                    got == "-needs" || !got.starts_with(typed),
+                    "`list {typed}<TAB>` grew {got:?} out of clap's short flags; \
+                     the word reached the engine unescaped"
+                );
+            }
+        }
+    }
+
+    /// The prefixes that never carried a dash must keep working unchanged — the
+    /// restore is a no-op for them, and a seam that only handled the dash case
+    /// would be a second code path to get wrong.
+    #[test]
+    fn the_other_sugar_prefixes_are_untouched_by_the_restore() {
+        assert_eq!(candidates_for(&["tasqx", "list", "+"], 2), ["+home"]);
+        assert_eq!(
+            candidates_for(&["tasqx", "list", "project:"], 2),
+            ["project:work"]
+        );
+        // A bare word is not completable and must stay that way; offering the
+        // whole vocabulary for a title word would be noise, not help.
+        assert!(candidates_for(&["tasqx", "list", "zz"], 2).is_empty());
+        // And clap's own flags still reach the user in filter position.
+        assert!(candidates_for(&["tasqx", "list", ""], 2)
+            .iter()
+            .any(|c| c == "--json"));
+    }
+
+    /// Drift guard, read out of clap's own arg table rather than a list kept
+    /// here: no positional that [`crate::argv::prepass`] can escape into may
+    /// carry a bare `ArgValueCandidates`.
+    ///
+    /// That combination compiles, reads correctly, and silently returns nothing
+    /// for every tag exclusion, because the engine prefix-filters its output
+    /// against the still-escaped word (see [`escaped_word_completer`]). It is the
+    /// silent-drop shape, so it is a build failure rather than a comment. The
+    /// commands come from the same set `argv` derives its escaping from, so a
+    /// filter command added tomorrow is covered the day it is declared.
+    #[test]
+    fn no_escapable_positional_uses_an_engine_filtered_provider() {
+        let mut cmd = Cli::command();
+        cmd.build();
+        let mut checked = 0;
+        for sc in cmd.get_subcommands() {
+            if !crate::argv::FILTER_COMMANDS.contains(&sc.get_name()) {
+                continue;
+            }
+            for pos in sc.get_positionals() {
+                checked += 1;
+                assert!(
+                    pos.get::<ArgValueCandidates>().is_none(),
+                    "`{} {}` is a positional the pre-pass escapes into, so an \
+                     ArgValueCandidates on it is prefix-filtered against the \
+                     sentinel and returns nothing for every `-tag`. Build it with \
+                     `complete::escaped_word_completer` instead.",
+                    sc.get_name(),
+                    pos.get_id()
+                );
+            }
+        }
+        assert!(
+            checked >= crate::argv::FILTER_COMMANDS.len(),
+            "every filter command declares a positional; the guard matched {checked} \
+             and would otherwise be vacuous"
+        );
+    }
 }

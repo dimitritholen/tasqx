@@ -57,7 +57,7 @@ const ESCAPED_DASH: char = '\u{1}';
 ///
 /// Aliases are resolved through clap, not listed here, so `ls` and `l` follow
 /// `list` automatically. Kept honest by `every_filter_positional_is_registered`.
-const FILTER_COMMANDS: [&str; 4] = ["list", "export", "report", "watch"];
+pub(crate) const FILTER_COMMANDS: [&str; 4] = ["list", "export", "report", "watch"];
 
 /// argv rewritten for clap, plus whether it addresses a filter-taking command.
 pub struct Prepass {
@@ -163,6 +163,28 @@ fn long_value_follows(cmd: &clap::Command, long: &str) -> bool {
         .is_some_and(|a| takes_value(a) && !a.is_require_equals_set())
 }
 
+/// Restore the dash [`prepass`] hid on ONE token.
+///
+/// The whole of the sentinel's inverse, in one place, because there are now two
+/// callers with nothing else in common and a second copy of this three-line rule
+/// would be a second thing to keep in step with [`ESCAPED_DASH`]:
+///
+///  * [`unescape`], on the filter tail clap has finished parsing (the command
+///    path);
+///  * `complete::escaped_word_completer`, on the single partial word the
+///    completion engine hands a candidate provider (the Tab path).
+///
+/// The second exists because escaping and restoring must stay symmetric on BOTH
+/// paths. `run()` restores what it parsed; the completion seam has to restore
+/// what it is about to match against, or a provider sees `\u{1}ne` where the
+/// user typed `-ne` and matches nothing.
+pub fn unescaped(tok: &str) -> String {
+    match tok.strip_prefix(ESCAPED_DASH) {
+        Some(rest) => format!("-{rest}"),
+        None => tok.to_string(),
+    }
+}
+
 /// Restore the dashes [`prepass`] hid, in place, on a parsed filter tail.
 ///
 /// Every hyphen-tolerant positional must be run through this before its value
@@ -170,9 +192,7 @@ fn long_value_follows(cmd: &clap::Command, long: &str) -> bool {
 /// token fails as unknown. `run()` does them all in one place for that reason.
 pub fn unescape(tokens: &mut [String]) {
     for tok in tokens {
-        if tok.starts_with(ESCAPED_DASH) {
-            *tok = format!("-{}", &tok[ESCAPED_DASH.len_utf8()..]);
-        }
+        *tok = unescaped(tok);
     }
 }
 
