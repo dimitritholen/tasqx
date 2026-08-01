@@ -31,13 +31,65 @@ use super::{CLEARABLE, VERSION};
 ///
 /// Pair this with `ignore_case = true` on the arg: without it clap would reject
 /// `--priority HIGH`, which parses today.
-fn priority_parser() -> PossibleValuesParser {
-    PossibleValuesParser::new(
+///
+/// Wrapped in [`Trimmed`] for the same reason `ignore_case` is set: to keep the
+/// declaration from narrowing what already worked. [`Priority::parse`] opens with
+/// `s.trim()`, so `--priority " H"` and `--priority "high "` reached the engine
+/// and parsed before this parser existed; `PossibleValuesParser` compares the
+/// value as given and rejected them.
+fn priority_parser() -> Trimmed {
+    Trimmed(PossibleValuesParser::new(
         Priority::SPELLINGS
             .iter()
             .map(|(spelling, p)| PossibleValue::new(*spelling).hide(*spelling != p.as_str()))
             .collect::<Vec<_>>(),
-    )
+    ))
+}
+
+/// A [`PossibleValuesParser`] that trims surrounding whitespace before matching.
+///
+/// Declaring a closed vocabulary to clap is meant to be *additive* — better
+/// errors, and values a shell can complete — and it is additive only if clap
+/// accepts everything the engine accepts. It did not: [`Priority::parse`] trims
+/// and `PossibleValuesParser` does not, so `--priority " H"` went from working to
+/// `invalid value ' H'`. Nothing announced that, because a narrowing hidden
+/// inside a "declare what we already accept" change looks like a no-op in the
+/// diff.
+///
+/// Trimming here rather than dropping the parser, and here rather than in
+/// [`Priority::parse`], because the two must agree and the engine is the one with
+/// other callers: the JSON API and MCP reach `task.add` without passing through
+/// clap at all, so relaxing the engine to match a stricter CLI would change a
+/// contract, while relaxing the CLI to match the engine restores one.
+///
+/// `possible_values` is forwarded, not reimplemented. It is what the help text
+/// lists and what `clap_complete` offers as candidates, so a wrapper that
+/// swallowed it would silently un-complete the flag this whole parser exists to
+/// make completable.
+#[derive(Clone)]
+struct Trimmed(PossibleValuesParser);
+
+impl clap::builder::TypedValueParser for Trimmed {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        // A non-UTF-8 value is handed on untouched: it cannot match any spelling
+        // anyway, and the inner parser's own error names the real problem better
+        // than a lossy conversion of it would.
+        match value.to_str() {
+            Some(s) => self.0.parse_ref(cmd, arg, std::ffi::OsStr::new(s.trim())),
+            None => self.0.parse_ref(cmd, arg, value),
+        }
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        self.0.possible_values()
+    }
 }
 
 /// The `memory search --scope` vocabulary, read out of the engine's own
@@ -824,20 +876,61 @@ mod tests {
     /// `Priority::SPELLINGS` rather than typed out, so a spelling added to the
     /// engine and not to clap fails here instead of becoming a documented form
     /// the CLI rejects.
+    ///
+    /// The padded forms are here because this guard once tested only the
+    /// untrimmed spellings and therefore missed a real narrowing: `Priority::parse`
+    /// opens with `s.trim()`, so `--priority " H"` and `--priority "high "` parsed
+    /// before the `value_parser` landed and were rejected after it, while the
+    /// change was described as purely additive. A guard that only feeds a parser
+    /// the inputs it obviously handles cannot notice the edge being cut off, so
+    /// every spelling is now asserted in every shape the ENGINE accepts — the
+    /// engine being the definition of "accepted", since the JSON API and MCP reach
+    /// it without passing through clap.
     #[test]
     fn every_engine_priority_spelling_still_parses_through_clap() {
         for (spelling, _) in Priority::SPELLINGS {
-            for form in [
+            for cased in [
                 spelling.to_string(),
                 spelling.to_ascii_uppercase(),
                 spelling.to_ascii_lowercase(),
             ] {
-                assert!(
-                    Cli::try_parse_from(["tasqx", "add", "x", "--priority", &form]).is_ok(),
-                    "--priority {form} parses in the engine and must parse here \
-                     (is `ignore_case` still set?)"
-                );
+                for form in [
+                    cased.clone(),
+                    format!(" {cased}"),
+                    format!("{cased} "),
+                    format!("  {cased}\t"),
+                ] {
+                    // The engine is the authority: assert it accepts the form
+                    // first, so this can never demand more of clap than the tool
+                    // actually supports.
+                    assert!(
+                        Priority::parse(&form).is_some(),
+                        "precondition: the engine accepts --priority {form:?}"
+                    );
+                    assert!(
+                        Cli::try_parse_from(["tasqx", "add", "x", "--priority", &form]).is_ok(),
+                        "--priority {form:?} parses in the engine and must parse here \
+                         (is `ignore_case` still set, and is the parser still `Trimmed`?)"
+                    );
+                }
             }
+        }
+    }
+
+    /// Trimming must not become "accept anything with a real value inside it".
+    /// `Priority::parse` trims and nothing more, so the CLI must too — otherwise
+    /// the pair drifts again, in the other direction this time.
+    #[test]
+    fn trimming_does_not_widen_the_priority_vocabulary() {
+        for bogus in ["h i g h", "h-", "-H", "H,M", ""] {
+            assert!(
+                Priority::parse(bogus).is_none(),
+                "precondition: the engine rejects --priority {bogus:?}"
+            );
+            assert!(
+                Cli::try_parse_from(["tasqx", "add", "x", "--priority", bogus]).is_err(),
+                "--priority {bogus:?} is refused by the engine and must be refused here"
+            );
         }
     }
 
