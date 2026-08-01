@@ -3,9 +3,53 @@
 //! This module owns clap parsing only. Execution, transport selection, and
 //! rendering remain in the parent orchestration module.
 
-use clap::{Args, Parser, Subcommand};
+use clap::builder::{PossibleValue, PossibleValuesParser};
+use clap::{Args, Parser, Subcommand, ValueHint};
+
+use tasqx_core::engine::MEMORY_SCOPES;
+use tasqx_core::Priority;
 
 use super::{CLEARABLE, VERSION};
+
+/// The `--priority` vocabulary, built from [`Priority::SPELLINGS`] so it is the
+/// engine's list rather than a copy of it.
+///
+/// Declaring it to clap buys two things that are the same thing seen from two
+/// sides. A shell can now complete `--priority <TAB>`, because a completion
+/// engine can only offer values something has declared. And a bad value now
+/// fails at parse time naming what would have worked, instead of travelling to
+/// the engine and coming back as `invalid priority: bogus` — a message that
+/// named the mistake and not the way out.
+///
+/// The long spellings are `hide`d, not omitted: they still parse (dropping them
+/// would break `--priority high`, which the help text has always promised), but
+/// a shell offering seven candidates for a three-valued field is worse than one
+/// offering three. clap's completion engine marks hidden possible values
+/// `hide(true)` and surfaces them only when nothing visible matches the partial
+/// word, so `--priority hi<TAB>` still finds `high`. Which spellings are
+/// canonical is read off `Priority::as_str` rather than listed again here.
+///
+/// Pair this with `ignore_case = true` on the arg: without it clap would reject
+/// `--priority HIGH`, which parses today.
+fn priority_parser() -> PossibleValuesParser {
+    PossibleValuesParser::new(
+        Priority::SPELLINGS
+            .iter()
+            .map(|(spelling, p)| PossibleValue::new(*spelling).hide(*spelling != p.as_str()))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// The `memory search --scope` vocabulary, read out of the engine's own
+/// [`MEMORY_SCOPES`] for the same reason as [`priority_parser`].
+///
+/// The engine keeps its runtime check — the JSON API and MCP reach
+/// `memory.search` without passing through clap at all, so removing it would
+/// open the surface this closes. Both sides read the one constant, so the
+/// duplicated *check* cannot become a duplicated *vocabulary*.
+fn scope_parser() -> PossibleValuesParser {
+    PossibleValuesParser::new(MEMORY_SCOPES)
+}
 
 /// The correlation facts `task.start` / `task.done` accept (#12), declared once
 /// and flattened into both so the two verbs cannot drift apart.
@@ -44,7 +88,12 @@ pub(super) struct CorrelationArgs {
 
     /// Absolute path to the session transcript the tokens will be found in.
     /// Requires --client.
-    #[arg(long, value_name = "PATH", requires = "client")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        value_hint = ValueHint::FilePath,
+        requires = "client"
+    )]
     pub(super) transcript_path: Option<String>,
 }
 
@@ -110,7 +159,7 @@ pub(super) enum Command {
         #[arg(long)]
         project: Option<String>,
         /// Priority: H, M, or L (or high/medium/low).
-        #[arg(long, short)]
+        #[arg(long, short, value_parser = priority_parser(), ignore_case = true)]
         priority: Option<String>,
         /// Due date — natural language ok (e.g. friday, "in 3 days", eom, -1d).
         ///
@@ -162,7 +211,7 @@ pub(super) enum Command {
         #[arg(long)]
         project: Option<String>,
         /// Priority: H, M, or L (or high/medium/low).
-        #[arg(long, short)]
+        #[arg(long, short, value_parser = priority_parser(), ignore_case = true)]
         priority: Option<String>,
         /// Due date — natural language ok (friday, "in 3 days", eom, -1d).
         #[arg(long, allow_hyphen_values = true)]
@@ -326,7 +375,12 @@ pub(super) enum Command {
         /// `report --out r.html` used to print the table, write no file, and
         /// exit 0. Under a CI redirect that reads as a report that was written.
         /// Same silent omission `--all` below is guarded against.
-        #[arg(long, requires = "html")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            value_hint = ValueHint::FilePath,
+            requires = "html"
+        )]
         out: Option<String>,
         /// Count cancelled tasks too. By default a report excludes cancelled
         /// tasks, unless the filter itself names a status (DESIGN D24).
@@ -380,6 +434,12 @@ pub(super) enum Command {
     #[command(after_help = crate::cmddoc::after_help("import"))]
     Import {
         /// Path to a canonical JSON file (array of tasks), or `-` for stdin.
+        // A line comment, not a doc one: clap renders doc comments into
+        // `--help`, and why a hint was chosen is not something a user reading
+        // help needs. `FilePath` even though `-` is also accepted — a shell
+        // offering the stdin sentinel would be noise, and a user who wants it
+        // types one character.
+        #[arg(value_hint = ValueHint::FilePath)]
         file: String,
     },
     /// Print the single highest-urgency unblocked task (the "what now" button).
@@ -402,7 +462,7 @@ pub(super) enum Command {
         /// Store path for the daemon's single Engine (default: $TASQX_DB or the
         /// platform data dir). The socket address comes from the global
         /// `--socket` / $TASQX_SOCK / the platform default.
-        #[arg(long)]
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         db: Option<String>,
     },
     /// Live view: connect to a daemon, subscribe, and re-render the working set
@@ -437,7 +497,12 @@ pub(super) enum Command {
         /// ever looks at `out`, so the pair wrote no file and exited 0. Two
         /// destinations for one document is a usage error — which is what the
         /// manual's `[--out PATH | --no-open | --stdout]` already promised.
-        #[arg(long, value_name = "PATH", conflicts_with = "stdout")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            value_hint = ValueHint::FilePath,
+            conflicts_with = "stdout"
+        )]
         out: Option<String>,
         /// Write the file but never launch a browser. Prints the path instead.
         #[arg(long)]
@@ -577,8 +642,12 @@ pub(super) enum MemoryAction {
         /// Max hits (default 10).
         #[arg(long)]
         limit: Option<u64>,
-        /// What to search: all | docs | annotations.
-        #[arg(long)]
+        /// What to search (default: all).
+        // The spellings used to be listed in the line above as well. Clap now
+        // prints `[possible values: ...]` from the parser itself, and two
+        // renderings of one vocabulary in one help entry is the smaller version
+        // of the drift this whole change is about.
+        #[arg(long, value_parser = scope_parser())]
         scope: Option<String>,
         /// Treat the query as raw FTS5 syntax (prefix*, AND/OR, columns).
         #[arg(long)]
@@ -592,6 +661,10 @@ pub(super) enum MemoryAction {
     /// Import markdown files as docs: one doc per file (maps to memory.add).
     Import {
         /// A file, or a directory whose *.md files are imported (non-recursive).
+        // `AnyPath`, not `FilePath`: this verb genuinely takes either, and
+        // `FilePath` sorts every directory below every file in the listing —
+        // backwards for the form most people use.
+        #[arg(value_hint = ValueHint::AnyPath)]
         path: String,
     },
 }
@@ -626,6 +699,7 @@ pub(super) enum McpAction {
 mod tests {
     use super::*;
     use clap::error::ErrorKind;
+    use clap::CommandFactory;
 
     /// Chart windows are fed straight into `jiff`'s `ToSpan::days`, which PANICS
     /// outside ±7,304,484, and long before that a `weeks * 7` window is a
@@ -718,5 +792,139 @@ mod tests {
         assert!(Cli::try_parse_from(["tasqx", "docs", "--out", "g.html"]).is_ok());
         assert!(Cli::try_parse_from(["tasqx", "docs", "--stdout"]).is_ok());
         assert!(Cli::try_parse_from(["tasqx", "docs", "--no-open"]).is_ok());
+    }
+
+    /// A closed vocabulary that clap does not know about is invisible twice
+    /// over: no shell can complete it, and the rejection arrives from the engine
+    /// as `invalid priority: "bogus"` — a message that names the mistake and not
+    /// the way out. Declared, the same typo fails at parse time listing what
+    /// would have worked.
+    #[test]
+    fn a_bad_priority_is_refused_at_parse_time_naming_the_accepted_values() {
+        for argv in [
+            &["tasqx", "add", "x", "--priority", "bogus"][..],
+            &["tasqx", "modify", "4", "--priority", "urgent"][..],
+        ] {
+            let err = Cli::try_parse_from(argv)
+                .err()
+                .unwrap_or_else(|| panic!("{argv:?} must be rejected"));
+            assert_eq!(err.kind(), ErrorKind::InvalidValue, "{argv:?}");
+            let msg = err.to_string();
+            for want in ["H", "M", "L"] {
+                assert!(
+                    msg.contains(want),
+                    "{argv:?}: the error must name {want:?}, got {msg:?}"
+                );
+            }
+        }
+    }
+
+    /// The other half, and the one a `value_parser` can silently break: every
+    /// spelling the engine accepts must still reach it. Derived from
+    /// `Priority::SPELLINGS` rather than typed out, so a spelling added to the
+    /// engine and not to clap fails here instead of becoming a documented form
+    /// the CLI rejects.
+    #[test]
+    fn every_engine_priority_spelling_still_parses_through_clap() {
+        for (spelling, _) in Priority::SPELLINGS {
+            for form in [
+                spelling.to_string(),
+                spelling.to_ascii_uppercase(),
+                spelling.to_ascii_lowercase(),
+            ] {
+                assert!(
+                    Cli::try_parse_from(["tasqx", "add", "x", "--priority", &form]).is_ok(),
+                    "--priority {form} parses in the engine and must parse here \
+                     (is `ignore_case` still set?)"
+                );
+            }
+        }
+    }
+
+    /// Same shape for `memory search --scope`, whose vocabulary lives in
+    /// `MEMORY_SCOPES` and is enforced by the engine for API and MCP callers who
+    /// never touch clap.
+    #[test]
+    fn memory_search_scope_is_a_closed_set_matching_the_engines() {
+        for scope in MEMORY_SCOPES {
+            assert!(
+                Cli::try_parse_from(["tasqx", "memory", "search", "x", "--scope", scope]).is_ok(),
+                "{scope} is an engine scope and must parse"
+            );
+        }
+        let err = Cli::try_parse_from(["tasqx", "memory", "search", "x", "--scope", "bogus"])
+            .err()
+            .expect("an unknown scope must be refused");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    /// Drift guard: an arg whose value name announces a filesystem path must
+    /// declare how to complete one.
+    ///
+    /// Without a `ValueHint`, clap's completion engine takes the
+    /// `ValueHint::Unknown` arm and offers nothing at all — so `tasqx docs --out
+    /// <TAB>` was silent where every other tool on the system offers files. That
+    /// is a per-arg omission with no symptom, which is exactly the shape this
+    /// repo keeps getting bitten by, so it is read out of clap's own arg table
+    /// rather than kept as a list here. Same technique as
+    /// `argv::no_declared_short_flag_is_ever_escaped`, and for the same reason:
+    /// an arg declared tomorrow is covered the day it is declared.
+    ///
+    /// The rule is a naming convention, and it is enforced in the direction that
+    /// matters — it cannot know that some arg is secretly a path, but it can
+    /// insist that one *announcing* itself as PATH/FILE/DIR says what to do with
+    /// it. `--socket` is deliberately outside it: on unix its value is a socket
+    /// path, on Windows a named pipe, and its value name says SOCKET rather than
+    /// pretending the two are the same thing.
+    #[test]
+    fn every_path_shaped_arg_declares_how_to_complete_it() {
+        const PATH_VALUE_NAMES: [&str; 3] = ["PATH", "FILE", "DIR"];
+
+        fn walk(cmd: &clap::Command, trail: &str, missing: &mut Vec<String>) {
+            for arg in cmd.get_arguments() {
+                let name = arg
+                    .get_value_names()
+                    .and_then(|n| n.first().map(|s| s.as_str().to_string()))
+                    .unwrap_or_else(|| arg.get_id().as_str().to_ascii_uppercase());
+                if !PATH_VALUE_NAMES.contains(&name.as_str()) {
+                    continue;
+                }
+                if arg.get_value_hint() == clap::ValueHint::Unknown {
+                    missing.push(format!("{trail} {} <{name}>", arg.get_id()));
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &format!("{trail} {}", sub.get_name()), missing);
+            }
+        }
+
+        let mut cmd = Cli::command();
+        cmd.build();
+        let mut missing = Vec::new();
+        walk(&cmd, "tasqx", &mut missing);
+        assert!(
+            missing.is_empty(),
+            "these args name a filesystem path but declare no ValueHint, so no \
+             shell will complete them: {missing:#?}"
+        );
+
+        // The guard is only worth anything if it is looking at something. If a
+        // refactor renamed every value away from the convention this would pass
+        // vacuously and protect nothing.
+        let mut seen = 0usize;
+        fn count(cmd: &clap::Command, seen: &mut usize) {
+            *seen += cmd
+                .get_arguments()
+                .filter(|a| a.get_value_hint() != clap::ValueHint::Unknown)
+                .count();
+            for sub in cmd.get_subcommands() {
+                count(sub, seen);
+            }
+        }
+        count(&cmd, &mut seen);
+        assert!(
+            seen >= 6,
+            "expected the path-taking args to still carry hints, found {seen}"
+        );
     }
 }
