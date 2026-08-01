@@ -162,6 +162,8 @@
 //! lines (`tasqx completions <shell>`); they paste what tasqx tells them to
 //! paste and never type the variable name.
 
+pub(crate) mod candidates;
+
 use std::ffi::{OsStr, OsString};
 
 use clap::CommandFactory;
@@ -512,15 +514,6 @@ const LOOKUP_BUDGET: std::time::Duration = std::time::Duration::from_millis(150)
 /// the connection and then never answers is the failure this buys protection
 /// from, and it is not hypothetical: `try_connect` returning `Some` proves a
 /// listener exists, not that it is healthy.
-// Dead until Task 5 attaches the first provider, in the same shape
-// `escaped_word_completer` above uses: landed with its tests rather than held
-// back, because the properties it promises — a budget, a caught panic, a store
-// that is never created — are only demonstrable against real machinery. Marking
-// the ROOT of the cluster is enough; rustc treats an allowed item as live and
-// stops warning about everything reachable from it, so `read_only_backend`,
-// `guarded`, `SilencedPanics` and `crate::db_path_read_only` need no attribute
-// of their own and get none. The `allow` comes off with the first attachment.
-#[allow(dead_code)]
 pub(crate) fn lookup<T>(
     f: impl FnOnce(&mut crate::Backend) -> Option<T> + Send + 'static,
 ) -> Option<T>
