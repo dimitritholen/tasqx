@@ -83,13 +83,48 @@ pub fn open(path: &str) -> Result<Connection, ApiError> {
 ///    wait inside a keystroke is precisely the stall this seam exists to avoid,
 ///    so contention degrades to "no candidates" almost immediately instead.
 ///
-/// Known limitation, accepted rather than solved: a read-only connection cannot
-/// create the `-shm`/`-wal` sidecars. If a writer is mid-transaction and the
-/// sidecars are in a state a reader cannot attach to, this returns an `Err`
-/// where a read-write open would have waited. For the completion caller that
-/// means one Tab press showing nothing, which is milder than either alternative
-/// (opening read-write reintroduces creation and migration; `immutable=1` is
-/// unsound against a live writer).
+/// # What this does NOT promise: the `-shm`/`-wal` sidecars
+///
+/// **A read-only connection does create them.** This is the opposite of what
+/// the obvious reading of `SQLITE_OPEN_READ_ONLY` suggests, and an earlier
+/// version of this comment claimed the opposite. Measured, on a cleanly-closed
+/// WAL store with no other connection open:
+///
+/// ```text
+///   writer closed          ["tasks.db"]
+///   opened read-only       ["tasks.db"]                  <- nothing yet
+///   after one SELECT       ["tasks.db", "-shm", "-wal"]  <- both appear
+///   reader dropped         ["tasks.db", "-shm", "-wal"]  <- both remain
+/// ```
+///
+/// The flag governs the DATABASE FILE, not the WAL index. SQLite's shm layer
+/// opens the `-shm` with `RDWR|CREATE` first and only falls back to a read-only
+/// attempt if that fails, so a writable DIRECTORY is enough for both sidecars to
+/// appear, whatever the connection flags say. They appear on first query rather
+/// than at open, because that is when the WAL index is first needed.
+///
+/// They also stay. Deleting the pair on last-connection close is a write, and
+/// this connection cannot perform one — so where an ordinary read-write reader
+/// tidies up after itself, this one leaves them behind. An ordinary `tasqx list`
+/// creates exactly the same two files during its run and then removes them
+/// (measured: the directory holds only `tasks.db` after it exits).
+///
+/// So the honest promise is narrower than "nothing appears", and it is the one
+/// the caller actually needs: **no database and no schema are created, and no
+/// user data is written.** An absent path is still an `Err` with nothing left
+/// behind, because the open fails before SQLite reaches the WAL layer at all.
+/// What a completion callback can leave behind is two derived index files
+/// belonging to a store that already existed, which the next writer reuses or
+/// removes. It is not doing anything to the store that reading it normally does
+/// not already do.
+///
+/// `immutable=1` would suppress the sidecars outright and is still rejected, but
+/// on its own ground rather than on the false premise above: it *tells* SQLite
+/// the file cannot change. Against a live writer that is a lie, and SQLite acts
+/// on it — a concurrent write yields stale pages, garbage rows, or a spurious
+/// "database disk image is malformed". Trading two harmless index files for
+/// silently wrong query results, on a path whose entire job is to be harmless,
+/// is not a trade worth making.
 pub fn open_read_only(path: &str) -> Result<Connection, ApiError> {
     // Spelled out rather than `OpenFlags::default() - CREATE` because the flag
     // set is the whole security property of this function and subtraction from

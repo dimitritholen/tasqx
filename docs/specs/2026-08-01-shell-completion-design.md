@@ -133,13 +133,19 @@ auto-spawns a daemon. Completion wants exactly that behaviour, so it reuses the
 logic rather than restating it. When a daemon is up, Tab is a socket round trip
 and the store is untouched.
 
-**The fallback is read-only and never creates.** `storage::open` creates the file
-and runs the migration (`storage.rs:34-41`). Reusing it would mean a Tab press on
-a machine that has never run tasqx authors a database and a schema. A keystroke
-that did not run a command must not create a file. `storage::open_read_only`
-opens with `OpenFlags::SQLITE_OPEN_READ_ONLY`, does not call `migrate`, and
-returns an error for an absent path — which the caller turns into an empty
-candidate list.
+**The fallback is read-only: no database, no schema, no user data.** `storage::open`
+creates the file and runs the migration (`storage.rs:34-41`). Reusing it would mean
+a Tab press on a machine that has never run tasqx authors a database and a schema.
+`storage::open_read_only` opens with `OpenFlags::SQLITE_OPEN_READ_ONLY`, does not
+call `migrate`, and returns an error for an absent path — which the caller turns
+into an empty candidate list.
+
+The promise is stated as those three things and not as "no file appears", because
+the wider claim is false and was measured to be false: a read-only connection
+*does* create the `-shm`/`-wal` sidecars on first query. See
+[Known limitation](#known-limitation-read-only-opens-and-the-wal). What a Tab
+press cannot do is bring a store into existence, change its schema, or alter a
+byte of the user's data.
 
 **Everything is inside a wall-clock budget.** 150 ms, measured across the whole
 lookup. The lookup runs on a worker thread and the caller waits on
@@ -150,17 +156,46 @@ about to exit — this must be stated in the code, not just here.
 
 ### Known limitation: read-only opens and the WAL
 
-A read-only SQLite connection cannot create the `-shm`/`-wal` sidecar files. In
-the normal case they do not exist (they are cleaned up when the last connection
-closes) or they already exist (a writer is live), and both work. The failing case
-is narrow: a writer is mid-transaction, no daemon is running, and the sidecars
-are in a state a read-only connection cannot attach to. Completion then shows
-nothing for that instant.
+**A read-only connection does create the `-shm`/`-wal` sidecars.** An earlier
+draft of this section, and the doc comment that followed it, claimed the
+opposite. That claim was wrong. Measured on a cleanly-closed WAL store with no
+other connection open:
 
-This is accepted rather than solved. The alternatives are opening read-write
-(which reintroduces creation and migration on a keystroke) or `immutable=1`
-(which is unsound against a live writer). Showing nothing for one Tab press
-during a concurrent write is the mildest of the three failures.
+```
+writer closed          ["tasks.db"]
+opened read-only       ["tasks.db"]                  <- nothing yet
+after one SELECT       ["tasks.db", "-shm", "-wal"]  <- both appear
+reader dropped         ["tasks.db", "-shm", "-wal"]  <- both remain
+```
+
+`SQLITE_OPEN_READ_ONLY` governs the **database file**. It says nothing about the
+WAL index: SQLite's shm layer opens `-shm` with `RDWR|CREATE` first and only falls
+back to a read-only attempt if that fails, so a writable *directory* is enough for
+both files to appear regardless of the connection's flags. They appear on first
+query, not at open, because that is when the WAL index is first needed.
+
+They also persist. Removing the pair on last-connection close is itself a write,
+and this connection cannot perform one. An ordinary `tasqx list` creates exactly
+the same two files while it runs and then removes them on exit (measured: only
+`tasks.db` remains afterwards), so completion is not doing anything new to the
+store — it is doing the same read and leaving the tidy-up undone.
+
+What is therefore accepted: a Tab press against an existing store can leave two
+derived index files beside it, which the next writer reuses or removes. What is
+still guaranteed, and is what the caller actually needs: **no database and no
+schema are created, and no user data is written.** An absent path remains an
+`Err` with nothing left behind, because the open fails before SQLite reaches the
+WAL layer at all.
+
+The alternatives are unchanged in verdict but not in reasoning. Opening
+read-write reintroduces creation and migration on a keystroke. `immutable=1`
+would suppress the sidecars outright, and it is rejected **not** because it
+cannot be made to work but because it is unsound against a live writer: it tells
+SQLite the file cannot change, and SQLite believes it — caching pages and
+skipping locks — so a concurrent write yields stale reads, garbage rows, or a
+spurious `database disk image is malformed`. Trading two harmless index files for
+silently wrong answers, on a path whose whole purpose is to be harmless, is the
+worse bargain.
 
 ## Candidate providers
 
@@ -318,6 +353,13 @@ upgrade. Moving it is an act with tests attached, not a `cargo update`.
 - With `TASQX_DB` pointing at a nonexistent path, the callback exits 0, prints
   nothing, **and creates no file at that path**. The never-create guarantee is
   asserted against the filesystem, not documented in a comment.
+- Against a store that **exists**, a read-only open plus a real query leaves the
+  database byte-identical, the schema unmigrated, and no second database beside
+  it. This is the case the missing-store test above cannot reach — that open
+  fails before SQLite touches its WAL layer — and its absence is how the false
+  sidecar claim survived review. The sidecars themselves are pinned as *observed*
+  rather than asserted as required, so a future SQLite that behaves differently
+  fails the build instead of silently invalidating the paragraph above.
 - A drift guard iterating clap's own arg table: any subcommand whose first
   positional is a task id and which has no completer attached fails the build.
   Same technique as `no_declared_short_flag_is_ever_escaped`, which reads clap's
