@@ -255,6 +255,15 @@ pub(super) enum Command {
     #[command(alias = "mod", alias = "m", alias = "edit", after_help = crate::cmddoc::after_help("modify"))]
     Modify {
         /// short_id or UUID.
+        // Every positional in this tree that takes a task reference carries
+        // this, and `complete::candidates::tests::every_task_id_positional_offers_ids`
+        // reads clap's own arg table to fail the build for one that does not.
+        // A line comment rather than a doc one: clap renders doc comments into
+        // `--help`, and where the candidates come from is not something a user
+        // reading help needs. The reasoning — why the title travels with the id,
+        // why one provider serves `done` and `reopen` alike — is in
+        // `candidates::task_ids`.
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
         /// New title words and/or inline sugar (due:friday, +tag, project:p,
         /// !high, est:4h, repeat:"every week", remind:-1h). Bare words become the
@@ -321,6 +330,7 @@ pub(super) enum Command {
     #[command(alias = "s", after_help = crate::cmddoc::after_help("start"))]
     Start {
         /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
         /// Keep other active tasks running (opt out of single-active).
         #[arg(long)]
@@ -332,12 +342,14 @@ pub(super) enum Command {
     #[command(alias = "st", after_help = crate::cmddoc::after_help("stop"))]
     Stop {
         /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
     /// Complete a task (maps to task.done).
     #[command(alias = "d", alias = "x", alias = "complete", after_help = crate::cmddoc::after_help("done"))]
     Done {
         /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
         #[command(flatten)]
         correlation: CorrelationArgs,
@@ -346,6 +358,7 @@ pub(super) enum Command {
     #[command(alias = "get", after_help = crate::cmddoc::after_help("show"))]
     Show {
         /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
     /// Cancel a task (maps to task.cancel).
@@ -357,18 +370,21 @@ pub(super) enum Command {
     )]
     Cancel {
         /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
     /// Reopen a done/cancelled task (maps to task.reopen).
     #[command(after_help = crate::cmddoc::after_help("reopen"))]
     Reopen {
         /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
     /// Annotate a task (maps to annotation.add).
     #[command(alias = "note", after_help = crate::cmddoc::after_help("annotate"))]
     Annotate {
         /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
         /// The annotation text.
         text: Vec<String>,
@@ -377,16 +393,20 @@ pub(super) enum Command {
     #[command(after_help = crate::cmddoc::after_help("dep"))]
     Dep {
         /// The dependent task (short_id or UUID).
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
         /// The task it depends on (short_id or UUID).
+        #[arg(add = crate::complete::candidates::task_ids())]
         depends_on: String,
     },
     /// Remove a dependency (maps to dependency.remove).
     #[command(after_help = crate::cmddoc::after_help("undep"))]
     Undep {
         /// The dependent task (short_id or UUID).
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
         /// The task it depended on (short_id or UUID).
+        #[arg(add = crate::complete::candidates::task_ids())]
         depends_on: String,
     },
     /// Set the default project — where a bare `tasqx add` lands (maps to
@@ -501,6 +521,7 @@ pub(super) enum Command {
     #[command(after_help = crate::cmddoc::after_help("why"))]
     Why {
         /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
     /// stdio one-shot: read ONE JSON request envelope on stdin, write ONE response.

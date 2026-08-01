@@ -552,6 +552,215 @@ fn a_path_arg_completes_real_filenames() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A store with two tasks in it, and the environment that makes a callback read
+/// THAT store rather than the developer's.
+///
+/// `$TASQX_SOCK` is not optional here, and the reason is the one `tests/help.rs`
+/// gives for `--no-daemon`: the completion lookup prefers a reachable daemon and
+/// the remote path never consults `$TASQX_DB`, so on a machine running `tasqx
+/// daemon` this fixture would seed a temp store and then assert against the
+/// user's live one. The callback path parses no flags, so `--no-daemon` is not
+/// available to it — pointing the socket at a name nothing is listening on is
+/// how the same guarantee is bought. `try_connect` fails immediately on it.
+fn seeded(label: &str) -> (std::path::PathBuf, String) {
+    let db = temp_db(label);
+    for title in [SEEDED_TITLE, "a second seeded task"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("TASQX_DB", &db)
+            .args(["--no-daemon", "add", title])
+            .output()
+            .expect("seed the store");
+        assert!(out.status.success(), "seeding {title:?} failed");
+    }
+    let socket = format!("tasqx-completion-no-daemon-{}-{label}", std::process::id());
+    (db, socket)
+}
+
+/// Distinctive enough that finding it in the output cannot be a coincidence, and
+/// free of `:` and `\` so zsh's `escape_help` leaves it byte-identical.
+const SEEDED_TITLE: &str = "seeded task with a findable title";
+
+/// The slice's whole point, driven through the REAL callback protocol: `tasqx
+/// done <TAB>` against a seeded store must offer the seeded id AND its title.
+///
+/// **zsh rather than bash**, and that is the load-bearing choice. bash's
+/// registration writes candidate VALUES only
+/// (`clap_complete-4.6.7/src/env/shells.rs`), so a bash-driven test can prove
+/// the id arrives and is structurally incapable of proving the title does —
+/// which is the half that turns a column of integers into something a user can
+/// choose from. zsh writes `value:help` separated by `$_CLAP_IFS`, so both
+/// halves are observable. The protocol is otherwise identical: `$TASQX_COMPLETE`
+/// names the shell, `_CLAP_COMPLETE_INDEX` carries the cursor word, and the
+/// words follow a `--`.
+///
+/// A unit test that installs its own fixture provider proves nothing about this:
+/// it would demonstrate that a completer this test wrote returns what this test
+/// seeded. That mistake was already made on this branch — a fixture on
+/// `List::filter` masked the shipped completer for three rebuilds — so the
+/// candidates here come out of the binary that ships.
+#[test]
+fn a_seeded_store_completes_its_task_ids_with_their_titles() {
+    let (db, socket) = seeded("task-ids");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env(VAR, "zsh")
+        .env("TASQX_DB", &db)
+        .env("TASQX_SOCK", &socket)
+        .env("_CLAP_COMPLETE_INDEX", "2")
+        .env("_CLAP_IFS", "\n")
+        .args(["--", "tasqx", "done", ""])
+        .output()
+        .expect("run the zsh callback against a seeded store");
+
+    assert_eq!(out.status.code(), Some(0), "the callback must exit 0");
+    assert!(
+        out.stderr.is_empty(),
+        "the callback must never write to stderr, got {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let rows: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    // Two tasks were seeded, so the ids are 1 and 2 in a fresh store.
+    assert!(
+        rows.iter().any(|r| r == &format!("1:{SEEDED_TITLE}")),
+        "`tasqx done <TAB>` must offer the seeded id carrying its title, got {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.starts_with("2:")),
+        "every seeded task must be offered, got {rows:?}"
+    );
+
+    // The provider is attached to the id positional and not to the command, so
+    // the id must NOT be offered where a task reference is not expected.
+    let elsewhere = candidates(&complete_bash(1, &["tasqx", ""]));
+    assert!(
+        !elsewhere.iter().any(|c| c == "1"),
+        "task ids leaked into the subcommand position, got {elsewhere:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// The escape hatch, end to end: with `$TASQX_NO_COMPLETE_LOOKUP` set, the same
+/// callback against the same seeded store offers no ids — and still offers the
+/// structure, because turning the value lookups off must not turn completion
+/// off.
+///
+/// The second half is the one worth having. A short-circuit that also killed
+/// flag and subcommand completion would be a far worse trade than the one the
+/// variable advertises, and nothing else in the suite would notice.
+#[test]
+fn the_escape_hatch_turns_off_values_and_leaves_the_structure() {
+    let (db, socket) = seeded("no-lookup");
+
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    let out = c
+        .env(VAR, "bash")
+        .env("TASQX_DB", &db)
+        .env("TASQX_SOCK", &socket)
+        .env("TASQX_NO_COMPLETE_LOOKUP", "1")
+        .env("_CLAP_COMPLETE_INDEX", "2")
+        .env("_CLAP_IFS", SEP.to_string())
+        .args(["--", "tasqx", "done", ""])
+        .output()
+        .expect("run the callback with lookups disabled");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        candidates(&out).iter().all(|c| c != "1"),
+        "$TASQX_NO_COMPLETE_LOOKUP left the store lookup running, got {:?}",
+        candidates(&out)
+    );
+
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    let structural = c
+        .env(VAR, "bash")
+        .env("TASQX_DB", &db)
+        .env("TASQX_SOCK", &socket)
+        .env("TASQX_NO_COMPLETE_LOOKUP", "1")
+        .env("_CLAP_COMPLETE_INDEX", "1")
+        .env("_CLAP_IFS", SEP.to_string())
+        .args(["--", "tasqx", "lis"])
+        .output()
+        .expect("run a structural callback with lookups disabled");
+    assert!(
+        candidates(&structural).iter().any(|c| c == "list"),
+        "the escape hatch must disable VALUE lookups only, got {:?}",
+        candidates(&structural)
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// A Tab press against a machine that has never run tasqx must leave that
+/// machine exactly as it found it: exit 0, no ids offered, nothing on stderr,
+/// **and no file at the path**.
+///
+/// Asserted against the FILESYSTEM rather than documented in a comment, because
+/// the two obvious ways to lose it are both invisible from the outside:
+/// `storage::open` (whose flags include `SQLITE_OPEN_CREATE`) would author a
+/// database and a schema, and `db_path()` — the resolution every command uses —
+/// creates the containing directory before it returns. The lookup uses
+/// `open_read_only` and `db_path_read_only` for exactly these two reasons, and
+/// nothing but this assertion notices if either is swapped back.
+///
+/// **Stdout is NOT empty, and the spec used to say it was.** Measured here:
+/// `tasqx done <TAB>` with no store answers `--json --theme --socket …` — the
+/// flags `done` declares, which clap's engine offers for an empty word whatever
+/// the value providers do. That is correct behaviour (structure needs no store),
+/// so the assertion is on the absence of ID candidates rather than on emptiness.
+/// An emptiness assertion would have been a stricter-looking test that pinned a
+/// property the code does not have.
+#[test]
+fn a_callback_against_an_absent_store_creates_nothing() {
+    let db = temp_db("absent-store");
+    let dir = db.parent().expect("fixture dir").to_path_buf();
+    let socket = format!("tasqx-completion-absent-{}", std::process::id());
+
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    let out = c
+        .env(VAR, "bash")
+        .env("TASQX_DB", &db)
+        .env("TASQX_SOCK", &socket)
+        .env("_CLAP_COMPLETE_INDEX", "2")
+        .env("_CLAP_IFS", SEP.to_string())
+        .args(["--", "tasqx", "done", ""])
+        .output()
+        .expect("run the callback against a nonexistent store");
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an absent store is still exit 0"
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "an absent store must produce no noise; got stderr {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let offered = candidates(&out);
+    assert!(
+        offered.iter().all(|c| c.starts_with('-')),
+        "an absent store must yield no task ids — only the flags `done` \
+         declares, which need no store. got {offered:?}"
+    );
+
+    let left: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read the fixture dir")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        left.is_empty(),
+        "a Tab press created {left:?} on a machine with no store"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The whole feature is a no-op without the variable, and that is a property of
 /// the entry point of EVERY command — `intercept()` runs before the argv
 /// pre-pass, so a mistake here breaks the tool rather than the feature.

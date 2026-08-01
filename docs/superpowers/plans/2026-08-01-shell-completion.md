@@ -108,8 +108,18 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
 
 - [ ] **Step 1: Write the failing tests.** A lookup against an absent store returns `None` and creates no file. A lookup whose closure sleeps past the budget returns `None`. A lookup whose closure panics returns `None` rather than unwinding out.
 - [ ] **Step 2: Implement.** `$TASQX_NO_COMPLETE_LOOKUP` short-circuit; daemon `try_connect`; read-only fallback; worker thread with `recv_timeout` at 150 ms; `catch_unwind` around the provider. Comment the detached-thread-on-timeout decision explicitly, including why it is acceptable *here specifically* — this codebase does not otherwise leak threads and the exception needs its reason attached.
-- [ ] **Step 3: Verify.** `cargo test -p tasqx-cli`, clippy clean.
+
+  Three things this step turned out to require that the sentence above does not say:
+
+  **`catch_unwind` is half of the promise.** It catches the unwind but does NOT suppress the panic hook, and the default hook writes `thread '…' panicked at …` to stderr. That satisfies "exit 0" and breaks "nothing on stderr", which is the half that lands in the user's command line. The hook must be silenced too, and SCOPED rather than installed for the process: this code compiles into the test binary, where a permanently silent hook swallows every assertion message in the crate. Scoping means a process-global swap, so it is serialised by a mutex — two concurrent installs can interleave into a permanent silence, which is exactly the kind of invisible failure a guard exists for.
+
+  **`db_path()` cannot be used.** It creates the parent directory of `$TASQX_DB` and the platform data directory before returning, so the never-create promise dies on the path resolution rather than on the open. `db_path_read_only()` is the same function and a boolean.
+
+  **The escape hatch belongs in `lookup`, not in the budget machinery.** Every guard on the budget/panic path asserts `None`, so a stray `$TASQX_NO_COMPLETE_LOOKUP` in the developer's environment would make all of them pass vacuously. Keeping the env read out of the inner function makes its behaviour a pure function of its argument.
+- [ ] **Step 3: Verify.** `cargo test -p tasqx-cli`, clippy clean. **Mutation-test each guard**: remove `SilencedPanics`, swap `recv_timeout` for `recv`, swap `open_read_only` for `open`. The first of those is how the stderr guard was found to be vacuous — it passed the bare function name as the libtest filter, libtest matches on the full path, and the child process ran zero tests and exited 0. Derive the filter from `module_path!` and require the child to report `1 passed`.
 - [ ] **Step 4: Commit** — `feat(cli): add the budgeted, never-writing completion lookup`.
+
+  Note: `docs.rs`'s `every_env_var_is_either_a_registered_setting_or_a_named_exception` never scanned `complete.rs`, so `TASQX_NO_COMPLETE_LOOKUP` could be added with nothing noticing. Add the file to its source list and name the completion variables as exceptions with their reasons. The list is hand-kept and cannot be `include_str!`-derived; that weakness is now commented but not fixed.
 
 ### Task 5: Task-id candidates with titles
 
@@ -117,9 +127,13 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
 - Create: `crates/tasqx-cli/src/complete/candidates.rs`
 - Modify: `crates/tasqx-cli/src/command.rs`
 
-- [ ] **Step 1: Write the failing test.** Against a seeded temp store, the completer for `done`'s positional emits the seeded task's `short_id` with its title as help text.
-- [ ] **Step 2: Implement.** The provider calls `task.list`, maps rows to `CompletionCandidate::new(short_id).help(title)`, caps at 200. Attach `ArgValueCandidates` to the id positional of `done`, `start`, `stop`, `show`, `modify`, `annotate`, `cancel`, `reopen`, `dep`, `undep`.
-- [ ] **Step 3: Verify.** Manual check in at least one real shell — this is the slice's whole point and a passing unit test does not prove a shell renders it.
+- [ ] **Step 1: Write the failing test.** Against a seeded temp store, driven through the REAL callback protocol and the REAL binary, `tasqx done <TAB>` emits the seeded task's `short_id` with its title as help text. **Use the zsh protocol, not bash**: bash's registration writes candidate VALUES only (`clap_complete-4.6.7/src/env/shells.rs`), so a bash-driven test can prove the id arrives and is structurally incapable of proving the title does. zsh writes `value:help`. The fixture must also set `$TASQX_SOCK` to an address nothing is listening on, or a developer machine running `tasqx daemon` has the assertion run against the user's live store — `--no-daemon` does not exist on the callback path. A unit test that installs its own fixture provider is not proof; that mistake was made once already on this branch.
+- [ ] **Step 2: Implement.** The provider calls `task.list` with `fields: ["short_id","title"]`, `sort: ["-urgency"]` and `limit: 200`, maps rows to `CompletionCandidate::new(short_id).help(Some(title.to_string().into()))`, caps at 200 locally as well. Note the signature: `help` takes `Option<StyledStr>`, NOT an `impl Into<…>`, and `StyledStr` has no `From<&'a str>` for a non-'static borrow.
+
+  **Attach to every positional that takes a task reference, and let the guard tell you which those are.** The list this plan used to carry — ten verbs — was wrong. Clap's arg table holds THIRTEEN: those ten plus `why`'s `ref`, and the second positional of `dep` and `undep`, which name a task exactly as much as their first does. Attach to all thirteen.
+
+  One provider serves all of them and filters nothing. `reopen` wants terminal tasks and `done` wants open ones, so a filter tuned for either makes the other useless — and `reopen <TAB>` offering only pending tasks is worse than offering everything, because it looks like an answer.
+- [ ] **Step 3: Verify.** The drift guard reads clap's table recursively (nested verbs live under `memory`, `config`, `chart`, `theme`, `tokens`, `mcp`) and decides membership by TWO signals that must agree — the help text containing `short_id or UUID`, and the field name being `ref` or `depends_on`. Either alone is one edit from silently narrowing the guard. **Mutation-test it**: remove one attachment, confirm the guard fails naming that positional, restore. Do the same to the end-to-end test. Manual check in at least one real shell — a passing test does not prove a shell renders it.
 - [ ] **Step 4: Commit** — `feat(cli): complete open task ids with their titles`.
 
 ### Task 6: Projects, tags, and the sugar prefix dispatcher
@@ -165,7 +179,7 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
   - All five shells emit a non-empty registration naming the binary and setting `TASQX_COMPLETE` (catches an upstream change at the pin, and `CompleteEnv::var` being dropped).
   - `COMPLETE=bash tasqx add -- "…"` still adds the task, and `TASQX_COMPLETE=bash tasqx add -- "…"` still drops it. The second pins the residual hazard as observed rather than claiming it away; a future fix must fail that test and update `complete.rs`'s module doc in the same change.
   - A seeded store yields its project, tag and task id through the real binary.
-  - `TASQX_DB` at a nonexistent path: exit 0, empty stdout, empty stderr, **and no file created**.
+  - `TASQX_DB` at a nonexistent path: exit 0, empty stderr, **no ID candidates**, **and no file created**. NOT "empty stdout" — that was measured false: `tasqx done <TAB>` with no store still answers `--json --theme --socket …`, because structure needs no store and clap's engine offers it regardless of the value providers. Asserting emptiness would pin a property the code does not have.
   - `TASQX_DB` at a store that **exists**: the database file stays byte-identical and its schema unmigrated across a callback that really queries. The nonexistent-path guard above cannot reach this — that open fails before SQLite touches its WAL layer — and its absence is exactly how the false "read-only cannot create the sidecars" claim survived review. Already covered at the core seam by `crates/tasqx-core/tests/read_only.rs`; assert it end-to-end through the binary here.
   - Drift guard iterating clap's arg table: any subcommand taking a task-id positional with no completer attached fails the build. Read the arg table, as `no_declared_short_flag_is_ever_escaped` does — do not hand-keep a list.
   - The escaping drift guard in `complete.rs` must probe BEHAVIOUR, not the absence of one type. Checking only `pos.get::<ArgValueCandidates>().is_none()` is blind to the likelier mistake — a bare `ArgValueCompleter` on a filter positional — which compiles, passes, and leaves `list -ne<TAB>` empty in the real binary.

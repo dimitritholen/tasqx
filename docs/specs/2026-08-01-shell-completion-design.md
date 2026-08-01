@@ -147,11 +147,19 @@ distinction should be visible in the file layout rather than only in comments.
 
 ```
 lookup()
-  ├─ $TASQX_NO_COMPLETE_LOOKUP set?          -> []
-  ├─ daemon::try_connect(resolve_socket(None)) -> Backend::Remote
-  ├─ storage::open_read_only(db_path())        -> Backend::Local  (READ_ONLY, no create, no migrate)
-  └─ absent | locked | error | over budget     -> []   exit 0, stderr silent
+  ├─ $TASQX_NO_COMPLETE_LOOKUP set?               -> []
+  ├─ daemon::try_connect(resolve_socket(None))    -> Backend::Remote
+  ├─ open_read_only(db_path_read_only())          -> Backend::Local  (READ_ONLY, no create, no migrate)
+  └─ absent | locked | error | over budget | panic -> []   exit 0, stderr silent
 ```
+
+`db_path_read_only()` rather than `db_path()`, and the difference is not
+cosmetic: `db_path()` creates the parent directory of `$TASQX_DB`, and the
+platform data directory, *before it returns*. A Tab press on a machine that has
+never run tasqx would therefore author `%APPDATA%\tasqx\tasqx\data\` even though
+no database was opened. The two are one resolution function and a boolean, not
+two copies of the `$TASQX_DB`-then-`ProjectDirs` rule, because they must agree
+about where the store is or completion offers ids from a store no command reads.
 
 Three properties, each deliberate.
 
@@ -229,7 +237,7 @@ worse bargain.
 
 | Provider | Source | Attached to |
 |---|---|---|
-| Task ids | `task.list`, `short_id` + title as the candidate's help text, capped at 200 | the id positional of `done`, `start`, `stop`, `show`, `modify`, `annotate`, `cancel`, `reopen`, `dep`, `undep` |
+| Task ids | `task.list`, `short_id` + title as the candidate's help text, capped at 200 | every positional in the tree that takes a task reference — **thirteen**, not the ten below |
 | Projects | `project.list` | `--project`, `use`, and the `project:`/`proj:` sugar prefix |
 | Tags | union of the `tags` field already present on `task.list` rows (`engine.rs:845`) | the `+` sugar prefix, and `+`/`-` in filter position |
 | Themes | the built-in names plus a listing of the user theme directory | `--theme` |
@@ -244,6 +252,34 @@ Task-id candidates carry the task title as help text, which shells render beside
 the value. This is the difference between `tasqx done <TAB>` offering a column of
 bare integers and offering a readable list; a completion that shows only ids
 solves the typing problem and not the remembering problem.
+
+Which shells render it is upstream's, and is not uniform: zsh writes
+`value:help` and fish writes `value\thelp`, while bash's registration writes
+values only (`clap_complete-4.6.7/src/env/shells.rs`). The help costs nothing
+where it is dropped, so it is always attached — but a test that wants to prove
+the title arrives must drive the zsh or fish protocol, because a bash-driven one
+is structurally incapable of seeing it.
+
+**The attachment list above was wrong when it was written, and the drift guard is
+what found that out.** An earlier draft named ten verbs. Reading clap's own arg
+table finds thirteen positionals that take a task reference: those ten plus
+`why`'s `ref` — the same "short_id or UUID" shape, omitted from the list for no
+reason anyone recorded — and the second positional of `dep` and `undep`, which
+name a task exactly as much as their first does. This is why the guard reads the
+table instead of a list: the list was the thing that was wrong.
+
+Membership is decided by TWO signals that must agree — the positional's help text
+containing `short_id or UUID`, and its field name being `ref` or `depends_on` —
+because either alone is one edit away from silently narrowing the guard's scope.
+A disagreement is a red build, not a smaller guard.
+
+**One provider serves all thirteen, and it filters nothing.** `reopen` wants
+terminal tasks and `done` wants open ones, so a filter tuned for either makes the
+other useless — and `reopen <TAB>` offering only pending tasks is worse than
+offering everything, because it looks like an answer. The provider sorts by
+urgency, the order `tasqx list` already shows, and the cap takes the hottest 200.
+Per-verb scoping is a real improvement and a later decision with its own
+evidence.
 
 ### Prefix dispatch for sugar and filters
 
@@ -391,10 +427,28 @@ upgrade. Moving it is an act with tests attached, not a `cargo update`.
   **pinned as observed**, not asserted as absent, so a future fix fails the build
   and sends whoever wrote it to the paragraph that has to stop saying it.
 - With a temp store seeded with a project, a tag and a task, the callback emits
-  the seeded values — the feature works, tested through the real binary.
-- With `TASQX_DB` pointing at a nonexistent path, the callback exits 0, prints
-  nothing, **and creates no file at that path**. The never-create guarantee is
-  asserted against the filesystem, not documented in a comment.
+  the seeded values — the feature works, tested through the real binary. The
+  seeded fixture must also set `$TASQX_SOCK` to an address nothing is listening
+  on: the lookup prefers a reachable daemon and the remote path never consults
+  `$TASQX_DB`, so on a developer machine running `tasqx daemon` the test would
+  seed a temp store and assert against the user's live one. `--no-daemon` is not
+  available, because the callback path parses no flags.
+- With `TASQX_DB` pointing at a nonexistent path, the callback exits 0, writes
+  nothing to stderr, offers no ids, **and creates no file at that path**. The
+  never-create guarantee is asserted against the filesystem, not documented in a
+  comment.
+
+  An earlier version of this bullet said "prints nothing", and that is false —
+  measured: `tasqx done <TAB>` with no store answers `--json --theme --socket …`,
+  the flags `done` declares, because structure needs no store and clap's engine
+  offers it regardless of what the value providers do. That is correct behaviour,
+  so the guard asserts the absence of ID candidates rather than emptiness. An
+  emptiness assertion would have pinned a property the code does not have, which
+  is the defect shape this branch has spent its time removing.
+- `$TASQX_NO_COMPLETE_LOOKUP` disables the VALUE lookups and nothing else:
+  against the same seeded store the ids are gone and `tasqx lis<TAB>` still
+  offers `list`. A short-circuit that also killed structural completion would be
+  a far worse trade than the variable advertises, and nothing else would notice.
 - Against a store that **exists**, a read-only open plus a real query leaves the
   database byte-identical, the schema unmigrated, and no second database beside
   it. This is the case the missing-store test above cannot reach — that open
@@ -402,10 +456,12 @@ upgrade. Moving it is an act with tests attached, not a `cargo update`.
   sidecar claim survived review. The sidecars themselves are pinned as *observed*
   rather than asserted as required, so a future SQLite that behaves differently
   fails the build instead of silently invalidating the paragraph above.
-- A drift guard iterating clap's own arg table: any subcommand whose first
-  positional is a task id and which has no completer attached fails the build.
-  Same technique as `no_declared_short_flag_is_ever_escaped`, which reads clap's
-  arg table rather than a hand-kept list, and for the same reason.
+- A drift guard iterating clap's own arg table, recursively so nested verbs are
+  covered: any positional that takes a task reference and has no candidate
+  provider attached fails the build, naming the positional. Same technique as
+  `no_declared_short_flag_is_ever_escaped`, which reads clap's arg table rather
+  than a hand-kept list, and for the same reason — proven by removing one
+  attachment and watching it redden.
 
 **`complete::tests::escaping_drift`** guards the other end of the pre-pass, and
 it must test BEHAVIOUR rather than a type. Every provider on a positional the
