@@ -1,11 +1,11 @@
-//! Shell completion: the `$COMPLETE` callback path.
+//! Shell completion: the `$TASQX_COMPLETE` callback path.
 //!
 //! The shell calls back into this binary on every Tab press. [`intercept`] is
 //! the first statement of [`crate::run`], ahead of the argv pre-pass, so that a
 //! completion request never reaches the dispatcher, never opens the ordinary
-//! read-write store, and never runs a command. Without `$COMPLETE` set it is one
-//! environment lookup and a return, which is what keeps every real invocation
-//! byte-identical to a build without this module.
+//! read-write store, and never runs a command. Without `$TASQX_COMPLETE` set it
+//! is one environment lookup and a return, which is what keeps every real
+//! invocation byte-identical to a build without this module.
 //!
 //! # Failure policy: D33 is INVERTED here, deliberately
 //!
@@ -16,8 +16,11 @@
 //! "On this path" is load-bearing and is not a figure of speech. The silence
 //! applies once we know a shell is asking; deciding *that* is
 //! [`names_a_shell_clap_can_complete`], and getting it wrong costs a real
-//! command. An unrecognised `$COMPLETE` is explicitly NOT in the list above: it
-//! cannot be a callback, so it is an ordinary run and it executes normally.
+//! command. An unrecognised `$TASQX_COMPLETE` is explicitly NOT in the list
+//! above: it cannot be a callback, so it is an ordinary run and it executes
+//! normally. What that check does *not* buy is the section below headed *The
+//! residual hazard*: a silent drop this module makes improbable and cannot
+//! remove. Read it before concluding that the silent-drop class is closed here.
 //!
 //! That is the exact opposite of the rule the rest of this codebase is built on.
 //! D33 says a value that changes nothing must not answer `ok`, and the
@@ -68,29 +71,85 @@
 //!
 //! `complete()` itself is unusable here: it ends in `Error::exit`, which prints
 //! a clap error to stderr and exits non-zero for, among other things, a
-//! `$COMPLETE` naming a shell it has no completer for. That is the policy above
-//! violated by the convenience wrapper, so [`intercept`] uses `try_complete`.
+//! `$TASQX_COMPLETE` naming a shell it has no completer for. That is the policy
+//! above violated by the convenience wrapper, so [`intercept`] uses
+//! `try_complete`.
 //!
-//! # The one accepted edge: a RECOGNISED `$COMPLETE` and no `--`
+//! # The residual hazard: a RECOGNISED `$TASQX_COMPLETE` and a real command
 //!
-//! `COMPLETE=bash tasqx add "a real task"` does not add a task. It prints the
-//! bash registration script and exits 0.
+//! [`names_a_shell_clap_can_complete`] closes the *unrecognised* half of this
+//! and nothing more. Once the variable names a shell clap does have a completer
+//! for, the process is handed to `try_complete_` and what happens next is
+//! decided by `clap_complete`'s protocol rather than by anything this module
+//! chooses. There are two outcomes and neither runs the command. Both were
+//! measured against the built binary, not reasoned about:
 //!
-//! That follows from the third fact above rather than from anything this module
-//! chooses: `try_complete_` drains argv through the first `--`, and "what is
-//! left is empty" is *the* signal it uses to mean "emit the registration". With
-//! no `--` anywhere, everything drains, the remainder is empty, and the
-//! registration branch is taken no matter what the words were. It is
-//! `clap_complete`'s protocol — `source <(COMPLETE=bash tasqx)` is the
-//! documented activation line and is exactly this call — so it stays.
+//!  * **No `--` anywhere — the registration script, on stdout, exit 0.**
+//!    `TASQX_COMPLETE=zsh tasqx done 1` prints `#compdef tasqx` and a page of
+//!    zsh instead of closing task 1. This follows from the third fact above:
+//!    `try_complete_` drains argv through the first `--` and "what is left is
+//!    empty" is *the* signal it uses to mean "emit the registration", so with no
+//!    `--` everything drains and that branch is taken whatever the words were.
+//!    It is also the activation call itself (`source <(TASQX_COMPLETE=zsh
+//!    tasqx)`), so it cannot be removed without removing the feature. It is at
+//!    least LOUD: a page of shell script on stdout is not mistakable for a
+//!    command that ran.
+//!  * **A `--` present — nothing at all, exit 0, and the command is DROPPED.**
+//!    `TASQX_COMPLETE=bash tasqx add -- "a real task"` writes zero bytes to
+//!    stdout, zero bytes to stderr, exits 0, and does not add the task. Here
+//!    `try_complete_` takes `shell.write_complete` instead, the engine completes
+//!    the word `a real task` in `add`'s title position, finds no candidates, and
+//!    prints the empty list. Nothing distinguishes that from a command that
+//!    succeeded quietly.
 //!
-//! It is recorded here because it is the same *shape* as the defect
-//! [`names_a_shell_clap_can_complete`] fixes and must not be mistaken for it.
-//! Two things separate them. It requires a `$COMPLETE` naming a shell that is
-//! genuinely installed and set for this process, which is a state a shell only
-//! reaches while actually completing. And it is LOUD: a page of shell script on
-//! stdout is impossible to mistake for a command that ran. The bug that was
-//! fixed was silent, exit 0, and reachable by a user simply trying `nushell`.
+//! The second one is a silent drop — the class this codebase hunts — sitting in
+//! the file whose whole argument is that it is not committing one. It is named
+//! here rather than argued away, because the previous version of this section
+//! described only the first case, called it "the one accepted edge", and
+//! justified it as "LOUD"; both claims were false of the `--` spelling, and a
+//! doc asserting a property the code lacks is the same defect shape as the bug
+//! it was written to explain.
+//!
+//! ## Why there is no stronger discriminator
+//!
+//! The obvious repair is to demand more evidence that a shell is really asking —
+//! `_CLAP_COMPLETE_INDEX` is the natural candidate, since it carries the cursor
+//! position and no human exports it. It cannot be required, because only three
+//! of the five registrations set it. Measured in
+//! `clap_complete-4.6.7/src/env/shells.rs`: bash (`:33`, `:46`), elvish (`:163`)
+//! and zsh (`:425`, `:430`) pass it and read it back (`:79`, `:180`, `:474`),
+//! while fish (`:231`) and PowerShell (`:381`) compute `index = args.len() - 1`
+//! from the words themselves and never set the variable at all. Confirmed
+//! against the binary: `TASQX_COMPLETE=fish tasqx -- tasqx lis` completes with
+//! no `_CLAP_COMPLETE_INDEX` in the environment, and so does the PowerShell
+//! spelling. Requiring it would silently kill completion in two of the five
+//! shells this feature ships for — trading a rare dropped command for a
+//! permanently dead feature on macOS's fish users and on Windows.
+//!
+//! Nor can `--` be used the other way round. It is the documented POSIX way to
+//! pass a leading-dash value and tasqx tells users to reach for it; treating its
+//! presence as proof of a callback is the *previous* bug, fixed in
+//! [`names_a_shell_clap_can_complete`], and reinstating it here would swallow
+//! `tasqx add -- "-leading dash"` for everyone rather than for the few.
+//!
+//! ## What the variable name buys, and what it does not
+//!
+//! So the mitigation is the variable, and it is a mitigation only. The
+//! completion protocol is activated by `$TASQX_COMPLETE` and not by
+//! `clap_complete`'s default `$COMPLETE` (see [`COMPLETE_VAR`]). `COMPLETE` is a
+//! generic name that another tool, a dotfile, or a half-run activation line can
+//! plausibly leave in the environment; the spec's own PowerShell activation line
+//! sets it and unsets it in a single statement, so an interrupted paste or a
+//! profile that errors between the two leaves it set for the rest of the
+//! session. `TASQX_COMPLETE` is a name nothing else has a reason to write, which
+//! makes the hazardous state improbable.
+//!
+//! Improbable is not impossible, and this module claims nothing more. A user who
+//! sets `TASQX_COMPLETE` by hand, or whose activation line dies between its two
+//! statements, still loses the next `tasqx … -- …` silently. The divergence from
+//! clap's convention costs users nothing because tasqx prints its own activation
+//! lines (`tasqx completions <shell>`); they paste what tasqx tells them to
+//! paste and never type the variable name.
 
 use std::ffi::{OsStr, OsString};
 
@@ -106,7 +165,21 @@ use crate::Cli;
 /// Named here and handed to `CompleteEnv::var` rather than relying on its
 /// default, so the cheap guard at the top of [`intercept`] and the machinery it
 /// guards can never disagree about which variable they are reading.
-const COMPLETE_VAR: &str = "COMPLETE";
+///
+/// **Deliberately not `clap_complete`'s default `COMPLETE`.** That default is
+/// what makes the residual hazard in this module's documentation reachable: any
+/// `tasqx … -- …` run with a recognised shell name in the variable is swallowed,
+/// silently, exit 0. `COMPLETE` is generic enough that a stale export is a real
+/// scenario — the PowerShell activation line sets it and removes it in one
+/// statement, so an interrupted paste leaves it set for the session, and any
+/// other clap-based tool activated in the same profile writes the same name.
+/// `TASQX_COMPLETE` is a name nothing else has cause to set, which is the whole
+/// of the mitigation: it makes the hazardous state improbable, not impossible.
+///
+/// The divergence from clap's documented convention is free here because tasqx
+/// generates its own activation lines rather than asking users to remember one.
+/// Nothing a user types contains this string.
+const COMPLETE_VAR: &str = "TASQX_COMPLETE";
 
 /// Serve a completion request and exit, or return so the ordinary run proceeds.
 ///
@@ -119,7 +192,7 @@ pub(crate) fn intercept() {
     // The whole cost of this feature on every ordinary `tasqx` invocation. It
     // is not merely an optimisation: returning here means argv is never even
     // collected on the command path, so "behaves exactly as before without
-    // $COMPLETE" is a property of the control flow rather than of the code
+    // $TASQX_COMPLETE" is a property of the control flow rather than of the code
     // downstream being careful.
     let Some(shell) = std::env::var_os(COMPLETE_VAR) else {
         return;
@@ -149,7 +222,7 @@ pub(crate) fn intercept() {
         // Candidates (or a registration script) were written. Exiting here is
         // what keeps the completion path from ever reaching the dispatcher.
         Ok(true) => std::process::exit(0),
-        // `$COMPLETE` unset, empty, or "0". Unreachable in practice: the guard
+        // `$TASQX_COMPLETE` unset, empty, or "0". Unreachable in practice: the guard
         // above already returned for all three (none of them names a shell), so
         // this arm agrees with it rather than second-guessing it.
         Ok(false) => {}
@@ -164,17 +237,22 @@ pub(crate) fn intercept() {
     }
 }
 
-/// Does `$COMPLETE`'s value name a shell `clap_complete` has a completer for?
+/// Does `$TASQX_COMPLETE`'s value name a shell `clap_complete` has a completer
+/// for?
 ///
 /// This is the discriminator between "a shell is asking for candidates" and "a
 /// human is running a command with a stale variable in the environment", and it
 /// replaces an earlier test that asked whether argv contained `--`.
 ///
+/// It is a PARTIAL discriminator and the module doc says where it stops: a
+/// recognised shell name plus a `--` still swallows a real command. This
+/// function closes the half that can be closed for free.
+///
 /// **Why recognisability decides it.** A completion callback is only ever
 /// launched by a registration script, and the only thing that emits a
 /// registration script is `clap_complete` itself — for a shell it has an
-/// `EnvCompleter` for. `COMPLETE=nushell tasqx` does not print a script, it
-/// errors, so no `nushell` registration has ever existed anywhere and nothing
+/// `EnvCompleter` for. `TASQX_COMPLETE=nushell tasqx` does not print a script,
+/// it errors, so no `nushell` registration has ever existed anywhere and nothing
 /// can have invoked us on its behalf. An unrecognised value therefore cannot
 /// possibly be a callback. It can only have been exported by hand, left behind
 /// by an experiment, or typed by a user trying the shell this project documents
@@ -197,7 +275,8 @@ pub(crate) fn intercept() {
 /// adds a shell.
 ///
 /// `file_stem` mirrors `Shells::completer_for_path`, which strips a directory so
-/// that a `$COMPLETE` copied from `$SHELL` (`/usr/bin/zsh`) still resolves. The
+/// that a `$TASQX_COMPLETE` copied from `$SHELL` (`/usr/bin/zsh`) still
+/// resolves. The
 /// two must agree: a value this function accepted but `try_complete` then
 /// rejected would take the late-error arm above and exit 0 on a real command —
 /// the very bug being fixed, reintroduced one layer down.

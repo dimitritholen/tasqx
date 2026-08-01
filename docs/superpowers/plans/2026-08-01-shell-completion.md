@@ -4,7 +4,7 @@
 
 **Goal:** `tasqx` completes its commands, aliases, flags, fixed value sets, task ids, project names, tags and filter tokens in bash, zsh, fish, PowerShell and elvish on Windows, Linux and macOS — with the value lookups reading live data and never creating, migrating or writing anything.
 
-**Architecture:** `clap_complete`'s `unstable-dynamic` `CompleteEnv` intercepts at the top of `run()`, before the argv pre-pass. Candidate providers attached to individual clap args fetch live values through a hard-guarded read path: daemon if reachable, else a strictly read-only SQLite open, all inside a 150 ms budget, degrading to zero candidates and exit 0 on every failure. A new `completions` verb prints or installs the shell activation line.
+**Architecture:** `clap_complete`'s `unstable-dynamic` `CompleteEnv` intercepts at the top of `run()`, before the argv pre-pass, activated by `$TASQX_COMPLETE` (via `CompleteEnv::var`) rather than clap's generic default `$COMPLETE`. Candidate providers attached to individual clap args fetch live values through a hard-guarded read path: daemon if reachable, else a strictly read-only SQLite open, all inside a 150 ms budget, degrading to zero candidates and exit 0 on every failure. A new `completions` verb prints or installs the shell activation line.
 
 **Tech Stack:** Rust 2021, clap 4.6.1 (derive), `clap_complete` 4.6.7 pinned exactly with `unstable-dynamic`, `rusqlite` (already present), no other new dependencies.
 
@@ -13,8 +13,9 @@
 ## Global Constraints
 
 - One new crate dependency only: `clap_complete`, pinned `=4.6.7`. Nothing else.
-- The `$COMPLETE` callback path must **never** create a database, migrate a schema, or write user data. This is asserted against the filesystem in Task 9, not merely intended. The stronger form this constraint used to carry — *"no file may appear as a result of a Tab press"* — is **false, and was measured to be false**: a read-only connection creates the `-shm`/`-wal` sidecars on first query (`SQLITE_OPEN_READ_ONLY` governs the database file, while the shm layer opens `-shm` with `RDWR|CREATE` first) and cannot delete them on close, because deleting them is a write. An ordinary `tasqx list` creates the same two files and *does* clean them up, so completion is not doing anything to the store that a normal read does not already do. See the spec's *Known limitation: read-only opens and the WAL*.
+- The `$TASQX_COMPLETE` callback path must **never** create a database, migrate a schema, or write user data. This is asserted against the filesystem in Task 9, not merely intended. The stronger form this constraint used to carry — *"no file may appear as a result of a Tab press"* — is **false, and was measured to be false**: a read-only connection creates the `-shm`/`-wal` sidecars on first query (`SQLITE_OPEN_READ_ONLY` governs the database file, while the shm layer opens `-shm` with `RDWR|CREATE` first) and cannot delete them on close, because deleting them is a write. An ordinary `tasqx list` creates the same two files and *does* clean them up, so completion is not doing anything to the store that a normal read does not already do. See the spec's *Known limitation: read-only opens and the WAL*.
 - The callback path must **never** print to stderr and must always exit 0, including on panic, timeout, missing store and unreachable daemon. This inverts D33 and must be documented as deliberate in `complete.rs`'s module doc, or a future review will correctly flag it as a silent-drop defect and "fix" it.
+- The activation variable is **`TASQX_COMPLETE`**, set through `CompleteEnv::var`. Not a style choice: once the variable names a shell clap can complete, an argv containing `--` is served as a callback and the real command is dropped silently at exit 0, and `clap_complete` offers nothing that tells the two apart (`_CLAP_COMPLETE_INDEX` is set only by the bash, elvish and zsh registrations — fish at `shells.rs:231` and PowerShell at `:381` compute the index themselves, so requiring it would kill completion in two of five shells). A tasqx-specific name makes the hazardous environment improbable rather than impossible, and it is free because tasqx prints its own activation lines in Task 8. **State it as a reduction, never as a fix.**
 - The `completions` verb is exempt from the above: it is an ordinary command and reports errors loudly with a non-zero exit.
 - Completion words must go through `argv::prepass` before reaching clap's completion engine, for the same reason `run()` does not call `Cli::parse()`.
 - `cargo clippy --workspace --all-targets` must stay clean; the workspace denies warnings in CI. `cargo fmt --check` must pass.
@@ -81,8 +82,8 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
 - Consumes: `argv::prepass`, `command::Cli::command()`.
 
 - [ ] **Step 1: Verify the two upstream assumptions** listed in the note above. Record what was found in the module doc.
-- [ ] **Step 2: Write the failing test.** `COMPLETE=bash <binary>` emits a non-empty registration containing the binary name; without `$COMPLETE` the binary behaves exactly as before (a plain `tasqx --version` still works).
-- [ ] **Step 3: Implement.** Add the pinned dependency with its guard comment. Write `complete.rs` with the module doc that states the inverted-D33 failure policy **and why**. `intercept()` builds `CompleteEnv::with_factory(command::Cli::command).bin("tasqx")`, runs the words through `argv::prepass`, and completes.
+- [ ] **Step 2: Write the failing test.** `TASQX_COMPLETE=bash <binary>` emits a non-empty registration containing the binary name and naming `TASQX_COMPLETE`; a stale `COMPLETE=bash` changes nothing; without `$TASQX_COMPLETE` the binary behaves exactly as before (a plain `tasqx --version` still works).
+- [ ] **Step 3: Implement.** Add the pinned dependency with its guard comment. Write `complete.rs` with the module doc that states the inverted-D33 failure policy **and why**. `intercept()` builds `CompleteEnv::with_factory(command::Cli::command).var("TASQX_COMPLETE").bin("tasqx")`, runs the words through `argv::prepass`, and completes.
 - [ ] **Step 4: Wire it** as the first statement of `run()`, before `argv::prepass`.
 - [ ] **Step 5: Verify.** Full suite green — this touches the entry point of every command, so a regression here breaks everything. Confirm all five shells emit a registration.
 - [ ] **Step 6: Commit** — `feat(cli): intercept shell completion before the argv pre-pass`.
@@ -150,7 +151,7 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
 - Modify: `crates/tasqx-cli/src/command.rs`, `crates/tasqx-cli/src/lib.rs`, `crates/tasqx-cli/src/cmddoc.rs`
 
 - [ ] **Step 1: Write the failing tests.** `completions bash` prints the activation line and exits 0. `completions cmd` exits 2 with the unsupported message. Installing into a temp profile twice leaves exactly one marked block. Uninstall restores the file byte-for-byte. A non-interactive `--install` refuses with a non-zero exit.
-- [ ] **Step 2: Implement.** The verb, the five activation lines (**copied from `clap_complete-4.6.7/src/env/mod.rs:38-63`, not from memory**), detection with a refusal on ambiguity, the marked block with replace-not-append semantics, confirmation before writing.
+- [ ] **Step 2: Implement.** The verb, the five activation lines (**shapes copied from `clap_complete-4.6.7/src/env/mod.rs:38-63`, not from memory, with `TASQX_COMPLETE` substituted for `COMPLETE`**), detection with a refusal on ambiguity, the marked block with replace-not-append semantics, confirmation before writing.
 - [ ] **Step 3: Add the `COMMAND_REF` entry.** The existing guard fails the build without it; add examples with the correct `RunKind` (printing is `Safe`, installing is `NoRun`).
 - [ ] **Step 4: Verify.** Full suite including the executable-examples guard.
 - [ ] **Step 5: Commit** — `feat(cli): add the completions verb with guided, idempotent install`.
@@ -161,11 +162,13 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
 - Create: `crates/tasqx-cli/tests/completion.rs`
 
 - [ ] **Step 1: Implement the guards** described in the spec:
-  - All five shells emit a non-empty registration naming the binary (catches an upstream change at the pin).
+  - All five shells emit a non-empty registration naming the binary and setting `TASQX_COMPLETE` (catches an upstream change at the pin, and `CompleteEnv::var` being dropped).
+  - `COMPLETE=bash tasqx add -- "…"` still adds the task, and `TASQX_COMPLETE=bash tasqx add -- "…"` still drops it. The second pins the residual hazard as observed rather than claiming it away; a future fix must fail that test and update `complete.rs`'s module doc in the same change.
   - A seeded store yields its project, tag and task id through the real binary.
   - `TASQX_DB` at a nonexistent path: exit 0, empty stdout, empty stderr, **and no file created**.
   - `TASQX_DB` at a store that **exists**: the database file stays byte-identical and its schema unmigrated across a callback that really queries. The nonexistent-path guard above cannot reach this — that open fails before SQLite touches its WAL layer — and its absence is exactly how the false "read-only cannot create the sidecars" claim survived review. Already covered at the core seam by `crates/tasqx-core/tests/read_only.rs`; assert it end-to-end through the binary here.
   - Drift guard iterating clap's arg table: any subcommand taking a task-id positional with no completer attached fails the build. Read the arg table, as `no_declared_short_flag_is_ever_escaped` does — do not hand-keep a list.
+  - The escaping drift guard in `complete.rs` must probe BEHAVIOUR, not the absence of one type. Checking only `pos.get::<ArgValueCandidates>().is_none()` is blind to the likelier mistake — a bare `ArgValueCompleter` on a filter positional — which compiles, passes, and leaves `list -ne<TAB>` empty in the real binary.
 - [ ] **Step 2: Verify** the drift guard actually fails when a completer is removed. A guard that has never failed is a guard that has not been tested.
 - [ ] **Step 3: Commit** — `test(cli): guard the completion surface against drift and upstream change`.
 
@@ -174,7 +177,7 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
 **Files:**
 - Modify: `README.md`, the manual topic, `cmddoc.rs`
 
-- [ ] **Step 1: Write** the per-shell setup instructions, the cmd.exe and nushell gaps stated plainly, and the `$TASQX_NO_COMPLETE_LOOKUP` escape hatch.
+- [ ] **Step 1: Write** the per-shell setup instructions (naming `TASQX_COMPLETE`, and saying why it is not clap's `COMPLETE`), the cmd.exe and nushell gaps stated plainly, and the `$TASQX_NO_COMPLETE_LOOKUP` escape hatch.
 - [ ] **Step 2: Verify** the README guard (`tests/readme.rs`) stays green — it checks claims against reality.
 - [ ] **Step 3: Commit** — `docs: document shell completion setup on all three platforms`.
 
