@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - One new crate dependency only: `clap_complete`, pinned `=4.6.7`. Nothing else.
-- The `$COMPLETE` callback path must **never** write, create or migrate. No file may appear as a result of a Tab press. This is asserted against the filesystem in Task 9, not merely intended.
+- The `$COMPLETE` callback path must **never** create a database, migrate a schema, or write user data. This is asserted against the filesystem in Task 9, not merely intended. The stronger form this constraint used to carry — *"no file may appear as a result of a Tab press"* — is **false, and was measured to be false**: a read-only connection creates the `-shm`/`-wal` sidecars on first query (`SQLITE_OPEN_READ_ONLY` governs the database file, while the shm layer opens `-shm` with `RDWR|CREATE` first) and cannot delete them on close, because deleting them is a write. An ordinary `tasqx list` creates the same two files and *does* clean them up, so completion is not doing anything to the store that a normal read does not already do. See the spec's *Known limitation: read-only opens and the WAL*.
 - The callback path must **never** print to stderr and must always exit 0, including on panic, timeout, missing store and unreachable daemon. This inverts D33 and must be documented as deliberate in `complete.rs`'s module doc, or a future review will correctly flag it as a silent-drop defect and "fix" it.
 - The `completions` verb is exempt from the above: it is an ordinary command and reports errors loudly with a non-zero exit.
 - Completion words must go through `argv::prepass` before reaching clap's completion engine, for the same reason `run()` does not call `Cli::parse()`.
@@ -164,6 +164,7 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
   - All five shells emit a non-empty registration naming the binary (catches an upstream change at the pin).
   - A seeded store yields its project, tag and task id through the real binary.
   - `TASQX_DB` at a nonexistent path: exit 0, empty stdout, empty stderr, **and no file created**.
+  - `TASQX_DB` at a store that **exists**: the database file stays byte-identical and its schema unmigrated across a callback that really queries. The nonexistent-path guard above cannot reach this — that open fails before SQLite touches its WAL layer — and its absence is exactly how the false "read-only cannot create the sidecars" claim survived review. Already covered at the core seam by `crates/tasqx-core/tests/read_only.rs`; assert it end-to-end through the binary here.
   - Drift guard iterating clap's arg table: any subcommand taking a task-id positional with no completer attached fails the build. Read the arg table, as `no_declared_short_flag_is_ever_escaped` does — do not hand-keep a list.
 - [ ] **Step 2: Verify** the drift guard actually fails when a completer is removed. A guard that has never failed is a guard that has not been tested.
 - [ ] **Step 3: Commit** — `test(cli): guard the completion surface against drift and upstream change`.
@@ -184,5 +185,5 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
 - `cargo test --workspace --all-targets` green on Windows, Linux and macOS.
 - `cargo clippy --workspace --all-targets` clean; `cargo fmt --check` clean.
 - Manual confirmation in at least bash/zsh (unix) and PowerShell (Windows) that commands, flags, and task ids actually complete in a real terminal.
-- No file is created by any Tab press, proven by test.
+- No Tab press creates a database, migrates a schema, or writes user data, proven by test — including against a store that already exists, where the database stays byte-identical. (The `-shm`/`-wal` sidecars are the documented exception; they are pinned as observed, not forbidden.)
 - The inverted-D33 policy is documented at the point where a reader would otherwise file it as a defect.
