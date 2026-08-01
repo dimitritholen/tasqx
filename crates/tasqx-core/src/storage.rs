@@ -23,6 +23,13 @@ use crate::util::now;
 /// Busy timeout for contended one-shot writers (DESIGN.md §2: ~3s).
 const BUSY_TIMEOUT_MS: u32 = 3000;
 
+/// Busy timeout for [`open_read_only`], two orders of magnitude below the
+/// writer's. A reader on this path is inside somebody's keystroke and has a
+/// wall-clock budget above it, so waiting out a contended write would spend the
+/// whole budget on a lock and still produce nothing. Failing fast produces
+/// nothing too, but instantly.
+const READ_ONLY_BUSY_TIMEOUT_MS: u64 = 30;
+
 /// Column list shared by every task SELECT, kept in sync with `map_task_row`.
 /// New columns are **appended**, never inserted: the order here is the positional
 /// contract `map_task_row` reads by index, so appending leaves every existing
@@ -37,6 +44,58 @@ pub fn open(path: &str) -> Result<Connection, ApiError> {
         .map_err(|e| ApiError::internal(format!("cannot open store {path}: {e}")))?;
     configure(&conn)?;
     migrate(&conn)?;
+    Ok(conn)
+}
+
+/// Open an EXISTING store at `path` for reading only: no create, no migration,
+/// no write lock, and a busy timeout measured in milliseconds rather than
+/// seconds.
+///
+/// This is not a convenience twin of [`open`]; every difference from it is a
+/// property some caller depends on, so none of them may be quietly restored:
+///
+///  * **No create.** [`open`] uses `Connection::open`, whose flags include
+///    `SQLITE_OPEN_CREATE`, so it authors a database file for any path handed
+///    to it. The caller this seam exists for is the shell-completion callback
+///    (`tasqx-cli/src/complete.rs`), which runs on a Tab press. A keystroke that
+///    did not run a command must not leave a database and a schema behind on a
+///    machine that has never run tasqx, so an absent path is an `Err` here.
+///  * **No migration.** [`migrate`] is DDL. Running it from a read path would
+///    fail on the read-only connection anyway, but the deeper reason is that
+///    upgrading a store's schema is a decision a command makes, never something
+///    a completion lookup does on the user's behalf.
+///  * **No `journal_mode = WAL`.** That pragma is a write to the database
+///    header. Issuing it on a read-only connection fails, and "fixing" that by
+///    dropping the read-only flag would undo the first two properties. WAL is
+///    already persistent in the file the writer created, so a reader inherits
+///    it without asking.
+///  * **A short busy timeout.** [`open`]'s three seconds is right for a
+///    one-shot writer that would otherwise report a spurious conflict. Here the
+///    caller has its own wall-clock budget for the whole lookup and a long busy
+///    wait inside a keystroke is precisely the stall this seam exists to avoid,
+///    so contention degrades to "no candidates" almost immediately instead.
+///
+/// Known limitation, accepted rather than solved: a read-only connection cannot
+/// create the `-shm`/`-wal` sidecars. If a writer is mid-transaction and the
+/// sidecars are in a state a reader cannot attach to, this returns an `Err`
+/// where a read-write open would have waited. For the completion caller that
+/// means one Tab press showing nothing, which is milder than either alternative
+/// (opening read-write reintroduces creation and migration; `immutable=1` is
+/// unsound against a live writer).
+pub fn open_read_only(path: &str) -> Result<Connection, ApiError> {
+    // Spelled out rather than `OpenFlags::default() - CREATE` because the flag
+    // set is the whole security property of this function and subtraction from
+    // a default hides what is actually being passed. `NO_MUTEX` and `URI` match
+    // rusqlite's default so path handling is identical to [`open`]'s; `URI` is
+    // safe to keep because SQLite refuses a `mode=` query parameter that is
+    // LESS restrictive than the flags, so a crafted path cannot re-enable
+    // writing or creation through it.
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+    let conn = Connection::open_with_flags(path, flags)
+        .map_err(|e| ApiError::internal(format!("cannot open store {path}: {e}")))?;
+    conn.busy_timeout(std::time::Duration::from_millis(READ_ONLY_BUSY_TIMEOUT_MS))?;
     Ok(conn)
 }
 
