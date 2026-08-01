@@ -11,8 +11,13 @@
 //!
 //! On this path, **every** failure produces zero candidates, exit 0, and nothing
 //! on stderr. A missing store, an unreachable daemon, a locked database, a
-//! lookup that blows its time budget, an unrecognised `$COMPLETE` value — all of
-//! them are silence.
+//! lookup that blows its time budget — all of them are silence.
+//!
+//! "On this path" is load-bearing and is not a figure of speech. The silence
+//! applies once we know a shell is asking; deciding *that* is
+//! [`names_a_shell_clap_can_complete`], and getting it wrong costs a real
+//! command. An unrecognised `$COMPLETE` is explicitly NOT in the list above: it
+//! cannot be a callback, so it is an ordinary run and it executes normally.
 //!
 //! That is the exact opposite of the rule the rest of this codebase is built on.
 //! D33 says a value that changes nothing must not answer `ok`, and the
@@ -65,10 +70,32 @@
 //! a clap error to stderr and exits non-zero for, among other things, a
 //! `$COMPLETE` naming a shell it has no completer for. That is the policy above
 //! violated by the convenience wrapper, so [`intercept`] uses `try_complete`.
+//!
+//! # The one accepted edge: a RECOGNISED `$COMPLETE` and no `--`
+//!
+//! `COMPLETE=bash tasqx add "a real task"` does not add a task. It prints the
+//! bash registration script and exits 0.
+//!
+//! That follows from the third fact above rather than from anything this module
+//! chooses: `try_complete_` drains argv through the first `--`, and "what is
+//! left is empty" is *the* signal it uses to mean "emit the registration". With
+//! no `--` anywhere, everything drains, the remainder is empty, and the
+//! registration branch is taken no matter what the words were. It is
+//! `clap_complete`'s protocol — `source <(COMPLETE=bash tasqx)` is the
+//! documented activation line and is exactly this call — so it stays.
+//!
+//! It is recorded here because it is the same *shape* as the defect
+//! [`names_a_shell_clap_can_complete`] fixes and must not be mistaken for it.
+//! Two things separate them. It requires a `$COMPLETE` naming a shell that is
+//! genuinely installed and set for this process, which is a state a shell only
+//! reaches while actually completing. And it is LOUD: a page of shell script on
+//! stdout is impossible to mistake for a command that ran. The bug that was
+//! fixed was silent, exit 0, and reachable by a user simply trying `nushell`.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 
 use clap::CommandFactory;
+use clap_complete::env::Shells;
 use clap_complete::CompleteEnv;
 
 use crate::Cli;
@@ -93,17 +120,19 @@ pub(crate) fn intercept() {
     // collected on the command path, so "behaves exactly as before without
     // $COMPLETE" is a property of the control flow rather than of the code
     // downstream being careful.
-    if std::env::var_os(COMPLETE_VAR).is_none() {
+    let Some(shell) = std::env::var_os(COMPLETE_VAR) else {
+        return;
+    };
+
+    // An unrecognised value is not a completion request, and this is the whole
+    // discriminator. See [`names_a_shell_clap_can_complete`] for why that
+    // implication holds; the consequence is that we return and the ordinary
+    // command RUNS, exactly as it would with the variable unset.
+    if !names_a_shell_clap_can_complete(&shell) {
         return;
     }
 
     let raw: Vec<OsString> = std::env::args_os().collect();
-    // A registration request (`COMPLETE=bash tasqx`) carries no `--`; a callback
-    // request always does, because the script clap emits invokes
-    // `<completer> -- "${words[@]}"`. The distinction is needed once, in the
-    // error arm below, so it is taken before `raw` is consumed.
-    let is_callback = raw.iter().any(|a| a == "--");
-
     let cwd = std::env::current_dir().ok();
     let result = CompleteEnv::with_factory(Cli::command)
         .var(COMPLETE_VAR)
@@ -119,22 +148,65 @@ pub(crate) fn intercept() {
         // Candidates (or a registration script) were written. Exiting here is
         // what keeps the completion path from ever reaching the dispatcher.
         Ok(true) => std::process::exit(0),
-        // `$COMPLETE` was unset, empty, or "0": not a completion run at all.
+        // `$COMPLETE` unset, empty, or "0". Unreachable in practice: the guard
+        // above already returned for all three (none of them names a shell), so
+        // this arm agrees with it rather than second-guessing it.
         Ok(false) => {}
-        // The only error `try_complete` produces before writing anything is a
-        // `$COMPLETE` naming a shell it has no completer for. Nothing has been
-        // printed and nothing will be.
-        //
-        // Which of the two right answers applies depends on who set the
-        // variable. A real callback (it carried `--`) gets the policy above:
-        // silence, exit 0. A plain `tasqx list` that merely inherited a stale
-        // or hand-set `$COMPLETE` gets to RUN — swallowing it into exit 0 there
-        // would turn an ordinary command into a silent no-op, which is the
-        // silent-drop defect this file is at pains not to commit outside the
-        // callback path.
-        Err(_) if is_callback => std::process::exit(0),
-        Err(_) => {}
+        // The shell IS one clap completes, so this is a genuine completion run
+        // that failed late — `try_complete_` has passed its shell lookup and the
+        // only remaining faults are I/O errors writing the candidates or the
+        // registration to stdout. The failure policy above applies in full:
+        // nothing on stderr, exit 0. Falling through instead would hand the
+        // dispatcher a completion argv (`tasqx -- tasqx list -ne`) and run it as
+        // a command, which is the worse of the two failures by a distance.
+        Err(_) => std::process::exit(0),
     }
+}
+
+/// Does `$COMPLETE`'s value name a shell `clap_complete` has a completer for?
+///
+/// This is the discriminator between "a shell is asking for candidates" and "a
+/// human is running a command with a stale variable in the environment", and it
+/// replaces an earlier test that asked whether argv contained `--`.
+///
+/// **Why recognisability decides it.** A completion callback is only ever
+/// launched by a registration script, and the only thing that emits a
+/// registration script is `clap_complete` itself — for a shell it has an
+/// `EnvCompleter` for. `COMPLETE=nushell tasqx` does not print a script, it
+/// errors, so no `nushell` registration has ever existed anywhere and nothing
+/// can have invoked us on its behalf. An unrecognised value therefore cannot
+/// possibly be a callback. It can only have been exported by hand, left behind
+/// by an experiment, or typed by a user trying the shell this project documents
+/// as a known gap. Every one of those is somebody running a real command, and a
+/// real command must RUN.
+///
+/// **Why the `--` test it replaces was wrong.** `--` is not a completion marker.
+/// It is the documented, POSIX way to pass a value that begins with a dash, and
+/// tasqx tells users to reach for it: `tasqx add -- "-leading dash title"`. So
+/// the old check classified an ordinary command as a callback and the error arm
+/// swallowed it — measured, with a real store: `COMPLETE=nushell tasqx add --
+/// "a real task"` printed nothing, exited 0, and never added the task. That is
+/// precisely the silent-drop class this codebase hunts, committed by the code
+/// whose comment claimed to be preventing it.
+///
+/// Read out of `Shells::builtins()` — clap's own registry, the same one
+/// `CompleteEnv` consults, since [`intercept`] never calls `.shells()` to
+/// override the default. A hand-kept list of shell names here would be the drift
+/// shape this repository keeps paying for, and it would drift the day upstream
+/// adds a shell.
+///
+/// `file_stem` mirrors `Shells::completer_for_path`, which strips a directory so
+/// that a `$COMPLETE` copied from `$SHELL` (`/usr/bin/zsh`) still resolves. The
+/// two must agree: a value this function accepted but `try_complete` then
+/// rejected would take the late-error arm above and exit 0 on a real command —
+/// the very bug being fixed, reintroduced one layer down.
+fn names_a_shell_clap_can_complete(value: &OsStr) -> bool {
+    let stem = std::path::Path::new(value)
+        .file_stem()
+        .unwrap_or(value)
+        .to_string_lossy()
+        .into_owned();
+    Shells::builtins().completer(&stem).is_some()
 }
 
 /// Run the completion words through [`crate::argv::prepass`], leaving the
