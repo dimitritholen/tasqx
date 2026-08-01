@@ -1,0 +1,358 @@
+# Shell completion — design
+
+**Date:** 2026-08-01
+**Status:** designed. Not yet implemented.
+**Scope:** the `tasqx` CLI binary only. No JSON API method is added, no MCP tool
+changes, no protocol change. One new core function (`storage::open_read_only`)
+and one new CLI verb (`completions`).
+
+## Problem
+
+`tasqx` has forty-odd subcommands, thirty-plus aliases, a per-verb flag surface,
+and three value vocabularies that are not flags at all: the capture sugar
+(`+tag`, `project:`, `due:`, `!prio`), the read-side filter grammar, and the
+short ids that every mutating verb takes as its first positional. All of it must
+be typed exactly, from memory, with no feedback until the command either runs or
+fails.
+
+The ids are the sharpest edge. `tasqx done 4` is unforgiving in the way that
+matters: 4 is a real task, just not the one meant, and the command succeeds. No
+amount of help text fixes a surface where the correct value is a small integer
+the user has to remember.
+
+Shell completion is the standard answer, and this project is unusually well
+placed to give it: `crates/tasqx-cli/src/command.rs` already declares the entire
+command surface in one clap derive tree, which is the exact input a completion
+generator wants.
+
+## Decision
+
+Ship **dynamic** completion via `clap_complete`'s `unstable-dynamic` feature —
+the shell calls back into the `tasqx` binary on each Tab, and candidates are
+produced by Rust code attached to individual args.
+
+Static script generation (`clap_complete::aot`) was the alternative and is
+rejected. It is stable API and needs no callback, but it can only ever complete
+what is knowable at build time. Every value this feature exists to supply — the
+user's projects, the user's tags, the ids of the user's open tasks — is knowable
+only at Tab time. A static script would complete `--project` as "some string".
+
+The two other routes considered:
+
+- **Hand-written scripts per shell.** Total control, no unstable dependency, and
+  the artefact packagers expect. Rejected because it creates five surfaces that
+  must be kept in lockstep with `command.rs` by hand. This repository has been
+  bitten by that class repeatedly — the `COMMAND_REF` drift that left fourteen
+  of twenty-seven `Safe` examples unexecuted is the same shape — and five
+  hand-maintained copies of the command tree is the largest instance of it
+  anyone has proposed here.
+- **Stable `aot` generation plus post-processed hooks.** Generate the scripts,
+  then splice value-lookup calls into them. No unstable dependency and the
+  command surface stays generated. Rejected because the splice is five
+  shell-dialect string patches against clap's own output template: it breaks
+  silently whenever clap changes that template, and "silently" is the operative
+  word.
+
+The cost of the chosen route is named rather than hidden: `unstable-dynamic` is
+semver-exempt, so clap may change the API in a patch release. The mitigation is
+an exact version pin and a test that exercises real completion output, so the
+breakage is a red build rather than a shipped regression. See
+[Guards](#guards).
+
+## Entry point
+
+`complete::intercept()` becomes the first statement of `run()`
+(`crates/tasqx-cli/src/lib.rs:234`), before `argv::prepass`:
+
+```rust
+pub fn run() {
+    complete::intercept();   // returns immediately unless $COMPLETE is set
+    let pre = argv::prepass(std::env::args_os());
+    ...
+}
+```
+
+`CompleteEnv` reads `$COMPLETE`. Unset — the ordinary case, every real
+invocation — it costs one environment lookup and returns. Set, it writes
+candidates and exits the process, so the completion path never reaches
+`open_backend`, never opens the ordinary read-write store, and never runs the
+dispatcher.
+
+### The pre-pass applies to completion words too
+
+This is the part that will be got wrong if it is not written down.
+
+The words a shell hands the completer are **raw argv**. tasqx cannot parse raw
+argv: filter tokens like `-needs` are valid grammar and look exactly like flags,
+which is why `run()` does not call `Cli::parse()` and calls
+`argv::prepass(std::env::args_os())` instead (`lib.rs:235-238`).
+
+clap's completion engine parses the words it is given against the same
+`clap::Command`. It therefore inherits the same problem, and needs the same fix:
+`intercept()` must run the completion words through `argv::prepass` before
+handing them to the engine.
+
+Without it, completing after `tasqx list -needs<TAB>` misbehaves — and it
+misbehaves in a place no existing test looks, because every current guard
+exercises the parse path, not the completion path.
+
+## Modules
+
+| File | Responsibility |
+|---|---|
+| `crates/tasqx-cli/src/complete.rs` | **Create.** `intercept()`, the `CompleteEnv` wiring, the guarded lookup and its time budget. |
+| `crates/tasqx-cli/src/complete/candidates.rs` | **Create.** The five candidate providers and the prefix dispatcher. |
+| `crates/tasqx-cli/src/complete/install.rs` | **Create.** The `completions` verb: print, install, uninstall, shell detection, the marked block. |
+| `crates/tasqx-cli/src/command.rs` | **Modify.** The `Completions` variant; `ValueHint` and `value_parser` additions; completer attachments. |
+| `crates/tasqx-cli/src/cmddoc.rs` | **Modify.** A `COMMAND_REF` entry for `completions`. Not optional — the existing guard fails the build for an undocumented verb. |
+| `crates/tasqx-core/src/storage.rs` | **Modify.** Add `open_read_only`. |
+| `crates/tasqx-core/src/engine.rs` | **Modify.** Add `Engine::open_read_only`. |
+| `crates/tasqx-cli/tests/completion.rs` | **Create.** The guards. |
+
+`complete.rs` owns *how* a candidate is fetched safely; `complete/candidates.rs`
+owns *what* the candidates are; `complete/install.rs` shares nothing with either
+and only happens to be about the same feature. Three files rather than one
+because the first two run inside a keystroke and the third does not, and that
+distinction should be visible in the file layout rather than only in comments.
+
+## Data path
+
+```
+lookup()
+  ├─ $TASQX_NO_COMPLETE_LOOKUP set?          -> []
+  ├─ daemon::try_connect(resolve_socket(None)) -> Backend::Remote
+  ├─ storage::open_read_only(db_path())        -> Backend::Local  (READ_ONLY, no create, no migrate)
+  └─ absent | locked | error | over budget     -> []   exit 0, stderr silent
+```
+
+Three properties, each deliberate.
+
+**It reuses the daemon preference.** `open_backend` (`lib.rs:788`) already tries
+the socket and falls back immediately on a missing or stale one, and it never
+auto-spawns a daemon. Completion wants exactly that behaviour, so it reuses the
+logic rather than restating it. When a daemon is up, Tab is a socket round trip
+and the store is untouched.
+
+**The fallback is read-only and never creates.** `storage::open` creates the file
+and runs the migration (`storage.rs:34-41`). Reusing it would mean a Tab press on
+a machine that has never run tasqx authors a database and a schema. A keystroke
+that did not run a command must not create a file. `storage::open_read_only`
+opens with `OpenFlags::SQLITE_OPEN_READ_ONLY`, does not call `migrate`, and
+returns an error for an absent path — which the caller turns into an empty
+candidate list.
+
+**Everything is inside a wall-clock budget.** 150 ms, measured across the whole
+lookup. The lookup runs on a worker thread and the caller waits on
+`recv_timeout`; on timeout it emits nothing and exits *without joining*. Leaving
+a thread detached is acceptable here and nowhere else in this codebase,
+specifically because the process is a short-lived completion callback that is
+about to exit — this must be stated in the code, not just here.
+
+### Known limitation: read-only opens and the WAL
+
+A read-only SQLite connection cannot create the `-shm`/`-wal` sidecar files. In
+the normal case they do not exist (they are cleaned up when the last connection
+closes) or they already exist (a writer is live), and both work. The failing case
+is narrow: a writer is mid-transaction, no daemon is running, and the sidecars
+are in a state a read-only connection cannot attach to. Completion then shows
+nothing for that instant.
+
+This is accepted rather than solved. The alternatives are opening read-write
+(which reintroduces creation and migration on a keystroke) or `immutable=1`
+(which is unsound against a live writer). Showing nothing for one Tab press
+during a concurrent write is the mildest of the three failures.
+
+## Candidate providers
+
+| Provider | Source | Attached to |
+|---|---|---|
+| Task ids | `task.list`, `short_id` + title as the candidate's help text, capped at 200 | the id positional of `done`, `start`, `stop`, `show`, `modify`, `annotate`, `cancel`, `reopen`, `dep`, `undep` |
+| Projects | `project.list` | `--project`, `use`, and the `project:`/`proj:` sugar prefix |
+| Tags | union of the `tags` field already present on `task.list` rows (`engine.rs:845`) | the `+` sugar prefix, and `+`/`-` in filter position |
+| Themes | the built-in names plus a listing of the user theme directory | `--theme` |
+| Filter tokens | the static grammar keywords, plus live projects and tags behind `project:` and `+` | the filter positionals of `list`, `export`, `watch` |
+
+Tags need **no new API method**: `task.list` rows already carry them, so the
+provider derives the set from a call that already exists. Adding a `tag.list`
+method to the JSON API for the benefit of a shell callback would widen a
+contract surface this project has recently been narrowing (D50).
+
+Task-id candidates carry the task title as help text, which shells render beside
+the value. This is the difference between `tasqx done <TAB>` offering a column of
+bare integers and offering a readable list; a completion that shows only ids
+solves the typing problem and not the remembering problem.
+
+### Prefix dispatch for sugar and filters
+
+`+tag`, `project:x` and `due:friday` are not clap args — they are words inside a
+positional `Vec<String>` that `sugar.rs` parses afterwards. A plain candidate
+list cannot serve them, because the right answer depends on what the user has
+typed so far *within the current word*.
+
+`ArgValueCompleter` receives the partial word, so the completer attached to those
+positionals dispatches on its prefix: `+` yields tags, `project:`/`proj:` yields
+projects, `!` yields priorities, the date keys yield the natural-language date
+vocabulary, and anything else yields nothing (a title word is not completable).
+
+The same mechanism serves filter positionals against the read-side grammar.
+
+## Fixed sets, hints, and the free wins
+
+Independent of the dynamic machinery, and stable clap API:
+
+- `--priority` is currently a bare `Option<String>` (`command.rs:112-114`). A
+  `value_parser` of `H|M|L` and the long spellings makes it completable *and*
+  improves the error message for a bad value. The same applies to other args
+  with a closed vocabulary.
+- Path-taking args declare `value_name = "PATH"` but no `ValueHint`
+  (`command.rs:440` and others), so no shell offers file completion for them.
+  `ValueHint::FilePath` / `DirPath` costs one attribute each.
+
+These are worth doing in the same change because they are the same user
+complaint, and because a `value_parser` is load-bearing for completion rather
+than decorative.
+
+## Failure policy — D33 inverted, on purpose
+
+On the `$COMPLETE` callback path, **every** failure produces zero candidates,
+exit 0, and nothing on stderr:
+
+| Condition | Behaviour |
+|---|---|
+| No store at `db_path()` | `[]`, exit 0 |
+| Store present but locked / WAL-inaccessible | `[]`, exit 0 |
+| Daemon unreachable | fall through to the read-only open |
+| Lookup exceeds the 150 ms budget | `[]`, exit 0 |
+| Panic inside a provider | caught, `[]`, exit 0 |
+
+This directly inverts the rule the rest of the codebase is built on. D33 says a
+value that changes nothing must not answer `ok`; the silent-drop class is the
+recurring defect this project names and hunts. Here silence is the *correct*
+behaviour, because stderr output during a Tab press corrupts the user's command
+line and an error exit makes the shell beep at someone who was only typing.
+
+Because that inversion is genuinely surprising in this codebase, it must be
+stated in the module documentation of `complete.rs`. Otherwise a future reader —
+or a future adversarial review, which is likelier — will correctly identify it as
+a silent-drop violation and "fix" it.
+
+**The `completions` verb is exempt.** It is an ordinary command run by a human,
+and it reports its errors loudly and exits non-zero like every other verb.
+
+## The `completions` verb
+
+```
+tasqx completions [SHELL]              # print the activation line
+tasqx completions [SHELL] --install    # append it to the profile, after confirming
+tasqx completions [SHELL] --uninstall  # remove a previously installed block
+```
+
+`tasqx completions <shell>` with no flags is the dry run: it prints exactly the
+text that `--install` would write, so a user can pipe it, inspect it, or paste it
+themselves. Printing is the default because it is the composable, packager-
+friendly, unsurprising behaviour.
+
+### Cross-platform matrix
+
+| Shell | Platforms | Activation line | Profile `--install` targets |
+|---|---|---|---|
+| bash | Linux, macOS, Git Bash | `source <(COMPLETE=bash tasqx)` | `~/.bashrc` |
+| zsh | macOS (default shell), Linux | `source <(COMPLETE=zsh tasqx)` | `~/.zshrc` |
+| fish | all three | `COMPLETE=fish tasqx \| source` | `~/.config/fish/completions/tasqx.fish` |
+| PowerShell | Windows, plus pwsh on macOS/Linux | `$env:COMPLETE = "powershell"; tasqx \| Out-String \| Invoke-Expression; Remove-Item Env:\COMPLETE` | `$PROFILE`, created with parents if absent |
+| elvish | all three | `eval (E:COMPLETE=elvish tasqx \| slurp)` | `~/.elvish/rc.elv` |
+
+The activation lines are `clap_complete`'s own, verified against
+`clap_complete-4.6.7/src/env/mod.rs:38-63`; they are not reproduced from memory
+and must be re-verified if the pin moves.
+
+**cmd.exe is unsupported.** It has no completion protocol to hook. `tasqx
+completions cmd` exits 2 saying so, rather than silently succeeding at nothing —
+the D33 rule applies here, because this is the verb surface, not the callback.
+
+**nushell is a known gap.** It would need `clap_complete_nushell`, which is
+static generation only and therefore could never carry live values. Documented,
+not built.
+
+### Shell detection
+
+`--shell` wins when given. Otherwise: `$SHELL` on unix, the parent process name
+on Windows. **If detection is ambiguous or fails, `--install` refuses and asks
+for `--shell`.** Guessing wrong means editing the wrong profile, which is a
+worse outcome than one more word of typing.
+
+### The marked block
+
+```
+# >>> tasqx completions >>>
+<activation line>
+# <<< tasqx completions <<<
+```
+
+`--install` **replaces** an existing block rather than appending a second, so
+running it twice is a no-op rather than a duplicate source line. `--uninstall`
+removes exactly that block and leaves everything else byte-identical. If the
+region between the markers has been hand-edited, `--install` shows what it would
+overwrite and asks before proceeding.
+
+Installation modifies a file the user owns, so it confirms first, printing the
+target path and the exact text. **A non-interactive stdin is a refusal, not an
+implied yes** — a piped `tasqx completions --install` exits non-zero telling the
+caller to run it interactively or use the printing form.
+
+## Guards
+
+**The pin.** `clap_complete = { version = "=4.6.7", features = ["unstable-dynamic"] }`.
+An exact pin, commented in the style of the MSRV block: this feature is
+semver-exempt, so cargo's ordinary compatibility rules do not protect against an
+API change, and the pin is what turns a silent breakage into a deliberate
+upgrade. Moving it is an act with tests attached, not a `cargo update`.
+
+**`crates/tasqx-cli/tests/completion.rs`:**
+
+- For each of the five shells, `COMPLETE=<shell> tasqx` emits a non-empty
+  registration naming the binary. This is what catches an upstream API or
+  template change at the pin.
+- With a temp store seeded with a project, a tag and a task, the callback emits
+  the seeded values — the feature works, tested through the real binary.
+- With `TASQX_DB` pointing at a nonexistent path, the callback exits 0, prints
+  nothing, **and creates no file at that path**. The never-create guarantee is
+  asserted against the filesystem, not documented in a comment.
+- A drift guard iterating clap's own arg table: any subcommand whose first
+  positional is a task id and which has no completer attached fails the build.
+  Same technique as `no_declared_short_flag_is_ever_escaped`, which reads clap's
+  arg table rather than a hand-kept list, and for the same reason.
+
+**Out of scope, deliberately:** real PTY round-trip tests against installed
+shells (`completest-pty`). They would need five shells installed on three CI
+platforms. The registration-emission test plus the candidate test cover the two
+halves that can break in this repository; the part they do not cover is whether
+each shell *interprets* clap's registration correctly, which is upstream's
+responsibility and is tested upstream.
+
+## Distribution
+
+**`release.yml` does not change.** There are no scripts to generate, ship,
+version-match or install into per-distro completion directories, because the
+completion logic travels inside the binary. This is the strongest practical
+argument for the dynamic route over static generation and is recorded here so it
+is not re-litigated.
+
+Documentation lands in three existing places: a `COMMAND_REF` entry (mandatory),
+a `manual` section under an existing topic, and a README section.
+
+## Slices
+
+Each is independently shippable and human-accepted before the next begins.
+
+1. `CompleteEnv` wired, the pre-pass fix, `completions <shell>` printing.
+   Commands, aliases and flags complete in all five shells. Useful on its own.
+2. `storage::open_read_only`, the guarded lookup, task ids with titles.
+3. Projects, tags, and the sugar prefix dispatcher.
+4. Filter grammar tokens.
+5. `completions --install` / `--uninstall`, plus `COMMAND_REF`, manual and
+   README documentation.
+
+Slice 1 delivers the majority of the typing relief. Slice 2 delivers the
+correctness relief — the wrong-id problem — and is the one that earns the
+unstable dependency.
