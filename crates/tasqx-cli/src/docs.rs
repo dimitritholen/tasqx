@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 31] = [
+const VERBS: [(&str, &str, &str); 32] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("add", "<code>a</code>, <code>new</code>", "task.add"),
@@ -100,6 +100,7 @@ const VERBS: [(&str, &str, &str); 31] = [
     ("mcp", "—", "(subset)"),
     ("docs", "—", "— (no store)"),
     ("manual", "<code>man</code>", "— (no store)"),
+    ("completions", "—", "— (no store)"),
 ];
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
@@ -3063,6 +3064,21 @@ mod tests {
         // table would invite exactly the hand-tuning the detector exists to
         // make unnecessary.
         const TERMINAL_IDENTITY: &[&str] = &["TERM", "COLORTERM"];
+        // Read by `complete/install.rs` to find the user's OWN files, and
+        // deliberately not switches. Neither one changes what tasqx does: they
+        // answer "which shell are you running" and "where did you put your
+        // config", questions whose answers belong to the operating system and
+        // to fish respectively. Documenting them in the override table would
+        // invite a user to set `SHELL=fish` to make `--install` target fish,
+        // which is a worse spelling of `tasqx completions fish --install` and
+        // would edit the wrong file for the shell they are actually in.
+        //
+        // `XDG_CONFIG_HOME` is honoured rather than merely tolerated: fish
+        // honours it, and writing to `~/.config/fish` for a user who moved
+        // their fish config produces a file fish never reads — completion
+        // silently not working, which is the symptomless failure this project
+        // hunts.
+        const USER_ENVIRONMENT: &[&str] = &["SHELL", "XDG_CONFIG_HOME"];
         // Hand-kept, and that is the guard's own weak spot: `complete.rs` was
         // absent until the completion feature added two variables to it, and
         // for the length of that branch `TASQX_NO_COMPLETE_LOOKUP` existed with
@@ -3078,6 +3094,14 @@ mod tests {
             include_str!("tui.rs"),
             include_str!("tokens.rs"),
             include_str!("complete.rs"),
+            // Added with the `completions` verb, which is the first code in the
+            // crate to read a variable it does not own (`$SHELL`,
+            // `$XDG_CONFIG_HOME`). `complete/candidates.rs` is here for nothing
+            // it does today and everything it might: it is the file a provider
+            // author edits, and the hole this list keeps having is a file
+            // nobody added.
+            include_str!("complete/install.rs"),
+            include_str!("complete/candidates.rs"),
         ];
 
         // TASQX_* rule: a textual scan, comments included — a prefixed mention
@@ -3147,6 +3171,7 @@ mod tests {
             // Prefixed vars answer to the registered-or-excepted rule above.
             .filter(|v| !v.starts_with("TASQX_"))
             .filter(|v| !TERMINAL_IDENTITY.contains(&v.as_str()))
+            .filter(|v| !USER_ENVIRONMENT.contains(&v.as_str()))
             .filter(|v| !doc.contains(&format!("<code>{v}</code>")))
             .collect();
         assert!(
