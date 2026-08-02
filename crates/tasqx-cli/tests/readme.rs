@@ -195,6 +195,64 @@ fn readme_mcp_tool_roster_matches_the_server() {
     }
 }
 
+/// The README's Tab-completion section prints an activation line per shell, by
+/// hand, and that is the worst place in the file for a hand-kept copy.
+///
+/// The failure it invites is total and silent. A line carrying `clap_complete`'s
+/// generic `COMPLETE` instead of `TASQX_COMPLETE` looks right, is what every
+/// clap tutorial shows, and activates nothing at all — `complete::intercept`
+/// reads `TASQX_COMPLETE` and returns immediately for anything else. The reader
+/// pastes it into their startup file, opens a new shell, presses Tab, and gets
+/// the shell's own filename completion, with no error printed anywhere and
+/// nothing to search for. The same is true of a line that goes stale by one
+/// character.
+///
+/// So the lines are not compared against a second copy kept in this test. They
+/// are compared against what the BINARY prints, for every shell
+/// `Shells::builtins()` names — the same registry `tasqx completions` resolves
+/// its argument out of, and the same one `install::ACTIVATIONS` is guarded
+/// against. Upstream gaining a sixth shell, the activation shape changing, or a
+/// README line edited by hand all fail here.
+#[test]
+fn readme_activation_lines_are_the_ones_the_binary_prints() {
+    let readme = readme();
+    let mut checked = 0;
+    for shell in clap_complete::env::Shells::builtins().names() {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .args(["completions", shell])
+            .output()
+            .unwrap_or_else(|e| panic!("run `tasqx completions {shell}`: {e}"));
+        assert!(
+            out.status.success(),
+            "`tasqx completions {shell}` failed: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // `trim_end` and nothing more: the line is printed with a trailing
+        // newline and is otherwise the exact text that has to reach the user's
+        // startup file, spaces and quotes included.
+        let printed = String::from_utf8_lossy(&out.stdout);
+        let line = printed.trim_end();
+        assert!(
+            !line.is_empty(),
+            "`tasqx completions {shell}` printed nothing to compare against"
+        );
+        assert!(
+            readme.contains(line),
+            "the README does not carry the {shell} activation line the binary \
+             prints, so a reader who pastes what the README says gets a shell \
+             that completes nothing and says nothing. Expected to find:\n  {line}"
+        );
+        checked += 1;
+    }
+    // Floor: the five shells this feature ships for. An empty registry would
+    // otherwise make the loop above a clean pass over nothing.
+    assert!(
+        checked >= 5,
+        "only {checked} shells were checked; `Shells::builtins()` shrank and \
+         this guard is covering less than the README claims"
+    );
+}
+
 /// "Five built-in themes" is a count of `theme::BUILTINS`, restated by hand.
 /// The verb table taught this lesson already: a spelled-out number reads
 /// exactly like a right one after the list underneath it grows.

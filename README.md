@@ -50,6 +50,47 @@ tasqx done 1
 
 `tasqx manual` is a real manual, not a wall of flags. `tasqx <verb> -h` gives you per-command help with examples you can copy. `tasqx docs` renders the same content as a single HTML file you can open in a browser.
 
+## Tab completion
+
+Verbs and flags, closed value sets, file paths, your task ids carrying their titles, project and tag names, the capture sugar (`+tag`, `project:x`, `!high`) and the whole filter grammar including `-tag` exclusions. bash, zsh, fish, elvish and PowerShell, the same five on Linux, macOS and Windows.
+
+Two details that aren't what you'd guess. Aliases come along, but a canonical name wins the prefix: `tasqx ls<TAB>` gives `ls` and `tasqx mod<TAB>` gives `modify` rather than `mod`. And the id menu is every task sorted by urgency, not just the open ones — `reopen` and `why` want the closed ones, and a menu that hid them would look like an answer.
+
+`tasqx completions <shell>` prints one line. Put it in your startup file:
+
+```console
+# bash — ~/.bashrc
+source <(TASQX_COMPLETE=bash tasqx)
+
+# zsh — ~/.zshrc
+source <(TASQX_COMPLETE=zsh tasqx)
+
+# fish — ~/.config/fish/completions/tasqx.fish
+TASQX_COMPLETE=fish tasqx | source
+
+# elvish — ~/.elvish/rc.elv
+eval (E:TASQX_COMPLETE=elvish tasqx | slurp)
+
+# PowerShell — $PROFILE
+$env:TASQX_COMPLETE = "powershell"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\TASQX_COMPLETE
+```
+
+Or let tasqx edit the file. `tasqx completions --install` finds the shell from `$SHELL`, shows the exact block, and asks first — a stdin that isn't a terminal is a refusal rather than an implied yes, so pass `--yes` from a script. Running it twice leaves one block; `tasqx completions <shell> --uninstall` takes it back out and restores the file byte for byte.
+
+No Windows shell sets `$SHELL`, so name the shell there. PowerShell's `--install` also refuses to guess where your profile is, because `$PROFILE` is a PowerShell variable rather than an environment one and it differs between Windows PowerShell 5.1, PowerShell 7 and the ISE. Let the shell expand it:
+
+```console
+tasqx completions powershell --install --profile $PROFILE
+```
+
+cmd.exe is a permanent non-goal, not a gap: no program can register a completer with it at all. nushell is a real gap — it completes external commands through its own `extern` definitions and there's nothing tasqx can print today that turns that on. Asking for either says so instead of "unknown shell".
+
+Two things worth knowing before you switch it on.
+
+**The variable is `TASQX_COMPLETE`, not clap's generic `COMPLETE`**, and that is deliberate rather than a naming preference. The completion protocol gives a program no way to tell a callback from a real command: with a recognised shell name in that variable, `tasqx add -- "a real task"` writes nothing, exits 0, and doesn't add the task. A name nothing else has a reason to set makes that state improbable — it does not make it impossible, so don't export it by hand. `COMPLETE` on its own does nothing to tasqx.
+
+**A Tab press reads your store.** It prefers a running daemon, otherwise opens the SQLite file read-only, gives the whole lookup 150 ms, and answers with no candidates rather than an error when any of that fails — a message on stderr would land in the middle of the line you're typing. That read leaves `tasks.db-shm` and `tasks.db-wal` beside your store, which is SQLite rather than tasqx: an ordinary `tasqx list` creates the same two files and removes them on the way out, and a read-only connection can't, because deleting them is a write. Your database is not altered — no migration, not a byte. `TASQX_NO_COMPLETE_LOOKUP=1` turns the value lookups off and leaves verbs, flags and value sets completing.
+
 ## Use cases
 
 Five worked scenarios, each a five-minute read with copy-pasteable commands:
