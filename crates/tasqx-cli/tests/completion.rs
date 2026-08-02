@@ -16,6 +16,18 @@
 //! `$TASQX_COMPLETE` it must be a single environment lookup and a return, which
 //! is only provable by driving ordinary commands through the same entry point
 //! and finding them unchanged.
+//!
+//! There is a third half, and calling it one is not sloppiness about halves: it
+//! belongs with neither of the above because its assertions are on the
+//! FILESYSTEM rather than on anything the process printed. A Tab press must not
+//! create a database, migrate a schema or write user data, and both cases have
+//! to be reached — the store that does not exist
+//! ([`a_callback_against_an_absent_store_creates_nothing`], in two layouts) and
+//! the store that does
+//! ([`a_callback_against_a_live_store_leaves_it_byte_identical_and_unmigrated`]).
+//! Each of those tests documents which mutation it was watched to fail for,
+//! because on this feature a guard nobody has seen redden has twice turned out
+//! to be guarding nothing.
 
 use std::process::Command;
 
@@ -1119,21 +1131,226 @@ fn the_escape_hatch_turns_off_values_and_leaves_the_structure() {
 /// `storage::open` (whose flags include `SQLITE_OPEN_CREATE`) would author a
 /// database and a schema, and `db_path()` — the resolution every command uses —
 /// creates the containing directory before it returns. The lookup uses
-/// `open_read_only` and `db_path_read_only` for exactly these two reasons, and
-/// nothing but this assertion notices if either is swapped back.
+/// `open_read_only` and `db_path_read_only` for exactly these two reasons.
 ///
-/// **Stdout is NOT empty, and the spec used to say it was.** Measured here:
-/// `tasqx done <TAB>` with no store answers `--json --theme --socket …` — the
-/// flags `done` declares, which clap's engine offers for an empty word whatever
-/// the value providers do. That is correct behaviour (structure needs no store),
-/// so the assertion is on the absence of ID candidates rather than on emptiness.
-/// An emptiness assertion would have been a stricter-looking test that pinned a
-/// property the code does not have.
+/// # Why there are TWO layouts, and how the second one was found
+///
+/// One probe cannot see both halves, which this test claimed to do and did not.
+/// It ran against `<dir>/tasks.db` with `<dir>` already created by the fixture —
+/// and against that shape, swapping `db_path_read_only()` back to `db_path()`
+/// changes nothing observable, because the only thing `db_path` adds is
+/// `create_dir_all(parent)` and the parent was already there. Measured: the
+/// mutation was applied, confirmed on disk, and this test stayed GREEN while its
+/// own doc comment said nothing else would notice. That is the exact defect
+/// shape this branch keeps paying for — a comment asserting a protection its
+/// code does not have — committed by the guard written to prevent it.
+///
+/// So the second layout points `$TASQX_DB` at `<dir>/never-run/tasks.db`, a path
+/// whose PARENT does not exist, and watches `<dir>`. `db_path()` authors
+/// `never-run/` there and the assertion fires; `db_path_read_only()` leaves the
+/// directory empty. The two layouts are not redundant and neither can be
+/// dropped: the nested one cannot catch the `storage::open` swap either, because
+/// SQLite refuses to create a database inside a directory that is not there, so
+/// the open fails and nothing appears. Each layout catches exactly the half the
+/// other is blind to.
+///
+/// # Stdout is NOT empty, and the spec used to say it was
+///
+/// Measured here: `tasqx done <TAB>` with no store answers
+/// `--json --theme --socket …` — the flags `done` declares, which clap's engine
+/// offers for an empty word whatever the value providers do. That is correct
+/// behaviour (structure needs no store), so the assertion is on the absence of ID
+/// candidates rather than on emptiness. An emptiness assertion would have been a
+/// stricter-looking test that pinned a property the code does not have.
 #[test]
 fn a_callback_against_an_absent_store_creates_nothing() {
-    let db = temp_db("absent-store");
+    for (label, segments) in [
+        // The parent EXISTS. This is the layout that catches a `storage::open`
+        // swap: SQLite happily authors `tasks.db` here.
+        ("existing parent", &["tasks.db"][..]),
+        // The parent does NOT. This is the layout that catches a `db_path()`
+        // swap: the directory it creates on the way is the file that appears.
+        ("absent parent", &["never-run", "tasks.db"][..]),
+    ] {
+        let dir = temp_db(&format!("absent-store-{}", label.replace(' ', "-")))
+            .parent()
+            .expect("fixture dir")
+            .to_path_buf();
+        let mut db = dir.clone();
+        for segment in segments {
+            db.push(segment);
+        }
+        let socket = format!("tasqx-completion-absent-{}", std::process::id());
+
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+        let out = c
+            .env(VAR, "bash")
+            .env("TASQX_DB", &db)
+            .env("TASQX_SOCK", &socket)
+            .env("_CLAP_COMPLETE_INDEX", "2")
+            .env("_CLAP_IFS", SEP.to_string())
+            .args(["--", "tasqx", "done", ""])
+            .output()
+            .expect("run the callback against a nonexistent store");
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{label}: an absent store is still exit 0"
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "{label}: an absent store must produce no noise; got stderr {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let offered = candidates(&out);
+        assert!(
+            offered.iter().all(|c| c.starts_with('-')),
+            "{label}: an absent store must yield no task ids — only the flags \
+             `done` declares, which need no store. got {offered:?}"
+        );
+
+        assert_eq!(
+            listing(&dir),
+            Vec::<String>::new(),
+            "{label}: a Tab press left something behind on a machine with no \
+             store. A `tasks.db` means the open is no longer `open_read_only`; a \
+             DIRECTORY means the path resolution is no longer \
+             `db_path_read_only`, which creates the parent on its way past."
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Every entry in `dir`, sorted.
+fn listing(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("read the fixture dir")
+        .map(|e| {
+            e.expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// The whole of `sqlite_master` as one string: the schema's fingerprint.
+///
+/// Read through `storage::open_read_only` — the same seam the callback uses —
+/// so that measuring the schema cannot itself migrate the file being measured.
+/// That is not caution for its own sake: `storage::open` would run `migrate`,
+/// and a fingerprint taken with it would report the schema it had just written.
+fn schema_of(path: &std::path::Path) -> String {
+    let conn = tasqx_core::storage::open_read_only(&path.to_string_lossy())
+        .expect("fingerprint the schema through the read-only seam");
+    // The `Statement` is a named local rather than a link in the chain: it
+    // borrows `conn`, and a temporary at the end of the block would outlive the
+    // local it borrows from.
+    let mut stmt = conn
+        .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY name")
+        .expect("prepare the schema query");
+    let rows: Vec<String> = stmt
+        .query_map([], |r| {
+            Ok(format!(
+                "{}|{}|{}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?.unwrap_or_default()
+            ))
+        })
+        .expect("run the schema query")
+        .map(Result::unwrap)
+        .collect();
+    rows.join("\n")
+}
+
+/// The other half of the never-create promise, end to end through the binary:
+/// a Tab press against a store that **exists** must leave that store alone.
+///
+/// # Why the absent-store guard above cannot stand in for this
+///
+/// It fails before SQLite reaches its WAL layer at all — `open_read_only` on a
+/// missing path errors on the `Connection::open_with_flags` itself — so it can
+/// observe only that nothing was authored. It can say nothing about what a
+/// read-only connection does to a store it successfully opens, and that gap is
+/// precisely how the false claim "a read-only open cannot create the
+/// `-shm`/`-wal` sidecars" survived review on this branch for three commits.
+/// `crates/tasqx-core/tests/read_only.rs` closed it at the SEAM; this closes it
+/// at the SURFACE, where `$TASQX_DB` resolution, the daemon fallback and the
+/// budget are all in the picture and none of them are in that one.
+///
+/// # The three assertions, and what each of them can actually catch
+///
+/// **The database is byte-identical.** This is the requirement: a keystroke must
+/// not alter the user's data. Measured, and it is a claim with content — a
+/// callback that reached a write method through a read-write connection changes
+/// these bytes and nothing else here would notice.
+///
+/// **The schema is unmigrated.** Compared against a fingerprint of a PRISTINE
+/// COPY of the pre-callback bytes rather than against a fingerprint of the file
+/// itself, so the "before" measurement cannot be contaminated by the thing being
+/// measured. Upgrading a store's schema is a decision a command makes; a Tab
+/// press must never make it, and a store from an older tasqx must not be
+/// silently rewritten by somebody reaching for their `done` id.
+///
+/// This one is corroboration and a named diagnostic rather than an independent
+/// detector, and saying so is cheaper than letting a later reader assume
+/// otherwise. No mutation was found that reddens it while leaving the bytes
+/// identical, and there cannot be one on THIS fixture: the store is seeded by
+/// the current binary, so `migrate` is a no-op against it, and any DDL that did
+/// run would be a byte change the assertion above catches first. What it buys is
+/// that a failure says *the schema moved* instead of *some byte moved*. The
+/// independent proof that the read-only open runs no migration is at the seam,
+/// against a store the migration really would have changed:
+/// `tasqx-core/tests/read_only.rs::the_read_only_open_runs_no_migration`.
+///
+/// **The sidecars, pinned as OBSERVED.** Exactly `-shm` and `-wal` appear and
+/// stay. That reads like a tripwire for a future SQLite, and it is one — but it
+/// is also the assertion in this test with the sharpest teeth, which was
+/// measured rather than expected. Swapping `Engine::open_read_only` for
+/// `Engine::open` in `complete::local_backend_at` leaves the database
+/// byte-identical AND the schema identical on an already-migrated store, because
+/// `migrate` is a no-op there: both assertions above stay green while a Tab press
+/// has quietly started taking a write lock on the user's live store. What it does
+/// NOT leave is the sidecars — a read-write connection checkpoints and removes
+/// them on close, and a read-only one cannot, because deleting them is a write.
+/// So this set is the only thing in this test that fails for that swap, and the
+/// message says so rather than sending the next reader to look at SQLite.
+///
+/// The sidecars are also the reason the fixture is asserted clean first: an
+/// ordinary `tasqx list` creates the same two files and removes them again
+/// (measured — the directory holds `tasks.db` alone after it exits), so anything
+/// left over from seeding would make the pin unreadable.
+#[test]
+fn a_callback_against_a_live_store_leaves_it_byte_identical_and_unmigrated() {
+    let (db, socket) = seeded("live-store");
     let dir = db.parent().expect("fixture dir").to_path_buf();
-    let socket = format!("tasqx-completion-absent-{}", std::process::id());
+
+    assert_eq!(
+        listing(&dir),
+        ["tasks.db"],
+        "precondition: the seeding writers closed cleanly and tidied their own \
+         sidecars away, so anything found afterwards was left by the callback"
+    );
+    let before_bytes = std::fs::read(&db).expect("read the seeded store");
+
+    // The "before" schema, taken from a copy of the bytes in a directory of its
+    // own. Fingerprinting the fixture in place would create the very sidecars
+    // this test is about to attribute to the callback.
+    let pristine_dir = dir.with_extension("pristine");
+    std::fs::create_dir_all(&pristine_dir).expect("create the pristine dir");
+    let pristine = pristine_dir.join("tasks.db");
+    std::fs::write(&pristine, &before_bytes).expect("copy the store");
+    let before_schema = schema_of(&pristine);
+    assert!(
+        before_schema.contains("tasks"),
+        "the fingerprint must actually see a schema, got {before_schema:?}"
+    );
+    let _ = std::fs::remove_dir_all(&pristine_dir);
 
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     let out = c
@@ -1144,33 +1361,59 @@ fn a_callback_against_an_absent_store_creates_nothing() {
         .env("_CLAP_IFS", SEP.to_string())
         .args(["--", "tasqx", "done", ""])
         .output()
-        .expect("run the callback against a nonexistent store");
+        .expect("run the callback against the seeded store");
 
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "an absent store is still exit 0"
-    );
+    assert_eq!(out.status.code(), Some(0));
     assert!(
         out.stderr.is_empty(),
-        "an absent store must produce no noise; got stderr {:?}",
+        "the callback must never write to stderr, got {:?}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // The callback must REALLY have queried, or every assertion below is
+    // satisfied by a lookup that never opened the store at all — which is
+    // exactly what a stray `$TASQX_NO_COMPLETE_LOOKUP` in the environment, or a
+    // provider that silently returned early, would produce.
     let offered = candidates(&out);
     assert!(
-        offered.iter().all(|c| c.starts_with('-')),
-        "an absent store must yield no task ids — only the flags `done` \
-         declares, which need no store. got {offered:?}"
+        offered.iter().any(|c| c == "1") && offered.iter().any(|c| c == "2"),
+        "the callback offered no seeded ids, so it never read the store and this \
+         guard proves nothing. got {offered:?}"
     );
 
-    let left: Vec<String> = std::fs::read_dir(&dir)
-        .expect("read the fixture dir")
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
+    // Compared with `assert!` rather than `assert_eq!` on purpose: these are
+    // two two-hundred-kilobyte byte vectors, and `assert_eq!` prints both of
+    // them as decimal arrays. The failure a reader needs is WHERE they diverge,
+    // not the file twice.
+    let after_bytes = std::fs::read(&db).expect("re-read the store");
     assert!(
-        left.is_empty(),
-        "a Tab press created {left:?} on a machine with no store"
+        after_bytes == before_bytes,
+        "a Tab press rewrote bytes of the user's database: {} bytes before, {} \
+         after, first difference at offset {:?}",
+        before_bytes.len(),
+        after_bytes.len(),
+        before_bytes
+            .iter()
+            .zip(&after_bytes)
+            .position(|(a, b)| a != b)
+    );
+
+    assert_eq!(
+        listing(&dir),
+        ["tasks.db", "tasks.db-shm", "tasks.db-wal"],
+        "the observed file set changed. Read this failure in BOTH directions \
+         before touching the assertion. If the sidecars are MISSING, the lookup \
+         is no longer opening the store read-only — a read-write connection \
+         checkpoints and deletes them on close, a read-only one cannot, and \
+         nothing else in this test can see that swap. If they have GAINED a \
+         member, something on the Tab path authored a file. Only if SQLite's own \
+         WAL behaviour has changed is re-measuring and updating this line (and \
+         the paragraph in storage.rs it pins) the right answer."
+    );
+
+    assert_eq!(
+        schema_of(&db),
+        before_schema,
+        "a Tab press migrated the schema of the user's store"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
