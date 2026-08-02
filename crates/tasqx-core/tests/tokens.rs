@@ -6,6 +6,27 @@
 use serde_json::json;
 use tasqx_core::{dispatch, Engine, ErrorCode};
 
+/// A `done` event payload carrying a transcript path, serialised rather than
+/// formatted.
+///
+/// These tests rewrite event payloads directly to pin field-observed instants
+/// the engine would otherwise stamp with wall-clock time. The payload has to be
+/// built with [`serde_json`] and not with `format!`: a transcript path is an OS
+/// path, and on Windows it is `C:\Users\…`, whose backslashes are invalid JSON
+/// escapes. A hand-written string is then well-formed on Linux and malformed on
+/// Windows — where it does not error, it simply fails to parse into an
+/// attributable completion, so the test reports a count of zero and looks like a
+/// logic bug in the engine. Twelve tests failed that way and
+/// `test (windows-latest)` stayed red for a week.
+fn done_payload(completed: &str, transcript_path: &str) -> String {
+    json!({
+        "completed": completed,
+        "client": "claude-code",
+        "transcript_path": transcript_path,
+    })
+    .to_string()
+}
+
 fn engine() -> Engine {
     Engine::open_in_memory().expect("open in-memory store")
 }
@@ -550,9 +571,15 @@ fn one_spend_is_never_billed_to_two_tasks() {
             .execute(
                 "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
                 (
-                    format!(
-                        r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{path}"}}"#
-                    ),
+                    // Built by the serializer, not by `format!`. A hand-written
+                    // JSON string with an OS path interpolated into it is
+                    // well-formed on Linux and NOT on Windows, where the path is
+                    // `C:\Users\…` and `\U`/`\A`/`\T` are invalid escapes: the
+                    // payload then fails to parse, the completion never becomes
+                    // a pending attribution, and the assertion reports "0"
+                    // against a test that looks entirely correct. That is what
+                    // held `test (windows-latest)` red across twelve tests.
+                    done_payload(completed, &path),
                     id,
                 ),
             )
@@ -804,12 +831,7 @@ fn pin_done(e: &Engine, task_uuid: &str, completed: &str, path: &str) {
     e.conn()
         .execute(
             "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
-            (
-                format!(
-                    r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{path}"}}"#
-                ),
-                task_uuid,
-            ),
+            (done_payload(completed, path), task_uuid),
         )
         .unwrap();
 }
