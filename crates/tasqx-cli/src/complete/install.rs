@@ -1675,6 +1675,84 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// Installing through a SYMLINKED profile edits the file the link points at
+    /// and leaves the link a link.
+    ///
+    /// This is the dotfiles-repo case, and it is the overwhelmingly common shape
+    /// for the people most likely to run `--install`: `~/.bashrc` is a symlink
+    /// into `~/dotfiles`, which is a git repo. The naive atomic write — temp
+    /// sibling, then rename over the path — is exactly wrong here. `rename` does
+    /// not follow symlinks: it REPLACES the link with the temp file. The user's
+    /// `~/.bashrc` stops being a link, their dotfiles repo never sees the change
+    /// and reports itself clean, and the next `stow`/`chezmoi`/`git checkout`
+    /// silently reverts the install or clobbers a now-untracked real file. The
+    /// damage is to the user's own version control, which is about the worst
+    /// place a shell-completion installer could reach.
+    ///
+    /// [`write_atomically`] avoids it by canonicalising first, so both the temp
+    /// sibling and the rename target are the real file. That fix shipped
+    /// UNREPRODUCED — symlinks need administrator rights on Windows, so nobody
+    /// watched it fail — and nothing guarded it: deleting the `canonicalize`
+    /// left every test in this file green, because every other test installs
+    /// into a plain file where canonicalising is a no-op.
+    ///
+    /// `#[cfg(unix)]` for that same reason. The test asserts three separate
+    /// things, and it needs all three: that the link still EXISTS, that it still
+    /// points where it did, and that the TARGET is what received the block. The
+    /// first two alone would pass over a broken link; the third alone would pass
+    /// if the link had been replaced by a copy of a file that happened to be
+    /// correct.
+    #[test]
+    #[cfg(unix)]
+    fn installing_through_a_symlink_edits_the_target_and_keeps_the_link() {
+        let link = scratch("symlink");
+        let dir = link.parent().expect("scratch dir");
+        let target = dir.join("dotfiles-bashrc");
+
+        let original = "# tracked in a dotfiles repo\nexport EDITOR=vim\n";
+        std::fs::write(&target, original).expect("seed the real file");
+        std::os::unix::fs::symlink(&target, &link).expect("link the profile at it");
+
+        run(
+            Some("bash".into()),
+            true,
+            false,
+            Some(link.to_string_lossy().into_owned()),
+            /* yes */ true,
+        )
+        .expect("install through the link");
+
+        // 1. Still a link. `symlink_metadata` does NOT follow, so this is the
+        //    assertion a replaced link fails.
+        let meta = std::fs::symlink_metadata(&link).expect("the profile path still exists");
+        assert!(
+            meta.file_type().is_symlink(),
+            "the rename replaced the symlink with a regular file — a dotfiles \
+             repo would now be silently detached from the user's ~/.bashrc"
+        );
+
+        // 2. Still pointing at the same file.
+        assert_eq!(
+            std::fs::read_link(&link).expect("read the link"),
+            target,
+            "the link survived but no longer points at the tracked file"
+        );
+
+        // 3. The TARGET received the block — the tracked file is what changed.
+        let written = std::fs::read_to_string(&target).expect("read the tracked file");
+        assert!(
+            written.starts_with(original),
+            "the original content must be preserved, got:\n{written}"
+        );
+        assert!(
+            written.contains(BEGIN) && written.contains(END),
+            "the block went somewhere other than the link's target, so the \
+             dotfiles repo never saw it. target now holds:\n{written}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// `--uninstall` over a file with no block changes nothing and says so with
     /// a non-zero exit (D33). The file must not even be rewritten — an identical
     /// rewrite still moves the mtime, which is a visible event in a directory
