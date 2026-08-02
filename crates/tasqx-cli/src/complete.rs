@@ -402,24 +402,89 @@ fn prepassed(raw: Vec<OsString>) -> Vec<OsString> {
 /// Both recognise one of these by ANSWERING [`RESTORE_PROBE`] rather than by any
 /// label it wears; see that constant for why the recognition has to be
 /// behavioural.
-// Live as of the sugar dispatcher: `command.rs` builds `add`'s title and
-// `modify`'s rest with this, so the `#[allow(dead_code)]` this carried while it
-// waited for its first caller is gone. `list`'s filter positional is still
-// unattached — that is Task 7 — and `escaping_drift` below covers it the day it
-// lands.
+// Live on both halves now: `command.rs` builds `add`'s title and `modify`'s
+// rest with this, and every positional in `argv::FILTER_COMMANDS` with this or
+// with [`escaped_word_completer_at`]. `escaping_drift` no longer tolerates an
+// unattached one.
 pub(crate) fn escaped_word_completer<F>(candidates: F) -> ArgValueCompleter
 where
     F: Fn(&str) -> Vec<CompletionCandidate> + Send + Sync + 'static,
 {
-    ArgValueCompleter::new(move |current: &OsStr| {
+    escaped_word_completer_at(move |_, word| candidates(word))
+}
+
+/// [`escaped_word_completer`] for a provider whose answer depends on WHERE in a
+/// multi-value positional the word sits.
+///
+/// One caller: `report`, whose tail is not pure filter grammar — its first word
+/// may be a `group_by` axis (`lib.rs::report_params`), and offering `project` or
+/// `status` where only a filter token is legal is a menu entry whose only
+/// outcome is `unknown filter token`, exit 2.
+///
+/// # What `arg_index` actually is, MEASURED rather than read
+///
+/// `clap_complete`'s doc calls it "the position of the value being completed
+/// within an argument's `num_args` range, starting at 0", which reads as a
+/// word index. On an unbounded `Vec<String>` positional it is NOT one, and the
+/// difference is exactly one word. Driven through `engine::complete` against
+/// this crate's real command tree:
+///
+/// ```text
+///   tasqx report <TAB>                 -> 0
+///   tasqx report project <TAB>         -> 0     <-- the second word, also 0
+///   tasqx report project +a <TAB>      -> 1
+///   tasqx report project +a +b <TAB>   -> 2
+/// ```
+///
+/// The first word takes `complete_arg`'s `ParseState::ValueDone` arm, which
+/// passes a hardcoded `0` (`engine/complete.rs`); every later word takes
+/// `ParseState::Pos((_, num_arg))` and passes `num_arg - 1`, and `num_arg` is 1
+/// for the second word. So `0` means "the first OR the second word" and there is
+/// no discriminator that separates them — a completer is handed the index and
+/// the partial word, and nothing else.
+///
+/// The consequence is stated where it is decided (`candidates::report_words`)
+/// rather than worked around here: this seam reports what upstream reports.
+pub(crate) fn escaped_word_completer_at<F>(candidates: F) -> ArgValueCompleter
+where
+    F: Fn(usize, &str) -> Vec<CompletionCandidate> + Send + Sync + 'static,
+{
+    ArgValueCompleter::new(Restoring(candidates))
+}
+
+/// The one place the escaped dash is restored on the Tab path, and the one place
+/// [`RESTORE_PROBE`] is answered.
+///
+/// A named type rather than a closure because [`ValueCompleter`]'s blanket impl
+/// for `Fn(&OsStr) -> …` cannot see `arg_index`: it implements `complete` only
+/// and inherits the default `complete_at`, which throws the index away. Writing
+/// both halves by hand is what makes `report`'s position-dependent menu
+/// expressible at all — and both halves are written, deliberately, because
+/// [`restores_the_escaped_dash`] probes each: a hand-written impl that restored
+/// in one and not the other is the asymmetry this seam would hide.
+struct Restoring<F>(F);
+
+impl<F> clap_complete::engine::ValueCompleter for Restoring<F>
+where
+    F: Fn(usize, &str) -> Vec<CompletionCandidate> + Send + Sync,
+{
+    /// The engine never calls this — `complete_arg_value` goes straight to
+    /// [`ValueCompleter::complete_at`] — so it exists for callers outside the
+    /// engine, and it answers as position 0 because that is the position a
+    /// caller with no index in hand is asking about.
+    fn complete(&self, current: &OsStr) -> Vec<CompletionCandidate> {
+        self.complete_at(0, current)
+    }
+
+    fn complete_at(&self, arg_index: usize, current: &OsStr) -> Vec<CompletionCandidate> {
         let word = crate::argv::unescaped(&current.to_string_lossy());
-        // Answered before `candidates` is consulted, so the probe never reaches
-        // a provider and never costs a store lookup. See `RESTORE_PROBE`.
+        // Answered before the provider is consulted, so the probe never reaches
+        // one and never costs a store lookup. See `RESTORE_PROBE`.
         if word == RESTORE_PROBE {
             return vec![CompletionCandidate::new(RESTORE_PROBE_ANSWER)];
         }
-        candidates(&word)
-    })
+        (self.0)(arg_index, &word)
+    }
 }
 
 /// The word [`escaping_drift`] hands every attached completer, in its RESTORED
@@ -738,30 +803,48 @@ mod tests {
     /// the shell passes (program name included) and `index` is the cursor word,
     /// both exactly as `clap_complete`'s registrations supply them.
     ///
-    /// # The fixture must never stand in for a shipped completer
+    /// # The fixture must never stand in for a MISSING or BROKEN shipped one
     ///
     /// `Arg::add` REPLACES: extensions are keyed by `TypeId`, so installing this
-    /// wrapper over a completer `command.rs` already attached silently discards
-    /// it and every test below then measures the fixture. That is not
-    /// hypothetical — it was measured. With a bare `ArgValueCompleter` attached
-    /// to `List::filter`, the two `a_partial_tag_exclusion_*` tests below stayed
-    /// green across three forced rebuilds while the real binary offered nothing
-    /// at all for `list -ne<TAB>` and `list -needs<TAB>`.
+    /// wrapper over a completer `command.rs` already attached discards it, and
+    /// every test below then measures the fixture. That is not hypothetical — it
+    /// was measured. With a bare `ArgValueCompleter` attached to `List::filter`,
+    /// the two seam tests below stayed green across three forced rebuilds while
+    /// the real binary offered nothing at all for `list -ne<TAB>` and
+    /// `list -needs<TAB>`.
     ///
-    /// So the fixture refuses to mask. The shipped surface is
-    /// [`escaping_drift`]'s job; these tests own the seam, and the assertion is
-    /// the line between the two. When Task 7 attaches the live provider this
-    /// fires, and the right answer then is to drive it against a seeded store
-    /// rather than to delete the assertion.
+    /// The assertion that caught that demanded the positional carry NOTHING, and
+    /// it did its job: it fired the moment `candidates::filter_words` was
+    /// attached, and sent the author to write the proof that was missing —
+    /// `tests/completion.rs::a_filter_position_completes_the_shipped_grammar`,
+    /// which drives the SHIPPED provider against a seeded store through the real
+    /// binary. It cannot stay in that form, because the shipped completer is now
+    /// permanent; deleting it outright would leave the next fixture free to
+    /// measure itself again, which is the failure it was added for.
+    ///
+    /// So it is INVERTED rather than removed, and the inverted form is stronger:
+    /// the shipped completer must be present AND must answer [`RESTORE_PROBE`]
+    /// before this fixture may replace it. A removed attachment is `None` here,
+    /// a bare `ArgValueCompleter` is `Some(false)`, and both fail loudly at the
+    /// masking site rather than being quietly stood in for. What the fixture
+    /// buys, and what the shipped provider cannot give in-process, is a
+    /// DETERMINISTIC vocabulary: these tests are about the escape/restore seam
+    /// and the engine's classification of a dash token, not about which tags a
+    /// store happens to hold, and reaching a store from a unit test would mean
+    /// reading whatever `$TASQX_DB` points at on the developer's machine.
     fn candidates_for(words: &[&str], index: usize) -> Vec<String> {
         let mut cmd = Cli::command().mut_subcommand("list", |sc| {
             sc.mut_arg("filter", |a| {
-                assert!(
-                    a.get::<ArgValueCompleter>().is_none()
-                        && a.get::<ArgValueCandidates>().is_none(),
-                    "`list filter` already carries a completer, and `Arg::add` \
-                     would replace it with this fixture — leaving these tests \
-                     measuring themselves. Drive the shipped one instead."
+                assert_eq!(
+                    restores_the_escaped_dash(&a),
+                    Some(true),
+                    "`list filter` must carry the shipped, dash-restoring \
+                     completer before this fixture replaces it for the seam \
+                     tests. `None` means the attachment was removed and these \
+                     tests would go on passing against a surface that offers \
+                     nothing; `Some(false)` means it was replaced with a bare \
+                     `ArgValueCompleter`, which is the defect the seam exists to \
+                     prevent. Fix `command.rs`, not this assertion."
                 );
                 a.add(escaped_word_completer(|current| {
                     ["-needs", "+home", "project:work"]
@@ -789,14 +872,21 @@ mod tests {
     }
 
     /// The defect: a partial tag exclusion reached the provider as `\u{1}ne`, so
-    /// nothing matched and Tab produced an empty list. Task 7 attaches the live
-    /// filter provider to this exact positional and would have inherited it.
+    /// nothing matched and Tab produced an empty list. The live filter provider
+    /// is attached to this exact positional and would have inherited it.
     ///
     /// Asserted at every length, because the old behaviour was length-dependent
     /// and so looked like it worked: the pre-pass only escapes tokens longer than
     /// one character, so a bare `-` matched and a two-character `-ne` did not.
+    /// That is what the fixture vocabulary buys and a store-backed test would
+    /// not: five lengths of one word, with no seeding and no lookup.
+    ///
+    /// The SHIPPED provider is proven against a seeded store, through the real
+    /// binary and the real callback protocol, by
+    /// `tests/completion.rs::a_filter_position_completes_the_shipped_grammar`.
+    /// This one owns the seam; that one owns the surface.
     #[test]
-    fn a_partial_tag_exclusion_reaches_the_provider_with_its_dash_intact() {
+    fn the_escape_seam_hands_a_provider_the_dash_at_every_length() {
         for typed in ["-", "-n", "-ne", "-need", "-needs"] {
             let got = candidates_for(&["tasqx", "list", typed], 2);
             assert!(
@@ -811,8 +901,14 @@ mod tests {
     /// the PROVIDER must not restore it for the ENGINE, which would send the word
     /// down `complete_option`'s short-flag branch and grow it into strings that
     /// are neither flags nor filter tokens (`-needsh`, `-needsV`).
+    ///
+    /// The fixture is load-bearing here rather than incidental. This assertion is
+    /// about the ABSENCE of candidates, so a store-backed version of it passes
+    /// vacuously whenever the store happens to hold no matching tag — which is
+    /// most of the time. A provider that always answers `-needs` is what makes
+    /// "nothing else starting with what was typed" a claim with content.
     #[test]
-    fn a_partial_tag_exclusion_offers_no_short_flag_junk() {
+    fn the_escape_seam_offers_no_short_flag_junk() {
         for typed in ["-n", "-ne", "-need", "-needs"] {
             for got in candidates_for(&["tasqx", "list", typed], 2) {
                 assert!(
@@ -888,11 +984,9 @@ mod tests {
                     sc.get_name(),
                     pos.get_id()
                 );
-                // `None` is no completer at all, which is the state today and is
-                // not a defect: the positional simply offers clap's own flags.
-                if let Some(restored) = restores_the_escaped_dash(pos) {
-                    assert!(
-                        restored,
+                match restores_the_escaped_dash(pos) {
+                    Some(true) => {}
+                    Some(false) => panic!(
                         "`{} {}` carries an ArgValueCompleter that did not restore \
                          the escaped dash — it will be handed `\\u{{1}}ne` where the \
                          user typed `-ne` and match nothing, silently, for every tag \
@@ -900,7 +994,25 @@ mod tests {
                          it with `complete::escaped_word_completer`.",
                         sc.get_name(),
                         pos.get_id()
-                    );
+                    ),
+                    // `None` used to be tolerated here and is not any more. It
+                    // meant "the positional offers clap's own flags and nothing
+                    // else", which was the state before the filter grammar was
+                    // completable at all; now it means a filter command whose
+                    // tail is silent, and the set this loop walks is
+                    // `FILTER_COMMANDS` — so a filter command added tomorrow
+                    // fails the build until its tail is completed too, which is
+                    // the only way "all four" stays true without a second list
+                    // of four kept somewhere.
+                    None => panic!(
+                        "`{} {}` is the filter tail of a FILTER_COMMANDS \
+                         subcommand and offers no candidates, so `tasqx {} +<TAB>` \
+                         is silent where the tool knows the whole grammar. Attach \
+                         `add = crate::complete::candidates::filter_words()`.",
+                        sc.get_name(),
+                        pos.get_id(),
+                        sc.get_name()
+                    ),
                 }
             }
         }

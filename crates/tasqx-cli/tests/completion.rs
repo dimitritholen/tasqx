@@ -1176,6 +1176,473 @@ fn a_callback_against_an_absent_store_creates_nothing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// ---- the read-side filter grammar ------------------------------------------
+
+/// A store shaped for the filter surface: one live project, one ARCHIVED
+/// project holding a task, and a task carrying four tags chosen to be traps.
+///
+/// Every element earns its place:
+///
+///  * `needs` is the tag the dash tests reach for, at five prefix lengths. It
+///    exists so that "a tag exclusion completes" is a claim with content rather
+///    than an empty list nobody can tell from a broken one.
+///  * `blocked` is the round-trip gate's trap. `+blocked` parses — as the
+///    derived blocked FLAG, not as this tag — so a completion gated on "does it
+///    parse" would offer it and silently answer a different question.
+///  * `-lead` is the other refusal: `-` + `-lead` is `--lead`, which the grammar
+///    refuses as a mistyped flag.
+///  * the archived project is the one a WRITE surface must withhold and a READ
+///    surface must offer, and the difference is measured here rather than
+///    reasoned about.
+///  * the SPACED project is the quoting rule. A candidate is inserted verbatim
+///    and then word-split, so `project:home renovation` reaches the grammar as
+///    two tokens and is refused; it must never be offered.
+fn seeded_filter(label: &str) -> (std::path::PathBuf, String) {
+    let db = temp_db(label);
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("TASQX_DB", &db)
+            .arg("--no-daemon")
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("seed with {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "seeding {args:?} failed: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(&["init", SEEDED_PROJECT]);
+    run(&["init", SEEDED_SPACED_PROJECT]);
+    run(&["init", ARCHIVED_PROJECT]);
+    run(&["add", ARCHIVED_TASK, "--project", ARCHIVED_PROJECT]);
+    // Through the capture sugar rather than `--tag`, because `-lead` cannot be
+    // spelled as a flag VALUE at all: clap reads `--tag -lead` as an unknown
+    // short-flag cluster and refuses it. `+-lead` is the spelling that works,
+    // which is itself the asymmetry `standalone_word` documents — a dash-led
+    // name is typeable welded behind a prefix and not as a whole argv element.
+    run(&[
+        "add",
+        "a tagged task",
+        "--project",
+        SEEDED_PROJECT,
+        "+api",
+        "+needs",
+        "+blocked",
+        "+-lead",
+    ]);
+
+    // `project.archive` has no CLI verb, so the one-shot JSON door is how a test
+    // reaches it. The envelope shape is `dispatch::handle_envelope`'s.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "api"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the one-shot api");
+    {
+        use std::io::Write as _;
+        let stdin = child.stdin.as_mut().expect("api stdin");
+        writeln!(
+            stdin,
+            r#"{{"tasqx":"1","id":"archive","method":"project.archive","params":{{"name":"{ARCHIVED_PROJECT}"}}}}"#
+        )
+        .expect("write the archive request");
+    }
+    let archived = child.wait_with_output().expect("run the archive request");
+    let reply = String::from_utf8_lossy(&archived.stdout);
+    assert!(
+        reply.contains("\"ok\":true"),
+        "archiving {ARCHIVED_PROJECT:?} failed: {reply}"
+    );
+
+    let socket = format!("tasqx-completion-no-daemon-{}-{label}", std::process::id());
+    (db, socket)
+}
+
+/// Archived, and therefore refused by every WRITE that takes a project.
+const ARCHIVED_PROJECT: &str = "oldstuff";
+/// The task that proves the archived project is still readable through a filter.
+const ARCHIVED_TASK: &str = "a task left in the archive";
+
+/// The slice, driven through the REAL binary and the REAL callback protocol
+/// against a seeded store: every prefix of the filter grammar answers.
+///
+/// **Every prefix in one test on purpose.** The failure this seam is built
+/// against is a dispatcher that serves some prefixes and not others — the tag
+/// EXCLUSION is the one that breaks alone, because it is the only prefix the
+/// argv pre-pass escapes, so `+tag` and `project:x` can keep working while it
+/// returns nothing. Four of five working is the worst version of this defect
+/// because it looks finished. Checked together, a partial answer is one red test
+/// rather than four green ones and a gap.
+///
+/// **All four filter positionals**, read out of `argv::FILTER_COMMANDS` rather
+/// than from a list written here — `report` included, whose tail is the same
+/// grammar after its optional first word. A completer attached to three of the
+/// four is exactly the shape `complete::escaping_drift` exists to catch, and
+/// this is the surface half of that guard.
+#[test]
+fn a_filter_position_completes_the_shipped_grammar() {
+    let (db, socket) = seeded_filter("filter-grammar");
+
+    for command in ["list", "export", "watch"] {
+        // THE one. `-ne` reaches the engine as `\u{1}ne` and a provider that
+        // does not restore the dash matches nothing — silently, for every tag
+        // exclusion, while the prefixes below keep working.
+        for typed in ["-", "-n", "-ne", "-need", "-needs"] {
+            let got = complete_bash_in(&db, &socket, 2, &["tasqx", command, typed]);
+            assert!(
+                got.iter().any(|c| c == "-needs"),
+                "`{command} {typed}<TAB>` must offer the tag exclusion `-needs`; \
+                 the escape/restore seam is not reaching the shipped provider. \
+                 got {got:?}"
+            );
+        }
+
+        let tags = complete_bash_in(&db, &socket, 2, &["tasqx", command, "+"]);
+        assert!(
+            tags.iter().any(|c| c == "+api") && tags.iter().any(|c| c == "+needs"),
+            "`{command} +<TAB>` must offer the seeded tags, got {tags:?}"
+        );
+
+        let projects = complete_bash_in(&db, &socket, 2, &["tasqx", command, "project:"]);
+        assert!(
+            projects.iter().any(|c| c == "project:work"),
+            "`{command} project:<TAB>` must offer the seeded project, got {projects:?}"
+        );
+        // ...and never the one a shell would split, on this surface as on the
+        // write ones. What WITHHOLDS it here is not `deliverable_as_one_word`
+        // but the round-trip gate, and that was measured rather than assumed:
+        // with the deliverability filter removed from `project_names_from` the
+        // menu is unchanged, because `project:home renovation` tokenizes into a
+        // predicate plus a stray word and `Filter::parse` refuses it. Two
+        // independent refusals for one hazard, which is why this assertion
+        // survives either of them being weakened.
+        assert!(
+            projects.iter().all(|c| !c.contains("home")),
+            "`{command} project:<TAB>` offered a project a shell would split, \
+             got {projects:?}"
+        );
+
+        // The bare partial: the shapes the grammar accepts, out of core's
+        // registries. `status:` is a stub the user goes on typing, which is why
+        // the assertion is on its presence rather than on it parsing alone.
+        let shapes = complete_bash_in(&db, &socket, 2, &["tasqx", command, ""]);
+        for shape in ["@working", "@blocked", "and", "or", "project:", "status:"] {
+            assert!(
+                shapes.iter().any(|c| c == shape),
+                "`{command} <TAB>` must offer the grammar shape {shape:?}, got {shapes:?}"
+            );
+        }
+
+        // The one closed vocabulary, which needs no store at all.
+        let statuses = complete_bash_in(&db, &socket, 2, &["tasqx", command, "status:"]);
+        assert!(
+            statuses.iter().any(|c| c == "status:pending"),
+            "`{command} status:<TAB>` must offer the status set, got {statuses:?}"
+        );
+
+        // And a date bound offers nothing, because its vocabulary is open. The
+        // assertion is that no DATE candidate appears, not that the list is
+        // empty: clap still offers its own flags for a word it reads as one.
+        let dates = complete_bash_in(&db, &socket, 2, &["tasqx", command, "due.before:"]);
+        assert!(
+            dates.iter().all(|c| !c.starts_with("due.before:")),
+            "`{command} due.before:<TAB>` invented a date vocabulary, got {dates:?}"
+        );
+    }
+
+    // `report`'s tail is the same grammar one word in, which is the position its
+    // group_by can no longer occupy.
+    let got = complete_bash_in(&db, &socket, 3, &["tasqx", "report", "project", "-ne"]);
+    assert!(
+        got.iter().any(|c| c == "-needs"),
+        "`report project -ne<TAB>` must complete the filter tail too, got {got:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// The round-trip gate through the binary: a candidate the FILTER PARSER would
+/// read as something else is never offered.
+///
+/// `+blocked` is the case, and it is not hypothetical — the store really holds a
+/// tag named `blocked`. `filter::predicate` claims that spelling for the derived
+/// blocked flag before it reaches the tag branch, so a completion gated on "does
+/// this parse?" offers it and Tab silently swaps "tasks tagged blocked" for
+/// "tasks with an unresolved dependency", at exit 0.
+///
+/// `-lead` is the other half: the exclusion prefix composes `--lead`, which the
+/// grammar refuses as a mistyped flag. That refusal is load-bearing rather than
+/// tidiness — it is what lets `argv` tell a filter token from a flag one token at
+/// a time.
+///
+/// Both are asserted against the SHIPPED menu rather than against the helper, so
+/// a gate that exists in `candidates.rs` and is not reached by the wiring fails
+/// here.
+#[test]
+fn a_filter_candidate_the_parser_reads_differently_is_never_offered() {
+    let (db, socket) = seeded_filter("filter-round-trip");
+
+    // Precondition: the traps really are in the store, so an empty menu cannot
+    // masquerade as the withholding under test.
+    let listed = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "--json", "list"])
+        .output()
+        .expect("list the store back");
+    let text = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        text.contains("blocked") && text.contains("-lead"),
+        "precondition: the store must carry the trap tags, got:\n{text}"
+    );
+
+    let included = complete_bash_in(&db, &socket, 2, &["tasqx", "list", "+"]);
+    assert!(
+        !included.iter().any(|c| c == "+blocked"),
+        "`+blocked` is the derived blocked flag, not the tag `blocked` — \
+         offering it answers a different question at exit 0. got {included:?}"
+    );
+    // The exclusion spelling of the same tag is unclaimed and must stay offered,
+    // or the gate is refusing by name rather than by what the parser does.
+    let excluded = complete_bash_in(&db, &socket, 2, &["tasqx", "list", "-b"]);
+    assert!(
+        excluded.iter().any(|c| c == "-blocked"),
+        "`-blocked` is a plain tag exclusion and must be offered, got {excluded:?}"
+    );
+
+    assert!(
+        !complete_bash_in(&db, &socket, 2, &["tasqx", "list", "-"])
+            .iter()
+            .any(|c| c == "--lead"),
+        "a tag named `-lead` composes `--lead`, which the grammar refuses"
+    );
+    // ...and is perfectly includable, because `+-lead` is not flag-shaped.
+    assert!(
+        complete_bash_in(&db, &socket, 2, &["tasqx", "list", "+-"])
+            .iter()
+            .any(|c| c == "+-lead"),
+        "`+-lead` is a legal include and withholding it is an under-offer"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// **Every value candidate the filter menu offers, typed as the shell would
+/// insert it, is a filter the tool accepts and answers.**
+///
+/// This is the quoting rule checked rather than asserted in prose, and it is the
+/// read-side twin of `every_offered_candidate_produces_the_command_it_promises`.
+/// A candidate is inserted VERBATIM, so one containing a space arrives as two
+/// argv elements and means something else — `filter::from_argv` joins them and
+/// `project:Home Renovation` becomes a project plus a stray token, refused at
+/// exit 2. The candidates are therefore split on whitespace before being handed
+/// back, exactly as a shell would split them, so a provider that offered a
+/// spaced value could not pass by being passed as one element.
+///
+/// The stub shapes (`project:`, `and`, `+`) are deliberately NOT round-tripped:
+/// they are prefixes of a token rather than tokens, and pressing Enter on one is
+/// a loud error by design. What is round-tripped is everything that names a
+/// VALUE, plus the valueless keywords, which are complete filters on their own.
+#[test]
+fn every_offered_filter_candidate_parses_as_a_filter() {
+    let (db, socket) = seeded_filter("filter-parses");
+
+    let listed = |filter: &str| -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("TASQX_DB", &db)
+            .args(["--no-daemon", "--json", "list"])
+            // SPLIT, deliberately: this is what a shell hands clap when the
+            // candidate is inserted unquoted, and passing it whole would repair
+            // the very failure `deliverable_as_one_word` exists to prevent.
+            .args(filter.split_whitespace())
+            .output()
+            .expect("list with the completed filter")
+    };
+
+    // Every probe word is one the engine contributes NO flags to, so the menu is
+    // this provider's alone and nothing has to be skipped — a skip list is how a
+    // round-trip guard quietly stops covering the candidate that broke. `-n` and
+    // `-b` rather than a bare `-` for exactly that reason: the pre-pass escapes a
+    // multi-character dash token, so `complete_option` never sees a dash and
+    // never offers `-h`/`-V`, while a bare `-` is `is_stdio` and does.
+    let mut checked = 0;
+    for typed in ["+", "-n", "-b", "project:", "status:", "@"] {
+        for candidate in complete_bash_in(&db, &socket, 2, &["tasqx", "list", typed]) {
+            checked += 1;
+            // The quoting rule, asserted before the round trip so a spaced
+            // candidate is named as such rather than showing up as a confusing
+            // `unknown filter token` two lines down.
+            assert!(
+                !candidate.chars().any(char::is_whitespace),
+                "`list {typed}<TAB>` offered {candidate:?}, which a shell splits \
+                 into two words — `filter::from_argv` then joins them back and the \
+                 grammar refuses the pair"
+            );
+            let out = listed(&candidate);
+            assert!(
+                out.status.success(),
+                "`tasqx list {candidate}` was refused, so the menu offered a word \
+                 the filter grammar does not accept: {:?}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+    assert!(
+        checked >= 10,
+        "only {checked} candidates were round-tripped; the fixture stopped \
+         producing a menu and this guard is checking nothing"
+    );
+
+    // And the property that makes the above more than "it did not crash": a tag
+    // exclusion really excludes. `-needs` must hide the tagged task and keep the
+    // one in the archive, which is the same pair `filter.rs` pins in core — here
+    // proven from the string the shell was actually handed.
+    let excluded = complete_bash_in(&db, &socket, 2, &["tasqx", "list", "-need"]);
+    assert_eq!(excluded, ["-needs"], "the fixture's premise moved");
+    let out = listed("-needs");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("a tagged task") && text.contains(ARCHIVED_TASK),
+        "`tasqx list -needs` must hide the tagged task and keep the others; the \
+         completed token did not reach the grammar intact. got:\n{text}"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// An ARCHIVED project is offered in a FILTER and withheld on a WRITE, and the
+/// asymmetry is what the receiving command does rather than a default somebody
+/// picked.
+///
+/// Measured against the built binary, both halves. `add`, `modify` and `use`
+/// refuse an archived project outright, so offering one there is a menu entry
+/// whose only outcome is an error. A filter is a READ and the engine serves it:
+/// `tasqx list project:oldstuff` prints the task at exit 0, so withholding the
+/// name would make completion offer LESS than the command accepts — which reads
+/// as "that project is gone".
+///
+/// The last assertion is the one that keeps this honest: the filter is actually
+/// run and must return the archived task. Without it, "the name is offered"
+/// could be true of a name that answers nothing.
+#[test]
+fn an_archived_project_is_offered_to_a_filter_and_withheld_from_a_write() {
+    let (db, socket) = seeded_filter("filter-archived");
+
+    for command in ["list", "export", "watch"] {
+        let got = complete_bash_in(&db, &socket, 2, &["tasqx", command, "project:"]);
+        assert!(
+            got.iter().any(|c| c == "project:oldstuff"),
+            "`{command} project:<TAB>` must offer the archived project — the \
+             engine really does filter on it. got {got:?}"
+        );
+    }
+
+    for (cursor, words) in [
+        (4, &["tasqx", "add", "x", "--project", ""][..]),
+        (2, &["tasqx", "use", ""][..]),
+        (2, &["tasqx", "add", "project:"][..]),
+    ] {
+        let got = complete_bash_in(&db, &socket, cursor, words);
+        assert!(
+            got.iter().all(|c| !c.contains(ARCHIVED_PROJECT)),
+            "`{words:?}` offered an archived project, which the command refuses \
+             outright — a menu entry whose only outcome is an error. got {got:?}"
+        );
+    }
+
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "list", "project:oldstuff"])
+        .output()
+        .expect("filter on the archived project");
+    assert!(out.status.success(), "the filter must be accepted");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(ARCHIVED_TASK),
+        "the archived project answers the filter it was offered for, or the \
+         candidate is a menu entry that finds nothing"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// `report`'s first word may be a `group_by` axis; every later word may not.
+///
+/// Both positions, because offering filter tokens where an axis belongs and
+/// offering an axis where only a filter token parses are two different wrong
+/// menus, and a test of one cannot see the other. `tasqx report project status`
+/// exits 2 with `unknown filter token "status"` — measured — which is what makes
+/// the second assertion a correctness claim rather than a preference.
+///
+/// The over-offer `report_words` documents is pinned here as OBSERVED rather
+/// than claimed absent: at the second word the engine still reports `arg_index`
+/// 0, so the axes are offered there too. A doc claim with no guard under it is
+/// what went wrong on this branch before; if upstream ever passes a true word
+/// index this test fails and sends whoever fixed it to the paragraph that must
+/// stop saying it is broken.
+#[test]
+fn a_report_group_by_is_offered_where_it_is_legal() {
+    let (db, socket) = seeded_filter("report-axes");
+
+    let first = complete_bash_in(&db, &socket, 2, &["tasqx", "report", ""]);
+    for axis in ["project", "status", "priority"] {
+        assert!(
+            first.iter().any(|c| c == axis),
+            "`report <TAB>` must offer the axis {axis:?}, got {first:?}"
+        );
+    }
+    // ...and the filter grammar alongside, because `report +api` is a valid
+    // first word too and means something different.
+    assert!(
+        first.iter().any(|c| c == "@working"),
+        "`report <TAB>` must offer the filter grammar as well, got {first:?}"
+    );
+    // `project` the axis and `project:` the predicate are different tokens and
+    // both are legal here.
+    let both = complete_bash_in(&db, &socket, 2, &["tasqx", "report", "pro"]);
+    assert_eq!(both, ["project", "project:"], "got {both:?}");
+
+    // Past the first word an axis no longer parses, and the menu says so.
+    let later = complete_bash_in(
+        &db,
+        &socket,
+        4,
+        &["tasqx", "report", "project", "+api", "pri"],
+    );
+    assert!(
+        !later.iter().any(|c| c == "priority"),
+        "an axis is offered where only a filter token parses, got {later:?}"
+    );
+
+    // The residual over-offer, pinned as measured: `arg_index` is 0 for the
+    // second word too, so the axes appear there. Choosing one is a LOUD failure
+    // — `unknown filter token`, exit 2 — which is why it is the accepted side of
+    // the trade rather than a defect being hidden.
+    let second = complete_bash_in(&db, &socket, 3, &["tasqx", "report", "project", "pri"]);
+    assert!(
+        second.iter().any(|c| c == "priority"),
+        "`arg_index` now distinguishes the second word from the first; \
+         `candidates::report_words` documents that it does not, and that \
+         paragraph is now wrong. got {second:?}"
+    );
+    let refused = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "report", "project", "priority"])
+        .output()
+        .expect("run report with an axis in the filter tail");
+    assert!(
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr).contains("unknown filter token"),
+        "the over-offered candidate must fail LOUDLY, which is the whole of why \
+         it is tolerable; got {:?} stderr {:?}",
+        refused.status.code(),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
 /// The whole feature is a no-op without the variable, and that is a property of
 /// the entry point of EVERY command — `intercept()` runs before the argv
 /// pre-pass, so a mistake here breaks the tool rather than the feature.
