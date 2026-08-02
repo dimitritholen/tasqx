@@ -290,8 +290,20 @@ typed so far *within the current word*.
 
 `ArgValueCompleter` receives the partial word, so the completer attached to those
 positionals dispatches on its prefix: `+` yields tags, `project:`/`proj:` yields
-projects, `!` yields priorities, the date keys yield the natural-language date
-vocabulary, and anything else yields nothing (a title word is not completable).
+projects, `!` yields priorities, and anything else yields nothing (a title word is
+not completable).
+
+**The date-shaped keys yield nothing either, and that is a decision rather than an
+omission.** `due:`, `scheduled:`, `wait:`, `repeat:`/`every:`/`recur:`, `remind:`
+and `est:`/`estimate:` all take an *open* vocabulary: natural-language expressions
+parsed by `tasqx_core::datetime` and `recur`, whose grammar is `in 3 days`,
+`every 3 days`, `-30m`, `1h30m`. Neither module exports a registry of accepted
+words — the words that do appear (`today`, `tomorrow`, `eom`) are match arms
+inside a private function — so a menu here would be a hand-written fourth copy of
+a vocabulary that already exists in three places, which is the drift shape D30
+exists to stop. Offering nothing is the honest answer to a question whose answer
+is "anything a human can write". This paragraph was added after the shipped
+dispatcher and this document were found to disagree.
 
 The same mechanism serves filter positionals against the read-side grammar.
 

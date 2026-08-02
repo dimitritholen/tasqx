@@ -143,7 +143,13 @@ Tasks 1–3 deliver slice 1 (commands and flags complete everywhere). Tasks 4–
 - Modify: `crates/tasqx-cli/src/command.rs`
 
 - [ ] **Step 1: Write the failing tests.** `--project <TAB>` emits seeded project names. A partial word `+` in `add`'s title position emits seeded tags. A partial word `project:` emits project names. A plain title word emits nothing.
-- [ ] **Step 2: Implement.** `projects()` from `project.list`; `tags()` from the `tags` field already on `task.list` rows — **do not add a `tag.list` API method**. The dispatcher reads the partial word and branches on prefix: `+`, `project:`/`proj:`, `!`, the date keys, else empty.
+- [ ] **Step 2: Implement.** `projects()` from `project.list`; `tags()` from the `tags` field already on `task.list` rows — **do not add a `tag.list` API method**. The dispatcher reads the partial word and branches on prefix: `+`, `project:`/`proj:`, `!`, else empty. The date-shaped keys (`due:`, `scheduled:`, `wait:`, `repeat:`/`every:`/`recur:`, `remind:`, `est:`/`estimate:`) are in the "else" — they take an open natural-language vocabulary that no module exports, so a menu would be a fourth hand-written copy. See the spec's amended prefix-dispatch section.
+
+  **A composed candidate must be gated on the PARSER, not on a character allowlist.** `project:` + a project legally named `:x` is `project::x`, which `sugar::split_key` refuses as a Rust path — so the completion feature built to prevent silent misfiling manufactured one: the task landed in the default project and the word landed in the title, at exit 0. Ask `sugar::parsed_value_of` whether the composed word still yields the value it was built from.
+
+  **The candidate cap goes AFTER the user's prefix on the sugar path.** Capping the sorted vocabulary first makes a tag that exists and uniquely matches what was typed silently absent from its own menu; measured at 251 tags, `+api<TAB>` answered nothing. Only the `ArgValueCandidates` surface, where the engine filters after the provider returns, may cap first — and that asymmetry has to be stated where the constant is defined.
+
+  **`--tag`/`-t` is part of "tags".** Leaving it silent while `+<TAB>` one argument away serves the whole vocabulary is the "four of five prefixes looks finished" shape. It needs `value_name = "TAG"` and a guard of its own; the `<PROJECT>` convention cannot see it, because the derive renders the plural field as `<TAGS>`.
 - [ ] **Step 3: Verify.** Confirm the quoting rules `sugar.rs` documents are respected — a project name with a space must complete to a form `add` can actually parse.
 - [ ] **Step 4: Commit** — `feat(cli): complete projects and tags, including inline capture sugar`.
 

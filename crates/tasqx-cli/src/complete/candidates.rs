@@ -125,12 +125,21 @@ fn from_rows(result: &Value) -> Vec<CompletionCandidate> {
 ///
 /// It bites differently on the two attachment shapes, and the difference is
 /// worth knowing before raising or lowering it. In [`sugar_words`] the partial
-/// word is filtered FIRST and the cap applies to what survives, so it only
-/// matters when two hundred names share a prefix. On [`projects`] the engine
-/// does the filtering after this function has returned, so a store with more
-/// than this many projects would have some of them cut off before the user's
-/// prefix was ever consulted. Two hundred projects is not a store this tool has
-/// seen; the asymmetry is recorded because it is invisible at the call site.
+/// word is filtered FIRST and the cap applies to what survives ([`prefixed`]),
+/// so it only matters when two hundred names share a prefix. On [`projects`] the
+/// engine does the filtering after [`project_candidates`] has returned, so a
+/// store with more than this many projects would have some of them cut off
+/// before the user's prefix was ever consulted. Two hundred projects is not a
+/// store this tool has seen; the asymmetry is recorded because it is invisible
+/// at the call site.
+///
+/// That paragraph described the intended design and, for one commit, not the
+/// code: the cap sat in [`tags_from`] and [`project_names_from`] — before the
+/// prefix on BOTH shapes — so on a store with 251 tags `+api<TAB>` answered
+/// nothing while an api-tagged task sat in the store. A doc asserting a
+/// protection the code does not have is the same defect shape as the bug it
+/// describes, which is why the guard below now measures the ordering instead of
+/// this text promising it.
 const MAX_VALUE_CANDIDATES: usize = 200;
 
 /// Project names, for every argument whose value IS a project name.
@@ -147,32 +156,58 @@ const MAX_VALUE_CANDIDATES: usize = 200;
 /// pre-pass (`argv::prepass` reads clap's arg table to find flag values), and
 /// `use` is not a filter command at all.
 ///
-/// Archived projects are excluded, which is `project.list`'s default and the
-/// same set `tasqx projects` shows. `use` refuses an archived project outright,
-/// and for `--project` the exclusion follows the tool's own answer to "which
-/// projects are there" rather than inventing a second one for the shell.
+/// Archived projects are excluded, and the reason is what the RECEIVING command
+/// does rather than what `project.list` defaults to: `add`, `modify` and `use`
+/// all refuse an archived project outright (`engine.rs`), so offering one would
+/// be a menu entry whose only outcome is an error. It is also the set
+/// `tasqx projects` shows, so the shell and the tool answer "which projects are
+/// there" the same way.
+///
+/// A command that ACCEPTS an archived project therefore needs the other
+/// constructor — see [`projects_including_archived`]. Splitting them rather than
+/// widening this one keeps each attachment site offering exactly what it takes.
 pub(crate) fn projects() -> ArgValueCandidates {
-    ArgValueCandidates::new(project_candidates)
+    ArgValueCandidates::new(|| project_candidates(false))
 }
 
-fn project_candidates() -> Vec<CompletionCandidate> {
-    project_names()
+/// [`projects`] plus the archived ones, for a command that genuinely accepts one.
+///
+/// `chart burndown --project` is the only such site today, and it is a READ:
+/// `tasqx chart burndown --project oldstuff` charts an archived project and
+/// exits 0. Serving it the narrow set made completion offer LESS than the
+/// command accepts — an under-offer rather than a wrong answer, but the kind
+/// that looks like the project no longer exists.
+pub(crate) fn projects_including_archived() -> ArgValueCandidates {
+    ArgValueCandidates::new(|| project_candidates(true))
+}
+
+/// The whole-word surface, so two things happen here that the sugar arm does not
+/// want: a name that would be read as a flag is dropped ([`standalone_word`]),
+/// and the cap is applied BEFORE any prefix, because the engine does its
+/// filtering after this function has returned and there is nowhere later to put
+/// it. That asymmetry with [`prefixed`] is real and is recorded on
+/// [`MAX_VALUE_CANDIDATES`]; it is the one place a name can be cut off without
+/// the user's prefix having been consulted.
+fn project_candidates(include_archived: bool) -> Vec<CompletionCandidate> {
+    project_names(include_archived)
         .into_iter()
+        .filter(|name| standalone_word(name))
+        .take(MAX_VALUE_CANDIDATES)
         .map(CompletionCandidate::new)
         .collect()
 }
 
 /// The one `project.list` read, shared by [`projects`] and the `project:` arm of
 /// [`sugar_words`] so the two can never offer different sets for one value type.
-fn project_names() -> Vec<String> {
-    super::lookup(|backend| {
+fn project_names(include_archived: bool) -> Vec<String> {
+    super::lookup(move |backend| {
         backend
             .call(
                 "project.list",
                 // Explicit rather than omitted, exactly as `task_id_candidates`
                 // spells its empty filter: this is the decision above, written
                 // where a reader can disagree with it, not a forgotten param.
-                &json!({ "include_archived": false }),
+                &json!({ "include_archived": include_archived }),
             )
             .ok()
     })
@@ -180,7 +215,54 @@ fn project_names() -> Vec<String> {
     .unwrap_or_default()
 }
 
-/// Tag names, gathered from the `tags` field `task.list` rows already carry.
+/// Tag names, for every argument whose value IS a tag name.
+///
+/// Its existence is not optional once [`sugar_words`] answers `+<TAB>`. Leaving
+/// `--tag` silent while the `+` one positional away offered the whole vocabulary
+/// was precisely the shape this module argues against elsewhere — a surface that
+/// serves most of its prefixes looks finished, so nobody goes looking for the
+/// one it drops.
+///
+/// # Why this one is a COMPLETER and [`projects`] is not
+///
+/// The obvious shape is [`projects`]'s — a flag value is the whole word with no
+/// prefix grammar of its own, so the engine's own filter should be the right
+/// filter. It was tried and MEASURED, and it reinstated the bug this module had
+/// just removed one surface over. An [`ArgValueCandidates`] is filtered by the
+/// engine AFTER the provider returns, so the cap has to be applied first, and on
+/// a store with 252 distinct tags `--tag zeb<TAB>` answered nothing while
+/// `+zeb<TAB>` answered `+zebra`: the two hundred alphabetically-first tags used
+/// up the whole menu before the word was consulted.
+///
+/// That is tolerable for projects and not for tags, and the difference is how
+/// many there plausibly are. Two hundred projects is not a store this tool has
+/// seen. Two hundred tags is an ordinary year of use, which is exactly why
+/// [`tag_names`] sends no `limit` — a cap that drops TAGS is a wrong answer
+/// rather than a shorter one, and moving it from the read to the menu does not
+/// change that.
+///
+/// So this seam takes the partial word and filters before capping, like
+/// [`prefixed`] does. Built through [`super::escaped_word_completer`] for the
+/// reason [`sugar_words`] is: `--tag`'s value is never escaped today (`add` and
+/// `modify` are not filter commands, and the pre-pass steps over flag values in
+/// the ones that are), the restore is a no-op without a sentinel, and the
+/// wrapper is the shape this module has committed to for anything handed a raw
+/// word.
+pub(crate) fn tags() -> ArgValueCompleter {
+    super::escaped_word_completer(tag_candidates)
+}
+
+fn tag_candidates(typed: &str) -> Vec<CompletionCandidate> {
+    tag_names()
+        .into_iter()
+        .filter(|name| standalone_word(name) && name.starts_with(typed))
+        .take(MAX_VALUE_CANDIDATES)
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
+/// The one `task.list` read, shared by [`tags`] and the `+` arm of
+/// [`sugar_words`], gathered from the `tags` field `task.list` rows already carry.
 ///
 /// **No `tag.list` API method, deliberately (D50).** A shell callback is not a
 /// reason to widen a contract surface that is being narrowed, and there is
@@ -217,9 +299,8 @@ fn project_names_from(result: &Value) -> Vec<String> {
     };
     rows.iter()
         .filter_map(|row| row.get("name")?.as_str())
-        .filter(|name| typeable_unquoted(name))
+        .filter(|name| deliverable_as_one_word(name))
         .map(str::to_string)
-        .take(MAX_VALUE_CANDIDATES)
         .collect()
 }
 
@@ -238,12 +319,18 @@ fn tags_from(result: &Value) -> Vec<String> {
         .filter_map(|row| row.get("tags")?.as_array())
         .flatten()
         .filter_map(Value::as_str)
-        .filter(|tag| typeable_unquoted(tag))
+        .filter(|tag| deliverable_as_one_word(tag))
         .map(str::to_string)
         .collect();
     tags.sort_unstable();
     tags.dedup();
-    tags.truncate(MAX_VALUE_CANDIDATES);
+    // NOT capped here. The cap belongs after the user's prefix has been applied
+    // ([`prefixed`]), and truncating the sorted vocabulary first is the defect
+    // this function's own doc argues against one paragraph up: it reinstates the
+    // silent tag loss that sending no `limit` was chosen to avoid, merely
+    // ordering it alphabetically instead of by row order. Measured on a store
+    // with 251 tags: `+api<TAB>` answered nothing while an api-tagged task sat
+    // in the store, because `api` sorted past the two-hundredth name.
     tags
 }
 
@@ -297,15 +384,37 @@ const SAFE_PUNCTUATION: &str = "._-/+:";
 /// lost is the Tab, and what is bought is that no Tab ever produces a command
 /// that runs and does something else.
 ///
-/// A leading `-` is excluded separately from the character set, because such a
-/// name is typeable in the middle of a word and unusable at the start of one:
-/// clap would read the completed value as a flag.
-fn typeable_unquoted(value: &str) -> bool {
+/// # What this does NOT answer
+///
+/// Only whether a SHELL can deliver the name as one word. Whether the composed
+/// candidate then survives tasqx's own grammar is a second, independent question
+/// — `:x` is perfectly deliverable and `project::x` is still not a project
+/// reference — and it is answered by `sugar::parsed_value_of` in [`prefixed`].
+/// Conflating the two is how a leading-`:` project name shipped as a candidate
+/// that filed the task under the default project at exit 0.
+fn deliverable_as_one_word(value: &str) -> bool {
     !value.is_empty()
-        && !value.starts_with('-')
         && value
             .chars()
             .all(|c| c.is_alphanumeric() || SAFE_PUNCTUATION.contains(c))
+}
+
+/// Can this value stand as a whole argv element — the shape `--project x` and
+/// `use x` take?
+///
+/// [`deliverable_as_one_word`] plus one more refusal: a leading `-`, because
+/// such a name is typeable in the middle of a word and unusable at the start of
+/// one — clap reads the completed value as a flag.
+///
+/// Deliberately NOT applied on the sugar surface. There the name is never the
+/// whole element; it arrives welded to a prefix, so a tag called `-x` completes
+/// to `+-x` and a project called `-x` to `project:-x`, neither of which is
+/// flag-shaped and both of which [`prefixed`]'s round-trip gate then confirms
+/// the parser accepts. Applying the flag rule there too withheld those names for
+/// a reason that does not hold, which is an under-offer rather than a wrong
+/// answer, but it is still a rule stated in a place it is not true.
+fn standalone_word(value: &str) -> bool {
+    deliverable_as_one_word(value) && !value.starts_with('-')
 }
 
 /// The inline capture sugar, for every positional whose words reach
@@ -368,7 +477,10 @@ fn sugar_candidates(current: &str) -> Vec<CompletionCandidate> {
         // Matched variant by variant with no wildcard, so the compiler asks
         // whoever adds a key to `VALUE_KEYS` what its Tab press should do.
         Some(Partial::Key(key, spelling, typed)) => match key {
-            ValueKey::Project => prefixed(spelling, typed, project_names()),
+            // The narrow set, for the same reason `--project` takes it: this
+            // sugar reaches `add` and `modify`, both of which refuse an
+            // archived project.
+            ValueKey::Project => prefixed(spelling, typed, project_names(false)),
             // Every remaining key takes an OPEN vocabulary and offers nothing.
             // Dates, recurrence rules, reminder offsets and estimates are
             // natural-language expressions parsed by `tasqx_core::datetime` and
@@ -401,26 +513,61 @@ fn sugar_candidates(current: &str) -> Vec<CompletionCandidate> {
 /// value (`complete_arg_value`: `name.starts_with(value)`). A completer that
 /// filtered more loosely than the rest of the surface would make `+Api<TAB>`
 /// behave differently from `--priority Hi<TAB>` for no reason a user could see.
+/// # The round-trip gate, and why it is not a character rule
+///
+/// A composed word is not automatically a word `sugar::parse_add` accepts. The
+/// case that shipped: a project may legally be named `:x`, `:x` is perfectly
+/// deliverable by a shell, and `project:` + `:x` is `project::x` — which
+/// `sugar::split_key` refuses as a Rust path. Accepting that candidate filed the
+/// task under the DEFAULT project and appended the word to the TITLE, at exit 0.
+/// Measured against the built binary, on a store holding such a project.
+///
+/// So every candidate is handed back to `sugar::parsed_value_of` and kept only
+/// if the parser takes the same value out of it that went in. Reading the answer
+/// out of the parser rather than adding `!name.starts_with(':')` here is the
+/// point: the `::` refusal already moved once, and a rule restated in two places
+/// is the drift shape this repository keeps paying for. It also covers every
+/// future key and refusal without this function being touched.
+///
+/// # Where the cap goes, and why it is here rather than in the readers
+///
+/// After the prefix filter, so it bounds the MENU rather than the vocabulary.
+/// The readers ([`tags_from`], [`project_names_from`]) deliberately do not cap:
+/// capping a sorted vocabulary before the user's prefix is consulted makes a tag
+/// that exists and uniquely matches what was typed silently absent from its own
+/// menu, which is a wrong answer rather than a shorter one.
 fn prefixed(spelling: &str, typed: &str, values: Vec<String>) -> Vec<CompletionCandidate> {
     values
         .into_iter()
         .filter(|value| value.starts_with(typed))
+        .filter_map(|value| {
+            let word = format!("{spelling}{value}");
+            (crate::sugar::parsed_value_of(&word) == Some(value.as_str())).then_some(word)
+        })
         .take(MAX_VALUE_CANDIDATES)
-        .map(|value| CompletionCandidate::new(format!("{spelling}{value}")))
+        .map(CompletionCandidate::new)
         .collect()
 }
 
 /// `!high` and friends, read out of [`Priority::SPELLINGS`] — the engine's table,
 /// which `--priority`'s `value_parser` and `sugar`'s `!` branch already share.
 ///
-/// All seven spellings are offered VISIBLY, unlike `--priority`, which hides the
-/// long forms so a three-valued flag does not show seven candidates. The
-/// difference is forced by clap's engine rather than chosen: it drops every
-/// hidden candidate whenever any visible one survives
-/// (`complete::complete_arg`), and in a positional the surrounding flags are
-/// always visible candidates — so a hidden `!high` would be invisible at every
-/// prefix including `!hi`, where `--priority hi<TAB>` does surface `high`.
-/// Marking them hidden here would not tidy the menu, it would delete them.
+/// The long forms are HIDDEN, by the same rule and for the same reason
+/// `priority_parser` hides them on `--priority`: a three-valued concept showing
+/// seven candidates is noise, and the canonical spelling is the one to teach.
+/// `hide` is asked of the same comparison there — the spelling differing from
+/// `Priority::as_str` — rather than a second list of which four are long.
+///
+/// Hiding does not delete them, which had to be MEASURED because clap's engine
+/// drops every hidden candidate whenever a visible one survives
+/// (`complete::complete_arg`) and an earlier version of this comment argued from
+/// that rule that a hidden `!high` would be unreachable at every prefix. It is
+/// not: for a non-empty word that does not start with `-`, `complete_option`
+/// contributes nothing, so there are no surrounding visible flags to trigger the
+/// drop. Measured against the built binary — `!` answers `!H !M !L`, `!hi`
+/// answers `!high`, `!me` answers `!medium !med` — which is exactly the shape
+/// `--priority` has, and is why the two surfaces now agree instead of diverging
+/// with a justification that was false.
 ///
 /// Needs no [`super::lookup`]: the vocabulary is compiled in, so `!<TAB>` is the
 /// one sugar prefix that answers without reading the store at all.
@@ -428,7 +575,9 @@ fn priority_candidates(typed: &str) -> Vec<CompletionCandidate> {
     Priority::SPELLINGS
         .iter()
         .filter(|(spelling, _)| spelling.starts_with(typed))
-        .map(|(spelling, _)| CompletionCandidate::new(format!("!{spelling}")))
+        .map(|(spelling, p)| {
+            CompletionCandidate::new(format!("!{spelling}")).hide(*spelling != p.as_str())
+        })
         .collect()
 }
 
@@ -782,6 +931,70 @@ mod tests {
     /// grows; the guard finds the members itself.
     const KNOWN_PROJECT_VALUED_ARGS: usize = 4;
 
+    /// The value name that means "this argument's value IS a tag name".
+    const TAG_VALUE_NAME: &str = "TAG";
+
+    /// Drift guard: an argument announcing that its value is a tag must say how
+    /// to complete one.
+    ///
+    /// The twin of [`every_project_valued_arg_offers_project_names`], and it
+    /// exists because the pair was NOT symmetric for one commit: `+<TAB>` in the
+    /// title position offered the whole tag vocabulary while `--tag` one
+    /// argument away offered nothing, and no guard could have noticed, because
+    /// the project convention keys on `<PROJECT>` and the derive renders these
+    /// two `<TAGS>` off the plural field name.
+    ///
+    /// So the `value_name = "TAG"` at each declaration is load-bearing rather
+    /// than cosmetic — it is what puts the argument inside this guard — and that
+    /// is said at the declaration too, since an annotation whose purpose lives
+    /// only in a test is one refactor from being tidied away.
+    ///
+    /// Mutation-proven: removing either attachment, or either `value_name`,
+    /// reddens this test naming the argument (the `value_name` case through the
+    /// floor below).
+    #[test]
+    fn every_tag_valued_arg_offers_tag_names() {
+        let mut cmd = crate::Cli::command();
+        cmd.build();
+
+        let mut checked = 0;
+        for (trail, sc) in all_subcommands_trailed(&cmd, "") {
+            for arg in sc.get_arguments() {
+                let name = arg
+                    .get_value_names()
+                    .and_then(|n| n.first().map(|s| s.as_str().to_string()))
+                    .unwrap_or_else(|| arg.get_id().as_str().to_ascii_uppercase());
+                if name != TAG_VALUE_NAME {
+                    continue;
+                }
+                checked += 1;
+                // An `ArgValueCompleter`, specifically, and not merely "some
+                // provider": an `ArgValueCandidates` here is filtered by the
+                // engine after the cap has already been applied, which is the
+                // measured defect `tags()` documents. Accepting either shape
+                // would let that regress silently.
+                assert!(
+                    arg.get::<ArgValueCompleter>().is_some(),
+                    "`{trail} --{}` takes a tag name and offers no candidates \
+                     from a completer, while `+<TAB>` on the same command offers \
+                     every tag. Attach `add = crate::complete::candidates::tags()` \
+                     — and note it must be a completer, so the typed word is \
+                     applied before the candidate cap.",
+                    arg.get_id()
+                );
+            }
+        }
+        assert!(
+            checked >= KNOWN_TAG_VALUED_ARGS,
+            "the guard found {checked} tag-valued arguments and the tree declares \
+             at least {KNOWN_TAG_VALUED_ARGS}; a `value_name = \"TAG\"` was \
+             dropped and this test is guarding less than it claims"
+        );
+    }
+
+    /// Floor, not a list: `add --tag` and `modify --tag`.
+    const KNOWN_TAG_VALUED_ARGS: usize = 2;
+
     /// The mapping from `project.list`'s envelope, including the one filter that
     /// is a decision rather than plumbing.
     #[test]
@@ -828,15 +1041,18 @@ mod tests {
     }
 
     /// The rule that decides whether a value can be a candidate at all. Read
-    /// [`typeable_unquoted`] before changing any of these: the `false` cases are
-    /// values that would complete into a command that runs and does something
-    /// else.
+    /// [`deliverable_as_one_word`] before changing any of these: the `false`
+    /// cases are values that would complete into a command that runs and does
+    /// something else.
     #[test]
     fn only_values_a_shell_delivers_whole_are_offered() {
         for ok in [
             "work", "work.api", "a_b", "a-b", "C++", "v1/2", "ns:thing", "café",
         ] {
-            assert!(typeable_unquoted(ok), "{ok:?} is deliverable unquoted");
+            assert!(
+                deliverable_as_one_word(ok),
+                "{ok:?} is deliverable unquoted"
+            );
         }
         for bad in [
             "",
@@ -848,8 +1064,6 @@ mod tests {
             // The shell eats the backslash, so the value that arrives is not
             // the value that was offered.
             "a\\b",
-            // Clap would read the completed value as a flag.
-            "-lead",
             // Word-splitting and expansion characters, one per family.
             "a;b",
             "a|b",
@@ -857,8 +1071,109 @@ mod tests {
             "a*b",
             "a(b",
         ] {
-            assert!(!typeable_unquoted(bad), "{bad:?} must not be a candidate");
+            assert!(
+                !deliverable_as_one_word(bad),
+                "{bad:?} must not be a candidate"
+            );
         }
+
+        // The leading-dash rule belongs to the WHOLE-WORD surface only. As a
+        // standalone `--project` value clap reads it as a flag; welded behind a
+        // sugar prefix it is `+-lead`, which is neither flag-shaped nor a
+        // problem, and withholding it there was a rule stated where it is not
+        // true.
+        assert!(deliverable_as_one_word("-lead"));
+        assert!(!standalone_word("-lead"));
+        assert!(standalone_word("work"));
+    }
+
+    /// A candidate the SHELL can deliver is not automatically a candidate the
+    /// PARSER accepts, and conflating the two shipped a silent misfile.
+    ///
+    /// `:x` is a legal project name and is perfectly deliverable; `project:` +
+    /// `:x` is `project::x`, which `sugar::split_key` refuses as a Rust path. The
+    /// task then went to the DEFAULT project with the candidate appended to its
+    /// title, at exit 0 — measured against the built binary. The gate reads the
+    /// answer out of `sugar::parsed_value_of` rather than restating a `::` rule
+    /// that already moved once.
+    ///
+    /// Mutation-proven: dropping the `parsed_value_of` filter in [`prefixed`]
+    /// reddens this test, and `every_offered_candidate_produces_the_command_it_promises`
+    /// end to end.
+    #[test]
+    fn a_candidate_the_sugar_parser_would_refuse_is_not_offered() {
+        let offered = |spelling: &str, typed: &str, names: &[&str]| -> Vec<String> {
+            prefixed(
+                spelling,
+                typed,
+                names.iter().map(|s| (*s).to_string()).collect(),
+            )
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect()
+        };
+
+        assert_eq!(
+            offered("project:", "", &[":x", "work"]),
+            ["project:work"],
+            "`project::x` is a Rust path to the parser, so it must not be a menu \
+             entry — accepting it files the task under the default project"
+        );
+        assert_eq!(offered("proj:", "", &[":x", "work"]), ["proj:work"]);
+
+        // The tag arm shares the gate and needs it for nothing today; asserted
+        // anyway, because `tag_of`'s refusals are the ones most likely to grow.
+        assert_eq!(offered("+", "", &["api", "docs"]), ["+api", "+docs"]);
+        // A dash-led name survives here and is withheld at the flag surface —
+        // the asymmetry the test above states, proven through the real seam.
+        assert_eq!(offered("+", "", &["-lead"]), ["+-lead"]);
+    }
+
+    /// The cap bounds the MENU, not the vocabulary: a name that exists and
+    /// uniquely matches what the user typed must be offered however late it
+    /// sorts.
+    ///
+    /// This is the ordering [`MAX_VALUE_CANDIDATES`]'s doc describes and the code
+    /// did not have for one commit: the cap sat in [`tags_from`], so on a store
+    /// with more than two hundred tags `+api<TAB>` answered nothing while an
+    /// api-tagged task sat in the store — the exact silent tag loss [`tag_names`]
+    /// sends no `limit` to avoid, merely reordered alphabetically.
+    ///
+    /// Mutation-proven: putting `truncate(MAX_VALUE_CANDIDATES)` back into
+    /// `tags_from` reddens this naming the tag it swallowed.
+    #[test]
+    fn the_cap_applies_after_the_prefix_not_before_it() {
+        let many: Vec<String> = (0..MAX_VALUE_CANDIDATES * 2)
+            .map(|i| format!("a{i:04}"))
+            .chain(["zebra".to_string()])
+            .collect();
+
+        let late = prefixed("+", "zeb", many.clone());
+        assert_eq!(
+            late.len(),
+            1,
+            "`zebra` sorts past the cap but uniquely matches `zeb`, so Tab must \
+             still find it; got {late:?}"
+        );
+
+        // And the cap is still a cap for what DOES survive the prefix.
+        assert_eq!(prefixed("+", "a", many).len(), MAX_VALUE_CANDIDATES);
+
+        // The readers hand the whole vocabulary over; capping there is what put
+        // the cut before the prefix.
+        let rows: Vec<Value> = many_tag_rows(MAX_VALUE_CANDIDATES * 2 + 1);
+        assert_eq!(
+            tags_from(&json!({ "tasks": rows })).len(),
+            MAX_VALUE_CANDIDATES * 2 + 1,
+            "`tags_from` must not truncate — the prefix has not been applied yet"
+        );
+    }
+
+    /// One task per tag, which is the shape `task.list` really returns.
+    fn many_tag_rows(n: usize) -> Vec<Value> {
+        (0..n)
+            .map(|i| json!({ "tags": [format!("t{i:04}")] }))
+            .collect()
     }
 
     /// The two dispatcher arms that need no store, so they can be driven in

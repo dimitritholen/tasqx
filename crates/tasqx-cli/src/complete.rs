@@ -394,9 +394,14 @@ fn prepassed(raw: Vec<OsString>) -> Vec<OsString> {
 /// prefixes is worse than one that serves none, because it looks finished.
 ///
 /// The claim in the second paragraph — that a completer not built with this
-/// fails the build — is enforced by [`escaping_drift`], which recognises one of
-/// these by ANSWERING [`RESTORE_PROBE`] rather than by any label it wears. See
-/// that constant for why the recognition has to be behavioural.
+/// fails the build — is enforced by TWO guards, one per half, and naming only
+/// the first was wrong: [`escaping_drift`] skips every subcommand outside
+/// `argv::FILTER_COMMANDS`, so it does not see `add` or `modify` at all, and a
+/// bare `ArgValueCompleter` on the capture-sugar positionals passed it. The
+/// sugar half is held by `candidates::tests::every_sugar_positional_offers_sugar`.
+/// Both recognise one of these by ANSWERING [`RESTORE_PROBE`] rather than by any
+/// label it wears; see that constant for why the recognition has to be
+/// behavioural.
 // Live as of the sugar dispatcher: `command.rs` builds `add`'s title and
 // `modify`'s rest with this, so the `#[allow(dead_code)]` this carried while it
 // waited for its first caller is gone. `list`'s filter positional is still
