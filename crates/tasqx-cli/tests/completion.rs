@@ -1880,3 +1880,333 @@ fn without_the_variable_the_binary_behaves_exactly_as_before() {
 
     let _ = std::fs::remove_file(&db);
 }
+
+// ---- the `completions` verb, through the real binary -----------------------
+//
+// Everything below drives `crates/tasqx-cli/src/complete/install.rs` as a user
+// would. The module's own unit tests own the string transformation; these own
+// the parts only a process can have — the exit code a script branches on, the
+// bytes that reach the filesystem, and the fact that a piped stdin really does
+// stop a write.
+//
+// NOTHING HERE MAY TOUCH A REAL STARTUP FILE. Every editing test passes an
+// explicit `--profile` under a scratch directory this process owns, which is
+// also the shape the docs tell PowerShell users to run.
+
+/// A scratch profile path, seeded with `contents`, unique per call.
+fn scratch_profile(label: &str, contents: &[u8]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "tasqx-completions-{label}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the fixture dir");
+    let path = dir.join("profile");
+    std::fs::write(&path, contents).expect("seed the profile");
+    path
+}
+
+/// `tasqx completions <args…>`, run through the real binary.
+fn completions(args: &[&str]) -> std::process::Output {
+    let mut cmd = bin();
+    cmd.arg("completions");
+    cmd.args(args);
+    cmd.output().expect("run tasqx completions")
+}
+
+/// The default mode: one line on stdout, exit 0, nothing on stderr — the shape
+/// `tasqx completions bash >> ~/.bashrc` depends on.
+///
+/// The line is asserted to name `$TASQX_COMPLETE` rather than clap's generic
+/// `COMPLETE`, because a line carrying the wrong variable looks correct, is what
+/// every clap tutorial shows, and activates nothing at all: `intercept` reads
+/// `TASQX_COMPLETE` and returns immediately for anything else. The user would
+/// paste it, restart their shell, press Tab, and get nothing, with no error
+/// anywhere.
+#[test]
+fn printing_an_activation_line_is_one_line_on_stdout_at_exit_zero() {
+    for shell in SHELLS {
+        let out = completions(&[shell]);
+        assert!(
+            out.status.success(),
+            "`completions {shell}` must exit 0, got {:?} stderr {:?}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "`completions {shell}` wrote to stderr: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            text.lines().count(),
+            1,
+            "the printed form is redirected into a startup file, so it must be \
+             the activation line and nothing else; got {text:?}"
+        );
+        assert!(
+            text.contains(VAR) && text.contains("tasqx") && text.contains(shell),
+            "the {shell} line must set ${VAR}, run tasqx, and name its own \
+             shell; got {text:?}"
+        );
+    }
+}
+
+/// cmd.exe exits 2 and the message says NON-GOAL, not "unknown shell".
+///
+/// The distinction is the whole reason the message is tested rather than only
+/// the exit code. "unknown shell `cmd`" reads as *not supported yet*, and sends
+/// a Windows user looking for a newer tasqx that will never exist — cmd.exe has
+/// no hook a program can register a completer against at all.
+#[test]
+fn an_unsupported_shell_exits_two_and_says_why_it_will_never_be_supported() {
+    for spelling in ["cmd", "cmd.exe"] {
+        let out = completions(&[spelling]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`completions {spelling}` must be a usage error"
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "nothing may reach stdout on a refusal: {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+        assert!(
+            err.contains("non-goal") && err.contains("cmd.exe"),
+            "the refusal must name cmd.exe as a permanent non-goal rather than \
+             an unknown shell; got {err:?}"
+        );
+        assert!(
+            err.contains("powershell"),
+            "it must point at the Windows shell that does complete; got {err:?}"
+        );
+    }
+}
+
+/// A pipeline must not be able to edit a startup file.
+///
+/// `Command::output()` gives the child a piped stdin, which is exactly the
+/// situation being guarded: a CI job, a `curl … | sh`, a Dockerfile layer. The
+/// refusal is exit 2 and the file is untouched — asserted on the BYTES, because
+/// "did not write" is the claim, not "printed something".
+#[test]
+fn a_non_interactive_install_refuses_and_writes_nothing() {
+    let original = b"# a profile somebody has had for years\nexport EDITOR=vim\n";
+    let path = scratch_profile("noninteractive", original);
+
+    let out = completions(&["bash", "--install", "--profile", &path.to_string_lossy()]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a piped stdin must not be read as consent; stderr {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--yes"),
+        "the refusal must name the flag that expresses consent on purpose: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read the profile back"),
+        original,
+        "the profile was edited by an invocation nobody confirmed"
+    );
+
+    let _ = std::fs::remove_dir_all(path.parent().expect("fixture dir"));
+}
+
+/// Installing twice leaves exactly ONE block, and uninstalling restores the
+/// file byte for byte — across every file shape that has ever broken an
+/// installer of this kind.
+///
+/// The shapes are the point, and each is here because it fails differently:
+///
+///  * **CRLF** is `$PROFILE` on Windows, the whole PowerShell half of this
+///    feature. A block written with LF into a CRLF file also invites the next
+///    editor that opens it to normalise the entire file, rewriting bytes tasqx
+///    never touched.
+///  * **A UTF-8 BOM** is what Windows editors put at the front of a profile. It
+///    is content, not framing, and must come back untouched.
+///  * **Text that merely LOOKS like the block** — an `echo` of the marker, and
+///    a conda block using the same `>>> … >>>` shape — is what separates a
+///    whole-line match from a `contains`. A `contains` here would cut from the
+///    middle of somebody's script.
+///  * **An empty file** is fish's ordinary case, and the one where an appended
+///    block must not gain a leading blank line.
+///  * **No trailing newline** is the one shape that does NOT round-trip
+///    exactly, and it is here to pin that rather than to hide it: `"A"` and
+///    `"A\n"` install to identical bytes, so no removal can tell them apart.
+///    The file gains one byte at its end and loses nothing —
+///    `complete::install::with_block` documents why encoding the original state
+///    inside the block was rejected.
+///
+/// Compared as bytes, not as strings, because every failure this test exists to
+/// catch is a byte one.
+#[test]
+fn install_is_idempotent_and_uninstall_restores_the_bytes() {
+    let shapes: [(&str, &[u8], bool); 6] = [
+        (
+            "plain",
+            b"export PATH=$PATH:/opt/bin\nalias ll='ls -l'\n",
+            true,
+        ),
+        ("crlf", b"$env:EDITOR = 'vim'\r\nSet-Alias ll gci\r\n", true),
+        ("bom", "\u{feff}# my profile\r\n".as_bytes(), true),
+        (
+            "lookalike",
+            b"echo \"# >>> tasqx completions >>>\"\n\
+              # >>> conda initialize >>>\n\
+              eval \"$(conda shell.bash hook)\"\n\
+              # <<< conda initialize <<<\n",
+            true,
+        ),
+        ("empty", b"", true),
+        // The documented exception: exact restore is impossible, so the
+        // assertion below is the weaker, TRUE one.
+        ("no-final-newline", b"alias ll='ls -l'", false),
+    ];
+
+    for (label, original, exact) in shapes {
+        let path = scratch_profile(label, original);
+        let profile = path.to_string_lossy().into_owned();
+
+        for pass in 1..=2 {
+            let out = completions(&["bash", "--install", "--profile", &profile, "--yes"]);
+            assert!(
+                out.status.success(),
+                "{label}: install pass {pass} failed: {:?}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        let installed = std::fs::read_to_string(&path).expect("read the installed profile");
+        // Counted by WHOLE LINE, not with `contains`. The `lookalike` shape
+        // holds a line that echoes the marker, and a substring count reports two
+        // blocks where the file has one — this assertion failed on its first run
+        // for exactly that reason, which is the same distinction the
+        // implementation has to make and the reason the shape is in this list.
+        let blocks = installed
+            .lines()
+            .filter(|l| l.trim() == "# >>> tasqx completions >>>")
+            .count();
+        assert_eq!(
+            blocks, 1,
+            "{label}: two installs must leave ONE block, got:\n{installed}"
+        );
+        assert!(
+            installed.contains("source <(TASQX_COMPLETE=bash tasqx)"),
+            "{label}: the activation line is missing:\n{installed}"
+        );
+
+        let out = completions(&["bash", "--uninstall", "--profile", &profile, "--yes"]);
+        assert!(
+            out.status.success(),
+            "{label}: uninstall failed: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let restored = std::fs::read(&path).expect("read the restored profile");
+        match exact {
+            true => assert_eq!(
+                restored, original,
+                "{label}: uninstall must restore the file byte for byte"
+            ),
+            // Everything the user wrote is still there, in order, and the file
+            // differs from the original by exactly the one newline the install
+            // had to add. Asserted precisely, so a REGRESSION — two bytes, or a
+            // reordering — is still a failure.
+            false => {
+                let mut expected = original.to_vec();
+                expected.push(b'\n');
+                assert_eq!(
+                    restored, expected,
+                    "{label}: the documented exception is one added newline and \
+                     nothing else"
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("fixture dir"));
+    }
+}
+
+/// An uninstall that removed nothing must not report success (D33).
+///
+/// The case where it matters is the likely one: a `--uninstall` aimed at the
+/// wrong file. A cheerful exit 0 there tells the user the activation line is
+/// gone while it sits in another file still turning completion on. And the file
+/// must not be rewritten at all — an identical rewrite still moves the mtime,
+/// which is a visible event in a directory people sync and back up.
+#[test]
+fn uninstalling_nothing_fails_loudly_and_leaves_the_file_alone() {
+    let original = b"# nothing of ours in here\n";
+    let path = scratch_profile("nothing-to-remove", original);
+
+    let out = completions(&[
+        "bash",
+        "--uninstall",
+        "--profile",
+        &path.to_string_lossy(),
+        "--yes",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "removing nothing is not_found, not a cheerful zero; stderr {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("nothing was removed"),
+        "the message must say plainly that nothing changed: {err}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    let _ = std::fs::remove_dir_all(path.parent().expect("fixture dir"));
+}
+
+/// PowerShell's `--install` refuses to guess `$PROFILE` and hands over the
+/// command that cannot be wrong.
+///
+/// `$PROFILE` is a PowerShell variable, not an environment variable, and it
+/// differs between Windows PowerShell 5.1, PowerShell 7 and the ISE — which
+/// `clap_complete` collapses to one name, so the host is not knowable here even
+/// in principle. A guess writes an activation line into a file PowerShell never
+/// reads: completion silently not working, with nothing pointing back at the
+/// cause.
+#[test]
+fn powershell_refuses_to_guess_the_profile_and_names_what_to_run() {
+    let out = completions(&["powershell", "--install", "--yes"]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--profile $PROFILE"),
+        "the refusal must hand over the working command, or the user has a dead \
+         end: {err}"
+    );
+
+    // And with the path supplied, the same shell installs normally — the
+    // refusal is about the GUESS, not about PowerShell.
+    let path = scratch_profile("pwsh", b"# profile\r\n");
+    let out = completions(&[
+        "powershell",
+        "--install",
+        "--profile",
+        &path.to_string_lossy(),
+        "--yes",
+    ]);
+    assert!(
+        out.status.success(),
+        "an explicit --profile must install: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("$env:TASQX_COMPLETE = \"powershell\""),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(path.parent().expect("fixture dir"));
+}

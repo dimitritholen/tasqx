@@ -323,6 +323,33 @@ fn execute(cli: Cli) -> Exit {
         return Exit::Out(run_docs(out.as_deref(), *no_open, *stdout));
     }
 
+    // `completions` needs no store, no theme and no network — it prints one
+    // line, or edits a file the user names. Dispatched beside `docs` and ahead
+    // of `build_ctx` for the same reason: a user who cannot get completion
+    // working must not be stopped by a theme that fails to load.
+    //
+    // It reports failures LOUDLY, on stderr, with a non-zero exit — the
+    // ordinary `CmdOutcome` contract, and the deliberate opposite of the
+    // silence `complete::intercept` keeps on the Tab path. `complete.rs`'s
+    // module doc names this verb as the exemption; `complete/install.rs` writes
+    // out why.
+    if let Some(Command::Completions {
+        shell,
+        install,
+        uninstall,
+        profile,
+        yes,
+    }) = &cli.command
+    {
+        return Exit::Out(complete::install::run(
+            shell.clone(),
+            *install,
+            *uninstall,
+            profile.clone(),
+            *yes,
+        ));
+    }
+
     // Build the render context: resolve the active theme (flag > env > config >
     // default) and detect the terminal's real capability (DESIGN.md §8).
     let ctx = build_ctx(cli.theme.as_deref());
@@ -492,6 +519,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Daemon { .. }) => unreachable!("handled above"),
         Some(Command::Mcp { .. }) => unreachable!("handled above"),
         Some(Command::Manual { .. }) => unreachable!("handled above"),
+        Some(Command::Completions { .. }) => unreachable!("handled above"),
     })
 }
 
