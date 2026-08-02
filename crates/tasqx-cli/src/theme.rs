@@ -1518,22 +1518,48 @@ urgency.ramp = ["#000000", "#ffffff"]
         assert_eq!(loaded.file, FileOutcome::Untouched);
     }
 
+    /// The property is that the io error REACHES the user, so they learn why the
+    /// file could not be read — not that the operating system phrases it any
+    /// particular way.
+    ///
+    /// # Why this asks the platform instead of naming the message
+    ///
+    /// The assertion used to be `msg.contains("directory")`, which is Linux's
+    /// phrasing of this failure ("Is a directory (os error 21)") and is not
+    /// Windows's ("Access is denied. (os error 5)"). The technique below — a
+    /// DIRECTORY where a file belongs, so the read fails without depending on
+    /// chmod, which root ignores — is genuinely portable; only the assertion on
+    /// top of it was not, and it turned `test (windows-latest)` red from
+    /// 2026-07-26 until it was fixed. A permanently red platform job is worse
+    /// than a missing one: it trains everyone to stop reading the only signal
+    /// that would catch a real Windows regression.
+    ///
+    /// So the expected text is obtained by performing the SAME read here and
+    /// asking the resulting `io::Error` what it says. That is stronger than the
+    /// old spelling as well as portable: it pins the exact error the user is
+    /// shown rather than one word that happened to appear in it.
     #[test]
     fn unreadable_user_file_is_rejected_with_the_io_error() {
-        // A directory where a file belongs is the portable way to make
-        // read_to_string fail without depending on chmod (root ignores 0o000).
         let dir = scratch_themes_dir("unreadable");
-        std::fs::create_dir_all(dir.join("mine.toml")).expect("mkdir mine.toml");
+        let path = dir.join("mine.toml");
+        std::fs::create_dir_all(&path).expect("mkdir mine.toml");
+
+        // What this platform says about reading a directory as a file. Taken
+        // from the same call `load_reporting` makes, so the two cannot disagree.
+        let expected = std::fs::read_to_string(&path)
+            .expect_err("reading a directory as a file must fail on every platform")
+            .to_string();
+
         let loaded = load_reporting("mine", Some(&dir));
         let msg = loaded
             .file
             .rejection()
             .expect("an unreadable theme file must be rejected, not swallowed");
         assert!(msg.contains("mine.toml"), "must name the file: {msg}");
-        // The io::Error itself, so the user learns *why* it could not be read.
         assert!(
-            msg.to_lowercase().contains("directory"),
-            "must carry the io error: {msg}"
+            msg.contains(&expected),
+            "must carry the io error this platform reports ({expected:?}), so the \
+             user learns why it could not be read: {msg}"
         );
         assert_eq!(loaded.theme.name, DEFAULT_THEME, "falls back, as before");
     }

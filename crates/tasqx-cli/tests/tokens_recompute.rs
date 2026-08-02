@@ -12,6 +12,25 @@ use std::process::Command;
 use serde_json::json;
 use tasqx_core::Engine;
 
+/// A `done` event payload carrying a transcript path, SERIALISED rather than
+/// formatted.
+///
+/// The payload is rewritten directly because the engine stamps completions with
+/// wall-clock time and these windows are field-observed. It must be built by
+/// [`serde_json`]: a transcript path is an OS path, and on Windows it is
+/// `C:\Users\…`, whose backslashes are not valid JSON escapes. A hand-written
+/// JSON string carrying one is well-formed on Linux and malformed on Windows,
+/// where it does not error — it just stops parsing into an attributable
+/// completion, so the test measures nothing and reads as an engine bug.
+fn done_payload(completed: &str, transcript_path: &str) -> String {
+    json!({
+        "completed": completed,
+        "client": "claude-code",
+        "transcript_path": transcript_path,
+    })
+    .to_string()
+}
+
 /// A fresh, isolated scratch dir (config + store + transcript) for one test.
 fn scratch(tag: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -115,12 +134,7 @@ fn seed_overlap(dir: &std::path::Path) {
         e.conn()
             .execute(
                 "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
-                (
-                    format!(
-                        r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{path}"}}"#
-                    ),
-                    id,
-                ),
+                (done_payload(completed, &path), id),
             )
             .unwrap();
     }

@@ -1252,6 +1252,28 @@ mod tests {
         s.parse().expect("valid RFC3339 test timestamp")
     }
 
+    /// A `done` event payload carrying a transcript path, SERIALISED rather than
+    /// formatted.
+    ///
+    /// These tests rewrite event payloads directly, because the engine stamps
+    /// completions with wall-clock time and the windows under test are
+    /// field-observed instants. The payload must be built by [`serde_json`]: a
+    /// transcript path is an OS path, and on Windows it is `C:\Users\…`, whose
+    /// backslashes are not valid JSON escapes. Interpolating one into a
+    /// hand-written JSON string yields a document that is well-formed on Linux
+    /// and malformed on Windows — and it does not fail loudly there, it simply
+    /// stops parsing into an attributable completion, so the test measures an
+    /// empty set and reads as a logic bug in the engine. That is what held
+    /// `test (windows-latest)` red from 2026-07-26.
+    fn done_payload(completed: &str, transcript_path: &str) -> String {
+        serde_json::json!({
+            "completed": completed,
+            "client": "claude-code",
+            "transcript_path": transcript_path,
+        })
+        .to_string()
+    }
+
     fn sample(ts: &str, input: u64, output: u64) -> UsageSample {
         UsageSample {
             id: None,
@@ -1813,13 +1835,28 @@ mod tests {
     /// candidate file in the tool's default roots carried anything for this
     /// window, and retrying that on every tick would keep every unattributable
     /// task in the pending set until the deadline for no gain.
+    ///
+    /// # The window is in 2020 on purpose
+    ///
+    /// This is the DISCOVERY branch, so it scans the tool's default roots —
+    /// which on a developer's machine is their real `~/.claude`, full of live
+    /// transcripts. The window used to be a recent date, and on any machine that
+    /// had actually used Claude Code in that hour the scan found real samples
+    /// and `found` was true: the test failed on the maintainer's box and passed
+    /// on CI, where no such data exists.
+    ///
+    /// A test whose result depends on the developer's own history is not a test.
+    /// 2020 is the fix the sibling `contested_discovery_*` already uses and for
+    /// the same reason — no real transcript can carry samples there — and it is
+    /// better than overriding `CLAUDE_CONFIG_DIR`, which needs `unsafe`, mutates
+    /// process-global state, and races the other tests in this binary.
     #[test]
     fn discovery_finding_nothing_stays_terminal_rather_than_retrying() {
         let pa = PendingAttribution {
             task_id: "t".into(),
             short_id: 1,
-            window_start: "2026-07-24T10:00:00Z".into(),
-            window_end: "2026-07-24T11:00:00Z".into(),
+            window_start: "2020-01-01T10:00:00Z".into(),
+            window_end: "2020-01-01T11:00:00Z".into(),
             client: Some("claude-code".into()),
             // No explicit path: this is the discovery branch.
             transcript_path: None,
@@ -1830,7 +1867,7 @@ mod tests {
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
         };
-        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z"))
+        let r = compute_attribution(&pa, ts("2020-01-01T11:05:00Z"))
             .expect("discovery must terminate, not retry");
         assert!(!r.found);
         assert_eq!(r.samples, 0);
@@ -2444,12 +2481,7 @@ mod tests {
             .conn()
             .execute(
                 "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
-                (
-                    format!(
-                        r#"{{"completed":"2026-07-25T10:30:00Z","client":"claude-code","transcript_path":"{path}"}}"#
-                    ),
-                    &id,
-                ),
+                (done_payload("2026-07-25T10:30:00Z", &path), &id),
             )
             .unwrap();
         std::fs::write(
@@ -2560,12 +2592,7 @@ mod tests {
                 .conn()
                 .execute(
                     "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
-                    (
-                        format!(
-                            r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{path}"}}"#
-                        ),
-                        &id,
-                    ),
+                    (done_payload(completed, &path), &id),
                 )
                 .unwrap();
         }
