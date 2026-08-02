@@ -16,6 +16,7 @@ mod argv;
 mod chart;
 pub mod cmddoc;
 mod command;
+mod complete;
 pub mod config;
 mod docs;
 mod html;
@@ -232,6 +233,14 @@ fn emit(text: &str) {
 }
 
 pub fn run() {
+    // FIRST, before anything reads argv or writes a byte of stdout. Unless
+    // `$TASQX_COMPLETE` is set this is one environment lookup and a return; when it is
+    // set, the process serves the shell's Tab press and exits without ever
+    // reaching the parse below, the backend, or the dispatcher. The completion
+    // words get their own `argv::prepass` inside — see `complete::prepassed` for
+    // why it cannot simply reuse the one on the next line.
+    complete::intercept();
+
     // Not `Cli::parse()`: filter tokens like `-needs` must reach the grammar,
     // and the only way to keep that from disarming clap's flag handling is to
     // hide the dash before clap looks. See `argv`.
@@ -312,6 +321,33 @@ fn execute(cli: Cli) -> Exit {
     }) = &cli.command
     {
         return Exit::Out(run_docs(out.as_deref(), *no_open, *stdout));
+    }
+
+    // `completions` needs no store, no theme and no network — it prints one
+    // line, or edits a file the user names. Dispatched beside `docs` and ahead
+    // of `build_ctx` for the same reason: a user who cannot get completion
+    // working must not be stopped by a theme that fails to load.
+    //
+    // It reports failures LOUDLY, on stderr, with a non-zero exit — the
+    // ordinary `CmdOutcome` contract, and the deliberate opposite of the
+    // silence `complete::intercept` keeps on the Tab path. `complete.rs`'s
+    // module doc names this verb as the exemption; `complete/install.rs` writes
+    // out why.
+    if let Some(Command::Completions {
+        shell,
+        install,
+        uninstall,
+        profile,
+        yes,
+    }) = &cli.command
+    {
+        return Exit::Out(complete::install::run(
+            shell.clone(),
+            *install,
+            *uninstall,
+            profile.clone(),
+            *yes,
+        ));
     }
 
     // Build the render context: resolve the active theme (flag > env > config >
@@ -483,6 +519,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Daemon { .. }) => unreachable!("handled above"),
         Some(Command::Mcp { .. }) => unreachable!("handled above"),
         Some(Command::Manual { .. }) => unreachable!("handled above"),
+        Some(Command::Completions { .. }) => unreachable!("handled above"),
     })
 }
 
@@ -2762,10 +2799,39 @@ fn store_location(remote_socket: Option<&str>, path: Result<PathBuf, String>) ->
 }
 
 fn db_path() -> Result<PathBuf, String> {
+    db_path_resolved(true)
+}
+
+/// The store path a command WOULD open, resolved without touching the disk.
+///
+/// The completion callback (`complete::lookup`) needs the same answer
+/// [`db_path`] gives and none of its side effects. That is not a preference:
+/// the whole promise of the `$TASQX_COMPLETE` path is that pressing Tab creates
+/// nothing, and [`db_path`] creates the parent directory of `$TASQX_DB` and the
+/// platform data directory before it returns. A Tab press on a machine that has
+/// never run tasqx would therefore author `%APPDATA%\tasqx\tasqx\data\`, and
+/// `tests/completion.rs` asserts against the filesystem that it does not.
+///
+/// Split off [`db_path`] rather than written beside it, because the two must
+/// agree about WHERE the store is or completion offers ids from a store no
+/// command reads. A second copy of the `$TASQX_DB`-then-`ProjectDirs` rule is
+/// exactly the parallel-copy drift this repository keeps paying for; the
+/// difference between the two callers is one boolean and nothing else.
+fn db_path_read_only() -> Result<PathBuf, String> {
+    db_path_resolved(false)
+}
+
+/// `$TASQX_DB` if set and non-empty, else the platform data dir. `create_dirs`
+/// decides whether the containing directory is brought into existence on the
+/// way — see [`db_path_read_only`] for why that is a caller's choice rather
+/// than a fixed behaviour.
+fn db_path_resolved(create_dirs: bool) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("TASQX_DB") {
         if !p.is_empty() {
-            if let Some(parent) = PathBuf::from(&p).parent() {
-                let _ = std::fs::create_dir_all(parent);
+            if create_dirs {
+                if let Some(parent) = PathBuf::from(&p).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
             }
             return Ok(PathBuf::from(p));
         }
@@ -2773,7 +2839,9 @@ fn db_path() -> Result<PathBuf, String> {
     let dirs = directories::ProjectDirs::from("dev", "tasqx", "tasqx")
         .ok_or_else(|| "cannot determine a data directory".to_string())?;
     let dir = dirs.data_dir();
-    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create data dir: {e}"))?;
+    if create_dirs {
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create data dir: {e}"))?;
+    }
     Ok(dir.join("tasks.db"))
 }
 

@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 31] = [
+const VERBS: [(&str, &str, &str); 32] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("add", "<code>a</code>, <code>new</code>", "task.add"),
@@ -100,6 +100,7 @@ const VERBS: [(&str, &str, &str); 31] = [
     ("mcp", "—", "(subset)"),
     ("docs", "—", "— (no store)"),
     ("manual", "<code>man</code>", "— (no store)"),
+    ("completions", "—", "— (no store)"),
 ];
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
@@ -3033,6 +3034,29 @@ mod tests {
             // binary and cannot be set by a user at all. A config layer for it
             // is not "out of scope" but meaningless.
             "TASQX_BUILD_ID",
+            // The shell-completion pair, and neither can be a setting.
+            //
+            // `TASQX_COMPLETE` selects a transport in the same sense TASQX_SOCK
+            // does — it is written by the activation line a shell sources, not
+            // by a human tuning behaviour, and `complete::intercept` reads it
+            // before argv exists, let alone a config file.
+            //
+            // `TASQX_NO_COMPLETE_LOOKUP` looks like a setting and deliberately
+            // is not: it disables opening the store on a keystroke, and reading
+            // `config.toml` to discover that would do the very work being
+            // disabled. A switch that can only be honoured after performing the
+            // thing it turns off is a switch that does not work. Both are
+            // user-facing and belong on the guide page — Task 10 of the
+            // completion plan owns that; this list is about the SETTINGS
+            // registry, which is a different question.
+            "TASQX_COMPLETE",
+            "TASQX_NO_COMPLETE_LOOKUP",
+            // Test scaffolding, not a switch: `complete.rs`'s panic-silencing
+            // guard re-runs itself as a child process and this is how the child
+            // knows which side of the fork it is on. Named here rather than
+            // spelled without the prefix to dodge the scan, because dodging a
+            // drift guard is how the things it hunts get in.
+            "TASQX_PANIC_PROBE_CHILD",
         ];
         // Read by the capability detector but deliberately not documented as
         // switches: they describe what the terminal IS (set by the terminal,
@@ -3040,12 +3064,44 @@ mod tests {
         // table would invite exactly the hand-tuning the detector exists to
         // make unnecessary.
         const TERMINAL_IDENTITY: &[&str] = &["TERM", "COLORTERM"];
+        // Read by `complete/install.rs` to find the user's OWN files, and
+        // deliberately not switches. Neither one changes what tasqx does: they
+        // answer "which shell are you running" and "where did you put your
+        // config", questions whose answers belong to the operating system and
+        // to fish respectively. Documenting them in the override table would
+        // invite a user to set `SHELL=fish` to make `--install` target fish,
+        // which is a worse spelling of `tasqx completions fish --install` and
+        // would edit the wrong file for the shell they are actually in.
+        //
+        // `XDG_CONFIG_HOME` is honoured rather than merely tolerated: fish
+        // honours it, and writing to `~/.config/fish` for a user who moved
+        // their fish config produces a file fish never reads — completion
+        // silently not working, which is the symptomless failure this project
+        // hunts.
+        const USER_ENVIRONMENT: &[&str] = &["SHELL", "XDG_CONFIG_HOME"];
+        // Hand-kept, and that is the guard's own weak spot: `complete.rs` was
+        // absent until the completion feature added two variables to it, and
+        // for the length of that branch `TASQX_NO_COMPLETE_LOOKUP` existed with
+        // nothing documenting it and nothing noticing — the exact state
+        // TASQX_FORCE_COLOR was in when this test was written. It surfaced only
+        // because a comment in `lib.rs` came to mention `$TASQX_COMPLETE`. A
+        // file added tomorrow has the same hole; the list is here rather than
+        // derived because `include_str!` needs a literal path.
         let sources = [
             include_str!("lib.rs"),
             include_str!("theme.rs"),
             include_str!("config.rs"),
             include_str!("tui.rs"),
             include_str!("tokens.rs"),
+            include_str!("complete.rs"),
+            // Added with the `completions` verb, which is the first code in the
+            // crate to read a variable it does not own (`$SHELL`,
+            // `$XDG_CONFIG_HOME`). `complete/candidates.rs` is here for nothing
+            // it does today and everything it might: it is the file a provider
+            // author edits, and the hole this list keeps having is a file
+            // nobody added.
+            include_str!("complete/install.rs"),
+            include_str!("complete/candidates.rs"),
         ];
 
         // TASQX_* rule: a textual scan, comments included — a prefixed mention
@@ -3115,6 +3171,7 @@ mod tests {
             // Prefixed vars answer to the registered-or-excepted rule above.
             .filter(|v| !v.starts_with("TASQX_"))
             .filter(|v| !TERMINAL_IDENTITY.contains(&v.as_str()))
+            .filter(|v| !USER_ENVIRONMENT.contains(&v.as_str()))
             .filter(|v| !doc.contains(&format!("<code>{v}</code>")))
             .collect();
         assert!(

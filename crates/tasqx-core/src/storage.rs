@@ -23,6 +23,13 @@ use crate::util::now;
 /// Busy timeout for contended one-shot writers (DESIGN.md §2: ~3s).
 const BUSY_TIMEOUT_MS: u32 = 3000;
 
+/// Busy timeout for [`open_read_only`], two orders of magnitude below the
+/// writer's. A reader on this path is inside somebody's keystroke and has a
+/// wall-clock budget above it, so waiting out a contended write would spend the
+/// whole budget on a lock and still produce nothing. Failing fast produces
+/// nothing too, but instantly.
+const READ_ONLY_BUSY_TIMEOUT_MS: u64 = 30;
+
 /// Column list shared by every task SELECT, kept in sync with `map_task_row`.
 /// New columns are **appended**, never inserted: the order here is the positional
 /// contract `map_task_row` reads by index, so appending leaves every existing
@@ -37,6 +44,101 @@ pub fn open(path: &str) -> Result<Connection, ApiError> {
         .map_err(|e| ApiError::internal(format!("cannot open store {path}: {e}")))?;
     configure(&conn)?;
     migrate(&conn)?;
+    Ok(conn)
+}
+
+/// Open an EXISTING store at `path` for reading only: no create, no migration,
+/// no write lock, and a busy timeout measured in milliseconds rather than
+/// seconds.
+///
+/// This is not a convenience twin of [`open`]; every difference from it is a
+/// property some caller depends on, so none of them may be quietly restored:
+///
+///  * **No create.** [`open`] uses `Connection::open`, whose flags include
+///    `SQLITE_OPEN_CREATE`, so it authors a database file for any path handed
+///    to it. The caller this seam exists for is the shell-completion callback
+///    (`tasqx-cli/src/complete.rs`), which runs on a Tab press. A keystroke that
+///    did not run a command must not leave a database and a schema behind on a
+///    machine that has never run tasqx, so an absent path is an `Err` here.
+///  * **No migration.** `migrate` is DDL. Running it from a read path would
+///    fail on the read-only connection anyway, but the deeper reason is that
+///    upgrading a store's schema is a decision a command makes, never something
+///    a completion lookup does on the user's behalf.
+///
+///    A code span and not a `[link]`, unlike [`open`] above, because `migrate`
+///    is private: rustdoc resolves such a link only under
+///    `--document-private-items` and 404s it for everyone who reads the
+///    published page, so `-D rustdoc::private_intra_doc_links` rejects it. Naming
+///    a private item in public prose is fine; linking to one is not. The repo
+///    fixes this with the span rather than an `#[allow]` — see `ci.yml`'s rustdoc
+///    step, which says so for the three earlier instances.
+///  * **No `journal_mode = WAL`.** That pragma is a write to the database
+///    header. Issuing it on a read-only connection fails, and "fixing" that by
+///    dropping the read-only flag would undo the first two properties. WAL is
+///    already persistent in the file the writer created, so a reader inherits
+///    it without asking.
+///  * **A short busy timeout.** [`open`]'s three seconds is right for a
+///    one-shot writer that would otherwise report a spurious conflict. Here the
+///    caller has its own wall-clock budget for the whole lookup and a long busy
+///    wait inside a keystroke is precisely the stall this seam exists to avoid,
+///    so contention degrades to "no candidates" almost immediately instead.
+///
+/// # What this does NOT promise: the `-shm`/`-wal` sidecars
+///
+/// **A read-only connection does create them.** This is the opposite of what
+/// the obvious reading of `SQLITE_OPEN_READ_ONLY` suggests, and an earlier
+/// version of this comment claimed the opposite. Measured, on a cleanly-closed
+/// WAL store with no other connection open:
+///
+/// ```text
+///   writer closed          ["tasks.db"]
+///   opened read-only       ["tasks.db"]                  <- nothing yet
+///   after one SELECT       ["tasks.db", "-shm", "-wal"]  <- both appear
+///   reader dropped         ["tasks.db", "-shm", "-wal"]  <- both remain
+/// ```
+///
+/// The flag governs the DATABASE FILE, not the WAL index. SQLite's shm layer
+/// opens the `-shm` with `RDWR|CREATE` first and only falls back to a read-only
+/// attempt if that fails, so a writable DIRECTORY is enough for both sidecars to
+/// appear, whatever the connection flags say. They appear on first query rather
+/// than at open, because that is when the WAL index is first needed.
+///
+/// They also stay. Deleting the pair on last-connection close is a write, and
+/// this connection cannot perform one — so where an ordinary read-write reader
+/// tidies up after itself, this one leaves them behind. An ordinary `tasqx list`
+/// creates exactly the same two files during its run and then removes them
+/// (measured: the directory holds only `tasks.db` after it exits).
+///
+/// So the honest promise is narrower than "nothing appears", and it is the one
+/// the caller actually needs: **no database and no schema are created, and no
+/// user data is written.** An absent path is still an `Err` with nothing left
+/// behind, because the open fails before SQLite reaches the WAL layer at all.
+/// What a completion callback can leave behind is two derived index files
+/// belonging to a store that already existed, which the next writer reuses or
+/// removes. It is not doing anything to the store that reading it normally does
+/// not already do.
+///
+/// `immutable=1` would suppress the sidecars outright and is still rejected, but
+/// on its own ground rather than on the false premise above: it *tells* SQLite
+/// the file cannot change. Against a live writer that is a lie, and SQLite acts
+/// on it — a concurrent write yields stale pages, garbage rows, or a spurious
+/// "database disk image is malformed". Trading two harmless index files for
+/// silently wrong query results, on a path whose entire job is to be harmless,
+/// is not a trade worth making.
+pub fn open_read_only(path: &str) -> Result<Connection, ApiError> {
+    // Spelled out rather than `OpenFlags::default() - CREATE` because the flag
+    // set is the whole security property of this function and subtraction from
+    // a default hides what is actually being passed. `NO_MUTEX` and `URI` match
+    // rusqlite's default so path handling is identical to [`open`]'s; `URI` is
+    // safe to keep because SQLite refuses a `mode=` query parameter that is
+    // LESS restrictive than the flags, so a crafted path cannot re-enable
+    // writing or creation through it.
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+    let conn = Connection::open_with_flags(path, flags)
+        .map_err(|e| ApiError::internal(format!("cannot open store {path}: {e}")))?;
+    conn.busy_timeout(std::time::Duration::from_millis(READ_ONLY_BUSY_TIMEOUT_MS))?;
     Ok(conn)
 }
 

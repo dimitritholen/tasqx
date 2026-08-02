@@ -680,7 +680,7 @@ impl<'e> McpServer<'e> {
         // attribution).
         if spec.method == "task.start" || spec.method == "task.done" {
             if let Some(obj) = args.as_object_mut() {
-                if !obj.get("client").is_some_and(|v| !v.is_null()) {
+                if obj.get("client").is_none_or(Value::is_null) {
                     if let Some(label) = self.client_label() {
                         obj.insert("client".to_string(), Value::String(label));
                     }

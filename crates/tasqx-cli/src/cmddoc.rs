@@ -39,10 +39,11 @@ pub enum Topic {
     Daemon,
     Automation,
     JsonApi,
+    Completion,
 }
 
 impl Topic {
-    pub const ALL: [Topic; 10] = [
+    pub const ALL: [Topic; 11] = [
         Topic::GettingStarted,
         Topic::Projects,
         Topic::Capturing,
@@ -53,6 +54,7 @@ impl Topic {
         Topic::Daemon,
         Topic::Automation,
         Topic::JsonApi,
+        Topic::Completion,
     ];
     pub fn slug(&self) -> &'static str {
         match self {
@@ -66,6 +68,7 @@ impl Topic {
             Topic::Daemon => "daemon",
             Topic::Automation => "automation",
             Topic::JsonApi => "json-api",
+            Topic::Completion => "completion",
         }
     }
     pub fn title(&self) -> &'static str {
@@ -80,6 +83,7 @@ impl Topic {
             Topic::Daemon => "Daemon & watch",
             Topic::Automation => "Automation (MCP & API)",
             Topic::JsonApi => "JSON API",
+            Topic::Completion => "Shell completion",
         }
     }
 }
@@ -602,6 +606,48 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &["No store, no network. `tasqx docs` is the fuller browser guide."],
         see_also: &["docs"],
         topic: Topic::GettingStarted,
+    },
+    CmdDoc {
+        verb: "completions",
+        aliases: &[],
+        method: "— (no store)",
+        summary: "Turn on Tab completion for your shell.",
+        usage: "tasqx completions [<shell>] [--install | --uninstall] [--profile PATH] [--yes]",
+        examples: &[
+            // Safe: printing reads nothing and writes nothing, so
+            // `tests/help.rs` executes it for real. Every example that EDITS a
+            // file is NoRun below — that guard runs on the developer's own
+            // machine, and a `--install` example marked Safe would append an
+            // activation line to their real `.bashrc` every time the suite ran.
+            ex("tasqx completions bash"),
+            ex_norun(
+                "tasqx completions bash >> ~/.bashrc",
+                "the printed line is one line for exactly this",
+            ),
+            ex_norun(
+                "tasqx completions --install",
+                "detects the shell from $SHELL, shows the block, asks first",
+            ),
+            ex_norun(
+                "tasqx completions powershell --install --profile $PROFILE",
+                "PowerShell expands $PROFILE; tasqx will not guess it",
+            ),
+            ex_norun(
+                "tasqx completions zsh --uninstall",
+                "removes the block, restoring the file byte for byte",
+            ),
+        ],
+        notes: &[
+            "--install edits your shell's startup file inside a marked block, asks before writing, and refuses when stdin is not a terminal (pass --yes from a script).",
+            "cmd.exe cannot be completed by any program and is a permanent non-goal; nushell is a gap clap_complete has no generator for.",
+        ],
+        see_also: &["manual", "docs"],
+        // Its own topic rather than `GettingStarted`, because the prose a user
+        // needs here does not fit in a verb's notes: five activation lines, two
+        // shells tasqx deliberately does not serve, a variable that is not the
+        // one every clap tutorial names, and the fact that a Tab press reads the
+        // store. `tasqx manual completion` is where all of that lives.
+        topic: Topic::Completion,
     },
 ];
 
