@@ -217,6 +217,48 @@ pub fn unescape(tokens: &mut [String]) {
     }
 }
 
+/// Would `tok` reach a filter positional as filter text, or does [`prepass`]
+/// hand it to clap as a flag?
+///
+/// **The authority on that question is this module, not the filter grammar**,
+/// and the difference is a silent drop. `filter::Filter::parse` accepts `-h` as
+/// a tag exclusion — it is valid filter grammar and the JSON API takes it
+/// verbatim — but on the CLI the loop above deliberately leaves a one-character
+/// dash token alone when clap declares that letter, so `-h` reaches clap as the
+/// HELP FLAG. That trade is stated at the site and is right; what was missing is
+/// that anything COMPOSING a filter token for the user has to know about it.
+///
+/// The shell completer did not, and the result was measured: with a task tagged
+/// `h`, `tasqx list -<TAB>` offered `-h`, and choosing it printed the help text
+/// at exit 0 instead of filtering. The completer had gated the candidate on the
+/// filter parser, which is the wrong parser — the same shape as the sugar-path
+/// defect where a candidate was gated on a character allowlist instead of
+/// `sugar::parsed_value_of`.
+///
+/// The cheap test first: everything that is not a one-character dash token
+/// reaches the tail, so the clap tree is built only for the rare word that could
+/// collide. Membership is the UNION over [`FILTER_COMMANDS`] rather than one
+/// subcommand, because a candidate provider is handed the word and nothing else.
+/// Today the union is exact — `-h` and `-V` are declared on all four — and if
+/// that ever stops being true this errs toward withholding a candidate rather
+/// than offering one that runs the wrong command.
+pub(crate) fn reaches_the_filter_tail(tok: &str) -> bool {
+    // Not dash-led, or longer than one character after the dash: the loop above
+    // escapes it, so it reaches the positional intact. No tree needed.
+    let Some(rest) = tok.strip_prefix('-') else {
+        return true;
+    };
+    if rest.chars().count() != 1 {
+        return true;
+    }
+    let mut cmd = Cli::command();
+    cmd.build();
+    !FILTER_COMMANDS.iter().any(|name| {
+        cmd.find_subcommand(name)
+            .is_some_and(|sub| declared_short(sub, tok).is_some())
+    })
+}
+
 /// The short flag `tok` names, if `cmd` declares one by that letter.
 ///
 /// Deliberately exact-match on a SINGLE character: `-needs` is a tag exclusion

@@ -194,6 +194,68 @@ use crate::Cli;
 /// Nothing a user types contains this string.
 const COMPLETE_VAR: &str = "TASQX_COMPLETE";
 
+/// Is the shell asking for candidates PowerShell?
+///
+/// The one place this module lets a shell's identity change WHAT is offered
+/// rather than only how it is written out, and it exists because PowerShell
+/// alone among the five mangles a candidate this feature must emit.
+///
+/// # The measurement
+///
+/// PowerShell's splatting operator claims a leading `@`, and it claims it even
+/// in an argument to a native executable. An unquoted `@word` does not arrive
+/// mangled — it VANISHES, and the command runs without it:
+///
+/// ```text
+///   PS> tasqx list @nonsensetoken     -> every task, exit 0
+///   PS> tasqx list '@nonsensetoken'   -> unknown filter token, exit 2
+/// ```
+///
+/// So Tab-completing `@blocked` and pressing Enter listed EVERY task at exit 0
+/// — the silent-drop class, delivered by the menu. The candidate is emitted in
+/// its quoted spelling there instead; `candidates::token_shapes` owns its own
+/// prefix filter, so it can match on the bare word and write the quoted one,
+/// which an `ArgValueCandidates` could not have done.
+///
+/// A `@nonsensetoken` probe is the only honest one: the earlier claim that
+/// `@working` "reaches the binary intact" was made with `@working` itself, which
+/// selects pending|active and therefore returns the same rows on an ordinary
+/// store whether the token survives or is dropped. A probe that cannot fail is
+/// not a measurement.
+///
+/// # Why the name is remembered instead of read
+///
+/// The obvious implementation reads `$`[`COMPLETE_VAR`] here, since a candidate
+/// provider is a `Fn` clap calls with no context of ours. It returns false every
+/// time, and the reason is upstream: `CompleteEnv::try_complete_` calls
+/// `std::env::remove_var(self.var)` (`clap_complete-4.6.7/src/env/mod.rs:227`)
+/// before it runs the engine, so by the time any provider is invoked the
+/// variable is GONE. That was measured, not deduced — the quoting silently did
+/// not apply and the menu looked exactly as it had before the fix.
+///
+/// So [`intercept`] records the name in [`ASKING_SHELL`] while it still exists,
+/// which is also the only place that knows it is a real completion request.
+///
+/// # Why the comparison is against clap's CANONICAL name
+///
+/// PowerShell answers to three spellings — `EnvCompleter::is` for it accepts
+/// `pwsh`, `powershell` and `powershell_ise`
+/// (`clap_complete-4.6.7/src/env/shells.rs:316`) — and `pwsh` is the usual one
+/// outside Windows. Comparing the raw value against the string `"powershell"`
+/// would therefore have left `pwsh` users with the defect this exists to fix,
+/// which is the hand-kept-list shape D30 rules against, in a list of one.
+///
+/// [`intercept`] stores what `Shells::builtins()` resolves the value to, so the
+/// alias set is clap's and grows with it.
+pub(crate) fn shell_is_powershell() -> bool {
+    ASKING_SHELL.get().is_some_and(|name| *name == "powershell")
+}
+
+/// The shell that asked, as `clap_complete` canonically names it, remembered by
+/// [`intercept`] before `clap_complete` unsets the variable it came from. Unset
+/// outside a completion callback.
+static ASKING_SHELL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
 /// Serve a completion request and exit, or return so the ordinary run proceeds.
 ///
 /// Must stay the FIRST statement of [`crate::run`]. Two reasons, and only the
@@ -217,6 +279,14 @@ pub(crate) fn intercept() {
     // command RUNS, exactly as it would with the variable unset.
     if !names_a_shell_clap_can_complete(&shell) {
         return;
+    }
+
+    // Recorded HERE, and it cannot be done later: `try_complete_` unsets the
+    // variable before it runs the engine, so a provider asking for it finds
+    // nothing. See [`shell_is_powershell`], the one candidate decision that
+    // depends on which shell is asking.
+    if let Some(canonical) = canonical_shell_name(&shell) {
+        let _ = ASKING_SHELL.set(canonical);
     }
 
     let raw: Vec<OsString> = std::env::args_os().collect();
@@ -294,12 +364,29 @@ pub(crate) fn intercept() {
 /// rejected would take the late-error arm above and exit 0 on a real command —
 /// the very bug being fixed, reintroduced one layer down.
 fn names_a_shell_clap_can_complete(value: &OsStr) -> bool {
+    canonical_shell_name(value).is_some()
+}
+
+/// What `clap_complete` canonically calls the shell `$TASQX_COMPLETE` names, or
+/// `None` if it names none.
+///
+/// One resolution, two callers, and they must not diverge: this decides whether
+/// the process is serving a callback at all
+/// ([`names_a_shell_clap_can_complete`]) AND which shell is asking
+/// ([`shell_is_powershell`]). A second, hand-written normalisation for the
+/// latter is what would let `pwsh` pass the first test and fail the second.
+///
+/// `file_stem` mirrors `Shells::completer_for_path`, so a value copied from
+/// `$SHELL` (`/usr/bin/zsh`) resolves; the alias set beyond that is clap's own
+/// (`EnvCompleter::is`), which is why the name is asked of the resolved
+/// completer rather than derived from the string.
+fn canonical_shell_name(value: &OsStr) -> Option<&'static str> {
     let stem = std::path::Path::new(value)
         .file_stem()
         .unwrap_or(value)
         .to_string_lossy()
         .into_owned();
-    Shells::builtins().completer(&stem).is_some()
+    Shells::builtins().completer(&stem).map(|c| c.name())
 }
 
 /// Run the completion words through [`crate::argv::prepass`], leaving the
