@@ -43,6 +43,15 @@
 //!    gains one. Every other shape — CRLF, a UTF-8 BOM, an empty file, a file
 //!    holding text that merely LOOKS like the block — round-trips exactly, and
 //!    `tests/completion.rs` hashes the bytes to prove it.
+//!
+//!    "Byte for byte" is a claim about the file's CONTENTS, and review found two
+//!    things about the file that are not its contents and were being discarded by
+//!    the temp-file-and-rename: the entry's link identity, and its permissions.
+//!    A `.bashrc` symlinked into a dotfiles repository was detached — the tracked
+//!    file never got the block, and `--uninstall` could not restore a link it had
+//!    no record of — and a deliberately chmod'ed profile came back with default
+//!    permissions. Both are repaired in [`write_atomically`], which says what the
+//!    repair does and does not cover.
 //!  * **Ambiguity refuses.** [`resolve_shell`] never guesses, because guessing
 //!    wrong writes an activation line into the wrong file — and the wrong file
 //!    is somebody's `.zshrc` getting a line of bash.
@@ -285,7 +294,14 @@ pub(crate) fn run(
 ) -> crate::CmdOutcome {
     let activation = resolve_shell(shell.as_deref())?;
     if !install && !uninstall {
-        return Ok(printed(activation));
+        // `--profile` is honoured here even though nothing is written, because
+        // the alternative is worse than useless: it used to be accepted,
+        // ignored, and then CONTRADICTED — `completions bash --profile <p>
+        // --json` reported the default `~/.bashrc` as the target while the
+        // caller had just named a different file. A dotfile manager reading that
+        // field, which is the audience `printed`'s doc names, would edit the
+        // wrong path on tasqx's own say-so.
+        return Ok(printed(activation, profile.as_deref()));
     }
     let path = match &profile {
         Some(p) => PathBuf::from(p),
@@ -308,8 +324,20 @@ pub(crate) fn run(
 /// `--json` comes free from the ordinary [`crate::CmdOutcome`] path and carries
 /// the target alongside the line, so a dotfile manager can ask tasqx where the
 /// line belongs instead of hard-coding five paths of its own.
-fn printed(a: &'static Activation) -> (serde_json::Value, String) {
-    let target = target_path(a).ok();
+///
+/// That is exactly why `override_target` exists: a caller who named `--profile`
+/// gets its own path back. Reporting the default while the caller had overridden
+/// it is not a cosmetic mismatch — it hands a machine reader a path to edit that
+/// the human explicitly declined.
+///
+/// The key is `target` here and `path` in the writing modes, and the two are
+/// deliberately different words: this one is where the line BELONGS, that one is
+/// the file that was actually changed.
+fn printed(a: &'static Activation, override_target: Option<&str>) -> (serde_json::Value, String) {
+    let target = match override_target {
+        Some(p) => Some(PathBuf::from(p)),
+        None => target_path(a).ok(),
+    };
     (
         json!({
             "shell": a.shell,
@@ -425,11 +453,8 @@ fn target_path(a: &'static Activation) -> Result<PathBuf, ApiError> {
             Ok(path)
         }
         Target::FishCompletions => {
-            let base = match std::env::var("XDG_CONFIG_HOME") {
-                Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
-                _ => home()?.join(".config"),
-            };
-            Ok(base.join("fish").join("completions").join("tasqx.fish"))
+            let moved = std::env::var("XDG_CONFIG_HOME").ok();
+            fish_target_under(moved.as_deref(), home)
         }
         Target::OnlyTheHostKnows => Err(ApiError::bad_request(
             "tasqx will not guess where your PowerShell profile is: $PROFILE is a \
@@ -439,6 +464,32 @@ fn target_path(a: &'static Activation) -> Result<PathBuf, ApiError> {
              starts:\n    tasqx completions powershell --install --profile $PROFILE",
         )),
     }
+}
+
+/// fish's completions file under `xdg_config_home`, falling back to
+/// `~/.config` when the variable is unset or empty.
+///
+/// **Split out purely so the XDG branch can be guarded.** It could not be
+/// before: the variable was read inline, and the only way to exercise the moved
+/// case was to set a process-global environment variable in a test binary whose
+/// tests run in parallel threads — which this module refuses to do for the same
+/// reason `complete.rs` refuses it. So the branch shipped untested, and a review
+/// mutation proved it: deleting `$XDG_CONFIG_HOME` support outright left all 63
+/// tests green while the test's own doc claimed the case was covered.
+///
+/// The value and the home lookup are both parameters, so both branches are
+/// reachable from a test without touching the process.
+fn fish_target_under(
+    xdg_config_home: Option<&str>,
+    home: impl FnOnce() -> Result<PathBuf, ApiError>,
+) -> Result<PathBuf, ApiError> {
+    // Empty is treated as unset, which is what the XDG spec says and what fish
+    // does: an exported-but-blank variable is not a relocation.
+    let base = match xdg_config_home.filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => home()?.join(".config"),
+    };
+    Ok(base.join("fish").join("completions").join("tasqx.fish"))
 }
 
 /// The user's home directory, via the same crate that resolves the store's
@@ -476,20 +527,52 @@ fn block(line: &str, eol: &str) -> String {
     out
 }
 
-/// The line terminator `text` already uses, so an edit does not mix two.
+/// The line terminator to write the block with, for `shell`, into `text`.
 ///
-/// A single `\r\n` anywhere decides it. That is deliberately eager: a file with
-/// mixed endings is already in trouble, and adding LF lines to a mostly-CRLF
-/// file is the change most likely to make an editor "fix" the whole file on the
-/// next save — which would rewrite bytes tasqx never touched and destroy the
-/// byte-exact `--uninstall` this module promises.
+/// # Only PowerShell ever gets CRLF, and the reason is fatal rather than tidy
 ///
-/// A new or empty file gets `\n`. Not a coin toss: bash, zsh, fish and elvish
-/// all treat a trailing `\r` as part of the command, so a CRLF startup file is
-/// broken for four of the five shells regardless of platform, and PowerShell
-/// reads LF happily.
-fn eol_of(text: &str) -> &'static str {
-    match text.contains("\r\n") {
+/// bash, zsh, fish and elvish all treat a trailing `\r` as part of the command.
+/// A CRLF-terminated activation line does not merely look untidy there — it
+/// BREAKS, and it breaks in the worst available way. Measured in GNU bash 5.2.21
+/// (WSL) with the exact bytes this module wrote:
+///
+/// ```text
+///   source <(TASQX_COMPLETE=bash tasqx)^M
+///   -> /tmp/rc: line 7: /dev/fd/63: No such file or directory
+///   -> no completion registered
+/// ```
+///
+/// So the user's shell prints an error at every startup AND does not get the
+/// feature — a failure with a symptom pointing at the wrong thing, in the file
+/// this module is arranged to protect.
+///
+/// # What this replaced, and why the old rule looked reasonable
+///
+/// The previous rule followed the FILE: a single `\r\n` anywhere chose CRLF for
+/// the block, so that adding LF lines to a mostly-CRLF file could not tempt an
+/// editor into "fixing" the whole file on the next save and rewriting bytes
+/// tasqx never touched. That concern is real but strictly smaller, and the rule
+/// misfired on the common Windows case rather than an exotic one: one line
+/// pasted from a Windows editor into an otherwise-LF `.bashrc` is enough to make
+/// every subsequent install write CRLF.
+///
+/// The old doc argued for `\n` on a new file with exactly the sentence that
+/// condemns the rest of it — "a CRLF startup file is broken for four of the five
+/// shells regardless of platform". The code did not follow its own reasoning,
+/// which is the defect shape this branch has now paid for five times.
+///
+/// It was invisible locally because git-bash is Cygwin and silently strips the
+/// `\r`: the same probe passes there and fails in real bash. A verification that
+/// cannot fail is not a verification.
+///
+/// # Why following the file is still right for PowerShell
+///
+/// PowerShell reads LF happily, so it needs nothing; but `$PROFILE` on Windows is
+/// overwhelmingly CRLF, nothing there breaks on either, and the editor-rewrite
+/// concern above is genuine. So the one shell that can afford to match the file
+/// does, and the four that cannot, do not.
+fn eol_for(shell: &str, text: &str) -> &'static str {
+    match shell == "powershell" && text.contains("\r\n") {
         true => "\r\n",
         false => "\n",
     }
@@ -593,9 +676,12 @@ fn block_regions(text: &str) -> Result<Vec<std::ops::Range<usize>>, ApiError> {
 /// or dropped, and appending to a file with no final newline is what every shell
 /// `>>` redirection does too — worse, in fact, since `>>` would join the
 /// activation line onto the user's last line.
-fn with_block(text: &str, line: &str) -> Result<String, ApiError> {
+fn with_block(text: &str, shell: &str, line: &str) -> Result<String, ApiError> {
     let regions = block_regions(text)?;
-    let eol = eol_of(text);
+    // The SHELL decides the terminator, not the file. See [`eol_for`]: a
+    // trailing `\r` is fatal in four of the five shells, so matching a
+    // mostly-CRLF file would write a block that errors at every startup.
+    let eol = eol_for(shell, text);
     let rendered = block(line, eol);
 
     let Some(first) = regions.first() else {
@@ -784,7 +870,44 @@ fn ask_at_the_terminal(what: &str, path: &Path) -> Option<String> {
 /// rename stays within one filesystem; `std::fs::rename` across mount points
 /// fails, and on Windows it replaces the destination atomically only on the same
 /// volume.
+///
+/// # Two things the rename would destroy, and what is done about them
+///
+/// A rename replaces a directory ENTRY. Everything that was true of the entry
+/// rather than of the bytes is therefore lost unless it is put back, and both
+/// losses are silent — the command reports success and the file reads correctly.
+///
+/// **Link identity.** A `~/.bashrc` that is a symlink or a hardlink into a
+/// dotfiles repository is exactly the profile most likely to meet `--install`:
+/// stow, chezmoi, yadm and dotbot users are the population that manages startup
+/// files deliberately. Renaming over the path detaches it — the tracked file
+/// never receives the block, the path becomes an unrelated regular file, and
+/// `--uninstall` cannot put back what it broke, because the link is not in the
+/// bytes it restores. Measured by review on this branch, with a hardlinked pair
+/// going from two names to one while the repo copy kept its old contents. So the
+/// path is CANONICALISED first and the write lands on the real file behind the
+/// link, which is also what a user asking to edit their profile means.
+///
+/// **Permissions.** A fresh temp file is created with default permissions, so
+/// the rename hands a deliberately-restricted startup file back with whatever
+/// the umask or the parent directory's inheritance says. Startup files routinely
+/// hold API keys and people chmod them for that reason. Measured on Windows: an
+/// explicit `icacls` grant was replaced by the parent's inherited ACEs. The
+/// original's permissions are copied onto the temp file before the rename when
+/// the target already existed.
+///
+/// Neither repair is total and the limit is worth stating: on Windows the
+/// copied `Permissions` carries the read-only flag and not the full ACL, so a
+/// hand-tuned ACL is still reduced to what inheritance gives. That is narrower
+/// than losing an explicit grant entirely, and `ReplaceFileW` — which preserves
+/// the destination's ACL properly — is not reachable from `std`.
 fn write_atomically(path: &Path, text: &str) -> Result<(), ApiError> {
+    // Through the link BEFORE anything else, so both the temp sibling and the
+    // rename target are the real file. Only when the path already exists:
+    // `canonicalize` fails on a path that does not, and creating a profile is
+    // an ordinary case.
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -800,6 +923,13 @@ fn write_atomically(path: &Path, text: &str) -> Result<(), ApiError> {
     temp.set_file_name(format!(".{name}.tasqx-{}", std::process::id()));
     std::fs::write(&temp, text)
         .map_err(|e| ApiError::bad_request(format!("cannot write {}: {e}", temp.display())))?;
+    // Best effort, and deliberately not fatal: failing the whole install
+    // because the mode could not be copied would refuse to do the thing the
+    // user asked for over a property most files do not have. The bytes are the
+    // contract; this is a repair on top of it.
+    if let Ok(original) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&temp, original.permissions());
+    }
     std::fs::rename(&temp, path).map_err(|e| {
         let _ = std::fs::remove_file(&temp);
         ApiError::bad_request(format!("cannot replace {}: {e}", path.display()))
@@ -816,7 +946,7 @@ fn write_atomically(path: &Path, text: &str) -> Result<(), ApiError> {
 /// directory people back up and sync.
 fn install_into(a: &'static Activation, path: &Path, yes: bool) -> crate::CmdOutcome {
     let current = read_text(path)?;
-    let wanted = with_block(&current, a.line)?;
+    let wanted = with_block(&current, a.shell, a.line)?;
     if wanted == current {
         return Ok((
             json!({
@@ -831,7 +961,7 @@ fn install_into(a: &'static Activation, path: &Path, yes: bool) -> crate::CmdOut
         ));
     }
 
-    let preview = block(a.line, eol_of(&current));
+    let preview = block(a.line, eol_for(a.shell, &current));
     let stdin_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
     if let Consent::Withheld = consent(yes, stdin_tty, || ask_at_the_terminal(&preview, path))? {
         return Ok((
@@ -1091,9 +1221,15 @@ mod tests {
     /// honoured because fish honours it.
     ///
     /// Asserted on the shape rather than on a literal path so it holds on every
-    /// platform; the XDG half is checked through the same function with the
-    /// variable injected, because the env is process-global and this test binary
-    /// runs in parallel threads.
+    /// platform.
+    ///
+    /// The XDG half is asserted in the sibling below. It used to be claimed
+    /// HERE — this doc said the case was "checked through the same function with
+    /// the variable injected" — and there was no such assertion and no such
+    /// injection: `target_path` read the variable inline and took no argument.
+    /// A review mutation deleted `$XDG_CONFIG_HOME` support outright and all 63
+    /// tests stayed green. A doc claiming coverage that does not exist is worse
+    /// than an admitted gap, because it stops anyone looking.
     #[test]
     fn fish_targets_its_completions_directory() {
         let a = resolve_shell(Some("fish")).unwrap();
@@ -1105,6 +1241,79 @@ mod tests {
         );
     }
 
+    /// Print mode reports the path the CALLER named, not the default it
+    /// overrode.
+    ///
+    /// `printed`'s doc names dotfile managers as the audience for the `target`
+    /// field — "so a dotfile manager can ask tasqx where the line belongs
+    /// instead of hard-coding five paths of its own". It used to answer
+    /// `~/.bashrc` for `completions bash --profile /elsewhere/rc --json`: the
+    /// flag was accepted, silently ignored, and then contradicted, handing a
+    /// machine reader a path to edit that the human had explicitly declined.
+    ///
+    /// Mutation-proven: dropping the override and calling `target_path`
+    /// unconditionally reddens this.
+    #[test]
+    fn print_mode_reports_the_profile_it_was_given() {
+        let a = resolve_shell(Some("bash")).unwrap();
+
+        let (json, text) = printed(a, Some("/elsewhere/rc"));
+        assert_eq!(json["target"], "/elsewhere/rc");
+        assert_eq!(
+            text, "source <(TASQX_COMPLETE=bash tasqx)\n",
+            "naming a profile must not change what is printed to stdout — the \
+             shape this supports is `tasqx completions bash >> ~/.bashrc`"
+        );
+
+        // Without one, the default is still reported.
+        let (json, _) = printed(a, None);
+        let target = json["target"]
+            .as_str()
+            .unwrap_or_default()
+            .replace('\\', "/");
+        assert!(target.ends_with("/.bashrc"), "got {target:?}");
+    }
+
+    /// A user who moved their fish config gets the line where fish will read it.
+    ///
+    /// Driven through [`fish_target_under`] with the value and the home lookup
+    /// both injected, which is the whole reason that function was split out of
+    /// `target_path`: the alternative is setting a process-global environment
+    /// variable in a test binary whose tests run in parallel threads, and this
+    /// module refuses that for the same reason `complete.rs` does.
+    ///
+    /// The failure it guards has no symptom. An activation line written to
+    /// `~/.config/fish` for a user whose config lives elsewhere sits in a file
+    /// fish never reads: `--install` reports success, the file exists, and Tab
+    /// does nothing forever.
+    ///
+    /// Mutation-proven: replacing the body with the unconditional
+    /// `home()?.join(".config")` reddens this naming the path it produced.
+    #[test]
+    fn a_moved_fish_config_gets_the_line_where_fish_reads_it() {
+        let home = || Ok(PathBuf::from("/home/u"));
+        let shape = |p: PathBuf| p.to_string_lossy().replace('\\', "/");
+
+        assert_eq!(
+            shape(fish_target_under(Some("/xdg"), home).unwrap()),
+            "/xdg/fish/completions/tasqx.fish",
+            "$XDG_CONFIG_HOME must decide the base, or the line lands in a file \
+             fish never reads and completion silently does not work"
+        );
+
+        // Unset and empty are the same thing, per the XDG spec and per fish: an
+        // exported-but-blank variable is not a relocation, and treating it as
+        // one would resolve the target to `fish/completions/tasqx.fish`
+        // RELATIVE to the working directory.
+        for blank in [None, Some("")] {
+            assert_eq!(
+                shape(fish_target_under(blank, home).unwrap()),
+                "/home/u/.config/fish/completions/tasqx.fish",
+                "{blank:?} must fall back to ~/.config"
+            );
+        }
+    }
+
     // ---- the marked block --------------------------------------------------
 
     /// The property the whole module is arranged around, on the shape that is
@@ -1112,7 +1321,8 @@ mod tests {
     #[test]
     fn install_then_uninstall_restores_the_bytes_exactly() {
         let original = "export PATH=$PATH:/opt/bin\nalias ll='ls -l'\n";
-        let installed = with_block(original, "source <(TASQX_COMPLETE=bash tasqx)").unwrap();
+        let installed =
+            with_block(original, "bash", "source <(TASQX_COMPLETE=bash tasqx)").unwrap();
         assert_ne!(installed, original, "the install must change something");
         let (restored, removed) = without_blocks(&installed).unwrap();
         assert_eq!(removed, 1);
@@ -1129,7 +1339,12 @@ mod tests {
     #[test]
     fn a_crlf_file_keeps_its_line_endings_and_round_trips() {
         let original = "$env:EDITOR = 'vim'\r\nSet-Alias ll Get-ChildItem\r\n";
-        let installed = with_block(original, "$env:TASQX_COMPLETE = \"powershell\"").unwrap();
+        let installed = with_block(
+            original,
+            "powershell",
+            "$env:TASQX_COMPLETE = \"powershell\"",
+        )
+        .unwrap();
         assert!(
             !installed.replace("\r\n", "").contains('\n'),
             "the block introduced a bare LF into a CRLF file: {installed:?}"
@@ -1137,12 +1352,62 @@ mod tests {
         assert_eq!(without_blocks(&installed).unwrap().0, original);
     }
 
+    /// The four POSIX shells NEVER get a CRLF activation line, whatever the file
+    /// they are being written into looks like.
+    ///
+    /// The sibling test above pins the opposite for PowerShell, and the pair is
+    /// the whole rule: only the shell that tolerates a trailing `\r` follows the
+    /// file's endings.
+    ///
+    /// # The case that shipped
+    ///
+    /// The terminator used to be chosen from the FILE alone, and one `\r\n`
+    /// anywhere was enough. A single line pasted from a Windows editor into an
+    /// otherwise-LF `.bashrc` — not exotic; the ordinary Windows accident — made
+    /// every later install write `source <(TASQX_COMPLETE=bash tasqx)\r`, which
+    /// GNU bash 5.2.21 answers with `/dev/fd/63: No such file or directory` and
+    /// no registration. The user's shell then errors at every startup and does
+    /// not get the feature.
+    ///
+    /// It survived local verification because git-bash is Cygwin and strips the
+    /// `\r` silently: the probe passes there and fails in real bash.
+    ///
+    /// Both fixtures matter. The mixed one is the case that shipped; the
+    /// uniformly-CRLF one is the case a reader would expect to be "respected",
+    /// and it must not be — such a `.bashrc` is already broken in real bash, and
+    /// writing LF is what makes at least our line work.
+    #[test]
+    fn a_posix_shell_never_gets_a_crlf_activation_line() {
+        for (name, original) in [
+            (
+                "one pasted CRLF line in an otherwise-LF file",
+                "export EDITOR=vim\n# pasted from a windows editor\r\nalias ll=ls\n",
+            ),
+            ("a uniformly CRLF file", "export EDITOR=vim\r\n"),
+        ] {
+            for shell in ["bash", "zsh", "fish", "elvish"] {
+                let installed = with_block(original, shell, "ACTIVATION").unwrap();
+                let added = installed
+                    .strip_prefix(original)
+                    .unwrap_or_else(|| panic!("{name}/{shell}: user content was altered"));
+                assert!(
+                    !added.contains('\r'),
+                    "{name}: the {shell} block carries a CR, which that shell \
+                     reads as part of the command — the line errors at every \
+                     startup and registers nothing. got {added:?}"
+                );
+                // And the user's own bytes are still untouched either way.
+                assert_eq!(without_blocks(&installed).unwrap().0, original);
+            }
+        }
+    }
+
     /// An absent or empty file installs to the block alone, with no leading
     /// blank line, and uninstalls back to empty. This is fish's ordinary case —
     /// `completions/tasqx.fish` does not exist until tasqx creates it.
     #[test]
     fn an_empty_file_round_trips_and_gains_no_leading_blank_line() {
-        let installed = with_block("", "TASQX_COMPLETE=fish tasqx | source").unwrap();
+        let installed = with_block("", "fish", "TASQX_COMPLETE=fish tasqx | source").unwrap();
         assert!(
             installed.starts_with(BEGIN),
             "an empty file must not gain a leading blank line: {installed:?}"
@@ -1156,7 +1421,7 @@ mod tests {
     #[test]
     fn a_bom_survives_the_round_trip() {
         let original = "\u{feff}# my profile\r\n";
-        let installed = with_block(original, "line").unwrap();
+        let installed = with_block(original, "bash", "line").unwrap();
         assert!(installed.starts_with('\u{feff}'));
         assert_eq!(without_blocks(&installed).unwrap().0, original);
     }
@@ -1171,7 +1436,7 @@ mod tests {
     #[test]
     fn a_file_with_no_trailing_newline_gains_one() {
         let original = "alias ll='ls -l'";
-        let installed = with_block(original, "line").unwrap();
+        let installed = with_block(original, "bash", "line").unwrap();
         let (restored, removed) = without_blocks(&installed).unwrap();
         assert_eq!(removed, 1);
         assert_eq!(
@@ -1192,8 +1457,8 @@ mod tests {
     #[test]
     fn installing_twice_leaves_exactly_one_block_where_the_first_one_was() {
         let original = "first\nsecond\n";
-        let once = with_block(original, "line").unwrap();
-        let twice = with_block(&once, "line").unwrap();
+        let once = with_block(original, "bash", "line").unwrap();
+        let twice = with_block(&once, "bash", "line").unwrap();
         assert_eq!(once, twice, "a second install must be a no-op");
         assert_eq!(block_regions(&twice).unwrap().len(), 1);
         // And the block stayed at the end, where the first install put it —
@@ -1207,8 +1472,8 @@ mod tests {
     /// running both.
     #[test]
     fn a_stale_activation_line_is_replaced_rather_than_shadowed() {
-        let once = with_block("keep me\n", "OLD_LINE").unwrap();
-        let twice = with_block(&once, "NEW_LINE").unwrap();
+        let once = with_block("keep me\n", "bash", "OLD_LINE").unwrap();
+        let twice = with_block(&once, "bash", "NEW_LINE").unwrap();
         assert!(twice.contains("NEW_LINE"));
         assert!(
             !twice.contains("OLD_LINE"),
@@ -1222,12 +1487,12 @@ mod tests {
     /// a merge) collapses to one, and the content between them is kept.
     #[test]
     fn several_blocks_collapse_to_one_without_losing_what_sat_between_them() {
-        let mut text = with_block("top\n", "line").unwrap();
+        let mut text = with_block("top\n", "bash", "line").unwrap();
         text.push_str("middle\n");
         text = text.replace("middle\n", &format!("{}middle\n", block("line", "\n")));
         assert_eq!(block_regions(&text).unwrap().len(), 2);
 
-        let collapsed = with_block(&text, "line").unwrap();
+        let collapsed = with_block(&text, "bash", "line").unwrap();
         assert_eq!(block_regions(&collapsed).unwrap().len(), 1);
         assert!(collapsed.contains("middle\n"), "{collapsed}");
         assert_eq!(without_blocks(&collapsed).unwrap().0, "top\nmiddle\n");
@@ -1251,7 +1516,7 @@ mod tests {
             block_regions(original).unwrap().is_empty(),
             "no tasqx block is present here"
         );
-        let installed = with_block(original, "line").unwrap();
+        let installed = with_block(original, "bash", "line").unwrap();
         assert_eq!(block_regions(&installed).unwrap().len(), 1);
         let (restored, removed) = without_blocks(&installed).unwrap();
         assert_eq!(removed, 1);
@@ -1288,7 +1553,7 @@ mod tests {
             err.message
         );
         // Both editing paths inherit the refusal — neither may quietly proceed.
-        assert!(with_block(&text, "line").is_err());
+        assert!(with_block(&text, "bash", "line").is_err());
         assert!(without_blocks(&text).is_err());
     }
 
