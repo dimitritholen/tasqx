@@ -1879,8 +1879,14 @@ mod tests {
     /// A test whose result depends on the developer's own history is not a test.
     /// 2020 is the fix the sibling `contested_discovery_*` already uses and for
     /// the same reason — no real transcript can carry samples there — and it is
-    /// better than overriding `CLAUDE_CONFIG_DIR`, which needs `unsafe`, mutates
-    /// process-global state, and races the other tests in this binary.
+    /// better than THIS test overriding `CLAUDE_CONFIG_DIR` itself, which would
+    /// need `unsafe` and mutate process-global state.
+    ///
+    /// It is not enough on its own, and the next line says why rather than
+    /// leaving the paragraph reading as though the hazard were designed out.
+    /// The sibling's override IS live in this binary, and the transcript it
+    /// plants sits in exactly this window — so the race was serialised with
+    /// [`DISCOVERY_ENV`], not avoided.
     #[test]
     fn discovery_finding_nothing_stays_terminal_rather_than_retrying() {
         // Keeps the sibling's `$CLAUDE_CONFIG_DIR` override — whose planted
@@ -2445,7 +2451,25 @@ mod tests {
         }
 
         let now = ts("2026-07-25T10:35:00Z");
-        for pa in &pending_attributions(&engine).unwrap() {
+        // BOUND AND COUNTED before anything is asserted about its members.
+        //
+        // Every real assertion below is either inside the loop or satisfied by
+        // zero, so an empty set makes the whole test pass while measuring
+        // nothing — and that was not a worry, it was the state this test shipped
+        // in. Its `done` payloads used to be built with `format!` around an OS
+        // path, which is malformed JSON on Windows (`C:\Users\…`), so on that
+        // platform `pending_attributions` returned nothing, the loop ran zero
+        // times and the test reported green. The payload is fixed now; this is
+        // what stops the vacuity from coming back through some other door.
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(
+            pending.len(),
+            2,
+            "both completions must parse into pending attributions — a payload \
+             that stops parsing makes every assertion below run zero times and \
+             this test certify the double-billing it exists to catch"
+        );
+        for pa in &pending {
             assert_eq!(
                 pa.foreign_windows.len(),
                 1,
@@ -2460,9 +2484,24 @@ mod tests {
             &engine,
             "SELECT COUNT(DISTINCT task_id) FROM token_usage WHERE source='log-parse'",
         );
-        assert!(
-            tasks_billed < 2,
-            "one spend was billed to {tasks_billed} tasks via path spelling"
+        // Exactly ZERO, and the exactness is the point rather than the number.
+        //
+        // The two windows fully overlap and both name the same file, so the
+        // sample is CONTESTED — and a contested sample is banked by nobody, per
+        // the rule this whole module is built on. Before paths were compared by
+        // identity the two spellings looked like different files, nothing
+        // contested, and both tasks banked the same spend: `tasks_billed` was 2.
+        //
+        // `< 2` was the loose way of writing that, and loose is what let the
+        // vacuity hide: it is also satisfied by a test that measured nothing at
+        // all. The count is pinned exactly; "nothing was measured" is now caught
+        // by the `pending.len()` assertion above, where it belongs, rather than
+        // by a bound here that cannot tell the two apart.
+        assert_eq!(
+            tasks_billed, 0,
+            "the spend is contested by two windows naming one file, so nobody \
+             may bank it; {tasks_billed} means the alias spelling was read as a \
+             different file and the same spend was billed twice"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

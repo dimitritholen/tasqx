@@ -33,10 +33,14 @@ jobs:
       fail-fast: false
       matrix:
         # All three, deliberately. `documented_store_path_matches_the_real_one`
-        # is `#[cfg(windows)]`, so the non-Windows store paths in the user guide
-        # were never checked by anything; and the daemon's transport differs per
-        # platform (Unix socket vs named pipe), which no single-OS run
-        # exercises.
+        # exists twice — a `#[cfg(windows)]` and a `#[cfg(unix)]` twin — and the
+        # unix one has a `target_os = "macos"` arm asserting
+        # `~/Library/Application Support/dev.tasqx.tasqx/tasks.db`. The ubuntu
+        # runner takes the Linux branch, so that macOS arm is a documented path
+        # no runner had ever executed. The daemon's transport also differs per
+        # platform (Unix socket vs named pipe), and BSD kernels differ from Linux
+        # on socket flag inheritance — a difference this repo has already been
+        # bitten by once, after a release rather than in CI.
         #
         # macOS joined on 2026-08-02, and the reason is a bill this project has
         # already paid. `release.yml` ships FOUR targets, two of them Darwin
@@ -116,7 +120,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y zsh fish elvish
+      # The two shells this job exists to prove. Strict: if either is missing
+      # the job must go red, and `REQUIRE` below catches it a second time.
+      - run: sudo apt-get update && sudo apt-get install -y zsh fish
+      # elvish separately and tolerantly. The script cannot drive it — its
+      # completer lives in the `edit:` namespace, so there is nothing to invoke
+      # from a non-interactive shell — and it is installed only so the log says
+      # what elvish's real status is. Making it a hard prerequisite would let a
+      # package that contributes one SKIP line redden the whole job.
+      - run: sudo apt-get install -y elvish || echo "elvish unavailable; the script will report it as not covered"
       - run: REQUIRE=zsh,fish scripts/shell-completion-smoke.sh
 
   # The OS-notification backend is off by default and therefore compiled by
