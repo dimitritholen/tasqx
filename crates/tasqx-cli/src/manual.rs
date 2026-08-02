@@ -313,7 +313,7 @@ The line, and the file it belongs in:
 
   bash        ~/.bashrc
               source <(TASQX_COMPLETE=bash tasqx)
-  zsh         ~/.zshrc
+  zsh         ~/.zshrc, AFTER your compinit line
               source <(TASQX_COMPLETE=zsh tasqx)
   fish        ~/.config/fish/completions/tasqx.fish
               TASQX_COMPLETE=fish tasqx | source
@@ -335,6 +335,12 @@ is: $PROFILE is a PowerShell variable, not an environment
 variable, and it differs between Windows PowerShell 5.1,
 PowerShell 7 and the ISE. Let the shell expand it for you:
   tasqx completions powershell --install --profile $PROFILE
+
+The zsh ordering is not a nicety. That registration ends in
+`compdef`, which exists only once `compinit` has run — source it
+earlier and zsh prints `command not found: compdef`, registers
+nothing, and carries on at exit 0. oh-my-zsh and prezto run
+`compinit` for you; a hand-written .zshrc may not.
 
 PowerShell must also be allowed to RUN $PROFILE. A stock Windows
 client sets the execution policy to Restricted, and then the

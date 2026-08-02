@@ -36,7 +36,7 @@ cd tasqx
 cargo install --path crates/tasqx-cli --force
 ```
 
-CI tests Linux and Windows on every push. macOS binaries are built and released but not yet covered by the test matrix.
+CI runs the suite on Linux, Windows and macOS on every push — the same three platforms the release builds for.
 
 ## Getting started
 
@@ -64,7 +64,7 @@ Two details that aren't what you'd guess. Aliases come along, but a canonical na
 # bash — ~/.bashrc
 source <(TASQX_COMPLETE=bash tasqx)
 
-# zsh — ~/.zshrc
+# zsh — ~/.zshrc, after your compinit line
 source <(TASQX_COMPLETE=zsh tasqx)
 
 # fish — ~/.config/fish/completions/tasqx.fish
@@ -76,6 +76,8 @@ eval (E:TASQX_COMPLETE=elvish tasqx | slurp)
 # PowerShell — $PROFILE
 $env:TASQX_COMPLETE = "powershell"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\TASQX_COMPLETE
 ```
+
+The zsh ordering is not a nicety. The registration ends in `compdef`, which only exists once `compinit` has run — source it earlier and zsh prints `command not found: compdef`, registers nothing, and carries on. Most setups (oh-my-zsh, prezto) run `compinit` for you; a hand-written `.zshrc` may not.
 
 Or let tasqx edit the file. `tasqx completions --install` finds the shell from `$SHELL`, shows the exact block, and asks first — a stdin that isn't a terminal is a refusal rather than an implied yes, so pass `--yes` from a script. Running it twice leaves one block; `tasqx completions <shell> --uninstall` takes it back out and restores the file byte for byte.
 
@@ -166,7 +168,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo mutants                    # see docs/mutation-testing.md
 ```
 
-CI runs the suite on Linux and Windows, builds the `notify-os` feature that's off by default, and gates on clippy and rustfmt. A `cargo deny` job gates dependency advisories, licenses and sources (`docs/dependency-policy.md` has the policy), and a coverage job publishes a line-and-branch report on every push — report only, no threshold. Rustc warnings are fatal, which sounds strict until you've had a `#[test]` get separated from its function by a careless edit. The test stops running, rustc says "function is never used" in every build after that, and nobody reads it.
+CI runs the suite on Linux, Windows and macOS, executes the zsh and fish activation lines in those real shells rather than comparing their text, builds the `notify-os` feature that's off by default, and gates on clippy and rustfmt. A `cargo deny` job gates dependency advisories, licenses and sources (`docs/dependency-policy.md` has the policy), and a coverage job publishes a line-and-branch report on every push — report only, no threshold. Rustc warnings are fatal, which sounds strict until you've had a `#[test]` get separated from its function by a careless edit. The test stops running, rustc says "function is never used" in every build after that, and nobody reads it.
 
 A good chunk of the suite is drift guards: tests that break the build when the docs and the code disagree. Every CLI flag has to show up in its verb's usage line. Every example in the docs has to parse, and the ones marked safe get executed for real. Status sets in SQL, in the filter language and in Rust all come from one enum, so you can't add a status and forget one of them.
 

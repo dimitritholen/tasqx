@@ -904,9 +904,16 @@ mod tests {
         // `handle_connection` is a mutation this guard actually catches —
         // verified by doing exactly that on Windows and watching it fail.
         //
-        // A receiver that gave up on the split request has already dropped the
-        // socket, so the second write is what fails — name the cause here
-        // rather than surfacing a bare `unwrap` on a connection-reset errno.
+        // WHICH of the two calls below reports the failure depends on buffering,
+        // so both carry the explanation. An earlier version of this comment
+        // asserted the second WRITE is what fails and put the diagnostic only
+        // there; measured on Windows with the `set_nonblocking(false)` deleted,
+        // the write SUCCEEDS — the bytes land in the socket buffer of a peer
+        // that has already gone — and the failure surfaces on the read, which
+        // was then the bare connection-reset errno the comment claimed to have
+        // replaced. A comment describing a diagnostic that does not fire is
+        // worse than none: the first Darwin run of this guard is exactly when a
+        // maintainer needs the explanation, and they would not have got it.
         let split_write = (|| -> std::io::Result<()> {
             stream.write_all(headers.as_bytes())?;
             stream.flush()?;
@@ -922,9 +929,15 @@ mod tests {
             split_write.unwrap_err()
         );
         let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("the receiver must answer a request that arrived in two writes");
+        stream.read_to_string(&mut response).unwrap_or_else(|e| {
+            panic!(
+                "the receiver hung up instead of waiting for the body — the \
+                 accepted socket is nonblocking, so a read past the buffered \
+                 bytes returned WouldBlock and was mistaken for a dead peer. \
+                 This is the arm that fires in practice; see the comment above. \
+                 Cause: {e:?}"
+            )
+        });
 
         shutdown.store(true, Ordering::Relaxed);
         handle.join().unwrap();

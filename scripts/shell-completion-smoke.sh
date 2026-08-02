@@ -63,7 +63,11 @@ if [ $# -ge 1 ]; then
 else
   say "building tasqx (pass a path to skip)..."
   (cd "$repo_root" && cargo build -p tasqx-cli --quiet)
-  bin="$repo_root/target/debug/tasqx"
+  # `$CARGO_TARGET_DIR` honoured, because cargo honours it: hardcoding
+  # `target/` means the build above succeeds and this script then reports the
+  # binary missing, on exactly the machine of the developer who set the
+  # variable — i.e. only ever in the local-debugging case this script exists for.
+  bin="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tasqx"
 fi
 [ -x "$bin" ] || { fail "not an executable: $bin"; exit 1; }
 
@@ -141,6 +145,13 @@ run_zsh() {
   cat > "$tmp/drive.zsh" <<'ZSH'
 emulate -L zsh
 setopt err_exit no_unset
+# compinit FIRST, and this is the documented order rather than a convenience:
+# the registration ends in `compdef`, which does not exist until compinit has
+# run. Source it earlier and zsh says `command not found: compdef`, registers
+# nothing, and exits 0 — so a driver that sourced first would be measuring a
+# setup the manual does not describe and that silently does not work. The
+# README and `tasqx manual completion` both say "after your compinit line";
+# this is that same order.
 autoload -Uz compinit
 compinit -u -d "${TMP_DIR}/zcompdump"
 
