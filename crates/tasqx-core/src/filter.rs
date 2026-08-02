@@ -309,6 +309,55 @@ impl Filter {
     pub fn constrains_status(&self) -> bool {
         constrains_status(&self.root)
     }
+
+    /// The VALUE carried by the single predicate this filter is — `None` when it
+    /// is not exactly one predicate, or when that predicate carries no value.
+    ///
+    /// # What it is for, and why a bare "does it parse?" is not enough
+    ///
+    /// This is the read-side twin of `cli/sugar.rs`'s `parsed_value_of`, and it
+    /// exists for one caller: the shell completion in `tasqx-cli`, which
+    /// composes a candidate out of a prefix from [`VALUE_PREFIXES`] and a value
+    /// out of the user's store and must not offer one this parser reads
+    /// DIFFERENTLY. Asking only whether the composed word parses is not the same
+    /// question, and the difference is not theoretical:
+    ///
+    ///  * a tag genuinely named `blocked` composes `+blocked`, which parses
+    ///    perfectly — as [`Pred::Blocked`], the derived flag, not as that tag.
+    ///    Offering it means Tab silently swaps "tasks tagged blocked" for "tasks
+    ///    with an unresolved dependency", at exit 0. `sole_value` answers `None`
+    ///    there, because `Blocked` carries no value, and the candidate is
+    ///    withheld.
+    ///  * a tag named `-lead` composes `--lead` under the exclusion prefix,
+    ///    which `predicate` refuses as a mistyped flag. That one a
+    ///    parse check would also catch; the first one it would not.
+    ///
+    /// So the gate is "the parser takes the same value back out", and it reads
+    /// the answer from the parser rather than from a rule restated in the CLI.
+    ///
+    /// A date bound answers `None` even though it took a value: the bound is
+    /// resolved to a [`Timestamp`] at parse time (see [`Pred::DueBefore`]) and
+    /// the string is gone by design. Nothing needs it — the date vocabulary is
+    /// open, so no caller composes a date candidate to check.
+    pub fn sole_value(&self) -> Option<&str> {
+        let Expr::Pred(pred) = &self.root else {
+            return None;
+        };
+        match pred {
+            Pred::Project(v) | Pred::TagInclude(v) | Pred::TagExclude(v) => Some(v.as_str()),
+            Pred::Status(s) => Some(s.as_str()),
+            // Matched variant by variant with no wildcard: a predicate added
+            // tomorrow must be classified as carrying a value or not, rather
+            // than inheriting `None` and quietly dropping its own candidates.
+            Pred::DueBefore(_)
+            | Pred::DueAfter(_)
+            | Pred::CompletedBefore(_)
+            | Pred::CompletedAfter(_)
+            | Pred::Working
+            | Pred::Blocked
+            | Pred::Always => None,
+        }
+    }
 }
 
 fn constrains_status(e: &Expr) -> bool {
@@ -399,23 +448,98 @@ pub fn quote(value: &str) -> String {
     out
 }
 
-/// Value-taking predicate prefixes, i.e. the ones a quoted VALUE can follow.
+/// Where a value-taking predicate's VALUE comes from.
+///
+/// The point of the enum, rather than a bare list of prefixes, is that a
+/// consumer can ANSWER the question "what values are legal after this prefix?"
+/// — which is what the CLI's shell completion needs and what nothing here
+/// previously said out loud. `project:` and `+` both take a runtime name, but
+/// from two different vocabularies, and `status:` takes a compile-time one; a
+/// consumer that could not tell them apart would have to restate the mapping,
+/// which is the parallel-list shape `TOKEN_SHAPES`'s own guard exists to
+/// prevent one field over.
+///
+/// **Deliberately NOT `#[non_exhaustive]`.** That attribute would force every
+/// out-of-crate `match` to carry a wildcard arm, and the wildcard is precisely
+/// what must not exist: a ninth prefix added to [`VALUE_PREFIXES`] has to be a
+/// COMPILE ERROR in `tasqx-cli`'s completion dispatcher, not a silently empty
+/// menu for the one prefix nobody remembered. The cost is that adding a variant
+/// is a breaking change for downstream crates; the workspace has exactly one
+/// consumer, and a breaking change that names its own call sites is the cheap
+/// half of this trade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Vocabulary {
+    /// A tag name: open, runtime, and drawn from whatever tasks carry.
+    Tag,
+    /// A project name: open and runtime, exactly as [`Pred::Project`] holding a
+    /// `String` rather than an enum records.
+    Project,
+    /// A [`Status`]: closed and compile-time, which is why a typo here is
+    /// refused by name (see the module comment's split) and why it is the one
+    /// vocabulary a caller can enumerate without touching a store.
+    Status,
+    /// A date bound, taking whatever [`crate::datetime::parse_when`] takes.
+    /// Open in the strongest sense — the grammar is natural language
+    /// (`tomorrow`, `in 3 days`, `eom`) and no module exports a list of accepted
+    /// words, because there is no list.
+    Date,
+}
+
+/// Value-taking predicate prefixes, i.e. the ones a quoted VALUE can follow,
+/// each with the vocabulary its value is drawn from.
 ///
 /// Kept beside the grammar it mirrors and pinned to it by
 /// `value_prefixes_match_the_grammar`, because a fifth `key:` predicate added
 /// to `GRAMMAR` alone would silently lose shell quoting on that key only.
 /// `+`/`-` are here for the same reason they are in the grammar: a tag is a
 /// VALUE like any other, it just spells its key as punctuation.
-const VALUE_PREFIXES: [&str; 8] = [
-    "project:",
-    "status:",
-    "due.before:",
-    "due.after:",
-    "completed.before:",
-    "completed.after:",
-    "+",
-    "-",
+///
+/// **Public, and the visibility is the decision.** It was private and read by
+/// `spacing_hint` alone until `tasqx-cli` grew shell completion, which has to
+/// answer "what token shapes may follow here?" on every Tab press. The
+/// alternative was a second copy of these eight strings in the CLI — the exact
+/// drift `token_shapes_name_every_value_prefix` was written to police after the
+/// `completed.` pair was added to the grammar and forgotten in the refusal
+/// message. A second copy in another crate would have been worse than the one
+/// that guard already caught, because no guard in this file can see it. So the
+/// list is exported instead, and its consumers read it rather than restating it.
+///
+/// The order is the grammar's, and is what a completion menu shows.
+pub const VALUE_PREFIXES: [(&str, Vocabulary); 8] = [
+    ("project:", Vocabulary::Project),
+    ("status:", Vocabulary::Status),
+    ("due.before:", Vocabulary::Date),
+    ("due.after:", Vocabulary::Date),
+    ("completed.before:", Vocabulary::Date),
+    ("completed.after:", Vocabulary::Date),
+    ("+", Vocabulary::Tag),
+    ("-", Vocabulary::Tag),
 ];
+
+/// The predicates that are a whole token by themselves — no value, no prefix.
+///
+/// The other half of the vocabulary [`VALUE_PREFIXES`] exports, and public for
+/// the same reason: a consumer offering the grammar to a user needs all of it,
+/// and half a menu is the shape this codebase keeps paying for.
+///
+/// `+blocked` and `status:blocked` are deliberately absent although
+/// `predicate` accepts them. They are alternative spellings of `@blocked`, and
+/// a menu that offers one concept three ways is noise; `@blocked` is the
+/// canonical one, and it is the one the grammar lists first.
+///
+/// Pinned to [`GRAMMAR`] in both directions by `keywords_match_the_grammar`.
+pub const KEYWORDS: [&str; 2] = ["@working", "@blocked"];
+
+/// The boolean operators that join terms.
+///
+/// Not predicates: each one is an error on its own (`expected a filter term`)
+/// and means something only between two terms, which is what
+/// `operators_join_terms_rather_than_being_ones` pins. Exported beside the
+/// predicates because a consumer teaching the grammar has to teach these too —
+/// `or` is the only way to express a disjunction, and a completion menu that
+/// silently omitted it would leave the boolean half of D8's grammar
+/// undiscoverable.
+pub const OPERATORS: [&str; 2] = ["and", "or"];
 
 /// The token shapes an error message offers when it refuses one.
 ///
@@ -789,12 +913,12 @@ fn spacing_hint(prev: Option<&Tok>, tok: &Tok) -> Option<String> {
     // Only a bare word is a plausible fragment of a split value. Anything that
     // opens a predicate of its own is a token the user meant as a token, and
     // its error should stand unadorned.
-    if VALUE_PREFIXES.iter().any(|p| tok.text.starts_with(p)) || tok.text.starts_with('@') {
+    if VALUE_PREFIXES.iter().any(|(p, _)| tok.text.starts_with(p)) || tok.text.starts_with('@') {
         return None;
     }
-    let p = VALUE_PREFIXES
+    let (p, _) = VALUE_PREFIXES
         .iter()
-        .find(|p| prev.text.strip_prefix(**p).is_some_and(|v| !v.is_empty()))?;
+        .find(|(p, _)| prev.text.strip_prefix(*p).is_some_and(|v| !v.is_empty()))?;
     let value = prev.text.strip_prefix(*p).expect("just matched");
     Some(format!(
         "did you mean {p}{}? quote a value that contains a space, so the shell hands it over whole",
@@ -1352,7 +1476,7 @@ mod tests {
             let key = format!("{}:", lhs.rsplit('"').next().unwrap_or_default());
             seen += 1;
             assert!(
-                VALUE_PREFIXES.contains(&key.as_str()),
+                VALUE_PREFIXES.iter().any(|(p, _)| *p == key),
                 "`{key}` takes an argument in GRAMMAR but is not in VALUE_PREFIXES, so a                  shell-quoted value would be re-split at its spaces"
             );
         }
@@ -1368,9 +1492,15 @@ mod tests {
     /// token does not exist — the read-side twin of the drift D30 rules against.
     /// Pinned to `VALUE_PREFIXES` rather than to a second list, so the check has
     /// nothing of its own to fall out of date.
+    ///
+    /// The list now has a SECOND consumer outside this crate — `tasqx-cli`'s
+    /// shell completion builds its filter menu from it — which does not change
+    /// what this guard checks but does change what it is worth: a prefix missing
+    /// from the registry is no longer only an error message that under-lists, it
+    /// is also a Tab press that silently offers nothing for that one predicate.
     #[test]
     fn token_shapes_name_every_value_prefix() {
-        for p in VALUE_PREFIXES {
+        for (p, _) in VALUE_PREFIXES {
             // `+`/`-` spell themselves as `+tag`/`-tag` in prose, since a bare
             // `+` is not something a user types.
             let needle = if p == "+" || p == "-" {
@@ -1382,6 +1512,134 @@ mod tests {
                 TOKEN_SHAPES.contains(&needle),
                 "`{p}` is an accepted filter prefix but no refusal message offers it: {TOKEN_SHAPES}"
             );
+        }
+    }
+
+    /// [`KEYWORDS`] and [`GRAMMAR`] must name the same valueless predicates, in
+    /// BOTH directions.
+    ///
+    /// The twin of [`value_prefixes_match_the_grammar`], and it exists for the
+    /// same reason one level over: `KEYWORDS` is now the menu `tasqx-cli` offers
+    /// for a bare partial word in a filter position, so a keyword added to the
+    /// parser and not to the list is a predicate the tool accepts and never
+    /// teaches, while one listed and not accepted is a Tab press that completes
+    /// to an error.
+    ///
+    /// Both directions matter and only one of them is the obvious one. Scanning
+    /// GRAMMAR for `"@…"` catches the addition; requiring each entry to PARSE
+    /// catches the removal, which no amount of text scanning can — a keyword
+    /// deleted from [`predicate`] leaves the grammar block, and this list, and
+    /// the menu, all still saying it works.
+    #[test]
+    fn keywords_match_the_grammar() {
+        let mut in_grammar: Vec<String> = Vec::new();
+        for line in GRAMMAR.lines() {
+            // `"@working"` and `"@blocked"` are the only `"@` shapes; the
+            // alternative spellings on the blocked line (`"+blocked"`,
+            // `"status:blocked"`) do not start with `@` and are deliberately not
+            // in the list — see KEYWORDS for why one concept gets one entry.
+            let mut rest = line;
+            while let Some(at) = rest.find("\"@") {
+                rest = &rest[at + 1..];
+                let Some(end) = rest[1..].find('"') else {
+                    break;
+                };
+                in_grammar.push(rest[..=end].to_string());
+            }
+        }
+        assert_eq!(
+            in_grammar, KEYWORDS,
+            "GRAMMAR names {in_grammar:?} as valueless predicates and KEYWORDS \
+             says {KEYWORDS:?}; one of them moved, and the completion menu reads \
+             KEYWORDS"
+        );
+        for kw in KEYWORDS {
+            Filter::parse(kw, anchor()).unwrap_or_else(|e| {
+                panic!("KEYWORDS offers {kw:?} and the parser refuses it: {e}")
+            });
+        }
+    }
+
+    /// An operator joins terms and is not one, which is exactly what a consumer
+    /// offering it in a menu has to know.
+    ///
+    /// Pinned behaviourally rather than by scanning [`GRAMMAR`], because the
+    /// operators appear there inside EBNF repetition (`( "or" and_expr )*`) and
+    /// a scan of that shape would be pinning the formatting. Renaming `or` to
+    /// something else reddens this in the only way that matters: the spelling
+    /// the menu offers stops joining two terms.
+    #[test]
+    fn operators_join_terms_rather_than_being_ones() {
+        for op in OPERATORS {
+            Filter::parse(&format!("+api {op} +infra"), anchor()).unwrap_or_else(|e| {
+                panic!("OPERATORS offers {op:?} and it does not join two terms: {e}")
+            });
+            assert!(
+                Filter::parse(op, anchor()).is_err(),
+                "{op:?} parses as a term on its own, so it is a predicate and \
+                 does not belong in OPERATORS"
+            );
+        }
+    }
+
+    /// The round-trip accessor the CLI's completion gate is built on, including
+    /// the case that makes it a VALUE check rather than a parse check.
+    ///
+    /// `+blocked` parses — as the derived blocked flag, not as a tag named
+    /// `blocked` — so a completion that only asked "does this parse?" would
+    /// offer it for such a tag and silently answer a different question at exit
+    /// 0. That is the shape this accessor exists to make refusable.
+    #[test]
+    fn sole_value_hands_back_what_the_token_carried() {
+        let value = |s: &str| {
+            Filter::parse(s, anchor())
+                .ok()
+                .and_then(|f| f.sole_value().map(str::to_string))
+        };
+        assert_eq!(value("+api"), Some("api".to_string()));
+        assert_eq!(value("-api"), Some("api".to_string()));
+        assert_eq!(value("project:work"), Some("work".to_string()));
+        assert_eq!(value("status:done"), Some("done".to_string()));
+        // The trap: a tag literally named `blocked` cannot be spelled `+blocked`.
+        assert_eq!(value("+blocked"), None);
+        assert_eq!(value("@working"), None);
+        // A date bound resolved its value away at parse time, by design.
+        assert_eq!(value("due.before:tomorrow"), None);
+        // Not one predicate at all, so there is no single value to hand back.
+        assert_eq!(value("+api +infra"), None);
+        assert_eq!(value("+api or +infra"), None);
+        // The empty filter is `Pred::Always`, which carries nothing.
+        assert_eq!(value(""), None);
+    }
+
+    /// Every vocabulary in the registry must be reachable, or the CLI's
+    /// exhaustive match carries an arm for a case that cannot happen while some
+    /// real prefix quietly shares another arm's answer.
+    #[test]
+    fn every_vocabulary_is_named_by_some_prefix() {
+        for want in [
+            Vocabulary::Tag,
+            Vocabulary::Project,
+            Vocabulary::Status,
+            Vocabulary::Date,
+        ] {
+            assert!(
+                VALUE_PREFIXES.iter().any(|(_, v)| *v == want),
+                "no prefix draws from {want:?}, so a consumer matching on it is \
+                 writing an unreachable arm"
+            );
+        }
+        // And each prefix really does take the vocabulary it claims: the value
+        // is fed back through the parser, which is the only authority on it.
+        for (prefix, vocabulary) in VALUE_PREFIXES {
+            let sample = match vocabulary {
+                Vocabulary::Tag | Vocabulary::Project => "sample",
+                Vocabulary::Status => Status::ALL[0].as_str(),
+                Vocabulary::Date => "tomorrow",
+            };
+            Filter::parse(&format!("{prefix}{sample}"), anchor()).unwrap_or_else(|e| {
+                panic!("`{prefix}` claims {vocabulary:?} and refuses {sample:?}: {e}")
+            });
         }
     }
 

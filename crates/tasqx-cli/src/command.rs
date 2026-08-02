@@ -351,6 +351,15 @@ pub(super) enum Command {
         /// token INCLUDING clap's own flags, which broke `list @working
         /// --json`. The dash is hidden by the `argv` pre-pass instead, leaving
         /// clap full authority over every `--flag` in any position.
+        //
+        // `filter_words()` and not a bare `ArgValueCompleter`: the pre-pass
+        // above escapes into this very positional, so a completer that does not
+        // restore the dash is handed `\u{1}ne` where the user typed `-ne` and
+        // answers nothing for every tag exclusion. `complete::escaping_drift`
+        // fails the build for one, and requires this attachment to exist —
+        // membership comes from `argv::FILTER_COMMANDS`, so a filter command
+        // added tomorrow is a red build until it is completed too.
+        #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
     },
     /// Start a task timer (maps to task.start).
@@ -474,6 +483,13 @@ pub(super) enum Command {
         /// Hyphen-tolerant because the tail is filter DSL and `-tag` is part of
         /// it — via the `argv` pre-pass, not `allow_hyphen_values`, which would
         /// swallow `--html`; see `List::filter`.
+        //
+        // `report_words()` and not `filter_words()`: this is the one filter
+        // positional whose FIRST word may be something else, and `report_params`
+        // is where that is decided. Offering only filter tokens would leave the
+        // three axes — a closed vocabulary the tool knows exactly — unoffered at
+        // the position they are legal in.
+        #[arg(add = crate::complete::candidates::report_words())]
         args: Vec<String>,
         /// Emit a single self-contained HTML report (inline CSS + SVG, no
         /// external requests) instead of the terminal table.
@@ -539,6 +555,7 @@ pub(super) enum Command {
         ///
         /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
         /// `List::filter`.
+        #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
     },
     /// Import tasks from a file, or `-` for stdin (maps to store.import).
@@ -585,6 +602,7 @@ pub(super) enum Command {
         ///
         /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
         /// `List::filter`.
+        #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
     },
     /// Bundled MCP server (DESIGN.md §7, §12-D7).

@@ -9,7 +9,8 @@
 use clap_complete::engine::{ArgValueCandidates, ArgValueCompleter, CompletionCandidate};
 use serde_json::{json, Value};
 
-use tasqx_core::Priority;
+use tasqx_core::filter::{self, Vocabulary};
+use tasqx_core::{Priority, Status};
 
 use crate::sugar::{Partial, ValueKey};
 
@@ -579,6 +580,277 @@ fn priority_candidates(typed: &str) -> Vec<CompletionCandidate> {
             CompletionCandidate::new(format!("!{spelling}")).hide(*spelling != p.as_str())
         })
         .collect()
+}
+
+// ---- the read-side filter grammar ------------------------------------------
+
+/// The filter DSL, for the positional tail of a command in
+/// `argv::FILTER_COMMANDS` whose words are filter grammar and nothing else.
+///
+/// `report` is the one member that is NOT this — its first word may be a
+/// `group_by` axis — and it takes [`report_words`] instead.
+///
+/// # Where the vocabulary comes from
+///
+/// `tasqx_core::filter`, variant by variant, and none of it is restated here.
+/// The eight value prefixes, the two valueless keywords and the two operators
+/// were all private to that module until this provider needed them; the
+/// alternative was a second copy of twelve strings in a second crate, which is
+/// the drift `filter::tests::token_shapes_name_every_value_prefix` already
+/// caught ONCE inside core — where a guard could see it. Across a crate
+/// boundary no guard here could. See `filter::VALUE_PREFIXES` for why the
+/// visibility change is the cheaper half of that trade.
+///
+/// # Why an `ArgValueCompleter`, through `escaped_word_completer`
+///
+/// A completer because the seam has to READ the partial word: `+`, `-`,
+/// `project:` and a bare `@w` are four different questions and only the word
+/// says which. Through [`super::escaped_word_completer`] because this is a
+/// filter positional and the argv pre-pass escapes the leading dash of every
+/// `-tag` before the engine sees it — a bare `ArgValueCompleter` here is handed
+/// `\u{1}ne` where the user typed `-ne` and answers nothing for every tag
+/// EXCLUSION while `+tag` and `project:x` keep working. Four of five prefixes is
+/// the worst version of this defect because it looks finished;
+/// `complete::escaping_drift` fails the build for it.
+pub(crate) fn filter_words() -> ArgValueCompleter {
+    super::escaped_word_completer(filter_candidates)
+}
+
+/// `report`'s tail: [`filter_words`] plus the `group_by` axis its FIRST word may
+/// be.
+///
+/// `report_params` (`lib.rs`) reads `args[0]` as a `group_by` when it names one
+/// and treats the whole tail as a filter otherwise, so at the first word BOTH
+/// vocabularies are legal — `tasqx report project` and `tasqx report +api` are
+/// each valid and mean different things. At every later word only filter grammar
+/// is: `tasqx report project status` exits 2 with `unknown filter token
+/// "status"`. Measured against the built binary, both spellings.
+///
+/// # The residual over-offer, named rather than papered over
+///
+/// The axes are offered at `arg_index == 0`, and that index does not mean what
+/// its name suggests: it is `0` for the first word AND for the second (measured;
+/// see [`super::escaped_word_completer_at`] for the table and the upstream
+/// lines). So `tasqx report project st<TAB>` — the second word, where a
+/// `group_by` is no longer legal — is also offered `status`.
+///
+/// That is an over-offer and it is the lesser of the two available failures:
+///
+///  * choosing the candidate produces `unknown filter token "status"` on stderr
+///    at exit 2, which is LOUD. Nothing is silently misfiled, nothing is
+///    silently narrowed, and core's own message names the offending token and
+///    lists the shapes that would have worked.
+///  * withholding the axes entirely to avoid it would leave `tasqx report <TAB>`
+///    — the primary spelling, and a closed compile-time vocabulary the tool
+///    knows exactly — answering with filter tokens only. That is an under-offer
+///    on the common case bought with a wrong menu removed from the rare one.
+///
+/// There is no third option: a completer is handed the index and the partial
+/// word and nothing else, so "is this the first word?" is not a question this
+/// seam can ask. If `clap_complete` ever passes a true word index, the `0` arm
+/// below becomes exact and
+/// `tests/completion.rs::a_report_group_by_is_offered_where_it_is_legal` is
+/// where that shows up.
+pub(crate) fn report_words() -> ArgValueCompleter {
+    super::escaped_word_completer_at(|arg_index, word| {
+        // The axes first: at the first word they are the likelier intent, and
+        // clap's engine preserves the order a provider returns within one tag.
+        let mut out = match arg_index {
+            0 => group_by_candidates(word),
+            _ => Vec::new(),
+        };
+        out.extend(filter_candidates(word));
+        out
+    })
+}
+
+/// The `report` axes, read out of `engine::SUMMARY_GROUP_BY` — the same const
+/// `report_params` dispatches on and the MCP schema renders from.
+///
+/// Needs no [`super::lookup`]: the vocabulary is compiled in, like `!` on the
+/// sugar surface.
+fn group_by_candidates(typed: &str) -> Vec<CompletionCandidate> {
+    tasqx_core::engine::SUMMARY_GROUP_BY
+        .iter()
+        .filter(|axis| axis.starts_with(typed))
+        .map(|axis| CompletionCandidate::new(*axis))
+        .collect()
+}
+
+/// The dispatcher: what filter token can follow the partial word `typed`?
+///
+/// A word carrying a value prefix asks about that prefix's vocabulary; anything
+/// else is asking what shapes exist at all.
+fn filter_candidates(typed: &str) -> Vec<CompletionCandidate> {
+    let Some((prefix, vocabulary, value)) = value_prefix_of(typed) else {
+        return token_shapes(typed);
+    };
+    // Matched variant by variant with no wildcard, which is why
+    // `filter::Vocabulary` is deliberately not `#[non_exhaustive]`: a ninth
+    // prefix added to core has to be a compile error here rather than a menu
+    // that is silently empty for exactly the predicate nobody remembered.
+    match vocabulary {
+        // Both tag prefixes take the same vocabulary and the composed word is
+        // what tells them apart — which is the round-trip gate's business, not
+        // this arm's. `-` is the one that only works because of the escape
+        // seam above.
+        Vocabulary::Tag => composed(prefix, value, tag_names()),
+        // ARCHIVED PROJECTS INCLUDED, unlike `--project` on a write command, and
+        // the difference is what the receiving command does. `add`, `modify` and
+        // `use` refuse an archived project outright, so offering one there is a
+        // menu entry whose only outcome is an error. A filter is a READ and the
+        // engine really does serve it: measured against the built binary, with a
+        // project archived through `project.archive`, `tasqx list
+        // project:oldstuff` prints its task, `export` exports it and `report`
+        // counts it, all at exit 0. Withholding the name would make completion
+        // offer LESS than the command accepts, which reads as "that project is
+        // gone" — the same under-offer `projects_including_archived` was split
+        // out to fix on `chart burndown`.
+        Vocabulary::Project => composed(prefix, value, project_names(true)),
+        // The one closed vocabulary in the grammar, and the only arm that needs
+        // no store at all. `Status::ALL` is the same five variants `Status::parse`
+        // accepts, so the menu and the refusal cannot disagree.
+        //
+        // `status:blocked` is deliberately absent although the grammar accepts
+        // it: it is a third spelling of `@blocked`, which the keyword menu
+        // already offers, and `Status::parse` refuses it anyway — so it falls out
+        // of this list rather than being excluded by a rule stated here.
+        Vocabulary::Status => composed(
+            prefix,
+            value,
+            Status::ALL.iter().map(|s| s.as_str().to_string()).collect(),
+        ),
+        // An OPEN natural-language vocabulary, for the reason the sugar
+        // dispatcher's date keys record: `due.before:` takes whatever
+        // `datetime::parse_when` takes — `tomorrow`, `friday`, `in 3 days`,
+        // `eom`, `2026-07-25` — and no module exports a list of accepted words
+        // because there is no list. A hand-written menu of three of them would
+        // be a fifth copy of a vocabulary that has four already (D30), and it
+        // would teach that the other spellings do not work.
+        //
+        // This arm is belt-and-braces, and that was found by mutation rather
+        // than reasoned: replacing it with `composed(prefix, value, [today,
+        // tomorrow, friday])` changes NOTHING, because the round-trip gate
+        // refuses every one of them — a date bound resolves its value away at
+        // parse time, so `Filter::sole_value` answers `None` and no composed
+        // date can ever survive. Emitting one takes bypassing `composed`
+        // entirely, which is the shape `a_date_bound_offers_nothing_because_its
+        // _vocabulary_is_open` was re-pointed at once that was measured.
+        Vocabulary::Date => Vec::new(),
+    }
+}
+
+/// The value prefix `word` carries, LONGEST first, plus what has been typed of
+/// its value.
+///
+/// Longest-match for the reason `sugar::classify_partial` orders `VALUE_KEYS`
+/// that way: the registry holds prefixes that could shadow one another, and
+/// resolving by first match makes the answer depend on the order somebody
+/// happened to write them in. Nothing in today's eight overlaps; that is a
+/// property of today's eight, not of the lookup.
+fn value_prefix_of(word: &str) -> Option<(&'static str, Vocabulary, &str)> {
+    filter::VALUE_PREFIXES
+        .iter()
+        .filter_map(|&(prefix, vocabulary)| Some((prefix, vocabulary, word.strip_prefix(prefix)?)))
+        .max_by_key(|(prefix, _, _)| prefix.len())
+}
+
+/// The token SHAPES the grammar accepts, for a word that has not committed to
+/// one yet.
+///
+/// Three registries, joined and filtered by what has been typed, and no fourth
+/// list of its own. A `key:` shape is offered as a stub the user goes on typing
+/// — `p<TAB>` gives `project:`, and `project:<TAB>` then gives the names — which
+/// is why this menu is NOT run through the round-trip gate that
+/// [`composed`] applies: `status:` and `due.before:` do not parse on their own
+/// and are not meant to, exactly as `and` and `or` do not. They are prefixes of
+/// a token, not tokens, and the question this menu answers is "what may I type
+/// here", not "what may I press Enter on".
+///
+/// **Not run through [`deliverable_as_one_word`] either**, and that is a
+/// decision rather than an omission. That rule asks whether a shell can deliver
+/// a value out of the USER'S STORE, where the answer is unknown and a wrong
+/// guess files a task somewhere else; these twelve strings are tasqx's own fixed
+/// grammar, printed in its help, its manual and its refusal messages. Applying
+/// the rule would drop `@working` and `@blocked` — `@` is not in
+/// [`SAFE_PUNCTUATION`] — for a hazard that does not exist: measured in
+/// PowerShell, the shell most likely to claim `@`, `tasqx list @working` reaches
+/// the binary intact, because splatting applies to PowerShell commands and not
+/// to a native executable's arguments.
+///
+/// `(` and `)` are grammar terminals and are deliberately in none of the three
+/// registries, so they are not offered. Both reasons point the same way: they
+/// are lexical structure rather than predicates, and a bare `(` is the one
+/// candidate no shell delivers — bash calls it a syntax error and PowerShell
+/// opens a subexpression, which is precisely the class
+/// [`deliverable_as_one_word`] refuses for a stored value.
+fn token_shapes(typed: &str) -> Vec<CompletionCandidate> {
+    filter::KEYWORDS
+        .into_iter()
+        .chain(filter::OPERATORS)
+        .chain(filter::VALUE_PREFIXES.iter().map(|&(prefix, _)| prefix))
+        .filter(|shape| shape.starts_with(typed))
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
+/// Filter `values` by what has been typed, weld the prefix back on, and keep
+/// only the words the FILTER PARSER reads back as the value they were built
+/// from.
+///
+/// The twin of [`prefixed`] on the read side, and it is a separate function
+/// rather than a parameter of that one because the two answer to different
+/// parsers: `prefixed` asks `sugar::parsed_value_of` (the write path), this asks
+/// `filter::Filter` (the read path), and a single function taking "which parser"
+/// would be one call site deciding a question that belongs to the grammar.
+///
+/// # The round-trip gate, and the case that makes it a VALUE check
+///
+/// Asking only whether the composed word PARSES is not enough, and the counter-
+/// example is not hypothetical: a tag genuinely named `blocked` composes
+/// `+blocked`, which parses perfectly — as the derived blocked flag
+/// (`filter::predicate` claims that spelling before the tag branch), not as the
+/// tag. Offering it means Tab silently swaps "tasks tagged blocked" for "tasks
+/// with an unresolved dependency", at exit 0, which is the silent-drop class
+/// manufactured by the feature built to prevent it. `Filter::sole_value` answers
+/// `None` there and the candidate is withheld.
+///
+/// The gate also covers the refusals a character rule would have had to restate:
+/// a tag named `-lead` composes `--lead`, which the grammar refuses as a
+/// mistyped flag (and *must* — that refusal is what lets `argv` tell a filter
+/// token from a flag one token at a time), and an empty value composes a bare
+/// `+`, which is an unknown token. Neither is spelled out here, because reading
+/// the answer out of the parser is what keeps this from drifting when the
+/// parser's refusals move — and they have moved once already.
+///
+/// # Where the cap goes
+///
+/// AFTER the prefix filter, exactly as [`prefixed`] does and for the reason
+/// [`MAX_VALUE_CANDIDATES`] records: capping the sorted vocabulary first makes a
+/// tag that exists and uniquely matches what was typed silently absent from its
+/// own menu, which is a wrong answer rather than a shorter one. Measured at 252
+/// tags on the sugar surface, where `+api<TAB>` answered nothing.
+fn composed(prefix: &str, typed: &str, values: Vec<String>) -> Vec<CompletionCandidate> {
+    values
+        .into_iter()
+        .filter(|value| value.starts_with(typed))
+        .filter_map(|value| {
+            let word = format!("{prefix}{value}");
+            parses_back_to(&word, &value).then_some(word)
+        })
+        .take(MAX_VALUE_CANDIDATES)
+        .map(CompletionCandidate::new)
+        .collect()
+}
+
+/// Does the filter parser take `value` back out of `word`?
+///
+/// `Timestamp::now()` for the reason `argv::filter_flag_error` gives for the
+/// same call: `Filter::parse` needs an instant to resolve a relative date bound
+/// against, and no composed candidate is ever a date — the [`Vocabulary::Date`]
+/// arm returns nothing — so which instant it is cannot matter.
+fn parses_back_to(word: &str, value: &str) -> bool {
+    filter::Filter::parse(word, jiff::Timestamp::now()).is_ok_and(|f| f.sole_value() == Some(value))
 }
 
 #[cfg(test)]
@@ -1231,5 +1503,261 @@ mod tests {
         got.iter()
             .map(|c| c.get_value().to_string_lossy().into_owned())
             .collect()
+    }
+
+    // ---- the filter grammar ------------------------------------------------
+
+    /// A bare partial word offers the SHAPES the grammar accepts, and it offers
+    /// them out of core's registries rather than out of a list kept here.
+    ///
+    /// Asserted as an exact set built from those same registries, which sounds
+    /// circular and is not: what it pins is that every entry reaches the menu and
+    /// nothing else does. A prefix dropped from `VALUE_PREFIXES` reddens core's
+    /// own `token_shapes_name_every_value_prefix`; a prefix silently skipped
+    /// HERE — filtered out by some rule added later — reddens this.
+    #[test]
+    fn a_bare_partial_offers_the_grammar_shapes() {
+        let want: Vec<String> = filter::KEYWORDS
+            .into_iter()
+            .chain(filter::OPERATORS)
+            .chain(filter::VALUE_PREFIXES.iter().map(|&(p, _)| p))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(values(filter_candidates("")), want);
+        // The registries really do carry the tokens a reader expects to see, so
+        // the assertion above is not satisfiable by two empty lists.
+        for shape in ["@working", "@blocked", "and", "or", "project:", "status:"] {
+            assert!(want.iter().any(|w| w == shape), "{shape:?} missing");
+        }
+
+        // Filtered by what has been typed, case-sensitively, exactly as clap's
+        // engine filters a possible value.
+        assert_eq!(values(filter_candidates("@")), ["@working", "@blocked"]);
+        assert_eq!(values(filter_candidates("@w")), ["@working"]);
+        assert_eq!(values(filter_candidates("pro")), ["project:"]);
+        assert_eq!(
+            values(filter_candidates("due.")),
+            ["due.before:", "due.after:"]
+        );
+        assert_eq!(values(filter_candidates("@W")), Vec::<String>::new());
+        // Prose is not a filter shape and must offer nothing rather than the
+        // whole grammar — the same rule the sugar dispatcher applies to a title.
+        assert_eq!(values(filter_candidates("zzq")), Vec::<String>::new());
+    }
+
+    /// `(` and `)` are grammar terminals and are deliberately NOT offered.
+    ///
+    /// Pinned rather than left implicit, because "the registries happen not to
+    /// contain them" is a fact somebody could undo in one line while believing
+    /// they were completing the grammar. A bare `(` is the one candidate no shell
+    /// delivers: bash calls it a syntax error and PowerShell opens a
+    /// subexpression, which is the class `deliverable_as_one_word` refuses.
+    #[test]
+    fn parentheses_are_not_offered_because_no_shell_delivers_one() {
+        for typed in ["", "(", ")"] {
+            for got in values(filter_candidates(typed)) {
+                assert!(
+                    !got.contains('(') && !got.contains(')'),
+                    "`list {typed}<TAB>` offered {got:?}, which a shell cannot \
+                     insert as one word"
+                );
+            }
+        }
+        assert!(!deliverable_as_one_word("("));
+    }
+
+    /// `status:` is the one filter vocabulary that is closed and compiled in, so
+    /// it answers without a store — and it answers with exactly `Status::ALL`.
+    ///
+    /// Driven off the enum rather than a list of five spellings, so a sixth
+    /// variant joins the menu the day it exists rather than when someone
+    /// remembers this test.
+    #[test]
+    fn a_status_prefix_offers_the_closed_status_set() {
+        let want: Vec<String> = Status::ALL
+            .iter()
+            .map(|s| format!("status:{}", s.as_str()))
+            .collect();
+        assert_eq!(values(filter_candidates("status:")), want);
+        assert_eq!(values(filter_candidates("status:d")), ["status:done"]);
+        assert_eq!(
+            values(filter_candidates("status:zz")),
+            Vec::<String>::new(),
+            "a value no status starts with must offer nothing, not everything"
+        );
+        // `status:blocked` is a third spelling of `@blocked` and is not a member
+        // of the status set; the keyword menu is where the blocked flag lives.
+        assert!(!values(filter_candidates("status:")).contains(&"status:blocked".to_string()));
+    }
+
+    /// The four date-shaped keys offer NOTHING, and that is the answer rather
+    /// than a gap: they take whatever `datetime::parse_when` takes, which is an
+    /// open natural-language vocabulary no module exports.
+    ///
+    /// Driven off the registry so the day a fifth date key is added it is covered
+    /// without this test being touched — and so that a key whose vocabulary was
+    /// mis-declared as `Date` shows up here as a menu that went quiet.
+    #[test]
+    fn a_date_bound_offers_nothing_because_its_vocabulary_is_open() {
+        let mut seen = 0;
+        for (prefix, vocabulary) in filter::VALUE_PREFIXES {
+            if vocabulary != Vocabulary::Date {
+                continue;
+            }
+            seen += 1;
+            assert!(
+                filter_candidates(prefix).is_empty(),
+                "`{prefix}<TAB>` offered a menu for a vocabulary that has no list"
+            );
+            assert!(filter_candidates(&format!("{prefix}tomo")).is_empty());
+        }
+        assert_eq!(seen, 4, "the grammar declares four date bounds");
+    }
+
+    /// The round-trip gate, and the case that makes it a VALUE check rather than
+    /// a parse check.
+    ///
+    /// A tag genuinely named `blocked` composes `+blocked`, which parses
+    /// perfectly — as the derived blocked FLAG, because `filter::predicate`
+    /// claims that spelling before it reaches the tag branch. Offering it means
+    /// Tab silently swaps "tasks tagged blocked" for "tasks with an unresolved
+    /// dependency", at exit 0. A gate that only asked "does this parse?" would
+    /// ship it.
+    ///
+    /// Mutation-proven: dropping the `parses_back_to` filter in [`composed`]
+    /// reddens this naming `+blocked`, and `-lead` with it.
+    #[test]
+    fn a_candidate_the_filter_parser_would_read_differently_is_not_offered() {
+        let offered = |prefix: &str, typed: &str, names: &[&str]| -> Vec<String> {
+            values(composed(
+                prefix,
+                typed,
+                names.iter().map(|s| (*s).to_string()).collect(),
+            ))
+        };
+
+        assert_eq!(
+            offered("+", "", &["blocked", "api"]),
+            ["+api"],
+            "`+blocked` is the derived blocked flag, not the tag `blocked`, so \
+             offering it answers a different question at exit 0"
+        );
+        // The exclusion spelling of the same tag is fine and must stay offered:
+        // only `+blocked` is claimed by the flag.
+        assert_eq!(offered("-", "", &["blocked"]), ["-blocked"]);
+        // A tag whose name begins with a dash composes `--lead`, which the
+        // grammar refuses as a mistyped flag — the refusal that lets `argv` tell
+        // a filter token from a flag one token at a time.
+        assert_eq!(offered("-", "", &["-lead", "api"]), ["-api"]);
+        // ...and is perfectly includable, because `+-lead` is not flag-shaped.
+        assert_eq!(offered("+", "", &["-lead"]), ["+-lead"]);
+        // An empty value composes a bare `+`, an unknown token.
+        assert_eq!(offered("+", "", &[""]), Vec::<String>::new());
+        // The ordinary case still works, or the assertions above would be
+        // satisfied by a gate that refuses everything.
+        assert_eq!(
+            offered("project:", "wo", &["work", "home"]),
+            ["project:work"]
+        );
+    }
+
+    /// The cap bounds the MENU, not the vocabulary — the filter surface's copy of
+    /// the property `the_cap_applies_after_the_prefix_not_before_it` pins on the
+    /// sugar surface, and it needs its own because it is a second `take` in a
+    /// second function.
+    ///
+    /// Mutation-proven: moving the `take` above the `starts_with` filter in
+    /// [`composed`] reddens this naming the tag it swallowed.
+    #[test]
+    fn the_filter_cap_applies_after_the_typed_word() {
+        let many: Vec<String> = (0..MAX_VALUE_CANDIDATES * 2)
+            .map(|i| format!("a{i:04}"))
+            .chain(["zebra".to_string()])
+            .collect();
+
+        let late = values(composed("-", "zeb", many.clone()));
+        assert_eq!(
+            late,
+            ["-zebra"],
+            "`zebra` sorts past the cap but uniquely matches `zeb`, so \
+             `list -zeb<TAB>` must still find it; got {late:?}"
+        );
+        assert_eq!(composed("+", "a", many).len(), MAX_VALUE_CANDIDATES);
+    }
+
+    /// `report`'s tail is the filter grammar PLUS the group_by axes, and only at
+    /// the first word.
+    ///
+    /// Both positions are asserted because offering filter tokens where an axis
+    /// belongs and offering an axis where only a filter token is legal are two
+    /// different wrong menus, and a test of one position cannot see the other.
+    /// The axes come from `engine::SUMMARY_GROUP_BY`, the same const
+    /// `report_params` dispatches on.
+    #[test]
+    fn report_offers_its_axes_at_the_first_word_and_not_later() {
+        // `report_words` is an `ArgValueCompleter`; drive it the way the engine
+        // does rather than calling a private helper, so the wiring is included.
+        let completer = report_words();
+        let at = |index: usize, word: &str| -> Vec<String> {
+            values(completer.complete_at(index, std::ffi::OsStr::new(word)))
+        };
+
+        let first = at(0, "");
+        for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
+            assert!(
+                first.iter().any(|c| c == axis),
+                "`report <TAB>` must offer the axis {axis:?}, got {first:?}"
+            );
+        }
+        // ...and the filter grammar alongside it, because `report +api` is a
+        // valid first word too.
+        assert!(first.iter().any(|c| c == "@working"), "got {first:?}");
+        assert_eq!(at(0, "pri"), ["priority"]);
+        // `project` the axis and `project:` the predicate are both legal at the
+        // first word and both must be offered; they are different tokens.
+        assert_eq!(at(0, "pro"), ["project", "project:"]);
+
+        // Past the first word an axis is no longer legal — `tasqx report project
+        // status` exits 2 with `unknown filter token "status"`, measured — so the
+        // menu is filter grammar only.
+        let later = at(1, "");
+        for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
+            assert!(
+                !later.iter().any(|c| c == axis),
+                "the axis {axis:?} is offered where only a filter token parses, \
+                 got {later:?}"
+            );
+        }
+        assert!(later.iter().any(|c| c == "@working"), "got {later:?}");
+        assert_eq!(at(1, "pro"), ["project:"]);
+    }
+
+    /// The two seams must agree about the grammar: whatever `list` offers for a
+    /// word, `report` offers too, plus the axes at the first word and nothing
+    /// else.
+    ///
+    /// It is the guard against the likelier of the two `report` mistakes — not a
+    /// wrong axis, but a second copy of the filter dispatcher that drifts. There
+    /// is one dispatcher and this says so.
+    #[test]
+    fn report_adds_to_the_filter_menu_rather_than_replacing_it() {
+        let filter = filter_words();
+        let report = report_words();
+        for word in ["", "@", "pro", "status:", "+", "-", "due.", "zzq"] {
+            let os = std::ffi::OsStr::new(word);
+            let shared = values(filter.complete_at(0, os));
+            let extended = values(report.complete_at(0, os));
+            assert!(
+                extended.ends_with(&shared),
+                "`report {word}<TAB>` must offer everything `list {word}<TAB>` \
+                 does; got {extended:?} against {shared:?}"
+            );
+            assert_eq!(
+                values(report.complete_at(1, os)),
+                shared,
+                "past the first word `report` is the filter grammar and nothing \
+                 more"
+            );
+        }
     }
 }
