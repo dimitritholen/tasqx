@@ -1252,6 +1252,37 @@ mod tests {
         s.parse().expect("valid RFC3339 test timestamp")
     }
 
+    /// Serialises every test that touches the DISCOVERY branch.
+    ///
+    /// Discovery scans process-global roots, and one of its tests
+    /// (`contested_discovery_samples_stay_terminal_rather_than_retrying`) plants
+    /// a transcript and points `$CLAUDE_CONFIG_DIR` at it with `set_var` — which
+    /// every other thread in this binary sees, because environment variables are
+    /// per-process and `cargo test` runs tests as threads.
+    ///
+    /// That was not a theoretical hazard. Its planted sample is stamped
+    /// `2020-01-01T10:10:00Z`, and the sibling
+    /// `discovery_finding_nothing_stays_terminal_rather_than_retrying` asserts
+    /// that a scan over `2020-01-01T10:00Z..11:00Z` finds NOTHING — the same
+    /// hour. When the two overlapped, the second test's scan saw the first
+    /// test's transcript through the override, `found` came back true, and it
+    /// failed at `assert!(!r.found)`. Measured on Linux: 1 failure in 15 runs of
+    /// the full lib binary, and 0 in 20 runs of either test on its own, which is
+    /// exactly the profile of a race and exactly the profile of a flake nobody
+    /// can reproduce from the failure message.
+    ///
+    /// The old code carried a `// SAFETY:` note claiming the concurrent readers
+    /// "tolerate an extra root". They do tolerate it; that was never the
+    /// problem. The problem is that the extra root CONTAINS an in-window sample
+    /// for the window another test is asserting is empty, so tolerating it is
+    /// precisely what makes the measurement wrong.
+    ///
+    /// Both tests take this lock, so the override is never live while another
+    /// discovery scan runs. Poisoning is deliberately ignored: a panic in one
+    /// test has already failed that test, and turning it into a cascade of
+    /// unrelated failures hides the original.
+    static DISCOVERY_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A `done` event payload carrying a transcript path, SERIALISED rather than
     /// formatted.
     ///
@@ -1852,6 +1883,10 @@ mod tests {
     /// process-global state, and races the other tests in this binary.
     #[test]
     fn discovery_finding_nothing_stays_terminal_rather_than_retrying() {
+        // Keeps the sibling's `$CLAUDE_CONFIG_DIR` override — whose planted
+        // transcript sits in this very window — out of this scan. See
+        // [`DISCOVERY_ENV`].
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let pa = PendingAttribution {
             task_id: "t".into(),
             short_id: 1,
@@ -1920,8 +1955,11 @@ mod tests {
             consumed_sample_ids: HashSet::new(),
         };
 
-        // SAFETY: restored below; the only concurrent readers are discovery
-        // scans, which tolerate an extra root (see the codex env-test pattern).
+        // Held across the whole override, so no other discovery scan in this
+        // binary can see the planted root. See [`DISCOVERY_ENV`].
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: restored below, and [`DISCOVERY_ENV`] keeps the only other
+        // discovery test out for the duration.
         let prev = std::env::var_os("CLAUDE_CONFIG_DIR");
         unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
         // Minutes after completion — where the explicit path would retry.
@@ -2401,12 +2439,7 @@ mod tests {
                 .conn()
                 .execute(
                     "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
-                    (
-                        format!(
-                            r#"{{"completed":"2026-07-25T10:30:00Z","client":"claude-code","transcript_path":"{p}"}}"#
-                        ),
-                        &id,
-                    ),
+                    (done_payload("2026-07-25T10:30:00Z", p), &id),
                 )
                 .unwrap();
         }
@@ -2729,12 +2762,7 @@ mod tests {
                 .conn()
                 .execute(
                     "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
-                    (
-                        format!(
-                            r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{p}"}}"#
-                        ),
-                        &id,
-                    ),
+                    (done_payload(completed, p), &id),
                 )
                 .unwrap();
         }
