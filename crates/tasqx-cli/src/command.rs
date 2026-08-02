@@ -250,7 +250,16 @@ pub(super) enum Command {
         #[arg(long, short = 'e')]
         estimate: Option<String>,
         /// Repeatable tag flag.
-        #[arg(long = "tag", short = 't')]
+        // `value_name` is what brings this into
+        // `every_tag_valued_arg_offers_tag_names`'s scope; the derive would
+        // otherwise render `<TAGS>` off the plural field name and the guard
+        // would silently not cover it.
+        #[arg(
+            long = "tag",
+            short = 't',
+            value_name = "TAG",
+            add = crate::complete::candidates::tags()
+        )]
         tags: Vec<String>,
     },
     /// Change a task (maps to task.modify). Takes the same inline sugar and
@@ -310,7 +319,12 @@ pub(super) enum Command {
         #[arg(long, short = 'e')]
         estimate: Option<String>,
         /// Add a tag (repeatable). Routed to tag.add.
-        #[arg(long = "tag", short = 't')]
+        #[arg(
+            long = "tag",
+            short = 't',
+            value_name = "TAG",
+            add = crate::complete::candidates::tags()
+        )]
         tags: Vec<String>,
         /// Clear a field back to unset (repeatable). The ONLY removal syntax.
         #[arg(
@@ -664,7 +678,12 @@ pub(super) enum ChartKind {
     /// Remaining open tasks over the last N days (from the events table).
     Burndown {
         /// Restrict to a project (else all tasks).
-        #[arg(long, add = crate::complete::candidates::projects())]
+        // The archived-inclusive provider, unlike every other `--project`. This
+        // is a READ and the engine really does chart an archived project, so the
+        // narrow set would offer less than the command accepts; `add`, `modify`
+        // and `use` all refuse an archived project outright, which is why they
+        // take the narrow one. See `candidates::projects`.
+        #[arg(long, add = crate::complete::candidates::projects_including_archived())]
         project: Option<String>,
         /// Number of days to show (1-3650; default 30).
         #[arg(long, value_parser = window_parser(MAX_CHART_DAYS))]

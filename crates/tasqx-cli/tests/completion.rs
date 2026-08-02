@@ -671,6 +671,7 @@ fn seeded_values(label: &str) -> (std::path::PathBuf, String) {
     };
     run(&["init", SEEDED_PROJECT]);
     run(&["init", SEEDED_SPACED_PROJECT]);
+    run(&["init", SEEDED_COLON_PROJECT]);
     run(&[
         "add",
         "a tagged task",
@@ -689,6 +690,14 @@ fn seeded_values(label: &str) -> (std::path::PathBuf, String) {
 const SEEDED_PROJECT: &str = "work";
 /// Not deliverable: a shell would split it into two words.
 const SEEDED_SPACED_PROJECT: &str = "home renovation";
+/// Deliverable by a shell and NOT usable after a sugar key: `project:` + this is
+/// `project::x`, which `sugar::split_key` refuses as a Rust path. It is in the
+/// fixture because without it
+/// [`every_offered_candidate_produces_the_command_it_promises`] was
+/// fixture-blind — the round trip it asserts held for every name seeded, and the
+/// shipped completer was offering `project::x`, which filed the task under the
+/// DEFAULT project and appended the candidate to the title at exit 0.
+const SEEDED_COLON_PROJECT: &str = ":x";
 
 /// One bash callback against a seeded store.
 ///
@@ -722,6 +731,83 @@ fn complete_bash_in(
     );
     candidates(&out)
 }
+
+/// A tag that exists and uniquely matches what was typed is offered, however
+/// late it sorts — on BOTH tag surfaces.
+///
+/// # Why this needs its own store and two hundred and fifty tags
+///
+/// The candidate cap is a menu bound, and it is only ever correct applied AFTER
+/// the user's prefix. Applied before, it silently deletes every name past the
+/// two-hundredth in sort order, which reads as "that tag does not exist" while
+/// the tag sits on a task. That shipped twice on this branch, in two different
+/// shapes, and neither was visible to a three-tag fixture:
+///
+///  * `+api<TAB>` answered nothing, because `tags_from` truncated the sorted
+///    vocabulary before `prefixed` filtered it;
+///  * `--tag zeb<TAB>` answered nothing while `+zeb<TAB>` answered `+zebra`,
+///    because `--tag` was first attached as an `ArgValueCandidates`, which the
+///    engine filters only after the provider has already capped.
+///
+/// Two tags do the work: one deep inside the alphabetical run and one past its
+/// end. Both are asserted through the real binary, because the second failure
+/// was a property of which clap seam the argument carries and no in-process test
+/// of the provider could have seen it.
+#[test]
+fn a_tag_past_the_candidate_cap_is_still_offered_for_its_own_prefix() {
+    let db = temp_db("cap-order");
+    let socket = format!("tasqx-completion-cap-order-{}", std::process::id());
+
+    // One task carrying a vocabulary larger than the cap. The filler sorts
+    // first, so anything that caps before filtering loses both probes.
+    let filler: Vec<String> = (0..250).map(|i| format!("a{i:03}")).collect();
+    let mut args: Vec<&str> = vec!["--no-daemon", "add", "a task with many tags"];
+    for tag in &filler {
+        args.push("--tag");
+        args.push(tag);
+    }
+    for probe in [LATE_TAG, LAST_TAG] {
+        args.push("--tag");
+        args.push(probe);
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(&args)
+        .output()
+        .expect("seed a task with more tags than the cap");
+    assert!(
+        out.status.success(),
+        "seeding failed: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    for (surface, cursor, words) in [
+        ("+ sugar", 2, &["tasqx", "add", "+zeb"][..]),
+        ("--tag", 4, &["tasqx", "add", "x", "--tag", "zeb"][..]),
+        ("-t", 4, &["tasqx", "add", "x", "-t", "zeb"][..]),
+    ] {
+        let got = complete_bash_in(&db, &socket, cursor, words);
+        assert_eq!(
+            got.len(),
+            1,
+            "`{surface}` lost {LAST_TAG:?}, which exists and uniquely matches \
+             `zeb`; the cap was applied before the typed word. got {got:?}"
+        );
+        assert!(got[0].ends_with(LAST_TAG), "got {got:?}");
+    }
+
+    // The one inside the run, which the alphabetical cut would also have eaten.
+    let got = complete_bash_in(&db, &socket, 2, &["tasqx", "add", "+api"]);
+    assert_eq!(got, ["+api"], "`+api<TAB>` lost a tag that is on a task");
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// Sorts after the whole `a000..a249` filler but before [`LAST_TAG`], and is the
+/// spelling `tag_names`'s own doc uses for the failure it warns about.
+const LATE_TAG: &str = "api";
+/// Sorts last, so it is the first thing any cap-before-filter loses.
+const LAST_TAG: &str = "zebra";
 
 /// Project names reach every surface whose value IS a project name, driven
 /// through the real binary and the real protocol.
@@ -788,9 +874,28 @@ fn the_capture_sugar_dispatcher_answers_by_prefix() {
     );
 
     // `!` needs no store at all: the vocabulary is `Priority::SPELLINGS`.
+    //
+    // Three candidates, not seven, matching what `--priority` shows: the long
+    // spellings are hidden by the same rule `priority_parser` hides them with.
     assert_eq!(
         complete_bash_in(&db, &socket, 2, &["tasqx", "add", "!"]),
-        ["!H", "!high", "!M", "!medium", "!med", "!L", "!low"]
+        ["!H", "!M", "!L"]
+    );
+
+    // Hidden is not deleted, and that had to be measured rather than reasoned
+    // about: clap's engine drops hidden candidates whenever a visible one
+    // survives, and an earlier comment argued from that rule that hiding these
+    // would make them unreachable. It does not — `complete_option` contributes
+    // nothing for a non-empty word that does not start with `-`, so there is no
+    // visible flag to trigger the drop. This assertion is what keeps that fact
+    // pinned to the binary rather than to a comment.
+    assert_eq!(
+        complete_bash_in(&db, &socket, 2, &["tasqx", "add", "!hi"]),
+        ["!high"]
+    );
+    assert_eq!(
+        complete_bash_in(&db, &socket, 2, &["tasqx", "add", "!me"]),
+        ["!medium", "!med"]
     );
 
     // And the half that keeps the menu out of the way: a bare title word is not

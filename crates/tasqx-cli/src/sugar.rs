@@ -355,6 +355,38 @@ fn split_key(tok: &str) -> Option<(ValueKey, &str)> {
     (!value.is_empty() && !value.starts_with(':')).then_some((key, value))
 }
 
+/// The sugar VALUE this module would take out of a FINISHED word, or `None` if
+/// it would take none and leave the word in the title.
+///
+/// # Why the completer has to ask
+///
+/// `complete::candidates` builds a candidate by composing a spelling with a name
+/// out of the store — `"project:"` + `":x"` — and a composed word is not
+/// automatically a word this parser accepts. That one is `project::x`, which
+/// [`split_key`] refuses as a Rust path, so accepting the candidate files the
+/// task under the DEFAULT project and leaves the word in the title, at exit 0.
+/// Measured, with a store holding a project named `:x`: the completion feature
+/// built to prevent exactly that failure was manufacturing it.
+///
+/// So the completer gates every candidate on this rather than on a character
+/// allowlist of its own. The allowlist answers a different question — can a
+/// SHELL deliver this as one word — and the two are independent: `:x` is
+/// perfectly deliverable and is still not sugar-safe after a `project:`.
+///
+/// Read out of [`tag_of`] and [`split_key`], the same two functions the parse
+/// path dispatches on, so a refusal added to either is honoured by the menu the
+/// day it lands. Restating their rules in the completer is the drift shape this
+/// repository keeps paying for, and the `::` rule in particular has already
+/// moved once.
+///
+/// The whitespace and quoting cases [`tokenize_argv`] handles are deliberately
+/// not considered here: `complete::candidates::deliverable_as_one_word` has
+/// already excluded every name containing either, so a word reaching this
+/// function is one [`tokenize`] would hand over intact.
+pub(crate) fn parsed_value_of(word: &str) -> Option<&str> {
+    tag_of(word).or_else(|| split_key(word).map(|(_, value)| value))
+}
+
 /// What a sugar word the user is still TYPING is reaching for, for the shell
 /// completion dispatcher (`complete::candidates`).
 ///
