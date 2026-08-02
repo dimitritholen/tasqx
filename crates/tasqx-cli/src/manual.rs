@@ -320,9 +320,7 @@ The line, and the file it belongs in:
   elvish      ~/.elvish/rc.elv
               eval (E:TASQX_COMPLETE=elvish tasqx | slurp)
   powershell  $PROFILE
-              $env:TASQX_COMPLETE = \"powershell\"; tasqx |
-              Out-String | Invoke-Expression;
-              Remove-Item Env:\\TASQX_COMPLETE
+              $env:TASQX_COMPLETE = \"powershell\"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\\TASQX_COMPLETE
 
 `--install` finds the shell from $SHELL, prints the exact block
 it would add, and asks. A stdin that is not a terminal is a
@@ -338,6 +336,13 @@ variable, and it differs between Windows PowerShell 5.1,
 PowerShell 7 and the ISE. Let the shell expand it for you:
   tasqx completions powershell --install --profile $PROFILE
 
+PowerShell must also be allowed to RUN $PROFILE. A stock Windows
+client sets the execution policy to Restricted, and then the
+profile never executes: the line sits in the right file, nothing
+errors, and completion simply never turns on. `Get-ExecutionPolicy`
+tells you; `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+is the minimum that runs it.
+
 cmd.exe is a permanent NON-GOAL, not a gap: no program can
 register a completer with it at all. nushell is a real gap —
 it completes external commands through its own `extern`
@@ -345,10 +350,14 @@ definitions, and nothing tasqx prints today activates them.
 Asking for either says so, rather than \"unknown shell\".
 
 What completes: verbs and flags, closed value sets
-(`--priority`, `--scope`, `status:`), file paths, your task ids
-carrying their titles, project and tag names, the capture sugar
-(`+tag`, `project:x`, `!high`) and the whole filter grammar
-including `-tag` exclusions.
+(`--priority`, `--scope`, `status:`), file paths, your task ids,
+project and tag names, the capture sugar (`+tag`, `project:x`,
+`!high`) and the whole filter grammar including `-tag` exclusions.
+
+Task ids carry their TITLES in zsh, fish and PowerShell. bash and
+elvish show bare ids: their registrations write candidate values
+only, so there is nowhere for a title to go. That is upstream's
+protocol, not a tasqx setting.
 
 Two details that are not what you would guess. An alias only
 surfaces when no canonical name claims the prefix: `ls<TAB>`
