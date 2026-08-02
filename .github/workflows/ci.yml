@@ -32,11 +32,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Both, deliberately. `documented_store_path_matches_the_real_one` is
-        # `#[cfg(windows)]`, so the non-Windows store paths in the user guide
+        # All three, deliberately. `documented_store_path_matches_the_real_one`
+        # is `#[cfg(windows)]`, so the non-Windows store paths in the user guide
         # were never checked by anything; and the daemon's transport differs per
-        # platform (Unix socket vs named pipe), which no single-OS run exercises.
-        os: [ubuntu-latest, windows-latest]
+        # platform (Unix socket vs named pipe), which no single-OS run
+        # exercises.
+        #
+        # macOS joined on 2026-08-02, and the reason is a bill this project has
+        # already paid. `release.yml` ships FOUR targets, two of them Darwin
+        # (`aarch64-apple-darwin`, `x86_64-apple-darwin`) — so half of what
+        # users download had never had a single test run against it. That is
+        # not hypothetical: the v0.2.0 release run itself exposed a macOS-only
+        # daemon bug, where a BSD-derived kernel hands an accepted socket the
+        # listener's O_NONBLOCK and Linux does not (daemon.rs, "BSD-derived
+        # kernels"). It was found by shipping, which is the most expensive
+        # place to find anything.
+        #
+        # The macOS runner is the priciest of the three, and it is still worth
+        # it: the alternative is continuing to publish two binaries whose only
+        # test is a user's bug report. Note also that Darwin is not merely
+        # "Unix like ubuntu" — the case-insensitive filesystem, the
+        # `/var` -> `/private/var` canonicalisation, the 104-byte `sun_path`
+        # limit and the absent runtime dir are all real behavioural differences
+        # this suite touches.
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

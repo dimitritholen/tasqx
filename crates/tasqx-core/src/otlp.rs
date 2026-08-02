@@ -178,6 +178,31 @@ fn accept_loop(listener: &TcpListener, engine: &Arc<Mutex<Engine>>, shutdown: &A
 /// Handle one connection: read the request, ingest any samples, write the
 /// response. Blocking with a deadline; any transport error just drops the peer.
 fn handle_connection(stream: TcpStream, engine: &Arc<Mutex<Engine>>) {
+    // [`accept_loop`]'s listener is nonblocking so it can poll the shutdown
+    // flag, and an ACCEPTED socket inherits that flag on more platforms than
+    // it does not: BSD-derived kernels (macOS) hand it down, and so does
+    // Windows, whose accept() copies the listening socket's properties.
+    // Linux is the exception, which is exactly why this was invisible for so
+    // long — the one platform that does NOT inherit is the one the suite ran
+    // on.
+    //
+    // This is NOT a redundant call. On a nonblocking stream the two SO_*
+    // timeouts below are silently no-ops, and every read that outruns the
+    // bytes already sitting in the receive buffer returns WouldBlock. Neither
+    // reader distinguishes that from a real failure: `read_line_capped` maps
+    // it to `HttpError::Io`, which makes us return with NO response at all,
+    // and `read_exact` on the body maps it to `HttpError::BadRequest`, which
+    // answers a perfectly valid export with 400. Any export whose bytes do
+    // not all land before the first read — a body past one loopback segment
+    // (MAX_BODY_BYTES is 1 MiB, so this is well inside the supported range),
+    // or an exporter that writes headers and body separately — is therefore
+    // dropped or refused, and the exporter retry-storms.
+    //
+    // `daemon::handle_conn` carries the same workaround for the same reason
+    // (see daemon.rs, "BSD-derived kernels"); this is the second accept loop
+    // and it needed it too. Restore the blocking contract explicitly instead
+    // of assuming the platform did.
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
 
@@ -854,16 +879,52 @@ mod tests {
             ],
         ))
         .unwrap();
-        let request = format!(
+        let headers = format!(
             "POST /v1/logs HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
-             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
 
         let mut stream = TcpStream::connect(addr).expect("connect to receiver");
-        stream.write_all(request.as_bytes()).unwrap();
+        // Deliberately split the request and pause between the halves, longer
+        // than one `ACCEPT_STEP`, so the receiver's first read on the BODY is
+        // guaranteed to find an EMPTY buffer.
+        //
+        // Without this pause the test cannot fail. Writing the whole request
+        // microseconds after connect, while `accept_loop` polls on a 50 ms
+        // step, means every byte is already in the receive buffer by the time
+        // `accept` returns, so a single read satisfies the whole request and
+        // the socket's blocking mode never matters. That kept this test green
+        // over a receiver that was genuinely broken wherever an accepted
+        // socket inherits the listener's O_NONBLOCK — macOS AND Windows — a
+        // read past the buffered bytes returning WouldBlock, which
+        // `read_exact` reports as a 400 on a valid export. Split like this,
+        // the test reddens on a nonblocking accepted stream and passes on a
+        // blocking one, so deleting the `set_nonblocking(false)` in
+        // `handle_connection` is a mutation this guard actually catches —
+        // verified by doing exactly that on Windows and watching it fail.
+        //
+        // A receiver that gave up on the split request has already dropped the
+        // socket, so the second write is what fails — name the cause here
+        // rather than surfacing a bare `unwrap` on a connection-reset errno.
+        let split_write = (|| -> std::io::Result<()> {
+            stream.write_all(headers.as_bytes())?;
+            stream.flush()?;
+            thread::sleep(ACCEPT_STEP * 3);
+            stream.write_all(body.as_bytes())?;
+            stream.flush()
+        })();
+        assert!(
+            split_write.is_ok(),
+            "the receiver hung up mid-request instead of waiting for the body — \
+             the accepted socket is nonblocking, so a read past the buffered \
+             bytes returned WouldBlock and was mistaken for a dead peer: {:?}",
+            split_write.unwrap_err()
+        );
         let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
+        stream
+            .read_to_string(&mut response)
+            .expect("the receiver must answer a request that arrived in two writes");
 
         shutdown.store(true, Ordering::Relaxed);
         handle.join().unwrap();
