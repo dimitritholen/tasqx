@@ -299,6 +299,86 @@ codes mirror the error model: 0 ok, 2 bad_request, 4 not_found,
 `tasqx export` / `tasqx import` round-trip canonical JSON. See
 `tasqx docs` for the full method table."
         }
+
+        Topic::Completion => {
+            "\
+Tab completion for bash, zsh, fish, elvish and PowerShell — the
+same five on Linux, macOS and Windows.
+
+  tasqx completions <shell>              print the line
+  tasqx completions --install            edit the startup file
+  tasqx completions <shell> --uninstall  take it back out
+
+The line, and the file it belongs in:
+
+  bash        ~/.bashrc
+              source <(TASQX_COMPLETE=bash tasqx)
+  zsh         ~/.zshrc
+              source <(TASQX_COMPLETE=zsh tasqx)
+  fish        ~/.config/fish/completions/tasqx.fish
+              TASQX_COMPLETE=fish tasqx | source
+  elvish      ~/.elvish/rc.elv
+              eval (E:TASQX_COMPLETE=elvish tasqx | slurp)
+  powershell  $PROFILE
+              $env:TASQX_COMPLETE = \"powershell\"; tasqx |
+              Out-String | Invoke-Expression;
+              Remove-Item Env:\\TASQX_COMPLETE
+
+`--install` finds the shell from $SHELL, prints the exact block
+it would add, and asks. A stdin that is not a terminal is a
+refusal, not an implied yes — pass `--yes` from a script. It
+writes ONE marked block and replaces it on a re-run rather than
+appending a second, and `--uninstall` restores the file byte
+for byte.
+
+No Windows shell sets $SHELL, so name the shell there. And
+PowerShell's `--install` refuses to guess where your profile
+is: $PROFILE is a PowerShell variable, not an environment
+variable, and it differs between Windows PowerShell 5.1,
+PowerShell 7 and the ISE. Let the shell expand it for you:
+  tasqx completions powershell --install --profile $PROFILE
+
+cmd.exe is a permanent NON-GOAL, not a gap: no program can
+register a completer with it at all. nushell is a real gap —
+it completes external commands through its own `extern`
+definitions, and nothing tasqx prints today activates them.
+Asking for either says so, rather than \"unknown shell\".
+
+What completes: verbs and flags, closed value sets
+(`--priority`, `--scope`, `status:`), file paths, your task ids
+carrying their titles, project and tag names, the capture sugar
+(`+tag`, `project:x`, `!high`) and the whole filter grammar
+including `-tag` exclusions.
+
+Two details that are not what you would guess. An alias only
+surfaces when no canonical name claims the prefix: `ls<TAB>`
+gives `ls`, `mod<TAB>` gives `modify`. And the id menu is EVERY
+task by urgency, not only the open ones — `reopen` and `why`
+want the closed ones, and a menu that hid them would look like
+an answer.
+
+BEFORE YOU SWITCH IT ON
+
+The variable is TASQX_COMPLETE, deliberately not the generic
+COMPLETE that clap tools usually take. The protocol cannot tell
+a callback from a real command: with a recognised shell name in
+that variable, `tasqx add -- \"a real task\"` writes nothing,
+exits 0, and does not add the task. A tasqx-specific name makes
+that state improbable rather than impossible, so do not export
+it by hand. COMPLETE on its own does nothing to tasqx.
+
+A Tab press READS your store — a running daemon if there is
+one, else the SQLite file opened read-only — inside a 150 ms
+budget, and answers with no candidates rather than an error
+whenever any of that fails, because a message on stderr lands
+in the middle of the line you are typing. That read leaves
+tasks.db-shm and tasks.db-wal beside your store: SQLite's
+doing, and an ordinary `tasqx list` creates the same two and
+removes them again. Your database is not altered — no
+migration, not a byte. Set TASQX_NO_COMPLETE_LOOKUP=1 to turn
+the value lookups off; verbs, flags and value sets still
+complete."
+        }
     }
 }
 
