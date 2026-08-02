@@ -645,6 +645,316 @@ fn a_seeded_store_completes_its_task_ids_with_their_titles() {
     let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
 }
 
+/// A store carrying two projects and a task with two tags, plus the socket that
+/// keeps the callback off a developer's live daemon.
+///
+/// One of the projects has a SPACE in its name, and it is the point of the
+/// fixture rather than decoration: it is the value a completion candidate cannot
+/// deliver, because a shell inserts a candidate verbatim and then splits it.
+/// `candidates::typeable_unquoted` withholds it, and
+/// `a_project_name_a_shell_would_split_is_never_offered` is what makes that a
+/// decision somebody can find rather than a name that quietly went missing.
+fn seeded_values(label: &str) -> (std::path::PathBuf, String) {
+    let db = temp_db(label);
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("TASQX_DB", &db)
+            .arg("--no-daemon")
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("seed with {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "seeding {args:?} failed: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(&["init", SEEDED_PROJECT]);
+    run(&["init", SEEDED_SPACED_PROJECT]);
+    run(&[
+        "add",
+        "a tagged task",
+        "--project",
+        SEEDED_PROJECT,
+        "--tag",
+        "api",
+        "--tag",
+        "docs",
+    ]);
+    let socket = format!("tasqx-completion-no-daemon-{}-{label}", std::process::id());
+    (db, socket)
+}
+
+/// Deliverable to a shell as one word, so completion can offer it.
+const SEEDED_PROJECT: &str = "work";
+/// Not deliverable: a shell would split it into two words.
+const SEEDED_SPACED_PROJECT: &str = "home renovation";
+
+/// One bash callback against a seeded store.
+///
+/// Separate from [`complete_bash`] only in that it points the callback at a
+/// fixture store and a dead socket; the protocol is identical. `$TASQX_SOCK` is
+/// not optional, for the reason `seeded` gives: the lookup prefers a reachable
+/// daemon and the remote path never reads `$TASQX_DB`, so without it this suite
+/// would assert against the developer's live store.
+fn complete_bash_in(
+    db: &std::path::Path,
+    socket: &str,
+    cursor: usize,
+    words: &[&str],
+) -> Vec<String> {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    let out = c
+        .env(VAR, "bash")
+        .env("TASQX_DB", db)
+        .env("TASQX_SOCK", socket)
+        .env("_CLAP_COMPLETE_INDEX", cursor.to_string())
+        .env("_CLAP_IFS", SEP.to_string())
+        .arg("--")
+        .args(words)
+        .output()
+        .expect("run the completion callback against the fixture store");
+    assert_eq!(out.status.code(), Some(0), "the callback must exit 0");
+    assert!(
+        out.stderr.is_empty(),
+        "the callback must never write to stderr, got {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    candidates(&out)
+}
+
+/// Project names reach every surface whose value IS a project name, driven
+/// through the real binary and the real protocol.
+///
+/// `use` is in here because it is the surface a list written from memory
+/// forgets: it is the only project-valued POSITIONAL, and the value it takes is
+/// spelled `name` rather than `project` in the derive tree.
+/// `candidates::tests::every_project_valued_arg_offers_project_names` is what
+/// keeps the set complete; this is what proves the wire works at all.
+#[test]
+fn a_seeded_store_completes_project_names() {
+    let (db, socket) = seeded_values("projects");
+
+    for (cursor, words) in [
+        (4, &["tasqx", "add", "x", "--project", ""][..]),
+        (5, &["tasqx", "modify", "1", "x", "--project", "wo"][..]),
+        (2, &["tasqx", "use", "wo"][..]),
+        (4, &["tasqx", "chart", "burndown", "--project", ""][..]),
+    ] {
+        let got = complete_bash_in(&db, &socket, cursor, words);
+        assert!(
+            got.iter().any(|c| c == SEEDED_PROJECT),
+            "`{words:?}` must offer the seeded project, got {got:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// The capture-sugar dispatcher, prefix by prefix, in `add`'s title position and
+/// `modify`'s rest.
+///
+/// Every prefix is asserted in one test on purpose. The failure this whole seam
+/// is built against is a dispatcher that serves some prefixes and not others —
+/// four of five working "looks finished" — so the prefixes are checked together
+/// and a partial answer is one red test rather than four green ones and a gap.
+#[test]
+fn the_capture_sugar_dispatcher_answers_by_prefix() {
+    let (db, socket) = seeded_values("sugar");
+
+    for (cursor, words) in [
+        (2, &["tasqx", "add", "+"][..]),
+        // `modify`'s tail is the same parser, so it must be the same menu.
+        (3, &["tasqx", "modify", "1", "+"][..]),
+    ] {
+        let got = complete_bash_in(&db, &socket, cursor, words);
+        assert_eq!(
+            got,
+            ["+api", "+docs"],
+            "`{words:?}` must offer the seeded tags, got {got:?}"
+        );
+    }
+
+    // Both spellings of the project key, each answering in the spelling it was
+    // typed with — the candidate replaces the whole word, so rewriting `proj:`
+    // to `project:` would change what the user chose to type.
+    assert_eq!(
+        complete_bash_in(&db, &socket, 2, &["tasqx", "add", "project:"]),
+        ["project:work"]
+    );
+    assert_eq!(
+        complete_bash_in(&db, &socket, 2, &["tasqx", "add", "proj:wo"]),
+        ["proj:work"]
+    );
+
+    // `!` needs no store at all: the vocabulary is `Priority::SPELLINGS`.
+    assert_eq!(
+        complete_bash_in(&db, &socket, 2, &["tasqx", "add", "!"]),
+        ["!H", "!high", "!M", "!medium", "!med", "!L", "!low"]
+    );
+
+    // And the half that keeps the menu out of the way: a bare title word is not
+    // completable and must stay that way. Empty rather than "no sugar
+    // candidates" because clap offers no flags for a non-empty word that does
+    // not start with a dash — measured, and asserted as measured.
+    for prose in ["zzq", "Ship", "project::config"] {
+        let got = complete_bash_in(&db, &socket, 2, &["tasqx", "add", prose]);
+        assert!(
+            got.is_empty(),
+            "`add {prose}<TAB>` is title text and must offer nothing, got {got:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// A project a shell would split into two words is NOT offered — on any surface
+/// — and that is a decision, not a lost row.
+///
+/// The last assertion is what makes this test honest: the project is read back
+/// out of the store first, so a seeding failure cannot masquerade as the
+/// withholding under test. Read `candidates::typeable_unquoted` for why the
+/// alternatives are worse; the short version is that the candidate would arrive
+/// at the command line as `--project home renovation`, which clap reads as the
+/// project `home` plus two title words, at exit 0.
+#[test]
+fn a_project_name_a_shell_would_split_is_never_offered() {
+    let (db, socket) = seeded_values("unquotable");
+
+    let listed = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "projects"])
+        .output()
+        .expect("list the projects back");
+    assert!(
+        String::from_utf8_lossy(&listed.stdout).contains(SEEDED_SPACED_PROJECT),
+        "precondition: the store really holds {SEEDED_SPACED_PROJECT:?}"
+    );
+
+    for (cursor, words) in [
+        (4, &["tasqx", "add", "x", "--project", ""][..]),
+        (4, &["tasqx", "add", "x", "--project", "home"][..]),
+        (2, &["tasqx", "use", ""][..]),
+        (2, &["tasqx", "add", "project:"][..]),
+        (2, &["tasqx", "add", "project:home"][..]),
+    ] {
+        let got = complete_bash_in(&db, &socket, cursor, words);
+        assert!(
+            got.iter().all(|c| !c.contains("home")),
+            "`{words:?}` offered a project a shell would split into two words, \
+             which completes to a command that files the task somewhere else. \
+             got {got:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// The property that makes the whole slice worth having: **every candidate the
+/// dispatcher offers, typed as the shell would insert it, produces the command
+/// the user was reaching for.**
+///
+/// This is the quoting rule, checked rather than asserted in prose. `sugar.rs`
+/// documents ONE quoting rule shared with the read-side grammar, and its
+/// consequence for completion is blunt: a candidate is inserted verbatim, so a
+/// candidate containing a space arrives as two words and means something else.
+/// The other half of that rule — that a candidate with no space arrives whole —
+/// is what this proves, by taking the strings the callback really returned and
+/// handing them to the real `add` as single argv elements, which is exactly the
+/// shape a shell produces for an unquoted word.
+///
+/// A weaker version of this test would seed a project, offer it and assert the
+/// candidate string looks right. That checks the menu against itself. The
+/// assertion here is on the STORE, one command later.
+#[test]
+fn every_offered_candidate_produces_the_command_it_promises() {
+    let (db, socket) = seeded_values("round-trip");
+
+    let add = |sugar: &str| -> serde_json::Value {
+        let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("TASQX_DB", &db)
+            .args(["--no-daemon", "--json", "add", "a round trip"])
+            // SPLIT, deliberately, and this is the whole fidelity of the test.
+            // A shell inserts a candidate verbatim and then word-splits the line,
+            // so an unquoted candidate reaches argv as one element per run of
+            // non-space characters. Passing the candidate as a single element
+            // would silently repair the exact failure `typeable_unquoted` exists
+            // to prevent, and this test would then pass for a provider that
+            // offered `project:home renovation`.
+            .args(sugar.split_whitespace())
+            .output()
+            .expect("add a task using the completed word");
+        assert!(
+            out.status.success(),
+            "`add {sugar:?}` was refused: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let added: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("add prints one JSON object");
+        let id = added["short_id"].to_string();
+        let shown = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("TASQX_DB", &db)
+            .args(["--no-daemon", "--json", "show", &id])
+            .output()
+            .expect("read the task back");
+        serde_json::from_slice(&shown.stdout).expect("show prints one JSON object")
+    };
+
+    for candidate in complete_bash_in(&db, &socket, 2, &["tasqx", "add", "project:"]) {
+        let task = add(&candidate);
+        assert_eq!(
+            task["project"], SEEDED_PROJECT,
+            "the candidate {candidate:?} did not file the task under its project"
+        );
+        // The title must survive intact: a candidate the shell split would leave
+        // its remainder in the title, which is the quiet half of that failure.
+        assert_eq!(task["title"], "a round trip");
+    }
+
+    for candidate in complete_bash_in(&db, &socket, 2, &["tasqx", "add", "+"]) {
+        let task = add(&candidate);
+        let want = candidate.trim_start_matches('+');
+        assert!(
+            task["tags"]
+                .as_array()
+                .is_some_and(|t| t.iter().any(|v| v == want)),
+            "the candidate {candidate:?} did not apply the tag {want:?}, got {:?}",
+            task["tags"]
+        );
+        assert_eq!(task["title"], "a round trip");
+    }
+
+    for candidate in complete_bash_in(&db, &socket, 2, &["tasqx", "add", "!"]) {
+        let task = add(&candidate);
+        assert!(
+            task["priority"].is_string(),
+            "the candidate {candidate:?} set no priority"
+        );
+        assert_eq!(task["title"], "a round trip");
+    }
+
+    // And the flag surface, where the candidate is the whole value.
+    for candidate in complete_bash_in(&db, &socket, 4, &["tasqx", "add", "x", "--project", ""]) {
+        let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("TASQX_DB", &db)
+            .args(["--no-daemon", "--json", "add", "flagged", "--project"])
+            // Split for the same reason as above: this is what the shell hands
+            // clap when the candidate is inserted unquoted.
+            .args(candidate.split_whitespace())
+            .output()
+            .expect("add a task using the completed project");
+        assert!(
+            out.status.success(),
+            "`--project {candidate:?}` was refused"
+        );
+        let added: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("add prints one JSON object");
+        assert_eq!(added["project"], candidate);
+    }
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
 /// The escape hatch, end to end: with `$TASQX_NO_COMPLETE_LOOKUP` set, the same
 /// callback against the same seeded store offers no ids — and still offers the
 /// structure, because turning the value lookups off must not turn completion

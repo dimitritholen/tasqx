@@ -397,12 +397,11 @@ fn prepassed(raw: Vec<OsString>) -> Vec<OsString> {
 /// fails the build — is enforced by [`escaping_drift`], which recognises one of
 /// these by ANSWERING [`RESTORE_PROBE`] rather than by any label it wears. See
 /// that constant for why the recognition has to be behavioural.
-// Dead until Tasks 6-7 attach the sugar and filter providers, in the shape
-// `theme.rs`'s `FileOutcome` uses: landed with the defect it fixes rather than
-// held back, because the tests below are what prove the two properties hold, and
-// they can only prove them against a real seam. The `allow` comes off with the
-// first live attachment.
-#[allow(dead_code)]
+// Live as of the sugar dispatcher: `command.rs` builds `add`'s title and
+// `modify`'s rest with this, so the `#[allow(dead_code)]` this carried while it
+// waited for its first caller is gone. `list`'s filter positional is still
+// unattached — that is Task 7 — and `escaping_drift` below covers it the day it
+// lands.
 pub(crate) fn escaped_word_completer<F>(candidates: F) -> ArgValueCompleter
 where
     F: Fn(&str) -> Vec<CompletionCandidate> + Send + Sync + 'static,
