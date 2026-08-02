@@ -52,7 +52,9 @@ tasqx done 1
 
 ## Tab completion
 
-Verbs and flags, closed value sets, file paths, your task ids carrying their titles, project and tag names, the capture sugar (`+tag`, `project:x`, `!high`) and the whole filter grammar including `-tag` exclusions. bash, zsh, fish, elvish and PowerShell, the same five on Linux, macOS and Windows.
+Verbs and flags, closed value sets, file paths, your task ids, project and tag names, the capture sugar (`+tag`, `project:x`, `!high`) and the whole filter grammar including `-tag` exclusions. bash, zsh, fish, elvish and PowerShell, the same five on Linux, macOS and Windows.
+
+Task ids come with their titles in zsh, fish and PowerShell. bash and elvish show bare ids: their registrations write candidate values only, so there is nowhere for the title to go. That is upstream's protocol rather than a tasqx setting, and it is why `tasqx done 4<TAB>` is more useful in some of these shells than others.
 
 Two details that aren't what you'd guess. Aliases come along, but a canonical name wins the prefix: `tasqx ls<TAB>` gives `ls` and `tasqx mod<TAB>` gives `modify` rather than `mod`. And the id menu is every task sorted by urgency, not just the open ones — `reopen` and `why` want the closed ones, and a menu that hid them would look like an answer.
 
@@ -82,6 +84,8 @@ No Windows shell sets `$SHELL`, so name the shell there. PowerShell's `--install
 ```console
 tasqx completions powershell --install --profile $PROFILE
 ```
+
+PowerShell also has to be allowed to run `$PROFILE` at all. A stock Windows client ships with the execution policy set to `Restricted`, and then the profile is never executed — so the line is in the right file, nothing errors, and completion simply never turns on. `Get-ExecutionPolicy` tells you; `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` is the minimum that runs it.
 
 cmd.exe is a permanent non-goal, not a gap: no program can register a completer with it at all. nushell is a real gap — it completes external commands through its own `extern` definitions and there's nothing tasqx can print today that turns that on. Asking for either says so instead of "unknown shell".
 
