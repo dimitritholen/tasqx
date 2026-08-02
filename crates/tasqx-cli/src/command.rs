@@ -207,8 +207,17 @@ pub(super) enum Command {
     #[command(alias = "a", alias = "new", after_help = crate::cmddoc::after_help("add"))]
     Add {
         /// The task title (may carry inline sugar).
+        // The sugar prefix dispatcher: `+`, `project:`, `!` and the value keys.
+        // Both positionals whose words reach `sugar::parse_add` carry this, and
+        // `complete::candidates::tests::every_sugar_positional_offers_sugar`
+        // reads clap's arg table and `sugar::SUGAR_POSITIONALS` to fail the
+        // build for one that does not. A line comment rather than a doc one:
+        // clap renders doc comments into `--help`, and where the candidates come
+        // from is not something a user reading help needs.
+        #[arg(add = crate::complete::candidates::sugar_words())]
         title: Vec<String>,
-        #[arg(long)]
+        /// File the task under an existing project (see `tasqx projects`).
+        #[arg(long, add = crate::complete::candidates::projects())]
         project: Option<String>,
         /// Priority: H, M, or L (or high/medium/low).
         #[arg(long, short, value_parser = priority_parser(), ignore_case = true)]
@@ -268,8 +277,12 @@ pub(super) enum Command {
         /// New title words and/or inline sugar (due:friday, +tag, project:p,
         /// !high, est:4h, repeat:"every week", remind:-1h). Bare words become the
         /// new title; omit them to leave the title alone.
+        // The same dispatcher `add`'s title carries, for the same reason: this
+        // is the other half of `sugar::SUGAR_POSITIONALS`.
+        #[arg(add = crate::complete::candidates::sugar_words())]
         rest: Vec<String>,
-        #[arg(long)]
+        /// Move the task to an existing project (see `tasqx projects`).
+        #[arg(long, add = crate::complete::candidates::projects())]
         project: Option<String>,
         /// Priority: H, M, or L (or high/medium/low).
         #[arg(long, short, value_parser = priority_parser(), ignore_case = true)]
@@ -417,6 +430,18 @@ pub(super) enum Command {
     #[command(after_help = crate::cmddoc::after_help("use"))]
     Use {
         /// An existing, non-archived project name.
+        //
+        // `value_name` is what makes this reachable by
+        // `every_project_valued_arg_offers_project_names`: the guard decides
+        // membership by the name the argument ANNOUNCES for its value, exactly
+        // as `every_path_shaped_arg_declares_how_to_complete_it` does for
+        // PATH/FILE/DIR, rather than by a list of verbs kept in a test. Without
+        // it this positional would announce `<NAME>` and drop out of the guard's
+        // scope while still very much taking a project name.
+        //
+        // `init` deliberately stays `<NAME>`: it CREATES a project, so the
+        // existing ones are precisely the names it will refuse.
+        #[arg(value_name = "PROJECT", add = crate::complete::candidates::projects())]
         name: String,
     },
     /// List projects (maps to project.list).
@@ -639,7 +664,7 @@ pub(super) enum ChartKind {
     /// Remaining open tasks over the last N days (from the events table).
     Burndown {
         /// Restrict to a project (else all tasks).
-        #[arg(long)]
+        #[arg(long, add = crate::complete::candidates::projects())]
         project: Option<String>,
         /// Number of days to show (1-3650; default 30).
         #[arg(long, value_parser = window_parser(MAX_CHART_DAYS))]

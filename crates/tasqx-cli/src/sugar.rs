@@ -110,8 +110,15 @@ pub struct AddFlags {
 /// the table and then quietly go nowhere.
 /// `Copy` so the table can be read by value; the loop matches on patterns and
 /// needs no `PartialEq`.
+///
+/// `pub(crate)` since the shell-completion dispatcher branches on it. That is
+/// the point of the type rather than a leak of it: `complete::candidates` has
+/// to answer "what can follow `project:`?" differently from "what can follow
+/// `due:`?", and matching the VARIANT means the compiler asks that question
+/// again for every key added to [`VALUE_KEYS`]. Matching the spelling would let
+/// a new key quietly inherit whichever arm its string happened to fall into.
 #[derive(Clone, Copy)]
-enum ValueKey {
+pub(crate) enum ValueKey {
     Project,
     Due,
     Scheduled,
@@ -154,6 +161,39 @@ const VALUE_KEYS: [(&str, ValueKey); 12] = [
 pub(crate) fn value_key_spellings() -> Vec<&'static str> {
     VALUE_KEYS.iter().map(|(k, _)| *k).collect()
 }
+
+/// The clap positionals whose words reach [`parse_add`], as
+/// `(command path, positional id)`.
+///
+/// A registry in the shape [`crate::argv::FILTER_COMMANDS`] uses, and for the
+/// same reason: the set exists — `lib.rs` calls [`parse_add`] from `run_add` and
+/// `run_modify` and nowhere else — but until now it was expressed only as two
+/// call sites, which is a set nothing can iterate. Shell completion needs to
+/// iterate it, because the sugar prefix dispatcher must be attached to every
+/// member and a member with no dispatcher is `tasqx add +<TAB>` silently
+/// offering nothing.
+///
+/// Kept honest in the direction that matters by
+/// `complete::candidates::tests::every_sugar_positional_offers_sugar`, which
+/// pairs this list against a SECOND, independent signal — the positionals whose
+/// help text says `inline sugar` — and fails the build when they disagree. A
+/// third verb taking sugar tomorrow lands in one of the two and is a red build
+/// either way; adding it to both is the fix, and the guard says so.
+///
+/// The path, not the bare verb name: `memory add` is also called `add` and also
+/// declares a positional called `title`, so a bare name is not an identity in
+/// this tree.
+///
+/// `#[cfg(test)]` for the same reason [`value_key_spellings`] is, and it is
+/// worth saying why that is not a dodge. Nothing on the command path iterates
+/// this set — `lib.rs` reaches [`parse_add`] by calling it, twice, directly — so
+/// compiling the constant into the binary would add a `dead_code` allow and no
+/// behaviour. Its authority comes from WHERE it lives, next to the parser whose
+/// call sites it names, which is where somebody adding a third one is already
+/// looking. What must not be hand-kept is a list of verbs *inside the test*,
+/// and that is precisely what this exists to avoid.
+#[cfg(test)]
+pub(crate) const SUGAR_POSITIONALS: [(&str, &str); 2] = [("add", "title"), ("modify", "rest")];
 
 /// Parse argv words plus explicit flags into structured fields.
 ///
@@ -313,6 +353,58 @@ fn split_key(tok: &str) -> Option<(ValueKey, &str)> {
         .iter()
         .find_map(|&(spelling, key)| Some((key, tok.strip_prefix(spelling)?)))?;
     (!value.is_empty() && !value.starts_with(':')).then_some((key, value))
+}
+
+/// What a sugar word the user is still TYPING is reaching for, for the shell
+/// completion dispatcher (`complete::candidates`).
+///
+/// The `'static` spelling is carried because the candidate REPLACES the whole
+/// word: completing `proj:wo` has to answer `proj:work`, not `project:work`, or
+/// Tab rewrites what the user chose to type. Reading the spelling back out of
+/// [`VALUE_KEYS`] rather than re-deriving it at the call site is what keeps the
+/// two aliases from needing two code paths.
+pub(crate) enum Partial<'a> {
+    /// `+`, then whatever has been typed of the tag name.
+    Tag(&'a str),
+    /// A value key, the spelling it was typed with, and the value so far.
+    Key(ValueKey, &'static str, &'a str),
+    /// `!`, then whatever has been typed of the priority.
+    Priority(&'a str),
+}
+
+/// Classify a PARTIAL word — the one under the cursor — or `None` when it is
+/// ordinary title text.
+///
+/// # Why this is not [`split_key`] plus [`tag_of`]
+///
+/// Those two answer "what IS this token", and their refusals are load-bearing on
+/// the parse path: a bare `+` names no tag and a valueless `due:` names no date,
+/// so both are left in the title (C6). This answers a different question —
+/// "what could COME NEXT here" — and for that question a bare `+` and a bare
+/// `project:` are the most informative words a user can type. They are the
+/// moment the menu is wanted, not the moment it is refused.
+///
+/// So the empty value is accepted here and nowhere else. Everything else is the
+/// same judgement, read out of the same table: the key is resolved ONCE by first
+/// prefix match against [`VALUE_KEYS`] (longest-first, so `estimate:` is not
+/// read as the estimate `imate:`), and `::` is still a Rust path rather than a
+/// key — `project::config<TAB>` must not offer projects any more than
+/// `add "see project::config"` may set one.
+///
+/// A word with no recognised prefix is `None`, and the dispatcher offers
+/// nothing for it. Completing bare title words against the sugar vocabulary
+/// would put a menu in front of somebody typing prose.
+pub(crate) fn classify_partial(word: &str) -> Option<Partial<'_>> {
+    if let Some(tag) = word.strip_prefix('+') {
+        return Some(Partial::Tag(tag));
+    }
+    if let Some(prio) = word.strip_prefix('!') {
+        return Some(Partial::Priority(prio));
+    }
+    let (key, spelling, value) = VALUE_KEYS
+        .iter()
+        .find_map(|&(spelling, key)| Some((key, spelling, word.strip_prefix(spelling)?)))?;
+    (!value.starts_with(':')).then_some(Partial::Key(key, spelling, value))
 }
 
 /// Turn argv into sugar tokens, respecting boundaries the shell already drew.
