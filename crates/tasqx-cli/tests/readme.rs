@@ -195,6 +195,111 @@ fn readme_mcp_tool_roster_matches_the_server() {
     }
 }
 
+/// The README's Tab-completion section prints an activation line per shell, by
+/// hand, and that is the worst place in the file for a hand-kept copy.
+///
+/// The failure it invites is total and silent. A line carrying `clap_complete`'s
+/// generic `COMPLETE` instead of `TASQX_COMPLETE` looks right, is what every
+/// clap tutorial shows, and activates nothing at all — `complete::intercept`
+/// reads `TASQX_COMPLETE` and returns immediately for anything else. The reader
+/// pastes it into their startup file, opens a new shell, presses Tab, and gets
+/// the shell's own filename completion, with no error printed anywhere and
+/// nothing to search for. The same is true of a line that goes stale by one
+/// character.
+///
+/// So the lines are not compared against a second copy kept in this test. They
+/// are compared against what the BINARY prints, for every shell
+/// `Shells::builtins()` names — the same registry `tasqx completions` resolves
+/// its argument out of, and the same one `install::ACTIVATIONS` is guarded
+/// against. Upstream gaining a sixth shell, the activation shape changing, or a
+/// README line edited by hand all fail here.
+/// # Both documents, and both halves of each row
+///
+/// The first version of this guard checked the README only, and only the LINE.
+/// Review measured both gaps and both were reachable with the whole suite green:
+///
+///  * `manual.rs`'s `Topic::Completion` keeps a SECOND hand-written copy of all
+///    five lines and targets, and it is the copy `tasqx manual completion` and
+///    `tasqx docs` render — the primary in-tool surface for this feature, since
+///    `COMMAND_REF`'s `completions` entry points at that topic. A mutation
+///    putting clap's generic `COMPLETE` into the manual's bash line left every
+///    test passing.
+///  * The TARGET file was unguarded in both. `~/.bashrc` drifting to
+///    `~/.bash_profile` is the classic silent failure here: a non-login
+///    interactive bash reads `.bashrc` and never the other, so the reader pastes
+///    a correct line into a file their shell does not source and gets no error
+///    anywhere. A mutation making exactly that edit also passed.
+///
+/// So one loop covers both documents and asserts both halves, out of the binary
+/// rather than out of a list kept here. The target comes from `--json`, which is
+/// `install::target_path` — the same resolution `--install` writes to — and is
+/// `null` for PowerShell, which deliberately has no knowable target.
+#[test]
+fn both_documents_carry_the_activation_lines_and_targets_the_binary_prints() {
+    let manual = std::process::Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .args(["manual", "completion"])
+        .output()
+        .expect("render the manual's completion topic");
+    assert!(manual.status.success(), "`tasqx manual completion` failed");
+    let manual = String::from_utf8_lossy(&manual.stdout).into_owned();
+
+    let mut checked = 0;
+    for shell in clap_complete::env::Shells::builtins().names() {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .args(["--json", "completions", shell])
+            .output()
+            .unwrap_or_else(|e| panic!("run `tasqx completions {shell}`: {e}"));
+        assert!(
+            out.status.success(),
+            "`tasqx completions {shell}` failed: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let printed: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("completions prints one JSON object");
+        let line = printed["line"].as_str().unwrap_or_default();
+        assert!(
+            !line.is_empty(),
+            "`tasqx completions {shell}` reported no line to compare against"
+        );
+
+        for (name, text) in [("README", &readme()), ("the manual", &manual)] {
+            assert!(
+                text.contains(line),
+                "{name} does not carry the {shell} activation line the binary \
+                 prints, so a reader who pastes what it says gets a shell that \
+                 completes nothing and says nothing. Expected to find:\n  {line}"
+            );
+            // `null` for PowerShell, which refuses to guess `$PROFILE`; both
+            // documents say `$PROFILE` in prose instead and there is nothing to
+            // compare that against.
+            if let Some(target) = printed["target"].as_str() {
+                // Compared on the `~`-relative tail rather than the absolute
+                // path: the documents write `~/.bashrc`, which is what a reader
+                // needs, while the binary reports this machine's home.
+                let tail = target.replace('\\', "/");
+                let tail = tail.rsplit_once("/.").map(|(_, t)| format!(".{t}"));
+                let Some(tail) = tail else { continue };
+                assert!(
+                    text.contains(&tail),
+                    "{name} does not name the file the {shell} line belongs in. \
+                     The binary installs to {target}, whose tail is {tail:?}. A \
+                     document naming a different file sends the reader to one \
+                     their shell never reads — no error, no completion, nothing \
+                     to search for."
+                );
+            }
+        }
+        checked += 1;
+    }
+    // Floor: the five shells this feature ships for. An empty registry would
+    // otherwise make the loop above a clean pass over nothing.
+    assert!(
+        checked >= 5,
+        "only {checked} shells were checked; `Shells::builtins()` shrank and \
+         this guard is covering less than the documents claim"
+    );
+}
+
 /// "Five built-in themes" is a count of `theme::BUILTINS`, restated by hand.
 /// The verb table taught this lesson already: a spelled-out number reads
 /// exactly like a right one after the list underneath it grows.

@@ -57,7 +57,7 @@ const ESCAPED_DASH: char = '\u{1}';
 ///
 /// Aliases are resolved through clap, not listed here, so `ls` and `l` follow
 /// `list` automatically. Kept honest by `every_filter_positional_is_registered`.
-const FILTER_COMMANDS: [&str; 4] = ["list", "export", "report", "watch"];
+pub(crate) const FILTER_COMMANDS: [&str; 4] = ["list", "export", "report", "watch"];
 
 /// argv rewritten for clap, plus whether it addresses a filter-taking command.
 pub struct Prepass {
@@ -139,7 +139,7 @@ pub fn prepass<I: IntoIterator<Item = OsString>>(raw: I) -> Prepass {
                 j += 1;
             }
         } else if is_tag_exclusion(&tok) {
-            argv[j] = OsString::from(format!("{ESCAPED_DASH}{}", &tok[1..]));
+            argv[j] = OsString::from(escaped(&tok));
         }
         j += 1;
     }
@@ -163,6 +163,49 @@ fn long_value_follows(cmd: &clap::Command, long: &str) -> bool {
         .is_some_and(|a| takes_value(a) && !a.is_require_equals_set())
 }
 
+/// Hide the leading dash of ONE filter token: the inverse of [`unescaped`].
+///
+/// Lifted out of [`prepass`]'s loop for the reason [`unescaped`] gives for being
+/// one function with two callers — the sentinel rule exists once, so nothing can
+/// drift away from [`ESCAPED_DASH`]. The second caller is `complete`'s
+/// `escaping_drift` guard, which drives every completer attached to a filter
+/// positional with an escaped word and checks the dash came back. A guard that
+/// spelled the escaped form itself would agree with a broken [`ESCAPED_DASH`] by
+/// construction and prove nothing.
+///
+/// Tokens [`is_tag_exclusion`] rejects are returned unchanged. Escaping a `--`
+/// flag or a bare `-` would hand it a sentinel that [`unescape`] never strips
+/// back off, which is the failure mode the caller's `else if` already avoids;
+/// stating it here keeps a second caller from having to know that.
+pub fn escaped(tok: &str) -> String {
+    match is_tag_exclusion(tok) {
+        true => format!("{ESCAPED_DASH}{}", &tok[1..]),
+        false => tok.to_string(),
+    }
+}
+
+/// Restore the dash [`prepass`] hid on ONE token.
+///
+/// The whole of the sentinel's inverse, in one place, because there are now two
+/// callers with nothing else in common and a second copy of this three-line rule
+/// would be a second thing to keep in step with [`ESCAPED_DASH`]:
+///
+///  * [`unescape`], on the filter tail clap has finished parsing (the command
+///    path);
+///  * `complete::escaped_word_completer`, on the single partial word the
+///    completion engine hands a candidate provider (the Tab path).
+///
+/// The second exists because escaping and restoring must stay symmetric on BOTH
+/// paths. `run()` restores what it parsed; the completion seam has to restore
+/// what it is about to match against, or a provider sees `\u{1}ne` where the
+/// user typed `-ne` and matches nothing.
+pub fn unescaped(tok: &str) -> String {
+    match tok.strip_prefix(ESCAPED_DASH) {
+        Some(rest) => format!("-{rest}"),
+        None => tok.to_string(),
+    }
+}
+
 /// Restore the dashes [`prepass`] hid, in place, on a parsed filter tail.
 ///
 /// Every hyphen-tolerant positional must be run through this before its value
@@ -170,10 +213,50 @@ fn long_value_follows(cmd: &clap::Command, long: &str) -> bool {
 /// token fails as unknown. `run()` does them all in one place for that reason.
 pub fn unescape(tokens: &mut [String]) {
     for tok in tokens {
-        if tok.starts_with(ESCAPED_DASH) {
-            *tok = format!("-{}", &tok[ESCAPED_DASH.len_utf8()..]);
-        }
+        *tok = unescaped(tok);
     }
+}
+
+/// Would `tok` reach a filter positional as filter text, or does [`prepass`]
+/// hand it to clap as a flag?
+///
+/// **The authority on that question is this module, not the filter grammar**,
+/// and the difference is a silent drop. `filter::Filter::parse` accepts `-h` as
+/// a tag exclusion — it is valid filter grammar and the JSON API takes it
+/// verbatim — but on the CLI the loop above deliberately leaves a one-character
+/// dash token alone when clap declares that letter, so `-h` reaches clap as the
+/// HELP FLAG. That trade is stated at the site and is right; what was missing is
+/// that anything COMPOSING a filter token for the user has to know about it.
+///
+/// The shell completer did not, and the result was measured: with a task tagged
+/// `h`, `tasqx list -<TAB>` offered `-h`, and choosing it printed the help text
+/// at exit 0 instead of filtering. The completer had gated the candidate on the
+/// filter parser, which is the wrong parser — the same shape as the sugar-path
+/// defect where a candidate was gated on a character allowlist instead of
+/// `sugar::parsed_value_of`.
+///
+/// The cheap test first: everything that is not a one-character dash token
+/// reaches the tail, so the clap tree is built only for the rare word that could
+/// collide. Membership is the UNION over [`FILTER_COMMANDS`] rather than one
+/// subcommand, because a candidate provider is handed the word and nothing else.
+/// Today the union is exact — `-h` and `-V` are declared on all four — and if
+/// that ever stops being true this errs toward withholding a candidate rather
+/// than offering one that runs the wrong command.
+pub(crate) fn reaches_the_filter_tail(tok: &str) -> bool {
+    // Not dash-led, or longer than one character after the dash: the loop above
+    // escapes it, so it reaches the positional intact. No tree needed.
+    let Some(rest) = tok.strip_prefix('-') else {
+        return true;
+    };
+    if rest.chars().count() != 1 {
+        return true;
+    }
+    let mut cmd = Cli::command();
+    cmd.build();
+    !FILTER_COMMANDS.iter().any(|name| {
+        cmd.find_subcommand(name)
+            .is_some_and(|sub| declared_short(sub, tok).is_some())
+    })
 }
 
 /// The short flag `tok` names, if `cmd` declares one by that letter.

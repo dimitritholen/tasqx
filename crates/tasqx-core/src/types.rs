@@ -285,14 +285,39 @@ impl Priority {
         }
     }
 
-    /// Accepts `H`/`M`/`L` (any case) and the words high/medium/low.
+    /// Every spelling [`Priority::parse`] accepts, with what it means.
+    ///
+    /// This is the table `parse` reads, not a description of it — so the two
+    /// cannot drift, because there is only one of them. It exists because the
+    /// vocabulary had grown THREE independent copies: this parser, the CLI's
+    /// `sugar::normalize_prio` for the `!high` capture form, and (as of the
+    /// completion work) clap's `value_parser` for `--priority`. A shell offering
+    /// a spelling the engine rejects, or silently withholding one it accepts, is
+    /// the same class of failure as the drifted MCP schema [`Priority::ALL`] was
+    /// introduced to end.
+    ///
+    /// The canonical spelling of each variant is the one equal to
+    /// [`Priority::as_str`]; that is how the CLI decides which entries to show a
+    /// user and which to accept quietly, rather than by a second hand-kept list.
+    pub const SPELLINGS: [(&'static str, Priority); 7] = [
+        ("H", Priority::H),
+        ("high", Priority::H),
+        ("M", Priority::M),
+        ("medium", Priority::M),
+        ("med", Priority::M),
+        ("L", Priority::L),
+        ("low", Priority::L),
+    ];
+
+    /// Accepts `H`/`M`/`L` (any case) and the words high/medium/low — every
+    /// entry of [`Priority::SPELLINGS`] and nothing else. The forgiving half of
+    /// the pair with [`Priority::as_str`], deliberately asymmetric.
     pub fn parse(s: &str) -> Option<Priority> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "h" | "high" => Some(Priority::H),
-            "m" | "medium" | "med" => Some(Priority::M),
-            "l" | "low" => Some(Priority::L),
-            _ => None,
-        }
+        let s = s.trim();
+        Priority::SPELLINGS
+            .iter()
+            .find(|(spelling, _)| spelling.eq_ignore_ascii_case(s))
+            .map(|(_, p)| *p)
     }
 }
 
@@ -535,6 +560,39 @@ mod tests {
                 "round trip failed for {p:?}"
             );
         }
+    }
+
+    /// `SPELLINGS` is the table `parse` reads, so it cannot disagree with the
+    /// parser. What it CAN do is lose an entry, or gain one that no variant
+    /// claims as its canonical form — and the CLI derives both its accepted
+    /// values and its *visible* values from exactly those two properties.
+    #[test]
+    fn every_priority_spelling_parses_and_every_variant_has_a_canonical_one() {
+        for (spelling, want) in Priority::SPELLINGS {
+            assert_eq!(
+                Priority::parse(spelling),
+                Some(want),
+                "{spelling:?} must parse to {want:?}"
+            );
+            // Case-insensitively, both ways: `--priority HIGH` and `!h` are both
+            // documented forms and both go through this table.
+            assert_eq!(Priority::parse(&spelling.to_ascii_uppercase()), Some(want));
+            assert_eq!(Priority::parse(&spelling.to_ascii_lowercase()), Some(want));
+        }
+        for p in Priority::ALL {
+            assert!(
+                Priority::SPELLINGS
+                    .iter()
+                    .any(|(spelling, v)| *v == p && *spelling == p.as_str()),
+                "{p:?} has no entry spelled the way `as_str` writes it, so the CLI \
+                 would have no visible value to offer for it"
+            );
+        }
+        assert_eq!(
+            Priority::parse("urgent"),
+            None,
+            "an invented word must not parse"
+        );
     }
 
     /// `sql_in_list` builds SQL by string concatenation, and four live queries

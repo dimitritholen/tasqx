@@ -190,6 +190,21 @@ impl Engine {
         })
     }
 
+    /// Open an EXISTING file-backed store for reading only.
+    ///
+    /// Every read method on this type works against the result; every mutating
+    /// one fails at `begin_mutation`, because SQLite refuses the write rather
+    /// than because anything here checked. That is the point: the guarantee is
+    /// enforced by the connection's open flags, so it cannot be lost by a new
+    /// method forgetting to consult a boolean. See
+    /// [`storage::open_read_only`] for the properties and the accepted WAL
+    /// limitation.
+    pub fn open_read_only(path: &str) -> Result<Engine, ApiError> {
+        Ok(Engine {
+            conn: storage::open_read_only(path)?,
+        })
+    }
+
     /// Open an ephemeral in-memory store (tests).
     pub fn open_in_memory() -> Result<Engine, ApiError> {
         Ok(Engine {
