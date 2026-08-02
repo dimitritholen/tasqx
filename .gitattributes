@@ -1,0 +1,15 @@
+# Shell scripts MUST keep LF endings, on every checkout, on every platform.
+#
+# This is not tidiness. The completion feature shipped a Windows-shaped defect of
+# exactly this kind — a CRLF-terminated activation line written into a profile,
+# which bash reads as part of the command and chokes on (`install.rs`, "A
+# CRLF-terminated activation line does not merely look untidy there"). A `.sh`
+# file that reaches a Unix box with CRLF fails the same way and worse: the
+# shebang line becomes `#!/usr/bin/env bash\r`, and the error is
+# `bash\r: command not found`, which names neither the file nor the cause.
+#
+# Developers on this repo work on Windows with `core.autocrlf=true`, so without
+# this line the working copy drifts to CRLF and only the checkout settings of
+# whoever commits next decide what lands in the blob. `eol=lf` takes that
+# decision away from the local config.
+*.sh text eol=lf
