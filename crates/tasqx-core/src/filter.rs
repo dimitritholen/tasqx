@@ -971,6 +971,26 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
         }
     }
     if let Some(v) = tok.strip_prefix("project:") {
+        // The empty value is refused, for the reason the `status:` arm below
+        // states and every other value prefix already obeys: `project:` names no
+        // project, and a token that names nothing is unknown rather than a
+        // constraint that matches nothing.
+        //
+        // It was the ONE prefix that accepted it, and the exception was silent
+        // in the way this codebase hunts: `tasqx list project:` printed
+        // "No tasks." at exit 0, `tasqx list +api project:` narrowed a real
+        // filter to nothing just as quietly, and `tasqx export project:` wrote a
+        // well-formed backup envelope containing none of the store's tasks — a
+        // backup that looks fine and holds nothing. Every sibling exits 2.
+        //
+        // Found because shell completion began offering `project:` as a stub the
+        // user goes on typing, which put the one silent token in the grammar a
+        // single keystroke away from Enter.
+        if v.is_empty() {
+            return Err(format!(
+                "unknown filter token {tok:?} (expected {TOKEN_SHAPES})"
+            ));
+        }
         return Ok(Pred::Project(v.to_string()));
     }
     if let Some(v) = tok.strip_prefix("status:") {
@@ -1582,6 +1602,33 @@ mod tests {
         }
     }
 
+    /// Every value prefix refuses an empty value, so no token in the grammar
+    /// parses into a constraint that matches nothing.
+    ///
+    /// Read out of [`VALUE_PREFIXES`] rather than listed, so a ninth prefix is
+    /// covered the day it is declared. That is the whole point: `project:` was
+    /// the one prefix that accepted its empty value, and it stayed that way
+    /// through several rounds of work on this grammar because nothing compared
+    /// the arms against each other. It exited 0 and matched nothing —
+    /// `tasqx list project:` said "No tasks.", `tasqx export project:` wrote a
+    /// well-formed backup containing none of them — while every sibling exited 2.
+    ///
+    /// The stubs a shell now offers are exactly these prefixes, which is how it
+    /// was found and why the guard belongs here rather than in the CLI: the menu
+    /// made an old silence reachable, it did not create it.
+    #[test]
+    fn no_value_prefix_accepts_an_empty_value() {
+        let now = jiff::Timestamp::now();
+        for (prefix, _) in VALUE_PREFIXES {
+            assert!(
+                Filter::parse(prefix, now).is_err(),
+                "`{prefix}` parses with no value, so it is a token that names \
+                 nothing and matches nothing at exit 0 — the shape every other \
+                 prefix refuses, and the one a completion menu offers as a stub"
+            );
+        }
+    }
+
     /// The round-trip accessor the CLI's completion gate is built on, including
     /// the case that makes it a VALUE check rather than a parse check.
     ///
@@ -1833,7 +1880,6 @@ mod tests {
             "back\\slash",
             "\\",
             "\"",
-            "",
             "and",
             "or",
             "(",
@@ -1854,6 +1900,26 @@ mod tests {
             };
             assert!(f.matches(&ctx), "quote({v:?}) did not round trip");
         }
+
+        // The empty value is NOT in the list above and is asserted here instead,
+        // moved rather than deleted when `project:` stopped accepting it.
+        //
+        // It never named a reachable project: `project.create` refuses an empty
+        // name (`missing or empty required field: name`), so `project:""` asked
+        // for something that cannot exist and answered "No tasks." at exit 0.
+        // The round-trip property this test is about — that `quote` escapes a
+        // value the parser reads back — is vacuous for a value no project can
+        // hold, and keeping the case as a success pinned the one silent token in
+        // the grammar as though it were intended.
+        //
+        // Asserted as a refusal so the case is still covered: if `project:`
+        // starts accepting an empty value again, this reddens rather than
+        // quietly passing.
+        assert!(
+            Filter::parse(&format!("project:{}", quote("")), anchor()).is_err(),
+            "an empty project name cannot exist, so `project:\"\"` must be \
+             refused rather than matching nothing at exit 0"
+        );
     }
 
     /// C8: the WRITE side must close the same round trip over the same values.

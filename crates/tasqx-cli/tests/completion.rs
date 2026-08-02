@@ -1230,6 +1230,14 @@ fn seeded_filter(label: &str) -> (std::path::PathBuf, String) {
         "+needs",
         "+blocked",
         "+-lead",
+        // A one-character tag whose letter clap declares as a short flag. It is
+        // in the fixture because its exclusion `-h` is valid filter grammar and
+        // is NOT deliverable on the CLI: `argv::prepass` deliberately leaves a
+        // one-character dash token alone so `tasqx list -h` still prints help,
+        // so an offered `-h` completes into the help text at exit 0 rather than
+        // filtering. Nothing here seeded such a tag before, so the menu offered
+        // it and no test could see it.
+        SHORT_FLAG_TAG_SUGAR,
     ]);
 
     // `project.archive` has no CLI verb, so the one-shot JSON door is how a test
@@ -1261,10 +1269,198 @@ fn seeded_filter(label: &str) -> (std::path::PathBuf, String) {
     (db, socket)
 }
 
+/// A tag named `h`, seeded through the capture sugar.
+const SHORT_FLAG_TAG_SUGAR: &str = "+h";
+/// Its exclusion — valid filter grammar, and clap's help flag on the CLI.
+const SHORT_FLAG_TAG_EXCLUSION: &str = "-h";
+
 /// Archived, and therefore refused by every WRITE that takes a project.
 const ARCHIVED_PROJECT: &str = "oldstuff";
 /// The task that proves the archived project is still readable through a filter.
 const ARCHIVED_TASK: &str = "a task left in the archive";
+
+/// Under PowerShell the two `@` shapes are offered QUOTED, because PowerShell
+/// throws an unquoted `@word` away.
+///
+/// # The defect this pins
+///
+/// PowerShell's splatting operator claims a leading `@` even in an argument to a
+/// native executable, and the token does not arrive mangled — it disappears:
+///
+/// ```text
+///   PS> tasqx list @nonsensetoken     -> every task, exit 0
+///   PS> tasqx list '@nonsensetoken'   -> unknown filter token, exit 2
+/// ```
+///
+/// So Tab-completing `@blocked` there listed EVERY task at exit 0, which is the
+/// silent-drop class delivered by the menu. It shipped because the comment
+/// exempting these shapes cited a measurement made with `@working` itself — a
+/// token that selects pending|active and therefore returns the same rows whether
+/// it survives or is dropped. A probe that cannot fail is not a measurement, and
+/// the assertion below is written against a token that CAN fail.
+///
+/// Driven through the real binary with `$TASQX_COMPLETE=powershell`, which is
+/// what the shipped registration sets. The bash spelling is asserted in the same
+/// test so the special case is proven to be narrow rather than merely present:
+/// eleven of the thirteen shapes were re-measured in PowerShell and pass through
+/// untouched, so quoting them all would be a cost with no defect behind it.
+#[test]
+fn the_at_shapes_are_quoted_for_the_one_shell_that_eats_them() {
+    let (db, socket) = seeded_filter("powershell-at");
+
+    // Each shell's registration reads the candidates back its own way, so the
+    // test has to as well: bash separates on `$_CLAP_IFS`, PowerShell writes one
+    // candidate per LINE and never sets that variable
+    // (`clap_complete-4.6.7/src/env/shells.rs`). Splitting PowerShell's output on
+    // the bash sentinel returns one string with newlines in it, which compares
+    // unequal to everything and would have made this test unwritable rather than
+    // wrong — but only after looking like a quoting failure.
+    let complete_in = |shell: &str, words: &[&str], cursor: usize| -> Vec<String> {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+        cmd.env(VAR, shell)
+            .env("TASQX_DB", &db)
+            .env("TASQX_SOCK", &socket)
+            .env("_CLAP_COMPLETE_INDEX", cursor.to_string());
+        if shell == "bash" {
+            cmd.env("_CLAP_IFS", SEP.to_string());
+        }
+        let out = cmd
+            .arg("--")
+            .args(words)
+            .output()
+            .expect("run the completion callback");
+        assert_eq!(out.status.code(), Some(0), "the callback must exit 0");
+        assert!(out.stderr.is_empty(), "the callback must not write stderr");
+        let sep = if shell == "bash" { SEP } else { '\n' };
+        String::from_utf8_lossy(&out.stdout)
+            .split(sep)
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+
+    let ps = complete_in("powershell", &["tasqx", "list", "@"], 2);
+    assert_eq!(
+        ps,
+        ["'@working'", "'@blocked'"],
+        "PowerShell throws an unquoted `@word` away, so the candidate must carry \
+         its quotes or completing it silently lists every task"
+    );
+
+    // Matched on the BARE spelling — it is what the user typed. Filtering on the
+    // quoted one would make this menu answer nothing the moment `@` is pressed,
+    // which is the failure mode `deliverable_as_one_word` records for quoted
+    // values on the engine-filtered surfaces.
+    assert_eq!(
+        complete_in("powershell", &["tasqx", "list", "@w"], 2),
+        ["'@working'"]
+    );
+
+    // Every other shape is untouched there, so the special case is as narrow as
+    // the defect. `project:` is the interesting one: it is a stub, not a value.
+    let ps_all = complete_in("powershell", &["tasqx", "list", ""], 2);
+    assert!(
+        ps_all.iter().any(|c| c == "project:") && ps_all.iter().any(|c| c == "and"),
+        "only the `@` shapes are quoted under PowerShell, got {ps_all:?}"
+    );
+
+    // And bash, which delivers `@` intact, keeps the bare spelling.
+    assert_eq!(
+        complete_in("bash", &["tasqx", "list", "@"], 2),
+        ["@working", "@blocked"],
+        "quoting these outside PowerShell would insert literal quote characters \
+         into a command line that does not need them"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// A tag exclusion clap would read as its own short flag is never offered, on
+/// any of the four filter commands.
+///
+/// # Two parsers stand between a candidate and the filter, and only one was asked
+///
+/// `-h` is valid filter grammar: `filter::Filter::parse` reads it as excluding
+/// the tag `h`, and the JSON API applies it that way. The completion gate asked
+/// exactly that parser and was satisfied. But on the CLI the token never reaches
+/// the filter — `argv::prepass` leaves a one-character dash token alone on
+/// purpose, so that `tasqx list -h` still prints help rather than hiding the help
+/// flag behind the escape sentinel. Measured with a task tagged `h`:
+/// `tasqx list -<TAB>` offered `-h`, and choosing it printed the help text at
+/// exit 0 instead of filtering anything.
+///
+/// So the gate now asks `argv::reaches_the_filter_tail` as well, and this is the
+/// end-to-end proof: the candidate is absent, and — the half that says WHY it
+/// must be absent — running it does something else entirely.
+///
+/// The tag itself is still reachable as `+h`, which is asserted too: the rule is
+/// "not excludable from the CLI", not "not completable", and withholding both
+/// would be an under-offer justified by a defect in the other direction.
+#[test]
+fn a_tag_exclusion_clap_would_read_as_a_flag_is_never_offered() {
+    let (db, socket) = seeded_filter("short-flag-tag");
+
+    for (cursor, words) in [
+        (2, &["tasqx", "list", "-"][..]),
+        (2, &["tasqx", "export", "-"][..]),
+        (2, &["tasqx", "watch", "-"][..]),
+        (3, &["tasqx", "report", "project", "-"][..]),
+    ] {
+        let got = complete_bash_in(&db, &socket, cursor, words);
+        // COUNTED, not searched. `-h` is legitimately in this menu once — it is
+        // clap's own help flag, offered by the engine, and suppressing that
+        // would be a different defect. What must not happen is the provider
+        // adding a SECOND one as a tag exclusion, which is exactly how the
+        // measurement read before the gate: `-V -api -h --json … -h -V`, with
+        // both spellings appearing twice.
+        let offered = got
+            .iter()
+            .filter(|c| *c == SHORT_FLAG_TAG_EXCLUSION)
+            .count();
+        assert_eq!(
+            offered, 1,
+            "`{words:?}` offers {SHORT_FLAG_TAG_EXCLUSION:?} {offered} times; \
+             one is clap's help flag and any more is the provider composing a \
+             tag exclusion that never reaches the filter — choosing it prints \
+             help at exit 0 instead of filtering. got {got:?}"
+        );
+        // The seam is still alive for exclusions that DO reach the tail; without
+        // this the assertion above would pass for a provider offering nothing.
+        assert!(
+            got.iter().any(|c| c == "-api"),
+            "`{words:?}` offered no tag exclusions at all, so the check above \
+             proves nothing. got {got:?}"
+        );
+    }
+
+    // What the withheld candidate would have done, stated as a measurement
+    // rather than as a claim in a comment.
+    let ran = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_DB", &db)
+        .args(["--no-daemon", "list", SHORT_FLAG_TAG_EXCLUSION])
+        .output()
+        .expect("run the candidate that must not be offered");
+    let stdout = String::from_utf8_lossy(&ran.stdout);
+    assert!(
+        ran.status.success() && stdout.contains("Usage:"),
+        "the premise of this guard is that `list {SHORT_FLAG_TAG_EXCLUSION}` is \
+         clap's help flag; if that changed, the withholding may no longer be \
+         needed. got exit {:?}, stdout {stdout:?}",
+        ran.status.code()
+    );
+
+    // And the tag is still completable in the direction that works.
+    let included = complete_bash_in(&db, &socket, 2, &["tasqx", "list", "+h"]);
+    assert_eq!(
+        included,
+        [SHORT_FLAG_TAG_SUGAR],
+        "the tag is not excludable from the CLI, which is not a reason to stop \
+         offering it as an inclusion"
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
 
 /// The slice, driven through the REAL binary and the REAL callback protocol
 /// against a seeded store: every prefix of the filter grammar answers.

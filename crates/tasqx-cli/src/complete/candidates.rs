@@ -771,12 +771,43 @@ fn value_prefix_of(word: &str) -> Option<(&'static str, Vocabulary, &str)> {
 /// decision rather than an omission. That rule asks whether a shell can deliver
 /// a value out of the USER'S STORE, where the answer is unknown and a wrong
 /// guess files a task somewhere else; these twelve strings are tasqx's own fixed
-/// grammar, printed in its help, its manual and its refusal messages. Applying
-/// the rule would drop `@working` and `@blocked` — `@` is not in
-/// [`SAFE_PUNCTUATION`] — for a hazard that does not exist: measured in
-/// PowerShell, the shell most likely to claim `@`, `tasqx list @working` reaches
-/// the binary intact, because splatting applies to PowerShell commands and not
-/// to a native executable's arguments.
+/// grammar, printed in its help, its manual and its refusal messages.
+///
+/// # `@` in PowerShell, which is a real hazard and was measured wrongly
+///
+/// An earlier version of this comment claimed the rule would drop `@working` and
+/// `@blocked` "for a hazard that does not exist", on the strength of running
+/// `tasqx list @working` in PowerShell and seeing tasks. That probe cannot fail:
+/// `@working` is pending|active, so an ordinary store returns the same rows
+/// whether the token arrives or is thrown away.
+///
+/// With a probe that can fail, the hazard is there and it is the silent-drop
+/// class:
+///
+/// ```text
+///   PS> tasqx list @nonsensetoken     -> every task, exit 0
+///   PS> tasqx list '@nonsensetoken'   -> unknown filter token, exit 2
+/// ```
+///
+/// PowerShell's splatting operator claims a leading `@` even in an argument to a
+/// native executable, and the token does not arrive mangled — it disappears, and
+/// the command runs without it. Tab-completing `@blocked` there listed EVERY
+/// task at exit 0.
+///
+/// So the two `@` shapes are emitted QUOTED under PowerShell and bare
+/// everywhere else. That is possible only because this menu is reached through
+/// an `ArgValueCompleter` and owns its own prefix filter: it matches on the bare
+/// spelling — which is what the user is typing — and writes the quoted one. An
+/// `ArgValueCandidates` is prefix-filtered by the engine against the word, so a
+/// quoted candidate would vanish from the menu at the first keystroke, which is
+/// the same trap `deliverable_as_one_word`'s doc records for quoted values.
+///
+/// Withholding them under PowerShell was the alternative and is worse: it is a
+/// four-of-five under-offer on tasqx's own grammar, which is the shape this
+/// module argues against everywhere else. Re-measure with a token that can fail
+/// before changing any of this. The other eleven shapes were re-measured in
+/// PowerShell and pass through untouched, so the special case stays as narrow as
+/// the defect.
 ///
 /// `(` and `)` are grammar terminals and are deliberately in none of the three
 /// registries, so they are not offered. Both reasons point the same way: they
@@ -785,12 +816,21 @@ fn value_prefix_of(word: &str) -> Option<(&'static str, Vocabulary, &str)> {
 /// opens a subexpression, which is precisely the class
 /// [`deliverable_as_one_word`] refuses for a stored value.
 fn token_shapes(typed: &str) -> Vec<CompletionCandidate> {
+    let quote_at_signs = super::shell_is_powershell();
     filter::KEYWORDS
         .into_iter()
         .chain(filter::OPERATORS)
         .chain(filter::VALUE_PREFIXES.iter().map(|&(prefix, _)| prefix))
+        // Matched on the BARE spelling, always: it is what the user is typing,
+        // and filtering on the quoted one would make `@<TAB>` answer nothing.
         .filter(|shape| shape.starts_with(typed))
-        .map(CompletionCandidate::new)
+        .map(|shape| {
+            if quote_at_signs && shape.starts_with('@') {
+                CompletionCandidate::new(format!("'{shape}'"))
+            } else {
+                CompletionCandidate::new(shape)
+            }
+        })
         .collect()
 }
 
@@ -836,7 +876,14 @@ fn composed(prefix: &str, typed: &str, values: Vec<String>) -> Vec<CompletionCan
         .filter(|value| value.starts_with(typed))
         .filter_map(|value| {
             let word = format!("{prefix}{value}");
-            parses_back_to(&word, &value).then_some(word)
+            // TWO parsers, because two of them stand between the candidate and
+            // the filter. `crate::argv` decides whether the word reaches the
+            // filter tail at all on the CLI; `filter::Filter` decides what the
+            // tail then means. Asking only the second offered `-h` for a tag
+            // named `h` — valid filter grammar, and clap's help flag before it
+            // ever gets there, so choosing it printed help at exit 0.
+            (crate::argv::reaches_the_filter_tail(&word) && parses_back_to(&word, &value))
+                .then_some(word)
         })
         .take(MAX_VALUE_CANDIDATES)
         .map(CompletionCandidate::new)
@@ -1739,11 +1786,36 @@ mod tests {
     /// It is the guard against the likelier of the two `report` mistakes — not a
     /// wrong axis, but a second copy of the filter dispatcher that drifts. There
     /// is one dispatcher and this says so.
+    ///
+    /// # Why `+` and `-` are not in the word list
+    ///
+    /// Those two reach the [`Vocabulary::Tag`] arm, which calls [`tag_names`] and
+    /// so [`super::lookup`] — and `lookup` prefers a reachable DAEMON before it
+    /// falls back to `$TASQX_DB`. In an in-process unit test that means opening
+    /// whatever store the machine running `cargo test` points at. This was not a
+    /// worry: it was measured, by copying a store to a directory holding only
+    /// `tasks.db` and watching the `-shm`/`-wal` sidecars appear when this test
+    /// ran alone.
+    ///
+    /// Two things were wrong with that, and the second is the one that bites.
+    /// The suite must not read the developer's live data — the sibling test
+    /// `a_title_word_offers_nothing_and_a_bang_offers_priorities` says so 300
+    /// lines up and excludes the same arms for the same reason. And the body
+    /// performs several independent reads and asserts them EQUAL, so on the
+    /// maintainer's own machine, where tasqx is the live task manager and a
+    /// daemon is the single writer, a task added between two of them reddens a
+    /// test with nothing wrong in the code.
+    ///
+    /// The store-free words below already prove the relation this test is about
+    /// — including a value arm, via `status:`, whose vocabulary is compiled in.
+    /// The tag arms are proven against a SEEDED store through the real binary in
+    /// `tests/completion.rs::a_filter_position_completes_the_shipped_grammar`,
+    /// which is the only place that proof means anything anyway.
     #[test]
     fn report_adds_to_the_filter_menu_rather_than_replacing_it() {
         let filter = filter_words();
         let report = report_words();
-        for word in ["", "@", "pro", "status:", "+", "-", "due.", "zzq"] {
+        for word in ["", "@", "pro", "status:", "due.", "zzq"] {
             let os = std::ffi::OsStr::new(word);
             let shared = values(filter.complete_at(0, os));
             let extended = values(report.complete_at(0, os));
