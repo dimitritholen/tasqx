@@ -37,21 +37,122 @@ impl Engine {
         )?;
 
         // Re-read the full tag set inside the transaction for the response.
-        let all = {
-            let mut stmt = tx.prepare(
-                "SELECT t.name FROM tags t JOIN task_tags tt ON tt.tag_id = t.id \
-                 WHERE tt.task_id = ?1 ORDER BY t.name",
-            )?;
-            let rows = stmt.query_map(params![task.id], |r| r.get::<_, String>(0))?;
-            let mut v = Vec::new();
-            for r in rows {
-                v.push(r?);
-            }
-            v
-        };
+        // `task_tags` and not a second copy of its SELECT: this method and
+        // `tag_remove` both answer with "the task's tags afterwards", and two
+        // copies of one query is how the pair would come to disagree about
+        // ordering the day either is touched.
+        let all = task_tags(&tx, &task.id)?;
         tx.commit()?;
 
         Ok(json!({ "short_id": task.short_id, "tags": all }))
+    }
+
+    // ---- tag.remove ----------------------------------------------------------
+
+    /// `tag.remove` — detach one or more tags from a task. Params: `ref`, `tags`
+    /// (a non-empty array). Mirrors [`Engine::tag_add`]: same params, same
+    /// transaction, one event, and a response carrying the task's FULL tag set
+    /// re-read inside that transaction.
+    ///
+    /// **Removing a tag the task does not carry is `not_found`, and nothing is
+    /// written.** This is the one place `tag.remove` deliberately does NOT
+    /// mirror its sibling `dependency.remove`, which treats an absent edge as a
+    /// no-op answering ok, so the difference is worth stating rather than
+    /// leaving to be discovered.
+    ///
+    /// The two cases are not alike. A dependency edge is named by two refs that
+    /// both had to resolve, so "the edge is not there" is already visible in the
+    /// response — `depends_on` comes back and the caller can see the target is
+    /// absent from it. A tag is a bare string the caller typed. `tasqx untag 42
+    /// blockign` has exactly one plausible cause, and answering ok with a tag
+    /// set that still contains `blocking` is D33's unfalsifiable write: the
+    /// caller stated an intent, nothing happened, and the answer was
+    /// indistinguishable from success. So the refusal names the tags the task
+    /// does not have AND the tags it does, which is the whole fix — the typo is
+    /// one glance from the correction.
+    ///
+    /// **All-or-nothing.** `tags: ["api", "blockign"]` removes neither. The
+    /// check runs inside the write transaction before the first DELETE, so a
+    /// partly-applied removal is unreachable rather than merely unlikely, and
+    /// the caller never has to ask which half landed.
+    ///
+    /// The `tags` ROW is left behind when the last task loses a tag. Nothing
+    /// reads the table except through the `task_tags` join (the completion
+    /// vocabulary is derived from `task.list` rows, D50 — there is no
+    /// `tag.list`), so an unreferenced name is invisible, and deleting it would
+    /// mean deciding what happens to a name two concurrent transactions are
+    /// racing to reuse.
+    pub fn tag_remove(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
+        let tags = opt_str_array(p, "tags")?;
+        if tags.is_empty() {
+            return Err(ApiError::bad_request(
+                "tag.remove requires a non-empty `tags` array",
+            ));
+        }
+
+        let ts = now();
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_on(&tx, p)?;
+
+        // Read the current set inside the IMMEDIATE tx — the write lock is held,
+        // so a concurrent `tag.add` serializes against us and this can neither
+        // refuse a tag that has just arrived nor delete one that has just gone.
+        let before = task_tags(&tx, &task.id)?;
+        let missing: Vec<String> = tags
+            .iter()
+            .filter(|t| !before.contains(t))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            let quoted = |names: &[String]| {
+                names
+                    .iter()
+                    .map(|t| format!("`{t}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let has = match before.is_empty() {
+                true => "the task has no tags".to_string(),
+                false => format!("it is tagged {}", quoted(&before)),
+            };
+            return Err(ApiError::not_found(
+                format!(
+                    "#{} does not have the tag {} — {has}. Check the spelling in `tags`, \
+                     or drop the entry; nothing was removed.",
+                    task.short_id,
+                    quoted(&missing),
+                ),
+                Some(json!({ "missing": missing, "tags": before })),
+            ));
+        }
+
+        for tag in &tags {
+            tx.execute(
+                "DELETE FROM task_tags WHERE task_id = ?1 \
+                 AND tag_id = (SELECT id FROM tags WHERE name = ?2)",
+                params![task.id, tag],
+            )?;
+        }
+        tx.execute(
+            "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
+            params![task.rev + 1, ts, task.id],
+        )?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "tag.remove",
+            &json!({ "tags": tags }),
+        )?;
+
+        let all = task_tags(&tx, &task.id)?;
+        tx.commit()?;
+
+        // `removed` as well as `tags`: the remaining set alone cannot tell a
+        // caller which of its entries this call took away, and D39 asks that a
+        // computed fact be visible on a surface rather than inferred.
+        Ok(json!({ "short_id": task.short_id, "tags": all, "removed": tags }))
     }
 
     // ---- annotation.add ------------------------------------------------------

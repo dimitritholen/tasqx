@@ -813,6 +813,186 @@ fn a_bad_value_and_an_empty_value_name_the_task_alike() {
     }
 }
 
+// ---- tag.remove (D52) -------------------------------------------------------
+
+/// A task carrying `api` and `release`, and the `{ref: …}` value every test
+/// below re-reads it with.
+fn tagged_task(e: &Engine) -> (Value, Value) {
+    let task = e.task_add(&json!({ "title": "tagged" })).expect("add");
+    let by_ref = json!({ "ref": task["short_id"].clone() });
+    e.tag_add(&json!({ "ref": task["short_id"].clone(), "tags": ["api", "release"] }))
+        .expect("tag.add");
+    (task, by_ref)
+}
+
+/// The `tag.*` events on one task, newest first.
+fn tag_events(e: &Engine, short_id: &Value) -> Vec<Value> {
+    let listed = e
+        .event_list(&json!({ "ref": short_id.clone() }))
+        .expect("event.list");
+    listed["events"]
+        .as_array()
+        .expect("event.list returns an events array")
+        .iter()
+        .filter(|ev| ev["op"].as_str().is_some_and(|op| op.starts_with("tag.")))
+        .cloned()
+        .collect()
+}
+
+/// The happy path, and the two facts the response has to carry: what is LEFT
+/// (so the caller does not re-read) and what WENT (so `#42 tags: +release` is
+/// distinguishable from the same line printed by a call that removed nothing).
+///
+/// The event is asserted here for the same reason `dependency_add` has its own
+/// test above the whole-surface scan: the scan only sees that the source
+/// contains `insert_event(`, so it cannot notice the op landing on the wrong row
+/// or under the wrong name, and `tag.remove` reaching the log as `tag.add` would
+/// make the audit trail claim the opposite of what happened.
+#[test]
+fn tag_remove_drops_the_tag_reports_both_sides_and_logs_one_event() {
+    let e = engine();
+    let (task, by_ref) = tagged_task(&e);
+    let rev_before = e.task_get(&by_ref).unwrap()["_rev"].as_i64().unwrap();
+
+    let out = e
+        .tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["api"] }))
+        .expect("tag.remove");
+
+    assert_eq!(out["tags"], json!(["release"]), "the set that remains");
+    assert_eq!(out["removed"], json!(["api"]), "what this call took away");
+    assert_eq!(out["short_id"], task["short_id"]);
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["tags"],
+        json!(["release"]),
+        "the removal must be in the store, not only in the response"
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["_rev"],
+        json!(rev_before + 1),
+        "a real edit must bump `rev`, or a client's expected_rev is stale-safe by accident"
+    );
+
+    let logged = tag_events(&e, &task["short_id"]);
+    assert_eq!(
+        logged.len(),
+        2,
+        "add then remove => two edits, got {logged:#?}"
+    );
+    assert_eq!(logged[0]["op"], "tag.remove");
+    assert_eq!(logged[0]["entity"], "task");
+    assert_eq!(logged[0]["entity_id"], task["id"]);
+    assert_eq!(logged[0]["payload"]["tags"], json!(["api"]));
+}
+
+/// D52(a). The refusal, and the whole reason `tag.remove` does not copy
+/// `dependency.remove`'s no-op-answers-ok shape: `untag 42 blockign` states an
+/// intent, and an `ok` carrying a tag set that still holds `blocking` is
+/// indistinguishable from success. The message must therefore name the tag the
+/// task does NOT have and the ones it does — a refusal that only says "no" sends
+/// the caller to `tasqx show` to find their own typo.
+///
+/// The `not_found` code is asserted, not just the error-ness: it is what the CLI
+/// turns into exit 4, which is the only thing a script can branch on.
+#[test]
+fn removing_a_tag_the_task_lacks_is_not_found_and_names_both_sides() {
+    let e = engine();
+    let (task, by_ref) = tagged_task(&e);
+    let rev_before = e.task_get(&by_ref).unwrap()["_rev"].clone();
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["blockign"] }))
+        .expect_err("a tag the task does not carry may not answer ok");
+
+    assert_eq!(err.code, ErrorCode::NotFound, "{}", err.message);
+    assert!(
+        err.message.contains("blockign"),
+        "the refusal must name the tag that was asked for: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("api") && err.message.contains("release"),
+        "the refusal must name the tags the task DOES have, or the typo stays hidden: {}",
+        err.message
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["tags"],
+        json!(["api", "release"]),
+        "a refused removal must leave every tag in place"
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["_rev"],
+        rev_before,
+        "a refused removal bumped `rev`, invalidating a client's expected_rev for nothing"
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "a refused removal appended an event the daemon would push as a change"
+    );
+}
+
+/// D52(b). All-or-nothing: one unknown tag in the list takes the whole call
+/// down, and the tags that WERE there are still there afterwards. Without the
+/// pre-check inside the transaction the loop would delete `api`, hit nothing for
+/// `blockign`, and commit a half-applied removal at `ok` — leaving the caller to
+/// work out which half landed.
+#[test]
+fn one_unknown_tag_removes_none_of_them() {
+    let e = engine();
+    let (task, by_ref) = tagged_task(&e);
+
+    let err = e
+        .tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["api", "blockign"] }))
+        .expect_err("a partly-unknown list may not partly apply");
+    assert_eq!(err.code, ErrorCode::NotFound, "{}", err.message);
+
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["tags"],
+        json!(["api", "release"]),
+        "`api` was removable and must NOT have been removed"
+    );
+}
+
+/// The empty-list refusal, mirroring `tag.add`'s. `tags: []` is a caller who
+/// named no tag at all: removing nothing and answering ok would be the same
+/// silent-success shape D52 exists to close, one level up.
+#[test]
+fn tag_remove_refuses_an_empty_tag_list() {
+    let e = engine();
+    let (task, _) = tagged_task(&e);
+
+    let err = e
+        .tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": [] }))
+        .expect_err("an empty `tags` array names no tag");
+    assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+    assert!(err.message.contains("tags"), "{}", err.message);
+}
+
+/// Reachability through the one seam every surface shares. The engine method
+/// existing is not the same as the method being callable: `tag.remove` needs a
+/// `PARAMS` row (or the D33 gate refuses `ref`/`tags` as unknown keys) *and* a
+/// match arm (or it is `unknown method`), and each half fails differently.
+#[test]
+fn tag_remove_is_reachable_through_dispatch_and_published_by_capabilities() {
+    let e = engine();
+    let (task, _) = tagged_task(&e);
+
+    let out = dispatch(
+        &e,
+        "tag.remove",
+        &json!({ "ref": task["short_id"].clone(), "tags": ["api"] }),
+    )
+    .expect("tag.remove must be dispatchable, not just implemented");
+    assert_eq!(out["tags"], json!(["release"]));
+
+    let methods = tasqx_core::capabilities()["methods"].clone();
+    assert!(
+        methods.as_array().unwrap().contains(&json!("tag.remove")),
+        "a method a client cannot feature-detect is a method it will not call: {methods}"
+    );
+}
+
 // ---- dependency edges leave the same audit trail as every other edit --------
 
 /// The `dependency.*` events recorded against one task, newest first (the
@@ -991,7 +1171,7 @@ fn a_repeated_dependency_add_logs_a_second_event_and_bumps_rev() {
 ///
 /// What a text scan cannot see is that the right op reaches the right row with
 /// the right payload; that is what the per-handler tests are for. What it does
-/// catch, for all twenty-three at once and at zero runtime cost, is the write
+/// catch, for all twenty-four at once and at zero runtime cost, is the write
 /// disappearing entirely — the mutation that stayed green.
 #[test]
 fn every_handler_that_opens_a_mutation_also_appends_an_event() {
@@ -1057,7 +1237,7 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     }
 
     // A source-scanning guard's real failure mode is matching nothing at all
-    // (a renamed helper, a re-indented impl). Twenty-three handlers mutate at
+    // (a renamed helper, a re-indented impl). Twenty-four handlers mutate at
     // the time of writing; the floor keeps a refactor that hides them from
     // being silently "all clear", while still letting the set grow.
     //
@@ -1070,7 +1250,7 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     // real count moves — a floor that drifts below the truth is a guard that
     // has stopped guarding while still reporting green.
     assert!(
-        mutating >= 23,
+        mutating >= 24,
         "the scan found only {mutating} mutating handlers — it has stopped matching"
     );
 }

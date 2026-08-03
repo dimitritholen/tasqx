@@ -193,8 +193,14 @@ fn safe_examples_all_exit_zero() {
     let examples = safe_examples();
     // A filter bug that selected nothing would leave this test green while
     // executing zero commands; the floor makes that impossible to miss.
+    //
+    // Re-derived from the count this guard reports (35), not incremented: it
+    // had been sitting at 27 against a real 35, so eight Safe examples could
+    // have been deleted with nothing going red — the exact way a floor stops
+    // guarding while still printing green. `tag`/`untag` are `NoRun` (they
+    // mutate), so they add nothing here; the correction is independent of them.
     assert!(
-        examples.len() >= 27,
+        examples.len() >= 35,
         "expected the full Safe set, got {}",
         examples.len()
     );

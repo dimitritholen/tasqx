@@ -328,6 +328,51 @@ fn tag_of(tok: &str) -> Option<&str> {
     tok.strip_prefix('+').filter(|t| !t.is_empty())
 }
 
+/// The tag names a `tasqx tag` / `tasqx untag` argument list denotes.
+///
+/// The two surfaces must not disagree about what a tag IS, so this routes the
+/// `+`-prefixed spelling through [`tag_of`] — the same one decision `add` and
+/// `modify` make about their sugar — rather than growing a second stripper. A
+/// word without the `+` is the tag itself: on `tag`/`untag` the positional has
+/// no title to fall through to, so `tasqx tag 42 api` and `tasqx tag 42 +api`
+/// name one tag, and both are spellings a user will reach for.
+///
+/// Two departures from the sugar path, both because there is no title here:
+///
+///  * A bare `+` is **refused**, naming the word. C6's rule sends a token the
+///    sugar declines to the TITLE, which is why `tasqx add "Display + Error"`
+///    keeps its `+`. There is nowhere for it to go on this verb, so the choices
+///    are a refusal or a silent deletion, and a silently deleted argument on a
+///    write is the failure this repository keeps paying for.
+///  * The empty string is refused for the same reason, rather than reaching the
+///    core to come back as "`tags` contains an empty string" — which is true but
+///    does not say which of the words the shell handed over was empty.
+///
+/// Duplicates collapse, exactly as they do in [`parse_add`]: `tag 42 api api` is
+/// one tag, and the order the user typed is preserved.
+pub fn tag_arguments(words: &[String]) -> Result<Vec<String>, ApiError> {
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    for word in words {
+        let name = match word.starts_with('+') {
+            true => tag_of(word).ok_or_else(|| {
+                ApiError::bad_request(
+                    "a bare `+` names no tag — write the tag after it, as `+api` or `api`",
+                )
+            })?,
+            false => word.as_str(),
+        };
+        if name.is_empty() {
+            return Err(ApiError::bad_request(
+                "an empty tag name was given — drop the argument rather than passing \"\"",
+            ));
+        }
+        if !out.iter().any(|t| t == name) {
+            out.push(name.to_string());
+        }
+    }
+    Ok(out)
+}
+
 /// The value key a token opens with, and the value after it — or `None` when the
 /// token is not sugar at all and belongs to the title.
 ///
@@ -975,5 +1020,59 @@ mod tests {
         let q = parse_argv(&["notes", "est:"], AddFlags::default());
         assert_eq!(q.title, "notes est:");
         assert_eq!(q.estimate, None);
+    }
+
+    // ---- tag_arguments (the `tag`/`untag` verbs) ----------------------------
+
+    fn words(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The property the whole helper exists for: `tasqx tag 42 +api` and
+    /// `tasqx modify 42 +api` must name the SAME tag. Sending `+api` verbatim
+    /// would create a tag literally called `+api` — invisible next to the `api`
+    /// the sugar path writes, and unreachable by the `+api` filter token.
+    #[test]
+    fn a_tag_means_the_same_thing_with_and_without_the_plus() {
+        assert_eq!(tag_arguments(&words(&["api"])).unwrap(), ["api"]);
+        assert_eq!(tag_arguments(&words(&["+api"])).unwrap(), ["api"]);
+        // And the sugar path, which is the surface this must agree with.
+        let sugared = parse_add(&words(&["x", "+api"]), AddFlags::default()).unwrap();
+        assert_eq!(sugared.tags, tag_arguments(&words(&["+api"])).unwrap());
+    }
+
+    /// Duplicates collapse and the typed order survives, exactly as in
+    /// [`parse_add`] — two spellings of one tag in one command is a typo-shaped
+    /// mistake, not a request for two links.
+    #[test]
+    fn duplicate_tags_collapse_and_keep_their_order() {
+        assert_eq!(
+            tag_arguments(&words(&["release", "+api", "api", "release"])).unwrap(),
+            ["release", "api"]
+        );
+    }
+
+    /// A bare `+` reaches the TITLE on `add` (C6). There is no title on
+    /// `tag`/`untag`, so the only alternatives are a refusal and a silent
+    /// deletion — and a silently deleted argument on a write is the failure
+    /// this repository keeps paying for. The message has to name the fix.
+    #[test]
+    fn a_bare_plus_is_refused_rather_than_dropped() {
+        let err = tag_arguments(&words(&["+"])).expect_err("a bare `+` names no tag");
+        assert!(err.message.contains('+'), "{}", err.message);
+        assert!(
+            err.message.contains("api"),
+            "the refusal must show a working spelling: {}",
+            err.message
+        );
+    }
+
+    /// The empty word, refused here rather than at the core. The core's own
+    /// message ("`tags` contains an empty string") is true and says nothing
+    /// about WHICH argument the shell handed over empty.
+    #[test]
+    fn an_empty_tag_word_is_refused_at_the_cli() {
+        let err = tag_arguments(&words(&["api", ""])).expect_err("an empty tag names nothing");
+        assert!(err.message.contains("empty"), "{}", err.message);
     }
 }

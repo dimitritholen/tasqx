@@ -176,9 +176,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "Setting is `due:friday`/`--due friday`; removal is only ever `--clear <field>` — there is no magic empty value.",
+            "`--clear` covers the steering fields only. `modify 42 +api` adds a tag; taking one off is `tasqx untag 42 api`.",
             "`--expected-rev` fails with conflict (exit 5) if the task moved on.",
         ],
-        see_also: &["add", "show", "why"],
+        see_also: &["add", "show", "why", "untag"],
         topic: Topic::Capturing,
     },
     CmdDoc {
@@ -326,6 +327,40 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         examples: &[ex_norun("tasqx annotate 1 Called the plumber, waiting on a quote", "")],
         notes: &[],
         see_also: &["show", "modify"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
+        verb: "tag",
+        aliases: &[],
+        method: "tag.add",
+        summary: "Attach tags to a task.",
+        usage: "tasqx tag <ref> <tag…>",
+        examples: &[
+            ex_norun("tasqx tag 1 api release", "two tags, one call"),
+            ex_norun("tasqx tag 1 +api", "the leading + is optional — same tag either way"),
+        ],
+        notes: &[
+            "A tag is written the same way here as in `add`/`modify` sugar: `+api` and `api` name one tag, and duplicates collapse.",
+            "Re-adding a tag the task already has is not an error — the answer is the resulting tag set, so nothing has to be guessed.",
+        ],
+        see_also: &["untag", "modify", "list", "show"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
+        verb: "untag",
+        aliases: &[],
+        method: "tag.remove",
+        summary: "Remove tags from a task.",
+        usage: "tasqx untag <ref> <tag…>",
+        examples: &[
+            ex_norun("tasqx untag 1 api", "removes it, and prints what remains"),
+            ex_norun("tasqx untag 1 api release", "all or nothing: one unknown tag removes neither"),
+        ],
+        notes: &[
+            "Removing a tag the task does not have exits 4 and removes nothing, naming the tags it does have. A typo may not answer ok.",
+            "There is no `--clear tags`: a tag comes off by name, which is why this verb exists.",
+        ],
+        see_also: &["tag", "show", "list"],
         topic: Topic::Capturing,
     },
     CmdDoc {

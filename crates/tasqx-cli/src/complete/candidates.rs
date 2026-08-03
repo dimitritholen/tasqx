@@ -917,10 +917,15 @@ mod tests {
     /// rather than a quietly narrower guard.
     const TASK_REF_IDS: [&str; 2] = ["ref", "depends_on"];
 
-    /// Floor, not a list. The tree declares thirteen task-reference positionals
+    /// Floor, not a list. The tree declares fifteen task-reference positionals
     /// today; the guard finds them itself and this only stops it from passing
     /// vacuously if the discovery breaks. Raise it when the surface grows.
-    const KNOWN_TASK_REF_POSITIONALS: usize = 13;
+    ///
+    /// Re-derived from the guard's own count rather than bumped by hand when
+    /// `tag`/`untag` landed: a floor arrived at by addition drifts below the
+    /// truth the first time somebody's arithmetic is off, and a floor below the
+    /// truth is a guard that has stopped guarding while still reporting green.
+    const KNOWN_TASK_REF_POSITIONALS: usize = 15;
 
     /// Every subcommand in the tree, at every depth.
     ///
@@ -1268,6 +1273,10 @@ mod tests {
     /// is said at the declaration too, since an annotation whose purpose lives
     /// only in a test is one refactor from being tidied away.
     ///
+    /// The membership is not flags-only: `tag`/`untag` take their tags as a
+    /// POSITIONAL, and `get_arguments` returns those too, which is why nothing
+    /// here filters on `get_long`.
+    ///
     /// Mutation-proven: removing either attachment, or either `value_name`,
     /// reddens this test naming the argument (the `value_name` case through the
     /// floor below).
@@ -1294,8 +1303,12 @@ mod tests {
                 // would let that regress silently.
                 assert!(
                     arg.get::<ArgValueCompleter>().is_some(),
-                    "`{trail} --{}` takes a tag name and offers no candidates \
-                     from a completer, while `+<TAB>` on the same command offers \
+                    // No `--` in front of the id: two of the four members are
+                    // POSITIONALS (`tag`/`untag`), and a message that spells
+                    // them as flags sends the reader looking for an argument
+                    // that does not exist.
+                    "`{trail} {}` takes a tag name and offers no candidates \
+                     from a completer, while `+<TAB>` on a sugar command offers \
                      every tag. Attach `add = crate::complete::candidates::tags()` \
                      — and note it must be a completer, so the typed word is \
                      applied before the candidate cap.",
@@ -1311,8 +1324,9 @@ mod tests {
         );
     }
 
-    /// Floor, not a list: `add --tag` and `modify --tag`.
-    const KNOWN_TAG_VALUED_ARGS: usize = 2;
+    /// Floor, not a list: `add --tag`, `modify --tag`, and the `tag`/`untag`
+    /// positionals. Re-derived from the guard's own count, not incremented.
+    const KNOWN_TAG_VALUED_ARGS: usize = 4;
 
     /// The mapping from `project.list`'s envelope, including the one filter that
     /// is a decision rather than plumbing.

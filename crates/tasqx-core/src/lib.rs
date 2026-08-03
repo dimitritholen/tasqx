@@ -36,7 +36,7 @@
 //!  * [`util`]      — the shared time/JSON param readers (D17, D32).
 //!
 //! The full §4 method catalogue is implemented (task add/list/get/start/stop/
-//! done/modify/cancel/reopen, project create/list/archive/use, tag.add,
+//! done/modify/cancel/reopen, project create/list/archive/use, tag add/remove,
 //! annotation.add, dependency add/remove, memory add/search/remove/import,
 //! report.summary, store export/import, event.list, reminder.fire,
 //! core.capabilities). Real dependency/blocked logic and the §12-D8
