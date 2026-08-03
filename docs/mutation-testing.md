@@ -124,11 +124,16 @@ run's log, wall clock and all — the same line appears in the comment on the
 `types.rs` and `urgency.rs` are clean, and so is every real gap the first sweep
 found.
 
-The one missed mutant is a real gap, not an equivalent one — `spacing_hint` in
-the table below, open as tasqx #48. The two equivalent mutants are suppressed
-via `exclude_re` in `.cargo/mutants.toml` — legitimate only because they are
-provably unkillable, not merely hard to test. Anything that is merely hard to
-test belongs in this table, not in the config.
+The one missed mutant was a real gap, not an equivalent one — `spacing_hint`,
+tasqx #48. It has since been closed by two tests (see "Gaps this sweep closed"),
+so the `1 missed` above is now history rather than a standing state; the figures
+are deliberately left as the run printed them, because re-typing a count nobody
+re-measured is exactly what the paragraph above this one warns against. The
+table below keeps its row: the survivor is what the next sweep has to come back
+clean on, and deleting the row would delete the only record of why. The two
+equivalent mutants are suppressed via `exclude_re` in `.cargo/mutants.toml` —
+legitimate only because they are provably unkillable, not merely hard to test.
+Anything that is merely hard to test belongs in this table, not in the config.
 
 The timeout row is why this is still not a CI gate: `cargo mutants` exits 3 on
 timeouts as well as survivors, and the timeout count varies run to run (three
@@ -146,7 +151,7 @@ in `tasqx-core`'s `lib.rs` — checked against the source by a test.
 
 | Location | Mutation | Verdict |
 | --- | --- | --- |
-| `filter.rs` `spacing_hint` | `\|\|` → `&&` on the suppression guard | **MISSED — a real gap, tracked as tasqx #48.** The hint is withheld from any token that opens a predicate of its own; under `&&` both halves would have to hold at once, so the suppression never fires again. Nothing in the suite pairs a value predicate with a following token that BOTH opens a predicate and fails to parse, so every test stays green while `project:Home @wroking` is answered with "did you mean `project:"Home @wroking"`?" — advice to quote a typo into the project name. |
+| `filter.rs` `spacing_hint` | `\|\|` → `&&` on the suppression guard | **MISSED by this sweep, CLOSED since (tasqx #48).** The hint is withheld from any token that opens a predicate of its own; under `&&` both halves would have to hold at once, so the suppression never fired again and `project:Home @wroking` was answered with "did you mean `project:"Home @wroking"`?" — advice to quote a typo into the project name. Nothing paired a value predicate with a following token that BOTH opens a predicate and fails to parse. Now `a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value` and `a_mistyped_at_keyword_is_never_hinted_as_a_split_value` do, one per disjunct; each was verified to redden under the `&&` mutation, and under deletion of its own disjunct alone. |
 | `filter.rs` `parse_and` | `and` keyword guard → `false` | Equivalent. Without the guard an explicit `and` falls through to `parse_term`, matches no predicate prefix, and becomes `Pred::Always` — the identity of the enclosing `And`. `eval`'s `.all()` is unchanged, and `constrains_status`'s `.any()` reads `Pred::Always` as false either way. |
 | `remind.rs` `spec_to_string` | `<` → `<=` | Equivalent. The two operators differ only at `secs == 0`, and that is exactly the input where `sign` is never read: the next lines compute `n = secs.abs()` and return the literal `"+0s"` before `sign` reaches any `format!`. |
 | `filter.rs` `parse_or`, `parse_and`, `parse_term` | `pos += 1` → `-=` / `*=` | Uninteresting, and reported as TIMEOUT rather than MISSED. The parser's cursor stops advancing and it loops forever. Non-termination is loud and immediately diagnosable, unlike every other finding here — a test for it would be a hang with a stopwatch. Worth knowing that loop termination rests entirely on monotonic `pos` advance. |
@@ -170,6 +175,22 @@ The first sweep found two real gaps, both now fixed and both mutation-verified:
 Neither was found by review, by 299 passing tests, or by adversarial reading.
 Both were found by mutation testing. That is the argument for this file
 existing.
+
+The second sweep — the one whose figures are quoted above — found one more, and
+it is now closed too:
+
+- **`filter.rs` `spacing_hint`, the `||` in the suppression guard.** Two
+  disjuncts, neither separately exercised: a token opening a VALUE predicate,
+  and a token opening an `@` keyword. Under `&&` the guard could never fire, and
+  the tool began advising users to quote a failing predicate into a project
+  name. Closed by
+  `a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value` and
+  `a_mistyped_at_keyword_is_never_hinted_as_a_split_value`. Both build their
+  cases out of `VALUE_PREFIXES` and `KEYWORDS` rather than listing tokens, so a
+  ninth prefix or a third keyword is covered on the day it is added, and both
+  assert the refusal is byte-identical to the one the offending token produces
+  with nothing in front of it — "unadorned" as an equality, not as a `contains`
+  of the hint's current wording.
 
 Keep this table current when the sweep changes — a stale known-survivors list is
 worse than none, because it trains people to skim the report.

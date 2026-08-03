@@ -916,6 +916,16 @@ fn spacing_hint(prev: Option<&Tok>, tok: &Tok) -> Option<String> {
     // Only a bare word is a plausible fragment of a split value. Anything that
     // opens a predicate of its own is a token the user meant as a token, and
     // its error should stand unadorned.
+    //
+    // Both disjuncts are separately load-bearing and were separately untested:
+    // a token starting with `@` never starts with one of the eight prefixes and
+    // vice versa, so `||` weakened to `&&` disabled the suppression entirely
+    // and left the whole workspace green — the one survivor of the 2026-08-03
+    // sweep (docs/mutation-testing.md). Pinned now by
+    // `a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value` and
+    // `a_mistyped_at_keyword_is_never_hinted_as_a_split_value`, one per
+    // disjunct, both built out of VALUE_PREFIXES and KEYWORDS so a ninth prefix
+    // or a third keyword arrives already covered.
     if VALUE_PREFIXES.iter().any(|(p, _)| tok.text.starts_with(p)) || tok.text.starts_with('@') {
         return None;
     }
@@ -1076,6 +1086,19 @@ mod tests {
     /// threading a Result through assertions about matching.
     fn parsed(s: &str) -> Filter {
         Filter::parse(s, anchor()).unwrap_or_else(|e| panic!("test filter {s:?} must parse: {e}"))
+    }
+
+    /// The refusal message for a filter the test asserts is invalid.
+    ///
+    /// The `Ok` arm panics rather than returning an `Option`, for the same
+    /// reason `parsed` does: a filter written here to be refused that suddenly
+    /// parses is a change in the grammar, and the test that named it should say
+    /// so by name instead of quietly asserting nothing.
+    fn refused(s: &str) -> String {
+        match Filter::parse(s, anchor()) {
+            Err(e) => e,
+            Ok(_) => panic!("test filter {s:?} must be refused, but it parsed"),
+        }
     }
 
     /// `report.summary` only applies its exclude-cancelled default when the
@@ -1770,6 +1793,81 @@ mod tests {
             assert!(
                 !err.contains("did you mean"),
                 "{input:?} must not be hinted at: {err}"
+            );
+        }
+    }
+
+    /// The other half of that suppression, one disjunct at a time: a token that
+    /// opens a VALUE predicate of its own must never be offered as the tail of a
+    /// shell-split value, however badly it then fails to parse.
+    ///
+    /// Separate from `the_quoting_hint_stays_out_of_filters_it_would_mislead`
+    /// because that test only reaches the `prev.quoted` and no-previous-value
+    /// exits; nothing in it ever got as far as the prefix check, so replacing
+    /// that check's `||` with `&&` left the whole suite green. The mutant is
+    /// user-visible: `list project:Home status:nosuch` would answer the honest
+    /// "unknown status" and then advise quoting `project:"Home status:nosuch"`,
+    /// i.e. swallowing a status predicate into a project name.
+    ///
+    /// The cases are built FROM [`VALUE_PREFIXES`] rather than listed, so a
+    /// ninth prefix is covered the day it is added — a hand-written list here
+    /// would be the parallel-list shape the rest of this module refuses. The
+    /// bare prefix is the one token every entry is guaranteed to reject (the
+    /// empty value is refused by all eight, which is what makes it usable as a
+    /// uniform probe); the spelled-out cases below it are the shapes a user
+    /// actually types.
+    #[test]
+    fn a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value() {
+        let bare: Vec<String> = VALUE_PREFIXES.iter().map(|(p, _)| p.to_string()).collect();
+        let typed = [
+            "status:nosuch".to_string(),
+            "due.before:notadate".to_string(),
+            "completed.after:notadate".to_string(),
+            "--jsn".to_string(),
+        ];
+        for tok in bare.iter().chain(typed.iter()) {
+            // The previous token is a VALID, unquoted, value-carrying predicate,
+            // which is exactly the state that arms the hint. Every other exit
+            // from `spacing_hint` says "hint this"; only the prefix check does
+            // not, so this is that check and nothing else.
+            let input = format!("project:Home {tok}");
+            // "Unadorned" spelled as an equality against the token's own error
+            // with nothing in front of it, rather than as a `contains` of the
+            // hint's current wording. Rewording the hint cannot weaken this.
+            assert_eq!(
+                refused(&input),
+                refused(tok),
+                "{tok:?} opens a value predicate of its own, so {input:?} must be \
+                 refused exactly as {tok:?} alone is — a hint here advises \
+                 swallowing a predicate into a project name"
+            );
+        }
+    }
+
+    /// The `@` disjunct of the same suppression, which no `VALUE_PREFIXES` entry
+    /// covers: `@` is not a value prefix, so a mistyped keyword falls past the
+    /// prefix check and reaches the second half of the condition alone.
+    ///
+    /// Written as its own test because the two disjuncts are separately
+    /// falsifiable — a token starting with `@` never starts with one of the
+    /// eight prefixes, and vice versa — so a single test exercising only one of
+    /// them leaves the other free to be deleted.
+    ///
+    /// Built from [`KEYWORDS`] plus one invented sigil: the near-miss of each
+    /// real keyword is the typo a user actually makes, and `@nosuchset` proves
+    /// the rule is the `@` and not the spelling of the two keywords.
+    #[test]
+    fn a_mistyped_at_keyword_is_never_hinted_as_a_split_value() {
+        let near_misses: Vec<String> = KEYWORDS.iter().map(|k| format!("{k}x")).collect();
+        let invented = ["@nosuchset".to_string()];
+        for tok in near_misses.iter().chain(invented.iter()) {
+            let input = format!("project:Home {tok}");
+            assert_eq!(
+                refused(&input),
+                refused(tok),
+                "{tok:?} opens a keyword predicate of its own, so {input:?} must be \
+                 refused exactly as {tok:?} alone is — a hint here advises \
+                 swallowing a keyword into a project name"
             );
         }
     }
