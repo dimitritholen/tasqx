@@ -108,6 +108,11 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("next", &["next"]),
         c("projects", &["projects"]),
         c("use", &["use", "guardproj"]),
+        // `archive` needs a project of its own: archiving `guardproj` would
+        // clear the default this store's later cases run against, and the
+        // question here is only whether the verb honours `--json`.
+        c("init", &["init", "guardretired"]),
+        c("archive", &["archive", "guardretired"]),
         c("done", &["done", "1"]),
         c("cancel", &["cancel", "2"]),
         c("reopen", &["reopen", "2"]),

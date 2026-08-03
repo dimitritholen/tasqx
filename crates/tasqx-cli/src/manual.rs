@@ -157,11 +157,16 @@ A project is just a name in the store — no folder, no path.
   tasqx init <name>      claim a new project name
   tasqx use <name>       make it the default for bare adds
   tasqx projects         list them; the default is marked `*`
+  tasqx archive <name>   retire one; --all still lists it
 
 A bare `tasqx add …` lands in the default project. The default
 is claimed only if the store had none yet; archiving the default
 project clears it, so a later add has no home until you `use`
-another one."
+another one.
+
+Archiving keeps the tasks and takes the project out of rotation:
+`use` and any `add`/`modify` naming it are refused. There is no
+`unarchive` — importing a saved export is the way back."
         }
 
         Topic::Capturing => {

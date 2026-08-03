@@ -164,6 +164,16 @@ const MAX_VALUE_CANDIDATES: usize = 200;
 /// `tasqx projects` shows, so the shell and the tool answer "which projects are
 /// there" the same way.
 ///
+/// `archive` is the fifth attachment site and the one exception to that
+/// sentence: `project.archive` does NOT refuse a project that is already
+/// archived — it sets `archived = 1` again and answers ok. The narrow set is
+/// still the right menu for it, for the weaker reason that re-archiving is the
+/// one input the verb cannot change anything with, and a completion menu whose
+/// entries are no-ops teaches the wrong thing about what the verb does. Written
+/// down rather than left implied, because "every site here refuses an archived
+/// project" was true when this comment was written and stopped being true when
+/// the verb landed.
+///
 /// A command that ACCEPTS an archived project therefore needs the other
 /// constructor — see [`projects_including_archived`]. Splitting them rather than
 /// widening this one keeps each attachment site offering exactly what it takes.
@@ -1201,9 +1211,9 @@ mod tests {
     /// gives its value — the same technique, and the same fallback, as
     /// `command.rs`'s `every_path_shaped_arg_declares_how_to_complete_it`. A
     /// list of `--project` sites kept in this test is the shape this repository
-    /// keeps paying for: there are four today (`add`, `modify`, `chart
-    /// burndown`, `use`) and the fourth is a POSITIONAL, which is exactly the
-    /// one a list written from memory forgets.
+    /// keeps paying for: there are five today (`add`, `modify`, `chart
+    /// burndown`, `use`, `archive`) and two of them are POSITIONALS, which is
+    /// exactly the kind a list written from memory forgets.
     ///
     /// It is a naming convention, enforced in the direction that can be
     /// enforced: it cannot know that some argument is secretly a project, but it
@@ -1211,7 +1221,7 @@ mod tests {
     /// `init` is outside it on purpose and says so at the declaration — it
     /// creates a project, so the existing names are the ones it refuses.
     ///
-    /// Mutation-proven: removing the attachment from any of the four reddens
+    /// Mutation-proven: removing the attachment from any of the five reddens
     /// this test naming that argument.
     #[test]
     fn every_project_valued_arg_offers_project_names() {
@@ -1251,9 +1261,13 @@ mod tests {
     }
 
     /// Floor, not a list: `add --project`, `modify --project`,
-    /// `chart burndown --project` and `use <PROJECT>`. Raise it when the surface
-    /// grows; the guard finds the members itself.
-    const KNOWN_PROJECT_VALUED_ARGS: usize = 4;
+    /// `chart burndown --project`, `use <PROJECT>` and `archive <PROJECT>`.
+    /// Raise it when the surface grows; the guard finds the members itself.
+    ///
+    /// Re-derived from the count the guard itself reports (5), not incremented
+    /// by hand — a floor that drifts below the real count is a guard that has
+    /// stopped guarding while still printing green.
+    const KNOWN_PROJECT_VALUED_ARGS: usize = 5;
 
     /// The value name that means "this argument's value IS a tag name".
     const TAG_VALUE_NAME: &str = "TAG";

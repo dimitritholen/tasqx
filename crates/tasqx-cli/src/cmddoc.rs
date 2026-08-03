@@ -109,7 +109,9 @@ const fn ex(cmd: &'static str) -> Example {
         run: Safe,
     }
 }
-#[allow(dead_code)]
+/// A `Safe` example with a note. Was `#[allow(dead_code)]` for as long as every
+/// annotated example happened to be `NoRun`; `archive` is the first Safe one
+/// that needs a note, so the allow is gone.
 const fn exn(cmd: &'static str, note: &'static str) -> Example {
     Example {
         cmd,
@@ -393,7 +395,35 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         usage: "tasqx use <name>",
         examples: &[ex_norun("tasqx use keuken-verbouwen", "move where a bare add lands")],
         notes: &["The project must already exist and not be archived. `tasqx projects` marks the default with `*`."],
-        see_also: &["init", "projects", "add"],
+        see_also: &["init", "projects", "add", "archive"],
+        topic: Topic::Projects,
+    },
+    CmdDoc {
+        verb: "archive",
+        aliases: &[],
+        method: "project.archive",
+        summary: "Retire a project — out of rotation, tasks untouched.",
+        usage: "tasqx archive <name>",
+        examples: &[
+            // `Safe`, and it is the only mutating example in the reference that
+            // is: `safe_examples_all_exit_zero` runs the Safe set in
+            // declaration order against a scratch store, where `init
+            // keuken-verbouwen` (the first `init` example, and therefore that
+            // store's default project) has already run. So this line executes
+            // the default-clearing path for real on every test run, which is
+            // the branch worth executing.
+            exn(
+                "tasqx archive keuken-verbouwen",
+                "retire it; archiving your default project clears the default",
+            ),
+        ],
+        notes: &[
+            "Archiving is a shelf, not a delete: the tasks keep their history and their project, and `tasqx projects --all` still lists the project.",
+            "An archived project is out of rotation — `use` refuses it (exit 5), and so does an `add`/`modify` that names it.",
+            "There is no `unarchive` verb and no `project.unarchive` method: among the project methods, archiving is one-way. `store.import` does write a project's `archived` flag from the document, so restoring a saved export un-archives one — a data restore, not an undo.",
+            "Archiving the project that IS the default clears the default: a bare `tasqx add` then has no project until `tasqx use <project>`. The line says which of the two happened.",
+        ],
+        see_also: &["projects", "use", "init"],
         topic: Topic::Projects,
     },
     CmdDoc {
@@ -406,8 +436,8 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex("tasqx projects"),
             ex("tasqx projects --all"),
         ],
-        notes: &[],
-        see_also: &["init", "use"],
+        notes: &["`--all` is the only way to see an archived project: without it the table shows the live ones, which is what `add` and `use` will accept."],
+        see_also: &["init", "use", "archive"],
         topic: Topic::Projects,
     },
     CmdDoc {

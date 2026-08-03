@@ -515,6 +515,29 @@ pub(super) enum Command {
         #[arg(value_name = "PROJECT", add = crate::complete::candidates::projects())]
         name: String,
     },
+    /// Retire a project — out of rotation, tasks untouched (maps to
+    /// project.archive).
+    ///
+    /// D22: an archived project drops out of `tasqx projects` (`--all` still
+    /// shows it) and no write may name it. Archiving the project that IS the
+    /// default clears the default in the same transaction, and the printed line
+    /// says so — where a bare `tasqx add` lands is the fact this verb is most
+    /// able to change silently.
+    #[command(after_help = crate::cmddoc::after_help("archive"))]
+    Archive {
+        /// An existing project name.
+        //
+        // `value_name = "PROJECT"` for the same reason as `Use::name`: it is
+        // what puts this positional inside
+        // `every_project_valued_arg_offers_project_names`, which decides
+        // membership by the name an argument announces for its value rather
+        // than by a list of verbs kept in a test. The candidates deliberately
+        // exclude archived projects — see `candidates::projects`, where the
+        // reason for THIS site is written down, since `archive` is the one
+        // attachment that does not refuse one.
+        #[arg(value_name = "PROJECT", add = crate::complete::candidates::projects())]
+        name: String,
+    },
     /// List projects (maps to project.list).
     #[command(after_help = crate::cmddoc::after_help("projects"))]
     Projects {

@@ -96,6 +96,42 @@ pub fn default_switched(ctx: &Ctx, result: &Value) -> String {
     )
 }
 
+/// D22: `archive` retired a project, and may have un-pointed the default doing
+/// it. Both facts go on the line.
+///
+/// The default-clearing branch is the whole reason this function is not a
+/// one-liner. `project.archive` clears the `default_project` key when it
+/// archives the project that key names, so a single `tasqx archive work` can
+/// change where every future bare `tasqx add` lands — and D22 wrote, before any
+/// terminal copy existed, that when a CLI verb landed it would render
+/// `default_cleared`. Printing only "Project work archived" would leave the user
+/// to discover the move by finding their next task in no project at all.
+///
+/// The other branch is stated rather than implied for the D39 reason: "Project
+/// work archived" alone is also exactly what the cleared case would print, so
+/// silence cannot be read as "the default is fine". Both outcomes name
+/// themselves, and `default_cleared` — a field the core always sends, never
+/// omits — decides which.
+pub fn project_archived(ctx: &Ctx, result: &Value) -> String {
+    let name = s(result, "name");
+    let cleared = result
+        .get("default_cleared")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // Name the verb that points the default somewhere again: a store with no
+    // default is a valid state (D22), but it is one the user has to be able to
+    // leave, and `use` is the only way out.
+    let trailer = if cleared {
+        "  ·  it was your default project, so a bare `tasqx add` has no home until `tasqx use <project>`"
+    } else {
+        "  ·  your default project is unchanged"
+    };
+    format!(
+        "{}{trailer}\n",
+        ctx.paint("accent", &format!("Project {name} archived"))
+    )
+}
+
 pub fn task_added(ctx: &Ctx, result: &Value, title: &str) -> String {
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
     let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
@@ -1543,6 +1579,58 @@ mod tests {
         assert!(
             !fresh.contains("was"),
             "invented a previous default: {fresh:?}"
+        );
+    }
+
+    /// The same rule one verb over: archiving the default MOVES where a bare
+    /// `tasqx add` lands, so the line may not be the same either way.
+    ///
+    /// D22 reserved this copy in writing ("when one lands it renders
+    /// `default_cleared`") while `project.archive` had no CLI verb at all. The
+    /// failure this pins is the cheap one: render the name, drop the field, and
+    /// the user reads "Project work archived" while their default silently
+    /// became nothing.
+    #[test]
+    fn project_archived_says_when_it_cleared_the_default() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+
+        let cleared = project_archived(
+            &ctx,
+            &json!({ "name": "work", "archived": true, "default_cleared": true }),
+        );
+        assert!(cleared.contains("work"), "missing the project: {cleared:?}");
+        assert!(
+            cleared.contains("default project") && !cleared.contains("unchanged"),
+            "the default moved and the line does not say so: {cleared:?}"
+        );
+        // And it must name the way back, exactly as `project_created` does when
+        // it declines to claim the default: a store with no default is valid,
+        // being unable to leave that state is not.
+        assert!(
+            cleared.contains("tasqx use"),
+            "must name the verb that re-points the default: {cleared:?}"
+        );
+
+        let kept = project_archived(
+            &ctx,
+            &json!({ "name": "side", "archived": true, "default_cleared": false }),
+        );
+        assert!(kept.contains("side"));
+        assert!(
+            !kept.contains("no home"),
+            "invented a default change that did not happen: {kept:?}"
+        );
+        // The two outcomes must be DISTINGUISHABLE, not merely different in
+        // what they omit — "Project side archived" on its own is also the line
+        // a cleared default would print if the field were dropped.
+        assert_ne!(
+            kept.replace("side", "work"),
+            cleared,
+            "the cleared and untouched cases print the same line"
+        );
+        assert!(
+            kept.contains("unchanged"),
+            "the untouched case must say the default is untouched: {kept:?}"
         );
     }
 
