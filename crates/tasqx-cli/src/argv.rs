@@ -57,7 +57,7 @@ const ESCAPED_DASH: char = '\u{1}';
 ///
 /// Aliases are resolved through clap, not listed here, so `ls` and `l` follow
 /// `list` automatically. Kept honest by `every_filter_positional_is_registered`.
-pub(crate) const FILTER_COMMANDS: [&str; 4] = ["list", "export", "report", "watch"];
+pub(crate) const FILTER_COMMANDS: [&str; 5] = ["list", "export", "report", "watch", "agenda"];
 
 /// argv rewritten for clap, plus whether it addresses a filter-taking command.
 pub struct Prepass {

@@ -203,6 +203,34 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Filters,
     },
     CmdDoc {
+        verb: "agenda",
+        aliases: &["ag", "cal"],
+        method: "task.list",
+        summary: "What is coming up, when — `list` ordered by time.",
+        usage: "tasqx agenda [filter…] [--days N]",
+        examples: &[
+            // `Safe`, and it runs against the same scratch store the `add`
+            // examples above have already filled — including `add Ship it
+            // due:friday`, so `safe_examples_all_exit_zero` renders a real day
+            // group rather than an empty agenda.
+            ex("tasqx agenda"),
+            ex("tasqx agenda --days 3"),
+            ex("tasqx agenda project:work"),
+        ],
+        notes: &[
+            "A task is placed on the EARLIER of its `due` and `scheduled` — the first day it asks anything of you — and the WHEN column says which of the two that was.",
+            "Overdue tasks are always shown, whatever `--days` says: a horizon is a question about the future.",
+            "Nothing is dropped in silence. Tasks with no date at all, tasks past the horizon and done/cancelled tasks are each COUNTED under the table, with the command or flag that reveals them — the `--days` line names the exact window that reaches the furthest one.",
+            "Done and cancelled tasks are left out unless your filter names a status, the same rule `report` applies to cancelled tasks (D24). `tasqx agenda status:done` shows them.",
+            "Days are UTC days, because a date typed without a time is stored as midnight UTC; grouping by local time would file `--due 2026-08-05` under the 4th west of Greenwich.",
+        ],
+        see_also: &["list", "next", "add", "modify"],
+        // Its own topic page is the one about `due`/`scheduled`, which is the
+        // entire subject of this verb — and until now the only topic in the
+        // manual with no command on it.
+        topic: Topic::Dates,
+    },
+    CmdDoc {
         verb: "next",
         aliases: &[],
         method: "task.list",

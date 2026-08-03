@@ -2818,3 +2818,159 @@ fn archiving_an_already_archived_project_is_told_apart_from_archiving_it() {
         "a project archived once must have one archive event: {log}"
     );
 }
+
+/// `tasqx agenda`, driven as a session, because the two things most likely to be
+/// wrong about it are only visible from outside the process.
+///
+/// The first is the default filter, and it was wrong in the first draft of this
+/// verb. A `scheduled` date in the future parks a task in **backlog** until that
+/// instant arrives (`types::effective_status`), and `list`'s `@working` is
+/// pending|active — so an agenda that inherited `list`'s default showed no
+/// Tuesday at all for a task scheduled on Tuesday. That is invisible to a unit
+/// test of the renderer, which is handed rows the filter already chose: the
+/// filter is composed in `run_agenda` and evaluated in the engine, and only a
+/// real store holds a task whose status the store itself derived.
+///
+/// The second is that the horizon and the omission notes are what the user reads
+/// instead of the rows they do not get.
+#[test]
+fn agenda_shows_what_is_scheduled_and_counts_what_it_could_not_place() {
+    let dir = fresh_config_dir("agenda");
+    let run = |args: &[&str]| bin("agenda", &dir).args(args).output().expect("run tasqx");
+    let _ = std::fs::remove_file(db_path("agenda"));
+
+    assert!(run(&["init", "agendaproj"]).status.success());
+    // Every date is a signed offset from now rather than a literal, so the
+    // fixture means the same thing on every day the suite is ever run — and
+    // stays inside `--days`' parse-time ceiling, which a year literal would not.
+    for args in [
+        &[
+            "add",
+            "Deadline only",
+            "due:+40d",
+            "--project",
+            "agendaproj",
+        ][..],
+        // The task the `@working` default silently swallowed: scheduled, in the
+        // future, therefore `backlog`, and with no deadline of its own.
+        &[
+            "add",
+            "Scheduled only",
+            "scheduled:+39d",
+            "--project",
+            "agendaproj",
+        ][..],
+        &["add", "No dates at all", "--project", "agendaproj"][..],
+        &["add", "Far future", "due:+400d", "--project", "agendaproj"][..],
+        // Already late, so the Overdue group is exercised — and it is the row
+        // that must survive every narrowing of the window below.
+        &["add", "Late already", "due:-5d", "--project", "agendaproj"][..],
+    ] {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Wide enough to hold the two tasks 40 days out, and not the one 400 days
+    // out. The default fortnight reaches none of the three, which is the other
+    // half of the horizon this test drives.
+    let days = "60";
+    let out = run(&["agenda", "--days", days]);
+    assert!(
+        out.status.success(),
+        "agenda exited {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+
+    assert!(
+        text.contains("Scheduled only"),
+        "a task scheduled in the future is backlog, and an agenda that cannot show it \
+         is not an agenda:\n{text}"
+    );
+    assert!(text.contains("Deadline only"), "{text}");
+    // …in that order: the 4th precedes the 5th, whichever field put them there.
+    let sched = text.find("Scheduled only").expect("scheduled row");
+    let due = text.find("Deadline only").expect("due row");
+    assert!(
+        sched < due,
+        "the agenda orders by time, not by which field carried it:\n{text}"
+    );
+    assert!(
+        text.contains("sched") && text.contains("due"),
+        "the WHEN column must name the field that placed each row:\n{text}"
+    );
+
+    // Nothing is dropped in silence: both omissions are counted, and each names
+    // the way to see what it is holding.
+    assert!(
+        text.contains("1 undated") && text.contains("tasqx list"),
+        "the undated task must be counted, not dropped:\n{text}"
+    );
+    assert!(
+        !text.contains("No dates at all"),
+        "an undated task has no day to sit on:\n{text}"
+    );
+    assert!(
+        text.contains("1 further out") && text.contains("--days"),
+        "the horizon must report what it cut, with the window that reaches it:\n{text}"
+    );
+    assert!(
+        !text.contains("Far future"),
+        "the horizon must actually cut:\n{text}"
+    );
+
+    // The horizon is honoured, and `--days` is the whole of the override.
+    let narrow = run(&["agenda"]);
+    let narrow = String::from_utf8_lossy(&narrow.stdout).to_string();
+    assert!(
+        !narrow.contains("Deadline only"),
+        "the default fortnight cannot reach 40 days out:\n{narrow}"
+    );
+    assert!(
+        narrow.contains("3 further out"),
+        "...and must say so rather than showing a nearly empty agenda:\n{narrow}"
+    );
+    // The one thing a horizon may never hide. `--days` is a question about the
+    // future; being late is not in the future.
+    assert!(
+        narrow.contains("Overdue") && narrow.contains("Late already"),
+        "an overdue task must survive every window:\n{narrow}"
+    );
+
+    // `--json` describes the same rows the table drew, which is why it is not
+    // the raw `task.list` answer: five tasks match the filter, three are drawn.
+    let js = run(&["--json", "agenda", "--days", days]);
+    let v: serde_json::Value = serde_json::from_slice(&js.stdout).expect("agenda --json is JSON");
+    assert_eq!(v["count"], serde_json::json!(3), "{v}");
+    assert_eq!(v["agenda"]["undated"], serde_json::json!(1), "{v}");
+    assert_eq!(v["agenda"]["beyond_horizon"], serde_json::json!(1), "{v}");
+
+    // D24's rule 2: a caller who names a status is taken literally rather than
+    // ANDed into an empty set. `status:done` finds nothing here, but it must
+    // find it by ASKING — an exit 2 would mean the composed filter was invalid.
+    let done = run(&["agenda", "status:done"]);
+    assert!(
+        done.status.success(),
+        "a filter naming a status must be taken literally: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+
+    // The filter tail is filter DSL, dashes included: `agenda` is in
+    // `argv::FILTER_COMMANDS`, so `-tag` reaches the grammar instead of clap.
+    let excluded = run(&["agenda", "-nosuchtag", "--days", days]);
+    assert!(
+        excluded.status.success(),
+        "`-tag` must reach the filter grammar: {}",
+        String::from_utf8_lossy(&excluded.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&excluded.stdout).contains("Scheduled only"),
+        "excluding a tag nothing carries must exclude nothing: {}",
+        String::from_utf8_lossy(&excluded.stdout)
+    );
+}

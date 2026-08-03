@@ -367,6 +367,43 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
     },
+    /// What is coming up, when (maps to task.list). `list` ordered by time and
+    /// grouped by day, instead of by urgency.
+    ///
+    /// A task is placed on the EARLIER of its `due` and `scheduled` — the first
+    /// day it asks anything of you — and the `WHEN` column says which of the two
+    /// that was. A task carrying neither is not on any day, so it is not in the
+    /// table; it is counted, and the footer names `tasqx list` as the view that
+    /// shows it. Nothing is dropped without being counted: the same holds for
+    /// rows past the horizon and for done/cancelled work.
+    ///
+    /// Overdue rows are always shown, whatever `--days` says. A horizon is a
+    /// question about the future, and an agenda that hid what you are already
+    /// late on would be answering a different one.
+    #[command(alias = "ag", alias = "cal", after_help = crate::cmddoc::after_help("agenda"))]
+    Agenda {
+        /// Filter DSL, e.g. "project:work +api" (default: the working set).
+        ///
+        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        /// `List::filter` for why the pre-pass and not `allow_hyphen_values`.
+        /// Being named `filter` is what puts this positional under
+        /// `argv::tests::every_filter_positional_is_registered`, which fails the
+        /// build unless `agenda` is in `FILTER_COMMANDS` too.
+        #[arg(add = crate::complete::candidates::filter_words())]
+        filter: Vec<String>,
+        /// How many days ahead to look (1-3650; default 14). Overdue tasks are
+        /// shown regardless.
+        //
+        // A `--days N` flag rather than the `agenda week` / `agenda month`
+        // keyword the spec sketched. The keyword form buys a closed vocabulary
+        // that then has to be completed, documented and translated into a
+        // number anyway, and it cannot express "the next three days" — which is
+        // the window a Wednesday afternoon actually wants. One number covers
+        // every case the keywords would have, and the footer already reports the
+        // exact `--days` that would reach whatever the horizon cut.
+        #[arg(long, value_parser = window_parser(MAX_AGENDA_DAYS))]
+        days: Option<usize>,
+    },
     /// Start a task timer (maps to task.start).
     #[command(alias = "s", after_help = crate::cmddoc::after_help("start"))]
     Start {
@@ -777,6 +814,17 @@ const MAX_CHART_WEEKS: u64 = 520;
 /// Same reasoning for `burndown --days`, which never passes through
 /// `default_weeks` at all — a decade of daily points.
 const MAX_CHART_DAYS: u64 = 3650;
+/// `agenda --days`, bounded for the same reason and by the same arithmetic:
+/// `render::agenda_select` adds the window to today with `jiff`'s `ToSpan::days`,
+/// which PANICS outside ±7,304,484, so an unbounded flag is an abort whose
+/// message names neither tasqx nor the flag. A decade is already past every
+/// horizon anyone plans against, and the floor is 1 because a zero-day window
+/// asks about no day at all.
+///
+/// Its own constant rather than a shared one with `chart`: the two happen to
+/// agree today, and a comment explaining why an agenda is bounded by a chart's
+/// limit would be a comment about a coincidence.
+const MAX_AGENDA_DAYS: u64 = 3650;
 
 /// Bound a window flag at parse time. Yields `RangedU64ValueParser<usize>` so
 /// the fields stay `Option<usize>` and every call site keeps its type.
