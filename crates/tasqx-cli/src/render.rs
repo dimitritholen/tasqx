@@ -810,6 +810,71 @@ pub fn annotated(ctx: &Ctx, result: &Value) -> String {
     )
 }
 
+/// `tasqx tag` / `untag`.
+///
+/// Both halves name what CHANGED and what the task carries now, for the reason
+/// [`dep_result`] does below: `tags` in the result is the set that REMAINS, so a
+/// removal rendered from it alone reads `#42 tags: +api` with no mention of what
+/// went, which is the same line a call that removed nothing would print. The
+/// core answers `removed` on `tag.remove` precisely so this line does not have
+/// to be reconstructed from the request, and D39 asks that a field the core
+/// computes reach a human surface.
+///
+/// `added` selects the verb rather than sniffing for the `removed` key, so a
+/// response shape that changes cannot silently flip the wording.
+pub fn tag_result(ctx: &Ctx, result: &Value, added: bool, asked: &[String]) -> String {
+    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let painted = |names: &[String]| -> String {
+        match names.is_empty() {
+            true => ctx.paint("muted", "(none)"),
+            false => ctx.paint(
+                "tag",
+                &names
+                    .iter()
+                    .map(|t| format!("+{}", san(t)))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+        }
+    };
+    let strings = |key: &str| -> Vec<String> {
+        result
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // The remaining set comes from the core; what changed comes from the core on
+    // removal (`removed`) and from the request on addition, where `tag.add` has
+    // no equivalent key and re-adding an existing tag is a legitimate no-change.
+    let all = strings("tags");
+    let changed = match added {
+        true => asked.to_vec(),
+        false => {
+            let removed = strings("removed");
+            match removed.is_empty() {
+                true => asked.to_vec(),
+                false => removed,
+            }
+        }
+    };
+    let verb = match added {
+        true => "tagged",
+        false => "untagged",
+    };
+    format!(
+        "{} {verb} {}   ·   tags: {}\n",
+        ctx.paint("accent", &format!("#{sid}")),
+        painted(&changed),
+        painted(&all),
+    )
+}
+
 /// `tasqx dep` / `undep`.
 ///
 /// `depends_on` in the result is the set that REMAINS, which made the removal
@@ -2018,5 +2083,66 @@ mod tests {
         assert!(ascii.ends_with("...") && !ascii.contains('…'));
         assert!(ascii.is_ascii(), "no non-ASCII in plain path");
         assert_eq!(ascii.chars().count(), 10);
+    }
+
+    // ---- tag_result (D39: what changed AND what remains) --------------------
+
+    /// The line a removal prints must name the tag that went. Rendering only
+    /// `tags` — the set that REMAINS — produces `#1 tags: +release` for a real
+    /// removal and the same string for a call that removed nothing, which is
+    /// the whole failure `dep_result` above was written to avoid, one noun over.
+    #[test]
+    fn an_untag_line_names_what_went_and_what_remains() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({ "short_id": 1, "tags": ["release"], "removed": ["api"] });
+        let out = tag_result(&ctx, &result, false, &["api".to_string()]);
+        assert!(out.contains("untagged"), "{out:?}");
+        assert!(out.contains("+api"), "the removed tag must appear: {out:?}");
+        assert!(
+            out.contains("+release"),
+            "the remaining set must appear: {out:?}"
+        );
+    }
+
+    /// The addition half, and the empty case. `tag.add` returns no `removed`
+    /// key, so the changed set comes from the request there; and a task left
+    /// with no tags renders `(none)` rather than a blank where a list belongs.
+    #[test]
+    fn a_tag_line_names_the_added_tag_and_an_empty_set_says_so() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let added = json!({ "short_id": 7, "tags": ["api", "release"] });
+        let out = tag_result(&ctx, &added, true, &["api".to_string()]);
+        assert!(out.contains("#7") && out.contains("tagged"), "{out:?}");
+        assert!(out.contains("+api") && out.contains("+release"), "{out:?}");
+        assert!(!out.contains("untagged"), "the verb must not flip: {out:?}");
+
+        let emptied = json!({ "short_id": 7, "tags": [], "removed": ["api"] });
+        let out = tag_result(&ctx, &emptied, false, &["api".to_string()]);
+        assert!(
+            out.contains("(none)"),
+            "a task with no tags left must say so, not print a blank: {out:?}"
+        );
+    }
+
+    /// A tag is untrusted text: it comes from argv, from `store.import` and from
+    /// an MCP client, and this line goes straight to a terminal. Every other
+    /// renderer in this file runs its values through `san` for that reason.
+    #[test]
+    fn tag_result_sanitizes_control_bytes_in_a_tag_name() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "short_id": 1,
+            "tags": ["]0;evilsafe"],
+            "removed": ["[2Jgone"],
+        });
+        let out = tag_result(&ctx, &result, false, &[]);
+        assert!(
+            !out.contains(''),
+            "escape byte reached the terminal: {out:?}"
+        );
+        assert!(
+            !out.contains(''),
+            "bell byte reached the terminal: {out:?}"
+        );
     }
 }

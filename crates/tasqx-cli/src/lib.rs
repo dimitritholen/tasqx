@@ -494,6 +494,10 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Cancel { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.cancel", r#ref),
         Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),
         Some(Command::Annotate { r#ref, text }) => run_annotate(&mut backend, &ctx, r#ref, text),
+        Some(Command::Tag { r#ref, tags }) => run_tag(&mut backend, &ctx, "tag.add", r#ref, &tags),
+        Some(Command::Untag { r#ref, tags }) => {
+            run_tag(&mut backend, &ctx, "tag.remove", r#ref, &tags)
+        }
         Some(Command::Dep { r#ref, depends_on }) => {
             run_dep(&mut backend, &ctx, "dependency.add", r#ref, depends_on)
         }
@@ -1182,6 +1186,30 @@ fn run_annotate(be: &mut Backend, ctx: &Ctx, r#ref: String, text: Vec<String>) -
     let result = be.call("annotation.add", &json!({ "ref": r#ref, "body": body }))?;
     let out = render::annotated(ctx, &result);
     Ok((result, out))
+}
+
+/// `tasqx tag` / `tasqx untag`, the two spellings of one params shape.
+///
+/// One function for both, the way [`run_dep`] serves `dep`/`undep`: the params
+/// are identical and only the method name differs, so two copies would be two
+/// places for the tag normalisation to fall out of step.
+///
+/// The words go through [`sugar::tag_arguments`] and not straight onto the wire,
+/// which is what makes `tasqx tag 42 +api` and `tasqx modify 42 +api` name the
+/// same tag. Sending `+api` verbatim would have created a tag literally called
+/// `+api`, invisible next to the `api` the sugar path writes and unreachable by
+/// the `+api` filter token.
+fn run_tag(
+    be: &mut Backend,
+    ctx: &Ctx,
+    method: &str,
+    r#ref: String,
+    tags: &[String],
+) -> CmdOutcome {
+    let names = sugar::tag_arguments(tags)?;
+    let result = be.call(method, &json!({ "ref": r#ref, "tags": names }))?;
+    let text = render::tag_result(ctx, &result, method == "tag.add", &names);
+    Ok((result, text))
 }
 
 fn run_dep(
@@ -3257,16 +3285,17 @@ mod tests {
         }
         // Both halves of COMMAND_REF are in scope; a filter or iteration bug
         // that checked nothing would otherwise pass silently.
-        // 72 examples (35 Safe + 37 NoRun), two of which are two-command
-        // pipelines and so contribute two segments each — 74 segments.
+        // 76 examples (35 Safe + 41 NoRun), two of which are two-command
+        // pipelines and so contribute two segments each — 78 segments.
         //
-        // Re-derive this whenever a row is added to COMMAND_REF. It said 52/54
-        // for long enough that twenty examples could have been deleted without
-        // the floor noticing, which is the failure mode a floor exists to
-        // prevent: it kept reporting green while guarding a quarter of what it
-        // claimed to.
+        // Re-derive this whenever a row is added to COMMAND_REF — from the
+        // count this guard itself reports, not by adding the number of examples
+        // you just wrote. It said 52/54 for long enough that twenty examples
+        // could have been deleted without the floor noticing, which is the
+        // failure mode a floor exists to prevent: it kept reporting green while
+        // guarding a quarter of what it claimed to.
         assert!(
-            checked >= 74,
+            checked >= 78,
             "expected every example, only checked {checked}"
         );
     }

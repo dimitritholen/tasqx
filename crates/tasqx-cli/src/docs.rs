@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 32] = [
+const VERBS: [(&str, &str, &str); 34] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("add", "<code>a</code>, <code>new</code>", "task.add"),
@@ -83,6 +83,8 @@ const VERBS: [(&str, &str, &str); 32] = [
     ),
     ("reopen", "—", "task.reopen"),
     ("annotate", "<code>note</code>", "annotation.add"),
+    ("tag", "—", "tag.add"),
+    ("untag", "—", "tag.remove"),
     ("dep", "—", "dependency.add"),
     ("undep", "—", "dependency.remove"),
     ("projects", "—", "project.list"),
@@ -105,7 +107,7 @@ const VERBS: [(&str, &str, &str); 32] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 29] = [
+const METHODS: [(&str, &str, &str); 30] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -186,6 +188,13 @@ const METHODS: [(&str, &str, &str); 29] = [
         "tag.add",
         "<code>ref</code>, <code>tags</code>",
         "The task's tags.",
+    ),
+    (
+        "tag.remove",
+        "<code>ref</code>, <code>tags</code>",
+        "The task's remaining tags, plus <code>removed</code>. A tag the task \
+         does not have is <code>not_found</code> and removes <em>nothing</em> — \
+         all or nothing, so a typo can never answer ok.",
     ),
     (
         "annotation.add",

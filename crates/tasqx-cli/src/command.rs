@@ -330,7 +330,8 @@ pub(super) enum Command {
             add = crate::complete::candidates::tags()
         )]
         tags: Vec<String>,
-        /// Clear a field back to unset (repeatable). The ONLY removal syntax.
+        /// Clear a field back to unset (repeatable). The only removal syntax for
+        /// a steering field; a tag comes off with `tasqx untag <ref> <tag>`.
         #[arg(
             long = "clear",
             value_name = "FIELD",
@@ -428,6 +429,49 @@ pub(super) enum Command {
         r#ref: String,
         /// The annotation text.
         text: Vec<String>,
+    },
+    /// Attach one or more tags to a task (maps to tag.add).
+    ///
+    /// The same operation `tasqx modify <ref> +tag` performs, spelled as its own
+    /// verb so the sugar is not the only way in — and so `untag` has a sibling
+    /// with the same argument shape.
+    #[command(after_help = crate::cmddoc::after_help("tag"))]
+    Tag {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// Tag names, with or without the leading `+`.
+        //
+        // `value_name = "TAG"` is load-bearing, not cosmetic: it is what puts
+        // this positional inside `every_tag_valued_arg_offers_tag_names`. The
+        // derive would otherwise render `<TAGS>` off the plural field name and
+        // the guard would silently not cover it.
+        #[arg(
+            value_name = "TAG",
+            required = true,
+            add = crate::complete::candidates::tags()
+        )]
+        tags: Vec<String>,
+    },
+    /// Remove one or more tags from a task (maps to tag.remove).
+    ///
+    /// A tag the task does not carry is exit 4, not a quiet success — see the
+    /// `tag.remove` docs in the engine for why this differs from `undep`.
+    #[command(after_help = crate::cmddoc::after_help("untag"))]
+    Untag {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// Tag names, with or without the leading `+`.
+        //
+        // See `Tag::tags`: the `value_name` is what the tag-completion guard
+        // keys on.
+        #[arg(
+            value_name = "TAG",
+            required = true,
+            add = crate::complete::candidates::tags()
+        )]
+        tags: Vec<String>,
     },
     /// Add a dependency: <ref> depends on <depends_on> (maps to dependency.add).
     #[command(after_help = crate::cmddoc::after_help("dep"))]

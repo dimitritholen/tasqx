@@ -97,6 +97,11 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("memory", &["memory", "search", "needle"]),
         c("start", &["start", "1"]),
         c("stop", &["stop", "1"]),
+        // `untag` follows `tag` and names the tag `tag` just wrote: removing a
+        // tag the task does not have is exit 4 by design, and this guard needs a
+        // successful run to have any output to judge.
+        c("tag", &["tag", "1", "guardtag"]),
+        c("untag", &["untag", "1", "guardtag"]),
         c("dep", &["dep", "1", "2"]),
         c("undep", &["undep", "1", "2"]),
         c("why", &["why", "1"]),

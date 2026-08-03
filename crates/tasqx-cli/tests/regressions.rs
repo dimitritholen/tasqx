@@ -2491,3 +2491,84 @@ fn config_set_refuses_an_unknown_detail_time_format() {
         .expect("config set")
         .success());
 }
+
+/// #52 — `tag`/`untag` end to end, through the real binary.
+///
+/// The binary and not a unit test, for three reasons that all live above the
+/// engine: the exit code a script branches on (4 for a tag the task does not
+/// have), the tag *vocabulary* — argv is where `+api` and `api` have to become
+/// one name — and the fact that a verb reaches its handler at all. DESIGN listed
+/// `tag`/`untag` as shipped MVP while `tasqx tag --help` failed, which is
+/// exactly the shape a test below the argv layer cannot see.
+#[test]
+fn tag_and_untag_agree_with_sugar_and_refuse_a_tag_the_task_lacks() {
+    let dir = fresh_config_dir("tagverb");
+    let run = |args: &[&str]| bin("tagverb", &dir).args(args).output().expect("run tasqx");
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    ok(&["init", "work"]);
+    ok(&["add", "paint the hall"]);
+
+    // The two spellings must name ONE tag. `+api` sent verbatim would create a
+    // tag literally called `+api`: invisible beside the `api` the `modify +tag`
+    // sugar writes, and unreachable by the `+api` filter token that reads it.
+    ok(&["tag", "1", "+api", "api", "release"]);
+    let shown = ok(&["--json", "show", "1"]);
+    assert!(
+        shown.contains(r#""api""#) && !shown.contains(r#""+api""#),
+        "`+api` and `api` must be one tag, stored without the sigil: {shown}"
+    );
+    assert_eq!(
+        shown.matches(r#""api""#).count(),
+        1,
+        "the duplicate must collapse rather than being stored twice: {shown}"
+    );
+
+    // The human line names what changed AND what remains: "tags: +release" on
+    // its own is the line a removal that did nothing would also print.
+    let removed = ok(&["untag", "1", "api"]);
+    assert!(
+        removed.contains("untagged") && removed.contains("+api"),
+        "the removal line must name the tag it took: {removed}"
+    );
+    assert!(
+        removed.contains("+release"),
+        "and the set that remains: {removed}"
+    );
+
+    // D52: a tag the task does not have is exit 4, and nothing is removed.
+    let miss = run(&["untag", "1", "release", "blockign"]);
+    assert_eq!(
+        miss.status.code(),
+        Some(4),
+        "a tag the task lacks must not answer ok; stdout was {}",
+        String::from_utf8_lossy(&miss.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&miss.stderr);
+    assert!(
+        stderr.contains("blockign") && stderr.contains("release"),
+        "the refusal must name the missing tag and the real ones: {stderr}"
+    );
+    let shown = ok(&["--json", "show", "1"]);
+    assert!(
+        shown.contains(r#""release""#),
+        "the removable half of an all-or-nothing call must survive it: {shown}"
+    );
+
+    // A bare `+` names no tag. In `add` it falls through to the title (C6);
+    // here there is no title, so the choice is a refusal or a silent deletion.
+    let bare = run(&["tag", "1", "+"]);
+    assert_eq!(
+        bare.status.code(),
+        Some(2),
+        "a bare `+` must be refused, not silently dropped"
+    );
+}
