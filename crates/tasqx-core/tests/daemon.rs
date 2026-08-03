@@ -865,6 +865,143 @@ fn a_reminder_about_to_ripen_holds_the_daemon_past_its_own_deadline() {
     let _ = std::fs::remove_file(&db);
 }
 
+/// A TCP port nothing is listening on right now, for the daemon's OTLP receiver
+/// to bind. Asking the OS for an ephemeral port and immediately giving it back
+/// is the standard trick; the window in which another process could steal it is
+/// tiny, and losing it only means the receiver logs a bind failure — which the
+/// test below then reports as a failed POST rather than as a silent pass.
+fn free_local_port() -> u16 {
+    let probe = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("bind an ephemeral probe port");
+    probe.local_addr().expect("probe address").port()
+}
+
+/// POST one minimal OTLP log export at `port`. Returns whether the receiver
+/// answered at all — the tests here care that the request reached the accept
+/// loop, not what it parsed to.
+fn post_otlp_export(port: u16) -> bool {
+    use std::io::{Read, Write};
+
+    let body = json!({
+        "resourceLogs": [{ "scopeLogs": [{ "logRecords": [{
+            "eventName": "claude_code.api_request",
+            "observedTimeUnixNano": "1774339200000000000",
+            "attributes": [
+                { "key": "input_tokens", "value": { "intValue": "7" } },
+                { "key": "session.id", "value": { "stringValue": "idle-clock" } }
+            ]
+        }] }] }]
+    })
+    .to_string();
+    let request = format!(
+        "POST /v1/logs HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let Ok(mut stream) = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)) else {
+        return false;
+    };
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.1 200")
+}
+
+/// `[otlp] enabled` must not quietly cancel `[daemon] idle_timeout`.
+///
+/// It did. The accept loop asked `server_busy` whether telemetry was in play by
+/// passing `otlp_port.is_some()` — a constant for the whole process — so with
+/// the receiver on, the idle clock never started and the daemon ran forever
+/// after printing "will exit after N minute(s) with no clients and no work" on
+/// its own stderr. Every unit test still passed: they all call the predicate
+/// with a literal, and none of them can see what the call site feeds it. Only a
+/// daemon built with BOTH options can, which is why this test is here and not
+/// next to the predicate.
+#[test]
+fn an_open_but_silent_otlp_receiver_does_not_cancel_the_idle_timeout() {
+    let (db, sock) = unique_target();
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            otlp_port: Some(free_local_port()),
+            idle_timeout: Some(Duration::from_millis(400)),
+            ..Default::default()
+        },
+    );
+
+    let outcome = serve_result(&result_rx, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    server.join().expect("server thread");
+    outcome
+        .expect(
+            "a daemon with the OTLP receiver bound but nobody posting must still \
+             honour its idle timeout — an open port is configuration, not work",
+        )
+        .expect("idle shutdown is an ordinary stop");
+    let _ = std::fs::remove_file(&db);
+}
+
+/// The other half, and the reason the fix is a clock rather than a deletion:
+/// telemetry that actually arrives IS work, and holds the daemon open.
+///
+/// An OTLP client holds no daemon connection and no subscription, so the accept
+/// loop cannot see it any other way; a daemon that left mid-export would drop it
+/// with no error at either end. Traffic is generated for well over three times
+/// the timeout, so a daemon that ignores it leaves long before the loop ends —
+/// and the posts are five times more frequent than the deadline, so it takes a
+/// five-fold stall, not a slow machine, to fail this spuriously.
+#[test]
+fn telemetry_arriving_holds_the_daemon_open_and_silence_then_releases_it() {
+    let (db, sock) = unique_target();
+    let port = free_local_port();
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            otlp_port: Some(port),
+            idle_timeout: Some(Duration::from_millis(500)),
+            ..Default::default()
+        },
+    );
+
+    // The receiver binds on its own thread; give it a moment to come up, then
+    // require it to answer — a bind that lost the port race must fail this test
+    // loudly rather than let it pass on a receiver that never existed.
+    let mut answered = false;
+    for _ in 0..50 {
+        if post_otlp_export(port) {
+            answered = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(answered, "the daemon's OTLP receiver never answered a POST");
+
+    for _ in 0..15 {
+        assert!(
+            post_otlp_export(port),
+            "the receiver stopped answering: the daemon left while telemetry \
+             was still arriving"
+        );
+        assert!(
+            serve_result(&result_rx, Duration::from_millis(100)).is_none(),
+            "a daemon being posted to must not leave: an OTLP export is the one \
+             kind of work that holds no connection here"
+        );
+    }
+
+    // Nothing posts any more. The clock that telemetry kept resetting now runs.
+    let outcome = serve_result(&result_rx, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    server.join().expect("server thread");
+    outcome
+        .expect("once the telemetry stops the daemon must be free to go")
+        .expect("idle shutdown is an ordinary stop");
+    let _ = std::fs::remove_file(&db);
+}
+
 // ---- §10 / #17: async token attribution over the daemon ---------------------
 
 /// A unique temp directory for a synthetic transcript, isolated per test.

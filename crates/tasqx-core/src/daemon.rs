@@ -42,9 +42,12 @@
 //!    work in hand, a daemon may exit on its own after
 //!    [`DaemonOptions::idle_timeout`]. It is a *server* clock, unrelated to the
 //!    per-connection `CLIENT_IDLE_TIMEOUT`, and it stops the daemon through the
-//!    same shutdown flag Ctrl-C sets — never `exit`. The decision itself is two
-//!    pure predicates, `server_busy` and `idle_shutdown_due` (private, like the
-//!    loops above: the policy is assertable in-crate, not a surface).
+//!    same shutdown flag Ctrl-C sets — never `exit`. The decision itself is
+//!    pure predicates — `server_busy`, `idle_shutdown_due` and the two "is this
+//!    work" helpers they consume (private, like the loops above: the policy is
+//!    assertable in-crate, not a surface). What counts as work is *traffic*,
+//!    never *configuration*: an OTLP receiver that is bound but silent does not
+//!    keep the daemon alive, only an export that actually arrives does.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
@@ -807,10 +810,21 @@ pub fn serve_with_options(
     // attribution thread (when on) then prefers that buffer over log-parsing. A
     // bind failure inside the receiver is logged and non-fatal (it is auxiliary),
     // so no `fatal` channel is wired to it.
+    //
+    // The receiver stamps `telemetry_seen` on every accepted peer, because that
+    // is the only trace an OTLP client leaves anywhere the accept loop can see:
+    // it holds no admission permit and no subscription. D5 reads that stamp. It
+    // must NOT read `otlp_port.is_some()` instead — that is a constant for the
+    // whole process, so `[otlp] enabled = true` would silently pin the daemon
+    // open forever while `tasqx daemon` printed a line promising it would leave.
+    // A setting accepted, echoed back by `config list`, and doing nothing is
+    // this project's most expensive recurring bug shape; it shipped here once.
+    let telemetry_seen: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     if let Some(port) = otlp_port {
         let engine = shared.engine.clone();
         let sd = shutdown.clone();
-        thread::spawn(move || otlp::run_receiver(engine, port, sd));
+        let seen = telemetry_seen.clone();
+        thread::spawn(move || otlp::run_receiver(engine, port, sd, seen));
     }
 
     // The server-level idle clock (D5). `None` means "not idle" — either
@@ -843,7 +857,11 @@ pub fn serve_with_options(
                 // window we would otherwise have been here for is exactly that.
                 idle_timeout.unwrap_or(Duration::ZERO),
             ),
-            otlp_port.is_some(),
+            // `idle_since` is the PREVIOUS iteration's value on purpose: the
+            // question is "has telemetry landed since this quiet stretch
+            // started", and the stretch that is running right now is the one
+            // recorded before `advance_idle_clock` gets to move it.
+            telemetry_since_idle_began(*lock_recover(&telemetry_seen), idle_since),
         );
         idle_since = advance_idle_clock(idle_since, busy, now);
         if idle_shutdown_due(idle_timeout, idle_since, now) {
@@ -906,10 +924,13 @@ pub fn serve_with_options(
 ///    ripened-while-down reminder on the next start), but nothing restarts this
 ///    daemon on its own yet, so "late" here means "when a human next runs
 ///    `tasqx daemon`", which for a reminder is the same as never.
-///  * `telemetry_listening` — the OTLP receiver (#18) is bound. Its clients are
-///    AI tools posting over TCP, which hold no socket connection and no
-///    subscription, so nothing else in this function can see them: a daemon
-///    that exits while that port is open drops telemetry with no error anywhere.
+///  * `telemetry_recent` — an OTLP client (#18) has posted during this quiet
+///    stretch. Those clients are AI tools posting over TCP: they hold no socket
+///    connection and no subscription, so nothing else in this function can see
+///    them, and a daemon that exits mid-export drops it with no error anywhere.
+///    This is *traffic*, not *configuration*. An open-but-silent port is not a
+///    reason to stay — see [`telemetry_since_idle_began`] for what happened
+///    when it was.
 ///
 /// Deliberately NOT a reason: the token-attribution thread (#17). It rebuilds
 /// its pending set from the store on the tick after any daemon starts, so work
@@ -919,9 +940,35 @@ fn server_busy(
     clients: usize,
     subscribers: usize,
     reminder_due: bool,
-    telemetry_listening: bool,
+    telemetry_recent: bool,
 ) -> bool {
-    clients > 0 || subscribers > 0 || reminder_due || telemetry_listening
+    clients > 0 || subscribers > 0 || reminder_due || telemetry_recent
+}
+
+/// Whether an OTLP export landed after the current idle stretch began.
+///
+/// This exists because the first cut of D5 passed `otlp_port.is_some()` here.
+/// That is a constant for the lifetime of the process, so `[otlp] enabled =
+/// true` made `server_busy` answer true on every single accept iteration: the
+/// idle clock could never start, `idle_shutdown_due` could never fire, and a
+/// daemon started with both `[daemon] idle_timeout` and `[otlp] enabled` ran
+/// forever — after printing, on stderr, that it would exit. Measured: with the
+/// `[otlp]` row present the process was still alive at 95 s against a
+/// one-minute timeout; with it absent it left at 60 s. The unit tests all
+/// passed, because every one of them called the predicate with a literal.
+///
+/// `last` before `since` is not activity: it belongs to a stretch that has
+/// already been counted and reset, so treating it as work would make the very
+/// first export pin the daemon for good — the same bug in a slower disguise.
+///
+/// `since` of `None` means the clock is not running: the previous iteration
+/// found some other reason to stay, so it will start fresh at `now` and any
+/// stamp already on the books is older than the stretch about to begin.
+fn telemetry_since_idle_began(last: Option<Instant>, since: Option<Instant>) -> bool {
+    match (last, since) {
+        (Some(last), Some(since)) => last >= since,
+        _ => false,
+    }
 }
 
 /// Whether a scheduled reminder falls inside `horizon` of `now`.
@@ -2738,6 +2785,48 @@ mod tests {
             server_busy(0, 0, false, true),
             "the OTLP receiver's clients hold no connection here, so nothing else \
              in the predicate can see them"
+        );
+    }
+
+    /// What the fourth argument of [`server_busy`] must be fed: traffic, not
+    /// configuration.
+    ///
+    /// The first cut of D5 passed `otlp_port.is_some()` there — a constant —
+    /// and every assertion in `every_reason_to_stay_up_stands_alone` still
+    /// passed, because they all hand the predicate a literal. `[otlp] enabled`
+    /// therefore disabled `[daemon] idle_timeout` outright while the daemon's
+    /// own stderr promised it would exit. This pins the property that made that
+    /// possible: a receiver that has never been posted to is not work.
+    #[test]
+    fn a_bound_but_silent_otlp_port_is_not_a_reason_to_stay() {
+        let stretch_began = Instant::now();
+        assert!(
+            !telemetry_since_idle_began(None, Some(stretch_began)),
+            "an open port nobody has posted to is configuration, not work — \
+             feeding `otlp_port.is_some()` here is the bug this test exists for"
+        );
+        assert!(
+            telemetry_since_idle_began(
+                Some(stretch_began + Duration::from_millis(1)),
+                Some(stretch_began)
+            ),
+            "an export that landed during this quiet stretch is work"
+        );
+        assert!(
+            telemetry_since_idle_began(Some(stretch_began), Some(stretch_began)),
+            "including one that landed on the very instant the stretch began"
+        );
+        assert!(
+            !telemetry_since_idle_began(
+                Some(stretch_began),
+                Some(stretch_began + Duration::from_millis(1))
+            ),
+            "an export from a stretch already counted and reset must not be \
+             re-counted, or the first one ever posted pins the daemon for good"
+        );
+        assert!(
+            !telemetry_since_idle_began(Some(stretch_began), None),
+            "no stretch running means nothing has happened 'since' it"
         );
     }
 
