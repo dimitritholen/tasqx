@@ -460,6 +460,16 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
+    /// Undo the last thing this store recorded (maps to event.revert).
+    ///
+    /// Deliberately argument-free. The core undoes the NEWEST event and nothing
+    /// else, because that is the only position from which its inverses are exact
+    /// rather than plausible (see `engine/undo.rs`); a `<ref>` here would look
+    /// like a courtesy and would silently reach past whatever happened
+    /// elsewhere. Four operations are undoable and every other one refuses by
+    /// name, saying what does take it back.
+    #[command(alias = "u", after_help = crate::cmddoc::after_help("undo"))]
+    Undo,
     /// Annotate a task (maps to annotation.add).
     #[command(alias = "note", after_help = crate::cmddoc::after_help("annotate"))]
     Annotate {

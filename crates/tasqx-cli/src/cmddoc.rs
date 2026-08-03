@@ -349,6 +349,28 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Capturing,
     },
     CmdDoc {
+        verb: "undo",
+        aliases: &["u"],
+        method: "event.revert",
+        summary: "Take back the last thing this store recorded.",
+        usage: "tasqx undo",
+        examples: &[
+            ex_norun("tasqx undo", "reverses the newest event, and says which one"),
+            ex_norun(
+                "tasqx untag 42 api && tasqx undo",
+                "the tag comes back off the shelf",
+            ),
+        ],
+        notes: &[
+            "It takes no ref, and that is the design: only the NEWEST event can be reversed exactly, because nothing has happened since to have read or overwritten what the inverse puts back.",
+            "Four operations are undoable — `stop`, `untag`, `undep` and `annotate`. Every other one exits 5 naming itself and the verb that does take it back (`done` -> `tasqx reopen`, `modify` -> `tasqx show` then a second `modify`).",
+            "Undo APPENDS: the event it reverses stays in the log and a new `undo` event lands behind it, so `tasqx chart` and the audit trail read `X happened, then it was undone`.",
+            "There is no redo, so `tasqx undo` twice in a row exits 5: the second one would find the first undo as the newest event and the pair would toggle forever.",
+        ],
+        see_also: &["untag", "undep", "reopen", "chart"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
         verb: "annotate",
         aliases: &["note"],
         method: "annotation.add",

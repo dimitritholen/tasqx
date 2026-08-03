@@ -2492,6 +2492,107 @@ fn config_set_refuses_an_unknown_detail_time_format() {
         .success());
 }
 
+/// #55 — `tasqx undo` end to end, through the real binary.
+///
+/// The binary and not a unit test for the two things that only exist above the
+/// engine: the exit code a script branches on (5 for an operation outside the
+/// closed set), and the fact that an argument-free verb reaches its handler at
+/// all — `undo` has no ref to mistype, so a verb that never routed would look
+/// identical to one that had nothing to do.
+#[test]
+fn undo_reverses_the_last_change_and_refuses_the_operations_it_cannot() {
+    let dir = fresh_config_dir("undoverb");
+    let run = |args: &[&str]| {
+        bin("undoverb", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    ok(&["init", "work"]);
+    ok(&["add", "paint the hall"]);
+    ok(&["tag", "1", "api", "release"]);
+    ok(&["untag", "1", "api"]);
+
+    // The line has to name the operation AND the task: `undo` takes no
+    // argument, so this is the user's only confirmation that it hit the thing
+    // they meant.
+    let undone = ok(&["undo"]);
+    assert!(
+        undone.contains("tag.remove") && undone.contains("#1"),
+        "the undo line must name the operation and the task: {undone}"
+    );
+    assert!(
+        undone.contains("paint the hall"),
+        "and the title — a short_id alone is not recognizable at a glance: {undone}"
+    );
+    assert!(undone.contains("+api"), "and what came back: {undone}");
+    let shown = ok(&["--json", "show", "1"]);
+    assert!(
+        shown.contains(r#""api""#),
+        "the tag must really be back in the store: {shown}"
+    );
+
+    // Rule 1: the reversed event stays in the log, with the compensating one
+    // behind it. `chart` reads the log, so a rewritten history would show here.
+    let log = ok(&["--json", "chart", "throughput"]);
+    assert!(!log.is_empty(), "chart must still read the log: {log}");
+
+    // There is no redo: the second undo finds the first one as the newest event.
+    let again = run(&["undo"]);
+    assert_eq!(
+        again.status.code(),
+        Some(5),
+        "undo of an undo must refuse; stdout was {}",
+        String::from_utf8_lossy(&again.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("no redo"),
+        "the refusal must say why: {}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+
+    // An operation outside the closed set refuses BY NAME and points at the
+    // verb that does take it back — exit 5, and the store untouched.
+    ok(&["done", "1"]);
+    let refused = run(&["undo"]);
+    assert_eq!(
+        refused.status.code(),
+        Some(5),
+        "completing a task is not undoable; stdout was {}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("`done`") && stderr.contains("tasqx reopen"),
+        "the refusal must name the op and the way back: {stderr}"
+    );
+    let shown = ok(&["--json", "show", "1"]);
+    assert!(
+        shown.contains(r#""status": "done""#) || shown.contains(r#""status":"done""#),
+        "a refused undo must leave the task exactly as it was: {shown}"
+    );
+
+    // The alias DESIGN promised. A verb whose alias never routes is the shape
+    // that let `tag`/`untag` sit in the spec unbuilt.
+    ok(&["reopen", "1"]);
+    ok(&["annotate", "1", "wrong task"]);
+    let aliased = ok(&["u"]);
+    assert!(
+        aliased.contains("annotation.add"),
+        "`tasqx u` must be `tasqx undo`: {aliased}"
+    );
+}
+
 /// #52 — `tag`/`untag` end to end, through the real binary.
 ///
 /// The binary and not a unit test, for three reasons that all live above the

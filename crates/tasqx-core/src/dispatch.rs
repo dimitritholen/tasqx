@@ -142,6 +142,12 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         true,
     ),
     ("event.list", &["limit", "ref", "entity"], false),
+    // `event.revert` takes NO params, and that is the decision rather than an
+    // omission: it undoes the newest event in the log and nothing else, because
+    // that is the only position from which the inverse is exact rather than
+    // plausible (see engine/undo.rs). A `ref` here would look like a courtesy
+    // and would silently reach past whatever happened elsewhere.
+    ("event.revert", &[], false),
     ("reminder.fire", &["ref", "at"], false),
     ("core.capabilities", &[], false),
 ];
@@ -236,6 +242,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "store.export" => engine.store_export(params),
         "store.import" => engine.store_import(params),
         "event.list" => engine.event_list(params),
+        "event.revert" => engine.event_revert(),
         "reminder.fire" => engine.reminder_fire(params),
         "core.capabilities" => engine.capabilities(),
         other => Err(ApiError::bad_request(format!("unknown method: {other}"))),
@@ -357,6 +364,7 @@ mod tests {
             include_str!("engine/task.rs"),
             include_str!("engine/tokens.rs"),
             include_str!("engine/transfer.rs"),
+            include_str!("engine/undo.rs"),
         ]
         .join("\n");
         // Strip comments and collapse whitespace: a chain split across lines

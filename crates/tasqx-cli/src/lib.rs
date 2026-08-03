@@ -535,6 +535,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Show { r#ref }) => run_show(&mut backend, &ctx, r#ref),
         Some(Command::Cancel { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.cancel", r#ref),
         Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),
+        Some(Command::Undo) => run_undo(&mut backend, &ctx),
         Some(Command::Annotate { r#ref, text }) => run_annotate(&mut backend, &ctx, r#ref, text),
         Some(Command::Tag { r#ref, tags }) => run_tag(&mut backend, &ctx, "tag.add", r#ref, &tags),
         Some(Command::Untag { r#ref, tags }) => {
@@ -1318,6 +1319,19 @@ fn run_show(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
 fn run_simple_ref(be: &mut Backend, ctx: &Ctx, method: &str, r#ref: String) -> CmdOutcome {
     let result = be.call(method, &json!({ "ref": r#ref }))?;
     let text = render::status_line(ctx, &result);
+    Ok((result, text))
+}
+
+/// `tasqx undo` — the safety net (DESIGN §5 example 12).
+///
+/// No params on the wire, and none to collect: `event.revert` reverses the
+/// newest event in the log or refuses. The whole of this function is therefore
+/// the call and the line it prints — and that line is the point, because
+/// "undone" with nothing after it is exactly the answer a user cannot check
+/// against what they actually did.
+fn run_undo(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
+    let result = be.call("event.revert", &json!({}))?;
+    let text = render::undone(ctx, &result);
     Ok((result, text))
 }
 
@@ -3442,8 +3456,10 @@ mod tests {
         }
         // Both halves of COMMAND_REF are in scope; a filter or iteration bug
         // that checked nothing would otherwise pass silently.
-        // 76 examples (35 Safe + 41 NoRun), two of which are two-command
-        // pipelines and so contribute two segments each — 78 segments.
+        // 82 segments at the time `undo` was written, 85 with its three. The
+        // floor said 78 against a real 82, so four segments could already have
+        // been deleted with nothing going red — corrected here from the count
+        // this guard itself reports, which is the only number worth trusting.
         //
         // Re-derive this whenever a row is added to COMMAND_REF — from the
         // count this guard itself reports, not by adding the number of examples
@@ -3452,7 +3468,7 @@ mod tests {
         // failure mode a floor exists to prevent: it kept reporting green while
         // guarding a quarter of what it claimed to.
         assert!(
-            checked >= 78,
+            checked >= 85,
             "expected every example, only checked {checked}"
         );
     }
