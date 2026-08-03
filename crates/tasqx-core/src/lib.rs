@@ -243,19 +243,30 @@ mod doc_gate_tests {
     /// print its counts in today. A guard pinned to a tool's output shape fails
     /// on the next tool upgrade, and a failure about nothing is how a guard
     /// gets deleted.
+    ///
+    /// The anchor is `mutants tested` WITHOUT the colon that follows it in the
+    /// prose here, because the tool does not print one there: the real line is
+    /// `203 mutants tested in 53m: 1 missed, ...`, with the wall clock between
+    /// the noun and the counts. Anchoring on `mutants tested:` meant that
+    /// pasting in the summary line — the one thing the comment above the
+    /// `mutants` job tells you to do — failed every check here with "the file
+    /// has no sweep line" while the correct line sat in it. An error that names
+    /// the opposite of the caller's mistake gets fixed by mangling the input
+    /// into a shape only the guard knows, or by deleting the guard.
     fn sweep_summary(text: &str, whose: &str) -> (usize, String, Vec<(u64, String)>) {
         let hits: Vec<(usize, &str)> = text
             .lines()
             .enumerate()
-            .filter(|(_, l)| l.contains("mutants tested:"))
+            .filter(|(_, l)| l.contains("mutants tested"))
             .collect();
         assert_eq!(
             hits.len(),
             1,
-            "{whose} must restate the last sweep on exactly one line \
-             (`N mutants tested: N missed, ...`), and it has {}. Exactly one, \
-             because a second copy in the same file drifts away from the first \
-             and the reader cannot tell which of them is the newer.",
+            "{whose} must restate the last sweep on exactly one line, verbatim \
+             as `cargo mutants` prints it (`N mutants tested in <duration>: N \
+             missed, N caught, N unviable, N timeouts`), and it has {}. Exactly \
+             one, because a second copy in the same file drifts away from the \
+             first and the reader cannot tell which of them is the newer.",
             hits.len()
         );
         let (idx, raw) = hits[0];
@@ -368,6 +379,65 @@ mod doc_gate_tests {
         paths
     }
 
+    /// The survivors a note lists, one prose line each.
+    ///
+    /// Matched on uppercase `MISSED`, as cargo-mutants prints it: the prose
+    /// around these lines says "missed" in lowercase a dozen times.
+    fn survivor_lines(text: &str) -> Vec<String> {
+        text.lines()
+            .map(as_prose)
+            .filter(|l| l.starts_with("MISSED"))
+            .collect()
+    }
+
+    /// The function a `MISSED` line records its mutant against.
+    fn recorded_fn(line: &str) -> &str {
+        line.split('`').nth(1).unwrap_or_else(|| {
+            panic!("a MISSED line must name the function in backticks:\n  {line}")
+        })
+    }
+
+    /// Each `exclude_re` entry in `.cargo/mutants.toml`, as the function whose
+    /// mutant it suppresses.
+    ///
+    /// cargo-mutants names every mutant `<the change> in <path::to::fn>` and
+    /// the regexes are written against that text, so the tail after the last
+    /// ` in ` is the function. Reading it back is what lets the triage table be
+    /// checked for a row per suppression BY NAME. The count it replaced could
+    /// not: the table's TIMEOUT row answers to neither a suppression nor a
+    /// miss, so `rows >= suppressed + missed` carried a permanent row of slack,
+    /// and a third suppression with no triage row anywhere — the exact silence
+    /// the config forbids two comments above `exclude_re` — stayed green.
+    ///
+    /// Every non-comment line in the block is an entry, not only the
+    /// single-quoted ones. Filtering on a leading `'` would have read zero
+    /// entries off an equally valid double-quoted TOML string, and a check with
+    /// nothing to check passes.
+    fn suppressed_fns() -> Vec<String> {
+        config_list("exclude_re")
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|entry| {
+                let re = entry.trim_end_matches(',').trim_matches(['\'', '"']);
+                assert!(
+                    re.contains(" in "),
+                    "the `exclude_re` entry `{re}` does not say which function \
+                     it suppresses a mutant in. cargo-mutants writes every \
+                     mutant as `<the change> in <path::to::fn>` — keep that \
+                     tail in the regex, so the known-survivors table can be \
+                     checked for the row this suppression is required to have."
+                );
+                let tail = re.rsplit(" in ").next().expect("rsplit yields a tail");
+                let name = tail.rsplit("::").next().expect("rsplit yields a tail");
+                // Whatever regex punctuation the entry anchors with (`$`, an
+                // escaped `.`) is not part of the identifier being looked up.
+                name.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .to_string()
+            })
+            .collect()
+    }
+
     /// Whether `src` defines a function called `name`.
     ///
     /// A textual `fn <name>(` and nothing cleverer, because that is all these
@@ -457,13 +527,7 @@ mod doc_gate_tests {
         let whose = ".github/workflows/ci.yml";
         let (_, _, counts) = sweep_summary(CI, whose);
         let missed = sweep_count(&counts, "missed", whose);
-        // Uppercase `MISSED`, as cargo-mutants prints it: the prose around it
-        // says "missed" in lowercase a dozen times.
-        let survivors: Vec<String> = CI
-            .lines()
-            .map(as_prose)
-            .filter(|l| l.starts_with("MISSED"))
-            .collect();
+        let survivors = survivor_lines(CI);
         assert_eq!(
             survivors.len() as u64,
             missed,
@@ -488,9 +552,7 @@ mod doc_gate_tests {
             );
             let src = std::fs::read_to_string(workspace_root().join(path))
                 .unwrap_or_else(|e| panic!("{path}, named by a MISSED line, is unreadable: {e}"));
-            let name = line.split('`').nth(1).unwrap_or_else(|| {
-                panic!("a MISSED line must name the function in backticks:\n  {line}")
-            });
+            let name = recorded_fn(line);
             assert!(
                 defines_fn(&src, name),
                 "{path} has no `fn {name}`, so this survivor is recorded \
@@ -508,19 +570,34 @@ mod doc_gate_tests {
         }
     }
 
-    /// Every survivor in the docs table names a function in a file the sweep
-    /// covers.
+    /// The docs table names every survivor that is being left in place, and
+    /// each name still resolves to a function in a file the sweep covers.
     ///
     /// The table is the triage record: it is what stops a suppressed mutant in
-    /// `.cargo/mutants.toml` from being an unexplained silence. So it has a
-    /// floor derived from the two things that force a row — the suppressed
-    /// entries in the config, and the missed count in the note — rather than a
-    /// hand-typed number that would sink below the real count and keep
-    /// reporting green.
+    /// `.cargo/mutants.toml`, or a missed one in the note, from being an
+    /// unexplained silence. So each of those is looked up in it BY NAME.
+    ///
+    /// It used to be a count — `rows >= suppressed + missed` — and a count was
+    /// the wrong shape twice over. The table's TIMEOUT row answers to neither a
+    /// suppression nor a miss, so the floor carried one row of permanent slack:
+    /// deleting the row for the ONE missed mutant, the entire subject of the
+    /// note, left 3 rows against a floor of 3 and passed, and a third
+    /// `exclude_re` entry with no triage row anywhere passed for the same
+    /// reason. Both are the silence this check exists to prevent, and a floor
+    /// that sits below the real requirement is a guard that has stopped
+    /// guarding while still reporting green — the failure this repo has shipped
+    /// three times.
+    ///
+    /// What it still cannot see: a function that two rows name. The `pos +=`
+    /// timeout row also names `parse_and`, so it would satisfy the requirement
+    /// that `parse_and`'s suppression have a row if the row explaining that
+    /// suppression were deleted. Matching a suppression to the row that
+    /// justifies IT would mean reading the Mutation and Verdict cells, and
+    /// those are prose with escaped pipes in them.
     #[test]
     fn every_known_survivor_in_the_docs_names_a_function_that_still_exists() {
         let scope = examined_paths();
-        let mut rows = 0usize;
+        let mut named: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for line in MUTATION_DOC.lines() {
             // Only the Location column, which is the first cell. Cells beyond
             // it are not addressable by splitting on `|`: a mutation like
@@ -535,7 +612,6 @@ mod doc_gate_tests {
             else {
                 continue;
             };
-            rows += 1;
             let path = scope
                 .iter()
                 .find(|p| p.ends_with(&format!("/{file}")))
@@ -555,24 +631,41 @@ mod doc_gate_tests {
                      from this table because they rotted invisibly; a function \
                      name is only better while something checks it:\n  {line}"
                 );
+                named.insert(name);
             }
         }
 
-        // One single-quoted regex per entry; everything else in the block is
-        // the justification each suppression is required to carry.
-        let suppressed = config_list("exclude_re")
-            .iter()
-            .filter(|l| l.trim_start().starts_with('\''))
-            .count();
-        let (_, _, counts) = sweep_summary(CI, ".github/workflows/ci.yml");
-        let missed = sweep_count(&counts, "missed", ".github/workflows/ci.yml") as usize;
-        assert!(
-            rows >= suppressed + missed,
-            "the known-survivors table has {rows} row(s) for {suppressed} \
-             suppressed mutant(s) plus {missed} missed one(s). The config says \
-             a suppression is only legitimate with a written justification, and \
-             a missed mutant left in place needs a verdict — a table shorter \
-             than that has silences in it."
-        );
+        // Two things oblige the table to carry a row, and neither of them is
+        // recorded anywhere else: a suppression is invisible in the sweep
+        // output by construction, and a missed mutant left in place is a
+        // decision somebody has to be able to read back.
+        let survivors = survivor_lines(CI);
+        let required = suppressed_fns()
+            .into_iter()
+            .map(|f| {
+                (
+                    f,
+                    "suppressed by `exclude_re` in .cargo/mutants.toml, which \
+                     that file says is legitimate only for a provably \
+                     unkillable mutant — anything merely hard to test belongs \
+                     in the table instead",
+                )
+            })
+            .chain(survivors.iter().map(|l| {
+                (
+                    recorded_fn(l).to_string(),
+                    "reported MISSED by the sweep .github/workflows/ci.yml \
+                     records, and a survivor left in place is a decision the \
+                     next reader has to be able to read back",
+                )
+            }));
+        for (name, why) in required {
+            assert!(
+                named.contains(name.as_str()),
+                "`{name}` is {why}. No row of the known-survivors table in \
+                 docs/mutation-testing.md names it: either write the row or \
+                 stop leaving the mutant alone. Rows name {named:?}"
+            );
+        }
     }
 }

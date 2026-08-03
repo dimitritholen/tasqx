@@ -256,15 +256,18 @@ jobs:
   # editing it: the same silently-green failure this job exists to find in the
   # code, in the prose describing it. Re-derive from the summary line
   # `cargo mutants` prints, or from the `mutants-report` artefact uploaded
-  # below, and say which run it came from.
+  # below, and say which run it came from. Paste that line VERBATIM, duration
+  # and all: the guards in tasqx-core's lib.rs read the counts off it and check
+  # it against the identical line in docs/mutation-testing.md, and they match
+  # the shape the tool prints rather than a tidied-up version of it.
   #
-  # Last sweep: run 30811736799 on a2f767b (2026-08-03, 53 minutes), which
-  # matched the scheduled run 30791446542 on ce3f284 that morning count for
-  # count — an identical total from two different commits being itself a
+  # Last sweep: run 30811736799 on a2f767b (2026-08-03), which matched the
+  # scheduled run 30791446542 on ce3f284 that morning count for count — an
+  # identical total from two different commits being itself a
   # finding, since it says `examine_globs` covered none of that day's merges
   # (tasqx #50 weighs what to do about the scope).
   #
-  #   203 mutants tested: 1 missed, 184 caught, 14 unviable, 4 timeouts
+  #   203 mutants tested in 53m: 1 missed, 184 caught, 14 unviable, 4 timeouts
   #   MISSED crates/tasqx-core/src/filter.rs `spacing_hint`: replace || with && — tasqx #48
   #
   # The survivor is recorded by FUNCTION, not by the `file:line:col` cargo-
@@ -306,8 +309,10 @@ jobs:
   # Scheduled weekly + manually dispatchable rather than per-push: the sweep
   # rebuilds and reruns the suite once per mutant — the note above says how many
   # there currently are, which is why the count is not repeated here — and that
-  # is minutes on a 24-core dev box against 53 of them on this runner at
-  # `--jobs 2`.
+  # is minutes on a 24-core dev box against the better part of an hour on this
+  # runner at `--jobs 2`. The exact wall clock is in the sweep line above, where
+  # it is dated; a second copy down here would be the same figure decaying in a
+  # place nobody re-derives.
   mutants:
     name: cargo-mutants (advisory)
     runs-on: ubuntu-latest
