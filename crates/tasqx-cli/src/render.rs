@@ -6,6 +6,9 @@
 //! terminal: truecolor/256/16 color, `NO_COLOR` emphasis-only, or byte-plain
 //! when piped (script-safe). Unicode rules degrade to ASCII on the same signal.
 
+use jiff::civil::{Date, Weekday};
+use jiff::tz::TimeZone;
+use jiff::{Timestamp, ToSpan, Unit};
 use serde_json::Value;
 
 use crate::theme::Ctx;
@@ -308,7 +311,16 @@ impl TaskCols {
     /// this function: a store with no due dates was spending 24 cells on a
     /// `DUE` column that could never hold anything, and the reader saw it as the
     /// table falling apart between `PROJECT` and `TAGS`.
-    fn fit(rows: &[TaskRow], budget: usize) -> TaskCols {
+    ///
+    /// `when_label` is the header the date column will be printed under — `DUE`
+    /// for [`task_table`], `WHEN` for [`agenda_text`], whose column holds
+    /// whichever of `due`/`scheduled` put the row on the calendar. It is a
+    /// PARAMETER rather than a constant because a column is sized to its own
+    /// header as well as to its content (the `sized` closure below), so a label
+    /// chosen by the caller and a width computed from a different one is a
+    /// header that can overhang its column by exactly the difference — the
+    /// misalignment this whole function exists to end, rebuilt one caller over.
+    fn fit(rows: &[TaskRow], budget: usize, when_label: &str) -> TaskCols {
         let max_of = |f: fn(&TaskRow) -> &str| rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
         // A column is as wide as its widest cell OR its own header, whichever
         // asks for more — a label that does not fit its column is the same
@@ -330,7 +342,7 @@ impl TaskCols {
             urg: max_of(|r| &r.urg).max(width("URG")),
             title: sized(max_of(|r| &r.title), "TASK").max(width("TASK")),
             project: sized(max_of(|r| &r.project), "PROJECT"),
-            due: sized(max_of(|r| &r.due), "DUE"),
+            due: sized(max_of(|r| &r.due), when_label),
             tags: sized(max_of(|r| &r.tags), "TAGS"),
         };
         c.title = c.title.min(Self::MAX_TITLE);
@@ -406,6 +418,121 @@ fn cell(ctx: &Ctx, role: Option<&str>, text: &str, w: usize) -> String {
     }
 }
 
+/// Cells between two columns, applied by the ONE joiner both the header and
+/// every row go through — so a dropped column cannot survive in one of them and
+/// not the other.
+fn join_cells(cells: Vec<String>) -> String {
+    cells.join(&" ".repeat(GAP)).trim_end().to_string()
+}
+
+/// The header line for a fitted table. `when_label` must be the same string the
+/// widths were fitted with — see [`TaskCols::fit`].
+fn header_line(c: &TaskCols, when_label: &str) -> String {
+    let mut head = vec![
+        rpad("ID", c.id),
+        rpad("URG", c.urg),
+        "P".to_string(),
+        pad("TASK", c.title),
+    ];
+    for (w, label) in [
+        (c.project, "PROJECT"),
+        (c.due, when_label),
+        (c.tags, "TAGS"),
+    ] {
+        if w > 0 {
+            head.push(pad(label, w));
+        }
+    }
+    join_cells(head)
+}
+
+/// One painted row of a fitted table.
+fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
+    let prio_role = match r.prio.as_str() {
+        "H" => "priority.H",
+        "M" => "priority.M",
+        "L" => "priority.L",
+        _ => "muted",
+    };
+    let urg_plain = rpad(&r.urg, c.urg);
+    let mut line = vec![
+        rpad(&r.sid, c.id),
+        ctx.theme.ramp_style(r.ramp).paint(&urg_plain, &ctx.caps),
+        cell(ctx, Some(prio_role), &r.prio, 1),
+        cell(ctx, None, &r.title, c.title),
+    ];
+    if c.project > 0 {
+        line.push(cell(ctx, Some("project"), &r.project, c.project));
+    }
+    if c.due > 0 {
+        // Painted or bare, the cell went through the SAME fit, so the
+        // overdue branch cannot drift out of width from the ordinary one.
+        let role = if r.overdue { Some("overdue") } else { None };
+        line.push(cell(ctx, role, &r.due, c.due));
+    }
+    if c.tags > 0 {
+        line.push(cell(ctx, Some("tag"), &r.tags, c.tags));
+    }
+    join_cells(line)
+}
+
+/// Measure one `task.list` row into the cells the layout will be computed from.
+///
+/// Shared with [`agenda_text`], which then overwrites `due`/`overdue` with what
+/// its own `WHEN` column holds. Everything else — the urgency ramp, the
+/// sanitizing, the `-` for an unset priority — is identical by construction
+/// rather than by two functions agreeing, which is how the two views cannot come
+/// to disagree about the same task.
+fn task_row(t: &Value, max_urg: f64, now: Timestamp) -> TaskRow {
+    let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+    TaskRow {
+        sid: format!("{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
+        urg: format!("{urg:.1}"),
+        ramp: urg / max_urg,
+        prio: t
+            .get("priority")
+            .and_then(Value::as_str)
+            .unwrap_or("-")
+            .to_string(),
+        title: s(t, "title"),
+        project: s(t, "project"),
+        due: s(t, "due"),
+        overdue: field_ts(t, "due").map(|d| d < now).unwrap_or(false)
+            && status_is_open(&s(t, "status")),
+        tags: t
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|a| {
+                san(&a
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// The urgency denominator that normalizes the ramp across the visible rows.
+/// Floored at 1.0 so a table of zero-urgency rows divides by something.
+fn max_urgency(tasks: &[&Value]) -> f64 {
+    tasks
+        .iter()
+        .filter_map(|t| t.get("urgency").and_then(Value::as_f64))
+        .fold(0.0_f64, f64::max)
+        .max(1.0)
+}
+
+/// One RFC3339 instant field of a task, or `None` when it is absent, null, or
+/// text this build cannot parse. Unparseable is treated as absent deliberately:
+/// the CLI may be talking to a different build of core over the socket, and a
+/// stamp it cannot read is a stamp it cannot place on a day either.
+fn field_ts(t: &Value, key: &str) -> Option<Timestamp> {
+    t.get(key)
+        .and_then(Value::as_str)
+        .and_then(|v| v.parse::<Timestamp>().ok())
+}
+
 /// Render a `task.list` result as an aligned, themed table.
 pub fn task_table(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
@@ -417,107 +544,26 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         return "No tasks.\n".to_string();
     }
 
-    // Normalize the urgency ramp across the visible rows.
-    let max_urg = tasks
-        .iter()
-        .filter_map(|t| t.get("urgency").and_then(Value::as_f64))
-        .fold(0.0_f64, f64::max)
-        .max(1.0);
+    let refs: Vec<&Value> = tasks.iter().collect();
+    let max_urg = max_urgency(&refs);
+    let now = Timestamp::now();
+    let rows: Vec<TaskRow> = tasks.iter().map(|t| task_row(t, max_urg, now)).collect();
+    let c = TaskCols::fit(&rows, ctx.cols, "DUE");
 
-    let now = jiff::Timestamp::now();
-    let rows: Vec<TaskRow> = tasks
-        .iter()
-        .map(|t| {
-            let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-            TaskRow {
-                sid: format!("{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
-                urg: format!("{urg:.1}"),
-                ramp: urg / max_urg,
-                prio: t
-                    .get("priority")
-                    .and_then(Value::as_str)
-                    .unwrap_or("-")
-                    .to_string(),
-                title: s(t, "title"),
-                project: s(t, "project"),
-                due: s(t, "due"),
-                overdue: t
-                    .get("due")
-                    .and_then(Value::as_str)
-                    .and_then(|d| d.parse::<jiff::Timestamp>().ok())
-                    .map(|d| d < now)
-                    .unwrap_or(false)
-                    && status_is_open(&s(t, "status")),
-                tags: t
-                    .get("tags")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        san(&a
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(" "))
-                    })
-                    .unwrap_or_default(),
-            }
-        })
-        .collect();
-    let c = TaskCols::fit(&rows, ctx.cols);
-
-    // Header and rows are assembled by the SAME joiner over the SAME widths, so
-    // a dropped column cannot survive in one of them and not the other.
-    let join = |cells: Vec<String>| cells.join(&" ".repeat(GAP)).trim_end().to_string();
-    let mut head = vec![
-        rpad("ID", c.id),
-        rpad("URG", c.urg),
-        "P".to_string(),
-        pad("TASK", c.title),
-    ];
-    for (w, label) in [(c.project, "PROJECT"), (c.due, "DUE"), (c.tags, "TAGS")] {
-        if w > 0 {
-            head.push(pad(label, w));
-        }
-    }
-    let header = join(head);
     // The rule spans the TABLE, not the header text. Those differ by the last
-    // column's padding, which `join` trims — and a rule cut to the trimmed
+    // column's padding, which `join_cells` trims — and a rule cut to the trimmed
     // header stops short of the rows that run under it, which reads as the rows
     // overflowing something.
     let rule_len = c.total().min(ctx.cols);
 
     let mut out = String::new();
-    out.push_str(&ctx.paint("header", &header));
+    out.push_str(&ctx.paint("header", &header_line(&c, "DUE")));
     out.push('\n');
     out.push_str(&ctx.hrule(rule_len));
     out.push('\n');
 
     for r in &rows {
-        let prio_role = match r.prio.as_str() {
-            "H" => "priority.H",
-            "M" => "priority.M",
-            "L" => "priority.L",
-            _ => "muted",
-        };
-        let urg_plain = rpad(&r.urg, c.urg);
-        let mut line = vec![
-            rpad(&r.sid, c.id),
-            ctx.theme.ramp_style(r.ramp).paint(&urg_plain, &ctx.caps),
-            cell(ctx, Some(prio_role), &r.prio, 1),
-            cell(ctx, None, &r.title, c.title),
-        ];
-        if c.project > 0 {
-            line.push(cell(ctx, Some("project"), &r.project, c.project));
-        }
-        if c.due > 0 {
-            // Painted or bare, the cell went through the SAME fit, so the
-            // overdue branch cannot drift out of width from the ordinary one.
-            let role = if r.overdue { Some("overdue") } else { None };
-            line.push(cell(ctx, role, &r.due, c.due));
-        }
-        if c.tags > 0 {
-            line.push(cell(ctx, Some("tag"), &r.tags, c.tags));
-        }
-        out.push_str(&join(line));
+        out.push_str(&row_line(ctx, &c, r));
         out.push('\n');
     }
 
@@ -605,6 +651,395 @@ fn status_is_unrecognized(t: &Value) -> bool {
     t.get("status_unrecognized")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+// ============================================================================
+// Agenda — the same `task.list` answer, ordered by time instead of urgency
+// ============================================================================
+
+/// How far ahead `tasqx agenda` looks when `--days` is not given.
+///
+/// A fortnight, not a week and not a month. A week ends on a boundary a reader
+/// is standing on top of — on a Friday it shows two working days — so the one
+/// question the view exists to answer ("is next week already full?") is exactly
+/// the one it cannot answer. A month puts thirty headings on the screen for a
+/// store that plans a fortnight out, and the rows worth acting on scroll off the
+/// top. Fourteen days always contains a whole next week from any day of the
+/// current one.
+///
+/// It is a default and not a rule: `--days` moves it, and anything the horizon
+/// cut is COUNTED and reported with the exact `--days` that would reach it, so
+/// the number here can be wrong for a given store without anything being hidden.
+pub const AGENDA_DEFAULT_DAYS: usize = 14;
+
+/// Which dated field put a task on the agenda.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum When {
+    Due,
+    Scheduled,
+}
+
+impl When {
+    /// The word the `WHEN` cell opens with. Short, because it is repeated on
+    /// every row and the date beside it is the information.
+    fn label(self) -> &'static str {
+        match self {
+            When::Due => "due",
+            When::Scheduled => "sched",
+        }
+    }
+}
+
+/// One task placed on the calendar.
+struct Entry {
+    task: Value,
+    at: Timestamp,
+    day: Date,
+    kind: When,
+}
+
+/// A `task.list` answer arranged as an agenda: the rows that have a place on the
+/// calendar, in time order, plus an exact account of every row that does not.
+///
+/// The counts are not decoration. This view drops rows the filter DID match, for
+/// two reasons of its own, and a time-ordered list that silently omits a task is
+/// the failure this project keeps rebuilding (D33/D39): a deadline that is not on
+/// the screen is indistinguishable from a deadline that does not exist. So each
+/// reason carries its own count, and [`agenda_text`] prints the ones that are
+/// non-zero together with the command or flag that reveals what they hold.
+pub struct Agenda {
+    entries: Vec<Entry>,
+    /// Tasks with neither `due` nor `scheduled`. Nothing can put them on a day.
+    undated: usize,
+    /// Tasks dated past the horizon.
+    beyond: usize,
+    /// The `--days` that would reach the furthest thing `beyond` is holding.
+    /// `None` when nothing is beyond the horizon.
+    reach_days: Option<usize>,
+    today: Date,
+    through: Date,
+    days: usize,
+}
+
+/// Arrange a `task.list` result into an [`Agenda`].
+///
+/// `now` is a parameter and never the system clock, for the reason
+/// `datetime::parse_when` gives: a view whose grouping depends on a hidden clock
+/// cannot be tested at the boundaries that matter — the last second of today,
+/// the first of the horizon.
+///
+/// # Which field orders it, and why both
+///
+/// `due` and `scheduled` are both calendar facts and they answer different
+/// questions: `scheduled` is when you meant to START, `due` is when it must be
+/// FINISHED. A view built on `due` alone loses every planned-but-undeadlined
+/// task, which is most of what a week actually contains; one built on
+/// `scheduled` alone loses every deadline. So a task is placed on the EARLIER of
+/// the two — the first day it asks anything of you — and the row says which
+/// field that was, because "Friday" means something different under each. When
+/// the two coincide the label is `due`: a deadline is the more consequential
+/// reading of the same instant.
+///
+/// A task carrying NEITHER is not on the agenda at all, because there is no
+/// honest day to put it on — but it is counted, and the footer names `tasqx
+/// list` as the view that does show it. Inventing a "Someday" bucket was
+/// rejected: it would sort a hundred undated backlog rows into the same screen
+/// as this week, which is precisely what `list`'s urgency order is for.
+///
+/// # Done and cancelled
+///
+/// Never seen here: which statuses reach this function is the caller's filter,
+/// and `lib::run_agenda` composes an open-status default into it under D24's
+/// resolution order. Filtering again here would be a second opinion about a
+/// question the filter grammar already answers, and the two would drift.
+pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda {
+    let empty = Vec::new();
+    let tasks = result
+        .get("tasks")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+
+    // Everything the store holds is UTC (`datetime.rs`: a naive date resolves to
+    // 00:00 UTC), so the day boundaries are UTC too. Grouping by the LOCAL day
+    // was considered and rejected: `--due 2026-08-05` is stored as midnight UTC,
+    // and west of Greenwich that instant is the 4th, so a local-day agenda would
+    // file the task one day before the date the user typed. Matching the
+    // parser's zone is the only arrangement in which a date round-trips.
+    let today = now.to_zoned(TimeZone::UTC).date();
+    // `--days` is bounded at parse time (`command::MAX_AGENDA_DAYS`), so this
+    // addition cannot overflow. `Date::MAX` on failure anyway, because the
+    // failure direction that matters is "show it" — a horizon that cannot be
+    // computed must not silently swallow the rows past it.
+    let through = today.checked_add((days as i64).days()).unwrap_or(Date::MAX);
+
+    let mut a = Agenda {
+        entries: Vec::new(),
+        undated: 0,
+        beyond: 0,
+        reach_days: None,
+        today,
+        through,
+        days,
+    };
+
+    for t in tasks {
+        let (at, kind) = match (field_ts(t, "due"), field_ts(t, "scheduled")) {
+            (Some(d), Some(sc)) if sc < d => (sc, When::Scheduled),
+            (Some(d), _) => (d, When::Due),
+            (None, Some(sc)) => (sc, When::Scheduled),
+            (None, None) => {
+                a.undated += 1;
+                continue;
+            }
+        };
+        let day = at.to_zoned(TimeZone::UTC).date();
+        if day > through {
+            a.beyond += 1;
+            // The reach is REPORTED, not guessed: the footer will name the
+            // exact `--days` that brings the furthest of these into view, so
+            // the reader does not have to widen the window by trial.
+            let need = day
+                .since((Unit::Day, today))
+                .map(|s| s.get_days().max(0) as usize)
+                .unwrap_or(days);
+            a.reach_days = Some(a.reach_days.map_or(need, |cur: usize| cur.max(need)));
+            continue;
+        }
+        a.entries.push(Entry {
+            task: t.clone(),
+            at,
+            day,
+            kind,
+        });
+    }
+
+    // STABLE, and by the instant alone. The rows arrive in the engine's
+    // `-urgency` order, so two tasks landing on the same instant keep the
+    // ranking the rest of the tool would give them instead of an arbitrary one.
+    a.entries.sort_by_key(|e| e.at);
+    a
+}
+
+/// The heading a row's day sits under. Every row before "now" collapses into ONE
+/// group rather than getting a heading per past day: a store that has been
+/// running for a year would otherwise open the agenda with a hundred headings
+/// nobody can act on, and what the reader needs from the past is the list, not
+/// the calendar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Group {
+    Overdue,
+    Day(Date),
+}
+
+fn group_of(day: Date, today: Date) -> Group {
+    if day < today {
+        Group::Overdue
+    } else {
+        Group::Day(day)
+    }
+}
+
+/// Three letters, written out rather than taken from a locale: the rest of this
+/// module renders one fixed English surface, and a heading whose width changes
+/// with `$LANG` would move a column the table has already been fitted to.
+fn weekday_abbrev(d: Date) -> &'static str {
+    match d.weekday() {
+        Weekday::Monday => "Mon",
+        Weekday::Tuesday => "Tue",
+        Weekday::Wednesday => "Wed",
+        Weekday::Thursday => "Thu",
+        Weekday::Friday => "Fri",
+        Weekday::Saturday => "Sat",
+        Weekday::Sunday => "Sun",
+    }
+}
+
+/// `Today · Mon 2026-08-03`. The date is spelled out on every heading, today's
+/// included: "Today" alone is the one label that means something different
+/// tomorrow, and terminal output gets pasted into tickets.
+fn day_heading(day: Date, today: Date) -> String {
+    let stamp = format!("{} {day}", weekday_abbrev(day));
+    let tomorrow = today.tomorrow().ok();
+    if day == today {
+        format!("Today · {stamp}")
+    } else if Some(day) == tomorrow {
+        format!("Tomorrow · {stamp}")
+    } else {
+        stamp
+    }
+}
+
+/// The `WHEN` cell: which field placed this row, plus the part of the instant
+/// its heading does not already carry.
+///
+/// Inside a day group the heading names the date, so the cell shows the time —
+/// and only when there is one to show. A date typed without a time resolves to
+/// 00:00 UTC (`datetime.rs`), so midnight is precisely the store's spelling of
+/// "no time given"; printing `due 00:00` on every row would fill the column with
+/// a time nobody typed. A caller who genuinely meant midnight loses nothing the
+/// store itself distinguishes.
+///
+/// The overdue group spans many days and so has no date in its heading. Its
+/// cells carry the full date instead — `due 2026-07-29` — because "how late" is
+/// the whole content of that group.
+fn when_cell(kind: When, at: Timestamp, dated: bool) -> String {
+    let z = at.to_zoned(TimeZone::UTC);
+    let t = z.time();
+    let clock = if t.hour() == 0 && t.minute() == 0 {
+        String::new()
+    } else {
+        format!("{:02}:{:02}", t.hour(), t.minute())
+    };
+    let stamp = match (dated, clock.is_empty()) {
+        (true, true) => z.date().to_string(),
+        (true, false) => format!("{} {clock}", z.date()),
+        (false, true) => String::new(),
+        (false, false) => clock,
+    };
+    if stamp.is_empty() {
+        kind.label().to_string()
+    } else {
+        format!("{} {stamp}", kind.label())
+    }
+}
+
+/// Render an [`Agenda`] as day-grouped tables sharing ONE fitted layout.
+///
+/// The columns are fitted once, over every visible row, and every group prints
+/// under that one layout — so `Today` and `Fri` line up with each other. Fitting
+/// per group would size each day's `TASK` column to its own longest title, and
+/// the result reads as a table that changes shape as you scroll down it.
+pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
+    let mut out = String::new();
+
+    let refs: Vec<&Value> = a.entries.iter().map(|e| &e.task).collect();
+    if !refs.is_empty() {
+        let max_urg = max_urgency(&refs);
+        let rows: Vec<TaskRow> = a
+            .entries
+            .iter()
+            .map(|e| {
+                let mut r = task_row(&e.task, max_urg, a.at_start_of_today());
+                let overdue = e.day < a.today;
+                r.due = when_cell(e.kind, e.at, overdue);
+                // Repainted from the AGENDA instant, not from `due` alone: a
+                // task scheduled last week and due next month is late on the
+                // thing this row is about, and `task_row`'s answer is about the
+                // deadline only.
+                r.overdue = overdue && status_is_open(&s(&e.task, "status"));
+                r
+            })
+            .collect();
+        let c = TaskCols::fit(&rows, ctx.cols, "WHEN");
+        let rule_len = c.total().min(ctx.cols);
+
+        out.push_str(&ctx.paint("header", &header_line(&c, "WHEN")));
+        out.push('\n');
+        out.push_str(&ctx.hrule(rule_len));
+        out.push('\n');
+
+        let mut current: Option<Group> = None;
+        for (e, r) in a.entries.iter().zip(&rows) {
+            let g = group_of(e.day, a.today);
+            if current != Some(g) {
+                let (role, text) = match g {
+                    Group::Overdue => ("overdue", "Overdue".to_string()),
+                    Group::Day(d) => ("accent", day_heading(d, a.today)),
+                };
+                out.push_str(&ctx.paint(role, &truncate(&text, ctx.cols, ctx.caps.unicode)));
+                out.push('\n');
+                current = Some(g);
+            }
+            out.push_str(&row_line(ctx, &c, r));
+            out.push('\n');
+        }
+        out.push_str(&ctx.hrule(rule_len));
+        out.push('\n');
+    }
+
+    // The horizon is stated on every run, not only when it cut something: "5
+    // task(s)" alone cannot be read as "and that is all there is" unless the
+    // window it is all there is WITHIN is on the same line. No weekday here,
+    // unlike the day headings -- the count can be four digits and this line has
+    // to survive a 40-cell terminal, and the headings already carry the days.
+    out.push_str(&ctx.paint(
+        "muted",
+        &format!(
+            "{} task(s) · through {} (+{}d)",
+            a.entries.len(),
+            a.through,
+            a.days
+        ),
+    ));
+    out.push('\n');
+    for note in a.omissions() {
+        out.push_str(&ctx.paint("muted", &note));
+        out.push('\n');
+    }
+    out
+}
+
+impl Agenda {
+    /// Midnight of the agenda's `today`, used as the "now" [`task_row`] compares
+    /// `due` against. The agenda has its own overdue answer (per row, from the
+    /// agenda instant), so this only has to be a stable instant on the right day
+    /// rather than the wall clock — and taking it from `today` keeps the whole
+    /// render a pure function of the `now` that was passed in.
+    fn at_start_of_today(&self) -> Timestamp {
+        self.today
+            .to_zoned(TimeZone::UTC)
+            .map(|z| z.timestamp())
+            .unwrap_or_else(|_| Timestamp::now())
+    }
+
+    /// One line per reason this view is holding something back, each naming the
+    /// way to see it. Empty on an agenda that omitted nothing — the notes are
+    /// conditional so that their presence always means something.
+    fn omissions(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        if self.undated > 0 {
+            v.push(format!(
+                "{} undated — no due or scheduled date, so nothing puts them on a day; \
+                 `tasqx list` shows them",
+                self.undated
+            ));
+        }
+        if self.beyond > 0 {
+            // The exact flag that reaches the furthest one, so widening the
+            // window is one paste rather than a guess-and-retry.
+            let reach = self.reach_days.unwrap_or(self.days);
+            v.push(format!(
+                "{} further out — `tasqx agenda --days {reach}` reaches the furthest",
+                self.beyond
+            ));
+        }
+        v
+    }
+}
+
+/// The `--json` half of the agenda, and the reason it is not simply the
+/// `task.list` result.
+///
+/// `--json` and the table must answer the same question (the rule
+/// `report --html` already follows). Handing the raw result back would make
+/// `tasqx agenda --json | jq '.tasks | length'` report every matching task,
+/// horizon and undated rows included, while the table beside it showed five —
+/// a number that means something different depending on which flag was passed.
+/// So the array is the rows the table drew, in the order it drew them, and every
+/// count the footer prints is a field a script can read.
+pub fn agenda_json(a: &Agenda) -> Value {
+    serde_json::json!({
+        "tasks": a.entries.iter().map(|e| e.task.clone()).collect::<Vec<_>>(),
+        "count": a.entries.len(),
+        "agenda": {
+            "days": a.days,
+            "today": a.today.to_string(),
+            "through": a.through.to_string(),
+            "undated": a.undated,
+            "beyond_horizon": a.beyond,
+            "reach_days": a.reach_days,
+        }
+    })
 }
 
 /// Full task detail (task.get): fields plus tags, deps, annotations, blocked.
@@ -2231,6 +2666,311 @@ mod tests {
         assert!(
             !out.contains(''),
             "bell byte reached the terminal: {out:?}"
+        );
+    }
+
+    // ---- agenda ------------------------------------------------------------
+
+    /// 2026-08-03 is a Monday. Every agenda test anchors to it, so "Today" and
+    /// "Tomorrow" are facts about the fixture rather than about the day the
+    /// suite happens to run.
+    const ANCHOR: &str = "2026-08-03T09:00:00Z";
+
+    fn anchor() -> Timestamp {
+        ANCHOR.parse().expect("the anchor is a real instant")
+    }
+
+    /// A task carrying whichever of the two dated fields the case is about.
+    /// An empty `due`/`scheduled` means the field is absent, which is what the
+    /// engine emits as `null` and what `field_ts` reads the same way.
+    fn dated(id: i64, title: &str, due: &str, scheduled: &str) -> Value {
+        json!({
+            "short_id": id, "urgency": 5.0, "priority": "M", "title": title,
+            "project": "p", "tags": [], "status": "pending",
+            "due": if due.is_empty() { Value::Null } else { json!(due) },
+            "scheduled": if scheduled.is_empty() { Value::Null } else { json!(scheduled) },
+        })
+    }
+
+    fn agenda_of(tasks: Vec<Value>, days: usize) -> Agenda {
+        agenda_select(&json!({ "tasks": tasks }), days, anchor())
+    }
+
+    fn agenda_out(tasks: Vec<Value>, days: usize) -> String {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        agenda_text(&ctx, &agenda_of(tasks, days))
+    }
+
+    /// The ordering rule, and the reason the view reads both fields.
+    ///
+    /// A task scheduled for Tuesday with a deadline three weeks out comes
+    /// BEFORE a task due on Wednesday, because Tuesday is the first day it asks
+    /// anything of you. Reading `due` alone would sort it last and file it in
+    /// the wrong week; reading `scheduled` alone would lose the Wednesday
+    /// deadline entirely. Both halves are asserted here, plus the label, since
+    /// "Tuesday" means something different under each field.
+    #[test]
+    fn agenda_places_a_task_on_the_earlier_of_due_and_scheduled() {
+        let a = agenda_of(
+            vec![
+                dated(1, "deadline only", "2026-08-05T00:00:00Z", ""),
+                dated(
+                    2,
+                    "starts tuesday, due much later",
+                    "2026-08-24T00:00:00Z",
+                    "2026-08-04T00:00:00Z",
+                ),
+                dated(3, "scheduled only", "", "2026-08-10T00:00:00Z"),
+            ],
+            30,
+        );
+        let order: Vec<i64> = a
+            .entries
+            .iter()
+            .map(|e| e.task["short_id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            order,
+            vec![2, 1, 3],
+            "the agenda instant is min(due, scheduled), so #2's Tuesday leads"
+        );
+        assert_eq!(
+            a.entries.iter().map(|e| e.kind).collect::<Vec<_>>(),
+            vec![When::Scheduled, When::Due, When::Scheduled],
+            "the row must name the field that placed it"
+        );
+    }
+
+    /// When one instant carries both meanings the label is `due`: the deadline
+    /// is the more consequential reading, and a row that said `sched` would
+    /// send the reader looking for a deadline that is right there.
+    #[test]
+    fn a_task_due_and_scheduled_at_the_same_instant_is_labelled_due() {
+        let a = agenda_of(
+            vec![dated(
+                1,
+                "same instant",
+                "2026-08-05T09:00:00Z",
+                "2026-08-05T09:00:00Z",
+            )],
+            30,
+        );
+        assert_eq!(a.entries[0].kind, When::Due);
+    }
+
+    /// The rule that keeps this view from being a lie: a task the filter
+    /// matched and the agenda cannot place is COUNTED, not dropped. A deadline
+    /// that is not on the screen is indistinguishable from a deadline that does
+    /// not exist, and the undated are the largest group this view omits.
+    #[test]
+    fn an_undated_task_is_counted_and_the_way_to_see_it_is_named() {
+        let out = agenda_out(
+            vec![
+                dated(1, "on a day", "2026-08-05T00:00:00Z", ""),
+                dated(2, "no dates at all", "", ""),
+                dated(3, "no dates either", "", ""),
+            ],
+            14,
+        );
+        assert!(
+            !out.contains("no dates at all"),
+            "an undated task has no day to sit on: {out}"
+        );
+        assert!(
+            out.contains("2 undated"),
+            "the count of what was left out must be on the screen: {out}"
+        );
+        assert!(
+            out.contains("tasqx list"),
+            "the note must name the view that does show them: {out}"
+        );
+    }
+
+    /// The horizon half of the same rule, plus the part that makes it
+    /// actionable: the note names the exact `--days` that reaches the furthest
+    /// thing it is holding, so widening the window is a paste and not a guess.
+    #[test]
+    fn a_task_past_the_horizon_is_counted_with_the_days_that_would_reach_it() {
+        let tasks = vec![
+            dated(1, "inside", "2026-08-05T00:00:00Z", ""),
+            dated(2, "just outside", "2026-08-18T00:00:00Z", ""),
+            dated(3, "far outside", "2026-11-01T00:00:00Z", ""),
+        ];
+        let out = agenda_out(tasks.clone(), AGENDA_DEFAULT_DAYS);
+        assert!(!out.contains("just outside"), "{out}");
+        assert!(out.contains("2 further out"), "{out}");
+        // 2026-08-03 -> 2026-11-01 is 90 days. Anything short of the real
+        // distance is a note that sends the reader back for another guess.
+        assert!(
+            out.contains("--days 90"),
+            "the note must name the window that reaches the furthest row: {out}"
+        );
+        // ...and the horizon really is a fortnight by default, stated on screen.
+        assert!(out.contains("through 2026-08-17 (+14d)"), "{out}");
+
+        // Raising it brings them in, which is the other half of the promise.
+        let wide = agenda_out(tasks, 90);
+        assert!(wide.contains("far outside"), "{wide}");
+        assert!(
+            !wide.contains("further out"),
+            "nothing is beyond a horizon that reaches everything: {wide}"
+        );
+    }
+
+    /// Overdue rows lead the table, under ONE heading, and the horizon does not
+    /// apply to them: `--days 1` must not hide work that was due last month.
+    /// The cells in that group carry the date, because the heading cannot.
+    #[test]
+    fn overdue_rows_lead_the_table_and_ignore_the_horizon() {
+        let out = agenda_out(
+            vec![
+                dated(1, "today thing", "2026-08-03T17:00:00Z", ""),
+                dated(2, "late by a week", "2026-07-27T00:00:00Z", ""),
+                dated(3, "late by a month", "2026-07-01T00:00:00Z", ""),
+            ],
+            1,
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        let overdue = lines
+            .iter()
+            .position(|l| l.trim() == "Overdue")
+            .unwrap_or_else(|| panic!("no Overdue heading:\n{out}"));
+        let today = lines
+            .iter()
+            .position(|l| l.starts_with("Today"))
+            .unwrap_or_else(|| panic!("no Today heading:\n{out}"));
+        assert!(overdue < today, "overdue comes first:\n{out}");
+        assert_eq!(
+            lines.iter().filter(|l| l.trim() == "Overdue").count(),
+            1,
+            "past days collapse into one heading:\n{out}"
+        );
+        assert!(out.contains("late by a month"), "{out}");
+        // The date, not a bare `due`: which day it was late on is the whole
+        // content of this group.
+        assert!(out.contains("due 2026-07-01"), "{out}");
+        // A time-of-day is shown only where the store has one. `2026-07-01` was
+        // typed without a time and resolves to midnight, so printing `00:00`
+        // would be a time nobody entered.
+        assert!(!out.contains("00:00"), "{out}");
+        assert!(out.contains("due 17:00"), "a real time is shown: {out}");
+    }
+
+    /// Today and tomorrow get their words, and every heading carries the date
+    /// anyway -- "Today" alone is the one label that means something else
+    /// tomorrow, and terminal output gets pasted into tickets.
+    #[test]
+    fn day_headings_name_the_relative_day_and_the_date() {
+        let out = agenda_out(
+            vec![
+                dated(1, "a", "2026-08-03T00:00:00Z", ""),
+                dated(2, "b", "2026-08-04T00:00:00Z", ""),
+                dated(3, "c", "2026-08-06T00:00:00Z", ""),
+            ],
+            14,
+        );
+        assert!(out.contains("Today"), "{out}");
+        assert!(out.contains("Mon 2026-08-03"), "{out}");
+        assert!(out.contains("Tomorrow"), "{out}");
+        assert!(out.contains("Tue 2026-08-04"), "{out}");
+        assert!(out.contains("\nThu 2026-08-06\n"), "{out}");
+    }
+
+    /// One layout for every group, and it is the D51 one: the columns are
+    /// fitted once across all the rows, and nothing -- heading, row, rule or
+    /// count line -- overruns the terminal it was given. A second table layout
+    /// written for this view is exactly what this asserts is absent.
+    #[test]
+    fn the_agenda_fits_the_width_it_was_given_across_every_group() {
+        for cols in [Ctx::MIN_COLS, 60, 80, Ctx::DEFAULT_COLS] {
+            let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(cols);
+            let tasks: Vec<Value> = (1..=6)
+                .map(|i| {
+                    json!({
+                        "short_id": i, "urgency": 5.0, "priority": "M",
+                        "title": "a title far too long to fit any of these budgets without a cut",
+                        "project": "some.rather.long.project.name",
+                        "tags": ["one", "two", "three", "four"],
+                        "status": "pending",
+                        "due": format!("2026-08-{:02}T17:00:00Z", i + 2),
+                        "scheduled": Value::Null,
+                    })
+                })
+                .collect();
+            // Nothing here is undated or beyond the horizon, so the whole
+            // render is table: the omission notes are deliberately prose that
+            // carries a command to paste, and cutting one would cut the way out.
+            let out = agenda_text(
+                &ctx,
+                &agenda_select(&json!({ "tasks": tasks }), 14, anchor()),
+            );
+            // Up to and including the closing rule. What follows it is prose:
+            // the count line and the omission notes are sentences carrying a
+            // command to paste, and a terminal narrower than a sentence gets a
+            // wrapped sentence rather than a truncated instruction -- the same
+            // treatment `task_table` gives its store-health warnings.
+            let mut rules = 0;
+            for line in out.lines() {
+                assert!(
+                    cells(line) <= cols,
+                    "a {}-cell line in a {cols}-cell terminal: {line:?}",
+                    cells(line)
+                );
+                if !line.is_empty() && line.chars().all(|c| c == '-' || c == '\u{2500}') {
+                    rules += 1;
+                    if rules == 2 {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(rules, 2, "the table must have a rule above and below it");
+        }
+    }
+
+    /// `--json` and the table answer the same question. The raw `task.list`
+    /// result would have made `tasqx agenda --json | jq .tasks` count every
+    /// matching task -- horizon and undated rows included -- while the table
+    /// beside it showed one.
+    #[test]
+    fn agenda_json_holds_exactly_the_rows_the_table_drew() {
+        let a = agenda_of(
+            vec![
+                dated(1, "shown", "2026-08-05T00:00:00Z", ""),
+                dated(2, "beyond", "2026-11-01T00:00:00Z", ""),
+                dated(3, "undated", "", ""),
+            ],
+            14,
+        );
+        let v = agenda_json(&a);
+        assert_eq!(v["count"], json!(1));
+        assert_eq!(v["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(v["tasks"][0]["short_id"], json!(1));
+        // Every number the footer prints is also a field, so a script never has
+        // to scrape the prose to learn what was left out.
+        assert_eq!(v["agenda"]["undated"], json!(1));
+        assert_eq!(v["agenda"]["beyond_horizon"], json!(1));
+        assert_eq!(v["agenda"]["reach_days"], json!(90));
+        assert_eq!(v["agenda"]["through"], json!("2026-08-17"));
+        assert_eq!(v["agenda"]["days"], json!(14));
+    }
+
+    /// Two tasks on the same instant keep the engine's `-urgency` ranking: the
+    /// sort is by the agenda instant alone and `sort_by_key` is stable, so the
+    /// order `task.list` returned survives a tie.
+    #[test]
+    fn tasks_at_the_same_instant_keep_the_urgency_order_they_arrived_in() {
+        let mut hot = dated(1, "hot", "2026-08-05T09:00:00Z", "");
+        hot["urgency"] = json!(20.0);
+        let mut cold = dated(2, "cold", "2026-08-05T09:00:00Z", "");
+        cold["urgency"] = json!(1.0);
+        // As `task.list {sort:["-urgency"]}` would return them.
+        let a = agenda_of(vec![hot, cold], 14);
+        assert_eq!(
+            a.entries
+                .iter()
+                .map(|e| e.task["short_id"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
         );
     }
 }

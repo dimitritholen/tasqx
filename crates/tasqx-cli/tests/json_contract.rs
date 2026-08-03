@@ -85,6 +85,12 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         // may share a verb; the coverage check only asks that the verb appears.
         c("add", &["add", "second thing"]),
         c("list", &["list"]),
+        // `agenda` is the one read whose `--json` body is NOT the `task.list`
+        // answer it called: the horizon and the undated rows are applied here,
+        // so the flag prints the agenda's own object (`render::agenda_json`).
+        // That is exactly why it has to be driven — a hand-built value is the
+        // easiest place to emit something that is not JSON at all.
+        c("agenda", &["agenda"]),
         c("show", &["show", "1"]),
         c("modify", &["modify", "1", "--priority", "high"]),
         c("annotate", &["annotate", "1", "a note"]),

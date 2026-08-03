@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 35] = [
+const VERBS: [(&str, &str, &str); 36] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -67,6 +67,7 @@ const VERBS: [(&str, &str, &str); 35] = [
         "task.modify",
     ),
     ("list", "<code>ls</code>, <code>l</code>", "task.list"),
+    ("agenda", "<code>ag</code>, <code>cal</code>", "task.list"),
     ("next", "—", "task.list"),
     ("show", "<code>get</code>", "task.get"),
     ("why", "—", "task.get"),
@@ -965,6 +966,72 @@ fn page_commands() -> String {
          \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
          -----------------------------------------------------------------------------------------\n\
          1 task(s)",
+    ));
+
+    // ---- agenda
+    s.push_str(&h3("agenda"));
+    s.push_str(&p(
+        "<code>agenda</code> asks the same question <code>list</code> does and answers it in the \
+         other order: by time, grouped by day. It maps to the same <code>task.list</code> call — \
+         there is no <code>agenda</code> method, because the grouping is a rendering of fields \
+         every row already carries.",
+    ));
+    s.push_str(&snippet(
+        "tasqx agenda",
+        "\x20 ID   URG  P  TASK                             PROJECT     WHEN            TAGS\n\
+         ---------------------------------------------------------------------------------------\n\
+         Overdue\n\
+         \x20  3  18.0  H  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  bug\n\
+         Today · Mon 2026-08-03\n\
+         \x20  2  12.0  -  Write API conformance tests      work.tasqx  due 12:00       api\n\
+         \x20  1  18.0  H  Ship the v1 JSON API freeze      work.tasqx  due 17:00       api release\n\
+         Tomorrow · Tue 2026-08-04\n\
+         \x20  4   0.0  -  Quarterly deps audit             work.tasqx  sched\n\
+         Thu 2026-08-06\n\
+         \x20  5  10.1  -  Publish the API docs             work.tasqx  due\n\
+         ---------------------------------------------------------------------------------------\n\
+         5 task(s) · through 2026-08-17 (+14d)\n\
+         1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them\n\
+         1 further out — `tasqx agenda --days 90` reaches the furthest",
+    ));
+    s.push_str(&p(
+        "That block was captured on Monday 3 August 2026, which is what <code>Today</code> names \
+         there; every heading carries its date as well for exactly that reason. A task is placed \
+         on the <strong>earlier</strong> of its <code>due</code> and its \
+         <code>scheduled</code> — the first day it asks anything of you — and the <code>WHEN</code> \
+         column says which of the two that was. #4 above is there because it is <em>scheduled</em> \
+         for Tuesday and has no deadline at all; a view built on <code>due</code> alone would not \
+         have shown it, and one built on <code>scheduled</code> alone would have lost #3. A cell \
+         shows a time only when the task carries one: a date typed without a time is stored as \
+         midnight, so <code>due</code> on its own means exactly what the store knows.",
+    ));
+    s.push_str(&p(
+        "Overdue rows come first and are always shown, whatever <code>--days</code> says — a \
+         horizon is a question about the future, and hiding what you are already late on would \
+         answer a different one. The window is 14 days by default; <code>--days N</code> moves it.",
+    ));
+    s.push_str(&note(
+        "Read the last two lines. This view leaves rows out for two reasons of its own, and it \
+         counts both rather than dropping them in silence: tasks with neither date have no day to \
+         sit on (<code>tasqx list</code> shows them), and tasks past the horizon are reported \
+         together with the exact <code>--days</code> that reaches the furthest one — here \
+         <code>tasqx agenda --days 90</code>, for a certificate renewal in November.",
+    ));
+    s.push_str(&p(
+        "Everything before <code>--days</code> is the <a href=\"#filters\">filter</a>, exactly as \
+         on <code>list</code>. The default is every open status — <code>backlog</code> included, \
+         unlike <code>list</code>'s <code>@working</code>, because a task scheduled for next week \
+         <em>is</em> backlog until that day arrives and an agenda that could not show it would be \
+         useless. Done and cancelled tasks stay out unless your filter names a status, the rule \
+         <code>report</code> already applies to cancelled work; <code>tasqx agenda status:done</code> \
+         shows them. Blocked tasks are shown: the date arrives whether or not the dependency \
+         cleared.",
+    ));
+    s.push_str(&note(
+        "Days are <strong>UTC</strong> days. Every instant in the store is UTC and a date typed \
+         without a time resolves to midnight UTC, so grouping by local time would file \
+         <code>--due 2026-08-05</code> under the 4th for anyone west of Greenwich — a day earlier \
+         than the one they typed.",
     ));
 
     // ---- show

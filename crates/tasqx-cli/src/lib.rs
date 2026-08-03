@@ -255,9 +255,14 @@ pub fn run() {
     // guard `argv::tests::every_filter_positional_is_registered` fails if a new
     // one appears without being added to the pre-pass side of the same pair.
     match &mut cli.command {
-        Some(Command::List { filter } | Command::Export { filter } | Command::Watch { filter }) => {
-            argv::unescape(filter)
-        }
+        Some(
+            Command::List { filter }
+            | Command::Export { filter }
+            | Command::Watch { filter }
+            // `..` because `agenda` carries `--days` beside its tail; the dash
+            // restoration is about the tail and nothing else.
+            | Command::Agenda { filter, .. },
+        ) => argv::unescape(filter),
         Some(Command::Report { args, .. }) => argv::unescape(args),
         _ => {}
     }
@@ -481,6 +486,7 @@ fn execute(cli: Cli) -> Exit {
             expected_rev,
         ),
         Some(Command::List { filter }) => run_list(&mut backend, &ctx, &filter),
+        Some(Command::Agenda { filter, days }) => run_agenda(&mut backend, &ctx, &filter, days),
         Some(Command::Start {
             r#ref,
             keep,
@@ -1113,6 +1119,103 @@ fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
     let result = be.call("task.list", &params)?;
     let text = render::task_table(ctx, &result);
     Ok((result, text))
+}
+
+/// The filter DSL for "not finished": every status `Status::is_open` calls open,
+/// spelled as an `or` chain.
+///
+/// Derived from `Status::ALL` rather than written out, for the reason that
+/// constant's own doc gives — the names used to live by hand in ten places, and
+/// a status missing from one of them makes tasks stop appearing without anything
+/// failing. There is no `@open` keyword in the grammar to lean on: `KEYWORDS` is
+/// `@working` and `@blocked`, and neither is this set.
+fn open_statuses_filter() -> String {
+    tasqx_core::types::Status::ALL
+        .iter()
+        .filter(|s| s.is_open())
+        .map(|s| format!("status:{}", s.as_str()))
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+/// `tasqx agenda` — the same question `list` asks, ordered by time.
+///
+/// # No new API method, deliberately
+///
+/// `task.list` already takes a filter and a sort (`dispatch::METHODS`), and this
+/// verb needs nothing else FROM the store: the day grouping, the horizon and the
+/// earlier-of-two-dates ordering are all functions of fields every row already
+/// carries. An `agenda.*` method would be a second way to ask one question, and
+/// D50 narrows the API on purpose — the surface that has to stay frozen for v1
+/// is the one worth keeping small.
+///
+/// The ordering is not sent as a `sort` key for the same reason it could not be:
+/// the agenda key is `min(due, scheduled)`, which is not in `engine::SORT_KEYS`
+/// and would have to be added to the frozen contract to express a presentation
+/// choice. `-urgency` is asked for instead — byte-identical to what [`run_list`]
+/// sends — and `agenda_select` stable-sorts by the instant, so two tasks landing
+/// at the same minute keep the urgency ranking the rest of the tool gives them.
+///
+/// # The filter default is NOT `list`'s, and the reason is a measured one
+///
+/// `list` defaults to `@working`, and `@working` is pending|active. A task with
+/// a `scheduled` (or `wait`) date in the future sits in **backlog** until that
+/// instant arrives — `types::effective_status` promotes it on the way out of the
+/// store — so `@working` excludes, precisely, everything that is scheduled for
+/// later. Driven against the real binary: `add "Quarterly deps audit"
+/// scheduled:2026-08-04` then `agenda` on the 3rd showed no Tuesday at all. An
+/// agenda that cannot show what is scheduled for tomorrow is not an agenda, so
+/// the default here is every OPEN status instead — the same set minus nothing,
+/// plus the backlog `@working` was built to hide from a "what can I do now" view.
+///
+/// The set is DERIVED from `Status::ALL` and `Status::is_open`, never typed out:
+/// a sixth status would otherwise reach `list` and silently miss this view, which
+/// is the drift `Status::ALL` exists to end (its own doc names the ten places the
+/// names used to be spelled by hand).
+///
+/// # How a caller's own filter is combined with it
+///
+/// D24's resolution order, the one `report.summary` already uses: a caller who
+/// named a status is taken literally, so `tasqx agenda status:done` shows done
+/// tasks rather than an empty table; anything else is ANDed with the open set.
+/// The question is asked of the PARSED tree via `Filter::constrains_status`,
+/// because a lexical `contains("status")` both over-matches (`+status-page`) and
+/// under-matches (`@working`).
+///
+/// Composed on the wire rather than applied to the rows after they arrive, so
+/// the store does the narrowing it is good at — and so `tasqx agenda` on a store
+/// with a thousand closed tasks does not report "1000 hidden" under every run.
+///
+/// A filter this build cannot parse is sent VERBATIM (`unwrap_or(true)`), so the
+/// engine's refusal quotes the caller's words instead of parentheses this
+/// function added — D45's rule about where a bad value is refused.
+fn run_agenda(be: &mut Backend, ctx: &Ctx, filter: &[String], days: Option<usize>) -> CmdOutcome {
+    let now = jiff::Timestamp::now();
+    let asked = if filter.is_empty() {
+        String::new()
+    } else {
+        tasqx_core::filter::from_argv(filter)
+    };
+    let names_status = tasqx_core::filter::Filter::parse(&asked, now)
+        .map(|f| f.constrains_status())
+        .unwrap_or(true);
+    let filter_str = match (names_status, asked.is_empty()) {
+        (true, _) => asked,
+        (false, true) => open_statuses_filter(),
+        // Parenthesised on both sides: the caller's filter may itself be an
+        // `or`, and `a or b and c` would bind the default to `b` alone.
+        (false, false) => format!("({asked}) and ({})", open_statuses_filter()),
+    };
+
+    let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
+    let result = be.call("task.list", &params)?;
+
+    let a = render::agenda_select(&result, days.unwrap_or(render::AGENDA_DEFAULT_DAYS), now);
+    let text = render::agenda_text(ctx, &a);
+    // The result the `--json` terminal prints is the agenda's own, not the raw
+    // `task.list` answer: see `render::agenda_json` for why the two flags have
+    // to describe one set of rows.
+    Ok((render::agenda_json(&a), text))
 }
 
 /// Widen a `task.start` / `task.done` params object with whichever correlation

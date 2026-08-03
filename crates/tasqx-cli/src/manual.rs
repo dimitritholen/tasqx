@@ -204,7 +204,17 @@ Recurrence forms:
   repeat:\"monthly on day 15\"
 
 Missed occurrences collapse to a single next one. `every N
-months` can drift across short months — anchor by day of month."
+months` can drift across short months — anchor by day of month.
+
+`tasqx agenda` reads those dates back: it is `list` ordered by
+time and grouped by day, placing each task on the EARLIER of
+its `due` and `scheduled` and saying which of the two that was.
+Overdue rows come first and are always shown; the window ahead
+is 14 days (`--days N`). It leaves out tasks with neither date
+and tasks past the horizon — and counts both under the table,
+naming the exact `--days` that would reach the furthest one.
+Days are UTC days, matching the zone the dates above are stored
+in."
         }
 
         Topic::Filters => {
