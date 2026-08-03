@@ -1046,7 +1046,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | Deferred | Ruling | Status & why it is safe to defer |
 |---|---|---|
 | **Git-first sync** | **D3** (§12) | **Not built.** Sync is a pure *consumer* of the append-only event log, which has shipped and is written transactionally with every mutation (the load-bearing invariant). Because the log is already the record of truth, the git backend (`store.export` → commit → merge, per-field LWW) can land later without a migration, and the CRDT-per-field upgrade after that is additive on top. Deferring costs nothing structural; building it now would freeze a conflict policy against zero real-world merge evidence. |
-| **Full ratatui TUI** | §2 / roadmap v1 | **Not built.** The daemon, socket/named-pipe transport, and live `task.changed` push all shipped and are exercised by `tasqx watch`, which is the TUI's data path in miniature. The TUI is therefore a *client* over a proven transport, not new core surface. Nothing in the JSON API freeze depends on it. |
+| **Full ratatui TUI** | §2 / D26 | **Foundation built; screens are the remaining work.** The `tui` module ships the part that is genuinely hard to get right — terminal lifecycle, capability gating, theme→ratatui style mapping — with `config edit` as its first screen, and the screens themselves are pure state machines (key in, intent out) so they are testable in a repo that fails the build on a warning. `pick` is a second screen on that foundation, not a second foundation, and is scheduled in the v1 CLI row rather than here. The daemon, socket/named-pipe transport and live `task.changed` push are exercised by `tasqx watch`, the same data path in miniature. Nothing in the JSON API freeze depends on any of it. |
 | **Plugins & hooks** | §6 (6a plugin API, 6b hooks + custom subcommands) | **Not built.** MCP proves read/write capability filtering but deliberately does not authenticate plugins: its scope is operator-selected configuration for a local stdio child (D7). A plugin loader therefore still needs a real trust and credential design. Shipping one now would freeze an ABI before there is a second consumer. |
 | **No-daemon OS-scheduler notification path** | **§9b** | **Not built.** §9a (the daemon min-heap path) ships and covers every user who has a daemon, TUI, or `watch` running. §9b would add per-OS scheduler integration (launchd / Task Scheduler / systemd timers) for users who want reminders with *no* long-lived process — three OS-specific integrations, each with its own failure modes, for a strictly narrower audience. `reminder.fire` is already an additive public method with an idempotent `reminded` event, so the scheduler path can call the same API later with no core change. |
 | **Actionable toast buttons** | **§9b** | **Not built.** Notifications fire (log backend always; OS backend behind the off-by-default `notify-os` feature, which stays absent from the default cargo tree). Buttons — "done" / "snooze" *on the toast* — require a live callback target, which means the daemon must own the toast lifecycle on all three OSes; `notify-rust`'s action support is the least portable part of its surface. Deferred until §9b's process-ownership question is answered, since both features hinge on it. |
@@ -1064,11 +1064,37 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | Surface | Ships |
 |---|---|
 | **Core** | API v1 declared **stable**; conformance test suite is the contract of record. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
-| **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, native charts, shell completions. |
-| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report. |
-| **Extensibility** | Hooks + git-style custom subcommands; plugin capability/permission model. |
-| **MCP** | `tasqx-mcp` server with the ~15 tools (§7), authenticating as a scoped plugin. |
+| **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions. |
+| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report. The `tui` module (D26) carries the shared terminal lifecycle; `pick` is a screen on it, not a second foundation. |
+| **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
+| **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
+
+Three corrections were made to this table on 2026-08-03, after it was read as a
+release checklist and disagreed with §11a and with §12-D7:
+
+* **Extensibility left v1.** Hooks, git-style custom subcommands and the plugin
+  capability model moved to *Later*. §11a already argued the case and called
+  them "not a prerequisite for the v1 contract freeze"; this table said
+  otherwise, so the two could not both be followed. The argument stands on its
+  own: a plugin ABI frozen before a second consumer exists is frozen against no
+  evidence. Hooks and custom subcommands are cheaper (process invocation, no
+  ABI, no credentials) and could have landed alone, but they buy nothing the
+  contract freeze depends on.
+* **The MCP row described a design that was rejected.** It said "authenticating
+  as a scoped plugin"; **D7** removed the forgeable token prefix, the minting
+  command and the environment fallback precisely because scope is operator
+  intent for a local stdio child, not an authentication credential. It also said
+  "~15 tools" while the server exposes 18.
+* **The CLI row was short.** `tag`/`untag` and `archive` are named as missing in
+  §11's build status but appeared in no phase table, so a reader working from the
+  tables would never schedule them. `tag` is in the *MVP* row and is still not
+  built.
+
+The general lesson, recorded because it has now cost time twice: a phase table
+is read as a checklist, so a line in it that contradicts a §12 ruling or a §11a
+deferral is not a stale note — it is a plan nobody can execute. When a decision
+lands in §12, walk the phase tables.
 
 ### Later — additive only, never breaking v1
 
@@ -1076,6 +1102,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 |---|---|
 | **Sync** | As an *event-log consumer*: git-based backend first (export → commit → merge), then optional self-hostable server; per-field LWW → CRDT-per-field upgrade path. |
 | **Core / API** | Additive growth (new methods/fields only; major stays `"1"`); attachments / larger annotations, saved-filter storage, richer query grammar. |
+| **Extensibility** | Hooks + git-style custom subcommands (process invocation — no ABI, no credentials), then the plugin capability/permission model once a second consumer exists to design the trust boundary against. Moved here from v1 on 2026-08-03; see §6 and §11a. |
 | **Ecosystem** | Importers (Taskwarrior/Todoist/GitHub), webhook bridge, templates, semantic-search sidecar, AI estimate suggestion, bi-directional GitHub sync. |
 
 ---
