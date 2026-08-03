@@ -719,7 +719,13 @@ pub(super) enum Command {
         /// `List::filter` for why the pre-pass and not `allow_hyphen_values`.
         /// Being named `filter` is what puts this positional under
         /// `argv::tests::every_filter_positional_is_registered`, which fails
-        /// the build unless `pick` is in `FILTER_COMMANDS` too.
+        /// the build unless `pick` is in `FILTER_COMMANDS` too — and, since
+        /// that guard reads only the escaping half, under
+        /// `every_filter_command_gets_its_dashes_back`, which is what makes
+        /// the sentence above true rather than intended. It was intended and
+        /// not true when this verb shipped: `pick` was registered for escaping
+        /// and missing from [`Command::filter_tail_mut`], so `tasqx pick -api`
+        /// filtered on `"\u{1}api"`.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
     },
@@ -835,6 +841,46 @@ pub(super) enum Command {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+}
+
+impl Command {
+    /// The positional tail that is filter DSL, for the ONE caller that has to
+    /// put [`crate::argv`]'s hidden dashes back.
+    ///
+    /// This exists as a method rather than as a `match` inline in `run()`
+    /// because the two halves of the escape pair were, until #51's review, two
+    /// independent hand-maintained lists: `argv::FILTER_COMMANDS` decided which
+    /// commands get their `-tag` tokens escaped, and a match arm in `run()`
+    /// decided which get them restored. `pick` was added to the first and not
+    /// the second, so every `tasqx pick -api` built the filter string
+    /// `"\u{1}api"` — C7's exact shape, the sentinel surviving into a value the
+    /// user then sees, one surface further along than the `--theme -nord` leak
+    /// that named it. Nothing failed, because the guard on that pair
+    /// (`argv::tests::every_filter_positional_is_registered`) only ever read
+    /// the FILTER_COMMANDS half.
+    ///
+    /// One list is still a list, but it is now a list a test can drive: the
+    /// guard `every_filter_command_gets_its_dashes_back` parses `-needs` for
+    /// every name in `FILTER_COMMANDS` through the real pre-pass and the real
+    /// restore, and fails naming the command whose tail still carries a
+    /// sentinel. A command added to `FILTER_COMMANDS` alone now fails the
+    /// build instead of shipping a filter nobody can type.
+    pub(super) fn filter_tail_mut(&mut self) -> Option<&mut Vec<String>> {
+        match self {
+            Command::List { filter }
+            | Command::Export { filter }
+            | Command::Watch { filter }
+            | Command::Pick { filter }
+            // `..` because `agenda` carries `--days` beside its tail; the dash
+            // restoration is about the tail and nothing else.
+            | Command::Agenda { filter, .. } => Some(filter),
+            // `report`'s tail is spelled `args`: it carries an optional
+            // group_by word before the filter DSL, and the escape applies to
+            // the whole tail either way.
+            Command::Report { args, .. } => Some(args),
+            _ => None,
+        }
+    }
 }
 
 /// Widest chart window we will draw, in weeks (a decade). The ceiling is not

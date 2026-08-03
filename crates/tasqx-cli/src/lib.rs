@@ -269,6 +269,22 @@ fn emit(text: &str) {
     }
 }
 
+/// Restore the dashes [`argv::prepass`] hid, on whichever positional tail this
+/// command spells its filter in.
+///
+/// A named function and not three lines inside [`run`], for one reason: this is
+/// the un-escape half of a PAIR, and the escape half (`argv::FILTER_COMMANDS`)
+/// has a guard while this half, inline, had none. `pick` shipped in
+/// `FILTER_COMMANDS` and not in the match, so `tasqx pick -api` built the
+/// filter string `"\u{1}api"` and the whole suite stayed green. Now
+/// `every_filter_command_gets_its_dashes_back` calls THIS function — not a copy
+/// of its body — for every name in `FILTER_COMMANDS`.
+fn unescape_filter_tail(cli: &mut Cli) {
+    if let Some(tail) = cli.command.as_mut().and_then(Command::filter_tail_mut) {
+        argv::unescape(tail);
+    }
+}
+
 pub fn run() {
     // FIRST, before anything reads argv or writes a byte of stdout. Unless
     // `$TASQX_COMPLETE` is set this is one environment lookup and a return; when it is
@@ -287,21 +303,7 @@ pub fn run() {
         Err(e) => exit_on_parse_error(&e, pre.filter_command),
     };
     // Put the dashes back, in ONE place, before any filter value is read.
-    // Every hyphen-tolerant positional in the tree is listed here; the drift
-    // guard `argv::tests::every_filter_positional_is_registered` fails if a new
-    // one appears without being added to the pre-pass side of the same pair.
-    match &mut cli.command {
-        Some(
-            Command::List { filter }
-            | Command::Export { filter }
-            | Command::Watch { filter }
-            // `..` because `agenda` carries `--days` beside its tail; the dash
-            // restoration is about the tail and nothing else.
-            | Command::Agenda { filter, .. },
-        ) => argv::unescape(filter),
-        Some(Command::Report { args, .. }) => argv::unescape(args),
-        _ => {}
-    }
+    unescape_filter_tail(&mut cli);
 
     // Read before `cli` is moved into `execute`, which consumes it by value.
     let json = cli.json;
@@ -417,6 +419,24 @@ fn execute(cli: Cli) -> Exit {
         let exit = Exit::self_framed("watch", cli.json);
         run_watch(cli.socket.as_deref(), cli.no_daemon, filter, &ctx);
         return exit;
+    }
+
+    // `pick`'s TTY gate, HERE and not inside `run_pick`, because the ordering is
+    // the property: `open_backend` a few lines down opens the store — and, if
+    // there is none, CREATES and migrates one — for every command that reaches
+    // it. A refused `pick` did exactly that: `TASQX_DB=<empty dir>/tasks.db
+    // tasqx pick | cat` exited 2 with the refusal AND left a 208 KB SQLite file
+    // behind, while three places (D55, this function's own comment, and
+    // `help.rs`) asserted the piped path touches no database.
+    //
+    // The reason to gate before the store rather than to correct the prose: the
+    // refusal is STRUCTURAL. `tasqx pick project:typo` in a pipe cannot run
+    // whatever the filter says, so failing on the filter — or on a store that
+    // cannot be opened at all — reports a problem the caller does not have and
+    // hides the one they do. Gating first also keeps the refusal free for a
+    // script on a machine where tasqx has never been run.
+    if matches!(&cli.command, Some(Command::Pick { .. })) && !tui::is_interactive(&ctx.caps) {
+        return Exit::Out(Err(ApiError::bad_request(PICK_NEEDS_A_TERMINAL)));
     }
 
     // Charts and the HTML report are pure local reads; they render straight from
@@ -1768,23 +1788,21 @@ const PICK_NEEDS_A_TERMINAL: &str =
 
 /// `tasqx pick` — choose a task on a full-screen list, and start it.
 ///
-/// The three pieces this function owns are the three the state machine must
-/// not: the TTY gate, the candidate snapshot, and the write. Everything between
-/// them is `tui::pick`.
+/// The two pieces this function owns are the two the state machine must not:
+/// the candidate snapshot and the write. Everything between them is `tui::pick`.
 ///
-/// # Why the gate runs before the store is opened
+/// # The TTY gate is NOT here
 ///
-/// `config edit` established the shape, and the ORDER matters here for a reason
-/// it did not have: this verb takes a filter, so a store read could fail on a
-/// bad filter token and report *that* to a script whose real problem is that
-/// this command cannot run in a pipe at all. The structural refusal comes
-/// first, and it also means the piped case touches no database — which is what
-/// lets `tests/help.rs` drive it without setting up a store.
+/// It runs in [`execute`], above `open_backend`, and the position is load-bearing
+/// rather than tidy: reaching this function at all means the store has already
+/// been opened — created and migrated, if the machine had none — so a gate here
+/// would refuse a pipe *after* writing a database the caller never asked for.
+/// That is what shipped, and what D55 and `help.rs` both claimed did not happen.
+/// This function may therefore be called only when `tui::is_interactive` has
+/// already said yes; `pick_refuses_a_piped_stdout_with_a_nonzero_exit` asserts
+/// the ordering by pointing `$TASQX_DB` at a path that must still not exist
+/// afterwards.
 fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
-    if !tui::is_interactive(&ctx.caps) {
-        return Err(ApiError::bad_request(PICK_NEEDS_A_TERMINAL));
-    }
-
     // The same default and the same argv-preserving parse as `list`: `pick` is
     // a chooser over the working set, so the set it offers must be the set
     // `tasqx` shows, token for token.
@@ -3329,6 +3347,68 @@ fn db_path_resolved(create_dirs: bool) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both halves of the argv escape pair, over the SAME registry.
+    ///
+    /// `argv::FILTER_COMMANDS` decides which commands get their `-tag` tokens
+    /// hidden from clap; `unescape_filter_tail` decides which get them back.
+    /// Until this guard existed only the first half was checked, and `pick`
+    /// shipped in the first list and not the second: `tasqx pick -api` reached
+    /// `task.list` with the filter string `"\u{1}api"`, so the user got either a
+    /// parse error for a token they never typed or `no_candidates` quoting a
+    /// control byte back at them, while `tasqx list -api` worked on the same
+    /// store. C7's exact class, the third time it has leaked in this cluster.
+    ///
+    /// Driven through the REAL pre-pass, the REAL clap parse and the REAL
+    /// restore function, for every name the registry holds — a test that built
+    /// the escaped token itself, or listed the commands again here, would agree
+    /// with a broken half by construction.
+    #[test]
+    fn every_filter_command_gets_its_dashes_back() {
+        for name in argv::FILTER_COMMANDS {
+            let raw = ["tasqx", name, "-needs"].map(std::ffi::OsString::from);
+            let pre = argv::prepass(raw);
+            assert!(
+                pre.filter_command,
+                "`{name}` is registered but the pre-pass did not treat it as filter-taking"
+            );
+            let mut cli =
+                Cli::try_parse_from(pre.argv).unwrap_or_else(|e| panic!("`{name} -needs`: {e}"));
+
+            // Before: the token must actually carry the sentinel, or this
+            // command is not hyphen-tolerant at all and the assertion below
+            // would pass for the wrong reason.
+            let before = cli
+                .command
+                .as_mut()
+                .and_then(Command::filter_tail_mut)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "`{name}` is in FILTER_COMMANDS but `filter_tail_mut` returns None, so \
+                         nothing restores the dash the pre-pass hid"
+                    )
+                })
+                .clone();
+            assert_eq!(
+                before,
+                [format!("{}needs", '\u{1}')],
+                "`{name} -needs` was not escaped by the pre-pass"
+            );
+
+            unescape_filter_tail(&mut cli);
+            let after = cli
+                .command
+                .as_mut()
+                .and_then(Command::filter_tail_mut)
+                .expect("the same tail as above")
+                .clone();
+            assert_eq!(
+                after,
+                ["-needs"],
+                "`{name} -needs` reached the filter with the argv sentinel still in it"
+            );
+        }
+    }
 
     /// The store path and the routing decision both drive every write and, until
     /// now, appeared on no read surface — the invisible-field failure DESIGN.md

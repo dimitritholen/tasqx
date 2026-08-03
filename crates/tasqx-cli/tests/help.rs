@@ -285,12 +285,34 @@ fn config_edit_refuses_a_piped_stdout_with_a_nonzero_exit() {
 /// script branches on, no escape bytes, and the names of the commands that
 /// answer the same question without a screen.
 ///
-/// No `TASQX_DB` is set, and that is an assertion in itself: the gate runs
-/// before the store is opened, so a piped `pick` must not reach a database at
-/// all — including the developer's real one.
+/// `TASQX_DB` points at a file that must NOT exist when the run is over, and
+/// that is the second half of the test. D55 says the gate runs before the store
+/// is opened; it did not. `open_backend` runs for every command in that arm of
+/// `execute`, before the `Command::Pick` match arm is ever reached, so a refused
+/// `pick` exited 2 with the right message AND left a fully created, migrated
+/// 208 KB SQLite store behind — on a machine that had never run tasqx, at
+/// whatever path `TASQX_DB` or the platform data dir named, because
+/// `db_path_resolved` creates the parent directory on the way.
+///
+/// Setting `TASQX_DB` at all is the first half: this test used to set neither it
+/// nor `TASQX_CONFIG_DIR`, unlike every other store-touching test in this file,
+/// so it opened and migrated the DEVELOPER'S real default store on every `cargo
+/// test` run.
 #[test]
 fn pick_refuses_a_piped_stdout_with_a_nonzero_exit() {
-    let out = bin().arg("pick").output().expect("run pick");
+    // A path inside a directory that does not exist, so "the store was opened"
+    // and "a directory was created" are both observable afterwards.
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("tasqx-help-pick-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = dir.join("tasks.db");
+    let piped = || {
+        let mut c = bin();
+        c.env("TASQX_DB", &db).env("TASQX_CONFIG_DIR", "");
+        c
+    };
+
+    let out = piped().arg("pick").output().expect("run pick");
 
     assert_eq!(
         out.status.code(),
@@ -316,7 +338,7 @@ fn pick_refuses_a_piped_stdout_with_a_nonzero_exit() {
     // A filter argument must not change the answer: the gate is structural and
     // comes first, so `pick project:work` may not fail on the filter instead —
     // that would report a problem the caller does not have.
-    let filtered = bin()
+    let filtered = piped()
         .args(["pick", "project:work", "+api"])
         .output()
         .expect("run pick with a filter");
@@ -327,13 +349,27 @@ fn pick_refuses_a_piped_stdout_with_a_nonzero_exit() {
     // the exit code: clap's own "unrecognized subcommand" also exits 2, so a
     // code-only check would pass for an alias that does not exist at all.
     for alias in ["p", "fzf"] {
-        let aliased = bin().arg(alias).output().expect("run the alias");
+        let aliased = piped().arg(alias).output().expect("run the alias");
         let err = String::from_utf8_lossy(&aliased.stderr);
         assert!(
             err.contains("interactive terminal"),
             "`tasqx {alias}` did not reach `pick`: {err}"
         );
     }
+
+    // Four refusals later, nothing has been written. Both halves are checked:
+    // the file, and the directory `db_path_resolved` would have created to hold
+    // it — the second is what a `TASQX_DB` under a fresh `$HOME` would show.
+    assert!(
+        !db.exists(),
+        "a refused `pick` created a store at {}",
+        db.display()
+    );
+    assert!(
+        !dir.exists(),
+        "a refused `pick` created the store's parent directory at {}",
+        dir.display()
+    );
 }
 
 #[test]
