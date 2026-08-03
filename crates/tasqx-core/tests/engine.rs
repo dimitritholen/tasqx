@@ -6,9 +6,44 @@
 //!    whole-surface floor for every handler that opens a mutation
 //!  * an end-to-end envelope integration test
 
+use std::collections::BTreeSet;
+
 use rusqlite::params;
 use serde_json::{json, Value};
+use tasqx_core::engine::{NOT_UNDOABLE, UNDOABLE_OPS};
 use tasqx_core::{dispatch, handle_envelope, storage, Engine, ErrorCode};
+
+/// Every file carrying `impl Engine` methods. `include_str!` makes each one a
+/// rebuild dependency, so no scan below can read a stale copy.
+///
+/// Module-level rather than inside the one test that used to own it, because
+/// two guards now read it — the mutation/event coupling scan and the undo
+/// vocabulary scan — and two copies of "which files hold the engine" is exactly
+/// the drift that once left `engine/tokens.rs` and `engine/reports.rs` unscanned
+/// for as long as they had existed.
+const SOURCES: [(&str, &str); 9] = [
+    ("engine.rs", include_str!("../src/engine.rs")),
+    ("engine/memory.rs", include_str!("../src/engine/memory.rs")),
+    (
+        "engine/projects.rs",
+        include_str!("../src/engine/projects.rs"),
+    ),
+    (
+        "engine/relationships.rs",
+        include_str!("../src/engine/relationships.rs"),
+    ),
+    (
+        "engine/reports.rs",
+        include_str!("../src/engine/reports.rs"),
+    ),
+    ("engine/task.rs", include_str!("../src/engine/task.rs")),
+    ("engine/tokens.rs", include_str!("../src/engine/tokens.rs")),
+    (
+        "engine/transfer.rs",
+        include_str!("../src/engine/transfer.rs"),
+    ),
+    ("engine/undo.rs", include_str!("../src/engine/undo.rs")),
+];
 
 fn engine() -> Engine {
     Engine::open_in_memory().expect("open in-memory store")
@@ -813,6 +848,186 @@ fn a_bad_value_and_an_empty_value_name_the_task_alike() {
     }
 }
 
+// ---- tag.remove (D52) -------------------------------------------------------
+
+/// A task carrying `api` and `release`, and the `{ref: …}` value every test
+/// below re-reads it with.
+fn tagged_task(e: &Engine) -> (Value, Value) {
+    let task = e.task_add(&json!({ "title": "tagged" })).expect("add");
+    let by_ref = json!({ "ref": task["short_id"].clone() });
+    e.tag_add(&json!({ "ref": task["short_id"].clone(), "tags": ["api", "release"] }))
+        .expect("tag.add");
+    (task, by_ref)
+}
+
+/// The `tag.*` events on one task, newest first.
+fn tag_events(e: &Engine, short_id: &Value) -> Vec<Value> {
+    let listed = e
+        .event_list(&json!({ "ref": short_id.clone() }))
+        .expect("event.list");
+    listed["events"]
+        .as_array()
+        .expect("event.list returns an events array")
+        .iter()
+        .filter(|ev| ev["op"].as_str().is_some_and(|op| op.starts_with("tag.")))
+        .cloned()
+        .collect()
+}
+
+/// The happy path, and the two facts the response has to carry: what is LEFT
+/// (so the caller does not re-read) and what WENT (so `#42 tags: +release` is
+/// distinguishable from the same line printed by a call that removed nothing).
+///
+/// The event is asserted here for the same reason `dependency_add` has its own
+/// test above the whole-surface scan: the scan only sees that the source
+/// contains `insert_event(`, so it cannot notice the op landing on the wrong row
+/// or under the wrong name, and `tag.remove` reaching the log as `tag.add` would
+/// make the audit trail claim the opposite of what happened.
+#[test]
+fn tag_remove_drops_the_tag_reports_both_sides_and_logs_one_event() {
+    let e = engine();
+    let (task, by_ref) = tagged_task(&e);
+    let rev_before = e.task_get(&by_ref).unwrap()["_rev"].as_i64().unwrap();
+
+    let out = e
+        .tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["api"] }))
+        .expect("tag.remove");
+
+    assert_eq!(out["tags"], json!(["release"]), "the set that remains");
+    assert_eq!(out["removed"], json!(["api"]), "what this call took away");
+    assert_eq!(out["short_id"], task["short_id"]);
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["tags"],
+        json!(["release"]),
+        "the removal must be in the store, not only in the response"
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["_rev"],
+        json!(rev_before + 1),
+        "a real edit must bump `rev`, or a client's expected_rev is stale-safe by accident"
+    );
+
+    let logged = tag_events(&e, &task["short_id"]);
+    assert_eq!(
+        logged.len(),
+        2,
+        "add then remove => two edits, got {logged:#?}"
+    );
+    assert_eq!(logged[0]["op"], "tag.remove");
+    assert_eq!(logged[0]["entity"], "task");
+    assert_eq!(logged[0]["entity_id"], task["id"]);
+    assert_eq!(logged[0]["payload"]["tags"], json!(["api"]));
+}
+
+/// D52(a). The refusal, and the whole reason `tag.remove` does not copy
+/// `dependency.remove`'s no-op-answers-ok shape: `untag 42 blockign` states an
+/// intent, and an `ok` carrying a tag set that still holds `blocking` is
+/// indistinguishable from success. The message must therefore name the tag the
+/// task does NOT have and the ones it does — a refusal that only says "no" sends
+/// the caller to `tasqx show` to find their own typo.
+///
+/// The `not_found` code is asserted, not just the error-ness: it is what the CLI
+/// turns into exit 4, which is the only thing a script can branch on.
+#[test]
+fn removing_a_tag_the_task_lacks_is_not_found_and_names_both_sides() {
+    let e = engine();
+    let (task, by_ref) = tagged_task(&e);
+    let rev_before = e.task_get(&by_ref).unwrap()["_rev"].clone();
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["blockign"] }))
+        .expect_err("a tag the task does not carry may not answer ok");
+
+    assert_eq!(err.code, ErrorCode::NotFound, "{}", err.message);
+    assert!(
+        err.message.contains("blockign"),
+        "the refusal must name the tag that was asked for: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("api") && err.message.contains("release"),
+        "the refusal must name the tags the task DOES have, or the typo stays hidden: {}",
+        err.message
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["tags"],
+        json!(["api", "release"]),
+        "a refused removal must leave every tag in place"
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["_rev"],
+        rev_before,
+        "a refused removal bumped `rev`, invalidating a client's expected_rev for nothing"
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "a refused removal appended an event the daemon would push as a change"
+    );
+}
+
+/// D52(b). All-or-nothing: one unknown tag in the list takes the whole call
+/// down, and the tags that WERE there are still there afterwards. Without the
+/// pre-check inside the transaction the loop would delete `api`, hit nothing for
+/// `blockign`, and commit a half-applied removal at `ok` — leaving the caller to
+/// work out which half landed.
+#[test]
+fn one_unknown_tag_removes_none_of_them() {
+    let e = engine();
+    let (task, by_ref) = tagged_task(&e);
+
+    let err = e
+        .tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["api", "blockign"] }))
+        .expect_err("a partly-unknown list may not partly apply");
+    assert_eq!(err.code, ErrorCode::NotFound, "{}", err.message);
+
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["tags"],
+        json!(["api", "release"]),
+        "`api` was removable and must NOT have been removed"
+    );
+}
+
+/// The empty-list refusal, mirroring `tag.add`'s. `tags: []` is a caller who
+/// named no tag at all: removing nothing and answering ok would be the same
+/// silent-success shape D52 exists to close, one level up.
+#[test]
+fn tag_remove_refuses_an_empty_tag_list() {
+    let e = engine();
+    let (task, _) = tagged_task(&e);
+
+    let err = e
+        .tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": [] }))
+        .expect_err("an empty `tags` array names no tag");
+    assert_eq!(err.code, ErrorCode::BadRequest, "{}", err.message);
+    assert!(err.message.contains("tags"), "{}", err.message);
+}
+
+/// Reachability through the one seam every surface shares. The engine method
+/// existing is not the same as the method being callable: `tag.remove` needs a
+/// `PARAMS` row (or the D33 gate refuses `ref`/`tags` as unknown keys) *and* a
+/// match arm (or it is `unknown method`), and each half fails differently.
+#[test]
+fn tag_remove_is_reachable_through_dispatch_and_published_by_capabilities() {
+    let e = engine();
+    let (task, _) = tagged_task(&e);
+
+    let out = dispatch(
+        &e,
+        "tag.remove",
+        &json!({ "ref": task["short_id"].clone(), "tags": ["api"] }),
+    )
+    .expect("tag.remove must be dispatchable, not just implemented");
+    assert_eq!(out["tags"], json!(["release"]));
+
+    let methods = tasqx_core::capabilities()["methods"].clone();
+    assert!(
+        methods.as_array().unwrap().contains(&json!("tag.remove")),
+        "a method a client cannot feature-detect is a method it will not call: {methods}"
+    );
+}
+
 // ---- dependency edges leave the same audit trail as every other edit --------
 
 /// The `dependency.*` events recorded against one task, newest first (the
@@ -991,35 +1206,10 @@ fn a_repeated_dependency_add_logs_a_second_event_and_bumps_rev() {
 ///
 /// What a text scan cannot see is that the right op reaches the right row with
 /// the right payload; that is what the per-handler tests are for. What it does
-/// catch, for all twenty-three at once and at zero runtime cost, is the write
+/// catch, for all twenty-four at once and at zero runtime cost, is the write
 /// disappearing entirely — the mutation that stayed green.
 #[test]
 fn every_handler_that_opens_a_mutation_also_appends_an_event() {
-    // Every file carrying `impl Engine` methods. include_str! makes each one a
-    // rebuild dependency, so the scan can never read a stale copy.
-    const SOURCES: [(&str, &str); 8] = [
-        ("engine.rs", include_str!("../src/engine.rs")),
-        ("engine/memory.rs", include_str!("../src/engine/memory.rs")),
-        (
-            "engine/projects.rs",
-            include_str!("../src/engine/projects.rs"),
-        ),
-        (
-            "engine/relationships.rs",
-            include_str!("../src/engine/relationships.rs"),
-        ),
-        (
-            "engine/reports.rs",
-            include_str!("../src/engine/reports.rs"),
-        ),
-        ("engine/task.rs", include_str!("../src/engine/task.rs")),
-        ("engine/tokens.rs", include_str!("../src/engine/tokens.rs")),
-        (
-            "engine/transfer.rs",
-            include_str!("../src/engine/transfer.rs"),
-        ),
-    ];
-
     // One handler opens a mutation and deliberately appends no event, and it is
     // named here rather than skipped by a rule, so adding a second one is a
     // decision somebody has to write down. `otlp_ingest` grows the raw OTLP
@@ -1057,7 +1247,7 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     }
 
     // A source-scanning guard's real failure mode is matching nothing at all
-    // (a renamed helper, a re-indented impl). Twenty-three handlers mutate at
+    // (a renamed helper, a re-indented impl). Twenty-four handlers mutate at
     // the time of writing; the floor keeps a refactor that hides them from
     // being silently "all clear", while still letting the set grow.
     //
@@ -1070,7 +1260,574 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     // real count moves — a floor that drifts below the truth is a guard that
     // has stopped guarding while still reporting green.
     assert!(
-        mutating >= 23,
+        mutating >= 25,
         "the scan found only {mutating} mutating handlers — it has stopped matching"
     );
+}
+
+// ---- event.revert (undo) ----------------------------------------------------
+
+/// Every `op` string literal the engine hands to `insert_event`, read out of the
+/// engine sources rather than listed here (D30).
+///
+/// The extraction is deliberately strict: `insert_event(tx, Entity::X, id, "op",
+/// payload)` has its op at argument index three, and anything that is not a
+/// plain string literal there panics naming the file. A scanner that quietly
+/// skipped a call site it could not parse would under-report the vocabulary,
+/// which is the one failure mode that makes the guard below pass vacuously.
+fn event_ops_the_engine_writes() -> BTreeSet<String> {
+    const CALL: &str = "insert_event(";
+    let mut ops = BTreeSet::new();
+    for (file, source) in SOURCES {
+        // The engine's own `#[cfg(test)]` modules are not writers, and the prose
+        // above a call site quotes the helper's name constantly.
+        let production = source.split("\n#[cfg(test)]").next().unwrap_or(source);
+        let code: String = production
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (i, _) in code.match_indices(CALL) {
+            let args = &code[i + CALL.len()..];
+            let op = args.split(',').nth(3).unwrap_or("").trim();
+            let literal = op
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{file}: an insert_event call passes {op:?} as its op, which this scan \
+                         cannot read as a string literal — the undo vocabulary guard would \
+                         silently stop covering it"
+                    )
+                });
+            ops.insert(literal.to_string());
+        }
+    }
+    ops
+}
+
+/// Rule 2, enforced structurally: every operation the engine can write is either
+/// undoable or refused BY NAME with a reason, and neither table names an op
+/// nothing writes.
+///
+/// Without this, a mutation added tomorrow falls through to `undo`'s generic
+/// "this build has never seen that op" message — which is the right answer for a
+/// store written by a NEWER tasqx and the wrong one for an op this very binary
+/// writes, because it tells the operator nothing about what would take it back.
+/// The reverse direction matters just as much: an entry left behind after its
+/// writer is deleted is a refusal message describing an operation that can no
+/// longer happen.
+#[test]
+fn every_event_op_the_engine_writes_is_either_undoable_or_refused_by_name() {
+    let written = event_ops_the_engine_writes();
+
+    for op in &written {
+        let undoable = UNDOABLE_OPS.contains(&op.as_str());
+        let refused = NOT_UNDOABLE.iter().any(|(known, _)| known == op);
+        assert!(
+            undoable ^ refused,
+            "`{op}` is written by the engine but is {} — it must be in exactly one of \
+             UNDOABLE_OPS (with an exact inverse) or NOT_UNDOABLE (with the reason and what \
+             does take it back)",
+            match (undoable, refused) {
+                (false, false) => "in neither undo table",
+                _ => "in both undo tables",
+            }
+        );
+    }
+
+    for op in UNDOABLE_OPS {
+        assert!(
+            written.contains(op),
+            "UNDOABLE_OPS names `{op}`, which no engine handler writes any more — undo claims to \
+             reverse an operation that cannot happen"
+        );
+    }
+    for (op, why) in NOT_UNDOABLE {
+        assert!(
+            written.contains(*op),
+            "NOT_UNDOABLE names `{op}`, which no engine handler writes any more — a refusal \
+             message for an operation that cannot happen"
+        );
+        assert!(
+            why.len() > 60,
+            "`{op}`'s refusal is {} characters, which cannot both name the reason and say what \
+             does take it back",
+            why.len()
+        );
+    }
+
+    // A source-scanning guard's real failure mode is matching nothing. Twenty-two
+    // distinct ops exist at the time of writing; re-derive from the count this
+    // guard reports rather than adding the number of ops you just wrote.
+    assert!(
+        written.len() >= 22,
+        "the scan found only {} event ops — it has stopped matching: {written:?}",
+        written.len()
+    );
+}
+
+/// A task carrying two tags, a note, a blocker it depends on, and a closed
+/// interval — one fixture per undoable op, so each test below can put the store
+/// into the shape it needs with one more call.
+fn undo_fixture(e: &Engine) -> (Value, Value) {
+    let blocker = e.task_add(&json!({ "title": "blocker" })).expect("add");
+    let task = e.task_add(&json!({ "title": "Ship v1" })).expect("add");
+    e.tag_add(&json!({ "ref": task["short_id"].clone(), "tags": ["api", "release"] }))
+        .expect("tag.add");
+    (task, blocker)
+}
+
+/// The whole shape of an undo, on the op whose inverse is exact by construction
+/// (D52's all-or-nothing pre-check): the tag comes back, the answer NAMES what
+/// it undid, and — rule 1 — the original event is still in the log with a fresh
+/// `undo` event behind it rather than in place of it.
+#[test]
+fn undo_puts_a_removed_tag_back_and_says_what_it_undid() {
+    let e = engine();
+    let (task, _) = undo_fixture(&e);
+    let by_ref = json!({ "ref": task["short_id"].clone() });
+    e.tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["api"] }))
+        .expect("tag.remove");
+    let rev_before = e.task_get(&by_ref).unwrap()["_rev"].as_i64().unwrap();
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let out = e.event_revert().expect("undo");
+
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["tags"],
+        json!(["api", "release"]),
+        "the tag must be back in the store, not only in the answer"
+    );
+    // Rule 4: it says what it undid, naming the task and the operation.
+    assert_eq!(out["reverted"]["op"], "tag.remove");
+    assert_eq!(out["short_id"], task["short_id"]);
+    assert_eq!(
+        out["title"], "Ship v1",
+        "a short_id alone is not something anyone recognizes at a glance"
+    );
+    assert_eq!(out["restored"]["tags"], json!(["api"]));
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["_rev"],
+        json!(rev_before + 1),
+        "undo really changed the task, so a client's expected_rev must move with it"
+    );
+
+    // Rule 1: APPEND, never rewrite. The `tag.remove` row is untouched and a new
+    // `undo` row sits behind it naming the event it reversed.
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before + 1,
+        "undo must add one event, not remove the one it reversed"
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events WHERE op='tag.remove'"),
+        1,
+        "the reversed event was deleted — every consumer of the log (D3 sync, \
+         `event.list`, the daemon feed) has just been lied to about what happened"
+    );
+    let logged = e
+        .event_list(&json!({ "ref": task["short_id"].clone(), "limit": 1 }))
+        .unwrap();
+    assert_eq!(logged["events"][0]["op"], "undo");
+    assert_eq!(
+        logged["events"][0]["payload"]["reverted"], out["reverted"]["event"],
+        "the compensating event must name the event it reversed, or the log cannot \
+         be read as `X happened, then it was undone`"
+    );
+    assert_eq!(logged["events"][0]["payload"]["reverted_op"], "tag.remove");
+}
+
+/// The other three inverses, each end to end. One test rather than three
+/// because the property is identical — the effect is gone from the store and the
+/// answer names it — and because a per-op test that only ever ran for `tag.remove`
+/// would leave three quarters of the closed set unproven.
+#[test]
+fn undo_reverses_every_operation_the_closed_set_claims() {
+    // stop: the interval reopens and the seconds it folded in come back off.
+    let e = engine();
+    let (task, _blocker) = undo_fixture(&e);
+    let by_ref = json!({ "ref": task["short_id"].clone() });
+    e.task_start(&by_ref).expect("start");
+    e.conn()
+        .execute(
+            "UPDATE tasks SET active_since = '2020-01-01T00:00:00Z' WHERE short_id = ?1",
+            params![task["short_id"].as_i64().unwrap()],
+        )
+        .expect("backdate the interval so it has measurable length");
+    let stopped = e.task_stop(&by_ref).expect("stop");
+    let tracked_after_stop: i64 = e
+        .conn()
+        .query_row(
+            "SELECT tracked_seconds FROM tasks WHERE short_id = ?1",
+            params![task["short_id"].as_i64().unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        tracked_after_stop > 0,
+        "precondition: the stop tracked time"
+    );
+
+    let out = e.event_revert().expect("undo the stop");
+    assert_eq!(out["reverted"]["op"], "stop");
+    assert_eq!(out["restored"]["tracked"], stopped["tracked"]);
+    let got = e.task_get(&by_ref).unwrap();
+    assert_eq!(got["status"], "active", "the interval must be open again");
+    // Read straight out of the column rather than off the rendered `tracked`
+    // string: the whole claim is that the stored seconds return to their
+    // pre-stop value exactly, and an ISO duration would round that claim.
+    assert_eq!(
+        count(
+            &e,
+            "SELECT tracked_seconds FROM tasks WHERE title = 'Ship v1'"
+        ),
+        0,
+        "the seconds `stop` folded into the total must come back off, exactly — \
+         that is the number every report reads"
+    );
+
+    // dependency.remove: the edge goes back, named by the blocker's short_id.
+    let e = engine();
+    let (task, blocker) = undo_fixture(&e);
+    let by_ref = json!({ "ref": task["short_id"].clone() });
+    let edge = json!({
+        "ref": task["short_id"].clone(),
+        "depends_on": blocker["short_id"].clone(),
+    });
+    e.dependency_add(&edge).expect("dependency.add");
+    e.dependency_remove(&edge).expect("dependency.remove");
+    assert_eq!(e.task_get(&by_ref).unwrap()["depends_on"], json!([]));
+
+    let out = e.event_revert().expect("undo the dependency removal");
+    assert_eq!(out["reverted"]["op"], "dependency.remove");
+    assert_eq!(out["restored"]["depends_on"], blocker["short_id"]);
+    let got = e.task_get(&by_ref).unwrap();
+    assert_eq!(got["depends_on"], json!([blocker["short_id"].clone()]));
+    assert_eq!(got["blocked"], true, "the edge is load-bearing again");
+
+    // annotation.add: the note is gone, and the answer shows the text that went.
+    let e = engine();
+    let (task, _blocker) = undo_fixture(&e);
+    let by_ref = json!({ "ref": task["short_id"].clone() });
+    e.annotation_add(&json!({ "ref": task["short_id"].clone(), "body": "wrong task" }))
+        .expect("annotation.add");
+
+    let out = e.event_revert().expect("undo the note");
+    assert_eq!(out["reverted"]["op"], "annotation.add");
+    assert_eq!(
+        out["restored"]["annotation"], "wrong task",
+        "the answer must show the text it removed — it is the only copy left"
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["annotations"],
+        json!([]),
+        "the note must be gone from the store"
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM annotations_fts"),
+        0,
+        "the FTS row must go with it, or `memory search` keeps finding a note that is not there"
+    );
+}
+
+/// Rule 2's refusal path, and the reason it names the op rather than saying
+/// "cannot undo that": every one of these has a different way back, and a
+/// refusal that does not say which one leaves the user guessing at a store they
+/// have just changed by accident.
+///
+/// The three chosen are the three whole classes of refusal: an operation whose
+/// event records the NEW values only (`modify`), one whose effect is compound
+/// (`done` — recurrence spawn plus token measurement), and one that cannot be
+/// reversed without deleting a row the log still names (`add`).
+#[test]
+fn undo_refuses_an_operation_outside_the_closed_set_and_names_the_way_back() {
+    for (setup, op, way_back) in [
+        ("modify", "modify", "tasqx show"),
+        ("done", "done", "tasqx reopen"),
+        ("add", "add", "tasqx cancel"),
+    ] {
+        let e = engine();
+        let (task, _) = undo_fixture(&e);
+        let by_ref = json!({ "ref": task["short_id"].clone() });
+        match setup {
+            "modify" => {
+                e.task_modify(
+                    &json!({ "ref": task["short_id"].clone(), "set": { "title": "typo" } }),
+                )
+                .expect("modify");
+            }
+            "done" => {
+                e.task_done(&by_ref).expect("done");
+            }
+            // `add` needs no setup: the fixture's own last event is the tag.add,
+            // so add one more task and its `add` is the newest event.
+            _ => {
+                e.task_add(&json!({ "title": "oops" })).expect("add");
+            }
+        }
+        let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+        let err = e
+            .event_revert()
+            .expect_err("an op outside the closed set must refuse, not guess an inverse");
+
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        assert!(
+            err.message.contains(&format!("`{op}`")),
+            "the refusal must name the operation it will not reverse: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(way_back),
+            "the refusal must say what DOES take it back (expected `{way_back}`): {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("tag.remove"),
+            "the refusal must publish the closed set, or there is no way to learn it: {}",
+            err.message
+        );
+        assert_eq!(
+            count(&e, "SELECT COUNT(*) FROM events"),
+            events_before,
+            "a refused undo wrote an event — the daemon would push it as a change"
+        );
+    }
+}
+
+/// There is no redo, and the reason is not squeamishness: `undo` reaches only
+/// the newest event, so undoing an undo would toggle one change back and forth
+/// forever. The refusal has to say that, because a second `tasqx undo` is
+/// exactly what a user reaches for when the first one was not enough.
+#[test]
+fn undoing_an_undo_refuses_rather_than_toggling_forever() {
+    let e = engine();
+    let (task, _) = undo_fixture(&e);
+    e.tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["api"] }))
+        .expect("tag.remove");
+    e.event_revert().expect("the first undo");
+
+    let err = e.event_revert().expect_err("undo of an undo must refuse");
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains("`undo`") && err.message.contains("no redo"),
+        "the refusal must name the op and say there is no redo: {}",
+        err.message
+    );
+    assert_eq!(
+        e.task_get(&json!({ "ref": task["short_id"].clone() }))
+            .unwrap()["tags"],
+        json!(["api", "release"]),
+        "the refused second undo must have changed nothing"
+    );
+}
+
+/// An empty log is `not_found`, not a silent success. "There was nothing to
+/// undo" and "I undid something" are different answers, and exit 4 is the only
+/// thing a script can branch on.
+#[test]
+fn undo_on_an_empty_log_is_not_found() {
+    let e = engine();
+    let err = e
+        .event_revert()
+        .expect_err("an empty log has nothing to undo");
+    assert_eq!(err.code, ErrorCode::NotFound, "{}", err.message);
+    assert!(err.message.contains("nothing to undo"), "{}", err.message);
+}
+
+/// The inverses are exact because nothing can have happened since the newest
+/// event — so when the store says otherwise, undo has to stop rather than write
+/// a "restoration" that restores nothing. This drives the store out of step the
+/// only way that is possible (an external SQLite writer) and checks the refusal
+/// names the tag that is already back.
+#[test]
+fn undo_refuses_when_the_effect_it_would_reverse_is_already_gone() {
+    let e = engine();
+    let (task, _) = undo_fixture(&e);
+    e.tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["api"] }))
+        .expect("tag.remove");
+    // An external writer puts the tag back without touching the log — exactly
+    // what another process editing the SQLite file does.
+    e.tag_add(&json!({ "ref": task["short_id"].clone(), "tags": ["api"] }))
+        .expect("tag.add");
+    e.conn()
+        .execute(
+            "DELETE FROM events WHERE op = 'tag.add' AND id = (SELECT MAX(id) FROM events)",
+            [],
+        )
+        .expect("drop the event so `tag.remove` is newest again");
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .event_revert()
+        .expect_err("undo must not report restoring a tag that is already attached");
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains("`api`"),
+        "the refusal must name the tag that is already back: {}",
+        err.message
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "a refused undo wrote an event"
+    );
+}
+
+/// The one inverse that writes a graph edge must run the acyclicity check every
+/// other writer of that table runs, instead of inheriting "nothing can have
+/// happened since" — because the three siblings beside it each decline to
+/// inherit exactly that, and this is the one where being wrong is unrepairable.
+///
+/// An external writer inserts the REVERSE edge while the forward one is gone.
+/// `dependency.add` refuses to mint that pair with `conflict`; undo restoring the
+/// forward edge would mint it at exit 0, and two tasks that block each other are
+/// `blocked: true` forever — no verb unblocks a cycle. This is D16's shipped
+/// corruption (`store.import` skipping the same guard) arriving by a second door.
+#[test]
+fn undo_refuses_to_restore_a_dependency_edge_that_would_close_a_cycle() {
+    let e = engine();
+    let (task, blocker) = undo_fixture(&e);
+    let edge = json!({
+        "ref": task["short_id"].clone(),
+        "depends_on": blocker["short_id"].clone(),
+    });
+    e.dependency_add(&edge).expect("dependency.add");
+    e.dependency_remove(&edge).expect("dependency.remove");
+
+    // The external SQLite writer this whole family of refusals exists for: the
+    // reverse edge goes in without an event, so `dependency.remove` is still the
+    // newest thing in the log and undo will aim at it.
+    e.conn()
+        .execute(
+            "INSERT INTO dependencies (task_id, depends_on_id) \
+             VALUES ((SELECT id FROM tasks WHERE short_id = ?1), \
+                     (SELECT id FROM tasks WHERE short_id = ?2))",
+            params![
+                blocker["short_id"].as_i64().unwrap(),
+                task["short_id"].as_i64().unwrap()
+            ],
+        )
+        .expect("seed the reverse edge behind the log's back");
+    // The API's own verdict on the pair, stated here rather than assumed: this
+    // is the edge undo is about to be asked to write.
+    let refused = e
+        .dependency_add(&edge)
+        .expect_err("precondition: dependency.add refuses this edge as a cycle");
+    assert_eq!(refused.code, ErrorCode::Conflict, "{}", refused.message);
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .event_revert()
+        .expect_err("undo must not insert an edge the API refuses as a cycle");
+
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains(&format!("#{}", blocker["short_id"]))
+            && err.message.contains(&format!("#{}", task["short_id"])),
+        "the refusal must name both tasks in the cycle it will not close: {}",
+        err.message
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM dependencies"),
+        1,
+        "the refused undo inserted the edge anyway — both tasks now block each other \
+         and no verb unblocks a cycle"
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "a refused undo wrote an event"
+    );
+    assert_eq!(
+        e.task_get(&json!({ "ref": task["short_id"].clone() }))
+            .unwrap()["depends_on"],
+        json!([]),
+        "the store must be exactly as the refusal found it"
+    );
+}
+
+/// The cost D54 now states out loud: `undo` reverses the newest *recorded*
+/// event, and a command that changed nothing records nothing — so a verb that
+/// answered ok while doing nothing is invisible to undo, which reaches past it.
+///
+/// Pinned in both directions on purpose. If `dependency.remove` on an absent
+/// edge ever starts writing an event (or refusing), this test goes red and the
+/// paragraph in D54, `tasqx help undo` and the module header stop being true
+/// together — which is the only way a documented cost stays honest.
+#[test]
+fn undo_reaches_past_a_command_that_answered_ok_without_recording_anything() {
+    let e = engine();
+    let (task, blocker) = undo_fixture(&e);
+    let by_ref = json!({ "ref": task["short_id"].clone() });
+    e.annotation_add(&json!({ "ref": task["short_id"].clone(), "body": "called the plumber" }))
+        .expect("annotation.add");
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    // No such edge was ever added: a documented no-op that answers ok.
+    e.dependency_remove(&json!({
+        "ref": task["short_id"].clone(),
+        "depends_on": blocker["short_id"].clone(),
+    }))
+    .expect("removing an absent edge is a no-op that answers ok, not an error");
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "precondition: the no-op recorded nothing — without that there is no cost to pin"
+    );
+
+    let out = e.event_revert().expect("undo");
+
+    assert_eq!(
+        out["reverted"]["op"], "annotation.add",
+        "undo reverses the newest RECORDED event, so it reached past the no-op"
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["annotations"],
+        json!([]),
+        "and it really removed the older change, not merely reported it"
+    );
+    // The mitigation, asserted rather than assumed: this is the entire reason
+    // the answer names the op and returns the text it took away instead of "ok".
+    assert_eq!(
+        out["restored"]["annotation"], "called the plumber",
+        "a user who was aiming at the `undep` has to be able to SEE what undo hit \
+         instead, and read back the note it removed"
+    );
+}
+
+/// Reachability through the one seam every surface shares. The engine method
+/// existing is not the same as the method being callable: `event.revert` needs a
+/// `PARAMS` row (or the D33 gate refuses it) *and* a match arm (or it is
+/// `unknown method`), and each half fails differently.
+///
+/// The empty accepted set is asserted too, because it is the scoping decision in
+/// machine-readable form: a `ref` here would silently reach past whatever
+/// happened elsewhere, so the published contract has to say there is none.
+#[test]
+fn event_revert_is_reachable_through_dispatch_and_takes_no_params() {
+    let e = engine();
+    let (task, _) = undo_fixture(&e);
+    e.tag_remove(&json!({ "ref": task["short_id"].clone(), "tags": ["api"] }))
+        .expect("tag.remove");
+
+    let out = dispatch(&e, "event.revert", &json!({}))
+        .expect("event.revert must be dispatchable, not just implemented");
+    assert_eq!(out["reverted"]["op"], "tag.remove");
+
+    let caps = tasqx_core::capabilities();
+    assert!(
+        caps["methods"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("event.revert")),
+        "a method a client cannot feature-detect is a method it will not call: {}",
+        caps["methods"]
+    );
+    assert_eq!(caps["params"]["event.revert"], json!([]));
+
+    let err = dispatch(&e, "event.revert", &json!({ "ref": 1 })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("ref"), "{}", err.message);
 }

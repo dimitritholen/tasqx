@@ -158,11 +158,19 @@ const MAX_VALUE_CANDIDATES: usize = 200;
 /// `use` is not a filter command at all.
 ///
 /// Archived projects are excluded, and the reason is what the RECEIVING command
-/// does rather than what `project.list` defaults to: `add`, `modify` and `use`
-/// all refuse an archived project outright (`engine.rs`), so offering one would
-/// be a menu entry whose only outcome is an error. It is also the set
-/// `tasqx projects` shows, so the shell and the tool answer "which projects are
-/// there" the same way.
+/// does rather than what `project.list` defaults to: `add`, `modify`, `use` and
+/// `archive` all refuse an archived project outright (`engine.rs`,
+/// `engine/projects.rs`), so offering one would be a menu entry whose only
+/// outcome is an error. It is also the set `tasqx projects` shows, so the shell
+/// and the tool answer "which projects are there" the same way.
+///
+/// `archive` is the fifth attachment site, and it briefly WAS an exception to
+/// that sentence: `project.archive` used to set `archived = 1` again and answer
+/// ok, so its menu entries would have been no-ops rather than errors. It now
+/// refuses with `conflict` like its siblings (D22), which is why this paragraph
+/// no longer carves it out — recorded rather than deleted, because the reason
+/// the narrow set is right here changed, and a reader comparing this comment to
+/// an older revision should find the change explained instead of silent.
 ///
 /// A command that ACCEPTS an archived project therefore needs the other
 /// constructor — see [`projects_including_archived`]. Splitting them rather than
@@ -917,10 +925,15 @@ mod tests {
     /// rather than a quietly narrower guard.
     const TASK_REF_IDS: [&str; 2] = ["ref", "depends_on"];
 
-    /// Floor, not a list. The tree declares thirteen task-reference positionals
+    /// Floor, not a list. The tree declares fifteen task-reference positionals
     /// today; the guard finds them itself and this only stops it from passing
     /// vacuously if the discovery breaks. Raise it when the surface grows.
-    const KNOWN_TASK_REF_POSITIONALS: usize = 13;
+    ///
+    /// Re-derived from the guard's own count rather than bumped by hand when
+    /// `tag`/`untag` landed: a floor arrived at by addition drifts below the
+    /// truth the first time somebody's arithmetic is off, and a floor below the
+    /// truth is a guard that has stopped guarding while still reporting green.
+    const KNOWN_TASK_REF_POSITIONALS: usize = 15;
 
     /// Every subcommand in the tree, at every depth.
     ///
@@ -1196,9 +1209,9 @@ mod tests {
     /// gives its value — the same technique, and the same fallback, as
     /// `command.rs`'s `every_path_shaped_arg_declares_how_to_complete_it`. A
     /// list of `--project` sites kept in this test is the shape this repository
-    /// keeps paying for: there are four today (`add`, `modify`, `chart
-    /// burndown`, `use`) and the fourth is a POSITIONAL, which is exactly the
-    /// one a list written from memory forgets.
+    /// keeps paying for: there are five today (`add`, `modify`, `chart
+    /// burndown`, `use`, `archive`) and two of them are POSITIONALS, which is
+    /// exactly the kind a list written from memory forgets.
     ///
     /// It is a naming convention, enforced in the direction that can be
     /// enforced: it cannot know that some argument is secretly a project, but it
@@ -1206,7 +1219,7 @@ mod tests {
     /// `init` is outside it on purpose and says so at the declaration — it
     /// creates a project, so the existing names are the ones it refuses.
     ///
-    /// Mutation-proven: removing the attachment from any of the four reddens
+    /// Mutation-proven: removing the attachment from any of the five reddens
     /// this test naming that argument.
     #[test]
     fn every_project_valued_arg_offers_project_names() {
@@ -1246,9 +1259,13 @@ mod tests {
     }
 
     /// Floor, not a list: `add --project`, `modify --project`,
-    /// `chart burndown --project` and `use <PROJECT>`. Raise it when the surface
-    /// grows; the guard finds the members itself.
-    const KNOWN_PROJECT_VALUED_ARGS: usize = 4;
+    /// `chart burndown --project`, `use <PROJECT>` and `archive <PROJECT>`.
+    /// Raise it when the surface grows; the guard finds the members itself.
+    ///
+    /// Re-derived from the count the guard itself reports (5), not incremented
+    /// by hand — a floor that drifts below the real count is a guard that has
+    /// stopped guarding while still printing green.
+    const KNOWN_PROJECT_VALUED_ARGS: usize = 5;
 
     /// The value name that means "this argument's value IS a tag name".
     const TAG_VALUE_NAME: &str = "TAG";
@@ -1267,6 +1284,10 @@ mod tests {
     /// than cosmetic — it is what puts the argument inside this guard — and that
     /// is said at the declaration too, since an annotation whose purpose lives
     /// only in a test is one refactor from being tidied away.
+    ///
+    /// The membership is not flags-only: `tag`/`untag` take their tags as a
+    /// POSITIONAL, and `get_arguments` returns those too, which is why nothing
+    /// here filters on `get_long`.
     ///
     /// Mutation-proven: removing either attachment, or either `value_name`,
     /// reddens this test naming the argument (the `value_name` case through the
@@ -1294,8 +1315,12 @@ mod tests {
                 // would let that regress silently.
                 assert!(
                     arg.get::<ArgValueCompleter>().is_some(),
-                    "`{trail} --{}` takes a tag name and offers no candidates \
-                     from a completer, while `+<TAB>` on the same command offers \
+                    // No `--` in front of the id: two of the four members are
+                    // POSITIONALS (`tag`/`untag`), and a message that spells
+                    // them as flags sends the reader looking for an argument
+                    // that does not exist.
+                    "`{trail} {}` takes a tag name and offers no candidates \
+                     from a completer, while `+<TAB>` on a sugar command offers \
                      every tag. Attach `add = crate::complete::candidates::tags()` \
                      — and note it must be a completer, so the typed word is \
                      applied before the candidate cap.",
@@ -1311,8 +1336,9 @@ mod tests {
         );
     }
 
-    /// Floor, not a list: `add --tag` and `modify --tag`.
-    const KNOWN_TAG_VALUED_ARGS: usize = 2;
+    /// Floor, not a list: `add --tag`, `modify --tag`, and the `tag`/`untag`
+    /// positionals. Re-derived from the guard's own count, not incremented.
+    const KNOWN_TAG_VALUED_ARGS: usize = 4;
 
     /// The mapping from `project.list`'s envelope, including the one filter that
     /// is a decision rather than plumbing.

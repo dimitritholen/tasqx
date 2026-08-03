@@ -144,7 +144,19 @@ pub struct OtlpSample {
 /// the OTLP receiver is an auxiliary, opt-in feature and must never take the rest
 /// of the daemon down with it (unlike the store-backed attribution/reminder
 /// threads, whose failures are genuinely fatal).
-pub fn run_receiver(engine: Arc<Mutex<Engine>>, port: u16, shutdown: Arc<AtomicBool>) {
+///
+/// `activity` is the daemon's D5 idle clock input: every accepted peer stamps
+/// it with the current [`Instant`]. Without it the accept loop has no way to
+/// tell a busy receiver from a silent one — an OTLP client holds no daemon
+/// connection and no subscription — and the only thing D5 could then ask is
+/// whether the port is *configured*, which is true forever and pins the daemon
+/// open for good. See `daemon::telemetry_since_idle_began`.
+pub fn run_receiver(
+    engine: Arc<Mutex<Engine>>,
+    port: u16,
+    shutdown: Arc<AtomicBool>,
+    activity: Arc<Mutex<Option<Instant>>>,
+) {
     let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
         Ok(l) => l,
         Err(e) => {
@@ -157,16 +169,31 @@ pub fn run_receiver(engine: Arc<Mutex<Engine>>, port: u16, shutdown: Arc<AtomicB
         return;
     }
     eprintln!("tasqx daemon: OTLP receiver on http://127.0.0.1:{port}/v1/logs");
-    accept_loop(&listener, &engine, &shutdown);
+    accept_loop(&listener, &engine, &shutdown, &activity);
 }
 
 /// The nonblocking accept loop, split from [`run_receiver`] so a test can drive
 /// it against an ephemeral, already-bound listener. `listener` must already be
 /// set nonblocking. Returns when `shutdown` is set.
-fn accept_loop(listener: &TcpListener, engine: &Arc<Mutex<Engine>>, shutdown: &Arc<AtomicBool>) {
+fn accept_loop(
+    listener: &TcpListener,
+    engine: &Arc<Mutex<Engine>>,
+    shutdown: &Arc<AtomicBool>,
+    activity: &Mutex<Option<Instant>>,
+) {
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((stream, _addr)) => handle_connection(stream, engine),
+            Ok((stream, _addr)) => {
+                // Stamped on ACCEPT rather than after a successful parse: a
+                // peer that connects and then dribbles a 1 MiB body is using
+                // the receiver for as long as it takes, and a daemon that
+                // walked out on it mid-export would drop the export with no
+                // error anywhere. The stamp is what D5 reads, so the cheap
+                // failure direction — call a malformed request "activity" —
+                // is the one that keeps a running daemon running.
+                *activity.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+                handle_connection(stream, engine);
+            }
             // No pending connection: sleep one step and re-check shutdown.
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => thread::sleep(ACCEPT_STEP),
             // A transient accept error must not spin the thread hot; step and retry.
@@ -870,10 +897,12 @@ mod tests {
 
         let engine = Arc::new(Mutex::new(Engine::open_in_memory().unwrap()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let activity: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
         let handle = {
             let engine = engine.clone();
             let shutdown = shutdown.clone();
-            thread::spawn(move || accept_loop(&listener, &engine, &shutdown))
+            let activity = activity.clone();
+            thread::spawn(move || accept_loop(&listener, &engine, &shutdown, &activity))
         };
 
         let body = serde_json::to_string(&logs_doc(
@@ -948,6 +977,15 @@ mod tests {
 
         shutdown.store(true, Ordering::Relaxed);
         handle.join().unwrap();
+
+        // The accept loop stamped the activity clock. This is what D5's idle
+        // shutdown reads to tell a busy receiver from a silent one; an accept
+        // loop that forgot to stamp would leave `[otlp] enabled` unable to hold
+        // a daemon open through an export it is in the middle of receiving.
+        assert!(
+            activity.lock().unwrap().is_some(),
+            "an accepted OTLP peer must stamp the D5 activity clock"
+        );
 
         assert!(
             response.starts_with("HTTP/1.1 200"),

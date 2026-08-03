@@ -37,7 +37,24 @@ pub enum Kind {
     /// `otlp.port` (#18); a value outside the range is a type mismatch and falls
     /// to the default, exactly like a bool written as a quoted string.
     Uint,
+    /// A count of minutes in `0..=MAX_TIMEOUT_MINUTES`, where **`0` means off**.
+    ///
+    /// Separate from [`Kind::Uint`] for the sake of that zero: a port of 0 asks
+    /// the OS to pick one and is refused, while a timeout of 0 is the disabled
+    /// state and is the DEFAULT of the only setting with this kind
+    /// (`daemon.idle_timeout`, D5). One range check cannot serve both, and
+    /// widening `Uint` to admit 0 would make `otlp.port = 0` a value the writer
+    /// accepts and the listener then binds to an arbitrary port.
+    Minutes,
 }
+
+/// Upper bound for a [`Kind::Minutes`] setting: 24 hours.
+///
+/// Not a technical limit — a longer timeout is `0` with extra steps, since a
+/// daemon that only leaves after a week is one nobody will ever observe
+/// leaving. The bound exists so a fat-fingered `1440000` is refused at the
+/// point of writing instead of quietly meaning "never".
+pub const MAX_TIMEOUT_MINUTES: i64 = 24 * 60;
 
 /// Which layer supplied the value a user is looking at. Reported by
 /// `config list` because the question behind a surprising setting is always
@@ -183,6 +200,17 @@ pub const SETTINGS: &[Setting] = &[
         summary: "TCP port the OTLP receiver binds on 127.0.0.1 (OTLP/HTTP convention: 4318).",
     },
     Setting {
+        key: "daemon.idle_timeout",
+        home: Home::Toml,
+        kind: Kind::Minutes,
+        default: "0",
+        env: None,
+        flag: None,
+        choices: Choices::Free,
+        summary: "Minutes with no clients and no work after which `tasqx daemon` exits by itself; \
+                  0 stays up until Ctrl-C (D5).",
+    },
+    Setting {
         key: "default_project",
         home: Home::Store,
         kind: Kind::Str,
@@ -276,6 +304,9 @@ fn coerce(kind: Kind, v: toml::Value) -> Option<String> {
         // string "4318", or an out-of-range number) is not a value and falls to
         // the default.
         (Kind::Uint, toml::Value::Integer(n)) if is_valid_port(n) => Some(n.to_string()),
+        // Same rule, its own range — and `0` is inside this one, because for a
+        // timeout it is the off switch rather than "let the OS choose".
+        (Kind::Minutes, toml::Value::Integer(n)) if is_valid_minutes(n) => Some(n.to_string()),
         // A value of the wrong type is not a value. It falls through to the
         // default, exactly as it did before the registry existed: the old
         // reader used `toml::Value::as_bool`, so `enabled = "true"` (a quoted
@@ -328,7 +359,7 @@ impl Kind {
         match self {
             Kind::Str => "string",
             Kind::Bool => "boolean",
-            Kind::Uint => "integer",
+            Kind::Uint | Kind::Minutes => "integer",
         }
     }
 }
@@ -338,6 +369,14 @@ impl Kind {
 /// silent coercion and the `config set` validator so both agree.
 fn is_valid_port(n: i64) -> bool {
     (1..=65535).contains(&n)
+}
+
+/// A timeout a user could mean: `0` (off) up to [`MAX_TIMEOUT_MINUTES`]. Shared
+/// by the silent coercion and the `config set` validator for the same reason
+/// [`is_valid_port`] is: two copies of a range is two chances to disagree about
+/// whether `0` is a value, and here `0` is the one that matters most.
+fn is_valid_minutes(n: i64) -> bool {
+    (0..=MAX_TIMEOUT_MINUTES).contains(&n)
 }
 
 /// The file names a key, but with a value of a type the setting does not
@@ -582,6 +621,15 @@ pub fn write_value_in(
             _ => {
                 return Err(ApiError::bad_request(format!(
                     "{} takes a port in 1..=65535, got {value:?}",
+                    s.key
+                )))
+            }
+        },
+        Kind::Minutes => match value.parse::<i64>() {
+            Ok(n) if is_valid_minutes(n) => n.into(),
+            _ => {
+                return Err(ApiError::bad_request(format!(
+                    "{} takes minutes in 0..={MAX_TIMEOUT_MINUTES} (0 = never), got {value:?}",
                     s.key
                 )))
             }
@@ -1156,6 +1204,54 @@ name = \"nord\"
             "toasts are opt-in"
         );
         assert_eq!(find("default_project").unwrap().default, "");
+        assert_eq!(
+            find("daemon.idle_timeout").unwrap().default,
+            "0",
+            "a daemon started by hand must not walk out on its operator (D5)"
+        );
+    }
+
+    /// A `Kind::Minutes` value is validated at the point of writing, and `0` is
+    /// inside its range — that zero is the entire reason this kind is not
+    /// `Kind::Uint`, whose range check exists to keep `otlp.port = 0` (bind
+    /// anywhere) out of the file.
+    ///
+    /// Both readers are asserted, because a range enforced by the writer alone
+    /// is a range a hand-edited `config.toml` walks straight through: `coerce`
+    /// is the silent path every command takes.
+    #[test]
+    fn a_minutes_setting_takes_zero_for_off_and_refuses_what_it_cannot_mean() {
+        let s = find("daemon.idle_timeout").expect("daemon.idle_timeout is registered");
+        assert_eq!(s.kind, Kind::Minutes);
+
+        let dir = temp_dir("minutes");
+        write_value_in(&dir, s, "0").expect("0 is the off switch, not an invalid timeout");
+        write_value_in(&dir, s, "15").expect("a plain number of minutes is accepted");
+
+        for bad in ["-1", &(MAX_TIMEOUT_MINUTES + 1).to_string(), "soon", "15m"] {
+            let err = write_value_in(&dir, s, bad).unwrap_err().message;
+            assert!(
+                err.contains("0 = never") && err.contains(&MAX_TIMEOUT_MINUTES.to_string()),
+                "the refusal of {bad:?} must name the range and what 0 means: {err}"
+            );
+        }
+
+        // The silent reader agrees on the same range, including the zero.
+        assert_eq!(
+            coerce(Kind::Minutes, toml::Value::Integer(0)),
+            Some("0".to_string())
+        );
+        assert_eq!(coerce(Kind::Minutes, toml::Value::Integer(-1)), None);
+        assert_eq!(
+            coerce(Kind::Minutes, toml::Value::Integer(MAX_TIMEOUT_MINUTES + 1)),
+            None
+        );
+        assert_eq!(
+            coerce(Kind::Minutes, toml::Value::String("15".into())),
+            None,
+            "a quoted number is the wrong type, exactly as it is for a port"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `write_value_in` refuses a store-homed key with a sentence that tells the

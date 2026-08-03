@@ -98,6 +98,7 @@ fn start_daemon_with_options(
             notifier,
             tokens_enabled,
             otlp_port: None,
+            idle_timeout: None,
         };
         daemon::serve_with_options(engine, &sk, sd, options).expect("serve");
     });
@@ -137,6 +138,35 @@ fn start_daemon_observing_failure(
     mpsc::Receiver<io::Result<()>>,
     thread::JoinHandle<()>,
 ) {
+    start_daemon_observing_result(
+        db,
+        sock,
+        daemon::DaemonOptions {
+            notifier: Arc::new(LogNotifier),
+            tokens_enabled,
+            otlp_port: None,
+            idle_timeout: None,
+        },
+    )
+}
+
+/// The general form: serve with arbitrary options and hand `serve`'s return
+/// value back over a channel.
+///
+/// Both callers need the return value for the same reason — a daemon that ends
+/// on its own does so by RETURNING, whether the reason is a supervised
+/// component failing (`Err`) or D5's idle timeout (`Ok`), and a detached thread
+/// throws that away. Written once so the readiness wait, the flag and the join
+/// handle do not exist twice with a chance to differ.
+fn start_daemon_observing_result(
+    db: &str,
+    sock: &str,
+    options: daemon::DaemonOptions,
+) -> (
+    Arc<AtomicBool>,
+    mpsc::Receiver<io::Result<()>>,
+    thread::JoinHandle<()>,
+) {
     let shutdown = Arc::new(AtomicBool::new(false));
     let sd = shutdown.clone();
     let owned_db = db.to_string();
@@ -144,11 +174,6 @@ fn start_daemon_observing_failure(
     let (result_tx, result_rx) = mpsc::channel();
     let server = thread::spawn(move || {
         let engine = Engine::open(&owned_db).expect("open server engine");
-        let options = daemon::DaemonOptions {
-            notifier: Arc::new(LogNotifier),
-            tokens_enabled,
-            otlp_port: None,
-        };
         let result = daemon::serve_with_options(engine, &sk, sd, options);
         let _ = result_tx.send(result);
     });
@@ -669,6 +694,311 @@ fn background_store_failure_stops_the_daemon_with_context() {
         message.contains("event poller") || message.contains("reminder scheduler"),
         "failure must identify the background component: {message}"
     );
+    let _ = std::fs::remove_file(&db);
+}
+
+// ---- §12-D5: idle shutdown ---------------------------------------------------
+
+/// Wait for `serve` to return, or say what it was still doing instead.
+fn serve_result(
+    result_rx: &mpsc::Receiver<io::Result<()>>,
+    within: Duration,
+) -> Option<io::Result<()>> {
+    result_rx.recv_timeout(within).ok()
+}
+
+/// D5 end to end: a configured daemon with nobody connected leaves on its own,
+/// and it leaves through the ordinary shutdown return rather than by dying.
+///
+/// The timeout here is 400 ms because the option is a `Duration`, not the
+/// setting's minutes — the CLI does the minutes conversion, which is what keeps
+/// this assertable in under a second instead of over fifteen.
+#[test]
+fn a_configured_daemon_with_no_clients_and_no_work_exits_on_its_own() {
+    let (db, sock) = unique_target();
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            idle_timeout: Some(Duration::from_millis(400)),
+            ..Default::default()
+        },
+    );
+
+    let outcome = serve_result(&result_rx, Duration::from_secs(20));
+    // Flagged only after the wait, exactly as `fatal_message` does it: setting
+    // it first would let a daemon that ignored its idle timeout return anyway
+    // and the test would read that as a pass.
+    shutdown.store(true, Ordering::Relaxed);
+    server.join().expect("server thread");
+    let outcome = outcome.expect("an idle daemon must return from serve, not sit there");
+    outcome.expect("idle shutdown is an ordinary stop, not a failure");
+    assert!(
+        daemon::try_connect(&sock).is_none(),
+        "the socket must be gone once the daemon has left"
+    );
+    let _ = std::fs::remove_file(&db);
+}
+
+/// The other half, and the one that protects everybody who never configured
+/// this: with no `idle_timeout`, a daemon nobody talks to stays.
+///
+/// A negative test with a deadline, so it is honest about what it proves — 2 s
+/// of silence against a feature whose only "on" state in this suite fires in
+/// 400 ms. A default that leaked D5's 15 minutes in would not fail here; a
+/// default that leaked *any* timeout short enough to observe would.
+#[test]
+fn a_daemon_without_the_setting_stays_up_through_the_same_silence() {
+    let (db, sock) = unique_target();
+    let (shutdown, result_rx, server) =
+        start_daemon_observing_result(&db, &sock, daemon::DaemonOptions::default());
+
+    assert!(
+        serve_result(&result_rx, Duration::from_secs(2)).is_none(),
+        "an unconfigured daemon must not exit by itself"
+    );
+    assert!(
+        daemon::try_connect(&sock).is_some(),
+        "and must still be serving"
+    );
+
+    shutdown.store(true, Ordering::Relaxed);
+    let stopped = serve_result(&result_rx, Duration::from_secs(20));
+    server.join().expect("server thread");
+    stopped
+        .expect("Ctrl-C must still stop it")
+        .expect("a flagged shutdown is a clean stop");
+    let _ = std::fs::remove_file(&db);
+}
+
+/// The clock is the SERVER's, not the connection's: a client that connects and
+/// says nothing for many times the idle timeout keeps the daemon alive, and the
+/// countdown only starts when it goes away.
+///
+/// This is the distinction `CLIENT_IDLE_TIMEOUT` (15 min, per connection) and
+/// D5's timeout would collapse into each other if the idle check consulted
+/// anything but the admitted-client count.
+#[test]
+fn a_connected_client_holds_the_daemon_open_and_leaving_starts_the_countdown() {
+    let (db, sock) = unique_target();
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            idle_timeout: Some(Duration::from_millis(400)),
+            ..Default::default()
+        },
+    );
+
+    let conn = daemon::try_connect(&sock).expect("connect before the deadline");
+    assert!(
+        serve_result(&result_rx, Duration::from_millis(1500)).is_none(),
+        "a connected client — even a silent one — is a reason to stay"
+    );
+
+    drop(conn);
+    let outcome = serve_result(&result_rx, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    server.join().expect("server thread");
+    outcome
+        .expect("the countdown must start when the last client leaves")
+        .expect("idle shutdown is an ordinary stop");
+    let _ = std::fs::remove_file(&db);
+}
+
+/// A reminder about to ripen is work, and the accept loop can only know that if
+/// the scheduler's soonest instant actually reaches it.
+///
+/// The whole path is here — `reminder_loop` republishing `peek_at()` after each
+/// tick, and `server_busy` reading it — because none of it is observable from a
+/// unit test: the mirror could be left unwritten and every predicate test would
+/// still pass while a live daemon walked out one second before a delivery.
+///
+/// The timings are the smallest that separate the two outcomes. The reminder
+/// leads by 1.8 s against a 2 s timeout, so it sits inside the horizon from the
+/// moment it is set: a daemon that honours it fires at ~1.8 s and can then leave
+/// no earlier than ~3.8 s, while one that cannot see it leaves at ~2 s. The 3 s
+/// window between those is what this asserts. Both drift the same way on a
+/// loaded machine — later — so slowness costs a missed defect, never a red run.
+#[test]
+fn a_reminder_about_to_ripen_holds_the_daemon_past_its_own_deadline() {
+    let (db, sock) = unique_target();
+    let collector: Arc<Collecting> = Arc::new(Collecting::default());
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            notifier: collector.clone(),
+            idle_timeout: Some(Duration::from_secs(2)),
+            ..Default::default()
+        },
+    );
+
+    {
+        let mut writer = daemon::try_connect(&sock).expect("connect writer");
+        let at = jiff::Timestamp::now() + jiff::SignedDuration::from_millis(1800);
+        let added = writer
+            .request(
+                "task.add",
+                &json!({ "title": "hold the door", "remind": at.to_string() }),
+            )
+            .expect("add a task with a reminder");
+        ok(&added);
+    } // The client leaves; from here the reminder is the only reason to stay.
+
+    assert!(
+        serve_result(&result_rx, Duration::from_secs(3)).is_none(),
+        "the daemon left while a reminder was inside its own idle window"
+    );
+    assert_eq!(
+        collector.titles(),
+        vec!["hold the door".to_string()],
+        "it stayed for a reminder that then actually fired"
+    );
+
+    let outcome = serve_result(&result_rx, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    server.join().expect("server thread");
+    outcome
+        .expect("and once the reminder is delivered it may leave")
+        .expect("idle shutdown is an ordinary stop");
+    let _ = std::fs::remove_file(&db);
+}
+
+/// A TCP port nothing is listening on right now, for the daemon's OTLP receiver
+/// to bind. Asking the OS for an ephemeral port and immediately giving it back
+/// is the standard trick; the window in which another process could steal it is
+/// tiny, and losing it only means the receiver logs a bind failure — which the
+/// test below then reports as a failed POST rather than as a silent pass.
+fn free_local_port() -> u16 {
+    let probe = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("bind an ephemeral probe port");
+    probe.local_addr().expect("probe address").port()
+}
+
+/// POST one minimal OTLP log export at `port`. Returns whether the receiver
+/// answered at all — the tests here care that the request reached the accept
+/// loop, not what it parsed to.
+fn post_otlp_export(port: u16) -> bool {
+    use std::io::{Read, Write};
+
+    let body = json!({
+        "resourceLogs": [{ "scopeLogs": [{ "logRecords": [{
+            "eventName": "claude_code.api_request",
+            "observedTimeUnixNano": "1774339200000000000",
+            "attributes": [
+                { "key": "input_tokens", "value": { "intValue": "7" } },
+                { "key": "session.id", "value": { "stringValue": "idle-clock" } }
+            ]
+        }] }] }]
+    })
+    .to_string();
+    let request = format!(
+        "POST /v1/logs HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let Ok(mut stream) = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)) else {
+        return false;
+    };
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.1 200")
+}
+
+/// `[otlp] enabled` must not quietly cancel `[daemon] idle_timeout`.
+///
+/// It did. The accept loop asked `server_busy` whether telemetry was in play by
+/// passing `otlp_port.is_some()` — a constant for the whole process — so with
+/// the receiver on, the idle clock never started and the daemon ran forever
+/// after printing "will exit after N minute(s) with no clients and no work" on
+/// its own stderr. Every unit test still passed: they all call the predicate
+/// with a literal, and none of them can see what the call site feeds it. Only a
+/// daemon built with BOTH options can, which is why this test is here and not
+/// next to the predicate.
+#[test]
+fn an_open_but_silent_otlp_receiver_does_not_cancel_the_idle_timeout() {
+    let (db, sock) = unique_target();
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            otlp_port: Some(free_local_port()),
+            idle_timeout: Some(Duration::from_millis(400)),
+            ..Default::default()
+        },
+    );
+
+    let outcome = serve_result(&result_rx, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    server.join().expect("server thread");
+    outcome
+        .expect(
+            "a daemon with the OTLP receiver bound but nobody posting must still \
+             honour its idle timeout — an open port is configuration, not work",
+        )
+        .expect("idle shutdown is an ordinary stop");
+    let _ = std::fs::remove_file(&db);
+}
+
+/// The other half, and the reason the fix is a clock rather than a deletion:
+/// telemetry that actually arrives IS work, and holds the daemon open.
+///
+/// An OTLP client holds no daemon connection and no subscription, so the accept
+/// loop cannot see it any other way; a daemon that left mid-export would drop it
+/// with no error at either end. Traffic is generated for well over three times
+/// the timeout, so a daemon that ignores it leaves long before the loop ends —
+/// and the posts are five times more frequent than the deadline, so it takes a
+/// five-fold stall, not a slow machine, to fail this spuriously.
+#[test]
+fn telemetry_arriving_holds_the_daemon_open_and_silence_then_releases_it() {
+    let (db, sock) = unique_target();
+    let port = free_local_port();
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            otlp_port: Some(port),
+            idle_timeout: Some(Duration::from_millis(500)),
+            ..Default::default()
+        },
+    );
+
+    // The receiver binds on its own thread; give it a moment to come up, then
+    // require it to answer — a bind that lost the port race must fail this test
+    // loudly rather than let it pass on a receiver that never existed.
+    let mut answered = false;
+    for _ in 0..50 {
+        if post_otlp_export(port) {
+            answered = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert!(answered, "the daemon's OTLP receiver never answered a POST");
+
+    for _ in 0..15 {
+        assert!(
+            post_otlp_export(port),
+            "the receiver stopped answering: the daemon left while telemetry \
+             was still arriving"
+        );
+        assert!(
+            serve_result(&result_rx, Duration::from_millis(100)).is_none(),
+            "a daemon being posted to must not leave: an OTLP export is the one \
+             kind of work that holds no connection here"
+        );
+    }
+
+    // Nothing posts any more. The clock that telemetry kept resetting now runs.
+    let outcome = serve_result(&result_rx, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    server.join().expect("server thread");
+    outcome
+        .expect("once the telemetry stops the daemon must be free to go")
+        .expect("idle shutdown is an ordinary stop");
     let _ = std::fs::remove_file(&db);
 }
 

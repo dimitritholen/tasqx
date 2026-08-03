@@ -237,21 +237,66 @@ jobs:
   # Mutation testing: does the suite NOTICE when the code is wrong?
   #
   # Advisory, NOT a gate — the same reasoning that kept clippy advisory until
-  # its findings were cleaned. The
-  # scoped sweep currently ends with 5 surviving mutants that have been triaged
-  # and deliberately left (two are equivalent mutants no test could ever catch;
-  # see docs/mutation-testing.md). A job that is red on its first run trains
-  # everyone to ignore it, and `cargo mutants` exits 3 whenever ANY mutant
-  # survives — including the equivalent ones.
+  # its findings were cleaned. The scoped sweep still ends with survivors, all
+  # of them triaged and deliberately left; the note below says how many and
+  # which, and docs/mutation-testing.md carries the verdict on each. A job that
+  # is red on its first run trains everyone to ignore it, and `cargo mutants`
+  # exits 3 whenever ANY mutant survives — including the ones no test could
+  # ever kill.
   #
-  # BEFORE THIS BECOMES A GATE — status as of the last local sweep
-  # (160 mutants, 143 caught, 0 missed):
+  # BEFORE THIS BECOMES A GATE — the figures below are a DATED READING OF ONE
+  # SWEEP, and they must be RE-DERIVED from the newest run every time this
+  # block is edited. They are not a standing property of the repository, and
+  # treating them as one is exactly how they went wrong: this paragraph read
+  # "160 mutants, 143 caught, 0 missed" from an undated local sweep while two
+  # consecutive CI sweeps were reporting 203 mutants and a survivor, and the
+  # sentence a reader would have acted on — "`missed` is now 0" — was the false
+  # one. The total moves whenever `.cargo/mutants.toml`'s scope or the code
+  # under it changes, so a snapshot nobody re-reads decays without anybody
+  # editing it: the same silently-green failure this job exists to find in the
+  # code, in the prose describing it. Re-derive from the summary line
+  # `cargo mutants` prints, or from the `mutants-report` artefact uploaded
+  # below, and say which run it came from. Paste that line VERBATIM, duration
+  # and all: the guards in tasqx-core's lib.rs read the counts off it and check
+  # it against the identical line in docs/mutation-testing.md, and they match
+  # the shape the tool prints rather than a tidied-up version of it.
+  #
+  # Last sweep: run 30811736799 on a2f767b (2026-08-03), which matched the
+  # scheduled run 30791446542 on ce3f284 that morning count for count — an
+  # identical total from two different commits being itself a
+  # finding, since it says `examine_globs` covered none of that day's merges
+  # (tasqx #50 weighs what to do about the scope).
+  #
+  #   203 mutants tested in 53m: 1 missed, 184 caught, 14 unviable, 4 timeouts
+  #   MISSED crates/tasqx-core/src/filter.rs `spacing_hint`: replace || with && — tasqx #48
+  #
+  # The survivor is recorded by FUNCTION, not by the `file:line:col` cargo-
+  # mutants prints, because `a_surviving_mutant_is_recorded_where_it_still_lives`
+  # in tasqx-core's lib.rs resolves that line against the source — and a line
+  # number is wrong the next time anything above it moves, which would redden
+  # the build on unrelated edits until somebody deleted the guard.
+  #
   #   1. DONE. Both real gaps the first sweep found are closed and
   #      mutation-verified: the parenthesised-filter precedence inversion
   #      (filter.rs `parse_and`) and the non-strict `due.before`/`due.after`
   #      boundary. Neither was found by review or by 299 passing tests.
-  #   2. DONE. The two equivalent mutants are suppressed via `exclude_re` in
-  #      .cargo/mutants.toml, each with a justification. `missed` is now 0.
+  #   2. DONE AGAIN, but not re-measured. The two equivalent mutants are still
+  #      suppressed via `exclude_re` in .cargo/mutants.toml, each with a
+  #      justification, so a survivor here still means something real rather
+  #      than known noise. `missed` was 1 in the sweep quoted above, and that
+  #      survivor is now killed: `spacing_hint` withholds its "did you mean"
+  #      advice from any token that opens a predicate of its own, no test paired
+  #      a value predicate with a following token that BOTH opens a predicate
+  #      and fails to parse, so the guard could weaken to `&&`, never suppress
+  #      anything again, and leave the whole suite green while
+  #      `project:Home @wroking` started advising a rewrite to
+  #      `project:"Home @wroking"`. tasqx #48 closed it with one test per
+  #      disjunct — `a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value`
+  #      and `a_mistyped_at_keyword_is_never_hinted_as_a_split_value` — each
+  #      verified to redden under the `&&` mutation. The count above is left as
+  #      the run printed it, because nobody has re-swept since; what makes this
+  #      point DONE is the two tests, and only the next sweep can make the
+  #      number agree.
   #   3. NOT DONE, and this is the whole remaining blocker. `cargo mutants`
   #      exits 3 on TIMEOUTS as well as on survivors, and the parser's
   #      `pos += 1` mutants time out by design (they make it loop forever).
@@ -268,8 +313,12 @@ jobs:
   # (loop termination rests entirely on monotonic cursor advance) to buy a
   # green tick.
   # Scheduled weekly + manually dispatchable rather than per-push: the sweep
-  # rebuilds and reruns the suite once per mutant (159 of them), which is ~5min
-  # on a 24-core dev box and 25-40min on a GitHub runner.
+  # rebuilds and reruns the suite once per mutant — the note above says how many
+  # there currently are, which is why the count is not repeated here — and that
+  # is minutes on a 24-core dev box against the better part of an hour on this
+  # runner at `--jobs 2`. The exact wall clock is in the sweep line above, where
+  # it is dated; a second copy down here would be the same figure decaying in a
+  # place nobody re-derives.
   mutants:
     name: cargo-mutants (advisory)
     runs-on: ubuntu-latest

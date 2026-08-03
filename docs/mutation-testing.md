@@ -50,9 +50,12 @@ CI job (below) is not a gate.
 ### Scope, and why it is narrow
 
 cargo-mutants rebuilds and reruns the suite **once per mutant**. The full
-workspace is ~16.5k lines; the scoped set is four files, 159 mutants, about
-5 minutes wall clock on a 24-core machine at `--jobs 6` and roughly 25-40
-minutes on a 2-core CI runner.
+workspace is ~16.5k lines; the scoped set is four files, a few minutes of wall
+clock on a 24-core machine at `--jobs 6` and just under an hour on a
+GitHub-hosted CI runner at `--jobs 2`. How many mutants that is today is in
+[the sweep below](#known-surviving-mutants) — stated once, in the one place
+that is dated, because the copy of the figure that used to sit here outlived
+the sweep it came from.
 
 The four files — `types.rs`, `filter.rs`, `remind.rs`, `urgency.rs` — were
 chosen because they are small, pure, heavily depended on, and they fail quietly.
@@ -81,7 +84,7 @@ Write a test. State the user-visible failure in its doc comment, per house style
 
 **2. An equivalent mutant.** The edit does not change observable behaviour, so
 no test could catch it and none should try. Example from this repo:
-`remind.rs:75` computes `let sign = if *secs < 0 {'-'} else {'+'}` and the
+`remind.rs`'s `spec_to_string` computes `let sign = if *secs < 0 {'-'} else {'+'}` and the
 mutant makes it `<=`. Those differ only at `secs == 0`, and the `n == 0` branch
 returns a hardcoded `"+0s"` without ever reading `sign`. Leave it. If a class of
 equivalent mutants gets noisy, silence it with `exclude_re` in the config **and
@@ -100,14 +103,37 @@ test disagrees with the code when the code changes.
 
 ## Known surviving mutants
 
-As of the last full sweep: **160 mutants, 143 caught, 0 missed, 10 unviable, 2-5 timeouts.**
+The figures below are a **dated reading of one sweep**, not a standing property
+of this repo. Re-derive them from the newest run whenever you touch this
+section, and name the run they came from. The previous version of this
+paragraph read "160 mutants, 143 caught, 0 missed" off an undated local sweep
+and stayed there while the scope grew by dozens of mutants and a survivor
+appeared in two consecutive CI sweeps — which is the failure this page's last
+line warns about, committed on the page itself.
+
+Last sweep: run 30811736799 on `a2f767b` (2026-08-03, on a CI runner at
+`--jobs 2`), count for count identical to the scheduled run 30791446542 on
+`ce3f284` earlier the same morning. The line below is quoted verbatim from that
+run's log, wall clock and all — the same line appears in the comment on the
+`mutants` job in `.github/workflows/ci.yml`, and a test compares the two.
+
+```text
+203 mutants tested in 53m: 1 missed, 184 caught, 14 unviable, 4 timeouts
+```
+
 `types.rs` and `urgency.rs` are clean, and so is every real gap the first sweep
 found.
 
-There are no missed mutants left. The two equivalent ones below are suppressed
-via `exclude_re` in `.cargo/mutants.toml` — legitimate only because they are
-provably unkillable, not merely hard to test. Anything that is merely hard to
-test belongs in this table, not in the config.
+The one missed mutant was a real gap, not an equivalent one — `spacing_hint`,
+tasqx #48. It has since been closed by two tests (see "Gaps this sweep closed"),
+so the `1 missed` above is now history rather than a standing state; the figures
+are deliberately left as the run printed them, because re-typing a count nobody
+re-measured is exactly what the paragraph above this one warns against. The
+table below keeps its row: the survivor is what the next sweep has to come back
+clean on, and deleting the row would delete the only record of why. The two
+equivalent mutants are suppressed via `exclude_re` in `.cargo/mutants.toml` —
+legitimate only because they are provably unkillable, not merely hard to test.
+Anything that is merely hard to test belongs in this table, not in the config.
 
 The timeout row is why this is still not a CI gate: `cargo mutants` exits 3 on
 timeouts as well as survivors, and the timeout count varies run to run (three
@@ -115,31 +141,56 @@ local sweeps gave 5, 4 and 2 from identical code, because a mutant that loses
 the race is scored caught instead). See the comment on the `mutants` job in
 `.github/workflows/ci.yml` for the two honest ways to fix that.
 
+Locations are given as file plus **function**, and the line numbers this table
+used to carry have been dropped rather than refreshed. Every one of them had
+rotted: `parse_and` was recorded at `filter.rs:227` and lives at 824, and the
+`pos += 1` row named three sites that had moved and multiplied to five. A line
+number in prose is wrong the moment anything above it moves, and it silently
+misdirects the next reader instead of failing; a function name can be — and is,
+in `tasqx-core`'s `lib.rs` — checked against the source by a test.
+
 | Location | Mutation | Verdict |
 | --- | --- | --- |
-| `filter.rs:227` `parse_and` | `and` keyword guard → `false` | Equivalent. Without the guard an explicit `and` falls through to `parse_term`, matches no predicate prefix, and becomes `Pred::Always` — the identity of the enclosing `And`. `eval`'s `.all()` is unchanged, and `constrains_status`'s `.any()` reads `Pred::Always` as false either way. |
-| `remind.rs:75` `spec_to_string` | `<` → `<=` | Equivalent. The two operators differ only at `secs == 0`, and that is exactly the input where `sign` is never read: the next lines compute `n = secs.abs()` and return the literal `"+0s"` before `sign` reaches any `format!`. |
-| `filter.rs:210/228/253` | `pos += 1` → `-=` / `*=` | Uninteresting, and reported as TIMEOUT rather than MISSED. The parser's cursor stops advancing and it loops forever. Non-termination is loud and immediately diagnosable, unlike every other finding here — a test for it would be a hang with a stopwatch. Worth knowing that loop termination rests entirely on monotonic `pos` advance. |
+| `filter.rs` `spacing_hint` | `\|\|` → `&&` on the suppression guard | **MISSED by this sweep, CLOSED since (tasqx #48).** The hint is withheld from any token that opens a predicate of its own; under `&&` both halves would have to hold at once, so the suppression never fired again and `project:Home @wroking` was answered with "did you mean `project:"Home @wroking"`?" — advice to quote a typo into the project name. Nothing paired a value predicate with a following token that BOTH opens a predicate and fails to parse. Now `a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value` and `a_mistyped_at_keyword_is_never_hinted_as_a_split_value` do, one per disjunct; each was verified to redden under the `&&` mutation, and under deletion of its own disjunct alone. |
+| `filter.rs` `parse_and` | `and` keyword guard → `false` | Equivalent. Without the guard an explicit `and` falls through to `parse_term`, matches no predicate prefix, and becomes `Pred::Always` — the identity of the enclosing `And`. `eval`'s `.all()` is unchanged, and `constrains_status`'s `.any()` reads `Pred::Always` as false either way. |
+| `remind.rs` `spec_to_string` | `<` → `<=` | Equivalent. The two operators differ only at `secs == 0`, and that is exactly the input where `sign` is never read: the next lines compute `n = secs.abs()` and return the literal `"+0s"` before `sign` reaches any `format!`. |
+| `filter.rs` `parse_or`, `parse_and`, `parse_term` | `pos += 1` → `-=` / `*=` | Uninteresting, and reported as TIMEOUT rather than MISSED. The parser's cursor stops advancing and it loops forever. Non-termination is loud and immediately diagnosable, unlike every other finding here — a test for it would be a hang with a stopwatch. Worth knowing that loop termination rests entirely on monotonic `pos` advance. |
 
 ### Gaps this sweep closed
 
 The first sweep found two real gaps, both now fixed and both mutation-verified:
 
-- **`filter.rs:225`, the significant one.** Deleting the `Some(")") => break`
-  arm left the whole workspace green. Nothing *evaluated* a parenthesised
+- **`filter.rs` `parse_and`, the significant one.** Deleting the loop's
+  break-on-`)` left the whole workspace green. Nothing *evaluated* a parenthesised
   filter — the only paren case in the suite sat inside a `constrains_status`
   assertion, which returns true either way. Without the arm `(a or b) and c`
   reassociates to `a or (b and c)`, so `tasqx list "(+api or +infra) and
   status:done"` would return every `+api` task regardless of status: no error,
   no crash, just a credible table containing exactly the rows the user filtered
   out. Closed by `parentheses_group_rather_than_reassociating`.
-- **`filter.rs:156/158`.** The exact-instant boundary of `due.before:` /
+- **`filter.rs` `instant_cmp`.** The exact-instant boundary of `due.before:` /
   `due.after:` was unasserted, so both comparisons could silently become
   non-strict. Closed by `due_bounds_are_strict_at_the_exact_instant`.
 
 Neither was found by review, by 299 passing tests, or by adversarial reading.
 Both were found by mutation testing. That is the argument for this file
 existing.
+
+The second sweep — the one whose figures are quoted above — found one more, and
+it is now closed too:
+
+- **`filter.rs` `spacing_hint`, the `||` in the suppression guard.** Two
+  disjuncts, neither separately exercised: a token opening a VALUE predicate,
+  and a token opening an `@` keyword. Under `&&` the guard could never fire, and
+  the tool began advising users to quote a failing predicate into a project
+  name. Closed by
+  `a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value` and
+  `a_mistyped_at_keyword_is_never_hinted_as_a_split_value`. Both build their
+  cases out of `VALUE_PREFIXES` and `KEYWORDS` rather than listing tokens, so a
+  ninth prefix or a third keyword is covered on the day it is added, and both
+  assert the refusal is byte-identical to the one the offending token produces
+  with nothing in front of it — "unadorned" as an equality, not as a `contains`
+  of the hint's current wording.
 
 Keep this table current when the sweep changes — a stale known-survivors list is
 worse than none, because it trains people to skim the report.

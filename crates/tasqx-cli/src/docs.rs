@@ -56,9 +56,10 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 32] = [
+const VERBS: [(&str, &str, &str); 38] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
+    ("archive", "—", "project.archive"),
     ("add", "<code>a</code>, <code>new</code>", "task.add"),
     (
         "modify",
@@ -66,7 +67,13 @@ const VERBS: [(&str, &str, &str); 32] = [
         "task.modify",
     ),
     ("list", "<code>ls</code>, <code>l</code>", "task.list"),
+    ("agenda", "<code>ag</code>, <code>cal</code>", "task.list"),
     ("next", "—", "task.list"),
+    (
+        "pick",
+        "<code>p</code>, <code>fzf</code>",
+        "task.list + task.start",
+    ),
     ("show", "<code>get</code>", "task.get"),
     ("why", "—", "task.get"),
     ("start", "<code>s</code>", "task.start"),
@@ -82,7 +89,10 @@ const VERBS: [(&str, &str, &str); 32] = [
         "task.cancel",
     ),
     ("reopen", "—", "task.reopen"),
+    ("undo", "<code>u</code>", "event.revert"),
     ("annotate", "<code>note</code>", "annotation.add"),
+    ("tag", "—", "tag.add"),
+    ("untag", "—", "tag.remove"),
     ("dep", "—", "dependency.add"),
     ("undep", "—", "dependency.remove"),
     ("projects", "—", "project.list"),
@@ -105,7 +115,7 @@ const VERBS: [(&str, &str, &str); 32] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 29] = [
+const METHODS: [(&str, &str, &str); 31] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -188,6 +198,13 @@ const METHODS: [(&str, &str, &str); 29] = [
         "The task's tags.",
     ),
     (
+        "tag.remove",
+        "<code>ref</code>, <code>tags</code>",
+        "The task's remaining tags, plus <code>removed</code>. A tag the task \
+         does not have is <code>not_found</code> and removes <em>nothing</em> — \
+         all or nothing, so a typo can never answer ok.",
+    ),
+    (
         "annotation.add",
         "<code>ref</code>, <code>body</code>",
         "The annotation.",
@@ -259,6 +276,18 @@ const METHODS: [(&str, &str, &str); 29] = [
         "event.list",
         "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>",
         "<code>{count, events}</code> — the append-only log.",
+    ),
+    (
+        "event.revert",
+        "—",
+        "<code>{reverted, short_id, title, restored}</code> — <code>reverted</code> carries \
+         the event id, its op and its timestamp. Undoes the <em>newest</em> event by \
+         APPENDING a compensating one, so the reversed event stays in the log. Four ops are \
+         undoable (<code>stop</code>, <code>tag.remove</code>, <code>dependency.remove</code>, \
+         <code>annotation.add</code>); every other one is <code>conflict</code> naming itself \
+         and what does take it back. The newest <em>event</em>, not the last call you made: a \
+         call that changed nothing writes no event, so undo reaches past it — which is why the \
+         answer names what it undid instead of saying ok.",
     ),
     (
         "reminder.fire",
@@ -957,6 +986,75 @@ fn page_commands() -> String {
          1 task(s)",
     ));
 
+    // ---- agenda
+    s.push_str(&h3("agenda"));
+    s.push_str(&p(
+        "<code>agenda</code> asks the same question <code>list</code> does and answers it in the \
+         other order: by time, grouped by day. It maps to the same <code>task.list</code> call — \
+         there is no <code>agenda</code> method, because the grouping is a rendering of fields \
+         every row already carries.",
+    ));
+    s.push_str(&snippet(
+        "tasqx agenda",
+        "\x20 ID   URG  P  TASK                             PROJECT     WHEN            TAGS\n\
+         ---------------------------------------------------------------------------------------\n\
+         Overdue\n\
+         \x20  3  18.0  H  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  bug\n\
+         Today · Mon 2026-08-03\n\
+         \x20  2  12.0  -  Write API conformance tests      work.tasqx  due 12:00       api\n\
+         \x20  1  18.0  H  Ship the v1 JSON API freeze      work.tasqx  due 17:00       api release\n\
+         Tomorrow · Tue 2026-08-04\n\
+         \x20  4   0.0  -  Quarterly deps audit             work.tasqx  sched\n\
+         Thu 2026-08-06\n\
+         \x20  5  10.1  -  Publish the API docs             work.tasqx  due\n\
+         ---------------------------------------------------------------------------------------\n\
+         5 task(s) · through 2026-08-17 (+14d)\n\
+         1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them\n\
+         1 further out — `tasqx agenda --days 90` reaches the furthest",
+    ));
+    s.push_str(&p(
+        "That block was captured on Monday 3 August 2026, which is what <code>Today</code> names \
+         there; every heading carries its date as well for exactly that reason. A task is placed \
+         on the <strong>earlier</strong> of its <code>due</code> and its \
+         <code>scheduled</code> — the first day it asks anything of you — and the <code>WHEN</code> \
+         column says which of the two that was. #4 above is there because it is <em>scheduled</em> \
+         for Tuesday and has no deadline at all; a view built on <code>due</code> alone would not \
+         have shown it, and one built on <code>scheduled</code> alone would have lost #3. A cell \
+         shows a time only when the task carries one: a date typed without a time is stored as \
+         midnight, so <code>due</code> on its own means exactly what the store knows.",
+    ));
+    s.push_str(&p(
+        "Overdue rows come first and are always shown, whatever <code>--days</code> says — a \
+         horizon is a question about the future, and hiding what you are already late on would \
+         answer a different one. The window is 14 days by default; <code>--days N</code> moves it.",
+    ));
+    s.push_str(&note(
+        "Read the last two lines. This view leaves rows out for two reasons of its own, and it \
+         counts both rather than dropping them in silence: tasks with neither date have no day to \
+         sit on (<code>tasqx list</code> shows them), and tasks past the horizon are reported \
+         together with the exact <code>--days</code> that reaches the furthest one — here \
+         <code>tasqx agenda --days 90</code>, for a certificate renewal in November. A row \
+         further out than the widest window <code>--days</code> accepts is still counted, and \
+         that line names <code>tasqx list</code> instead of a <code>--days</code> the CLI would \
+         refuse.",
+    ));
+    s.push_str(&p(
+        "Everything before <code>--days</code> is the <a href=\"#filters\">filter</a>, exactly as \
+         on <code>list</code>. The default is every open status — <code>backlog</code> included, \
+         unlike <code>list</code>'s <code>@working</code>, because a task scheduled for next week \
+         <em>is</em> backlog until that day arrives and an agenda that could not show it would be \
+         useless. Done and cancelled tasks stay out unless your filter names a status, the rule \
+         <code>report</code> already applies to cancelled work; <code>tasqx agenda status:done</code> \
+         shows them. Blocked tasks are shown: the date arrives whether or not the dependency \
+         cleared.",
+    ));
+    s.push_str(&note(
+        "Days are <strong>UTC</strong> days. Every instant in the store is UTC and a date typed \
+         without a time resolves to midnight UTC, so grouping by local time would file \
+         <code>--due 2026-08-05</code> under the 4th for anyone west of Greenwich — a day earlier \
+         than the one they typed.",
+    ));
+
     // ---- show
     s.push_str(&h3("show"));
     s.push_str(&p(
@@ -1054,6 +1152,55 @@ fn page_commands() -> String {
          <code>conflict</code> (exit 5). Archiving the project that <em>is</em> the default clears \
          the default rather than leaving it pointed at a retired project, and a bare \
          <code>add</code> is then projectless until you <code>use</code> another.",
+    ));
+
+    // ---- archive
+    s.push_str(&h3("archive"));
+    s.push_str(&p(
+        "<code>archive</code> takes a project out of rotation. Its tasks are untouched — they keep \
+         their history and their project — but the project drops out of <code>tasqx projects</code> \
+         and no verb may name it any more. Archiving is a shelf, not a delete.",
+    ));
+    s.push_str(&snippet(
+        "tasqx archive prive.klussen\ntasqx use work.tasqx",
+        "Project prive.klussen archived  ·  it was your default project, so a bare `tasqx add` has \
+         no home until `tasqx use <project>`\n\
+         Default project is now work.tasqx  ·  a bare `tasqx add` lands here",
+    ));
+    s.push_str(&p(
+        "That first line is the point of the verb having a terminal at all. The project just \
+         archived <em>was</em> the default, so archiving it cleared the default in the same \
+         transaction (D22) — leaving it pointed at a retired project would file every later bare \
+         <code>add</code> somewhere the project list no longer shows. Until you <code>use</code> \
+         another one, a bare <code>add</code> is projectless, which is the same state a brand-new \
+         store is in. Archiving a project that is <em>not</em> the default says so too, rather \
+         than saying nothing.",
+    ));
+    s.push_str(&snippet(
+        "tasqx projects --all",
+        "DEFAULT  PROJECT                   ARCHIVED   DESCRIPTION\n\
+         \x20        prive.klussen             yes\n\
+         *        work.tasqx                no         The tasqx project itself",
+    ));
+    s.push_str(&p(
+        "\u{201c}No verb may name it\u{201d} includes <code>archive</code> itself. Retiring a \
+         project that is already retired would change nothing, so it is a <code>conflict</code> \
+         (exit 5) rather than a second success — an <code>ok</code> that changed nothing is \
+         byte-identical to the run that did the work, for you and for the event log, which is \
+         where \u{201c}when did the default move?\u{201d} is answered. The one write that still \
+         names an archived project is <code>store.import</code>, which restores the flag from a \
+         document \u{2014} see the note below.",
+    ));
+    s.push_str(&snippet(
+        "tasqx archive prive.klussen",
+        "error [conflict]: project is already archived: prive.klussen (`tasqx projects --all` \
+         lists it; archiving it again would change nothing)",
+    ));
+    s.push_str(&note(
+        "There is no <code>unarchive</code> verb and no <code>project.unarchive</code> method — \
+         among the project methods, archiving is one-way. <code>store.import</code> does write a \
+         project's <code>archived</code> flag from the document, so restoring a saved export \
+         un-archives one; that is a data restore, not an undo.",
     ));
 
     // ---- lifecycle
@@ -1606,6 +1753,14 @@ fn page_daemon() -> String {
         "tasqx daemon: listening on tasqx-docsdemo (Ctrl-C to stop)",
     ));
     s.push_str(&p(
+        "It stays until you stop it. Set <code>[daemon] idle_timeout</code> to a number of \
+         minutes and it will instead exit by itself once that long has passed with no client \
+         connected, no subscriber attached, no reminder about to ripen and no telemetry \
+         posted to its OTLP receiver — and it says so on stderr on the way out. \
+         <code>0</code>, the default, means it never does. Turning the receiver on does not \
+         hold it open: only exports that actually arrive count as work.",
+    ));
+    s.push_str(&p(
         "Now route a command through it — note this is the ordinary <code>add</code>, unchanged:",
     ));
     s.push_str(&snippet(
@@ -1844,16 +1999,17 @@ fn page_api() -> String {
     ));
     s.push_str(&snippet(
         "echo '{\"tasqx\":\"1\",\"id\":\"c1\",\"method\":\"core.capabilities\"}' | tasqx api",
-        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"token.add\",\"dependency.add\",\"dependency.remove\",\"memory.add\",\"memory.search\",\"memory.remove\",\"memory.import\",\"tokens.recompute\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"memory.add\":[\"title\",\"body\",\"source\"],\"memory.import\":[\"docs\"],\"memory.remove\":[\"id\"],\"memory.search\":[\"query\",\"limit\",\"scope\",\"raw\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\",\"projects\",\"default_project\",\"docs\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\",\"tool\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\"],\"task.stop\":[\"ref\"],\"token.add\":[\"ref\",\"tool\",\"source\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\",\"confidence\"],\"tokens.recompute\":[\"dry_run\"]}},\"tasqx\":\"1\"}",
+        &capabilities_snippet(),
     ));
 
     s.push_str(&h3("The methods"));
-    s.push_str(&p(
-        "All twenty-nine — and this table is what the tests compare against \
+    s.push_str(&p(&format!(
+        "All {} — and this table is what the tests compare against \
          <code>core.capabilities</code>: the method names, and (D33) the Params column against its \
          <code>params</code> map, so it cannot describe a method — or a key — this build does not \
          have. A key not in the accepted set is refused, never ignored.",
-    ));
+        METHODS.len()
+    )));
     let method_rows: Vec<Vec<String>> = METHODS
         .iter()
         .map(|(method, params, returns)| {
@@ -2334,6 +2490,34 @@ fn snippet(cmd: &str, output: &str) -> String {
     )
 }
 
+/// The `core.capabilities` handshake, as this build would really answer it.
+///
+/// Derived from [`tasqx_core::capabilities`] instead of pasted, and the reason
+/// is a bug this page shipped: when `tag.remove` was added (D52) the pasted copy
+/// stayed at twenty-nine methods with no `tag.remove` in either `methods` or
+/// `params`. Nothing went red — [`documented_methods_match_core_capabilities`]
+/// compares the [`METHODS`] *table* to the real report and never looks at this
+/// string. So the one section headed "do not guess what a build supports — ask
+/// it" was itself guessing, and an API author reading it would have written a
+/// client that never calls `tag.remove`. A literal that no test can falsify has
+/// to stop being a literal; nothing short of deriving it can rot again.
+///
+/// `default_project` is the single substituted value. The real answer depends on
+/// whichever store the reader happens to have open, and the rest of the page is
+/// written against an example store whose default project is `work.tasqx` — so
+/// printing this machine's answer would be less true, not more.
+fn capabilities_snippet() -> String {
+    let mut caps = tasqx_core::capabilities();
+    caps["default_project"] = serde_json::Value::String("work.tasqx".into());
+    serde_json::to_string(&serde_json::json!({
+        "tasqx": "1",
+        "id": "c1",
+        "ok": true,
+        "result": caps,
+    }))
+    .expect("a serde_json::Value always serialises")
+}
+
 /// A preformatted block with no command line (grammar, config, JSON). Escaped.
 fn pre_plain(text: &str) -> String {
     format!("<pre class=\"plain\"><code>{}</code></pre>", esc(text))
@@ -2742,9 +2926,33 @@ mod tests {
     /// observe — proving those names would mean a real call per parameter with a
     /// value round-tripped back out, which is an integration suite, not a
     /// doc-drift guard.
+    /// An in-memory store whose newest event is undoable.
+    ///
+    /// The two guards below probe every method with `{}` and read the answer as
+    /// a statement about its PARAMS. `event.revert` is the one method whose bare
+    /// call can fail for a reason that has nothing to do with params — an empty
+    /// log has nothing to undo — so on a virgin store it would look like a
+    /// method with an undocumented required argument. Seeding one undoable event
+    /// removes that confound without weakening either guard: no other method in
+    /// [`METHODS`] can be called bare AND append an event, so the `tag.remove`
+    /// left here is still the newest event when the loop reaches `event.revert`.
+    #[cfg(test)]
+    fn probe_engine() -> tasqx_core::Engine {
+        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        let sid = e
+            .task_add(&serde_json::json!({ "title": "probe" }))
+            .expect("seed a task")["short_id"]
+            .clone();
+        e.tag_add(&serde_json::json!({ "ref": sid.clone(), "tags": ["probe"] }))
+            .expect("seed a tag");
+        e.tag_remove(&serde_json::json!({ "ref": sid, "tags": ["probe"] }))
+            .expect("seed an undoable event");
+        e
+    }
+
     #[test]
     fn documented_required_params_match_what_the_engine_demands() {
-        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        let e = probe_engine();
 
         for (method, params, _returns) in METHODS {
             let names = param_names(params);
@@ -2783,7 +2991,7 @@ mod tests {
     /// Partial by construction, and worth naming precisely: this only covers the
     /// methods callable with no arguments, because those are the ones a
     /// doc-drift test can invoke without inventing fixture data. That is seven
-    /// of the twenty-nine rows. The write methods' return shapes, and every prose
+    /// of the [`METHODS`] rows. The write methods' return shapes, and every prose
     /// `returns` cell that describes rather than enumerates ("The task, timer
     /// running."), stay unguarded — asserting on English is not a thing a test
     /// can do, and asserting on the write shapes needs a fixture store per
@@ -2794,7 +3002,7 @@ mod tests {
     /// telling every API client to read a field that is no longer there.
     #[test]
     fn documented_return_shapes_match_the_real_response_where_checkable() {
-        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        let e = probe_engine();
         let mut checked = 0;
 
         for (method, params, returns) in METHODS {
@@ -2827,10 +3035,13 @@ mod tests {
         }
 
         // Pin the coverage claim itself. If a future edit makes this loop skip
-        // everything, the test would pass while guarding nothing.
+        // everything, the test would pass while guarding nothing. Re-derive from
+        // the count this guard reports rather than adding the rows you wrote:
+        // it went 7 -> 8 when `event.revert` joined, and a floor that drifts
+        // below the truth is a guard that has stopped guarding.
         assert_eq!(
-            checked, 7,
-            "expected to check all 7 bare-callable return shapes; a row that stopped being \
+            checked, 8,
+            "expected to check all 8 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }
@@ -2878,6 +3089,56 @@ mod tests {
         assert_eq!(
             real, documented,
             "the JSON API page has drifted from core.capabilities"
+        );
+    }
+
+    /// The feature-detection snippet on the API page, against the envelope the
+    /// binary really emits for that exact request.
+    ///
+    /// [`capabilities_snippet`] derives its body, so a new method reaches the
+    /// page for free — but derivation cannot notice the *envelope* drifting
+    /// around it. Rename `ok`, drop `tasqx`, nest `result` one level deeper, and
+    /// the snippet would go on rendering a shape no build has emitted since.
+    /// This pushes the request through `handle_envelope` — the same function
+    /// `tasqx api` calls — and compares the bytes, so the module's claim that
+    /// every block of output here was executed against the real binary holds for
+    /// this block by construction rather than by anyone's diligence.
+    ///
+    /// The method-name assertion is the D52 regression itself: the pasted copy
+    /// this replaced was missing `tag.remove` from both `methods` and `params`,
+    /// and every other guard on this page stayed green through it.
+    #[test]
+    fn the_capabilities_snippet_is_the_envelope_the_api_really_emits() {
+        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        let mut real = tasqx_core::handle_envelope(
+            &e,
+            r#"{"tasqx":"1","id":"c1","method":"core.capabilities"}"#,
+        );
+        // The one value the page substitutes: it belongs to the reader's store,
+        // not to this test's empty one.
+        real["result"]["default_project"] = serde_json::Value::String("work.tasqx".into());
+        let shown = capabilities_snippet();
+        assert_eq!(
+            serde_json::to_string(&real).expect("a Value serialises"),
+            shown,
+            "the API page's core.capabilities snippet is not what `tasqx api` answers"
+        );
+
+        for m in tasqx_core::capabilities()["methods"]
+            .as_array()
+            .expect("capabilities.methods is an array")
+        {
+            let m = m.as_str().expect("a method name is a string");
+            assert!(
+                shown.contains(&format!("\"{m}\"")),
+                "method `{m}` is missing from the page's core.capabilities handshake — a client \
+                 author reading it would conclude this build cannot do it"
+            );
+        }
+
+        assert!(
+            generate().contains(&esc(&shown)),
+            "the derived capabilities snippet never reaches the rendered page"
         );
     }
 
@@ -3768,6 +4029,52 @@ mod tests {
                  Documented inits: {created:?}"
             );
         }
+    }
+
+    /// Three surfaces claim `archive` refuses an already-archived project — the
+    /// Commands page, the terminal note behind `tasqx archive --help`, and the
+    /// worked example's output block — and this asks the engine whether that is
+    /// true, rather than trusting the prose.
+    ///
+    /// The review of #53 is why it exists. Both doc surfaces asserted "no write
+    /// may name it" about an archived project while `project.archive` was itself
+    /// a write that named one and answered `ok`: a documented protection the
+    /// code did not have, which is the failure class this repo fails builds
+    /// over. Deleting the refusal from the engine now reddens the docs too,
+    /// which is the only arrangement in which the sentence stays true.
+    ///
+    /// The output block is compared to the engine's real message rather than to
+    /// a fragment, because the page shows it as literal terminal output — a
+    /// reader who cannot find that string in their own terminal has been taught
+    /// something false about the tool.
+    #[test]
+    fn the_archive_pages_refusal_is_the_one_the_engine_actually_gives() {
+        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        tasqx_core::dispatch(&e, "project.create", &serde_json::json!({ "name": "old" }))
+            .expect("create");
+        tasqx_core::dispatch(&e, "project.archive", &serde_json::json!({ "name": "old" }))
+            .expect("first archive");
+        let err =
+            tasqx_core::dispatch(&e, "project.archive", &serde_json::json!({ "name": "old" }))
+                .expect_err("a second archive of the same project must be refused");
+
+        // The verb's own note in `cmddoc` names the refusal, so a reader of
+        // `--help` learns it without running the command twice.
+        let note = crate::cmddoc::after_help("archive");
+        assert!(
+            note.contains("already archived"),
+            "`tasqx archive --help` does not mention the refusal: {note}"
+        );
+
+        // And the guide's worked output block is the engine's message verbatim,
+        // with only the project name swapped for the one the page uses.
+        let doc = generate();
+        let shown = err.message.replace("old", "prive.klussen");
+        assert!(
+            doc.contains(&esc(&shown)),
+            "the Commands page shows an `archive` refusal the engine does not give.\n\
+             engine: {shown}"
+        );
     }
 
     /// The page must be substantial — a guard against a refactor quietly rendering

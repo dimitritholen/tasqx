@@ -193,8 +193,19 @@ fn safe_examples_all_exit_zero() {
     let examples = safe_examples();
     // A filter bug that selected nothing would leave this test green while
     // executing zero commands; the floor makes that impossible to miss.
+    //
+    // Re-derived from the count this guard reports (39), not incremented: it
+    // had been sitting at 27 against a real 35, so eight Safe examples could
+    // have been deleted with nothing going red — the exact way a floor stops
+    // guarding while still printing green. `tag`/`untag` are `NoRun` (they
+    // mutate), so they added nothing; `archive` is `Safe` on purpose and is the
+    // 36th — it runs after the `init` example that created its project, and
+    // that project is this store's default, so the default-clearing branch of
+    // `project.archive` is executed for real on every run of this suite.
+    // `agenda`'s three are 37-39, and they run against the store the `add`
+    // examples above have already filled, one of which carries `due:friday`.
     assert!(
-        examples.len() >= 27,
+        examples.len() >= 39,
         "expected the full Safe set, got {}",
         examples.len()
     );
@@ -264,6 +275,100 @@ fn config_edit_refuses_a_piped_stdout_with_a_nonzero_exit() {
     assert!(
         err.contains("config set"),
         "the refusal must name the way that works: {err}"
+    );
+}
+
+/// `tasqx pick` is the second subcommand that wants a terminal, and the first
+/// whose whole purpose is composition — `tasqx pick | tasqx done` and
+/// `$(tasqx pick)` are the shapes a user reaches for, and both are exactly the
+/// invocations this refusal covers. So the refusal has to be good: the code a
+/// script branches on, no escape bytes, and the names of the commands that
+/// answer the same question without a screen.
+///
+/// `TASQX_DB` points at a file that must NOT exist when the run is over, and
+/// that is the second half of the test. D55 says the gate runs before the store
+/// is opened; it did not. `open_backend` runs for every command in that arm of
+/// `execute`, before the `Command::Pick` match arm is ever reached, so a refused
+/// `pick` exited 2 with the right message AND left a fully created, migrated
+/// 208 KB SQLite store behind — on a machine that had never run tasqx, at
+/// whatever path `TASQX_DB` or the platform data dir named, because
+/// `db_path_resolved` creates the parent directory on the way.
+///
+/// Setting `TASQX_DB` at all is the first half: this test used to set neither it
+/// nor `TASQX_CONFIG_DIR`, unlike every other store-touching test in this file,
+/// so it opened and migrated the DEVELOPER'S real default store on every `cargo
+/// test` run.
+#[test]
+fn pick_refuses_a_piped_stdout_with_a_nonzero_exit() {
+    // A path inside a directory that does not exist, so "the store was opened"
+    // and "a directory was created" are both observable afterwards.
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("tasqx-help-pick-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = dir.join("tasks.db");
+    let piped = || {
+        let mut c = bin();
+        c.env("TASQX_DB", &db).env("TASQX_CONFIG_DIR", "");
+        c
+    };
+
+    let out = piped().arg("pick").output().expect("run pick");
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a refused TUI must exit non-zero (bad_request)"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "nothing may reach a piped stdout: {:?}",
+        out.stdout
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains('\x1b'),
+        "escape codes leaked into the refusal: {err:?}"
+    );
+    assert!(err.contains("interactive terminal"), "{err}");
+    assert!(
+        err.contains("tasqx next") && err.contains("tasqx start"),
+        "the refusal must name the commands that DO work in a pipe: {err}"
+    );
+
+    // A filter argument must not change the answer: the gate is structural and
+    // comes first, so `pick project:work` may not fail on the filter instead —
+    // that would report a problem the caller does not have.
+    let filtered = piped()
+        .args(["pick", "project:work", "+api"])
+        .output()
+        .expect("run pick with a filter");
+    assert_eq!(filtered.status.code(), Some(2));
+    assert!(filtered.stdout.is_empty());
+
+    // And its aliases are the same command. Asserted on the MESSAGE, not on
+    // the exit code: clap's own "unrecognized subcommand" also exits 2, so a
+    // code-only check would pass for an alias that does not exist at all.
+    for alias in ["p", "fzf"] {
+        let aliased = piped().arg(alias).output().expect("run the alias");
+        let err = String::from_utf8_lossy(&aliased.stderr);
+        assert!(
+            err.contains("interactive terminal"),
+            "`tasqx {alias}` did not reach `pick`: {err}"
+        );
+    }
+
+    // Four refusals later, nothing has been written. Both halves are checked:
+    // the file, and the directory `db_path_resolved` would have created to hold
+    // it — the second is what a `TASQX_DB` under a fresh `$HOME` would show.
+    assert!(
+        !db.exists(),
+        "a refused `pick` created a store at {}",
+        db.display()
+    );
+    assert!(
+        !dir.exists(),
+        "a refused `pick` created the store's parent directory at {}",
+        dir.display()
     );
 }
 
