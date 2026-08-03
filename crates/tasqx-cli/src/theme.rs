@@ -225,6 +225,34 @@ impl Caps {
     }
 }
 
+/// The live width of the output surface, in cells.
+///
+/// Three sources, in falling order of authority: an explicit `COLUMNS` (the
+/// de-facto override, and the only handle a user has when tasqx runs inside
+/// something that lies about its size), the terminal itself, and — when the
+/// stream is a pipe or the terminal will not answer — [`Ctx::DEFAULT_COLS`].
+///
+/// It is read ONCE, at context construction, rather than per table: a resize
+/// mid-command would otherwise draw a header at one width and its rows at
+/// another, and every row of one `list` must agree with every other.
+pub fn detect_cols() -> usize {
+    if let Some(n) = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        return n;
+    }
+    // A redirected stdout has no width — asking the *terminal* would answer with
+    // the size of a window the bytes are not going to, so don't ask.
+    if !std::io::stdout().is_terminal() {
+        return Ctx::DEFAULT_COLS;
+    }
+    ratatui::crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(Ctx::DEFAULT_COLS)
+}
+
 /// The environment inputs that drive detection — split out so the decision is a
 /// pure function we can unit-test at every capability level.
 #[derive(Clone, Debug, Default)]
@@ -1170,15 +1198,43 @@ pub fn default_theme() -> Theme {
 // ============================================================================
 
 /// The bundle every render function receives: the active theme + the detected
-/// terminal capability. One lookup surface, so no command hard-codes a color.
+/// terminal capability + how wide the surface is. One lookup surface, so no
+/// command hard-codes a color — or a column width.
 pub struct Ctx {
     pub theme: Theme,
     pub caps: Caps,
+    /// How many CELLS wide a table may lay itself out over. Not a capability
+    /// (it changes when the user drags a window edge, and `Caps` is `Copy` state
+    /// several tests build by literal), so it rides on the context instead.
+    pub cols: usize,
 }
 
 impl Ctx {
+    /// The width to lay out for when the real one is unknowable — piped,
+    /// redirected, or a terminal that will not answer. Deliberately a constant
+    /// rather than "unbounded": a pipe has no width, and a table that grows to
+    /// its content there would be a different shape for every store, which is
+    /// exactly what a script diffing two runs must not see.
+    pub const DEFAULT_COLS: usize = 100;
+    /// Narrower than this and the table has no room for its own headers, so the
+    /// minimum column budgets take over and rows are allowed to overflow.
+    pub const MIN_COLS: usize = 40;
+    /// An ultrawide terminal is not an invitation to draw a 300-cell row; past
+    /// this the eye loses the line it is reading (see `typography`).
+    pub const MAX_COLS: usize = 160;
+
     pub fn new(theme: Theme, caps: Caps) -> Self {
-        Ctx { theme, caps }
+        Ctx {
+            theme,
+            caps,
+            cols: Self::DEFAULT_COLS,
+        }
+    }
+
+    /// Lay out for `cols` cells, clamped to the range a table can actually use.
+    pub fn with_cols(mut self, cols: usize) -> Self {
+        self.cols = cols.clamp(Self::MIN_COLS, Self::MAX_COLS);
+        self
     }
 
     pub fn paint(&self, role: &str, text: &str) -> String {

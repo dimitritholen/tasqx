@@ -154,10 +154,14 @@ pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
     out.push_str(&format!("   {}\n", ctx.paint("muted", legend)));
 
     for b in buckets {
-        let added_bar = bar(b.added, max, width, ctx);
-        let done_bar = bar(b.done, max, width, ctx);
-        let added_s = ctx.paint("accent", &added_bar);
-        let done_s = ctx.paint("timer.active", &done_bar);
+        // The counts sit LEFT of their bars and the bars are padded out to a
+        // fixed cell budget, so every number in the column starts at the same
+        // place. Drawn the other way round — a ragged-length bar and then its
+        // number — each row's figures landed wherever that row's bar happened to
+        // end, and the chart read as four columns that could not agree on where
+        // they were. A bar is a magnitude; a magnitude belongs on a grid.
+        let added_s = bar_cell(b.added, max, width, ctx, "accent");
+        let done_s = bar_cell(b.done, max, width, ctx, "timer.active");
         let net = b.net();
         let net_s = if net > 0 {
             format!("+{net}")
@@ -166,7 +170,7 @@ pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
         };
         let note = if net < 0 { "  burning down" } else { "" };
         out.push_str(&format!(
-            "  {}  added {added_s} {:>2}   done {done_s} {:>2}   net {:>3}{}\n",
+            "  {}  added {:>3} {added_s}   done {:>3} {done_s}   net {:>4}{}\n",
             ctx.paint("muted", &b.label()),
             b.added,
             b.done,
@@ -196,6 +200,22 @@ pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
         )
     ));
     out
+}
+
+/// A painted bar padded out to its full `width` in cells — the fixed-size box
+/// the row after it is aligned against.
+///
+/// The padding is added AFTER painting so the trailing spaces carry no SGR
+/// state (a themed background would otherwise draw an empty bar as a filled
+/// one, which is the opposite of what it means).
+fn bar_cell(n: u32, max: u32, width: usize, ctx: &Ctx, role: &str) -> String {
+    let b = bar(n, max, width, ctx);
+    let filled = b.chars().count();
+    format!(
+        "{}{}",
+        ctx.paint(role, &b),
+        " ".repeat(width.saturating_sub(filled))
+    )
 }
 
 /// A block-glyph bar of `n/max` over `width` cells, ASCII `#` when no Unicode.
@@ -733,6 +753,49 @@ mod tests {
         assert_eq!(spark_glyph(1.0, true), '█');
         assert_eq!(spark_glyph(1.0, false), '#');
         assert_eq!(spark_glyph(0.0, false), '_');
+    }
+
+    /// Every figure in a chart row must sit in the same column as the one above
+    /// it. The bars used to be drawn BEFORE their numbers and were only as long
+    /// as their own magnitude, so each row's `done`, its counts and its `net`
+    /// landed wherever that row's bar happened to end — a chart whose four
+    /// columns disagreed about where they were, on the same screen as the table
+    /// this alignment work started from.
+    #[test]
+    fn throughput_rows_line_their_columns_up_whatever_the_bars_do() {
+        use crate::theme::{self, Caps};
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        // Magnitudes chosen to give every row a different bar length, including
+        // the empty bar and the full one.
+        let buckets: Vec<WeekBucket> = [(0u32, 0u32), (6, 0), (23, 7), (16, 0), (3, 7)]
+            .iter()
+            .enumerate()
+            .map(|(i, (added, done))| WeekBucket {
+                iso_year: 2026,
+                iso_week: 28 + i as i8,
+                added: *added,
+                done: *done,
+            })
+            .collect();
+        let out = render_throughput(&ctx, &buckets);
+        let rows: Vec<&str> = out.lines().skip(1).take(buckets.len()).collect();
+        assert_eq!(rows.len(), buckets.len(), "one row per week: {out}");
+        for label in ["added", "done", "net"] {
+            let want = rows[0].find(label);
+            assert!(want.is_some(), "no {label:?} in {:?}", rows[0]);
+            for row in &rows {
+                assert_eq!(row.find(label), want, "the {label:?} column moved:\n{out}");
+            }
+        }
+        // …and the counts themselves, which sit at a fixed offset from `added`.
+        let cut = |row: &str| row.split("done").next().unwrap().len();
+        for row in &rows {
+            assert_eq!(
+                cut(row),
+                cut(rows[0]),
+                "the added block changed width:\n{out}"
+            );
+        }
     }
 
     #[test]

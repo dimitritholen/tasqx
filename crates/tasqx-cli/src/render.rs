@@ -203,6 +203,173 @@ pub fn done(ctx: &Ctx, result: &Value) -> String {
     out
 }
 
+/// One row of the `task.list` table, as plain text — measured, not yet painted.
+///
+/// The cells are built ONCE and the layout is computed FROM them, because a
+/// column can only be sized to content that already exists. The alternative the
+/// table used to run — constants in a header format string, and every cell
+/// cut to fit them — sized the columns to nothing at all: `DUE` held 22 cells
+/// on a store with no due dates and `TASK` held 36 on a 150-cell terminal, so
+/// the widest gap in the table sat where there was no data and the titles that
+/// had some were the ones truncated.
+struct TaskRow {
+    sid: String,
+    urg: String,
+    ramp: f64,
+    prio: String,
+    title: String,
+    project: String,
+    due: String,
+    overdue: bool,
+    tags: String,
+}
+
+/// The width of every column of one table, in cells. A `0` means the column is
+/// ABSENT — not empty-but-drawn — and neither its header nor its gap is emitted.
+struct TaskCols {
+    id: usize,
+    urg: usize,
+    title: usize,
+    project: usize,
+    due: usize,
+    tags: usize,
+}
+
+/// Cells between two columns.
+const GAP: usize = 2;
+
+impl TaskCols {
+    /// Floors: below these a column stops carrying information, so the table
+    /// overflows the terminal rather than shrinking past them.
+    const MIN_TITLE: usize = 20;
+    const MIN_PROJECT: usize = 8;
+    const MIN_TAGS: usize = 8;
+    /// A cut date must still show the date: `2026-07-20…` is 11 cells.
+    const MIN_DUE: usize = 11;
+    /// Ceilings. A column wider than this stops earning its cells: the eye
+    /// loses the row across a 90-cell title, and the tail of a tag list or a
+    /// project name identifies far less than its head. Overflow goes to the
+    /// ellipsis, not to the column — and the cells stay available to the
+    /// neighbours that can still use them.
+    const MAX_TITLE: usize = 72;
+    const MAX_PROJECT: usize = 24;
+    const MAX_TAGS: usize = 28;
+
+    /// Everything left of `TASK`, plus the gap that follows it.
+    fn head_width(&self) -> usize {
+        self.id + GAP + self.urg + GAP + 1 + GAP
+    }
+
+    /// The whole row, gaps included, absent columns costing nothing.
+    fn total(&self) -> usize {
+        let opt = |w: usize| if w == 0 { 0 } else { GAP + w };
+        self.head_width() + self.title + opt(self.project) + opt(self.due) + opt(self.tags)
+    }
+
+    /// Size the columns to the rows, then to the terminal.
+    ///
+    /// A column every row leaves empty is DROPPED. That is the visible half of
+    /// this function: a store with no due dates was spending 24 cells on a
+    /// `DUE` column that could never hold anything, and the reader saw it as the
+    /// table falling apart between `PROJECT` and `TAGS`.
+    fn fit(rows: &[TaskRow], budget: usize) -> TaskCols {
+        let max_of = |f: fn(&TaskRow) -> &str| rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
+        // A column is as wide as its widest cell OR its own header, whichever
+        // asks for more — a label that does not fit its column is the same
+        // misalignment one row up.
+        let sized = |content: usize, label: &str| {
+            if content == 0 {
+                0
+            } else {
+                content.max(width(label))
+            }
+        };
+
+        let mut c = TaskCols {
+            // The id column keeps a floor of 4 rather than sizing to its digits:
+            // ids grow monotonically, and a table that shifted left by a cell
+            // the day the store passed #999 would look like the bug this
+            // function fixes.
+            id: max_of(|r| &r.sid).max(4),
+            urg: max_of(|r| &r.urg).max(width("URG")),
+            title: sized(max_of(|r| &r.title), "TASK").max(width("TASK")),
+            project: sized(max_of(|r| &r.project), "PROJECT"),
+            due: sized(max_of(|r| &r.due), "DUE"),
+            tags: sized(max_of(|r| &r.tags), "TAGS"),
+        };
+        c.title = c.title.min(Self::MAX_TITLE);
+        c.project = c.project.min(Self::MAX_PROJECT);
+        c.tags = c.tags.min(Self::MAX_TAGS);
+
+        // Over budget: take each cell from whichever column is currently WIDEST,
+        // down to its floor. Not "shrink the least important one first" — that
+        // was tried, and on a real store it cut `PROJECT` and `TAGS` to their
+        // floors while a 68-cell `TASK` column sat untouched, which is the same
+        // failure as the old fixed widths (one column keeping room it does not
+        // need while its neighbours are unreadable), just chosen dynamically.
+        // Taking from the widest converges on columns of comparable size, so
+        // what gets cut is whatever has the most left to lose.
+        //
+        // Ties go to the title: it is the one column whose first characters are
+        // rarely enough to identify the row.
+        let mut over = c.total().saturating_sub(budget);
+        while over > 0 {
+            // Order matters: `max_by_key` keeps the LAST of equal maxima, so
+            // the title comes first and is the last to be picked on a tie.
+            let mut cols: Vec<(&mut usize, usize)> = vec![
+                (&mut c.title, Self::MIN_TITLE),
+                (&mut c.due, Self::MIN_DUE),
+                (&mut c.project, Self::MIN_PROJECT),
+                (&mut c.tags, Self::MIN_TAGS),
+            ];
+            cols.retain(|(w, floor)| **w > *floor);
+            let Some((widest, _)) = cols.into_iter().max_by_key(|(w, _)| **w) else {
+                break; // every column is at its floor — see the drop pass below
+            };
+            *widest -= 1;
+            over -= 1;
+        }
+
+        // Still over, with every column at its floor: a narrow terminal that
+        // simply cannot hold this many columns. Drop them from the RIGHT until
+        // the row fits — positional, so a reader can predict which column goes
+        // without reading this function. A row that overflowed instead would
+        // wrap, and a wrapped row destroys the alignment of every column at
+        // once, which is worse than showing fewer of them.
+        if c.total() > budget {
+            c.tags = 0;
+        }
+        if c.total() > budget {
+            c.due = 0;
+        }
+        if c.total() > budget {
+            c.project = 0;
+        }
+        c
+    }
+}
+
+/// Right-align `s` in `w` CELLS. The `{:>w$}` this replaces pads by char count.
+fn rpad(s: &str, w: usize) -> String {
+    format!("{}{}", " ".repeat(w.saturating_sub(width(s))), s)
+}
+
+/// Fit `text` into `w` cells, paint it in `role`, and pad the RESULT — so the
+/// spaces sit OUTSIDE the escape sequence. Padding inside it is padding a
+/// `trim_end` cannot reach, which is how a table grows invisible trailing cells.
+///
+/// `role: None` is a deliberately unpainted cell (the title, an ordinary due
+/// date): the alternative is inventing a role name no theme file defines, which
+/// would read as themed and paint nothing.
+fn cell(ctx: &Ctx, role: Option<&str>, text: &str, w: usize) -> String {
+    let t = truncate(text, w, ctx.caps.unicode);
+    let padding = " ".repeat(w.saturating_sub(width(&t)));
+    match role {
+        Some(r) => format!("{}{padding}", ctx.paint(r, &t)),
+        None => format!("{t}{padding}"),
+    }
+}
+
 /// Render a `task.list` result as an aligned, themed table.
 pub fn task_table(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
@@ -221,75 +388,101 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         .fold(0.0_f64, f64::max)
         .max(1.0);
 
-    let header = format!(
-        "{:>4}  {:>5}  {:<1}  {:<36}  {:<14}  {:<22}  {}",
-        "ID", "URG", "P", "TASK", "PROJECT", "DUE", "TAGS"
-    );
-    let rule_len = width(&header).min(120);
+    let now = jiff::Timestamp::now();
+    let rows: Vec<TaskRow> = tasks
+        .iter()
+        .map(|t| {
+            let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+            TaskRow {
+                sid: format!("{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
+                urg: format!("{urg:.1}"),
+                ramp: urg / max_urg,
+                prio: t
+                    .get("priority")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-")
+                    .to_string(),
+                title: s(t, "title"),
+                project: s(t, "project"),
+                due: s(t, "due"),
+                overdue: t
+                    .get("due")
+                    .and_then(Value::as_str)
+                    .and_then(|d| d.parse::<jiff::Timestamp>().ok())
+                    .map(|d| d < now)
+                    .unwrap_or(false)
+                    && status_is_open(&s(t, "status")),
+                tags: t
+                    .get("tags")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        san(&a
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" "))
+                    })
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
+    let c = TaskCols::fit(&rows, ctx.cols);
+
+    // Header and rows are assembled by the SAME joiner over the SAME widths, so
+    // a dropped column cannot survive in one of them and not the other.
+    let join = |cells: Vec<String>| cells.join(&" ".repeat(GAP)).trim_end().to_string();
+    let mut head = vec![
+        rpad("ID", c.id),
+        rpad("URG", c.urg),
+        "P".to_string(),
+        pad("TASK", c.title),
+    ];
+    for (w, label) in [(c.project, "PROJECT"), (c.due, "DUE"), (c.tags, "TAGS")] {
+        if w > 0 {
+            head.push(pad(label, w));
+        }
+    }
+    let header = join(head);
+    // The rule spans the TABLE, not the header text. Those differ by the last
+    // column's padding, which `join` trims — and a rule cut to the trimmed
+    // header stops short of the rows that run under it, which reads as the rows
+    // overflowing something.
+    let rule_len = c.total().min(ctx.cols);
+
     let mut out = String::new();
     out.push_str(&ctx.paint("header", &header));
     out.push('\n');
     out.push_str(&ctx.hrule(rule_len));
     out.push('\n');
 
-    let now = jiff::Timestamp::now();
-    for t in tasks {
-        let sid = t.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-        let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-        let prio = t.get("priority").and_then(Value::as_str).unwrap_or("-");
-        let title = fit(&s(t, "title"), 36, ctx.caps.unicode);
-        let project = fit(&s(t, "project"), 14, ctx.caps.unicode);
-        let due_raw = s(t, "due");
-        let is_overdue = t
-            .get("due")
-            .and_then(Value::as_str)
-            .and_then(|d| d.parse::<jiff::Timestamp>().ok())
-            .map(|d| d < now)
-            .unwrap_or(false)
-            && status_is_open(&s(t, "status"));
-        let due = fit(&due_raw, 22, ctx.caps.unicode);
-        let tags = t
-            .get("tags")
-            .and_then(Value::as_array)
-            .map(|a| {
-                san(&a
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" "))
-            })
-            .unwrap_or_default();
-
-        // Painted cells (paint after width-formatting so ANSI never skews columns).
-        let urg_cell = format!("{urg:>5.1}");
-        let urg_p = ctx
-            .theme
-            .ramp_style(urg / max_urg)
-            .paint(&urg_cell, &ctx.caps);
-        let prio_role = match prio {
+    for r in &rows {
+        let prio_role = match r.prio.as_str() {
             "H" => "priority.H",
             "M" => "priority.M",
             "L" => "priority.L",
             _ => "muted",
         };
-        let prio_p = ctx.paint(prio_role, &format!("{prio:<1}"));
-        let project_p = ctx.paint("project", &project);
-        let tags_p = if tags.is_empty() {
-            String::new()
-        } else {
-            ctx.paint("tag", &tags)
-        };
-        // Painted or bare, the cell is the SAME already-fitted string, so the
-        // overdue branch cannot drift out of width from the ordinary one.
-        let due_p = if is_overdue {
-            ctx.paint("overdue", &due)
-        } else {
-            due
-        };
-
-        out.push_str(&format!(
-            "{sid:>4}  {urg_p}  {prio_p}  {title}  {project_p}  {due_p}  {tags_p}\n"
-        ));
+        let urg_plain = rpad(&r.urg, c.urg);
+        let mut line = vec![
+            rpad(&r.sid, c.id),
+            ctx.theme.ramp_style(r.ramp).paint(&urg_plain, &ctx.caps),
+            cell(ctx, Some(prio_role), &r.prio, 1),
+            cell(ctx, None, &r.title, c.title),
+        ];
+        if c.project > 0 {
+            line.push(cell(ctx, Some("project"), &r.project, c.project));
+        }
+        if c.due > 0 {
+            // Painted or bare, the cell went through the SAME fit, so the
+            // overdue branch cannot drift out of width from the ordinary one.
+            let role = if r.overdue { Some("overdue") } else { None };
+            line.push(cell(ctx, role, &r.due, c.due));
+        }
+        if c.tags > 0 {
+            line.push(cell(ctx, Some("tag"), &r.tags, c.tags));
+        }
+        out.push_str(&join(line));
+        out.push('\n');
     }
 
     let count = result
@@ -982,25 +1175,20 @@ pub fn pad(s: &str, max: usize) -> String {
     out
 }
 
-/// Truncate `s` to `max` cells with a trailing ellipsis, then pad out to exactly
-/// `max` — a fixed-size box whatever text lands in it.
+/// Truncate `s` to at most `max` cells, with a trailing ellipsis when it had to
+/// cut. The other half of the pair [`pad`] completes — see [`cell`], which
+/// applies both to a column whose budget the table's layout depends on.
 ///
-/// This is the treatment for a column with a stated budget the table's layout
-/// depends on (`TASK` is 36 cells wide and the header says so). The ellipsis
-/// degrades to ASCII `...` when the terminal can't render Unicode
+/// The ellipsis degrades to ASCII `...` when the terminal can't render Unicode
 /// (piped/dumb/legacy), so the script-safe path never leaks a stray `…` —
 /// matching the rest of the glyph gating (hrule/arrow/mid/chart bars).
 ///
 /// The cut is made by `unicode_truncate`, which walks GRAPHEME CLUSTERS: half a
 /// ZWJ sequence is not a shorter emoji but a different one — or a dangling
 /// joiner the terminal draws as tofu — and it would still overflow the column,
-/// so a cluster is never sliced. The trailing `pad` is not redundant with the
-/// truncation: cutting a 36-cell budget just before a double-width glyph leaves
-/// 35 cells, and the spaces make up the difference.
-fn fit(s: &str, max: usize, unicode: bool) -> String {
-    pad(&truncate(s, max, unicode), max)
-}
-
+/// so a cluster is never sliced. The `pad` that follows it is not redundant:
+/// cutting a budget just before a double-width glyph leaves one cell short, and
+/// the spaces make up the difference.
 fn truncate(s: &str, max: usize, unicode: bool) -> String {
     if width(s) <= max {
         return s.to_string();
@@ -1417,9 +1605,9 @@ mod tests {
         }
     }
 
-    /// The same rule on the OTHER columns of the same table: `project` is
-    /// padded to 14 and `due` to 22, and a fix that only widened `title` would
-    /// leave both of them shifting the columns to their right.
+    /// The same rule on the OTHER columns of the same table: a fix that only
+    /// sized `title` correctly would leave `project` and `due` shifting the
+    /// columns to their right.
     #[test]
     fn task_table_project_and_due_columns_hold_their_width_in_cells() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
@@ -1441,6 +1629,96 @@ mod tests {
             for (row, v) in rows.iter().zip(AWKWARD) {
                 assert_eq!(cells(row), want, "{field}={v:?} broke alignment: {row:?}");
             }
+        }
+    }
+
+    /// One row of table JSON, so a layout test can vary the one field it is about.
+    fn task_json(id: i64, title: &str, project: &str, due: &str, tags: &[&str]) -> Value {
+        json!({ "short_id": id, "urgency": 5.0, "priority": "M", "title": title,
+                "project": project, "due": due, "tags": tags, "status": "pending" })
+    }
+
+    /// A column no row fills is not drawn, and its cells go to the columns that
+    /// have something to show.
+    ///
+    /// This is what the reader was looking at when they said the table "doesn't
+    /// look aligned": on a store with no due dates, `DUE` still held 22 cells
+    /// plus its gaps, so the widest gap in the table sat where there was no
+    /// data — a hole between `PROJECT` and `TAGS` that reads as a broken grid —
+    /// while `TASK` was cut to 36 cells and ellipsised titles that had 40 cells
+    /// of empty terminal to their right.
+    #[test]
+    fn a_column_no_task_fills_is_not_drawn_and_its_room_goes_to_the_titles() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let long = "Level-1 gameplay vision walkthrough, progression and escalation";
+        let with_due = json!({ "tasks": [
+            task_json(1, long, "raid.game", "2026-07-20T17:00:00Z", &["design"]),
+        ], "count": 1 });
+        let without_due = json!({ "tasks": [
+            task_json(1, long, "raid.game", "", &["design"]),
+        ], "count": 1 });
+
+        let head = |t: &Value| task_table(&ctx, t).lines().next().unwrap().to_string();
+        assert!(head(&with_due).contains("DUE"), "{}", head(&with_due));
+        assert!(
+            !head(&without_due).contains("DUE"),
+            "an empty DUE column was still drawn: {:?}",
+            head(&without_due)
+        );
+        // And the title survives whole once the dead column is gone.
+        let row = task_table(&ctx, &without_due)
+            .lines()
+            .nth(2)
+            .unwrap()
+            .to_string();
+        assert!(
+            row.contains(long),
+            "the title was truncated with room to spare: {row:?}"
+        );
+    }
+
+    /// The table lays out for the terminal it is printing into, and never
+    /// overruns it — including the rule, which is drawn from the same widths.
+    #[test]
+    fn the_table_fits_the_width_it_was_given() {
+        for cols in [Ctx::MIN_COLS, 60, 80, Ctx::DEFAULT_COLS, Ctx::MAX_COLS] {
+            let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(cols);
+            let tasks: Vec<Value> = (1..=4)
+                .map(|i| {
+                    task_json(
+                        i,
+                        "a title long enough that it cannot possibly fit any of these budgets \
+                         without being cut somewhere",
+                        "some.rather.long.project.name",
+                        "2026-07-20T17:00:00Z",
+                        &["one", "two", "three", "four", "five", "six"],
+                    )
+                })
+                .collect();
+            let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
+            for line in out.lines() {
+                assert!(
+                    cells(line) <= cols,
+                    "a {}-cell line in a {cols}-cell terminal: {line:?}",
+                    cells(line)
+                );
+            }
+        }
+    }
+
+    /// Wider is not a licence to spread: past `MAX_COLS` the extra cells are
+    /// left alone rather than poured into one enormous title column.
+    #[test]
+    fn an_ultrawide_terminal_does_not_get_an_ultrawide_table() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(400);
+        assert_eq!(ctx.cols, Ctx::MAX_COLS, "the width must be clamped");
+        let title = "x".repeat(300);
+        let out = task_table(
+            &ctx,
+            &json!({ "tasks": [task_json(1, &title, "p", "", &["t"])], "count": 1 }),
+        );
+        for line in out.lines() {
+            assert!(cells(line) <= Ctx::MAX_COLS, "{line:?}");
         }
     }
 
@@ -1541,13 +1819,25 @@ mod tests {
     /// Truncation has to cut on a GRAPHEME boundary and budget in cells. Half a
     /// ZWJ sequence is not a shorter emoji — it is a different one, or a lone
     /// joiner the terminal draws as tofu, and it still overflows the column.
+    ///
+    /// Asserted through `cell` — the function the table actually builds its
+    /// columns with — rather than through the truncation helper underneath it,
+    /// so a correct helper called with the wrong budget still fails here.
     #[test]
     fn truncation_budgets_cells_and_never_splits_a_cluster() {
         let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f466}";
         for unicode in [true, false] {
+            let ctx = Ctx::new(
+                theme::default_theme(),
+                theme::Caps {
+                    depth: theme::ColorDepth::None,
+                    ansi: false,
+                    unicode,
+                },
+            );
             // Long enough to force a cut, with the cut landing inside a cluster.
             let s = format!("ab{family}{family}cd");
-            let got = fit(&s, 7, unicode);
+            let got = cell(&ctx, None, &s, 7);
             assert_eq!(
                 cells(&got),
                 7,
@@ -1559,20 +1849,19 @@ mod tests {
             );
             // A CJK string: 5 ideographs are 10 cells, so 6 cells must fit at
             // most 2 of them plus the ellipsis — a char-counting truncate keeps 5.
-            let cjk = fit("漢字テスト", 6, unicode);
+            let cjk = cell(&ctx, None, "漢字テスト", 6);
             assert_eq!(
                 cells(&cjk),
                 6,
                 "CJK cell budget blown (unicode={unicode}): {cjk:?}"
             );
+            // A string already inside its budget is padded, not cut.
+            assert_eq!(
+                cell(&ctx, None, "中文", 6),
+                "中文  ",
+                "short cell should be padded to 6 cells"
+            );
         }
-        // A string already inside its budget is padded, not cut.
-        assert_eq!(
-            fit("中文", 6, true),
-            "中文  ",
-            "short cell should be padded to 6 cells"
-        );
-        assert_eq!(cells(&fit("中文", 6, true)), 6);
     }
 
     /// `tasqx why` printed `age             -0.00`.
