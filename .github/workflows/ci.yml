@@ -32,11 +32,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Both, deliberately. `documented_store_path_matches_the_real_one` is
-        # `#[cfg(windows)]`, so the non-Windows store paths in the user guide
-        # were never checked by anything; and the daemon's transport differs per
-        # platform (Unix socket vs named pipe), which no single-OS run exercises.
-        os: [ubuntu-latest, windows-latest]
+        # All three, deliberately. `documented_store_path_matches_the_real_one`
+        # exists twice — a `#[cfg(windows)]` and a `#[cfg(unix)]` twin — and the
+        # unix one has a `target_os = "macos"` arm asserting
+        # `~/Library/Application Support/dev.tasqx.tasqx/tasks.db`. The ubuntu
+        # runner takes the Linux branch, so that macOS arm is a documented path
+        # no runner had ever executed. The daemon's transport also differs per
+        # platform (Unix socket vs named pipe), and BSD kernels differ from Linux
+        # on socket flag inheritance — a difference this repo has already been
+        # bitten by once, after a release rather than in CI.
+        #
+        # macOS joined on 2026-08-02, and the reason is a bill this project has
+        # already paid. `release.yml` ships FOUR targets, two of them Darwin
+        # (`aarch64-apple-darwin`, `x86_64-apple-darwin`) — so half of what
+        # users download had never had a single test run against it. That is
+        # not hypothetical: the v0.2.0 release run itself exposed a macOS-only
+        # daemon bug, where a BSD-derived kernel hands an accepted socket the
+        # listener's O_NONBLOCK and Linux does not (daemon.rs, "BSD-derived
+        # kernels"). It was found by shipping, which is the most expensive
+        # place to find anything.
+        #
+        # The macOS runner is the priciest of the three, and it is still worth
+        # it: the alternative is continuing to publish two binaries whose only
+        # test is a user's bug report. Note also that Darwin is not merely
+        # "Unix like ubuntu" — the case-insensitive filesystem, the
+        # `/var` -> `/private/var` canonicalisation, the 104-byte `sun_path`
+        # limit and the absent runtime dir are all real behavioural differences
+        # this suite touches.
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -56,6 +79,57 @@ jobs:
       - run: cargo test --workspace --all-targets --no-fail-fast
         env:
           RUSTFLAGS: -D warnings
+
+  # Shell completion, EXECUTED rather than compared against a string.
+  #
+  # tests/completion.rs is 2400 lines and every line of it about zsh, fish and
+  # elvish is a text comparison or an "a registration was emitted" check.
+  # Neither proves the activation line works. This repo has the receipt: moving
+  # completion off clap's generic `COMPLETE` variable (cf96c81) was a real
+  # behavioural change that every text guard passed clean, because a string that
+  # matches a string that is also wrong is still a match. Only bash and
+  # PowerShell had ever had their line actually run.
+  #
+  # So this job installs the shells and runs the line the binary prints, then
+  # drives the completer it installs against a seeded store — `tasqx li` must
+  # offer `list` (static subcommands) and `tasqx done ` must offer a seeded id
+  # (the dynamic store lookup, which is the only assertion that proves the
+  # completer reaches the store at all).
+  #
+  # `REQUIRE=zsh,fish` is what stops this degrading quietly: without it a failed
+  # `apt-get install` would leave the script reporting "not installed, skipped"
+  # and the job would go green having measured nothing — the exact shape of
+  # failure this whole job exists to end.
+  #
+  # elvish IS installed here, deliberately, even though it cannot be driven. It
+  # is cheaply installable (it is in the Ubuntu archive), so the honest reason
+  # for its absence is not cost: its activation installs
+  # `$edit:completion:arg-completer`, and the `edit:` namespace belongs to
+  # elvish's interactive line editor, so a non-interactive elvish has nothing to
+  # register into — verified, it answers `cannot find variable
+  # $edit:completion:arg-completer`. Installing it makes the script say that out
+  # loud in the log, so nobody reads this job and assumes elvish is covered.
+  #
+  # The script is a plain script, not a `#[test]`, so a developer runs exactly
+  # what CI runs: `scripts/shell-completion-smoke.sh`. A check only CI can run
+  # is one nobody debugs.
+  shell-completion:
+    name: zsh + fish activation lines (executed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The two shells this job exists to prove. Strict: if either is missing
+      # the job must go red, and `REQUIRE` below catches it a second time.
+      - run: sudo apt-get update && sudo apt-get install -y zsh fish
+      # elvish separately and tolerantly. The script cannot drive it — its
+      # completer lives in the `edit:` namespace, so there is nothing to invoke
+      # from a non-interactive shell — and it is installed only so the log says
+      # what elvish's real status is. Making it a hard prerequisite would let a
+      # package that contributes one SKIP line redden the whole job.
+      - run: sudo apt-get install -y elvish || echo "elvish unavailable; the script will report it as not covered"
+      - run: REQUIRE=zsh,fish scripts/shell-completion-smoke.sh
 
   # The OS-notification backend is off by default and therefore compiled by
   # nothing in the normal test run — a break in it would surface only on a
