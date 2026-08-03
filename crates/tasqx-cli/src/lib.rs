@@ -559,6 +559,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, file),
         Some(Command::Next) => run_next(&mut backend, &ctx),
+        Some(Command::Pick { filter }) => run_pick(&mut backend, &ctx, &filter),
         Some(Command::Why { r#ref }) => run_why(&mut backend, &ctx, r#ref),
         Some(Command::Chart { .. }) => unreachable!("handled above"),
         Some(Command::Theme { .. }) => unreachable!("handled above"),
@@ -1748,6 +1749,217 @@ fn run_why(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
     let result = be.call("task.get", &json!({ "ref": r#ref }))?;
     let text = render::why(ctx, &result);
     Ok((result, text))
+}
+
+// ---- `tasqx pick`: the interactive chooser (DESIGN.md §10, D55) -------------
+
+/// The refusal a non-interactive `tasqx pick` gives.
+///
+/// A constant because it is asserted from two places — the unit test below and
+/// `tests/help.rs`, which drives the real binary — and a message pinned by a
+/// hand-copied substring in each is a message that drifts out from under both.
+/// It names the two commands that answer the same question without a screen,
+/// because "needs a terminal" on its own leaves a scripter with nothing to type
+/// next; `config edit`'s refusal earns its exit 2 the same way.
+const PICK_NEEDS_A_TERMINAL: &str =
+    "`tasqx pick` needs an interactive terminal on stdin and stdout \
+     (one of them is piped, redirected, or TERM=dumb). `tasqx next` picks the \
+     highest-urgency task for you and `tasqx start <ref>` starts it.";
+
+/// `tasqx pick` — choose a task on a full-screen list, and start it.
+///
+/// The three pieces this function owns are the three the state machine must
+/// not: the TTY gate, the candidate snapshot, and the write. Everything between
+/// them is `tui::pick`.
+///
+/// # Why the gate runs before the store is opened
+///
+/// `config edit` established the shape, and the ORDER matters here for a reason
+/// it did not have: this verb takes a filter, so a store read could fail on a
+/// bad filter token and report *that* to a script whose real problem is that
+/// this command cannot run in a pipe at all. The structural refusal comes
+/// first, and it also means the piped case touches no database — which is what
+/// lets `tests/help.rs` drive it without setting up a store.
+fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
+    if !tui::is_interactive(&ctx.caps) {
+        return Err(ApiError::bad_request(PICK_NEEDS_A_TERMINAL));
+    }
+
+    // The same default and the same argv-preserving parse as `list`: `pick` is
+    // a chooser over the working set, so the set it offers must be the set
+    // `tasqx` shows, token for token.
+    let filter_str = if filter.is_empty() {
+        "@working".to_string()
+    } else {
+        tasqx_core::filter::from_argv(filter)
+    };
+    let listed = be.call(
+        "task.list",
+        &json!({ "filter": filter_str, "sort": ["-urgency"] }),
+    )?;
+    let rows = pick_rows(&listed);
+    if rows.is_empty() {
+        return Err(no_candidates(&filter_str));
+    }
+
+    let mut app = tui::pick::App::new(rows);
+    let caps = ctx.caps;
+    let chosen = tui::with_terminal(|term| pick_loop(term, &mut app, &ctx.theme, caps))
+        .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
+
+    // Cancelling is exit 4, not exit 0. `pick` exists to produce one task; when
+    // it produced none, answering ok is a command reporting success for work it
+    // did not do — this project's named recurring defect, and the reason
+    // `config edit`'s "no changes" exit 0 is NOT the precedent to copy. That
+    // screen is a session where zero edits is a legitimate outcome; this one is
+    // a selection whose entire output is the choice.
+    let Some(short_id) = chosen else {
+        return Err(ApiError::not_found(
+            "nothing picked — no task was started",
+            None,
+        ));
+    };
+    // The title is read back out of the snapshot the screen was built from,
+    // because the screen is gone by the time this prints and `task.start`
+    // answers with a UUID and a timestamp, neither of which a human recognises.
+    let title = app
+        .rows()
+        .iter()
+        .find(|r| r.short_id == short_id)
+        .map(|r| r.title.clone())
+        .unwrap_or_default();
+
+    let result = be.call(
+        "task.start",
+        &json!({ "ref": short_id.to_string(), "keep": false }),
+    )?;
+    let text = picked_summary(ctx, short_id, &title, &result);
+    Ok((pick_result(short_id, &title, result), text))
+}
+
+/// An empty candidate set is a refusal, not an empty screen.
+///
+/// Exit 4 with the filter quoted back, because the two ways to get here look
+/// identical from the outside — a store with nothing pending, and a filter that
+/// excludes everything — and only the text can tell them apart. Opening the
+/// screen on zero rows instead would put the user in an alt screen whose only
+/// available action is leaving it.
+fn no_candidates(filter: &str) -> ApiError {
+    ApiError::not_found(
+        format!("no task matches `{filter}` — nothing to pick (try `tasqx list {filter}`)"),
+        None,
+    )
+}
+
+/// The `task.list` answer, flattened into the rows the screen draws.
+///
+/// Extracted so it is reachable from a test at all: everything around it needs
+/// a real terminal, and a mapping that dropped a field — or read `id` where it
+/// meant `short_id`, which would make every Enter start the wrong task or none
+/// at all — would leave the whole suite green with the screen unusable. That is
+/// the same hole `settings_rows` was pulled out of `run_config_edit` to close.
+fn pick_rows(result: &Value) -> Vec<tui::pick::Row> {
+    let field = |t: &Value, key: &str| -> String {
+        t.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    };
+    result
+        .get("tasks")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|t| {
+            let urgency = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+            tui::pick::Row::new(
+                t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
+                &field(t, "title"),
+                &field(t, "project"),
+                // `-` and not an empty cell: a task with no priority is a fact,
+                // and a blank column reads as a rendering bug.
+                match field(t, "priority").as_str() {
+                    "" => "-",
+                    p => p,
+                },
+                &format!("{urgency:.1}"),
+                &t.get("tags")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// Draw, read one key, fold it in. Returns the chosen `short_id`, or `None`
+/// when the user left without choosing.
+///
+/// The theme is resolved once, outside, and not per frame: unlike the settings
+/// screen there is nothing here whose value depends on repainting in a
+/// different theme, so re-loading it every keystroke would be work with no
+/// observable effect.
+fn pick_loop(
+    term: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    app: &mut tui::pick::App,
+    theme: &theme::Theme,
+    caps: Caps,
+) -> std::io::Result<Option<i64>> {
+    use ratatui::crossterm::event::{self, Event};
+
+    loop {
+        term.draw(|f| tui::pick::render(app, theme, &caps, f))?;
+        // Resize and paste events just redraw; only keys are decisions.
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        match app.on_key(key) {
+            Some(tui::pick::Action::Choose { short_id }) => return Ok(Some(short_id)),
+            Some(tui::pick::Action::Cancel) => return Ok(None),
+            None => {}
+        }
+    }
+}
+
+/// The scrollback record `pick` leaves behind once the alt screen is gone.
+///
+/// `render::started` alone is not enough here, and that is not a style
+/// preference: it prints "Started task · timer running (since …)" and names no
+/// task, which is right for `tasqx start 42` — the user typed the ref — and
+/// wrong for a screen that has just been wiped off the display. Without the
+/// identity line an interactive session leaves no trace of WHICH task it
+/// started, which is exactly the auditability `saved_summary` exists to give
+/// `config edit`.
+///
+/// Extracted for the same reason as that function: the rest of `run_pick` needs
+/// a real terminal, so this line would otherwise be the one piece of it no test
+/// could ever see.
+fn picked_summary(ctx: &Ctx, short_id: i64, title: &str, result: &Value) -> String {
+    format!(
+        "{}\n{}",
+        ctx.paint("header", &format!("#{short_id}  {title}")),
+        render::started(ctx, result)
+    )
+}
+
+/// The `--json` body: `task.start`'s own answer, plus the identity of the task
+/// that was picked.
+///
+/// `task.start` returns `{id, interval_started}` — a UUID and a timestamp. That
+/// is the right answer for a caller who supplied the ref, and a useless one
+/// here, because the ref is the thing `pick` was asked to determine. The two
+/// added fields are the CLI's own composition (as `agenda`'s `--json` body is),
+/// never a change to what the method returns: the method's keys are passed
+/// through untouched beside them.
+fn pick_result(short_id: i64, title: &str, mut started: Value) -> Value {
+    if let Some(obj) = started.as_object_mut() {
+        obj.insert("short_id".to_string(), json!(short_id));
+        obj.insert("title".to_string(), json!(title));
+    }
+    started
 }
 
 // ---- charts, HTML report, and theme tools (DESIGN.md §8) --------------------
@@ -3340,6 +3552,134 @@ mod tests {
         let hint = theme_pointer("theme.name").expect("theme.name has a pointer");
         assert!(hint.contains("tasqx theme show"), "{hint}");
         Cli::try_parse_from(["tasqx", "theme", "show"]).expect("`tasqx theme show` must parse");
+    }
+
+    // ---- `tasqx pick` (D55) --------------------------------------------------
+
+    /// A plain context: no ANSI, so the assertions below are about the words in
+    /// the line rather than about the escape sequences around them.
+    fn plain_ctx() -> Ctx {
+        Ctx::new(theme::load("nord", None), Caps::PLAIN)
+    }
+
+    /// The flattening from a `task.list` answer to screen rows. Every field on
+    /// this screen decides which task the user starts, and the whole path
+    /// around it needs a real terminal — so a mapping that read `id` where it
+    /// meant `short_id`, or dropped the project, would leave the suite green
+    /// with the chooser unusable. That is the hole `settings_rows` was pulled
+    /// out of `run_config_edit` to close, one screen over.
+    #[test]
+    fn pick_rows_carry_every_field_the_screen_tells_tasks_apart_by() {
+        let listed = json!({ "tasks": [
+            { "short_id": 42, "id": "uuid-not-this-one", "title": "Ship the freeze",
+              "project": "work.tasqx", "priority": "H", "urgency": 11.84,
+              "tags": ["release", "api"] },
+            { "short_id": 7, "title": "No priority here" },
+        ]});
+        let rows = pick_rows(&listed);
+        assert_eq!(rows.len(), 2);
+
+        assert_eq!(rows[0].short_id, 42, "the ref must be the short_id");
+        assert_eq!(rows[0].title, "Ship the freeze");
+        assert_eq!(rows[0].project, "work.tasqx");
+        assert_eq!(rows[0].priority, "H");
+        assert_eq!(rows[0].urgency, "11.8", "urgency is shown to one decimal");
+        assert_eq!(rows[0].tags, "release api");
+
+        // A task missing the optional fields is still a pickable row, and its
+        // priority reads as a fact rather than as a blank cell.
+        assert_eq!(rows[1].short_id, 7);
+        assert_eq!(rows[1].priority, "-");
+        assert_eq!(rows[1].urgency, "0.0");
+        assert!(rows[1].project.is_empty() && rows[1].tags.is_empty());
+    }
+
+    /// An empty `task.list` answer must produce no rows, which is what makes
+    /// `run_pick` refuse instead of opening an alt screen whose only available
+    /// action is leaving it.
+    #[test]
+    fn an_empty_task_list_yields_no_pick_rows() {
+        assert!(pick_rows(&json!({ "tasks": [] })).is_empty());
+        assert!(
+            pick_rows(&json!({})).is_empty(),
+            "a missing key is not rows"
+        );
+    }
+
+    /// Nothing to pick is exit 4, and the message has to quote the filter back.
+    /// "No tasks." would be ambiguous in the one place it matters: an empty
+    /// working set and a filter that excludes everything look identical from
+    /// outside, and only the text can tell the user which one they hit.
+    #[test]
+    fn nothing_to_pick_is_a_not_found_that_names_the_filter() {
+        let e = no_candidates("project:work +api");
+        assert_eq!(e.exit_code(), 4, "an empty candidate set may not exit 0");
+        assert!(e.message.contains("project:work +api"), "{}", e.message);
+        assert!(
+            e.message.contains("tasqx list"),
+            "the refusal must name a way to look: {}",
+            e.message
+        );
+    }
+
+    /// The refusal a script hits. It must name the commands that answer the
+    /// same question without a screen — "needs a terminal" alone leaves the
+    /// reader with nothing to type next — and those commands must be real,
+    /// which is what the parse below checks.
+    #[test]
+    fn the_non_interactive_refusal_names_commands_that_exist() {
+        assert!(
+            PICK_NEEDS_A_TERMINAL.contains("interactive terminal"),
+            "{PICK_NEEDS_A_TERMINAL}"
+        );
+        assert!(
+            PICK_NEEDS_A_TERMINAL.contains("tasqx next"),
+            "{PICK_NEEDS_A_TERMINAL}"
+        );
+        assert!(
+            PICK_NEEDS_A_TERMINAL.contains("tasqx start"),
+            "{PICK_NEEDS_A_TERMINAL}"
+        );
+        Cli::try_parse_from(["tasqx", "next"]).expect("`tasqx next` must parse");
+        Cli::try_parse_from(["tasqx", "start", "1"]).expect("`tasqx start <ref>` must parse");
+        // And the gate itself: `Caps::PLAIN` and a redirected stream are both
+        // refusals, which is the rule this message explains.
+        assert!(!tui::is_interactive_with(&Caps::PLAIN, true, true));
+        assert!(!tui::is_interactive_with(&plain_ctx().caps, false, true));
+    }
+
+    /// The scrollback line `pick` leaves once the alt screen is gone. It has to
+    /// NAME the task: `render::started` prints "Started task · timer running"
+    /// and nothing else, which is right for `tasqx start 42` — the user typed
+    /// the ref — and leaves an interactive session with no record of which task
+    /// it started. This is the only reachable test of that line; the rest of
+    /// `run_pick` needs a real terminal.
+    #[test]
+    fn the_pick_summary_names_the_task_it_started() {
+        let started = json!({ "id": "0199-uuid", "interval_started": "2026-08-03T10:00:00Z" });
+        let text = picked_summary(&plain_ctx(), 42, "Ship the v1 JSON API freeze", &started);
+        assert!(text.contains("#42"), "{text}");
+        assert!(text.contains("Ship the v1 JSON API freeze"), "{text}");
+        assert!(
+            text.contains("Started task"),
+            "the timer line must survive too: {text}"
+        );
+        assert!(text.ends_with('\n'), "{text:?}");
+    }
+
+    /// `--json` must carry the identity of the task that was picked. The method
+    /// answers `{id, interval_started}` — a UUID and a timestamp — and the ref
+    /// is the very thing `pick` was asked to determine, so without these two
+    /// fields the machine-readable answer omits the answer. The method's own
+    /// keys are passed through untouched beside them.
+    #[test]
+    fn the_pick_json_carries_the_chosen_ref_beside_the_methods_own_answer() {
+        let started = json!({ "id": "0199-uuid", "interval_started": "2026-08-03T10:00:00Z" });
+        let out = pick_result(42, "Ship the freeze", started);
+        assert_eq!(out["short_id"], json!(42));
+        assert_eq!(out["title"], json!("Ship the freeze"));
+        assert_eq!(out["id"], json!("0199-uuid"));
+        assert_eq!(out["interval_started"], json!("2026-08-03T10:00:00Z"));
     }
 
     // ---- the reference examples parse ---------------------------------------

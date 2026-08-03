@@ -278,6 +278,64 @@ fn config_edit_refuses_a_piped_stdout_with_a_nonzero_exit() {
     );
 }
 
+/// `tasqx pick` is the second subcommand that wants a terminal, and the first
+/// whose whole purpose is composition — `tasqx pick | tasqx done` and
+/// `$(tasqx pick)` are the shapes a user reaches for, and both are exactly the
+/// invocations this refusal covers. So the refusal has to be good: the code a
+/// script branches on, no escape bytes, and the names of the commands that
+/// answer the same question without a screen.
+///
+/// No `TASQX_DB` is set, and that is an assertion in itself: the gate runs
+/// before the store is opened, so a piped `pick` must not reach a database at
+/// all — including the developer's real one.
+#[test]
+fn pick_refuses_a_piped_stdout_with_a_nonzero_exit() {
+    let out = bin().arg("pick").output().expect("run pick");
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a refused TUI must exit non-zero (bad_request)"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "nothing may reach a piped stdout: {:?}",
+        out.stdout
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.contains('\x1b'),
+        "escape codes leaked into the refusal: {err:?}"
+    );
+    assert!(err.contains("interactive terminal"), "{err}");
+    assert!(
+        err.contains("tasqx next") && err.contains("tasqx start"),
+        "the refusal must name the commands that DO work in a pipe: {err}"
+    );
+
+    // A filter argument must not change the answer: the gate is structural and
+    // comes first, so `pick project:work` may not fail on the filter instead —
+    // that would report a problem the caller does not have.
+    let filtered = bin()
+        .args(["pick", "project:work", "+api"])
+        .output()
+        .expect("run pick with a filter");
+    assert_eq!(filtered.status.code(), Some(2));
+    assert!(filtered.stdout.is_empty());
+
+    // And its aliases are the same command. Asserted on the MESSAGE, not on
+    // the exit code: clap's own "unrecognized subcommand" also exits 2, so a
+    // code-only check would pass for an alias that does not exist at all.
+    for alias in ["p", "fzf"] {
+        let aliased = bin().arg(alias).output().expect("run the alias");
+        let err = String::from_utf8_lossy(&aliased.stderr);
+        assert!(
+            err.contains("interactive terminal"),
+            "`tasqx {alias}` did not reach `pick`: {err}"
+        );
+    }
+}
+
 #[test]
 fn manual_toc_and_sections_work() {
     let out = bin().arg("manual").output().unwrap();

@@ -696,6 +696,33 @@ pub(super) enum Command {
     /// Print the single highest-urgency unblocked task (the "what now" button).
     #[command(after_help = crate::cmddoc::after_help("next"))]
     Next,
+    /// Choose a task on a full-screen list and start it (maps to task.list,
+    /// then task.start).
+    ///
+    /// Type to narrow the list — the query is a fuzzy subsequence match over
+    /// id, title, project and tags, and whitespace splits it into terms that
+    /// all have to match. Up/down (or ctrl-p/ctrl-n) move, enter starts the
+    /// highlighted task, esc clears the query and then leaves.
+    ///
+    /// Enter is the only key with a side effect, and it has one: this verb
+    /// starts the task it selects. Cancelling, or a filter that matches no
+    /// task, exits 4 having changed nothing — `pick` produced no task, and a
+    /// command that produced nothing may not report success.
+    ///
+    /// It needs a real terminal on BOTH stdin and stdout, so it refuses in a
+    /// pipe rather than writing escape codes into it (exit 2, D26).
+    #[command(alias = "p", alias = "fzf", after_help = crate::cmddoc::after_help("pick"))]
+    Pick {
+        /// Filter DSL, e.g. "project:work +api" (default: the working set).
+        ///
+        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        /// `List::filter` for why the pre-pass and not `allow_hyphen_values`.
+        /// Being named `filter` is what puts this positional under
+        /// `argv::tests::every_filter_positional_is_registered`, which fails
+        /// the build unless `pick` is in `FILTER_COMMANDS` too.
+        #[arg(add = crate::complete::candidates::filter_words())]
+        filter: Vec<String>,
+    },
     /// Explain a task's urgency breakdown (maps to task.get + the D1 formula).
     #[command(after_help = crate::cmddoc::after_help("why"))]
     Why {
