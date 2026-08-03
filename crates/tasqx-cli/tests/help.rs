@@ -194,13 +194,16 @@ fn safe_examples_all_exit_zero() {
     // A filter bug that selected nothing would leave this test green while
     // executing zero commands; the floor makes that impossible to miss.
     //
-    // Re-derived from the count this guard reports (35), not incremented: it
+    // Re-derived from the count this guard reports (36), not incremented: it
     // had been sitting at 27 against a real 35, so eight Safe examples could
     // have been deleted with nothing going red — the exact way a floor stops
     // guarding while still printing green. `tag`/`untag` are `NoRun` (they
-    // mutate), so they add nothing here; the correction is independent of them.
+    // mutate), so they added nothing; `archive` is `Safe` on purpose and is the
+    // 36th — it runs after the `init` example that created its project, and
+    // that project is this store's default, so the default-clearing branch of
+    // `project.archive` is executed for real on every run of this suite.
     assert!(
-        examples.len() >= 35,
+        examples.len() >= 36,
         "expected the full Safe set, got {}",
         examples.len()
     );

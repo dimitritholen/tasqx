@@ -2572,3 +2572,129 @@ fn tag_and_untag_agree_with_sugar_and_refuse_a_tag_the_task_lacks() {
         "a bare `+` must be refused, not silently dropped"
     );
 }
+
+/// #53 — the CLI `archive` verb, end to end through the real binary.
+///
+/// `project.archive` shipped with the engine and was reachable over the JSON API
+/// and MCP, and from the terminal not at all: D22 wrote the rule down ("archiving
+/// the current default clears it") together with the sentence "there is no CLI
+/// `archive` verb today … when one lands it renders `default_cleared`". This is
+/// that verb, and the assertion is deliberately about the terminal rather than
+/// the engine — the engine half is pinned in the core suite. What only the binary
+/// can show is the exit code a script branches on, the words the user reads, and
+/// whether the default really moved underneath them.
+///
+/// The default-clearing branch is the whole reason the verb needs copy. A `tasqx
+/// archive work` that printed nothing but "Project work archived" would change
+/// where every later bare `tasqx add` lands with nobody told — this project's
+/// recurring failure, arriving through the one verb that had no terminal.
+#[test]
+fn archive_retires_a_project_and_says_when_it_cleared_the_default() {
+    let dir = fresh_config_dir("archiveverb");
+    let run = |args: &[&str]| {
+        bin("archiveverb", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    // `work` is created first, so it is the store's default (D21).
+    ok(&["init", "work"]);
+    ok(&["init", "side"]);
+    ok(&["add", "keep this", "--project", "side"]);
+
+    // Archiving a NON-default project leaves the default alone — and says so,
+    // rather than saying nothing: silence is also what the cleared case would
+    // print if the field were dropped.
+    let quiet = ok(&["archive", "side"]);
+    assert!(quiet.contains("side"), "must name the project: {quiet}");
+    assert!(
+        quiet.contains("unchanged"),
+        "the untouched default must be stated, not implied: {quiet}"
+    );
+    let listed = ok(&["--json", "projects"]);
+    assert!(
+        !listed.contains("side"),
+        "an archived project must drop out of `projects`: {listed}"
+    );
+    let all = ok(&["--json", "projects", "--all"]);
+    assert!(
+        all.contains("side"),
+        "`--all` must still show it — archiving is a shelf, not a delete: {all}"
+    );
+    // The tasks are untouched: still there, still in the project. Read as JSON
+    // rather than as a substring, because `--json` pretty-prints and a
+    // hand-spelled `"project":"side"` would be a test that passes on the
+    // formatter rather than on the value.
+    let shown: serde_json::Value =
+        serde_json::from_str(&ok(&["--json", "show", "1"])).expect("show --json");
+    assert_eq!(
+        shown["project"], "side",
+        "archiving a project must not touch its tasks: {shown}"
+    );
+
+    // D22, the loud half: archiving the CURRENT default clears the default.
+    let loud = ok(&["archive", "work"]);
+    assert!(
+        !loud.contains("unchanged"),
+        "the default was cleared and the line says it was not: {loud}"
+    );
+    assert!(
+        loud.contains("default project"),
+        "the default moved and the line does not say so: {loud}"
+    );
+    assert!(
+        loud.contains("tasqx use"),
+        "must name the way to point the default somewhere again: {loud}"
+    );
+
+    // And the outcome the user actually gets: a bare `add` is now projectless,
+    // the same state a fresh store is in.
+    //
+    // What this does NOT prove, stated plainly, because it was measured rather
+    // than assumed: it does not prove the ARCHIVE cleared the key. Deleting
+    // `clear_config` from `project_archive` leaves this assertion green, because
+    // every CLI command opens the store afresh and D23(b)'s stale-default repair
+    // (`storage::repair_stale_default_project`) deletes a default naming an
+    // archived project on the way in. The two mechanisms are indistinguishable
+    // from a process boundary. The engine half is pinned inside one Engine by
+    // `archiving_the_default_project_clears_the_default_and_reports_it` in the
+    // core suite, which does redden for that mutation.
+    ok(&["add", "homeless"]);
+    let shown: serde_json::Value =
+        serde_json::from_str(&ok(&["--json", "show", "2"])).expect("show --json");
+    assert_eq!(
+        shown["project"],
+        serde_json::Value::Null,
+        "the default was reported cleared and a bare add still landed in it: {shown}"
+    );
+
+    // Validation happens at the edge, in the core, exactly as `use` does it:
+    // an unknown name is exit 4 naming it, and a blank one is exit 2.
+    let unknown = run(&["archive", "nope"]);
+    assert_eq!(
+        unknown.status.code(),
+        Some(4),
+        "an unknown project must be not_found; stdout was {}",
+        String::from_utf8_lossy(&unknown.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("nope"),
+        "the refusal must name what the caller got wrong: {}",
+        String::from_utf8_lossy(&unknown.stderr)
+    );
+    assert_eq!(
+        run(&["archive", ""]).status.code(),
+        Some(2),
+        "an empty name is bad_request, as it is on `use` (D36)"
+    );
+}

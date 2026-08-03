@@ -505,6 +505,7 @@ fn execute(cli: Cli) -> Exit {
             run_dep(&mut backend, &ctx, "dependency.remove", r#ref, depends_on)
         }
         Some(Command::Use { name }) => run_use(&mut backend, &ctx, name),
+        Some(Command::Archive { name }) => run_archive(&mut backend, &ctx, name),
         Some(Command::Projects { all }) => run_projects(&mut backend, &ctx, all),
         Some(Command::Report { args, all, .. }) => run_report(&mut backend, &ctx, args, all),
         Some(Command::Config { action }) => {
@@ -1230,6 +1231,23 @@ fn run_dep(
 fn run_use(be: &mut Backend, ctx: &Ctx, name: String) -> CmdOutcome {
     let result = be.call("project.use", &json!({ "name": name }))?;
     let text = render::default_switched(ctx, &result);
+    Ok((result, text))
+}
+
+/// D22: take a project out of rotation. Same shape as [`run_use`] — the name is
+/// a lookup the core resolves, so an unknown one is `not_found` (exit 4) from
+/// the engine and not from a second copy of the rule here.
+///
+/// The interesting half is the response, not the request: `project.archive`
+/// clears the default project when it archives the one the `default_project`
+/// key names, and `default_cleared` is how it says so. Dropping that field on
+/// the floor here would make the CLI the surface on which "where does a bare
+/// `tasqx add` land" changed with nobody told — the invisible-state failure D21
+/// and D22 exist to close, arriving through the one verb that was never wired
+/// to a terminal.
+fn run_archive(be: &mut Backend, ctx: &Ctx, name: String) -> CmdOutcome {
+    let result = be.call("project.archive", &json!({ "name": name }))?;
+    let text = render::project_archived(ctx, &result);
     Ok((result, text))
 }
 

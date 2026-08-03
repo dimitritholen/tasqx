@@ -56,9 +56,10 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 34] = [
+const VERBS: [(&str, &str, &str); 35] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
+    ("archive", "—", "project.archive"),
     ("add", "<code>a</code>, <code>new</code>", "task.add"),
     (
         "modify",
@@ -1063,6 +1064,41 @@ fn page_commands() -> String {
          <code>conflict</code> (exit 5). Archiving the project that <em>is</em> the default clears \
          the default rather than leaving it pointed at a retired project, and a bare \
          <code>add</code> is then projectless until you <code>use</code> another.",
+    ));
+
+    // ---- archive
+    s.push_str(&h3("archive"));
+    s.push_str(&p(
+        "<code>archive</code> takes a project out of rotation. Its tasks are untouched — they keep \
+         their history and their project — but the project drops out of <code>tasqx projects</code> \
+         and no write may name it any more. Archiving is a shelf, not a delete.",
+    ));
+    s.push_str(&snippet(
+        "tasqx archive prive.klussen\ntasqx use work.tasqx",
+        "Project prive.klussen archived  ·  it was your default project, so a bare `tasqx add` has \
+         no home until `tasqx use <project>`\n\
+         Default project is now work.tasqx  ·  a bare `tasqx add` lands here",
+    ));
+    s.push_str(&p(
+        "That first line is the point of the verb having a terminal at all. The project just \
+         archived <em>was</em> the default, so archiving it cleared the default in the same \
+         transaction (D22) — leaving it pointed at a retired project would file every later bare \
+         <code>add</code> somewhere the project list no longer shows. Until you <code>use</code> \
+         another one, a bare <code>add</code> is projectless, which is the same state a brand-new \
+         store is in. Archiving a project that is <em>not</em> the default says so too, rather \
+         than saying nothing.",
+    ));
+    s.push_str(&snippet(
+        "tasqx projects --all",
+        "DEFAULT  PROJECT                   ARCHIVED   DESCRIPTION\n\
+         \x20        prive.klussen             yes\n\
+         *        work.tasqx                no         The tasqx project itself",
+    ));
+    s.push_str(&note(
+        "There is no <code>unarchive</code> verb and no <code>project.unarchive</code> method — \
+         among the project methods, archiving is one-way. <code>store.import</code> does write a \
+         project's <code>archived</code> flag from the document, so restoring a saved export \
+         un-archives one; that is a data restore, not an undo.",
     ));
 
     // ---- lifecycle
