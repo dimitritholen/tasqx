@@ -21,6 +21,102 @@ fn readme() -> String {
     fs::read_to_string(root().join("README.md")).expect("../../README.md is readable")
 }
 
+/// The README names the platforms CI tests on, and that sentence must agree with
+/// the matrix in `.github/workflows/ci.yml`.
+///
+/// # Why this is worth a guard
+///
+/// It has now drifted twice, in opposite directions. It said "Linux and Windows"
+/// while the Windows job had been red for a week, and then it went on saying
+/// "macOS binaries are built and released but not yet covered by the test matrix"
+/// in the very commit that added `macos-latest` to the matrix. Both readings were
+/// wrong at the moment somebody would have relied on them, and no gate could see
+/// either: the workflow is YAML that no Rust test parses, and the README is prose.
+///
+/// The matrix is the registry and the README restates it, which is the D30 shape
+/// this repository keeps paying for. So the list is READ out of the workflow — a
+/// deliberately small parse, since pulling in a YAML crate for one line would be
+/// a dependency the supply-chain job then has to carry — and every platform in it
+/// must be named in the sentence.
+///
+/// # The check is scoped to the CI SENTENCES, and that is load-bearing
+///
+/// The first version of this guard asked whether the README contained the word
+/// "macos" anywhere. It passed while the CI sentence still said "Linux and
+/// Windows", because the install section mentions macOS binaries three
+/// paragraphs earlier — a guard that cannot fail, written in the commit whose
+/// whole purpose was to stop unguarded prose. So membership is decided by the
+/// lines that ANNOUNCE the matrix, found by the phrase they open with.
+///
+/// Deliberately one-directional: it fails when the workflow gains a platform
+/// those lines do not name, which is the direction that misleads a reader. It
+/// cannot catch a line naming a platform the workflow dropped; that would need
+/// the sentence itself to be machine-readable, and rewriting English to suit a
+/// parser is a worse trade than the half-guard.
+#[test]
+fn readme_names_every_platform_the_ci_matrix_tests() {
+    let ci = fs::read_to_string(root().join(".github/workflows/ci.yml"))
+        .expect("the CI workflow is readable");
+    let line = ci
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("os: ["))
+        .expect("ci.yml declares an `os: [...]` matrix; if that moved, fix this guard");
+    let platforms: Vec<&str> = line
+        .trim_start_matches("os: [")
+        .trim_end_matches(']')
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    assert!(
+        platforms.len() >= 2,
+        "parsed {platforms:?} out of {line:?} — the matrix format changed and \
+         this guard is checking almost nothing"
+    );
+
+    // The sentences that announce the matrix, not the whole document. Both
+    // README paragraphs about CI open with this phrase; anything else that
+    // happens to mention a platform (the install section lists the release
+    // targets) is none of this guard's business and must not satisfy it.
+    const ANNOUNCES_THE_MATRIX: &str = "ci runs the suite on";
+    let readme = readme().to_lowercase();
+    let claims: Vec<&str> = readme
+        .lines()
+        .filter(|l| l.contains(ANNOUNCES_THE_MATRIX))
+        .collect();
+    assert!(
+        !claims.is_empty(),
+        "no README line contains {ANNOUNCES_THE_MATRIX:?}, so this guard is \
+         checking nothing. Either the sentence was reworded — update the phrase \
+         here — or the README stopped saying which platforms CI covers."
+    );
+
+    for platform in &platforms {
+        // `ubuntu-latest` is called Linux in prose, and rightly: the README is
+        // for humans choosing a machine, not for someone reading a runner label.
+        let prose = match *platform {
+            p if p.starts_with("ubuntu") => "linux",
+            p if p.starts_with("windows") => "windows",
+            p if p.starts_with("macos") => "macos",
+            other => panic!(
+                "unknown runner {other:?} in the CI matrix; teach this guard what \
+                 to call it in prose rather than dropping it from the check"
+            ),
+        };
+        let named = claims.iter().filter(|c| c.contains(prose)).count();
+        assert_eq!(
+            named,
+            claims.len(),
+            "the CI matrix tests on {platform}, and only {named} of the \
+             {} README sentence(s) announcing the matrix say {prose:?}. A reader \
+             deciding whether their platform is covered is given the wrong \
+             answer, and nothing else in the build can tell.",
+            claims.len()
+        );
+    }
+}
+
 /// The README writes counts as words ("Fifteen tools"), so the guards that
 /// count for themselves need the same spelling. Panics past the table's end
 /// rather than guessing: extending it is a one-line edit at the moment a

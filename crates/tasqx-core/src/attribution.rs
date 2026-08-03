@@ -1252,6 +1252,37 @@ mod tests {
         s.parse().expect("valid RFC3339 test timestamp")
     }
 
+    /// Serialises every test that touches the DISCOVERY branch.
+    ///
+    /// Discovery scans process-global roots, and one of its tests
+    /// (`contested_discovery_samples_stay_terminal_rather_than_retrying`) plants
+    /// a transcript and points `$CLAUDE_CONFIG_DIR` at it with `set_var` — which
+    /// every other thread in this binary sees, because environment variables are
+    /// per-process and `cargo test` runs tests as threads.
+    ///
+    /// That was not a theoretical hazard. Its planted sample is stamped
+    /// `2020-01-01T10:10:00Z`, and the sibling
+    /// `discovery_finding_nothing_stays_terminal_rather_than_retrying` asserts
+    /// that a scan over `2020-01-01T10:00Z..11:00Z` finds NOTHING — the same
+    /// hour. When the two overlapped, the second test's scan saw the first
+    /// test's transcript through the override, `found` came back true, and it
+    /// failed at `assert!(!r.found)`. Measured on Linux: 1 failure in 15 runs of
+    /// the full lib binary, and 0 in 20 runs of either test on its own, which is
+    /// exactly the profile of a race and exactly the profile of a flake nobody
+    /// can reproduce from the failure message.
+    ///
+    /// The old code carried a `// SAFETY:` note claiming the concurrent readers
+    /// "tolerate an extra root". They do tolerate it; that was never the
+    /// problem. The problem is that the extra root CONTAINS an in-window sample
+    /// for the window another test is asserting is empty, so tolerating it is
+    /// precisely what makes the measurement wrong.
+    ///
+    /// Both tests take this lock, so the override is never live while another
+    /// discovery scan runs. Poisoning is deliberately ignored: a panic in one
+    /// test has already failed that test, and turning it into a cascade of
+    /// unrelated failures hides the original.
+    static DISCOVERY_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A `done` event payload carrying a transcript path, SERIALISED rather than
     /// formatted.
     ///
@@ -1848,10 +1879,20 @@ mod tests {
     /// A test whose result depends on the developer's own history is not a test.
     /// 2020 is the fix the sibling `contested_discovery_*` already uses and for
     /// the same reason — no real transcript can carry samples there — and it is
-    /// better than overriding `CLAUDE_CONFIG_DIR`, which needs `unsafe`, mutates
-    /// process-global state, and races the other tests in this binary.
+    /// better than THIS test overriding `CLAUDE_CONFIG_DIR` itself, which would
+    /// need `unsafe` and mutate process-global state.
+    ///
+    /// It is not enough on its own, and the next line says why rather than
+    /// leaving the paragraph reading as though the hazard were designed out.
+    /// The sibling's override IS live in this binary, and the transcript it
+    /// plants sits in exactly this window — so the race was serialised with
+    /// [`DISCOVERY_ENV`], not avoided.
     #[test]
     fn discovery_finding_nothing_stays_terminal_rather_than_retrying() {
+        // Keeps the sibling's `$CLAUDE_CONFIG_DIR` override — whose planted
+        // transcript sits in this very window — out of this scan. See
+        // [`DISCOVERY_ENV`].
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let pa = PendingAttribution {
             task_id: "t".into(),
             short_id: 1,
@@ -1920,8 +1961,11 @@ mod tests {
             consumed_sample_ids: HashSet::new(),
         };
 
-        // SAFETY: restored below; the only concurrent readers are discovery
-        // scans, which tolerate an extra root (see the codex env-test pattern).
+        // Held across the whole override, so no other discovery scan in this
+        // binary can see the planted root. See [`DISCOVERY_ENV`].
+        let _guard = DISCOVERY_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: restored below, and [`DISCOVERY_ENV`] keeps the only other
+        // discovery test out for the duration.
         let prev = std::env::var_os("CLAUDE_CONFIG_DIR");
         unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
         // Minutes after completion — where the explicit path would retry.
@@ -2401,18 +2445,31 @@ mod tests {
                 .conn()
                 .execute(
                     "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
-                    (
-                        format!(
-                            r#"{{"completed":"2026-07-25T10:30:00Z","client":"claude-code","transcript_path":"{p}"}}"#
-                        ),
-                        &id,
-                    ),
+                    (done_payload("2026-07-25T10:30:00Z", p), &id),
                 )
                 .unwrap();
         }
 
         let now = ts("2026-07-25T10:35:00Z");
-        for pa in &pending_attributions(&engine).unwrap() {
+        // BOUND AND COUNTED before anything is asserted about its members.
+        //
+        // Every real assertion below is either inside the loop or satisfied by
+        // zero, so an empty set makes the whole test pass while measuring
+        // nothing — and that was not a worry, it was the state this test shipped
+        // in. Its `done` payloads used to be built with `format!` around an OS
+        // path, which is malformed JSON on Windows (`C:\Users\…`), so on that
+        // platform `pending_attributions` returned nothing, the loop ran zero
+        // times and the test reported green. The payload is fixed now; this is
+        // what stops the vacuity from coming back through some other door.
+        let pending = pending_attributions(&engine).unwrap();
+        assert_eq!(
+            pending.len(),
+            2,
+            "both completions must parse into pending attributions — a payload \
+             that stops parsing makes every assertion below run zero times and \
+             this test certify the double-billing it exists to catch"
+        );
+        for pa in &pending {
             assert_eq!(
                 pa.foreign_windows.len(),
                 1,
@@ -2427,9 +2484,24 @@ mod tests {
             &engine,
             "SELECT COUNT(DISTINCT task_id) FROM token_usage WHERE source='log-parse'",
         );
-        assert!(
-            tasks_billed < 2,
-            "one spend was billed to {tasks_billed} tasks via path spelling"
+        // Exactly ZERO, and the exactness is the point rather than the number.
+        //
+        // The two windows fully overlap and both name the same file, so the
+        // sample is CONTESTED — and a contested sample is banked by nobody, per
+        // the rule this whole module is built on. Before paths were compared by
+        // identity the two spellings looked like different files, nothing
+        // contested, and both tasks banked the same spend: `tasks_billed` was 2.
+        //
+        // `< 2` was the loose way of writing that, and loose is what let the
+        // vacuity hide: it is also satisfied by a test that measured nothing at
+        // all. The count is pinned exactly; "nothing was measured" is now caught
+        // by the `pending.len()` assertion above, where it belongs, rather than
+        // by a bound here that cannot tell the two apart.
+        assert_eq!(
+            tasks_billed, 0,
+            "the spend is contested by two windows naming one file, so nobody \
+             may bank it; {tasks_billed} means the alias spelling was read as a \
+             different file and the same spend was billed twice"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2729,12 +2801,7 @@ mod tests {
                 .conn()
                 .execute(
                     "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done'",
-                    (
-                        format!(
-                            r#"{{"completed":"{completed}","client":"claude-code","transcript_path":"{p}"}}"#
-                        ),
-                        &id,
-                    ),
+                    (done_payload(completed, p), &id),
                 )
                 .unwrap();
         }
