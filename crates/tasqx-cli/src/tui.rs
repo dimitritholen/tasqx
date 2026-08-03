@@ -3,13 +3,14 @@
 //!
 //! Everything in this module is deliberately small and boring, because the one
 //! thing an interactive layer must never do is hand back a broken terminal. The
-//! screens themselves ([`settings`], and `tasqx pick` later) hold no terminal
+//! screens themselves ([`settings`] and [`pick`]) hold no terminal
 //! state at all: they are pure state machines that take a key and return an
 //! intent, and a `render` function that draws into a ratatui `Frame`. That split
 //! is what makes a TUI testable in a repo that fails the build on a warning —
 //! the untestable surface here is the handful of lines that actually put a real
 //! console into raw mode.
 
+pub mod pick;
 pub mod settings;
 
 use std::io::{self, Write};

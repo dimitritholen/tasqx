@@ -2308,6 +2308,80 @@ fn archiving_the_default_project_clears_the_default_and_reports_it() {
     assert_eq!(e.default_project().unwrap().as_deref(), Some("work2"));
 }
 
+/// D22 in the direction the first cut of it missed: `project.archive` on a
+/// project that is ALREADY archived is a `conflict`, not a second `ok`.
+///
+/// The defect this pins shipped and was found by review: the method ran
+/// `UPDATE projects SET archived = 1` without reading the prior value and
+/// returned `{"archived": true, "default_cleared": false}` regardless, so the
+/// run that retired a project and the fourth run that did nothing at all were
+/// byte-identical answers. That is D34's unfalsifiable write, and it landed on
+/// the one surface D22 names as the place "where did the default go" is
+/// answered: the event log grew an `archive` row per repeat.
+///
+/// It was also the single counterexample to D22's own sentence — repeated in
+/// `tasqx archive --help` and in the user guide — that no verb may name an
+/// archived project.
+#[test]
+fn archiving_an_already_archived_project_is_refused_and_writes_nothing() {
+    let e = engine();
+    e.project_create(&json!({ "name": "work" })).unwrap();
+    e.project_create(&json!({ "name": "old" })).unwrap();
+    e.project_archive(&json!({ "name": "old" })).unwrap();
+
+    let err = e.project_archive(&json!({ "name": "old" })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(
+        err.message.contains("already archived"),
+        "must say the state was already reached, not merely that something is wrong: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("old"),
+        "must name the project the caller got wrong: {}",
+        err.message
+    );
+    // The refusal must be distinguishable from the archive that did the work,
+    // which is the whole point: `use` on the same project says something else.
+    let use_err = e.project_use(&json!({ "name": "old" })).unwrap_err();
+    assert_ne!(
+        err.message, use_err.message,
+        "the two archived-project refusals must say which one happened"
+    );
+
+    // Nothing was written: exactly one `archive` event for a project archived
+    // once, against the one `create`. Counted rather than asserted on the top
+    // row, because the defect appended a row and left the top one identical.
+    let events = e
+        .event_list(&json!({ "entity": "project", "limit": 100 }))
+        .unwrap();
+    let ops: Vec<&str> = events["events"]
+        .as_array()
+        .expect("events array")
+        .iter()
+        .filter(|ev| ev["payload"]["name"] == json!("old"))
+        .map(|ev| ev["op"].as_str().expect("op"))
+        .collect();
+    assert_eq!(
+        ops.iter().filter(|o| **o == "archive").count(),
+        1,
+        "a project archived once must have one archive event, got {ops:?}"
+    );
+
+    // And the store still reads the same: still archived, default untouched.
+    let all = e
+        .project_list(&json!({ "include_archived": true }))
+        .unwrap();
+    let old_row = all["projects"]
+        .as_array()
+        .expect("projects array")
+        .iter()
+        .find(|r| r["name"] == json!("old"))
+        .expect("old is still listed by --all");
+    assert_eq!(old_row["archived"], json!(true));
+    assert_eq!(e.default_project().unwrap().as_deref(), Some("work"));
+}
+
 /// The invisible-field trap: the default drives where a bare add lands, so every
 /// read surface that lists projects must show which one it is.
 #[test]

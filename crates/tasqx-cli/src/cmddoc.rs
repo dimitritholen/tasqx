@@ -109,7 +109,9 @@ const fn ex(cmd: &'static str) -> Example {
         run: Safe,
     }
 }
-#[allow(dead_code)]
+/// A `Safe` example with a note. Was `#[allow(dead_code)]` for as long as every
+/// annotated example happened to be `NoRun`; `archive` is the first Safe one
+/// that needs a note, so the allow is gone.
 const fn exn(cmd: &'static str, note: &'static str) -> Example {
     Example {
         cmd,
@@ -176,9 +178,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "Setting is `due:friday`/`--due friday`; removal is only ever `--clear <field>` — there is no magic empty value.",
+            "`--clear` covers the steering fields only. `modify 42 +api` adds a tag; taking one off is `tasqx untag 42 api`.",
             "`--expected-rev` fails with conflict (exit 5) if the task moved on.",
         ],
-        see_also: &["add", "show", "why"],
+        see_also: &["add", "show", "why", "untag"],
         topic: Topic::Capturing,
     },
     CmdDoc {
@@ -200,6 +203,34 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Filters,
     },
     CmdDoc {
+        verb: "agenda",
+        aliases: &["ag", "cal"],
+        method: "task.list",
+        summary: "What is coming up, when — `list` ordered by time.",
+        usage: "tasqx agenda [filter…] [--days N]",
+        examples: &[
+            // `Safe`, and it runs against the same scratch store the `add`
+            // examples above have already filled — including `add Ship it
+            // due:friday`, so `safe_examples_all_exit_zero` renders a real day
+            // group rather than an empty agenda.
+            ex("tasqx agenda"),
+            ex("tasqx agenda --days 3"),
+            ex("tasqx agenda project:work"),
+        ],
+        notes: &[
+            "A task is placed on the EARLIER of its `due` and `scheduled` — the first day it asks anything of you — and the WHEN column says which of the two that was.",
+            "Overdue tasks are always shown, whatever `--days` says: a horizon is a question about the future.",
+            "This view holds a row back for exactly two reasons, and both are COUNTED under the table rather than dropped in silence: no date at all, and past the horizon. Each count names the way to see them — the horizon line quotes the exact `--days` that reaches the furthest one, or, when the row is further out than the widest window `--days` accepts, says so and points at `tasqx list`.",
+            "Done and cancelled tasks are left out unless your filter names a status, the same rule `report` applies to cancelled tasks (D24). `tasqx agenda status:done` shows them.",
+            "Days are UTC days, because a date typed without a time is stored as midnight UTC; grouping by local time would file `--due 2026-08-05` under the 4th west of Greenwich.",
+        ],
+        see_also: &["list", "next", "add", "modify"],
+        // Its own topic page is the one about `due`/`scheduled`, which is the
+        // entire subject of this verb — and until now the only topic in the
+        // manual with no command on it.
+        topic: Topic::Dates,
+    },
+    CmdDoc {
         verb: "next",
         aliases: &[],
         method: "task.list",
@@ -208,6 +239,33 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         examples: &[ex("tasqx next")],
         notes: &["The single highest-urgency unblocked task — the \"what now\" button."],
         see_also: &["list", "why", "start"],
+        topic: Topic::GettingStarted,
+    },
+    CmdDoc {
+        verb: "pick",
+        aliases: &["p", "fzf"],
+        method: "task.list + task.start",
+        summary: "Choose a task on a full-screen list, and start it.",
+        usage: "tasqx pick [filter…]",
+        examples: &[
+            // `NoRun`, like `config edit`, and for the same reason rather than
+            // out of caution: the executable-examples guard runs each Safe
+            // example with `Command::output()`, which gives it a piped stdout —
+            // the exact situation this verb refuses with exit 2. There is no
+            // non-interactive spelling of it to run instead, because the whole
+            // command IS the screen. What the refusal does on that path is
+            // covered for real by `help.rs::pick_refuses_a_piped_stdout_with_a_
+            // nonzero_exit`, which drives the binary and asserts the code.
+            ex_norun("tasqx pick", "choose from the working set and start it"),
+            ex_norun("tasqx pick project:work +api", "narrow the candidates first"),
+        ],
+        notes: &[
+            "Type to narrow: the query is a fuzzy SUBSEQUENCE match over id, title, project and tags, so `wac` finds `Write API conformance tests`. Whitespace splits it into terms that must all match.",
+            "Enter STARTS the highlighted task — the one key on this screen with a side effect, and the same single-active rule `tasqx start` follows. Esc clears the query first, and only then leaves.",
+            "Cancelling, and a filter that matches no task, both exit 4 having started nothing. `pick` exists to produce one task; when it produced none, saying ok would be a command reporting success for work it did not do.",
+            "It needs a real terminal on stdin AND stdout, so `tasqx pick | …` and `$(tasqx pick)` refuse with exit 2 rather than writing escape codes into your pipe (D26). Non-interactively, `tasqx next` answers the same question and `tasqx start <ref>` acts on it.",
+        ],
+        see_also: &["next", "list", "start", "agenda"],
         topic: Topic::GettingStarted,
     },
     CmdDoc {
@@ -318,6 +376,29 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Capturing,
     },
     CmdDoc {
+        verb: "undo",
+        aliases: &["u"],
+        method: "event.revert",
+        summary: "Take back the last thing this store recorded.",
+        usage: "tasqx undo",
+        examples: &[
+            ex_norun("tasqx undo", "reverses the newest event, and says which one"),
+            ex_norun(
+                "tasqx untag 42 api && tasqx undo",
+                "the tag comes back off the shelf",
+            ),
+        ],
+        notes: &[
+            "It takes no ref, and that is the design: only the NEWEST event can be reversed exactly, because nothing has happened since to have read or overwritten what the inverse puts back.",
+            "Four operations are undoable — `stop`, `untag`, `undep` and `annotate`. Every other one exits 5 naming itself and the verb that does take it back (`done` -> `tasqx reopen`, `modify` -> `tasqx show` then a second `modify`).",
+            "Undo APPENDS: the event it reverses stays in the log and a new `undo` event lands behind it, so `tasqx chart` and the audit trail read `X happened, then it was undone`.",
+            "There is no redo, so `tasqx undo` twice in a row exits 5: the second one would find the first undo as the newest event and the pair would toggle forever.",
+            "It reverses the newest RECORDED event, which is not always the last command you typed. A command that changed nothing records nothing — `tasqx undep 1 2` where no such edge exists, or `tasqx start` on a task already running — so `undo` reaches past it to the previous change. That is why the answer names what it undid: read it before assuming it hit what you were aiming at.",
+        ],
+        see_also: &["untag", "undep", "reopen", "chart"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
         verb: "annotate",
         aliases: &["note"],
         method: "annotation.add",
@@ -326,6 +407,40 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         examples: &[ex_norun("tasqx annotate 1 Called the plumber, waiting on a quote", "")],
         notes: &[],
         see_also: &["show", "modify"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
+        verb: "tag",
+        aliases: &[],
+        method: "tag.add",
+        summary: "Attach tags to a task.",
+        usage: "tasqx tag <ref> <tag…>",
+        examples: &[
+            ex_norun("tasqx tag 1 api release", "two tags, one call"),
+            ex_norun("tasqx tag 1 +api", "the leading + is optional — same tag either way"),
+        ],
+        notes: &[
+            "A tag is written the same way here as in `add`/`modify` sugar: `+api` and `api` name one tag, and duplicates collapse.",
+            "Re-adding a tag the task already has is not an error — the answer is the resulting tag set, so nothing has to be guessed.",
+        ],
+        see_also: &["untag", "modify", "list", "show"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
+        verb: "untag",
+        aliases: &[],
+        method: "tag.remove",
+        summary: "Remove tags from a task.",
+        usage: "tasqx untag <ref> <tag…>",
+        examples: &[
+            ex_norun("tasqx untag 1 api", "removes it, and prints what remains"),
+            ex_norun("tasqx untag 1 api release", "all or nothing: one unknown tag removes neither"),
+        ],
+        notes: &[
+            "Removing a tag the task does not have exits 4 and removes nothing, naming the tags it does have. A typo may not answer ok.",
+            "There is no `--clear tags`: a tag comes off by name, which is why this verb exists.",
+        ],
+        see_also: &["tag", "show", "list"],
         topic: Topic::Capturing,
     },
     CmdDoc {
@@ -358,7 +473,35 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         usage: "tasqx use <name>",
         examples: &[ex_norun("tasqx use keuken-verbouwen", "move where a bare add lands")],
         notes: &["The project must already exist and not be archived. `tasqx projects` marks the default with `*`."],
-        see_also: &["init", "projects", "add"],
+        see_also: &["init", "projects", "add", "archive"],
+        topic: Topic::Projects,
+    },
+    CmdDoc {
+        verb: "archive",
+        aliases: &[],
+        method: "project.archive",
+        summary: "Retire a project — out of rotation, tasks untouched.",
+        usage: "tasqx archive <name>",
+        examples: &[
+            // `Safe`, and it is the only mutating example in the reference that
+            // is: `safe_examples_all_exit_zero` runs the Safe set in
+            // declaration order against a scratch store, where `init
+            // keuken-verbouwen` (the first `init` example, and therefore that
+            // store's default project) has already run. So this line executes
+            // the default-clearing path for real on every test run, which is
+            // the branch worth executing.
+            exn(
+                "tasqx archive keuken-verbouwen",
+                "retire it; archiving your default project clears the default",
+            ),
+        ],
+        notes: &[
+            "Archiving is a shelf, not a delete: the tasks keep their history and their project, and `tasqx projects --all` still lists the project.",
+            "An archived project is out of rotation — `use` refuses it (exit 5), and so does an `add`/`modify` that names it, and so does a second `archive` of it (`project is already archived`, exit 5). No verb may name an archived project, this one included; `store.import` restoring the flag from a document is the one write that still can.",
+            "There is no `unarchive` verb and no `project.unarchive` method: among the project methods, archiving is one-way. `store.import` does write a project's `archived` flag from the document, so restoring a saved export un-archives one — a data restore, not an undo.",
+            "Archiving the project that IS the default clears the default: a bare `tasqx add` then has no project until `tasqx use <project>`. The line says which of the two happened.",
+        ],
+        see_also: &["projects", "use", "init"],
         topic: Topic::Projects,
     },
     CmdDoc {
@@ -371,8 +514,8 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex("tasqx projects"),
             ex("tasqx projects --all"),
         ],
-        notes: &[],
-        see_also: &["init", "use"],
+        notes: &["`--all` is the only way to see an archived project: without it the table shows the live ones, which is what `add` and `use` will accept."],
+        see_also: &["init", "use", "archive"],
         topic: Topic::Projects,
     },
     CmdDoc {
@@ -714,6 +857,68 @@ mod tests {
                     e.cmd
                 );
             }
+        }
+    }
+
+    /// `agenda`'s prose may promise a count only for something the footer
+    /// actually counts.
+    ///
+    /// The shipped note read "Tasks with no date at all, tasks past the horizon
+    /// and done/cancelled tasks are each COUNTED under the table" — and
+    /// `render::Agenda` has no done/cancelled counter at all, because those rows
+    /// are excluded on the wire by the composed filter and never reach the
+    /// renderer. A reader with 500 done tasks looked for that count, found
+    /// nothing, and could not tell an empty store from broken accounting: the
+    /// exact ambiguity the counters exist to remove. The note even contradicted
+    /// the next note in its own array, which correctly says done and cancelled
+    /// are *left out* by the filter.
+    ///
+    /// Asserted over both prose surfaces at once, because they are separate
+    /// strings that drifted together: this array and `command::Command::Agenda`'s
+    /// doc comment (clap's long help). The rule is narrow on purpose — the
+    /// counting sentence must not name the statuses — so rewording the promise
+    /// keeps passing while re-adding the false claim does not.
+    #[test]
+    fn the_agenda_counting_promise_names_only_reasons_the_footer_counts() {
+        let clap_about = include_str!("command.rs");
+        let agenda_about = clap_about
+            .split("What is coming up, when (maps to task.list)")
+            .nth(1)
+            .expect("Command::Agenda's doc comment")
+            .split("#[command(alias = \"ag\"")
+            .next()
+            .expect("the doc comment ends at the attribute");
+
+        let notes = find("agenda").expect("agenda is documented").notes.concat();
+        for (name, surface) in [
+            ("cmddoc notes", notes.as_str()),
+            ("clap help", agenda_about),
+        ] {
+            let mut checked = 0;
+            for sentence in surface.split('.') {
+                let lower = sentence.to_lowercase();
+                if !lower.contains("counted") {
+                    continue;
+                }
+                checked += 1;
+                for status in ["done", "cancelled"] {
+                    assert!(
+                        !lower.contains(status),
+                        "{name}: the agenda counts undated rows and rows past the horizon, \
+                         and nothing else — a sentence promising a count for {status:?} \
+                         sends the reader looking for a number that is not there: \
+                         {sentence:?}"
+                    );
+                }
+            }
+            // Without this the guard passes vacuously the moment someone drops
+            // the promise entirely, which is its own regression: D53's whole
+            // claim is that nothing is dropped in silence.
+            assert!(
+                checked > 0,
+                "{name} no longer promises anything is counted, so this guard is \
+                 asserting nothing"
+            );
         }
     }
 

@@ -2491,3 +2491,587 @@ fn config_set_refuses_an_unknown_detail_time_format() {
         .expect("config set")
         .success());
 }
+
+/// #55 — `tasqx undo` end to end, through the real binary.
+///
+/// The binary and not a unit test for the two things that only exist above the
+/// engine: the exit code a script branches on (5 for an operation outside the
+/// closed set), and the fact that an argument-free verb reaches its handler at
+/// all — `undo` has no ref to mistype, so a verb that never routed would look
+/// identical to one that had nothing to do.
+#[test]
+fn undo_reverses_the_last_change_and_refuses_the_operations_it_cannot() {
+    let dir = fresh_config_dir("undoverb");
+    let run = |args: &[&str]| {
+        bin("undoverb", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    ok(&["init", "work"]);
+    ok(&["add", "paint the hall"]);
+    ok(&["tag", "1", "api", "release"]);
+    ok(&["untag", "1", "api"]);
+
+    // The line has to name the operation AND the task: `undo` takes no
+    // argument, so this is the user's only confirmation that it hit the thing
+    // they meant.
+    let undone = ok(&["undo"]);
+    assert!(
+        undone.contains("tag.remove") && undone.contains("#1"),
+        "the undo line must name the operation and the task: {undone}"
+    );
+    assert!(
+        undone.contains("paint the hall"),
+        "and the title — a short_id alone is not recognizable at a glance: {undone}"
+    );
+    assert!(undone.contains("+api"), "and what came back: {undone}");
+    let shown = ok(&["--json", "show", "1"]);
+    assert!(
+        shown.contains(r#""api""#),
+        "the tag must really be back in the store: {shown}"
+    );
+
+    // Rule 1: the reversed event stays in the log, with the compensating one
+    // behind it. `chart` reads the log, so a rewritten history would show here.
+    let log = ok(&["--json", "chart", "throughput"]);
+    assert!(!log.is_empty(), "chart must still read the log: {log}");
+
+    // There is no redo: the second undo finds the first one as the newest event.
+    let again = run(&["undo"]);
+    assert_eq!(
+        again.status.code(),
+        Some(5),
+        "undo of an undo must refuse; stdout was {}",
+        String::from_utf8_lossy(&again.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("no redo"),
+        "the refusal must say why: {}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+
+    // An operation outside the closed set refuses BY NAME and points at the
+    // verb that does take it back — exit 5, and the store untouched.
+    ok(&["done", "1"]);
+    let refused = run(&["undo"]);
+    assert_eq!(
+        refused.status.code(),
+        Some(5),
+        "completing a task is not undoable; stdout was {}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("`done`") && stderr.contains("tasqx reopen"),
+        "the refusal must name the op and the way back: {stderr}"
+    );
+    let shown = ok(&["--json", "show", "1"]);
+    assert!(
+        shown.contains(r#""status": "done""#) || shown.contains(r#""status":"done""#),
+        "a refused undo must leave the task exactly as it was: {shown}"
+    );
+
+    // The alias DESIGN promised. A verb whose alias never routes is the shape
+    // that let `tag`/`untag` sit in the spec unbuilt.
+    ok(&["reopen", "1"]);
+    ok(&["annotate", "1", "wrong task"]);
+    let aliased = ok(&["u"]);
+    assert!(
+        aliased.contains("annotation.add"),
+        "`tasqx u` must be `tasqx undo`: {aliased}"
+    );
+}
+
+/// #52 — `tag`/`untag` end to end, through the real binary.
+///
+/// The binary and not a unit test, for three reasons that all live above the
+/// engine: the exit code a script branches on (4 for a tag the task does not
+/// have), the tag *vocabulary* — argv is where `+api` and `api` have to become
+/// one name — and the fact that a verb reaches its handler at all. DESIGN listed
+/// `tag`/`untag` as shipped MVP while `tasqx tag --help` failed, which is
+/// exactly the shape a test below the argv layer cannot see.
+#[test]
+fn tag_and_untag_agree_with_sugar_and_refuse_a_tag_the_task_lacks() {
+    let dir = fresh_config_dir("tagverb");
+    let run = |args: &[&str]| bin("tagverb", &dir).args(args).output().expect("run tasqx");
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    ok(&["init", "work"]);
+    ok(&["add", "paint the hall"]);
+
+    // The two spellings must name ONE tag. `+api` sent verbatim would create a
+    // tag literally called `+api`: invisible beside the `api` the `modify +tag`
+    // sugar writes, and unreachable by the `+api` filter token that reads it.
+    ok(&["tag", "1", "+api", "api", "release"]);
+    let shown = ok(&["--json", "show", "1"]);
+    assert!(
+        shown.contains(r#""api""#) && !shown.contains(r#""+api""#),
+        "`+api` and `api` must be one tag, stored without the sigil: {shown}"
+    );
+    assert_eq!(
+        shown.matches(r#""api""#).count(),
+        1,
+        "the duplicate must collapse rather than being stored twice: {shown}"
+    );
+
+    // The human line names what changed AND what remains: "tags: +release" on
+    // its own is the line a removal that did nothing would also print.
+    let removed = ok(&["untag", "1", "api"]);
+    assert!(
+        removed.contains("untagged") && removed.contains("+api"),
+        "the removal line must name the tag it took: {removed}"
+    );
+    assert!(
+        removed.contains("+release"),
+        "and the set that remains: {removed}"
+    );
+
+    // D52: a tag the task does not have is exit 4, and nothing is removed.
+    let miss = run(&["untag", "1", "release", "blockign"]);
+    assert_eq!(
+        miss.status.code(),
+        Some(4),
+        "a tag the task lacks must not answer ok; stdout was {}",
+        String::from_utf8_lossy(&miss.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&miss.stderr);
+    assert!(
+        stderr.contains("blockign") && stderr.contains("release"),
+        "the refusal must name the missing tag and the real ones: {stderr}"
+    );
+    let shown = ok(&["--json", "show", "1"]);
+    assert!(
+        shown.contains(r#""release""#),
+        "the removable half of an all-or-nothing call must survive it: {shown}"
+    );
+
+    // A bare `+` names no tag. In `add` it falls through to the title (C6);
+    // here there is no title, so the choice is a refusal or a silent deletion.
+    let bare = run(&["tag", "1", "+"]);
+    assert_eq!(
+        bare.status.code(),
+        Some(2),
+        "a bare `+` must be refused, not silently dropped"
+    );
+}
+
+/// #53 — the CLI `archive` verb, end to end through the real binary.
+///
+/// `project.archive` shipped with the engine and was reachable over the JSON API
+/// and MCP, and from the terminal not at all: D22 wrote the rule down ("archiving
+/// the current default clears it") together with the sentence "there is no CLI
+/// `archive` verb today … when one lands it renders `default_cleared`". This is
+/// that verb, and the assertion is deliberately about the terminal rather than
+/// the engine — the engine half is pinned in the core suite. What only the binary
+/// can show is the exit code a script branches on, the words the user reads, and
+/// whether the default really moved underneath them.
+///
+/// The default-clearing branch is the whole reason the verb needs copy. A `tasqx
+/// archive work` that printed nothing but "Project work archived" would change
+/// where every later bare `tasqx add` lands with nobody told — this project's
+/// recurring failure, arriving through the one verb that had no terminal.
+#[test]
+fn archive_retires_a_project_and_says_when_it_cleared_the_default() {
+    let dir = fresh_config_dir("archiveverb");
+    let run = |args: &[&str]| {
+        bin("archiveverb", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    // `work` is created first, so it is the store's default (D21).
+    ok(&["init", "work"]);
+    ok(&["init", "side"]);
+    ok(&["add", "keep this", "--project", "side"]);
+
+    // Archiving a NON-default project leaves the default alone — and says so,
+    // rather than saying nothing: silence is also what the cleared case would
+    // print if the field were dropped.
+    let quiet = ok(&["archive", "side"]);
+    assert!(quiet.contains("side"), "must name the project: {quiet}");
+    assert!(
+        quiet.contains("unchanged"),
+        "the untouched default must be stated, not implied: {quiet}"
+    );
+    let listed = ok(&["--json", "projects"]);
+    assert!(
+        !listed.contains("side"),
+        "an archived project must drop out of `projects`: {listed}"
+    );
+    let all = ok(&["--json", "projects", "--all"]);
+    assert!(
+        all.contains("side"),
+        "`--all` must still show it — archiving is a shelf, not a delete: {all}"
+    );
+    // The tasks are untouched: still there, still in the project. Read as JSON
+    // rather than as a substring, because `--json` pretty-prints and a
+    // hand-spelled `"project":"side"` would be a test that passes on the
+    // formatter rather than on the value.
+    let shown: serde_json::Value =
+        serde_json::from_str(&ok(&["--json", "show", "1"])).expect("show --json");
+    assert_eq!(
+        shown["project"], "side",
+        "archiving a project must not touch its tasks: {shown}"
+    );
+
+    // D22, the loud half: archiving the CURRENT default clears the default.
+    let loud = ok(&["archive", "work"]);
+    assert!(
+        !loud.contains("unchanged"),
+        "the default was cleared and the line says it was not: {loud}"
+    );
+    assert!(
+        loud.contains("default project"),
+        "the default moved and the line does not say so: {loud}"
+    );
+    assert!(
+        loud.contains("tasqx use"),
+        "must name the way to point the default somewhere again: {loud}"
+    );
+
+    // And the outcome the user actually gets: a bare `add` is now projectless,
+    // the same state a fresh store is in.
+    //
+    // What this does NOT prove, stated plainly, because it was measured rather
+    // than assumed: it does not prove the ARCHIVE cleared the key. Deleting
+    // `clear_config` from `project_archive` leaves this assertion green, because
+    // every CLI command opens the store afresh and D23(b)'s stale-default repair
+    // (`storage::repair_stale_default_project`) deletes a default naming an
+    // archived project on the way in. The two mechanisms are indistinguishable
+    // from a process boundary. The engine half is pinned inside one Engine by
+    // `archiving_the_default_project_clears_the_default_and_reports_it` in the
+    // core suite, which does redden for that mutation.
+    ok(&["add", "homeless"]);
+    let shown: serde_json::Value =
+        serde_json::from_str(&ok(&["--json", "show", "2"])).expect("show --json");
+    assert_eq!(
+        shown["project"],
+        serde_json::Value::Null,
+        "the default was reported cleared and a bare add still landed in it: {shown}"
+    );
+
+    // Validation happens at the edge, in the core, exactly as `use` does it:
+    // an unknown name is exit 4 naming it, and a blank one is exit 2.
+    let unknown = run(&["archive", "nope"]);
+    assert_eq!(
+        unknown.status.code(),
+        Some(4),
+        "an unknown project must be not_found; stdout was {}",
+        String::from_utf8_lossy(&unknown.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("nope"),
+        "the refusal must name what the caller got wrong: {}",
+        String::from_utf8_lossy(&unknown.stderr)
+    );
+    assert_eq!(
+        run(&["archive", ""]).status.code(),
+        Some(2),
+        "an empty name is bad_request, as it is on `use` (D36)"
+    );
+
+    // And the refusal this verb shipped without: archiving `side` a SECOND time
+    // changes nothing, so it must not answer like the run that retired it. It
+    // used to print the same success line at exit 0 — see the dedicated test
+    // below, which is where the reasoning lives.
+    let again = run(&["archive", "side"]);
+    assert_eq!(
+        again.status.code(),
+        Some(5),
+        "a second archive changes nothing and must not exit 0; stdout was {}",
+        String::from_utf8_lossy(&again.stdout)
+    );
+}
+
+/// The #53 review's first finding, at the terminal: `tasqx archive old` twice
+/// printed the same success line and exited 0 both times.
+///
+/// Kept apart from the verb's own test because it is a different claim. That one
+/// asks "does the verb do the job and say what it did"; this one asks "can a
+/// human or a script tell the run that retired a project from the run that found
+/// it already retired" — D34's rule, and the one this repo's siblings already
+/// keep (`use <archived>` is exit 5, `untag <tag the task lacks>` is exit 4).
+///
+/// The assertions are on the *pair*, not on either run alone. A fix that made
+/// the second run print something else while still exiting 0 would leave every
+/// script that branches on the exit code exactly as wrong as before, and the
+/// no-op run is the one a script is most likely to take for success.
+#[test]
+fn archiving_an_already_archived_project_is_told_apart_from_archiving_it() {
+    let dir = fresh_config_dir("archivetwice");
+    // `fresh_config_dir` wipes the config dir but not the store beside it, and
+    // this test's very first assertion is that `init work` succeeds — a store
+    // left by a previous run under a recycled pid would make it exit 5 and read
+    // as a failure of the verb rather than of the fixture.
+    let _ = std::fs::remove_file(db_path("archivetwice"));
+    let run = |args: &[&str]| {
+        bin("archivetwice", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    assert!(run(&["init", "work"]).status.success());
+    assert!(run(&["init", "old"]).status.success());
+
+    let first = run(&["archive", "old"]);
+    assert!(
+        first.status.success(),
+        "the archive that does the work must succeed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let second = run(&["archive", "old"]);
+    assert_eq!(
+        second.status.code(),
+        Some(5),
+        "a second archive changes nothing, so it must be a conflict; stdout was {}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    let msg = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        msg.contains("already archived") && msg.contains("old"),
+        "the refusal must name the project and why it was refused: {msg}"
+    );
+    // The two runs must not be confusable on stdout either: the success line is
+    // what a user reads, and printing it again is what made the defect invisible.
+    assert_ne!(
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&first.stdout),
+        "the no-op run printed the same thing the real one did"
+    );
+
+    // The `--json` surface has to refuse too, because that is the one a script
+    // reads: `{"archived": true, "default_cleared": false}` at exit 0 came back
+    // from every repeat. A CLI refusal rides the exit code and stderr rather
+    // than an `ok:false` envelope (that shape belongs to `tasqx api`, D31), so
+    // what is pinned here is that `--json` does not soften it into a payload.
+    let json_again = run(&["--json", "archive", "old"]);
+    assert_eq!(
+        json_again.status.code(),
+        Some(5),
+        "--json must not soften the refusal into ok"
+    );
+    assert!(
+        !String::from_utf8_lossy(&json_again.stdout).contains("archived"),
+        "a refused archive must not print a result payload: {}",
+        String::from_utf8_lossy(&json_again.stdout)
+    );
+
+    // The audit surface D22 points at for "where did the default go" must not
+    // grow a row per no-op: three archive attempts, one archive event.
+    let log = {
+        use std::io::Write;
+        let mut child = bin("archivetwice", &dir)
+            .arg("api")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn tasqx api");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(
+                br#"{"tasqx":"1","id":"e","method":"event.list","params":{"entity":"project","limit":100}}"#,
+            )
+            .expect("write envelope");
+        let out = child.wait_with_output().expect("wait");
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).expect("event.list answers JSON")
+    };
+    let archives = log["result"]["events"]
+        .as_array()
+        .expect("events array")
+        .iter()
+        .filter(|ev| ev["op"] == "archive" && ev["payload"]["name"] == "old")
+        .count();
+    assert_eq!(
+        archives, 1,
+        "a project archived once must have one archive event: {log}"
+    );
+}
+
+/// `tasqx agenda`, driven as a session, because the two things most likely to be
+/// wrong about it are only visible from outside the process.
+///
+/// The first is the default filter, and it was wrong in the first draft of this
+/// verb. A `scheduled` date in the future parks a task in **backlog** until that
+/// instant arrives (`types::effective_status`), and `list`'s `@working` is
+/// pending|active — so an agenda that inherited `list`'s default showed no
+/// Tuesday at all for a task scheduled on Tuesday. That is invisible to a unit
+/// test of the renderer, which is handed rows the filter already chose: the
+/// filter is composed in `run_agenda` and evaluated in the engine, and only a
+/// real store holds a task whose status the store itself derived.
+///
+/// The second is that the horizon and the omission notes are what the user reads
+/// instead of the rows they do not get.
+#[test]
+fn agenda_shows_what_is_scheduled_and_counts_what_it_could_not_place() {
+    let dir = fresh_config_dir("agenda");
+    let run = |args: &[&str]| bin("agenda", &dir).args(args).output().expect("run tasqx");
+    let _ = std::fs::remove_file(db_path("agenda"));
+
+    assert!(run(&["init", "agendaproj"]).status.success());
+    // Every date is a signed offset from now rather than a literal, so the
+    // fixture means the same thing on every day the suite is ever run — and
+    // stays inside `--days`' parse-time ceiling, which a year literal would not.
+    for args in [
+        &[
+            "add",
+            "Deadline only",
+            "due:+40d",
+            "--project",
+            "agendaproj",
+        ][..],
+        // The task the `@working` default silently swallowed: scheduled, in the
+        // future, therefore `backlog`, and with no deadline of its own.
+        &[
+            "add",
+            "Scheduled only",
+            "scheduled:+39d",
+            "--project",
+            "agendaproj",
+        ][..],
+        &["add", "No dates at all", "--project", "agendaproj"][..],
+        &["add", "Far future", "due:+400d", "--project", "agendaproj"][..],
+        // Already late, so the Overdue group is exercised — and it is the row
+        // that must survive every narrowing of the window below.
+        &["add", "Late already", "due:-5d", "--project", "agendaproj"][..],
+    ] {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Wide enough to hold the two tasks 40 days out, and not the one 400 days
+    // out. The default fortnight reaches none of the three, which is the other
+    // half of the horizon this test drives.
+    let days = "60";
+    let out = run(&["agenda", "--days", days]);
+    assert!(
+        out.status.success(),
+        "agenda exited {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+
+    assert!(
+        text.contains("Scheduled only"),
+        "a task scheduled in the future is backlog, and an agenda that cannot show it \
+         is not an agenda:\n{text}"
+    );
+    assert!(text.contains("Deadline only"), "{text}");
+    // …in that order: the 4th precedes the 5th, whichever field put them there.
+    let sched = text.find("Scheduled only").expect("scheduled row");
+    let due = text.find("Deadline only").expect("due row");
+    assert!(
+        sched < due,
+        "the agenda orders by time, not by which field carried it:\n{text}"
+    );
+    assert!(
+        text.contains("sched") && text.contains("due"),
+        "the WHEN column must name the field that placed each row:\n{text}"
+    );
+
+    // Nothing is dropped in silence: both omissions are counted, and each names
+    // the way to see what it is holding.
+    assert!(
+        text.contains("1 undated") && text.contains("tasqx list"),
+        "the undated task must be counted, not dropped:\n{text}"
+    );
+    assert!(
+        !text.contains("No dates at all"),
+        "an undated task has no day to sit on:\n{text}"
+    );
+    assert!(
+        text.contains("1 further out") && text.contains("--days"),
+        "the horizon must report what it cut, with the window that reaches it:\n{text}"
+    );
+    assert!(
+        !text.contains("Far future"),
+        "the horizon must actually cut:\n{text}"
+    );
+
+    // The horizon is honoured, and `--days` is the whole of the override.
+    let narrow = run(&["agenda"]);
+    let narrow = String::from_utf8_lossy(&narrow.stdout).to_string();
+    assert!(
+        !narrow.contains("Deadline only"),
+        "the default fortnight cannot reach 40 days out:\n{narrow}"
+    );
+    assert!(
+        narrow.contains("3 further out"),
+        "...and must say so rather than showing a nearly empty agenda:\n{narrow}"
+    );
+    // The one thing a horizon may never hide. `--days` is a question about the
+    // future; being late is not in the future.
+    assert!(
+        narrow.contains("Overdue") && narrow.contains("Late already"),
+        "an overdue task must survive every window:\n{narrow}"
+    );
+
+    // `--json` describes the same rows the table drew, which is why it is not
+    // the raw `task.list` answer: five tasks match the filter, three are drawn.
+    let js = run(&["--json", "agenda", "--days", days]);
+    let v: serde_json::Value = serde_json::from_slice(&js.stdout).expect("agenda --json is JSON");
+    assert_eq!(v["count"], serde_json::json!(3), "{v}");
+    assert_eq!(v["agenda"]["undated"], serde_json::json!(1), "{v}");
+    assert_eq!(v["agenda"]["beyond_horizon"], serde_json::json!(1), "{v}");
+
+    // D24's rule 2: a caller who names a status is taken literally rather than
+    // ANDed into an empty set. `status:done` finds nothing here, but it must
+    // find it by ASKING — an exit 2 would mean the composed filter was invalid.
+    let done = run(&["agenda", "status:done"]);
+    assert!(
+        done.status.success(),
+        "a filter naming a status must be taken literally: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+
+    // The filter tail is filter DSL, dashes included: `agenda` is in
+    // `argv::FILTER_COMMANDS`, so `-tag` reaches the grammar instead of clap.
+    let excluded = run(&["agenda", "-nosuchtag", "--days", days]);
+    assert!(
+        excluded.status.success(),
+        "`-tag` must reach the filter grammar: {}",
+        String::from_utf8_lossy(&excluded.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&excluded.stdout).contains("Scheduled only"),
+        "excluding a tag nothing carries must exclude nothing: {}",
+        String::from_utf8_lossy(&excluded.stdout)
+    );
+}

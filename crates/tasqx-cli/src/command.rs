@@ -9,7 +9,7 @@ use clap::{Args, Parser, Subcommand, ValueHint};
 use tasqx_core::engine::MEMORY_SCOPES;
 use tasqx_core::Priority;
 
-use super::{CLEARABLE, VERSION};
+use super::{AGENDA_MAX_DAYS, CLEARABLE, VERSION};
 
 /// The `--priority` vocabulary, built from [`Priority::SPELLINGS`] so it is the
 /// engine's list rather than a copy of it.
@@ -330,7 +330,8 @@ pub(super) enum Command {
             add = crate::complete::candidates::tags()
         )]
         tags: Vec<String>,
-        /// Clear a field back to unset (repeatable). The ONLY removal syntax.
+        /// Clear a field back to unset (repeatable). The only removal syntax for
+        /// a steering field; a tag comes off with `tasqx untag <ref> <tag>`.
         #[arg(
             long = "clear",
             value_name = "FIELD",
@@ -365,6 +366,45 @@ pub(super) enum Command {
         // added tomorrow is a red build until it is completed too.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
+    },
+    /// What is coming up, when (maps to task.list). `list` ordered by time and
+    /// grouped by day, instead of by urgency.
+    ///
+    /// A task is placed on the EARLIER of its `due` and `scheduled` — the first
+    /// day it asks anything of you — and the `WHEN` column says which of the two
+    /// that was. A task carrying neither is not on any day, so it is not in the
+    /// table; it is counted, and the footer names `tasqx list` as the view that
+    /// shows it. Rows past the horizon are counted the same way. Those are the
+    /// only two reasons this view holds a row back — done and cancelled work is
+    /// not among them, because it never matched the filter to begin with (see
+    /// the notes below), so there is no count for it here.
+    ///
+    /// Overdue rows are always shown, whatever `--days` says. A horizon is a
+    /// question about the future, and an agenda that hid what you are already
+    /// late on would be answering a different one.
+    #[command(alias = "ag", alias = "cal", after_help = crate::cmddoc::after_help("agenda"))]
+    Agenda {
+        /// Filter DSL, e.g. "project:work +api" (default: the working set).
+        ///
+        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        /// `List::filter` for why the pre-pass and not `allow_hyphen_values`.
+        /// Being named `filter` is what puts this positional under
+        /// `argv::tests::every_filter_positional_is_registered`, which fails the
+        /// build unless `agenda` is in `FILTER_COMMANDS` too.
+        #[arg(add = crate::complete::candidates::filter_words())]
+        filter: Vec<String>,
+        /// How many days ahead to look (1-3650; default 14). Overdue tasks are
+        /// shown regardless.
+        //
+        // A `--days N` flag rather than the `agenda week` / `agenda month`
+        // keyword the spec sketched. The keyword form buys a closed vocabulary
+        // that then has to be completed, documented and translated into a
+        // number anyway, and it cannot express "the next three days" — which is
+        // the window a Wednesday afternoon actually wants. One number covers
+        // every case the keywords would have, and the footer already reports the
+        // exact `--days` that would reach whatever the horizon cut.
+        #[arg(long, value_parser = window_parser(MAX_AGENDA_DAYS))]
+        days: Option<usize>,
     },
     /// Start a task timer (maps to task.start).
     #[command(alias = "s", after_help = crate::cmddoc::after_help("start"))]
@@ -420,6 +460,16 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
+    /// Undo the last thing this store recorded (maps to event.revert).
+    ///
+    /// Deliberately argument-free. The core undoes the NEWEST event and nothing
+    /// else, because that is the only position from which its inverses are exact
+    /// rather than plausible (see `engine/undo.rs`); a `<ref>` here would look
+    /// like a courtesy and would silently reach past whatever happened
+    /// elsewhere. Four operations are undoable and every other one refuses by
+    /// name, saying what does take it back.
+    #[command(alias = "u", after_help = crate::cmddoc::after_help("undo"))]
+    Undo,
     /// Annotate a task (maps to annotation.add).
     #[command(alias = "note", after_help = crate::cmddoc::after_help("annotate"))]
     Annotate {
@@ -428,6 +478,49 @@ pub(super) enum Command {
         r#ref: String,
         /// The annotation text.
         text: Vec<String>,
+    },
+    /// Attach one or more tags to a task (maps to tag.add).
+    ///
+    /// The same operation `tasqx modify <ref> +tag` performs, spelled as its own
+    /// verb so the sugar is not the only way in — and so `untag` has a sibling
+    /// with the same argument shape.
+    #[command(after_help = crate::cmddoc::after_help("tag"))]
+    Tag {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// Tag names, with or without the leading `+`.
+        //
+        // `value_name = "TAG"` is load-bearing, not cosmetic: it is what puts
+        // this positional inside `every_tag_valued_arg_offers_tag_names`. The
+        // derive would otherwise render `<TAGS>` off the plural field name and
+        // the guard would silently not cover it.
+        #[arg(
+            value_name = "TAG",
+            required = true,
+            add = crate::complete::candidates::tags()
+        )]
+        tags: Vec<String>,
+    },
+    /// Remove one or more tags from a task (maps to tag.remove).
+    ///
+    /// A tag the task does not carry is exit 4, not a quiet success — see the
+    /// `tag.remove` docs in the engine for why this differs from `undep`.
+    #[command(after_help = crate::cmddoc::after_help("untag"))]
+    Untag {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// Tag names, with or without the leading `+`.
+        //
+        // See `Tag::tags`: the `value_name` is what the tag-completion guard
+        // keys on.
+        #[arg(
+            value_name = "TAG",
+            required = true,
+            add = crate::complete::candidates::tags()
+        )]
+        tags: Vec<String>,
     },
     /// Add a dependency: <ref> depends on <depends_on> (maps to dependency.add).
     #[command(after_help = crate::cmddoc::after_help("dep"))]
@@ -468,6 +561,32 @@ pub(super) enum Command {
         //
         // `init` deliberately stays `<NAME>`: it CREATES a project, so the
         // existing ones are precisely the names it will refuse.
+        #[arg(value_name = "PROJECT", add = crate::complete::candidates::projects())]
+        name: String,
+    },
+    /// Retire a project — out of rotation, tasks untouched (maps to
+    /// project.archive).
+    ///
+    /// D22: an archived project drops out of `tasqx projects` (`--all` still
+    /// shows it) and no verb may name it — including this one, so archiving a
+    /// project that is already archived is a `conflict` (exit 5) rather than a
+    /// second success that changed nothing. (`store.import` restores the flag
+    /// from a document and is the one write that still names one.) Archiving
+    /// the project that IS the default clears the default in the same
+    /// transaction, and the printed line says so — where a bare `tasqx add`
+    /// lands is the fact this verb is most able to change silently.
+    #[command(after_help = crate::cmddoc::after_help("archive"))]
+    Archive {
+        /// An existing project name.
+        //
+        // `value_name = "PROJECT"` for the same reason as `Use::name`: it is
+        // what puts this positional inside
+        // `every_project_valued_arg_offers_project_names`, which decides
+        // membership by the name an argument announces for its value rather
+        // than by a list of verbs kept in a test. The candidates deliberately
+        // exclude archived projects — see `candidates::projects`, where the
+        // reason for THIS site is written down, and where the carve-out this
+        // site used to need is recorded as retired.
         #[arg(value_name = "PROJECT", add = crate::complete::candidates::projects())]
         name: String,
     },
@@ -577,6 +696,39 @@ pub(super) enum Command {
     /// Print the single highest-urgency unblocked task (the "what now" button).
     #[command(after_help = crate::cmddoc::after_help("next"))]
     Next,
+    /// Choose a task on a full-screen list and start it (maps to task.list,
+    /// then task.start).
+    ///
+    /// Type to narrow the list — the query is a fuzzy subsequence match over
+    /// id, title, project and tags, and whitespace splits it into terms that
+    /// all have to match. Up/down (or ctrl-p/ctrl-n) move, enter starts the
+    /// highlighted task, esc clears the query and then leaves.
+    ///
+    /// Enter is the only key with a side effect, and it has one: this verb
+    /// starts the task it selects. Cancelling, or a filter that matches no
+    /// task, exits 4 having changed nothing — `pick` produced no task, and a
+    /// command that produced nothing may not report success.
+    ///
+    /// It needs a real terminal on BOTH stdin and stdout, so it refuses in a
+    /// pipe rather than writing escape codes into it (exit 2, D26).
+    #[command(alias = "p", alias = "fzf", after_help = crate::cmddoc::after_help("pick"))]
+    Pick {
+        /// Filter DSL, e.g. "project:work +api" (default: the working set).
+        ///
+        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        /// `List::filter` for why the pre-pass and not `allow_hyphen_values`.
+        /// Being named `filter` is what puts this positional under
+        /// `argv::tests::every_filter_positional_is_registered`, which fails
+        /// the build unless `pick` is in `FILTER_COMMANDS` too — and, since
+        /// that guard reads only the escaping half, under
+        /// `every_filter_command_gets_its_dashes_back`, which is what makes
+        /// the sentence above true rather than intended. It was intended and
+        /// not true when this verb shipped: `pick` was registered for escaping
+        /// and missing from [`Command::filter_tail_mut`], so `tasqx pick -api`
+        /// filtered on `"\u{1}api"`.
+        #[arg(add = crate::complete::candidates::filter_words())]
+        filter: Vec<String>,
+    },
     /// Explain a task's urgency breakdown (maps to task.get + the D1 formula).
     #[command(after_help = crate::cmddoc::after_help("why"))]
     Why {
@@ -691,6 +843,46 @@ pub(super) enum Command {
     },
 }
 
+impl Command {
+    /// The positional tail that is filter DSL, for the ONE caller that has to
+    /// put [`crate::argv`]'s hidden dashes back.
+    ///
+    /// This exists as a method rather than as a `match` inline in `run()`
+    /// because the two halves of the escape pair were, until #51's review, two
+    /// independent hand-maintained lists: `argv::FILTER_COMMANDS` decided which
+    /// commands get their `-tag` tokens escaped, and a match arm in `run()`
+    /// decided which get them restored. `pick` was added to the first and not
+    /// the second, so every `tasqx pick -api` built the filter string
+    /// `"\u{1}api"` — C7's exact shape, the sentinel surviving into a value the
+    /// user then sees, one surface further along than the `--theme -nord` leak
+    /// that named it. Nothing failed, because the guard on that pair
+    /// (`argv::tests::every_filter_positional_is_registered`) only ever read
+    /// the FILTER_COMMANDS half.
+    ///
+    /// One list is still a list, but it is now a list a test can drive: the
+    /// guard `every_filter_command_gets_its_dashes_back` parses `-needs` for
+    /// every name in `FILTER_COMMANDS` through the real pre-pass and the real
+    /// restore, and fails naming the command whose tail still carries a
+    /// sentinel. A command added to `FILTER_COMMANDS` alone now fails the
+    /// build instead of shipping a filter nobody can type.
+    pub(super) fn filter_tail_mut(&mut self) -> Option<&mut Vec<String>> {
+        match self {
+            Command::List { filter }
+            | Command::Export { filter }
+            | Command::Watch { filter }
+            | Command::Pick { filter }
+            // `..` because `agenda` carries `--days` beside its tail; the dash
+            // restoration is about the tail and nothing else.
+            | Command::Agenda { filter, .. } => Some(filter),
+            // `report`'s tail is spelled `args`: it carries an optional
+            // group_by word before the filter DSL, and the escape applies to
+            // the whole tail either way.
+            Command::Report { args, .. } => Some(args),
+            _ => None,
+        }
+    }
+}
+
 /// Widest chart window we will draw, in weeks (a decade). The ceiling is not
 /// cosmetic: every window ends up inside `jiff`'s `ToSpan::days`, which PANICS
 /// outside ±7,304,484 — an abort whose message names neither tasqx nor the flag.
@@ -707,6 +899,18 @@ const MAX_CHART_WEEKS: u64 = 520;
 /// Same reasoning for `burndown --days`, which never passes through
 /// `default_weeks` at all — a decade of daily points.
 const MAX_CHART_DAYS: u64 = 3650;
+/// `agenda --days`, bounded for the same reason as `chart` and by the same
+/// arithmetic — see [`super::AGENDA_MAX_DAYS`], which is where the value lives
+/// and why. The floor is 1 because a zero-day window asks about no day at all.
+///
+/// Read from the crate root rather than written here, and still NOT shared with
+/// `chart`'s: the agenda footer RECOMMENDS a `--days` that reaches a row it cut,
+/// and it can only avoid recommending one this parser refuses if both read the
+/// same number. A second copy is exactly how that footer came to print
+/// `--days 12204` for a task due in 2060 and send the reader into an exit-2.
+/// `chart`'s limit merely happens to agree today; a comment explaining why an
+/// agenda is bounded by a chart's limit would be a comment about a coincidence.
+const MAX_AGENDA_DAYS: u64 = AGENDA_MAX_DAYS as u64;
 
 /// Bound a window flag at parse time. Yields `RangedU64ValueParser<usize>` so
 /// the fields stay `Option<usize>` and every call site keeps its type.
@@ -930,6 +1134,50 @@ mod tests {
                 "{argv:?} is a supported window"
             );
         }
+    }
+
+    /// The `--days` ceiling has ONE source, and everything that quotes it reads
+    /// that source.
+    ///
+    /// `Agenda::omissions` recommends a `--days` that reaches a row the horizon
+    /// cut. When the parser's bound and the renderer's idea of it were separate
+    /// literals, the footer printed `tasqx agenda --days 12204` for a task due
+    /// in 2060 and pasting it exited 2. The constant moved to the crate root,
+    /// this parser reads it, and this test pins the boundary AND the help prose
+    /// to it — a hand-typed range in a doc comment is the same drift one surface
+    /// over.
+    #[test]
+    fn the_agenda_days_bound_is_the_one_the_renderer_reads() {
+        let max = AGENDA_MAX_DAYS;
+        assert!(
+            Cli::try_parse_from(["tasqx", "agenda", "--days", &max.to_string()]).is_ok(),
+            "the ceiling itself must be accepted, or the renderer can recommend \
+             a value this parser refuses"
+        );
+        let err = Cli::try_parse_from(["tasqx", "agenda", "--days", &(max + 1).to_string()])
+            .err()
+            .expect("one past the ceiling is a usage error");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+
+        let cmd = Cli::command();
+        let help = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "agenda")
+            .expect("agenda is a subcommand")
+            .get_arguments()
+            .find(|a| a.get_id() == "days")
+            .expect("agenda takes --days")
+            .get_help()
+            .expect("--days is documented")
+            .to_string();
+        assert!(
+            help.contains(&format!("1-{max}")),
+            "the `--days` help must name the range this parser enforces, got {help:?}"
+        );
+        assert!(
+            help.contains(&format!("default {}", crate::AGENDA_DEFAULT_DAYS)),
+            "the `--days` help must name the default the renderer applies, got {help:?}"
+        );
     }
 
     /// `--out` is read on the `--html` branch of `execute` only; the terminal

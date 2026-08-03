@@ -37,6 +37,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::Parser;
@@ -76,6 +77,42 @@ const CLEARABLE: [&str; 8] = [
     "recurrence",
     "estimate",
 ];
+
+/// How far ahead `tasqx agenda` looks when `--days` is not given.
+///
+/// A fortnight, not a week and not a month. A week ends on a boundary a reader
+/// is standing on top of — on a Friday it shows two working days — so the one
+/// question the view exists to answer ("is next week already full?") is exactly
+/// the one it cannot answer. A month puts thirty headings on the screen for a
+/// store that plans a fortnight out, and the rows worth acting on scroll off the
+/// top. Fourteen days always contains a whole next week from any day of the
+/// current one.
+///
+/// It is a default and not a rule: `--days` moves it, and anything the horizon
+/// cut is COUNTED and reported with the exact `--days` that would reach it, so
+/// the number here can be wrong for a given store without anything being hidden.
+const AGENDA_DEFAULT_DAYS: usize = 14;
+
+/// The widest window `--days` accepts, and therefore the furthest `agenda` can
+/// reach at all.
+///
+/// It lives at the crate root because it has two readers in two layers that
+/// `command_declarations_do_not_execute_or_render` forbids from importing each
+/// other: `command::window_parser` refuses a larger value at parse time, and
+/// `render::Agenda::omissions` has to know when the `--days` it is about to
+/// RECOMMEND is one the parser would refuse. When those were separate literals
+/// they were free to disagree, and the footer duly recommended
+/// ``tasqx agenda --days 12204`` for a task due in 2060 — a command that exits 2
+/// with `12204 is not in 1..=3650`, leaving that row unreachable in the view and
+/// D53 rule 2's "widening the window is a paste rather than a guess" false. One
+/// copy, read by both, is the fix; `command::tests` pins the parser boundary and
+/// the `--days` help prose to it, and `render::tests` pins the footer to it.
+///
+/// A decade is already past every horizon anyone plans against, and the value is
+/// bounded at all because `render::agenda_select` adds the window to today with
+/// `jiff`'s `ToSpan::days`, which PANICS outside ±7,304,484 — an unbounded flag
+/// is an abort whose message names neither tasqx nor the flag.
+const AGENDA_MAX_DAYS: usize = 3650;
 
 /// What `--version` prints: the crate version plus the commit it was built from.
 ///
@@ -232,6 +269,22 @@ fn emit(text: &str) {
     }
 }
 
+/// Restore the dashes [`argv::prepass`] hid, on whichever positional tail this
+/// command spells its filter in.
+///
+/// A named function and not three lines inside [`run`], for one reason: this is
+/// the un-escape half of a PAIR, and the escape half (`argv::FILTER_COMMANDS`)
+/// has a guard while this half, inline, had none. `pick` shipped in
+/// `FILTER_COMMANDS` and not in the match, so `tasqx pick -api` built the
+/// filter string `"\u{1}api"` and the whole suite stayed green. Now
+/// `every_filter_command_gets_its_dashes_back` calls THIS function — not a copy
+/// of its body — for every name in `FILTER_COMMANDS`.
+fn unescape_filter_tail(cli: &mut Cli) {
+    if let Some(tail) = cli.command.as_mut().and_then(Command::filter_tail_mut) {
+        argv::unescape(tail);
+    }
+}
+
 pub fn run() {
     // FIRST, before anything reads argv or writes a byte of stdout. Unless
     // `$TASQX_COMPLETE` is set this is one environment lookup and a return; when it is
@@ -250,16 +303,7 @@ pub fn run() {
         Err(e) => exit_on_parse_error(&e, pre.filter_command),
     };
     // Put the dashes back, in ONE place, before any filter value is read.
-    // Every hyphen-tolerant positional in the tree is listed here; the drift
-    // guard `argv::tests::every_filter_positional_is_registered` fails if a new
-    // one appears without being added to the pre-pass side of the same pair.
-    match &mut cli.command {
-        Some(Command::List { filter } | Command::Export { filter } | Command::Watch { filter }) => {
-            argv::unescape(filter)
-        }
-        Some(Command::Report { args, .. }) => argv::unescape(args),
-        _ => {}
-    }
+    unescape_filter_tail(&mut cli);
 
     // Read before `cli` is moved into `execute`, which consumes it by value.
     let json = cli.json;
@@ -377,6 +421,24 @@ fn execute(cli: Cli) -> Exit {
         return exit;
     }
 
+    // `pick`'s TTY gate, HERE and not inside `run_pick`, because the ordering is
+    // the property: `open_backend` a few lines down opens the store — and, if
+    // there is none, CREATES and migrates one — for every command that reaches
+    // it. A refused `pick` did exactly that: `TASQX_DB=<empty dir>/tasks.db
+    // tasqx pick | cat` exited 2 with the refusal AND left a 208 KB SQLite file
+    // behind, while three places (D55, this function's own comment, and
+    // `help.rs`) asserted the piped path touches no database.
+    //
+    // The reason to gate before the store rather than to correct the prose: the
+    // refusal is STRUCTURAL. `tasqx pick project:typo` in a pipe cannot run
+    // whatever the filter says, so failing on the filter — or on a store that
+    // cannot be opened at all — reports a problem the caller does not have and
+    // hides the one they do. Gating first also keeps the refusal free for a
+    // script on a machine where tasqx has never been run.
+    if matches!(&cli.command, Some(Command::Pick { .. })) && !tui::is_interactive(&ctx.caps) {
+        return Exit::Out(Err(ApiError::bad_request(PICK_NEEDS_A_TERMINAL)));
+    }
+
     // Charts and the HTML report are pure local reads; they render straight from
     // a direct Engine (safe under WAL even if a daemon is also running).
     if matches!(
@@ -480,6 +542,7 @@ fn execute(cli: Cli) -> Exit {
             expected_rev,
         ),
         Some(Command::List { filter }) => run_list(&mut backend, &ctx, &filter),
+        Some(Command::Agenda { filter, days }) => run_agenda(&mut backend, &ctx, &filter, days),
         Some(Command::Start {
             r#ref,
             keep,
@@ -492,7 +555,12 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Show { r#ref }) => run_show(&mut backend, &ctx, r#ref),
         Some(Command::Cancel { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.cancel", r#ref),
         Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),
+        Some(Command::Undo) => run_undo(&mut backend, &ctx),
         Some(Command::Annotate { r#ref, text }) => run_annotate(&mut backend, &ctx, r#ref, text),
+        Some(Command::Tag { r#ref, tags }) => run_tag(&mut backend, &ctx, "tag.add", r#ref, &tags),
+        Some(Command::Untag { r#ref, tags }) => {
+            run_tag(&mut backend, &ctx, "tag.remove", r#ref, &tags)
+        }
         Some(Command::Dep { r#ref, depends_on }) => {
             run_dep(&mut backend, &ctx, "dependency.add", r#ref, depends_on)
         }
@@ -500,6 +568,7 @@ fn execute(cli: Cli) -> Exit {
             run_dep(&mut backend, &ctx, "dependency.remove", r#ref, depends_on)
         }
         Some(Command::Use { name }) => run_use(&mut backend, &ctx, name),
+        Some(Command::Archive { name }) => run_archive(&mut backend, &ctx, name),
         Some(Command::Projects { all }) => run_projects(&mut backend, &ctx, all),
         Some(Command::Report { args, all, .. }) => run_report(&mut backend, &ctx, args, all),
         Some(Command::Config { action }) => {
@@ -510,6 +579,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, file),
         Some(Command::Next) => run_next(&mut backend, &ctx),
+        Some(Command::Pick { filter }) => run_pick(&mut backend, &ctx, &filter),
         Some(Command::Why { r#ref }) => run_why(&mut backend, &ctx, r#ref),
         Some(Command::Chart { .. }) => unreachable!("handled above"),
         Some(Command::Theme { .. }) => unreachable!("handled above"),
@@ -715,6 +785,33 @@ fn config_otlp_port() -> u16 {
             .parse()
             .expect("the registered default is a valid port")
     })
+}
+
+/// Read `[daemon] idle_timeout` from `config.toml` (D5): how long the daemon
+/// may sit with no clients and no work before it exits by itself.
+///
+/// Off unless the user asked for it, and every failure mode lands on off — the
+/// same direction [`config_notify_enabled`] and [`config_tokens_enabled`] fall
+/// in, for a sharper reason: the surprise here is not a missing toast but a
+/// background process that vanishes mid-session, and nothing in a daemon's
+/// output would explain it after the fact.
+fn config_daemon_idle_timeout() -> Option<Duration> {
+    let s =
+        config::find("daemon.idle_timeout").expect("daemon.idle_timeout is a registered setting");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    idle_timeout_from_minutes(&v)
+}
+
+/// The registry's minutes string as the daemon's `Option<Duration>`.
+///
+/// Split out of [`config_daemon_idle_timeout`] because it is the whole of the
+/// decision and the only part testable without a config directory: `0` and
+/// anything unparseable are both "never exit". Unparseable is reachable — the
+/// writer's range check only covers `config set`, and a hand-edited
+/// `idle_timeout = "soon"` reaches here as the default string either way.
+fn idle_timeout_from_minutes(value: &str) -> Option<Duration> {
+    let minutes = value.trim().parse::<u64>().ok()?;
+    (minutes > 0).then(|| Duration::from_secs(minutes * 60))
 }
 
 /// Result of a rendered command: the raw API result (for `--json`) plus the
@@ -1082,6 +1179,103 @@ fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
     Ok((result, text))
 }
 
+/// The filter DSL for "not finished": every status `Status::is_open` calls open,
+/// spelled as an `or` chain.
+///
+/// Derived from `Status::ALL` rather than written out, for the reason that
+/// constant's own doc gives — the names used to live by hand in ten places, and
+/// a status missing from one of them makes tasks stop appearing without anything
+/// failing. There is no `@open` keyword in the grammar to lean on: `KEYWORDS` is
+/// `@working` and `@blocked`, and neither is this set.
+fn open_statuses_filter() -> String {
+    tasqx_core::types::Status::ALL
+        .iter()
+        .filter(|s| s.is_open())
+        .map(|s| format!("status:{}", s.as_str()))
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+/// `tasqx agenda` — the same question `list` asks, ordered by time.
+///
+/// # No new API method, deliberately
+///
+/// `task.list` already takes a filter and a sort (`dispatch::METHODS`), and this
+/// verb needs nothing else FROM the store: the day grouping, the horizon and the
+/// earlier-of-two-dates ordering are all functions of fields every row already
+/// carries. An `agenda.*` method would be a second way to ask one question, and
+/// D50 narrows the API on purpose — the surface that has to stay frozen for v1
+/// is the one worth keeping small.
+///
+/// The ordering is not sent as a `sort` key for the same reason it could not be:
+/// the agenda key is `min(due, scheduled)`, which is not in `engine::SORT_KEYS`
+/// and would have to be added to the frozen contract to express a presentation
+/// choice. `-urgency` is asked for instead — byte-identical to what [`run_list`]
+/// sends — and `agenda_select` stable-sorts by the instant, so two tasks landing
+/// at the same minute keep the urgency ranking the rest of the tool gives them.
+///
+/// # The filter default is NOT `list`'s, and the reason is a measured one
+///
+/// `list` defaults to `@working`, and `@working` is pending|active. A task with
+/// a `scheduled` (or `wait`) date in the future sits in **backlog** until that
+/// instant arrives — `types::effective_status` promotes it on the way out of the
+/// store — so `@working` excludes, precisely, everything that is scheduled for
+/// later. Driven against the real binary: `add "Quarterly deps audit"
+/// scheduled:2026-08-04` then `agenda` on the 3rd showed no Tuesday at all. An
+/// agenda that cannot show what is scheduled for tomorrow is not an agenda, so
+/// the default here is every OPEN status instead — the same set minus nothing,
+/// plus the backlog `@working` was built to hide from a "what can I do now" view.
+///
+/// The set is DERIVED from `Status::ALL` and `Status::is_open`, never typed out:
+/// a sixth status would otherwise reach `list` and silently miss this view, which
+/// is the drift `Status::ALL` exists to end (its own doc names the ten places the
+/// names used to be spelled by hand).
+///
+/// # How a caller's own filter is combined with it
+///
+/// D24's resolution order, the one `report.summary` already uses: a caller who
+/// named a status is taken literally, so `tasqx agenda status:done` shows done
+/// tasks rather than an empty table; anything else is ANDed with the open set.
+/// The question is asked of the PARSED tree via `Filter::constrains_status`,
+/// because a lexical `contains("status")` both over-matches (`+status-page`) and
+/// under-matches (`@working`).
+///
+/// Composed on the wire rather than applied to the rows after they arrive, so
+/// the store does the narrowing it is good at — and so `tasqx agenda` on a store
+/// with a thousand closed tasks does not report "1000 hidden" under every run.
+///
+/// A filter this build cannot parse is sent VERBATIM (`unwrap_or(true)`), so the
+/// engine's refusal quotes the caller's words instead of parentheses this
+/// function added — D45's rule about where a bad value is refused.
+fn run_agenda(be: &mut Backend, ctx: &Ctx, filter: &[String], days: Option<usize>) -> CmdOutcome {
+    let now = jiff::Timestamp::now();
+    let asked = if filter.is_empty() {
+        String::new()
+    } else {
+        tasqx_core::filter::from_argv(filter)
+    };
+    let names_status = tasqx_core::filter::Filter::parse(&asked, now)
+        .map(|f| f.constrains_status())
+        .unwrap_or(true);
+    let filter_str = match (names_status, asked.is_empty()) {
+        (true, _) => asked,
+        (false, true) => open_statuses_filter(),
+        // Parenthesised on both sides: the caller's filter may itself be an
+        // `or`, and `a or b and c` would bind the default to `b` alone.
+        (false, false) => format!("({asked}) and ({})", open_statuses_filter()),
+    };
+
+    let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
+    let result = be.call("task.list", &params)?;
+
+    let a = render::agenda_select(&result, days.unwrap_or(AGENDA_DEFAULT_DAYS), now);
+    let text = render::agenda_text(ctx, &a);
+    // The result the `--json` terminal prints is the agenda's own, not the raw
+    // `task.list` answer: see `render::agenda_json` for why the two flags have
+    // to describe one set of rows.
+    Ok((render::agenda_json(&a), text))
+}
+
 /// Widen a `task.start` / `task.done` params object with whichever correlation
 /// facts were given on the command line (#12, #72).
 ///
@@ -1149,11 +1343,48 @@ fn run_simple_ref(be: &mut Backend, ctx: &Ctx, method: &str, r#ref: String) -> C
     Ok((result, text))
 }
 
+/// `tasqx undo` — the safety net (DESIGN §5 example 12).
+///
+/// No params on the wire, and none to collect: `event.revert` reverses the
+/// newest event in the log or refuses. The whole of this function is therefore
+/// the call and the line it prints — and that line is the point, because
+/// "undone" with nothing after it is exactly the answer a user cannot check
+/// against what they actually did.
+fn run_undo(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
+    let result = be.call("event.revert", &json!({}))?;
+    let text = render::undone(ctx, &result);
+    Ok((result, text))
+}
+
 fn run_annotate(be: &mut Backend, ctx: &Ctx, r#ref: String, text: Vec<String>) -> CmdOutcome {
     let body = text.join(" ");
     let result = be.call("annotation.add", &json!({ "ref": r#ref, "body": body }))?;
     let out = render::annotated(ctx, &result);
     Ok((result, out))
+}
+
+/// `tasqx tag` / `tasqx untag`, the two spellings of one params shape.
+///
+/// One function for both, the way [`run_dep`] serves `dep`/`undep`: the params
+/// are identical and only the method name differs, so two copies would be two
+/// places for the tag normalisation to fall out of step.
+///
+/// The words go through [`sugar::tag_arguments`] and not straight onto the wire,
+/// which is what makes `tasqx tag 42 +api` and `tasqx modify 42 +api` name the
+/// same tag. Sending `+api` verbatim would have created a tag literally called
+/// `+api`, invisible next to the `api` the sugar path writes and unreachable by
+/// the `+api` filter token.
+fn run_tag(
+    be: &mut Backend,
+    ctx: &Ctx,
+    method: &str,
+    r#ref: String,
+    tags: &[String],
+) -> CmdOutcome {
+    let names = sugar::tag_arguments(tags)?;
+    let result = be.call(method, &json!({ "ref": r#ref, "tags": names }))?;
+    let text = render::tag_result(ctx, &result, method == "tag.add", &names);
+    Ok((result, text))
 }
 
 fn run_dep(
@@ -1174,6 +1405,23 @@ fn run_dep(
 fn run_use(be: &mut Backend, ctx: &Ctx, name: String) -> CmdOutcome {
     let result = be.call("project.use", &json!({ "name": name }))?;
     let text = render::default_switched(ctx, &result);
+    Ok((result, text))
+}
+
+/// D22: take a project out of rotation. Same shape as [`run_use`] — the name is
+/// a lookup the core resolves, so an unknown one is `not_found` (exit 4) from
+/// the engine and not from a second copy of the rule here.
+///
+/// The interesting half is the response, not the request: `project.archive`
+/// clears the default project when it archives the one the `default_project`
+/// key names, and `default_cleared` is how it says so. Dropping that field on
+/// the floor here would make the CLI the surface on which "where does a bare
+/// `tasqx add` land" changed with nobody told — the invisible-state failure D21
+/// and D22 exist to close, arriving through the one verb that was never wired
+/// to a terminal.
+fn run_archive(be: &mut Backend, ctx: &Ctx, name: String) -> CmdOutcome {
+    let result = be.call("project.archive", &json!({ "name": name }))?;
+    let text = render::project_archived(ctx, &result);
     Ok((result, text))
 }
 
@@ -1521,6 +1769,215 @@ fn run_why(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
     let result = be.call("task.get", &json!({ "ref": r#ref }))?;
     let text = render::why(ctx, &result);
     Ok((result, text))
+}
+
+// ---- `tasqx pick`: the interactive chooser (DESIGN.md §10, D55) -------------
+
+/// The refusal a non-interactive `tasqx pick` gives.
+///
+/// A constant because it is asserted from two places — the unit test below and
+/// `tests/help.rs`, which drives the real binary — and a message pinned by a
+/// hand-copied substring in each is a message that drifts out from under both.
+/// It names the two commands that answer the same question without a screen,
+/// because "needs a terminal" on its own leaves a scripter with nothing to type
+/// next; `config edit`'s refusal earns its exit 2 the same way.
+const PICK_NEEDS_A_TERMINAL: &str =
+    "`tasqx pick` needs an interactive terminal on stdin and stdout \
+     (one of them is piped, redirected, or TERM=dumb). `tasqx next` picks the \
+     highest-urgency task for you and `tasqx start <ref>` starts it.";
+
+/// `tasqx pick` — choose a task on a full-screen list, and start it.
+///
+/// The two pieces this function owns are the two the state machine must not:
+/// the candidate snapshot and the write. Everything between them is `tui::pick`.
+///
+/// # The TTY gate is NOT here
+///
+/// It runs in [`execute`], above `open_backend`, and the position is load-bearing
+/// rather than tidy: reaching this function at all means the store has already
+/// been opened — created and migrated, if the machine had none — so a gate here
+/// would refuse a pipe *after* writing a database the caller never asked for.
+/// That is what shipped, and what D55 and `help.rs` both claimed did not happen.
+/// This function may therefore be called only when `tui::is_interactive` has
+/// already said yes; `pick_refuses_a_piped_stdout_with_a_nonzero_exit` asserts
+/// the ordering by pointing `$TASQX_DB` at a path that must still not exist
+/// afterwards.
+fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
+    // The same default and the same argv-preserving parse as `list`: `pick` is
+    // a chooser over the working set, so the set it offers must be the set
+    // `tasqx` shows, token for token.
+    let filter_str = if filter.is_empty() {
+        "@working".to_string()
+    } else {
+        tasqx_core::filter::from_argv(filter)
+    };
+    let listed = be.call(
+        "task.list",
+        &json!({ "filter": filter_str, "sort": ["-urgency"] }),
+    )?;
+    let rows = pick_rows(&listed);
+    if rows.is_empty() {
+        return Err(no_candidates(&filter_str));
+    }
+
+    let mut app = tui::pick::App::new(rows);
+    let caps = ctx.caps;
+    let chosen = tui::with_terminal(|term| pick_loop(term, &mut app, &ctx.theme, caps))
+        .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
+
+    // Cancelling is exit 4, not exit 0. `pick` exists to produce one task; when
+    // it produced none, answering ok is a command reporting success for work it
+    // did not do — this project's named recurring defect, and the reason
+    // `config edit`'s "no changes" exit 0 is NOT the precedent to copy. That
+    // screen is a session where zero edits is a legitimate outcome; this one is
+    // a selection whose entire output is the choice.
+    let Some(short_id) = chosen else {
+        return Err(ApiError::not_found(
+            "nothing picked — no task was started",
+            None,
+        ));
+    };
+    // The title is read back out of the snapshot the screen was built from,
+    // because the screen is gone by the time this prints and `task.start`
+    // answers with a UUID and a timestamp, neither of which a human recognises.
+    let title = app
+        .rows()
+        .iter()
+        .find(|r| r.short_id == short_id)
+        .map(|r| r.title.clone())
+        .unwrap_or_default();
+
+    let result = be.call(
+        "task.start",
+        &json!({ "ref": short_id.to_string(), "keep": false }),
+    )?;
+    let text = picked_summary(ctx, short_id, &title, &result);
+    Ok((pick_result(short_id, &title, result), text))
+}
+
+/// An empty candidate set is a refusal, not an empty screen.
+///
+/// Exit 4 with the filter quoted back, because the two ways to get here look
+/// identical from the outside — a store with nothing pending, and a filter that
+/// excludes everything — and only the text can tell them apart. Opening the
+/// screen on zero rows instead would put the user in an alt screen whose only
+/// available action is leaving it.
+fn no_candidates(filter: &str) -> ApiError {
+    ApiError::not_found(
+        format!("no task matches `{filter}` — nothing to pick (try `tasqx list {filter}`)"),
+        None,
+    )
+}
+
+/// The `task.list` answer, flattened into the rows the screen draws.
+///
+/// Extracted so it is reachable from a test at all: everything around it needs
+/// a real terminal, and a mapping that dropped a field — or read `id` where it
+/// meant `short_id`, which would make every Enter start the wrong task or none
+/// at all — would leave the whole suite green with the screen unusable. That is
+/// the same hole `settings_rows` was pulled out of `run_config_edit` to close.
+fn pick_rows(result: &Value) -> Vec<tui::pick::Row> {
+    let field = |t: &Value, key: &str| -> String {
+        t.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    };
+    result
+        .get("tasks")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|t| {
+            let urgency = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+            tui::pick::Row::new(
+                t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
+                &field(t, "title"),
+                &field(t, "project"),
+                // `-` and not an empty cell: a task with no priority is a fact,
+                // and a blank column reads as a rendering bug.
+                match field(t, "priority").as_str() {
+                    "" => "-",
+                    p => p,
+                },
+                &format!("{urgency:.1}"),
+                &t.get("tags")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// Draw, read one key, fold it in. Returns the chosen `short_id`, or `None`
+/// when the user left without choosing.
+///
+/// The theme is resolved once, outside, and not per frame: unlike the settings
+/// screen there is nothing here whose value depends on repainting in a
+/// different theme, so re-loading it every keystroke would be work with no
+/// observable effect.
+fn pick_loop(
+    term: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    app: &mut tui::pick::App,
+    theme: &theme::Theme,
+    caps: Caps,
+) -> std::io::Result<Option<i64>> {
+    use ratatui::crossterm::event::{self, Event};
+
+    loop {
+        term.draw(|f| tui::pick::render(app, theme, &caps, f))?;
+        // Resize and paste events just redraw; only keys are decisions.
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        match app.on_key(key) {
+            Some(tui::pick::Action::Choose { short_id }) => return Ok(Some(short_id)),
+            Some(tui::pick::Action::Cancel) => return Ok(None),
+            None => {}
+        }
+    }
+}
+
+/// The scrollback record `pick` leaves behind once the alt screen is gone.
+///
+/// `render::started` alone is not enough here, and that is not a style
+/// preference: it prints "Started task · timer running (since …)" and names no
+/// task, which is right for `tasqx start 42` — the user typed the ref — and
+/// wrong for a screen that has just been wiped off the display. Without the
+/// identity line an interactive session leaves no trace of WHICH task it
+/// started, which is exactly the auditability `saved_summary` exists to give
+/// `config edit`.
+///
+/// Extracted for the same reason as that function: the rest of `run_pick` needs
+/// a real terminal, so this line would otherwise be the one piece of it no test
+/// could ever see.
+fn picked_summary(ctx: &Ctx, short_id: i64, title: &str, result: &Value) -> String {
+    format!(
+        "{}\n{}",
+        ctx.paint("header", &format!("#{short_id}  {title}")),
+        render::started(ctx, result)
+    )
+}
+
+/// The `--json` body: `task.start`'s own answer, plus the identity of the task
+/// that was picked.
+///
+/// `task.start` returns `{id, interval_started}` — a UUID and a timestamp. That
+/// is the right answer for a caller who supplied the ref, and a useless one
+/// here, because the ref is the thing `pick` was asked to determine. The two
+/// added fields are the CLI's own composition (as `agenda`'s `--json` body is),
+/// never a change to what the method returns: the method's keys are passed
+/// through untouched beside them.
+fn pick_result(short_id: i64, title: &str, mut started: Value) -> Value {
+    if let Some(obj) = started.as_object_mut() {
+        obj.insert("short_id".to_string(), json!(short_id));
+        obj.insert("title".to_string(), json!(title));
+    }
+    started
 }
 
 // ---- charts, HTML report, and theme tools (DESIGN.md §8) --------------------
@@ -2393,12 +2850,48 @@ fn settings_loop(
 /// column is the point — the question behind a surprising setting is always
 /// "which layer won", and a bare value cannot answer it.
 fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
+    // Widths come from the rows about to be printed, floored at the layout this
+    // table has always had (D51's rule, one table over). They were plain `18`
+    // and `22`, and both are guesses about data the renderer is holding: the
+    // registry grew a `daemon.idle_timeout` (19 cells), which overflowed the
+    // key column and shoved SOURCE one cell right on that row alone — the
+    // misalignment `the_config_table_stays_aligned_when_a_value_is_not_ascii`
+    // exists to catch, arriving from the column that was never suspected.
+    // Padded, never truncated: a key and a value are the data the reader came
+    // for, and this table is where they read it.
+    let cells =
+        |v: &Value, field: &str| -> usize { render::width(v[field].as_str().unwrap_or("")) };
+    let key_w = rows
+        .iter()
+        .map(|r| cells(r, "key"))
+        .max()
+        .unwrap_or(0)
+        .max(18);
+    let val_w = rows
+        .iter()
+        .map(|r| {
+            let w = cells(r, "value");
+            // The empty value renders as `(unset)`, which is what has to fit.
+            if w == 0 {
+                render::width("(unset)")
+            } else {
+                w
+            }
+        })
+        .max()
+        .unwrap_or(0)
+        .max(22);
     let mut out = String::new();
     out.push_str(&format!(
         "{}\n",
         ctx.paint(
             "header",
-            &format!("{:<18} {:<22} {}", "SETTING", "VALUE", "SOURCE")
+            &format!(
+                "{} {} {}",
+                render::pad("SETTING", key_w),
+                render::pad("VALUE", val_w),
+                "SOURCE"
+            )
         )
     ));
     for r in rows {
@@ -2408,12 +2901,11 @@ fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
         let shown = if val.is_empty() { "(unset)" } else { val };
         // `render::pad` measures terminal CELLS, not chars, so a value carrying
         // CJK or an emoji — an editor path, a project name — no longer shoves
-        // the SOURCE column sideways. Padded, never truncated: the value is the
-        // data the reader came for, and this table is where they read it.
+        // the SOURCE column sideways.
         out.push_str(&format!(
             "{} {} {}\n",
-            render::pad(key, 18),
-            render::pad(shown, 22),
+            render::pad(key, key_w),
+            render::pad(shown, val_w),
             ctx.paint("muted", src)
         ));
     }
@@ -2481,11 +2973,26 @@ fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
     // telemetry from AI tools; off by default => no listener thread.
     let otlp_port = config_otlp_enabled().then(config_otlp_port);
 
+    // D5: a daemon may self-terminate once nothing needs it. Off unless
+    // `[daemon] idle_timeout` says otherwise — see `DaemonOptions::idle_timeout`
+    // for why the 15 minutes D5 names is the auto-spawn default and not this
+    // one. Announced on its own line only when armed, so the banner an operator
+    // who never configured it sees is byte-for-byte the one they saw before.
+    let idle_timeout = config_daemon_idle_timeout();
+
     eprintln!("tasqx daemon: listening on {socket} (Ctrl-C to stop)");
+    if let Some(idle) = idle_timeout {
+        eprintln!(
+            "tasqx daemon: will exit after {} minute(s) with no clients and no work \
+             (`[daemon] idle_timeout`)",
+            idle.as_secs() / 60
+        );
+    }
     let options = daemon::DaemonOptions {
         notifier,
         tokens_enabled,
         otlp_port,
+        idle_timeout,
     };
     match daemon::serve_with_options(engine, &socket, shutdown, options) {
         Ok(()) => eprintln!("tasqx daemon: stopped"),
@@ -2841,6 +3348,68 @@ fn db_path_resolved(create_dirs: bool) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
+    /// Both halves of the argv escape pair, over the SAME registry.
+    ///
+    /// `argv::FILTER_COMMANDS` decides which commands get their `-tag` tokens
+    /// hidden from clap; `unescape_filter_tail` decides which get them back.
+    /// Until this guard existed only the first half was checked, and `pick`
+    /// shipped in the first list and not the second: `tasqx pick -api` reached
+    /// `task.list` with the filter string `"\u{1}api"`, so the user got either a
+    /// parse error for a token they never typed or `no_candidates` quoting a
+    /// control byte back at them, while `tasqx list -api` worked on the same
+    /// store. C7's exact class, the third time it has leaked in this cluster.
+    ///
+    /// Driven through the REAL pre-pass, the REAL clap parse and the REAL
+    /// restore function, for every name the registry holds — a test that built
+    /// the escaped token itself, or listed the commands again here, would agree
+    /// with a broken half by construction.
+    #[test]
+    fn every_filter_command_gets_its_dashes_back() {
+        for name in argv::FILTER_COMMANDS {
+            let raw = ["tasqx", name, "-needs"].map(std::ffi::OsString::from);
+            let pre = argv::prepass(raw);
+            assert!(
+                pre.filter_command,
+                "`{name}` is registered but the pre-pass did not treat it as filter-taking"
+            );
+            let mut cli =
+                Cli::try_parse_from(pre.argv).unwrap_or_else(|e| panic!("`{name} -needs`: {e}"));
+
+            // Before: the token must actually carry the sentinel, or this
+            // command is not hyphen-tolerant at all and the assertion below
+            // would pass for the wrong reason.
+            let before = cli
+                .command
+                .as_mut()
+                .and_then(Command::filter_tail_mut)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "`{name}` is in FILTER_COMMANDS but `filter_tail_mut` returns None, so \
+                         nothing restores the dash the pre-pass hid"
+                    )
+                })
+                .clone();
+            assert_eq!(
+                before,
+                [format!("{}needs", '\u{1}')],
+                "`{name} -needs` was not escaped by the pre-pass"
+            );
+
+            unescape_filter_tail(&mut cli);
+            let after = cli
+                .command
+                .as_mut()
+                .and_then(Command::filter_tail_mut)
+                .expect("the same tail as above")
+                .clone();
+            assert_eq!(
+                after,
+                ["-needs"],
+                "`{name} -needs` reached the filter with the argv sentinel still in it"
+            );
+        }
+    }
+
     /// The store path and the routing decision both drive every write and, until
     /// now, appeared on no read surface — the invisible-field failure DESIGN.md
     /// has already recorded six times (`remind`, `estimate`, the dependency
@@ -3065,6 +3634,134 @@ mod tests {
         Cli::try_parse_from(["tasqx", "theme", "show"]).expect("`tasqx theme show` must parse");
     }
 
+    // ---- `tasqx pick` (D55) --------------------------------------------------
+
+    /// A plain context: no ANSI, so the assertions below are about the words in
+    /// the line rather than about the escape sequences around them.
+    fn plain_ctx() -> Ctx {
+        Ctx::new(theme::load("nord", None), Caps::PLAIN)
+    }
+
+    /// The flattening from a `task.list` answer to screen rows. Every field on
+    /// this screen decides which task the user starts, and the whole path
+    /// around it needs a real terminal — so a mapping that read `id` where it
+    /// meant `short_id`, or dropped the project, would leave the suite green
+    /// with the chooser unusable. That is the hole `settings_rows` was pulled
+    /// out of `run_config_edit` to close, one screen over.
+    #[test]
+    fn pick_rows_carry_every_field_the_screen_tells_tasks_apart_by() {
+        let listed = json!({ "tasks": [
+            { "short_id": 42, "id": "uuid-not-this-one", "title": "Ship the freeze",
+              "project": "work.tasqx", "priority": "H", "urgency": 11.84,
+              "tags": ["release", "api"] },
+            { "short_id": 7, "title": "No priority here" },
+        ]});
+        let rows = pick_rows(&listed);
+        assert_eq!(rows.len(), 2);
+
+        assert_eq!(rows[0].short_id, 42, "the ref must be the short_id");
+        assert_eq!(rows[0].title, "Ship the freeze");
+        assert_eq!(rows[0].project, "work.tasqx");
+        assert_eq!(rows[0].priority, "H");
+        assert_eq!(rows[0].urgency, "11.8", "urgency is shown to one decimal");
+        assert_eq!(rows[0].tags, "release api");
+
+        // A task missing the optional fields is still a pickable row, and its
+        // priority reads as a fact rather than as a blank cell.
+        assert_eq!(rows[1].short_id, 7);
+        assert_eq!(rows[1].priority, "-");
+        assert_eq!(rows[1].urgency, "0.0");
+        assert!(rows[1].project.is_empty() && rows[1].tags.is_empty());
+    }
+
+    /// An empty `task.list` answer must produce no rows, which is what makes
+    /// `run_pick` refuse instead of opening an alt screen whose only available
+    /// action is leaving it.
+    #[test]
+    fn an_empty_task_list_yields_no_pick_rows() {
+        assert!(pick_rows(&json!({ "tasks": [] })).is_empty());
+        assert!(
+            pick_rows(&json!({})).is_empty(),
+            "a missing key is not rows"
+        );
+    }
+
+    /// Nothing to pick is exit 4, and the message has to quote the filter back.
+    /// "No tasks." would be ambiguous in the one place it matters: an empty
+    /// working set and a filter that excludes everything look identical from
+    /// outside, and only the text can tell the user which one they hit.
+    #[test]
+    fn nothing_to_pick_is_a_not_found_that_names_the_filter() {
+        let e = no_candidates("project:work +api");
+        assert_eq!(e.exit_code(), 4, "an empty candidate set may not exit 0");
+        assert!(e.message.contains("project:work +api"), "{}", e.message);
+        assert!(
+            e.message.contains("tasqx list"),
+            "the refusal must name a way to look: {}",
+            e.message
+        );
+    }
+
+    /// The refusal a script hits. It must name the commands that answer the
+    /// same question without a screen — "needs a terminal" alone leaves the
+    /// reader with nothing to type next — and those commands must be real,
+    /// which is what the parse below checks.
+    #[test]
+    fn the_non_interactive_refusal_names_commands_that_exist() {
+        assert!(
+            PICK_NEEDS_A_TERMINAL.contains("interactive terminal"),
+            "{PICK_NEEDS_A_TERMINAL}"
+        );
+        assert!(
+            PICK_NEEDS_A_TERMINAL.contains("tasqx next"),
+            "{PICK_NEEDS_A_TERMINAL}"
+        );
+        assert!(
+            PICK_NEEDS_A_TERMINAL.contains("tasqx start"),
+            "{PICK_NEEDS_A_TERMINAL}"
+        );
+        Cli::try_parse_from(["tasqx", "next"]).expect("`tasqx next` must parse");
+        Cli::try_parse_from(["tasqx", "start", "1"]).expect("`tasqx start <ref>` must parse");
+        // And the gate itself: `Caps::PLAIN` and a redirected stream are both
+        // refusals, which is the rule this message explains.
+        assert!(!tui::is_interactive_with(&Caps::PLAIN, true, true));
+        assert!(!tui::is_interactive_with(&plain_ctx().caps, false, true));
+    }
+
+    /// The scrollback line `pick` leaves once the alt screen is gone. It has to
+    /// NAME the task: `render::started` prints "Started task · timer running"
+    /// and nothing else, which is right for `tasqx start 42` — the user typed
+    /// the ref — and leaves an interactive session with no record of which task
+    /// it started. This is the only reachable test of that line; the rest of
+    /// `run_pick` needs a real terminal.
+    #[test]
+    fn the_pick_summary_names_the_task_it_started() {
+        let started = json!({ "id": "0199-uuid", "interval_started": "2026-08-03T10:00:00Z" });
+        let text = picked_summary(&plain_ctx(), 42, "Ship the v1 JSON API freeze", &started);
+        assert!(text.contains("#42"), "{text}");
+        assert!(text.contains("Ship the v1 JSON API freeze"), "{text}");
+        assert!(
+            text.contains("Started task"),
+            "the timer line must survive too: {text}"
+        );
+        assert!(text.ends_with('\n'), "{text:?}");
+    }
+
+    /// `--json` must carry the identity of the task that was picked. The method
+    /// answers `{id, interval_started}` — a UUID and a timestamp — and the ref
+    /// is the very thing `pick` was asked to determine, so without these two
+    /// fields the machine-readable answer omits the answer. The method's own
+    /// keys are passed through untouched beside them.
+    #[test]
+    fn the_pick_json_carries_the_chosen_ref_beside_the_methods_own_answer() {
+        let started = json!({ "id": "0199-uuid", "interval_started": "2026-08-03T10:00:00Z" });
+        let out = pick_result(42, "Ship the freeze", started);
+        assert_eq!(out["short_id"], json!(42));
+        assert_eq!(out["title"], json!("Ship the freeze"));
+        assert_eq!(out["id"], json!("0199-uuid"));
+        assert_eq!(out["interval_started"], json!("2026-08-03T10:00:00Z"));
+    }
+
     // ---- the reference examples parse ---------------------------------------
 
     /// Shell-style tokenizer for the reference examples: whitespace splits,
@@ -3179,16 +3876,19 @@ mod tests {
         }
         // Both halves of COMMAND_REF are in scope; a filter or iteration bug
         // that checked nothing would otherwise pass silently.
-        // 72 examples (35 Safe + 37 NoRun), two of which are two-command
-        // pipelines and so contribute two segments each — 74 segments.
+        // 82 segments at the time `undo` was written, 85 with its three. The
+        // floor said 78 against a real 82, so four segments could already have
+        // been deleted with nothing going red — corrected here from the count
+        // this guard itself reports, which is the only number worth trusting.
         //
-        // Re-derive this whenever a row is added to COMMAND_REF. It said 52/54
-        // for long enough that twenty examples could have been deleted without
-        // the floor noticing, which is the failure mode a floor exists to
-        // prevent: it kept reporting green while guarding a quarter of what it
-        // claimed to.
+        // Re-derive this whenever a row is added to COMMAND_REF — from the
+        // count this guard itself reports, not by adding the number of examples
+        // you just wrote. It said 52/54 for long enough that twenty examples
+        // could have been deleted without the floor noticing, which is the
+        // failure mode a floor exists to prevent: it kept reporting green while
+        // guarding a quarter of what it claimed to.
         assert!(
-            checked >= 74,
+            checked >= 85,
             "expected every example, only checked {checked}"
         );
     }
@@ -3235,6 +3935,39 @@ mod tests {
         );
     }
 
+    /// The one conversion between `[daemon] idle_timeout` and what the daemon
+    /// takes (D5), including both spellings of "never".
+    ///
+    /// The junk case is not hypothetical: `write_value_in` only guards
+    /// `config set`, so a hand-edited `idle_timeout = "soon"` reaches this
+    /// function as whatever the resolver handed back, and the wrong answer here
+    /// is a daemon that exits at some invented deadline the file never asked
+    /// for. Every failure lands on "never", the same direction
+    /// `config_notify_enabled` falls in.
+    #[test]
+    fn an_idle_timeout_of_zero_or_junk_is_never_and_minutes_become_a_duration() {
+        assert_eq!(idle_timeout_from_minutes("0"), None, "0 means never");
+        assert_eq!(
+            idle_timeout_from_minutes(config::find("daemon.idle_timeout").unwrap().default),
+            None,
+            "and the shipped default is that off switch"
+        );
+        assert_eq!(idle_timeout_from_minutes("soon"), None);
+        assert_eq!(idle_timeout_from_minutes(""), None);
+        assert_eq!(idle_timeout_from_minutes("-5"), None);
+        assert_eq!(
+            idle_timeout_from_minutes("15"),
+            Some(Duration::from_secs(900)),
+            "minutes, not seconds — a daemon that left after 15 seconds would be \
+             indistinguishable from a crash"
+        );
+        assert_eq!(
+            idle_timeout_from_minutes(" 1 "),
+            Some(Duration::from_secs(60)),
+            "the resolver hands back what the file held, whitespace and all"
+        );
+    }
+
     /// The theme validator must not be applied to settings that are not themes.
     ///
     /// `effective_setting` runs for EVERY registered setting, and a first
@@ -3256,6 +3989,7 @@ mod tests {
             let held = match s.kind {
                 config::Kind::Bool => "true",
                 config::Kind::Uint => "4318",
+                config::Kind::Minutes => "15",
                 _ => "a-value-that-is-not-a-theme",
             };
             let (value, source, warning) = effective_setting(s, None, Some(held));

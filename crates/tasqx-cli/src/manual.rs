@@ -157,11 +157,16 @@ A project is just a name in the store — no folder, no path.
   tasqx init <name>      claim a new project name
   tasqx use <name>       make it the default for bare adds
   tasqx projects         list them; the default is marked `*`
+  tasqx archive <name>   retire one; --all still lists it
 
 A bare `tasqx add …` lands in the default project. The default
 is claimed only if the store had none yet; archiving the default
 project clears it, so a later add has no home until you `use`
-another one."
+another one.
+
+Archiving keeps the tasks and takes the project out of rotation:
+`use` and any `add`/`modify` naming it are refused. There is no
+`unarchive` — importing a saved export is the way back."
         }
 
         Topic::Capturing => {
@@ -199,7 +204,19 @@ Recurrence forms:
   repeat:\"monthly on day 15\"
 
 Missed occurrences collapse to a single next one. `every N
-months` can drift across short months — anchor by day of month."
+months` can drift across short months — anchor by day of month.
+
+`tasqx agenda` reads those dates back: it is `list` ordered by
+time and grouped by day, placing each task on the EARLIER of
+its `due` and `scheduled` and saying which of the two that was.
+Overdue rows come first and are always shown; the window ahead
+is 14 days (`--days N`). It leaves out tasks with neither date
+and tasks past the horizon — and counts both under the table,
+naming the exact `--days` that would reach the furthest one,
+or saying `tasqx list` when it is further out than `--days`
+goes.
+Days are UTC days, matching the zone the dates above are stored
+in."
         }
 
         Topic::Filters => {

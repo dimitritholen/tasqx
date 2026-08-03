@@ -156,11 +156,14 @@ impl ReminderScheduler {
         self.heap.is_empty()
     }
 
-    /// The soonest scheduled instant, if any — the seam a deadline-driven loop
-    /// would read. Nothing outside the tests calls it today: the daemon sleeps
-    /// a fixed `daemon::REMINDER_TICK_MS` between ticks, which is why a
-    /// reminder can fire up to one tick late and why that latency is a
-    /// constant rather than a property of the heap.
+    /// The soonest scheduled instant, if any.
+    ///
+    /// Not a deadline the loop sleeps to: the daemon ticks on a fixed
+    /// `daemon::REMINDER_TICK_MS` regardless, which is why a reminder can fire
+    /// up to one tick late and why that latency is a constant rather than a
+    /// property of the heap. What reads it is `daemon::reminder_loop`, which
+    /// republishes it after every tick so the idle-shutdown check (D5) can ask
+    /// whether leaving now would strand a delivery.
     pub fn peek_at(&self) -> Option<Timestamp> {
         self.heap.peek().map(|Reverse(p)| p.at)
     }

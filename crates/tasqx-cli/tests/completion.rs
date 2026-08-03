@@ -1483,30 +1483,13 @@ fn seeded_filter(label: &str) -> (std::path::PathBuf, String) {
         SHORT_FLAG_TAG_SUGAR,
     ]);
 
-    // `project.archive` has no CLI verb, so the one-shot JSON door is how a test
-    // reaches it. The envelope shape is `dispatch::handle_envelope`'s.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tasqx"))
-        .env("TASQX_DB", &db)
-        .args(["--no-daemon", "api"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn the one-shot api");
-    {
-        use std::io::Write as _;
-        let stdin = child.stdin.as_mut().expect("api stdin");
-        writeln!(
-            stdin,
-            r#"{{"tasqx":"1","id":"archive","method":"project.archive","params":{{"name":"{ARCHIVED_PROJECT}"}}}}"#
-        )
-        .expect("write the archive request");
-    }
-    let archived = child.wait_with_output().expect("run the archive request");
-    let reply = String::from_utf8_lossy(&archived.stdout);
-    assert!(
-        reply.contains("\"ok\":true"),
-        "archiving {ARCHIVED_PROJECT:?} failed: {reply}"
-    );
+    // The `archive` verb, like every other seeding step. This used to go through
+    // the one-shot JSON door with a hand-built envelope, for the reason written
+    // beside it: `project.archive` had no CLI verb to reach. It has one now, and
+    // the fixture is one of the places where that fact is load-bearing — the
+    // whole point of the archived project below is that a WRITE surface must
+    // withhold it, and `archive` is now itself such a surface.
+    run(&["archive", ARCHIVED_PROJECT]);
 
     let socket = format!("tasqx-completion-no-daemon-{}-{label}", std::process::id());
     (db, socket)
@@ -1990,6 +1973,24 @@ fn an_archived_project_is_offered_to_a_filter_and_withheld_from_a_write() {
              outright — a menu entry whose only outcome is an error. got {got:?}"
         );
     }
+
+    // `archive` is the fifth project-valued site and the one that does NOT
+    // refuse an archived project: the engine sets `archived = 1` again and
+    // answers ok. It is withheld anyway, and deliberately kept out of the loop
+    // above so that loop's reason stays true of its own members — here the
+    // reason is weaker and different. Re-archiving is the one input this verb
+    // cannot change anything with, so offering it is a menu of no-ops.
+    let got = complete_bash_in(&db, &socket, 2, &["tasqx", "archive", ""]);
+    assert!(
+        got.iter().all(|c| !c.contains(ARCHIVED_PROJECT)),
+        "`archive <TAB>` offered an already-archived project — re-archiving it \
+         changes nothing. got {got:?}"
+    );
+    assert!(
+        got.iter().any(|c| c == SEEDED_PROJECT),
+        "`archive <TAB>` must still offer the live projects, or the assertion \
+         above is true of an empty menu. got {got:?}"
+    );
 
     let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
         .env("TASQX_DB", &db)

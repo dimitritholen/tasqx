@@ -6,9 +6,13 @@
 //! terminal: truecolor/256/16 color, `NO_COLOR` emphasis-only, or byte-plain
 //! when piped (script-safe). Unicode rules degrade to ASCII on the same signal.
 
+use jiff::civil::{Date, Weekday};
+use jiff::tz::TimeZone;
+use jiff::{Timestamp, ToSpan, Unit};
 use serde_json::Value;
 
 use crate::theme::Ctx;
+use crate::AGENDA_MAX_DAYS;
 
 /// Strip terminal-control bytes from untrusted text before it is painted, so an
 /// imported or agent-authored task field can't smuggle ANSI/OSC escapes that
@@ -93,6 +97,42 @@ pub fn default_switched(ctx: &Ctx, result: &Value) -> String {
     format!(
         "{}  ·  a bare `tasqx add` lands here{trailer}\n",
         ctx.paint("accent", &format!("Default project is now {name}"))
+    )
+}
+
+/// D22: `archive` retired a project, and may have un-pointed the default doing
+/// it. Both facts go on the line.
+///
+/// The default-clearing branch is the whole reason this function is not a
+/// one-liner. `project.archive` clears the `default_project` key when it
+/// archives the project that key names, so a single `tasqx archive work` can
+/// change where every future bare `tasqx add` lands — and D22 wrote, before any
+/// terminal copy existed, that when a CLI verb landed it would render
+/// `default_cleared`. Printing only "Project work archived" would leave the user
+/// to discover the move by finding their next task in no project at all.
+///
+/// The other branch is stated rather than implied for the D39 reason: "Project
+/// work archived" alone is also exactly what the cleared case would print, so
+/// silence cannot be read as "the default is fine". Both outcomes name
+/// themselves, and `default_cleared` — a field the core always sends, never
+/// omits — decides which.
+pub fn project_archived(ctx: &Ctx, result: &Value) -> String {
+    let name = s(result, "name");
+    let cleared = result
+        .get("default_cleared")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // Name the verb that points the default somewhere again: a store with no
+    // default is a valid state (D22), but it is one the user has to be able to
+    // leave, and `use` is the only way out.
+    let trailer = if cleared {
+        "  ·  it was your default project, so a bare `tasqx add` has no home until `tasqx use <project>`"
+    } else {
+        "  ·  your default project is unchanged"
+    };
+    format!(
+        "{}{trailer}\n",
+        ctx.paint("accent", &format!("Project {name} archived"))
     )
 }
 
@@ -272,7 +312,16 @@ impl TaskCols {
     /// this function: a store with no due dates was spending 24 cells on a
     /// `DUE` column that could never hold anything, and the reader saw it as the
     /// table falling apart between `PROJECT` and `TAGS`.
-    fn fit(rows: &[TaskRow], budget: usize) -> TaskCols {
+    ///
+    /// `when_label` is the header the date column will be printed under — `DUE`
+    /// for [`task_table`], `WHEN` for [`agenda_text`], whose column holds
+    /// whichever of `due`/`scheduled` put the row on the calendar. It is a
+    /// PARAMETER rather than a constant because a column is sized to its own
+    /// header as well as to its content (the `sized` closure below), so a label
+    /// chosen by the caller and a width computed from a different one is a
+    /// header that can overhang its column by exactly the difference — the
+    /// misalignment this whole function exists to end, rebuilt one caller over.
+    fn fit(rows: &[TaskRow], budget: usize, when_label: &str) -> TaskCols {
         let max_of = |f: fn(&TaskRow) -> &str| rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
         // A column is as wide as its widest cell OR its own header, whichever
         // asks for more — a label that does not fit its column is the same
@@ -294,7 +343,7 @@ impl TaskCols {
             urg: max_of(|r| &r.urg).max(width("URG")),
             title: sized(max_of(|r| &r.title), "TASK").max(width("TASK")),
             project: sized(max_of(|r| &r.project), "PROJECT"),
-            due: sized(max_of(|r| &r.due), "DUE"),
+            due: sized(max_of(|r| &r.due), when_label),
             tags: sized(max_of(|r| &r.tags), "TAGS"),
         };
         c.title = c.title.min(Self::MAX_TITLE);
@@ -370,6 +419,121 @@ fn cell(ctx: &Ctx, role: Option<&str>, text: &str, w: usize) -> String {
     }
 }
 
+/// Cells between two columns, applied by the ONE joiner both the header and
+/// every row go through — so a dropped column cannot survive in one of them and
+/// not the other.
+fn join_cells(cells: Vec<String>) -> String {
+    cells.join(&" ".repeat(GAP)).trim_end().to_string()
+}
+
+/// The header line for a fitted table. `when_label` must be the same string the
+/// widths were fitted with — see [`TaskCols::fit`].
+fn header_line(c: &TaskCols, when_label: &str) -> String {
+    let mut head = vec![
+        rpad("ID", c.id),
+        rpad("URG", c.urg),
+        "P".to_string(),
+        pad("TASK", c.title),
+    ];
+    for (w, label) in [
+        (c.project, "PROJECT"),
+        (c.due, when_label),
+        (c.tags, "TAGS"),
+    ] {
+        if w > 0 {
+            head.push(pad(label, w));
+        }
+    }
+    join_cells(head)
+}
+
+/// One painted row of a fitted table.
+fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
+    let prio_role = match r.prio.as_str() {
+        "H" => "priority.H",
+        "M" => "priority.M",
+        "L" => "priority.L",
+        _ => "muted",
+    };
+    let urg_plain = rpad(&r.urg, c.urg);
+    let mut line = vec![
+        rpad(&r.sid, c.id),
+        ctx.theme.ramp_style(r.ramp).paint(&urg_plain, &ctx.caps),
+        cell(ctx, Some(prio_role), &r.prio, 1),
+        cell(ctx, None, &r.title, c.title),
+    ];
+    if c.project > 0 {
+        line.push(cell(ctx, Some("project"), &r.project, c.project));
+    }
+    if c.due > 0 {
+        // Painted or bare, the cell went through the SAME fit, so the
+        // overdue branch cannot drift out of width from the ordinary one.
+        let role = if r.overdue { Some("overdue") } else { None };
+        line.push(cell(ctx, role, &r.due, c.due));
+    }
+    if c.tags > 0 {
+        line.push(cell(ctx, Some("tag"), &r.tags, c.tags));
+    }
+    join_cells(line)
+}
+
+/// Measure one `task.list` row into the cells the layout will be computed from.
+///
+/// Shared with [`agenda_text`], which then overwrites `due`/`overdue` with what
+/// its own `WHEN` column holds. Everything else — the urgency ramp, the
+/// sanitizing, the `-` for an unset priority — is identical by construction
+/// rather than by two functions agreeing, which is how the two views cannot come
+/// to disagree about the same task.
+fn task_row(t: &Value, max_urg: f64, now: Timestamp) -> TaskRow {
+    let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+    TaskRow {
+        sid: format!("{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
+        urg: format!("{urg:.1}"),
+        ramp: urg / max_urg,
+        prio: t
+            .get("priority")
+            .and_then(Value::as_str)
+            .unwrap_or("-")
+            .to_string(),
+        title: s(t, "title"),
+        project: s(t, "project"),
+        due: s(t, "due"),
+        overdue: field_ts(t, "due").map(|d| d < now).unwrap_or(false)
+            && status_is_open(&s(t, "status")),
+        tags: t
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|a| {
+                san(&a
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// The urgency denominator that normalizes the ramp across the visible rows.
+/// Floored at 1.0 so a table of zero-urgency rows divides by something.
+fn max_urgency(tasks: &[&Value]) -> f64 {
+    tasks
+        .iter()
+        .filter_map(|t| t.get("urgency").and_then(Value::as_f64))
+        .fold(0.0_f64, f64::max)
+        .max(1.0)
+}
+
+/// One RFC3339 instant field of a task, or `None` when it is absent, null, or
+/// text this build cannot parse. Unparseable is treated as absent deliberately:
+/// the CLI may be talking to a different build of core over the socket, and a
+/// stamp it cannot read is a stamp it cannot place on a day either.
+fn field_ts(t: &Value, key: &str) -> Option<Timestamp> {
+    t.get(key)
+        .and_then(Value::as_str)
+        .and_then(|v| v.parse::<Timestamp>().ok())
+}
+
 /// Render a `task.list` result as an aligned, themed table.
 pub fn task_table(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
@@ -381,107 +545,26 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         return "No tasks.\n".to_string();
     }
 
-    // Normalize the urgency ramp across the visible rows.
-    let max_urg = tasks
-        .iter()
-        .filter_map(|t| t.get("urgency").and_then(Value::as_f64))
-        .fold(0.0_f64, f64::max)
-        .max(1.0);
+    let refs: Vec<&Value> = tasks.iter().collect();
+    let max_urg = max_urgency(&refs);
+    let now = Timestamp::now();
+    let rows: Vec<TaskRow> = tasks.iter().map(|t| task_row(t, max_urg, now)).collect();
+    let c = TaskCols::fit(&rows, ctx.cols, "DUE");
 
-    let now = jiff::Timestamp::now();
-    let rows: Vec<TaskRow> = tasks
-        .iter()
-        .map(|t| {
-            let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-            TaskRow {
-                sid: format!("{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
-                urg: format!("{urg:.1}"),
-                ramp: urg / max_urg,
-                prio: t
-                    .get("priority")
-                    .and_then(Value::as_str)
-                    .unwrap_or("-")
-                    .to_string(),
-                title: s(t, "title"),
-                project: s(t, "project"),
-                due: s(t, "due"),
-                overdue: t
-                    .get("due")
-                    .and_then(Value::as_str)
-                    .and_then(|d| d.parse::<jiff::Timestamp>().ok())
-                    .map(|d| d < now)
-                    .unwrap_or(false)
-                    && status_is_open(&s(t, "status")),
-                tags: t
-                    .get("tags")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        san(&a
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(" "))
-                    })
-                    .unwrap_or_default(),
-            }
-        })
-        .collect();
-    let c = TaskCols::fit(&rows, ctx.cols);
-
-    // Header and rows are assembled by the SAME joiner over the SAME widths, so
-    // a dropped column cannot survive in one of them and not the other.
-    let join = |cells: Vec<String>| cells.join(&" ".repeat(GAP)).trim_end().to_string();
-    let mut head = vec![
-        rpad("ID", c.id),
-        rpad("URG", c.urg),
-        "P".to_string(),
-        pad("TASK", c.title),
-    ];
-    for (w, label) in [(c.project, "PROJECT"), (c.due, "DUE"), (c.tags, "TAGS")] {
-        if w > 0 {
-            head.push(pad(label, w));
-        }
-    }
-    let header = join(head);
     // The rule spans the TABLE, not the header text. Those differ by the last
-    // column's padding, which `join` trims — and a rule cut to the trimmed
+    // column's padding, which `join_cells` trims — and a rule cut to the trimmed
     // header stops short of the rows that run under it, which reads as the rows
     // overflowing something.
     let rule_len = c.total().min(ctx.cols);
 
     let mut out = String::new();
-    out.push_str(&ctx.paint("header", &header));
+    out.push_str(&ctx.paint("header", &header_line(&c, "DUE")));
     out.push('\n');
     out.push_str(&ctx.hrule(rule_len));
     out.push('\n');
 
     for r in &rows {
-        let prio_role = match r.prio.as_str() {
-            "H" => "priority.H",
-            "M" => "priority.M",
-            "L" => "priority.L",
-            _ => "muted",
-        };
-        let urg_plain = rpad(&r.urg, c.urg);
-        let mut line = vec![
-            rpad(&r.sid, c.id),
-            ctx.theme.ramp_style(r.ramp).paint(&urg_plain, &ctx.caps),
-            cell(ctx, Some(prio_role), &r.prio, 1),
-            cell(ctx, None, &r.title, c.title),
-        ];
-        if c.project > 0 {
-            line.push(cell(ctx, Some("project"), &r.project, c.project));
-        }
-        if c.due > 0 {
-            // Painted or bare, the cell went through the SAME fit, so the
-            // overdue branch cannot drift out of width from the ordinary one.
-            let role = if r.overdue { Some("overdue") } else { None };
-            line.push(cell(ctx, role, &r.due, c.due));
-        }
-        if c.tags > 0 {
-            line.push(cell(ctx, Some("tag"), &r.tags, c.tags));
-        }
-        out.push_str(&join(line));
+        out.push_str(&row_line(ctx, &c, r));
         out.push('\n');
     }
 
@@ -494,10 +577,34 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
     out.push_str(&ctx.paint("muted", &format!("{count} task(s)")));
     out.push('\n');
 
-    // The table has no status column, so a row the store could not read would
-    // otherwise sit in the default view indistinguishable from ordinary open
-    // work — the invisible-field failure this project keeps rebuilding. The
-    // note is conditional: on a healthy store it never appears.
+    for note in store_health_notes(tasks) {
+        out.push_str(&ctx.paint("warn", &note));
+        out.push('\n');
+    }
+    out
+}
+
+/// The notes a status-less task table owes its reader about rows the store
+/// could not read back cleanly — one per defect, naming the offending ids and
+/// the way out. Empty for a healthy store, so their presence always means
+/// something.
+///
+/// Shared rather than written per view, and that is the whole point of it being
+/// a function. Both [`task_table`] and [`agenda_text`] draw the same rows
+/// WITHOUT a status column and WITH a title cell that can come out empty, so
+/// each of them can hide exactly these two defects. `agenda` shipped as a second
+/// table over the same rows and did not carry the notes: an unreadable status
+/// sat under `Wed 2026-08-05` looking like ordinary open work, and a blank-title
+/// row drew as an empty TASK cell with nothing under the table to say why —
+/// the invisible-field failure rebuilt one view over, which is what a copied
+/// layout does. A third view gets them by calling this; it cannot get them by
+/// remembering to.
+fn store_health_notes(tasks: &[Value]) -> Vec<String> {
+    let mut notes = Vec::new();
+
+    // Neither table has a status column, so a row the store could not read
+    // would otherwise sit in the default view indistinguishable from ordinary
+    // open work — the invisible-field failure this project keeps rebuilding.
     let broken: Vec<String> = tasks
         .iter()
         .filter(|t| status_is_unrecognized(t))
@@ -514,13 +621,10 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         // "run tasqx modify": status is not freely settable (§10 routes every
         // transition through start/stop/done), and the correct value is the
         // user's call, not ours — export, edit that one field, import.
-        out.push_str(&ctx.paint(
-            "warn",
-            &format!(
-                "unrecognized status in the store: {} — `tasqx export` still works; \
-                 fix the status there and `tasqx import` it back\n",
-                broken.join(", ")
-            ),
+        notes.push(format!(
+            "unrecognized status in the store: {} — `tasqx export` still works; \
+             fix the status there and `tasqx import` it back",
+            broken.join(", ")
         ));
     }
 
@@ -550,16 +654,13 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         })
         .collect();
     if !blank.is_empty() {
-        out.push_str(&ctx.paint(
-            "warn",
-            &format!(
-                "blank title in the store: {} — written before this rule existed, and an export \
-                 holding one will not import; fix with `tasqx modify <ref> \"<a real title>\"`\n",
-                blank.join(", ")
-            ),
+        notes.push(format!(
+            "blank title in the store: {} — written before this rule existed, and an export \
+             holding one will not import; fix with `tasqx modify <ref> \"<a real title>\"`",
+            blank.join(", ")
         ));
     }
-    out
+    notes
 }
 
 /// True when the core flagged this task's `status` as text it could not
@@ -569,6 +670,436 @@ fn status_is_unrecognized(t: &Value) -> bool {
     t.get("status_unrecognized")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+// ============================================================================
+// Agenda — the same `task.list` answer, ordered by time instead of urgency
+// ============================================================================
+
+/// Which dated field put a task on the agenda.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum When {
+    Due,
+    Scheduled,
+}
+
+impl When {
+    /// The word the `WHEN` cell opens with. Short, because it is repeated on
+    /// every row and the date beside it is the information.
+    fn label(self) -> &'static str {
+        match self {
+            When::Due => "due",
+            When::Scheduled => "sched",
+        }
+    }
+}
+
+/// One task placed on the calendar.
+struct Entry {
+    task: Value,
+    at: Timestamp,
+    day: Date,
+    kind: When,
+}
+
+/// A `task.list` answer arranged as an agenda: the rows that have a place on the
+/// calendar, in time order, plus an exact account of every row that does not.
+///
+/// The counts are not decoration. This view drops rows the filter DID match, for
+/// two reasons of its own, and a time-ordered list that silently omits a task is
+/// the failure this project keeps rebuilding (D33/D39): a deadline that is not on
+/// the screen is indistinguishable from a deadline that does not exist. So each
+/// reason carries its own count, and [`agenda_text`] prints the ones that are
+/// non-zero together with the command or flag that reveals what they hold.
+pub struct Agenda {
+    entries: Vec<Entry>,
+    /// Tasks with neither `due` nor `scheduled`. Nothing can put them on a day.
+    undated: usize,
+    /// Tasks dated past the horizon.
+    beyond: usize,
+    /// Days from `today` to the furthest thing `beyond` is holding. `None` when
+    /// nothing is beyond the horizon.
+    ///
+    /// A distance, NOT necessarily a usable `--days`: it can exceed
+    /// [`AGENDA_MAX_DAYS`], and then no window reaches that row and
+    /// [`Agenda::omissions`] says so instead of quoting a flag value the parser
+    /// refuses. `agenda_json` reports it beside `max_days` so a script can tell
+    /// the two cases apart the same way the footer does.
+    reach_days: Option<usize>,
+    /// Store-health notes over every task the filter matched — see
+    /// [`store_health_notes`]. Computed over the whole result and not over
+    /// `entries`, because an unreadable status or a blank title is a fact about
+    /// the store whether or not that row happened to land inside the horizon.
+    health: Vec<String>,
+    today: Date,
+    through: Date,
+    days: usize,
+}
+
+/// Arrange a `task.list` result into an [`Agenda`].
+///
+/// `now` is a parameter and never the system clock, for the reason
+/// `datetime::parse_when` gives: a view whose grouping depends on a hidden clock
+/// cannot be tested at the boundaries that matter — the last second of today,
+/// the first of the horizon.
+///
+/// # Which field orders it, and why both
+///
+/// `due` and `scheduled` are both calendar facts and they answer different
+/// questions: `scheduled` is when you meant to START, `due` is when it must be
+/// FINISHED. A view built on `due` alone loses every planned-but-undeadlined
+/// task, which is most of what a week actually contains; one built on
+/// `scheduled` alone loses every deadline. So a task is placed on the EARLIER of
+/// the two — the first day it asks anything of you — and the row says which
+/// field that was, because "Friday" means something different under each. When
+/// the two coincide the label is `due`: a deadline is the more consequential
+/// reading of the same instant.
+///
+/// A task carrying NEITHER is not on the agenda at all, because there is no
+/// honest day to put it on — but it is counted, and the footer names `tasqx
+/// list` as the view that does show it. Inventing a "Someday" bucket was
+/// rejected: it would sort a hundred undated backlog rows into the same screen
+/// as this week, which is precisely what `list`'s urgency order is for.
+///
+/// # Done and cancelled
+///
+/// Never seen here: which statuses reach this function is the caller's filter,
+/// and `lib::run_agenda` composes an open-status default into it under D24's
+/// resolution order. Filtering again here would be a second opinion about a
+/// question the filter grammar already answers, and the two would drift.
+pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda {
+    let empty = Vec::new();
+    let tasks = result
+        .get("tasks")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+
+    // Everything the store holds is UTC (`datetime.rs`: a naive date resolves to
+    // 00:00 UTC), so the day boundaries are UTC too. Grouping by the LOCAL day
+    // was considered and rejected: `--due 2026-08-05` is stored as midnight UTC,
+    // and west of Greenwich that instant is the 4th, so a local-day agenda would
+    // file the task one day before the date the user typed. Matching the
+    // parser's zone is the only arrangement in which a date round-trips.
+    let today = now.to_zoned(TimeZone::UTC).date();
+    // `--days` is bounded at parse time at `AGENDA_MAX_DAYS`, so this
+    // addition cannot overflow. `Date::MAX` on failure anyway, because the
+    // failure direction that matters is "show it" — a horizon that cannot be
+    // computed must not silently swallow the rows past it.
+    let through = today.checked_add((days as i64).days()).unwrap_or(Date::MAX);
+
+    let mut a = Agenda {
+        entries: Vec::new(),
+        undated: 0,
+        beyond: 0,
+        reach_days: None,
+        health: store_health_notes(tasks),
+        today,
+        through,
+        days,
+    };
+
+    for t in tasks {
+        let (at, kind) = match (field_ts(t, "due"), field_ts(t, "scheduled")) {
+            (Some(d), Some(sc)) if sc < d => (sc, When::Scheduled),
+            (Some(d), _) => (d, When::Due),
+            (None, Some(sc)) => (sc, When::Scheduled),
+            (None, None) => {
+                a.undated += 1;
+                continue;
+            }
+        };
+        let day = at.to_zoned(TimeZone::UTC).date();
+        if day > through {
+            a.beyond += 1;
+            // The reach is REPORTED, not guessed: the footer will name the
+            // exact `--days` that brings the furthest of these into view, so
+            // the reader does not have to widen the window by trial. A raw
+            // distance, deliberately — `omissions()` decides what to do with
+            // one that no window can reach, because that is a question about
+            // advice and this loop only knows facts.
+            let need = day
+                .since((Unit::Day, today))
+                .map(|s| s.get_days().max(0) as usize)
+                .unwrap_or(days);
+            a.reach_days = Some(a.reach_days.map_or(need, |cur: usize| cur.max(need)));
+            continue;
+        }
+        a.entries.push(Entry {
+            task: t.clone(),
+            at,
+            day,
+            kind,
+        });
+    }
+
+    // STABLE, and by the instant alone. The rows arrive in the engine's
+    // `-urgency` order, so two tasks landing on the same instant keep the
+    // ranking the rest of the tool would give them instead of an arbitrary one.
+    a.entries.sort_by_key(|e| e.at);
+    a
+}
+
+/// The heading a row's day sits under. Every row before "now" collapses into ONE
+/// group rather than getting a heading per past day: a store that has been
+/// running for a year would otherwise open the agenda with a hundred headings
+/// nobody can act on, and what the reader needs from the past is the list, not
+/// the calendar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Group {
+    Overdue,
+    Day(Date),
+}
+
+fn group_of(day: Date, today: Date) -> Group {
+    if day < today {
+        Group::Overdue
+    } else {
+        Group::Day(day)
+    }
+}
+
+/// Three letters, written out rather than taken from a locale: the rest of this
+/// module renders one fixed English surface, and a heading whose width changes
+/// with `$LANG` would move a column the table has already been fitted to.
+fn weekday_abbrev(d: Date) -> &'static str {
+    match d.weekday() {
+        Weekday::Monday => "Mon",
+        Weekday::Tuesday => "Tue",
+        Weekday::Wednesday => "Wed",
+        Weekday::Thursday => "Thu",
+        Weekday::Friday => "Fri",
+        Weekday::Saturday => "Sat",
+        Weekday::Sunday => "Sun",
+    }
+}
+
+/// `Today · Mon 2026-08-03`. The date is spelled out on every heading, today's
+/// included: "Today" alone is the one label that means something different
+/// tomorrow, and terminal output gets pasted into tickets.
+fn day_heading(day: Date, today: Date) -> String {
+    let stamp = format!("{} {day}", weekday_abbrev(day));
+    let tomorrow = today.tomorrow().ok();
+    if day == today {
+        format!("Today · {stamp}")
+    } else if Some(day) == tomorrow {
+        format!("Tomorrow · {stamp}")
+    } else {
+        stamp
+    }
+}
+
+/// The `WHEN` cell: which field placed this row, plus the part of the instant
+/// its heading does not already carry.
+///
+/// Inside a day group the heading names the date, so the cell shows the time —
+/// and only when there is one to show. A date typed without a time resolves to
+/// 00:00 UTC (`datetime.rs`), so midnight is precisely the store's spelling of
+/// "no time given"; printing `due 00:00` on every row would fill the column with
+/// a time nobody typed. A caller who genuinely meant midnight loses nothing the
+/// store itself distinguishes.
+///
+/// The overdue group spans many days and so has no date in its heading. Its
+/// cells carry the full date instead — `due 2026-07-29` — because "how late" is
+/// the whole content of that group.
+fn when_cell(kind: When, at: Timestamp, dated: bool) -> String {
+    let z = at.to_zoned(TimeZone::UTC);
+    let t = z.time();
+    let clock = if t.hour() == 0 && t.minute() == 0 {
+        String::new()
+    } else {
+        format!("{:02}:{:02}", t.hour(), t.minute())
+    };
+    let stamp = match (dated, clock.is_empty()) {
+        (true, true) => z.date().to_string(),
+        (true, false) => format!("{} {clock}", z.date()),
+        (false, true) => String::new(),
+        (false, false) => clock,
+    };
+    if stamp.is_empty() {
+        kind.label().to_string()
+    } else {
+        format!("{} {stamp}", kind.label())
+    }
+}
+
+/// Render an [`Agenda`] as day-grouped tables sharing ONE fitted layout.
+///
+/// The columns are fitted once, over every visible row, and every group prints
+/// under that one layout — so `Today` and `Fri` line up with each other. Fitting
+/// per group would size each day's `TASK` column to its own longest title, and
+/// the result reads as a table that changes shape as you scroll down it.
+pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
+    let mut out = String::new();
+
+    let refs: Vec<&Value> = a.entries.iter().map(|e| &e.task).collect();
+    if !refs.is_empty() {
+        let max_urg = max_urgency(&refs);
+        let rows: Vec<TaskRow> = a
+            .entries
+            .iter()
+            .map(|e| {
+                let mut r = task_row(&e.task, max_urg, a.at_start_of_today());
+                let overdue = e.day < a.today;
+                r.due = when_cell(e.kind, e.at, overdue);
+                // Repainted from the AGENDA instant, not from `due` alone: a
+                // task scheduled last week and due next month is late on the
+                // thing this row is about, and `task_row`'s answer is about the
+                // deadline only.
+                r.overdue = overdue && status_is_open(&s(&e.task, "status"));
+                r
+            })
+            .collect();
+        let c = TaskCols::fit(&rows, ctx.cols, "WHEN");
+        let rule_len = c.total().min(ctx.cols);
+
+        out.push_str(&ctx.paint("header", &header_line(&c, "WHEN")));
+        out.push('\n');
+        out.push_str(&ctx.hrule(rule_len));
+        out.push('\n');
+
+        let mut current: Option<Group> = None;
+        for (e, r) in a.entries.iter().zip(&rows) {
+            let g = group_of(e.day, a.today);
+            if current != Some(g) {
+                let (role, text) = match g {
+                    Group::Overdue => ("overdue", "Overdue".to_string()),
+                    Group::Day(d) => ("accent", day_heading(d, a.today)),
+                };
+                out.push_str(&ctx.paint(role, &truncate(&text, ctx.cols, ctx.caps.unicode)));
+                out.push('\n');
+                current = Some(g);
+            }
+            out.push_str(&row_line(ctx, &c, r));
+            out.push('\n');
+        }
+        out.push_str(&ctx.hrule(rule_len));
+        out.push('\n');
+    }
+
+    // The horizon is stated on every run, not only when it cut something: "5
+    // task(s)" alone cannot be read as "and that is all there is" unless the
+    // window it is all there is WITHIN is on the same line. No weekday here,
+    // unlike the day headings -- the count can be four digits and this line has
+    // to survive a 40-cell terminal, and the headings already carry the days.
+    out.push_str(&ctx.paint(
+        "muted",
+        &format!(
+            "{} task(s) · through {} (+{}d)",
+            a.entries.len(),
+            a.through,
+            a.days
+        ),
+    ));
+    out.push('\n');
+    for note in a.omissions() {
+        out.push_str(&ctx.paint("muted", &note));
+        out.push('\n');
+    }
+    // Last, and in `warn` rather than `muted`, because these are not this
+    // view's own omissions: they are damage in the store that this layout —
+    // like `list`'s, which it shares — cannot show in a cell. See
+    // `store_health_notes` for why both views read one implementation.
+    for note in &a.health {
+        out.push_str(&ctx.paint("warn", note));
+        out.push('\n');
+    }
+    out
+}
+
+impl Agenda {
+    /// Midnight of the agenda's `today`, used as the "now" [`task_row`] compares
+    /// `due` against. The agenda has its own overdue answer (per row, from the
+    /// agenda instant), so this only has to be a stable instant on the right day
+    /// rather than the wall clock — and taking it from `today` keeps the whole
+    /// render a pure function of the `now` that was passed in.
+    fn at_start_of_today(&self) -> Timestamp {
+        self.today
+            .to_zoned(TimeZone::UTC)
+            .map(|z| z.timestamp())
+            .unwrap_or_else(|_| Timestamp::now())
+    }
+
+    /// One line per reason this view is holding something back, each naming the
+    /// way to see it. Empty on an agenda that omitted nothing — the notes are
+    /// conditional so that their presence always means something.
+    fn omissions(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        if self.undated > 0 {
+            v.push(format!(
+                "{} undated — no due or scheduled date, so nothing puts them on a day; \
+                 `tasqx list` shows them",
+                self.undated
+            ));
+        }
+        if self.beyond > 0 {
+            // The exact flag that reaches the furthest one, so widening the
+            // window is one paste rather than a guess-and-retry — but only when
+            // the CLI would accept it. `--days` is bounded at 3650
+            // (`AGENDA_MAX_DAYS`) and the reach is a raw distance, so a task due
+            // in 2060 used to print ``tasqx agenda --days 12204``, which exits 2
+            // with `12204 is not in 1..=3650`. A footer that hands out a refused
+            // command is worse than one that admits the row is out of range: the
+            // reader spends the retry before learning anything.
+            //
+            // So past the ceiling the note says the widest window still does not
+            // reach, and names `tasqx list` — the view with no horizon at all —
+            // exactly as the undated note does. The count stays either way,
+            // which is the promise that actually matters: nothing is dropped in
+            // silence.
+            //
+            // One line either way, including the mixed case where some cut rows
+            // ARE reachable and the furthest is not. This note has only ever
+            // named one number — the furthest — so the mixed case loses nothing
+            // it used to have, and a second line ("--days 3650 reaches all but
+            // one") would need a second counter to be true, which is more
+            // machinery than a footer is worth. `tasqx list` shows every one of
+            // them regardless.
+            let reach = self.reach_days.unwrap_or(self.days);
+            v.push(if reach > AGENDA_MAX_DAYS {
+                format!(
+                    "{} further out — past `--days {AGENDA_MAX_DAYS}`, the widest window there \
+                     is; `tasqx list` shows them",
+                    self.beyond
+                )
+            } else {
+                format!(
+                    "{} further out — `tasqx agenda --days {reach}` reaches the furthest",
+                    self.beyond
+                )
+            });
+        }
+        v
+    }
+}
+
+/// The `--json` half of the agenda, and the reason it is not simply the
+/// `task.list` result.
+///
+/// `--json` and the table must answer the same question (the rule
+/// `report --html` already follows). Handing the raw result back would make
+/// `tasqx agenda --json | jq '.tasks | length'` report every matching task,
+/// horizon and undated rows included, while the table beside it showed five —
+/// a number that means something different depending on which flag was passed.
+/// So the array is the rows the table drew, in the order it drew them, and every
+/// count the footer prints is a field a script can read.
+pub fn agenda_json(a: &Agenda) -> Value {
+    serde_json::json!({
+        "tasks": a.entries.iter().map(|e| e.task.clone()).collect::<Vec<_>>(),
+        "count": a.entries.len(),
+        "agenda": {
+            "days": a.days,
+            "today": a.today.to_string(),
+            "through": a.through.to_string(),
+            "undated": a.undated,
+            "beyond_horizon": a.beyond,
+            "reach_days": a.reach_days,
+            // The ceiling, so a script can make the decision the footer makes.
+            // `reach_days` is a distance and may exceed it, and without this
+            // field the obvious `tasqx agenda --days $(jq .agenda.reach_days)`
+            // is the same exit-2 the text note used to walk the reader into.
+            "max_days": AGENDA_MAX_DAYS,
+        }
+    })
 }
 
 /// Full task detail (task.get): fields plus tags, deps, annotations, blocked.
@@ -807,6 +1338,155 @@ pub fn annotated(ctx: &Ctx, result: &Value) -> String {
     format!(
         "{}: {body}\n",
         ctx.paint("accent", &format!("Annotated #{sid}"))
+    )
+}
+
+/// `tasqx undo`.
+///
+/// Names the operation AND the task AND what came back, because "undone" on its
+/// own is the one answer nobody can check: undo takes no argument, so the user
+/// never named the thing it acted on and has only this line to confirm it was
+/// the thing they meant.
+///
+/// The detail line is driven by the reverted op rather than by sniffing which
+/// keys `restored` happens to carry — a response shape that grows a key must not
+/// be able to silently change the sentence. An op this build has no phrasing for
+/// still prints its `restored` object rather than nothing: a new entry in the
+/// core's closed set would otherwise reach the terminal as a blank second line,
+/// which reads as "it restored nothing".
+pub fn undone(ctx: &Ctx, result: &Value) -> String {
+    let op = result
+        .get("reverted")
+        .and_then(|r| r.get("op"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let title = san(result.get("title").and_then(Value::as_str).unwrap_or(""));
+    let restored = result.get("restored").cloned().unwrap_or(Value::Null);
+
+    let tags = |key: &str| -> String {
+        restored
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|t| format!("+{}", san(t)))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default()
+    };
+    let detail = match op {
+        "tag.remove" => format!("tags back: {}", ctx.paint("tag", &tags("tags"))),
+        "dependency.remove" => format!(
+            "depends on {} again",
+            ctx.paint(
+                "accent",
+                &format!(
+                    "#{}",
+                    restored
+                        .get("depends_on")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0)
+                )
+            )
+        ),
+        "stop" => format!(
+            "the timer is running again  ·  {} back on the clock",
+            san(restored
+                .get("tracked")
+                .and_then(Value::as_str)
+                .unwrap_or("PT0S"))
+        ),
+        "annotation.add" => format!(
+            "note removed: {}",
+            ctx.paint(
+                "muted",
+                &san(restored
+                    .get("annotation")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""))
+            )
+        ),
+        _ => format!("restored: {}", san(&restored.to_string())),
+    };
+
+    let arrow = match ctx.caps.unicode {
+        true => "↩",
+        false => "<-",
+    };
+    format!(
+        "{} {}  ·  {} {}\n  {detail}\n",
+        ctx.paint("accent", arrow),
+        ctx.paint("accent", &format!("undid {}", san(op))),
+        ctx.paint("accent", &format!("#{sid}")),
+        title,
+    )
+}
+
+/// `tasqx tag` / `untag`.
+///
+/// Both halves name what CHANGED and what the task carries now, for the reason
+/// [`dep_result`] does below: `tags` in the result is the set that REMAINS, so a
+/// removal rendered from it alone reads `#42 tags: +api` with no mention of what
+/// went, which is the same line a call that removed nothing would print. The
+/// core answers `removed` on `tag.remove` precisely so this line does not have
+/// to be reconstructed from the request, and D39 asks that a field the core
+/// computes reach a human surface.
+///
+/// `added` selects the verb rather than sniffing for the `removed` key, so a
+/// response shape that changes cannot silently flip the wording.
+pub fn tag_result(ctx: &Ctx, result: &Value, added: bool, asked: &[String]) -> String {
+    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let painted = |names: &[String]| -> String {
+        match names.is_empty() {
+            true => ctx.paint("muted", "(none)"),
+            false => ctx.paint(
+                "tag",
+                &names
+                    .iter()
+                    .map(|t| format!("+{}", san(t)))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+        }
+    };
+    let strings = |key: &str| -> Vec<String> {
+        result
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // The remaining set comes from the core; what changed comes from the core on
+    // removal (`removed`) and from the request on addition, where `tag.add` has
+    // no equivalent key and re-adding an existing tag is a legitimate no-change.
+    let all = strings("tags");
+    let changed = match added {
+        true => asked.to_vec(),
+        false => {
+            let removed = strings("removed");
+            match removed.is_empty() {
+                true => asked.to_vec(),
+                false => removed,
+            }
+        }
+    };
+    let verb = match added {
+        true => "tagged",
+        false => "untagged",
+    };
+    format!(
+        "{} {verb} {}   ·   tags: {}\n",
+        ctx.paint("accent", &format!("#{sid}")),
+        painted(&changed),
+        painted(&all),
     )
 }
 
@@ -1207,6 +1887,7 @@ fn truncate(s: &str, max: usize, unicode: bool) -> String {
 mod tests {
     use super::*;
     use crate::theme::{self, Caps, Ctx};
+    use crate::AGENDA_DEFAULT_DAYS;
     use serde_json::json;
 
     /// The CLI and core are separately deployable — `tasqx` talks to a daemon it
@@ -1478,6 +2159,58 @@ mod tests {
         assert!(
             !fresh.contains("was"),
             "invented a previous default: {fresh:?}"
+        );
+    }
+
+    /// The same rule one verb over: archiving the default MOVES where a bare
+    /// `tasqx add` lands, so the line may not be the same either way.
+    ///
+    /// D22 reserved this copy in writing ("when one lands it renders
+    /// `default_cleared`") while `project.archive` had no CLI verb at all. The
+    /// failure this pins is the cheap one: render the name, drop the field, and
+    /// the user reads "Project work archived" while their default silently
+    /// became nothing.
+    #[test]
+    fn project_archived_says_when_it_cleared_the_default() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+
+        let cleared = project_archived(
+            &ctx,
+            &json!({ "name": "work", "archived": true, "default_cleared": true }),
+        );
+        assert!(cleared.contains("work"), "missing the project: {cleared:?}");
+        assert!(
+            cleared.contains("default project") && !cleared.contains("unchanged"),
+            "the default moved and the line does not say so: {cleared:?}"
+        );
+        // And it must name the way back, exactly as `project_created` does when
+        // it declines to claim the default: a store with no default is valid,
+        // being unable to leave that state is not.
+        assert!(
+            cleared.contains("tasqx use"),
+            "must name the verb that re-points the default: {cleared:?}"
+        );
+
+        let kept = project_archived(
+            &ctx,
+            &json!({ "name": "side", "archived": true, "default_cleared": false }),
+        );
+        assert!(kept.contains("side"));
+        assert!(
+            !kept.contains("no home"),
+            "invented a default change that did not happen: {kept:?}"
+        );
+        // The two outcomes must be DISTINGUISHABLE, not merely different in
+        // what they omit — "Project side archived" on its own is also the line
+        // a cleared default would print if the field were dropped.
+        assert_ne!(
+            kept.replace("side", "work"),
+            cleared,
+            "the cleared and untouched cases print the same line"
+        );
+        assert!(
+            kept.contains("unchanged"),
+            "the untouched case must say the default is untouched: {kept:?}"
         );
     }
 
@@ -2018,5 +2751,573 @@ mod tests {
         assert!(ascii.ends_with("...") && !ascii.contains('…'));
         assert!(ascii.is_ascii(), "no non-ASCII in plain path");
         assert_eq!(ascii.chars().count(), 10);
+    }
+
+    // ---- undone (the line that says what undo actually did) -----------------
+
+    /// The whole point of the line: `undo` takes no argument, so unless it names
+    /// the operation, the task and what came back, the user has no way to check
+    /// that it reversed the thing they meant. A bare "undone" is the failure.
+    #[test]
+    fn the_undo_line_names_the_operation_the_task_and_what_came_back() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "reverted": { "event": "e1", "op": "tag.remove", "ts": "2026-08-03T10:00:00Z" },
+            "short_id": 42,
+            "title": "Ship v1",
+            "restored": { "tags": ["api", "release"] },
+        });
+        let out = undone(&ctx, &result);
+        assert!(
+            out.contains("tag.remove"),
+            "the line must name the operation that was reversed: {out:?}"
+        );
+        assert!(
+            out.contains("#42"),
+            "the line must name the task it acted on: {out:?}"
+        );
+        assert!(
+            out.contains("Ship v1"),
+            "the line must carry the title — a short_id alone is not recognizable at a \
+             glance, and undo took no argument to echo back: {out:?}"
+        );
+        assert!(
+            out.contains("+api") && out.contains("+release"),
+            "the line must name what came back, or it says nothing an undo that \
+             restored nothing would not also say: {out:?}"
+        );
+    }
+
+    /// One phrasing per op in the core's closed set, selected by the reverted op
+    /// rather than by sniffing which keys `restored` happens to carry — and a
+    /// fallback that still prints the payload, because an op this build has no
+    /// phrasing for must not reach the terminal as a blank line reading "it
+    /// restored nothing".
+    #[test]
+    fn every_undoable_op_gets_a_line_that_says_what_it_restored() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let line = |op: &str, restored: Value| -> String {
+            undone(
+                &ctx,
+                &json!({
+                    "reverted": { "event": "e1", "op": op, "ts": "t" },
+                    "short_id": 7,
+                    "title": "t",
+                    "restored": restored,
+                }),
+            )
+        };
+
+        assert!(line("dependency.remove", json!({ "depends_on": 3 })).contains("#3"));
+        let stopped = line("stop", json!({ "tracked": "PT30M", "status": "active" }));
+        assert!(
+            stopped.contains("PT30M") && stopped.contains("running"),
+            "{stopped:?}"
+        );
+        let noted = line(
+            "annotation.add",
+            json!({ "annotation": "called the plumber" }),
+        );
+        assert!(noted.contains("called the plumber"), "{noted:?}");
+
+        // The core's closed set can grow; this renderer must degrade to showing
+        // the data rather than to showing nothing.
+        let unknown = line("some.future.op", json!({ "whatever": 1 }));
+        assert!(
+            unknown.contains("whatever"),
+            "an op with no phrasing must still print what it restored: {unknown:?}"
+        );
+    }
+
+    /// An annotation body and a tag are untrusted text — argv, `store.import`,
+    /// an MCP client — and this line goes straight to a terminal.
+    #[test]
+    fn undone_sanitizes_control_bytes_in_the_text_it_echoes() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = undone(
+            &ctx,
+            &json!({
+                "reverted": { "event": "e1", "op": "annotation.add", "ts": "t" },
+                "short_id": 1,
+                "title": "\u{1b}[2Jclear",
+                "restored": { "annotation": "\u{1b}]0;evil\u{7}note" },
+            }),
+        );
+        assert!(
+            !out.contains('\u{1b}'),
+            "escape byte reached the terminal: {out:?}"
+        );
+        assert!(
+            !out.contains('\u{7}'),
+            "bell byte reached the terminal: {out:?}"
+        );
+    }
+
+    // ---- tag_result (D39: what changed AND what remains) --------------------
+
+    /// The line a removal prints must name the tag that went. Rendering only
+    /// `tags` — the set that REMAINS — produces `#1 tags: +release` for a real
+    /// removal and the same string for a call that removed nothing, which is
+    /// the whole failure `dep_result` above was written to avoid, one noun over.
+    #[test]
+    fn an_untag_line_names_what_went_and_what_remains() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({ "short_id": 1, "tags": ["release"], "removed": ["api"] });
+        let out = tag_result(&ctx, &result, false, &["api".to_string()]);
+        assert!(out.contains("untagged"), "{out:?}");
+        assert!(out.contains("+api"), "the removed tag must appear: {out:?}");
+        assert!(
+            out.contains("+release"),
+            "the remaining set must appear: {out:?}"
+        );
+    }
+
+    /// The addition half, and the empty case. `tag.add` returns no `removed`
+    /// key, so the changed set comes from the request there; and a task left
+    /// with no tags renders `(none)` rather than a blank where a list belongs.
+    #[test]
+    fn a_tag_line_names_the_added_tag_and_an_empty_set_says_so() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let added = json!({ "short_id": 7, "tags": ["api", "release"] });
+        let out = tag_result(&ctx, &added, true, &["api".to_string()]);
+        assert!(out.contains("#7") && out.contains("tagged"), "{out:?}");
+        assert!(out.contains("+api") && out.contains("+release"), "{out:?}");
+        assert!(!out.contains("untagged"), "the verb must not flip: {out:?}");
+
+        let emptied = json!({ "short_id": 7, "tags": [], "removed": ["api"] });
+        let out = tag_result(&ctx, &emptied, false, &["api".to_string()]);
+        assert!(
+            out.contains("(none)"),
+            "a task with no tags left must say so, not print a blank: {out:?}"
+        );
+    }
+
+    /// A tag is untrusted text: it comes from argv, from `store.import` and from
+    /// an MCP client, and this line goes straight to a terminal. Every other
+    /// renderer in this file runs its values through `san` for that reason.
+    #[test]
+    fn tag_result_sanitizes_control_bytes_in_a_tag_name() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "short_id": 1,
+            "tags": ["]0;evilsafe"],
+            "removed": ["[2Jgone"],
+        });
+        let out = tag_result(&ctx, &result, false, &[]);
+        assert!(
+            !out.contains(''),
+            "escape byte reached the terminal: {out:?}"
+        );
+        assert!(
+            !out.contains(''),
+            "bell byte reached the terminal: {out:?}"
+        );
+    }
+
+    // ---- agenda ------------------------------------------------------------
+
+    /// 2026-08-03 is a Monday. Every agenda test anchors to it, so "Today" and
+    /// "Tomorrow" are facts about the fixture rather than about the day the
+    /// suite happens to run.
+    const ANCHOR: &str = "2026-08-03T09:00:00Z";
+
+    fn anchor() -> Timestamp {
+        ANCHOR.parse().expect("the anchor is a real instant")
+    }
+
+    /// A task carrying whichever of the two dated fields the case is about.
+    /// An empty `due`/`scheduled` means the field is absent, which is what the
+    /// engine emits as `null` and what `field_ts` reads the same way.
+    fn dated(id: i64, title: &str, due: &str, scheduled: &str) -> Value {
+        json!({
+            "short_id": id, "urgency": 5.0, "priority": "M", "title": title,
+            "project": "p", "tags": [], "status": "pending",
+            "due": if due.is_empty() { Value::Null } else { json!(due) },
+            "scheduled": if scheduled.is_empty() { Value::Null } else { json!(scheduled) },
+        })
+    }
+
+    fn agenda_of(tasks: Vec<Value>, days: usize) -> Agenda {
+        agenda_select(&json!({ "tasks": tasks }), days, anchor())
+    }
+
+    fn agenda_out(tasks: Vec<Value>, days: usize) -> String {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        agenda_text(&ctx, &agenda_of(tasks, days))
+    }
+
+    /// The ordering rule, and the reason the view reads both fields.
+    ///
+    /// A task scheduled for Tuesday with a deadline three weeks out comes
+    /// BEFORE a task due on Wednesday, because Tuesday is the first day it asks
+    /// anything of you. Reading `due` alone would sort it last and file it in
+    /// the wrong week; reading `scheduled` alone would lose the Wednesday
+    /// deadline entirely. Both halves are asserted here, plus the label, since
+    /// "Tuesday" means something different under each field.
+    #[test]
+    fn agenda_places_a_task_on_the_earlier_of_due_and_scheduled() {
+        let a = agenda_of(
+            vec![
+                dated(1, "deadline only", "2026-08-05T00:00:00Z", ""),
+                dated(
+                    2,
+                    "starts tuesday, due much later",
+                    "2026-08-24T00:00:00Z",
+                    "2026-08-04T00:00:00Z",
+                ),
+                dated(3, "scheduled only", "", "2026-08-10T00:00:00Z"),
+            ],
+            30,
+        );
+        let order: Vec<i64> = a
+            .entries
+            .iter()
+            .map(|e| e.task["short_id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            order,
+            vec![2, 1, 3],
+            "the agenda instant is min(due, scheduled), so #2's Tuesday leads"
+        );
+        assert_eq!(
+            a.entries.iter().map(|e| e.kind).collect::<Vec<_>>(),
+            vec![When::Scheduled, When::Due, When::Scheduled],
+            "the row must name the field that placed it"
+        );
+    }
+
+    /// When one instant carries both meanings the label is `due`: the deadline
+    /// is the more consequential reading, and a row that said `sched` would
+    /// send the reader looking for a deadline that is right there.
+    #[test]
+    fn a_task_due_and_scheduled_at_the_same_instant_is_labelled_due() {
+        let a = agenda_of(
+            vec![dated(
+                1,
+                "same instant",
+                "2026-08-05T09:00:00Z",
+                "2026-08-05T09:00:00Z",
+            )],
+            30,
+        );
+        assert_eq!(a.entries[0].kind, When::Due);
+    }
+
+    /// The rule that keeps this view from being a lie: a task the filter
+    /// matched and the agenda cannot place is COUNTED, not dropped. A deadline
+    /// that is not on the screen is indistinguishable from a deadline that does
+    /// not exist, and the undated are the largest group this view omits.
+    #[test]
+    fn an_undated_task_is_counted_and_the_way_to_see_it_is_named() {
+        let out = agenda_out(
+            vec![
+                dated(1, "on a day", "2026-08-05T00:00:00Z", ""),
+                dated(2, "no dates at all", "", ""),
+                dated(3, "no dates either", "", ""),
+            ],
+            14,
+        );
+        assert!(
+            !out.contains("no dates at all"),
+            "an undated task has no day to sit on: {out}"
+        );
+        assert!(
+            out.contains("2 undated"),
+            "the count of what was left out must be on the screen: {out}"
+        );
+        assert!(
+            out.contains("tasqx list"),
+            "the note must name the view that does show them: {out}"
+        );
+    }
+
+    /// The horizon half of the same rule, plus the part that makes it
+    /// actionable: the note names the exact `--days` that reaches the furthest
+    /// thing it is holding, so widening the window is a paste and not a guess.
+    #[test]
+    fn a_task_past_the_horizon_is_counted_with_the_days_that_would_reach_it() {
+        let tasks = vec![
+            dated(1, "inside", "2026-08-05T00:00:00Z", ""),
+            dated(2, "just outside", "2026-08-18T00:00:00Z", ""),
+            dated(3, "far outside", "2026-11-01T00:00:00Z", ""),
+        ];
+        let out = agenda_out(tasks.clone(), AGENDA_DEFAULT_DAYS);
+        assert!(!out.contains("just outside"), "{out}");
+        assert!(out.contains("2 further out"), "{out}");
+        // 2026-08-03 -> 2026-11-01 is 90 days. Anything short of the real
+        // distance is a note that sends the reader back for another guess.
+        assert!(
+            out.contains("--days 90"),
+            "the note must name the window that reaches the furthest row: {out}"
+        );
+        // ...and the horizon really is a fortnight by default, stated on screen.
+        assert!(out.contains("through 2026-08-17 (+14d)"), "{out}");
+
+        // Raising it brings them in, which is the other half of the promise.
+        let wide = agenda_out(tasks, 90);
+        assert!(wide.contains("far outside"), "{wide}");
+        assert!(
+            !wide.contains("further out"),
+            "nothing is beyond a horizon that reaches everything: {wide}"
+        );
+    }
+
+    /// Overdue rows lead the table, under ONE heading, and the horizon does not
+    /// apply to them: `--days 1` must not hide work that was due last month.
+    /// The cells in that group carry the date, because the heading cannot.
+    #[test]
+    fn overdue_rows_lead_the_table_and_ignore_the_horizon() {
+        let out = agenda_out(
+            vec![
+                dated(1, "today thing", "2026-08-03T17:00:00Z", ""),
+                dated(2, "late by a week", "2026-07-27T00:00:00Z", ""),
+                dated(3, "late by a month", "2026-07-01T00:00:00Z", ""),
+            ],
+            1,
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        let overdue = lines
+            .iter()
+            .position(|l| l.trim() == "Overdue")
+            .unwrap_or_else(|| panic!("no Overdue heading:\n{out}"));
+        let today = lines
+            .iter()
+            .position(|l| l.starts_with("Today"))
+            .unwrap_or_else(|| panic!("no Today heading:\n{out}"));
+        assert!(overdue < today, "overdue comes first:\n{out}");
+        assert_eq!(
+            lines.iter().filter(|l| l.trim() == "Overdue").count(),
+            1,
+            "past days collapse into one heading:\n{out}"
+        );
+        assert!(out.contains("late by a month"), "{out}");
+        // The date, not a bare `due`: which day it was late on is the whole
+        // content of this group.
+        assert!(out.contains("due 2026-07-01"), "{out}");
+        // A time-of-day is shown only where the store has one. `2026-07-01` was
+        // typed without a time and resolves to midnight, so printing `00:00`
+        // would be a time nobody entered.
+        assert!(!out.contains("00:00"), "{out}");
+        assert!(out.contains("due 17:00"), "a real time is shown: {out}");
+    }
+
+    /// Today and tomorrow get their words, and every heading carries the date
+    /// anyway -- "Today" alone is the one label that means something else
+    /// tomorrow, and terminal output gets pasted into tickets.
+    #[test]
+    fn day_headings_name_the_relative_day_and_the_date() {
+        let out = agenda_out(
+            vec![
+                dated(1, "a", "2026-08-03T00:00:00Z", ""),
+                dated(2, "b", "2026-08-04T00:00:00Z", ""),
+                dated(3, "c", "2026-08-06T00:00:00Z", ""),
+            ],
+            14,
+        );
+        assert!(out.contains("Today"), "{out}");
+        assert!(out.contains("Mon 2026-08-03"), "{out}");
+        assert!(out.contains("Tomorrow"), "{out}");
+        assert!(out.contains("Tue 2026-08-04"), "{out}");
+        assert!(out.contains("\nThu 2026-08-06\n"), "{out}");
+    }
+
+    /// One layout for every group, and it is the D51 one: the columns are
+    /// fitted once across all the rows, and nothing -- heading, row, rule or
+    /// count line -- overruns the terminal it was given. A second table layout
+    /// written for this view is exactly what this asserts is absent.
+    #[test]
+    fn the_agenda_fits_the_width_it_was_given_across_every_group() {
+        for cols in [Ctx::MIN_COLS, 60, 80, Ctx::DEFAULT_COLS] {
+            let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(cols);
+            let tasks: Vec<Value> = (1..=6)
+                .map(|i| {
+                    json!({
+                        "short_id": i, "urgency": 5.0, "priority": "M",
+                        "title": "a title far too long to fit any of these budgets without a cut",
+                        "project": "some.rather.long.project.name",
+                        "tags": ["one", "two", "three", "four"],
+                        "status": "pending",
+                        "due": format!("2026-08-{:02}T17:00:00Z", i + 2),
+                        "scheduled": Value::Null,
+                    })
+                })
+                .collect();
+            // Nothing here is undated or beyond the horizon, so the whole
+            // render is table: the omission notes are deliberately prose that
+            // carries a command to paste, and cutting one would cut the way out.
+            let out = agenda_text(
+                &ctx,
+                &agenda_select(&json!({ "tasks": tasks }), 14, anchor()),
+            );
+            // Up to and including the closing rule. What follows it is prose:
+            // the count line and the omission notes are sentences carrying a
+            // command to paste, and a terminal narrower than a sentence gets a
+            // wrapped sentence rather than a truncated instruction -- the same
+            // treatment `task_table` gives its store-health warnings.
+            let mut rules = 0;
+            for line in out.lines() {
+                assert!(
+                    cells(line) <= cols,
+                    "a {}-cell line in a {cols}-cell terminal: {line:?}",
+                    cells(line)
+                );
+                if !line.is_empty() && line.chars().all(|c| c == '-' || c == '\u{2500}') {
+                    rules += 1;
+                    if rules == 2 {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(rules, 2, "the table must have a rule above and below it");
+        }
+    }
+
+    /// `--json` and the table answer the same question. The raw `task.list`
+    /// result would have made `tasqx agenda --json | jq .tasks` count every
+    /// matching task -- horizon and undated rows included -- while the table
+    /// beside it showed one.
+    #[test]
+    fn agenda_json_holds_exactly_the_rows_the_table_drew() {
+        let a = agenda_of(
+            vec![
+                dated(1, "shown", "2026-08-05T00:00:00Z", ""),
+                dated(2, "beyond", "2026-11-01T00:00:00Z", ""),
+                dated(3, "undated", "", ""),
+            ],
+            14,
+        );
+        let v = agenda_json(&a);
+        assert_eq!(v["count"], json!(1));
+        assert_eq!(v["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(v["tasks"][0]["short_id"], json!(1));
+        // Every number the footer prints is also a field, so a script never has
+        // to scrape the prose to learn what was left out.
+        assert_eq!(v["agenda"]["undated"], json!(1));
+        assert_eq!(v["agenda"]["beyond_horizon"], json!(1));
+        assert_eq!(v["agenda"]["reach_days"], json!(90));
+        assert_eq!(v["agenda"]["through"], json!("2026-08-17"));
+        assert_eq!(v["agenda"]["days"], json!(14));
+        // The ceiling too, read out of the constant rather than typed: without
+        // it a script has no way to tell a `reach_days` it can pass to `--days`
+        // from one the parser would refuse.
+        assert_eq!(v["agenda"]["max_days"], json!(AGENDA_MAX_DAYS));
+    }
+
+    /// Both status-less tables print the SAME store-health notes, because they
+    /// call the same function.
+    ///
+    /// The defect this pins: `agenda` shipped as a second table over `list`'s
+    /// rows and carried neither note. An unreadable status has no column to
+    /// appear in and a blank title draws as an empty cell, so the row sat under
+    /// a day heading indistinguishable from ordinary open work and the run
+    /// exited 0 — the invisible-field failure rebuilt one view over. Asserting
+    /// the two views AGREE, rather than asserting each one's text, is what makes
+    /// this a guard: a third view that forgets the notes fails it too, and
+    /// rewording a note cannot pass it on one side only.
+    #[test]
+    fn every_status_less_table_carries_the_same_store_health_notes() {
+        let mut unreadable = dated(7, "important work", "2026-08-05T00:00:00Z", "");
+        unreadable["status"] = json!("Done");
+        unreadable["status_unrecognized"] = json!(true);
+        let untitled = dated(4, "", "2026-08-06T00:00:00Z", "");
+        let tasks = vec![unreadable, untitled];
+
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let list = task_table(&ctx, &json!({ "tasks": tasks, "count": 2 }));
+        let agenda = agenda_out(tasks.clone(), AGENDA_DEFAULT_DAYS);
+
+        let notes = store_health_notes(&tasks);
+        assert_eq!(
+            notes.len(),
+            2,
+            "the fixture must trip both notes: {notes:?}"
+        );
+        for note in &notes {
+            assert!(
+                list.contains(note.as_str()),
+                "`list` dropped a store-health note:\n{list}"
+            );
+            assert!(
+                agenda.contains(note.as_str()),
+                "`agenda` draws the same rows in the same layout, so it owes the \
+                 reader the same note:\n{agenda}"
+            );
+        }
+        // Named ids, not just a count: "1 unreadable row" leaves the reader with
+        // a store to search by hand.
+        assert!(agenda.contains("#7 (Done)"), "{agenda}");
+        assert!(agenda.contains("#4"), "{agenda}");
+    }
+
+    /// A row the horizon cut but no `--days` can reach: the footer must not hand
+    /// the reader a command the CLI refuses.
+    ///
+    /// `--days` is bounded at `AGENDA_MAX_DAYS`, and the reach is a raw distance
+    /// to the furthest cut row, so a task due decades out produced ``tasqx
+    /// agenda --days 12204`` — pasted, that exits 2 with `12204 is not in
+    /// 1..=3650`, and the row was unreachable in this view by any window.
+    /// D53 rule 2 promises the count is unconditional and the advice actionable;
+    /// past the ceiling the actionable advice is a different view.
+    #[test]
+    fn a_row_no_window_can_reach_is_counted_without_quoting_a_refused_days() {
+        // Comfortably past the ceiling from the 2026-08-03 anchor.
+        let out = agenda_out(
+            vec![dated(1, "retirement party", "2060-01-01T00:00:00Z", "")],
+            AGENDA_DEFAULT_DAYS,
+        );
+        assert!(out.contains("1 further out"), "still counted: {out}");
+        assert!(
+            out.contains("tasqx list"),
+            "the note must name a view that actually shows it: {out}"
+        );
+
+        // The real check, and it reads the ceiling rather than a literal: no
+        // `--days N` in the footer may be one `window_parser` would refuse.
+        for n in recommended_days(&out) {
+            assert!(
+                (1..=AGENDA_MAX_DAYS).contains(&n),
+                "the footer recommended `--days {n}`, which the CLI refuses \
+                 (1..={AGENDA_MAX_DAYS}): {out}"
+            );
+        }
+
+        // ...and inside the ceiling the exact window is still quoted, so the
+        // clamp did not buy the fix by making every note useless.
+        let near = agenda_out(
+            vec![dated(1, "far outside", "2026-11-01T00:00:00Z", "")],
+            AGENDA_DEFAULT_DAYS,
+        );
+        assert_eq!(recommended_days(&near), vec![90], "{near}");
+    }
+
+    /// Every `--days N` the rendered footer tells the reader to run.
+    fn recommended_days(out: &str) -> Vec<usize> {
+        out.split("--days ")
+            .skip(1)
+            .filter_map(|tail| {
+                let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().ok()
+            })
+            .collect()
+    }
+
+    /// Two tasks on the same instant keep the engine's `-urgency` ranking: the
+    /// sort is by the agenda instant alone and `sort_by_key` is stable, so the
+    /// order `task.list` returned survives a tie.
+    #[test]
+    fn tasks_at_the_same_instant_keep_the_urgency_order_they_arrived_in() {
+        let mut hot = dated(1, "hot", "2026-08-05T09:00:00Z", "");
+        hot["urgency"] = json!(20.0);
+        let mut cold = dated(2, "cold", "2026-08-05T09:00:00Z", "");
+        cold["urgency"] = json!(1.0);
+        // As `task.list {sort:["-urgency"]}` would return them.
+        let a = agenda_of(vec![hot, cold], 14);
+        assert_eq!(
+            a.entries
+                .iter()
+                .map(|e| e.task["short_id"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
 }

@@ -78,6 +78,14 @@ cap_lints = true
 # Suppressing a survivor is only legitimate when it is provably unkillable.
 # Anything that is merely hard to test belongs in the known-survivors table in
 # docs/mutation-testing.md, not here.
+#
+# A suppressed mutant is invisible in the sweep output by construction, so it
+# has to be visible somewhere: every entry below must have a row in that table,
+# and `every_known_survivor_in_the_docs_names_a_function_that_still_exists` in
+# tasqx-core's lib.rs fails the build when one does not. It finds the row by the
+# function the regex ends in, which is why each entry keeps cargo-mutants' own
+# `<the change> in <path::to::fn>` tail rather than being trimmed to the part
+# that has to match.
 exclude_re = [
     # `and` is skipped as an explicit separator. Without the guard it falls
     # through to parse_term, matches no predicate prefix, and becomes
