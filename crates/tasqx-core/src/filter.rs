@@ -132,8 +132,11 @@ use crate::util::parse_ts;
 /// and the refusal names the spelling above.
 ///
 /// The example lines live here and not inside the const because
-/// `value_prefixes_match_the_grammar` scans it for `key:"` shapes and would
-/// count an example as a fifth predicate.
+/// `value_prefixes_match_the_grammar` scans it for `key:"` shapes: an example
+/// moved inside would count as a seventh predicate, and would then fail that
+/// guard's per-line assert outright — the key it derives from
+/// `tasqx list 'project:"Home Renovation"'` is `tasqx list 'project:`, which is
+/// in no list of prefixes and never will be.
 pub const GRAMMAR: &str = "\
 filter     := or_expr
 or_expr    := and_expr ( \"or\" and_expr )*
@@ -489,7 +492,7 @@ pub enum Vocabulary {
 /// each with the vocabulary its value is drawn from.
 ///
 /// Kept beside the grammar it mirrors and pinned to it by
-/// `value_prefixes_match_the_grammar`, because a fifth `key:` predicate added
+/// `value_prefixes_match_the_grammar`, because a seventh `key:` predicate added
 /// to `GRAMMAR` alone would silently lose shell quoting on that key only.
 /// `+`/`-` are here for the same reason they are in the grammar: a tag is a
 /// VALUE like any other, it just spells its key as punctuation.
@@ -1055,11 +1058,6 @@ fn bound(value: &str, prefix: &str, now: Timestamp) -> Result<Timestamp, String>
 mod tests {
     use super::*;
 
-    /// Parse a filter that the test asserts is valid.
-    ///
-    /// Every filter below is a hand-written literal, so a parse failure here
-    /// means the test itself is wrong — worth panicking on rather than
-    /// threading a Result through assertions about matching.
     /// The grammar block, as the docs show it — the same string, by construction.
     fn grammar() -> &'static str {
         GRAMMAR
@@ -1071,6 +1069,11 @@ mod tests {
         "2026-07-19T12:00:00Z".parse().expect("anchor")
     }
 
+    /// Parse a filter that the test asserts is valid.
+    ///
+    /// Every filter below is a hand-written literal, so a parse failure here
+    /// means the test itself is wrong — worth panicking on rather than
+    /// threading a Result through assertions about matching.
     fn parsed(s: &str) -> Filter {
         Filter::parse(s, anchor()).unwrap_or_else(|e| panic!("test filter {s:?} must parse: {e}"))
     }
@@ -1461,16 +1464,11 @@ mod tests {
         }
     }
 
-    /// A project or tag whose name contains a space was simply not expressible.
-    /// `project:Home Renovation` tokenized to `project:Home` + a stray
-    /// `Renovation`, and no quoting form worked because there was no quoting at
-    /// all — so every filter naming such a project was silently wrong before
-    /// D27 (the stray was the always-true term) and a hard error after it.
-    ///
-    /// The values here are deliberately hostile: a space needs the quoting, a
-    /// `VALUE_PREFIXES` is a hand-maintained list, so a fifth `key:` predicate
-    /// added to the grammar alone would lose shell quoting on that key with no
-    /// other symptom than a confusing "unknown filter token".
+    /// `VALUE_PREFIXES` is a hand-maintained mirror of the grammar, so a
+    /// seventh `key:` predicate added to `GRAMMAR` alone would lose shell
+    /// quoting on that key with no other symptom than a confusing "unknown
+    /// filter token". The guard reads the grammar text rather than trusting the
+    /// list, so the two cannot drift apart in silence.
     #[test]
     fn value_prefixes_match_the_grammar() {
         let mut seen = 0;
@@ -1482,8 +1480,8 @@ mod tests {
             // capital — rather than by listing the nonterminal names. Listing
             // them was itself the hand-maintained-parallel-list shape this guard
             // exists to police: renaming `RFC3339` to `DATE` made the scan stop
-            // seeing two of the four predicates, and only the `seen == 4` floor
-            // below caught it.
+            // seeing two of the four predicates there were then, and only the
+            // floor below — `seen == 4` at the time — caught it.
             let Some((lhs, rhs)) = line.split_once(":\"") else {
                 continue;
             };
@@ -1776,6 +1774,13 @@ mod tests {
         }
     }
 
+    /// A project or tag whose name contains a space was simply not expressible.
+    /// `project:Home Renovation` tokenized to `project:Home` + a stray
+    /// `Renovation`, and no quoting form worked because there was no quoting at
+    /// all — so every filter naming such a project was silently wrong before
+    /// D27 (the stray was the always-true term) and a hard error after it.
+    ///
+    /// The values here are deliberately hostile: a space needs the quoting, a
     /// `(` proves quoting also suppresses grouping, and a `"` proves the escape
     /// exists. Asserted through `matches` rather than on the token list, so this
     /// guards what a user gets back and not how the tokenizer spells it.

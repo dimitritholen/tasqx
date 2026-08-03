@@ -585,7 +585,7 @@ fn import_field<T>(id: &str, field: &str, r: Result<T, ApiError>) -> Result<T, A
 
 /// Every key a `store.export` task object can carry. D34.
 ///
-/// Three of these are read by nobody and belong here anyway: `urgency` is
+/// Two of these are read by nobody and belong here anyway: `urgency` is
 /// derived (recomputed on import from priority/due/created, so honouring a
 /// supplied one would let a payload contradict the ranking rule), and
 /// `status_unrecognized` is a D28 read-side annotation, not stored state.

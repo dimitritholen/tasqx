@@ -69,9 +69,10 @@ pub fn parse_rule(input: &str) -> Result<Recur, ApiError> {
         // every N <unit>  /  every <unit>
         ["every", rest @ ..] => {
             let (n, unit) = match rest {
+                // A single token, which may be a glued short form like
+                // `every 3d` — that one is taken apart a few lines down.
                 [unit] => (1i64, *unit),
                 [n, unit] => (n.parse::<i64>().map_err(|_| err())?, *unit),
-                // also accept a glued short form like `every 3d`
                 _ => return Err(err()),
             };
             // `every 3d` glues the unit onto the count in a single token, and
@@ -475,9 +476,10 @@ mod tests {
     #[test]
     fn monthly_5th_weekday_skips_months_without_one() {
         // "monthly on the 5th friday". Anchor is the 5th Friday of Jan 2027
-        // (2027-01-29). Feb, Mar, Apr 2027 have only 4 Fridays; the next month
-        // with a 5th Friday is Apr 2027? Check: the next 5th Friday after Jan is
-        // 2027-04-30 (Apr 2027 Fridays: 2,9,16,23,30). It must NOT error.
+        // (2027-01-29). Feb and Mar 2027 have only four Fridays and are stepped
+        // over; Apr 2027 has five (2, 9, 16, 23, 30), so this lands on
+        // 2027-04-30. It must NOT error: "no 5th Friday this month" is a month
+        // to skip, not a broken rule.
         let r = Recur::MonthlyNthWeekday(5, Weekday::Friday);
         let next = next_after(&r, ts("2027-01-29T09:00:00Z"), ts("2027-01-29T09:00:00Z")).unwrap();
         assert_eq!(next.to_string(), "2027-04-30T09:00:00Z");

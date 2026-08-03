@@ -585,10 +585,11 @@ pub fn clear_config(tx: &Transaction, key: &str) -> Result<bool, ApiError> {
 /// Append one event row. THE invariant: this runs inside the same `tx` as the
 /// state change it records, so state and history can never diverge.
 ///
-/// `entity` is the typed [`Entity`], not a `&str`, so the two spellings the
-/// column may ever hold are the enum's variants rather than nineteen hand-typed
-/// literals. That is what lets `event.list` state its accepted set from
-/// [`Entity::ALL`] instead of keeping a second list in sync with these writers.
+/// `entity` is the typed [`Entity`], not a `&str`, so the only spellings the
+/// column may ever hold are the enum's three variants — `task`, `project` and
+/// `doc` (D41) — rather than a literal hand-typed at each call site. That is what
+/// lets `event.list` state its accepted set from [`Entity::ALL`] instead of
+/// keeping a second list in sync with these writers.
 pub fn insert_event(
     tx: &Transaction,
     entity: Entity,
@@ -662,10 +663,14 @@ pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
     // therefore a cache, not the truth, for backlog rows specifically — the same
     // bargain `urgency` already makes (persisted at write, recomputed on every
     // read because its inputs move on their own). Only raw SQL that filters on
-    // the `status` text can be fooled by it, and both such queries are immune by
-    // construction: `task.start`'s auto-stop sweep selects `active`, which this
-    // rule never produces, and the reminder rebuild selects every open status,
-    // which contains both sides of the edge.
+    // the `status` text can be fooled by it, and all six such queries are immune
+    // by construction rather than by luck: `task.start`'s auto-stop sweep selects
+    // `active`, which this rule never produces, and the other five — the reminder
+    // rebuild, `compute_unblocked`, the remaining-blocker count, `is_blocked` and
+    // the snapshot loader's blocked set — take a WHOLE open or terminal set from
+    // `Status::sql_in_list`, and both sides of this edge are open while neither
+    // is terminal, so no set can hold one and not the other. The query that would
+    // break the bargain is a new one naming `backlog` or `pending` on its own.
     let scheduled: Option<String> = row.get(7)?;
     let wait: Option<String> = row.get(8)?;
     let status = effective_status(

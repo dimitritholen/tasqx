@@ -877,16 +877,15 @@ fn ask_at_the_terminal(what: &str, path: &Path) -> Option<String> {
 /// rather than of the bytes is therefore lost unless it is put back, and both
 /// losses are silent — the command reports success and the file reads correctly.
 ///
-/// **Link identity.** A `~/.bashrc` that is a symlink or a hardlink into a
-/// dotfiles repository is exactly the profile most likely to meet `--install`:
-/// stow, chezmoi, yadm and dotbot users are the population that manages startup
-/// files deliberately. Renaming over the path detaches it — the tracked file
-/// never receives the block, the path becomes an unrelated regular file, and
+/// **Link identity.** A `~/.bashrc` that is a SYMLINK into a dotfiles
+/// repository is exactly the profile most likely to meet `--install`: stow,
+/// chezmoi, yadm and dotbot users are the population that manages startup files
+/// deliberately. Renaming over the path detaches it — the tracked file never
+/// receives the block, the path becomes an unrelated regular file, and
 /// `--uninstall` cannot put back what it broke, because the link is not in the
-/// bytes it restores. Measured by review on this branch, with a hardlinked pair
-/// going from two names to one while the repo copy kept its old contents. So the
-/// path is CANONICALISED first and the write lands on the real file behind the
-/// link, which is also what a user asking to edit their profile means.
+/// bytes it restores. So the path is CANONICALISED first and the write lands on
+/// the real file behind the link, which is also what a user asking to edit their
+/// profile means.
 ///
 /// **Permissions.** A fresh temp file is created with default permissions, so
 /// the rename hands a deliberately-restricted startup file back with whatever
@@ -896,11 +895,21 @@ fn ask_at_the_terminal(what: &str, path: &Path) -> Option<String> {
 /// original's permissions are copied onto the temp file before the rename when
 /// the target already existed.
 ///
-/// Neither repair is total and the limit is worth stating: on Windows the
+/// Neither repair is total and the limits are worth stating. On Windows the
 /// copied `Permissions` carries the read-only flag and not the full ACL, so a
 /// hand-tuned ACL is still reduced to what inheritance gives. That is narrower
 /// than losing an explicit grant entirely, and `ReplaceFileW` — which preserves
 /// the destination's ACL properly — is not reachable from `std`.
+///
+/// A HARDLINKED profile is not repaired at all. `canonicalize` resolves
+/// symlinks; a hardlink has no target to resolve — both names ARE the file — so
+/// the rename replaces one directory entry and the other name (the dotfiles
+/// repo's copy) is left pointing at the old contents, which is the same
+/// detachment the symlink case describes. Measured on Windows with a hardlinked
+/// pair against this exact sequence: afterwards one name carried the block and
+/// the other still held the original bytes. Fixing it means writing in place
+/// rather than renaming, which reopens the truncation window this function
+/// exists to close, so it stays unfixed and nothing guards it.
 fn write_atomically(path: &Path, text: &str) -> Result<(), ApiError> {
     // Through the link BEFORE anything else, so both the temp sibling and the
     // rename target are the real file. Only when the path already exists:

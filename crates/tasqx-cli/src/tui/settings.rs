@@ -187,10 +187,12 @@ impl App {
             self.status.clear();
             return None;
         }
-        // A free-form string with no closed value set. No setting reaches this
-        // today (`default_project` is the only Str + Free entry and it is
-        // store-homed), but a registry row is a one-line edit away from it, and
-        // a silent no-op on Enter reads as a broken screen.
+        // A row with no closed value set and nothing to toggle. `otlp.port`
+        // (Toml + Uint + Free) lands here today: reachability turns on an empty
+        // `choices` list, not on the kind, which is what the earlier
+        // "`default_project` is the only Str + Free entry" reasoning missed.
+        // Say where to set it instead of doing nothing, because a silent no-op
+        // on Enter reads as a broken screen.
         self.status = format!("no inline editor for {} — use `tasqx config set`", s.key);
         None
     }

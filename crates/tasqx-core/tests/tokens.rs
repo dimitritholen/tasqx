@@ -627,6 +627,56 @@ fn one_spend_is_never_billed_to_two_tasks() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A wrong-typed `sample_ids` is a caller error, not an absent value.
+///
+/// It read through `p.get("sample_ids").and_then(Value::as_array)`, which
+/// answers `None` for both, and the array branch then dropped non-string
+/// entries with `filter_map(as_str)`. So `"msg-1"` instead of `["msg-1"]`, or
+/// one stray number in the array, banked the measurement with fewer ids than
+/// the caller sent — at `ok: true`. The ids exist precisely so a later tick can
+/// refuse a re-emitted sample by identity; ids lost on the way in take that
+/// refusal with them, and no reader can tell "the parser had none" from "the
+/// caller sent them wrong". D32: present + wrong type is `bad_request`, absent
+/// keeps the default.
+#[test]
+fn token_attribute_refuses_a_wrong_typed_sample_ids() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+
+    let attribute = |ids: serde_json::Value| {
+        e.token_attribute(&json!({
+            "ref": sid, "source": "log-parse", "tool": "claude-code",
+            "confidence": "medium", "input_tokens": 10, "sample_ids": ids,
+        }))
+    };
+
+    for (shape, ids) in [
+        ("a bare string where an array belongs", json!("msg-1")),
+        ("a number among the ids", json!(["msg-1", 7])),
+    ] {
+        let err = attribute(ids).unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadRequest, "{shape}");
+        assert!(
+            err.message.contains("sample_ids"),
+            "{shape}: the refusal must name the param the caller got wrong, \
+             not leave them guessing: {}",
+            err.message
+        );
+    }
+
+    // A refusal writes nothing — the measurement must not land with the ids
+    // quietly missing, which is the outcome this replaces.
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 0);
+
+    // Absent is still absent: the parsers that have no ids must keep working.
+    assert!(e
+        .token_attribute(&json!({
+            "ref": sid, "source": "log-parse", "tool": "codex",
+            "confidence": "medium", "input_tokens": 10,
+        }))
+        .is_ok());
+}
+
 /// The `sample_ids` array lands verbatim in the event log and is re-parsed on
 /// every pending build, so an unbounded one is a permanent per-tick tax. No
 /// real transcript window approaches thousands of samples (the store's biggest

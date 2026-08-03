@@ -147,14 +147,20 @@ impl ReminderScheduler {
     }
 
     /// Whether nothing is scheduled. Present because clippy requires it
-    /// alongside [`ReminderScheduler::len`], and the daemon reads it to decide
-    /// whether it may block indefinitely instead of on a deadline.
+    /// alongside [`ReminderScheduler::len`]; only the tests below read it
+    /// today. The daemon never asks: `reminder_loop` ticks on a fixed
+    /// `daemon::REMINDER_TICK_MS` rather than sleeping to a deadline, so an
+    /// empty heap costs exactly the same tick as a full one and there is no
+    /// "may I block indefinitely?" decision to answer.
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }
 
-    /// The soonest scheduled instant, if any. The daemon uses this to decide how
-    /// long it may sleep.
+    /// The soonest scheduled instant, if any — the seam a deadline-driven loop
+    /// would read. Nothing outside the tests calls it today: the daemon sleeps
+    /// a fixed `daemon::REMINDER_TICK_MS` between ticks, which is why a
+    /// reminder can fire up to one tick late and why that latency is a
+    /// constant rather than a property of the heap.
     pub fn peek_at(&self) -> Option<Timestamp> {
         self.heap.peek().map(|Reverse(p)| p.at)
     }

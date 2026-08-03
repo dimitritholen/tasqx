@@ -5,9 +5,11 @@
 //! `client` / `session_id` / `prompt_id` / `transcript_path` since #12, the MCP
 //! server sends them, and the API-level tests pass — but the CLI never offered a
 //! way to type them, so every CLI-completed task fell out of the attribution
-//! engine's candidate set (`attribution.rs:608`) and measured zero. A test that
-//! calls the API directly cannot see that gap; only one that drives the real
-//! binary's argv can.
+//! engine's candidate set — its scan over the `done` events skips every one
+//! whose payload carries none of `client`, `transcript_path` or `session_id`,
+//! which is exactly what a hand-typed `tasqx done 4` looks like — and measured
+//! zero. A test that calls the API directly cannot see that gap; only one that
+//! drives the real binary's argv can.
 //!
 //! So these run the binary, and they read back through `tasqx api` rather than
 //! through a formatted view: the event payload is the durable artifact the
@@ -168,11 +170,13 @@ fn correlation_without_a_client_is_refused_before_it_reaches_the_store() {
         .expect("add")
         .success());
 
-    // Without `client` the engine cannot select a parser (attribution.rs:367),
-    // so it terminates with a zero-sample marker that `has_attributed_event`
-    // makes permanent. Accepting the command would look like a measurement and
-    // poison the task against a later correct one, so clap refuses the
-    // combination instead (D33: a value that changes nothing must not answer ok).
+    // Without `client` the engine cannot select a parser — `parser_for` is only
+    // ever asked about a client string, so with none the `let ... else` around
+    // it takes its else branch — and it terminates with a zero-sample marker that
+    // `has_attributed_event` makes permanent. Accepting the command would look
+    // like a measurement and poison the task against a later correct one, so
+    // clap refuses the combination instead (D33: a value that changes nothing
+    // must not answer ok).
     for flag in ["--session-id", "--transcript-path"] {
         let out = bin(&cfg, &db)
             .args(["start", "1", flag, "whatever"])

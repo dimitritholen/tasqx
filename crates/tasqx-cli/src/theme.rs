@@ -1001,8 +1001,11 @@ pub enum FileOutcome {
 // way it already refuses an unknown *name*. Until those two lines land, nothing
 // outside the tests reads either method, and `mod theme` is private so
 // `pub` alone does not keep dead_code quiet. Drop these two attributes when the
-// call sites are wired up — MSRV 1.80 rules out `#[expect]`, which would have
-// failed loudly at that point instead of needing to be remembered.
+// call sites are wired up. Better still, make them `#[expect(dead_code)]`:
+// `lint_reasons` is stable since 1.81, well under the 1.95 workspace floor
+// (Cargo.toml), so the loud option IS available here — an `expect` that stops
+// firing becomes a warning, and `-D warnings` turns that into the reminder,
+// instead of this paragraph having to be found and remembered.
 #[allow(dead_code)]
 impl FileOutcome {
     /// The complaint that means "this is not the theme you asked for". `None`

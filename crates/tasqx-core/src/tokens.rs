@@ -36,8 +36,15 @@ pub const SOURCE_OTEL: &str = "otel";
 
 /// The agent supplied the counts itself on `task.done`. The last resort for
 /// tools that write neither a local transcript nor telemetry (Cursor), and the
-/// only source nothing can check — hence always stored at
-/// [`CONFIDENCE_MEDIUM`].
+/// only source nothing can check — hence stored at [`CONFIDENCE_MEDIUM`] by the
+/// one path tasqx itself writes, `task.done`'s inline counts in
+/// `engine::commands`.
+///
+/// That pairing is a convention, not an invariant: `token.add` is a public
+/// method, and [`require_source`] and [`require_confidence`] gate the two
+/// vocabularies independently with neither looking at the other, so a caller
+/// may store `self-report` at `high` and the row will be accepted. Do not read
+/// a confidence back out of a source, or a source out of a confidence.
 pub const SOURCE_SELF_REPORT: &str = "self-report";
 
 /// Where a stored measurement came from. Closed vocabulary (D34): each source

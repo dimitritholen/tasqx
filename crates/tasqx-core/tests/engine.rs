@@ -111,13 +111,15 @@ fn wait_in_future_starts_in_backlog() {
 
 // ---- the same-transaction event-log invariant -------------------------------
 
-/// Two handlers out of the nineteen that open a mutation transaction. The name
-/// used to promise "every mutation", which is what let `dependency.add` and
-/// `dependency.remove` ship with no event assertion anywhere in the workspace —
-/// a test that claims a surface it never walks stops anyone looking for the
-/// gap. The whole-surface floor lives in
-/// `every_handler_that_opens_a_mutation_also_appends_an_event` below; the
-/// per-op payload assertions live beside the behaviour they belong to.
+/// Two handlers out of the twenty-three Engine methods that open a mutation
+/// transaction. The name used to promise "every mutation", which is what let
+/// `dependency.add` and `dependency.remove` ship with no event assertion
+/// anywhere in the workspace — a test that claims a surface it never walks
+/// stops anyone looking for the gap. The whole-surface floor lives in
+/// `every_handler_that_opens_a_mutation_also_appends_an_event` below, which now
+/// reaches all twenty-three; it read six of the eight engine files until a doc
+/// audit found the comment claiming otherwise. The per-op payload assertions
+/// live beside the behaviour they belong to.
 #[test]
 fn task_add_and_task_start_each_write_exactly_one_event() {
     let e = engine();
@@ -989,13 +991,13 @@ fn a_repeated_dependency_add_logs_a_second_event_and_bumps_rev() {
 ///
 /// What a text scan cannot see is that the right op reaches the right row with
 /// the right payload; that is what the per-handler tests are for. What it does
-/// catch, for all nineteen at once and at zero runtime cost, is the write
+/// catch, for all twenty-three at once and at zero runtime cost, is the write
 /// disappearing entirely — the mutation that stayed green.
 #[test]
 fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     // Every file carrying `impl Engine` methods. include_str! makes each one a
     // rebuild dependency, so the scan can never read a stale copy.
-    const SOURCES: [(&str, &str); 6] = [
+    const SOURCES: [(&str, &str); 8] = [
         ("engine.rs", include_str!("../src/engine.rs")),
         ("engine/memory.rs", include_str!("../src/engine/memory.rs")),
         (
@@ -1006,12 +1008,25 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
             "engine/relationships.rs",
             include_str!("../src/engine/relationships.rs"),
         ),
+        (
+            "engine/reports.rs",
+            include_str!("../src/engine/reports.rs"),
+        ),
         ("engine/task.rs", include_str!("../src/engine/task.rs")),
+        ("engine/tokens.rs", include_str!("../src/engine/tokens.rs")),
         (
             "engine/transfer.rs",
             include_str!("../src/engine/transfer.rs"),
         ),
     ];
+
+    // One handler opens a mutation and deliberately appends no event, and it is
+    // named here rather than skipped by a rule, so adding a second one is a
+    // decision somebody has to write down. `otlp_ingest` grows the raw OTLP
+    // staging buffer; those rows are attributed to a task only later, by
+    // session id and time window, so at ingest there is no entity whose
+    // watchers could be told anything. Every other mutation here changes a task.
+    const EVENTLESS_BY_DESIGN: [&str; 1] = ["otlp_ingest"];
 
     let mut mutating = 0;
     for (file, source) in SOURCES {
@@ -1029,6 +1044,9 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
             }
             let name = chunk.split('(').next().unwrap_or(chunk).trim();
             mutating += 1;
+            if EVENTLESS_BY_DESIGN.contains(&name) {
+                continue;
+            }
             assert!(
                 body.contains("insert_event("),
                 "{file}: `{name}` opens a mutation transaction but appends no event — \
@@ -1039,11 +1057,20 @@ fn every_handler_that_opens_a_mutation_also_appends_an_event() {
     }
 
     // A source-scanning guard's real failure mode is matching nothing at all
-    // (a renamed helper, a re-indented impl). Nineteen handlers mutate at the
-    // time of writing; the floor keeps a refactor that hides them from being
-    // silently "all clear", while still letting the set grow.
+    // (a renamed helper, a re-indented impl). Twenty-three handlers mutate at
+    // the time of writing; the floor keeps a refactor that hides them from
+    // being silently "all clear", while still letting the set grow.
+    //
+    // This number is also what catches a file dropping out of SOURCES, and that
+    // is not hypothetical: engine/tokens.rs and engine/reports.rs were both
+    // absent for as long as they have existed, above a comment claiming the
+    // list held every file with `impl Engine` methods. Four mutating handlers
+    // went unscanned the whole time, and the floor of 19 sat comfortably below
+    // the 19 the remaining six files happened to yield. Raise it whenever the
+    // real count moves — a floor that drifts below the truth is a guard that
+    // has stopped guarding while still reporting green.
     assert!(
-        mutating >= 19,
+        mutating >= 23,
         "the scan found only {mutating} mutating handlers — it has stopped matching"
     );
 }
