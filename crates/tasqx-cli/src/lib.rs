@@ -611,7 +611,7 @@ fn build_ctx(flag: Option<&str>) -> Ctx {
     }
     let dir = themes_dir();
     let theme = theme::load(&name, dir.as_deref());
-    Ctx::new(theme, Caps::detect())
+    Ctx::new(theme, Caps::detect()).with_cols(theme::detect_cols())
 }
 
 /// The stems of `themes/*.toml`, sorted. A missing directory is an empty list —
@@ -1913,8 +1913,9 @@ fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                     // inline copy already did once.
                     validate_setting("theme.name", &resolved)?;
                     Ctx::new(theme::load(&resolved, themes_dir().as_deref()), ctx.caps)
+                        .with_cols(ctx.cols)
                 }
-                None => Ctx::new(ctx.theme.clone(), ctx.caps),
+                None => Ctx::new(ctx.theme.clone(), ctx.caps).with_cols(ctx.cols),
             };
             // Block glyphs are Unicode; degrade the swatch to ASCII on the plain/
             // legacy path so `theme show | cat` never emits mojibake.

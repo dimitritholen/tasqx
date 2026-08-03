@@ -718,12 +718,12 @@ fn page_install() -> String {
     ));
     s.push_str(&snippet(
         "tasqx",
-        "  ID    URG  P  TASK                                  PROJECT         DUE                     TAGS\n\
-         --------------------------------------------------------------------------------------------------\n\
-         \x20  1   17.5  H  Ship the v1 JSON API freeze           work.tasqx      2026-07-17T00:00:00Z    api release\n\
-         \x20  3   12.0  -  Renew the TLS cert                    work.tasqx      2026-07-15T00:00:00Z    ops\n\
-         \x20  2   11.5  -  Write the user guide                  work.tasqx      2026-07-17T00:00:00Z    docs\n\
-         --------------------------------------------------------------------------------------------------\n\
+        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
+         -----------------------------------------------------------------------------------------\n\
+         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
+         \x20  3  12.0  -  Renew the TLS cert           work.tasqx  2026-07-15T00:00:00Z  ops\n\
+         \x20  2  11.5  -  Write the user guide         work.tasqx  2026-07-17T00:00:00Z  docs\n\
+         -----------------------------------------------------------------------------------------\n\
          3 task(s)",
     ));
 
@@ -950,10 +950,10 @@ fn page_commands() -> String {
     )));
     s.push_str(&snippet(
         "tasqx list \"project:work.tasqx +api\"",
-        "  ID    URG  P  TASK                                  PROJECT         DUE                     TAGS\n\
-         --------------------------------------------------------------------------------------------------\n\
-         \x20  1   17.5  H  Ship the v1 JSON API freeze           work.tasqx      2026-07-17T00:00:00Z    api release\n\
-         --------------------------------------------------------------------------------------------------\n\
+        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
+         -----------------------------------------------------------------------------------------\n\
+         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
+         -----------------------------------------------------------------------------------------\n\
          1 task(s)",
     ));
 
@@ -999,12 +999,12 @@ fn page_commands() -> String {
     ));
     s.push_str(&snippet(
         "tasqx list",
-        "  ID    URG  P  TASK                                  PROJECT         DUE                     TAGS\n\
-         --------------------------------------------------------------------------------------------------\n\
-         \x20  1   17.5  H  Ship the v1 JSON API freeze           work.tasqx      2026-07-17T00:00:00Z    api release\n\
-         \x20  3   12.0  -  Renew the TLS cert                    work.tasqx      2026-07-15T00:00:00Z    ops\n\
-         \x20  4   12.0  -  Water the plants                      home            2026-07-16T00:00:00Z    \n\
-         --------------------------------------------------------------------------------------------------\n\
+        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
+         -----------------------------------------------------------------------------------------\n\
+         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
+         \x20  3  12.0  -  Renew the TLS cert           work.tasqx  2026-07-15T00:00:00Z  ops\n\
+         \x20  4  12.0  -  Water the plants             home        2026-07-16T00:00:00Z\n\
+         -----------------------------------------------------------------------------------------\n\
          3 task(s)",
     ));
     s.push_str(&snippet(
@@ -1193,11 +1193,11 @@ fn page_filters() -> String {
     ));
     s.push_str(&snippet(
         "tasqx list \"(+api or +ops) and status:pending\"",
-        "  ID    URG  P  TASK                                  PROJECT         DUE                     TAGS\n\
-         --------------------------------------------------------------------------------------------------\n\
-         \x20  1   17.5  H  Ship the v1 JSON API freeze           work.tasqx      2026-07-17T00:00:00Z    api release\n\
-         \x20  3   12.0  -  Renew the TLS cert                    work.tasqx      2026-07-15T00:00:00Z    ops\n\
-         --------------------------------------------------------------------------------------------------\n\
+        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
+         -----------------------------------------------------------------------------------------\n\
+         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
+         \x20  3  12.0  -  Renew the TLS cert           work.tasqx  2026-07-15T00:00:00Z  ops\n\
+         -----------------------------------------------------------------------------------------\n\
          2 task(s)",
     ));
 
@@ -1629,13 +1629,13 @@ fn page_daemon() -> String {
     ));
     s.push_str(&snippet(
         "tasqx watch --socket tasqx-docsdemo | cat\n# ... meanwhile, in another shell:\n#   tasqx --socket tasqx-docsdemo add \"Wire up the docs page ...\"\n#   tasqx --socket tasqx-docsdemo done 3",
-        "  ID    URG  P  TASK                                  PROJECT         DUE                     TAGS\n\
-         --------------------------------------------------------------------------------------------------\n\
-         \x20  1   17.5  H  Ship the v1 JSON API freeze           work.tasqx      2026-07-17T00:00:00Z    api release\n\
-         \x20  3   12.0  -  Renew the TLS cert                    work.tasqx      2026-07-15T00:00:00Z    ops\n\
-         \x20  5    9.7  -  Water the plants                      home            2026-07-19T00:00:00Z    \n\
-         \x20  2    8.9  -  Write the user guide                  work.tasqx      2026-07-20T00:00:00Z    docs\n\
-         --------------------------------------------------------------------------------------------------\n\
+        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
+         -----------------------------------------------------------------------------------------\n\
+         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
+         \x20  3  12.0  -  Renew the TLS cert           work.tasqx  2026-07-15T00:00:00Z  ops\n\
+         \x20  5   9.7  -  Water the plants             home        2026-07-19T00:00:00Z\n\
+         \x20  2   8.9  -  Write the user guide         work.tasqx  2026-07-20T00:00:00Z  docs\n\
+         -----------------------------------------------------------------------------------------\n\
          4 task(s)\n\
          task.changed op=add short_id=6\n\
          task.changed op=done short_id=3",
@@ -2125,13 +2125,21 @@ fn page_themes() -> String {
          away; on a terminal without Unicode the block glyphs degrade to ASCII rather than \
          emitting mojibake. <code>mono</code> is there for when you want that unconditionally.",
     ));
-    s.push_str(&p("Three environment variables override the detection:"));
+    s.push_str(&note(
+        "Width is detected too. <code>tasqx list</code> sizes its columns to what is actually in \
+         them and to the terminal it is printing into: a column no task fills — <code>DUE</code> on \
+         a store with no due dates — is not drawn at all, and the space goes to the titles. Through \
+         a pipe there is no width to detect, so the table lays out for a fixed 100 columns and two \
+         runs of the same store stay diffable.",
+    ));
+    s.push_str(&p("Four environment variables override the detection:"));
     s.push_str(&table(
         &["Variable", "Effect"],
         &[
             &["<code>NO_COLOR</code>", "Set to anything: drop all colour, keep bold/underline. Wins over everything below."],
             &["<code>CLICOLOR_FORCE</code>", "Set to anything but <code>0</code>: force colour even through a pipe — for <code>less -R</code> and CI logs."],
             &["<code>TASQX_FORCE_COLOR</code>", "Set to anything: same as <code>CLICOLOR_FORCE</code>, scoped to tasqx."],
+            &["<code>COLUMNS</code>", "How many columns wide to lay tables out. Beats both the terminal's own answer and the piped default — for a multiplexer that misreports its size, or to pin the width of captured output. Clamped to 40–160."],
         ],
     ));
 
