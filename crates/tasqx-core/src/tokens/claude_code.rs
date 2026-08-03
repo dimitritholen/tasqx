@@ -89,7 +89,11 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// A transcript line. Unknown fields are ignored on purpose (version
-/// tolerance); only user/tool lines lacking a `message.usage` are dropped.
+/// tolerance), but a line is dropped when it is not valid JSON, when it carries
+/// no `message.usage` (where user and tool lines land), or when its timestamp is
+/// missing or not something `jiff` can parse — a reading with no instant cannot
+/// be placed in any attribution window, so counting it would put tokens in a
+/// period nobody can name.
 #[derive(Deserialize)]
 struct Line {
     timestamp: Option<String>,

@@ -198,8 +198,13 @@ pub fn totals_in_window_excluding(
 /// banked by another task on an earlier tick — is contested *regardless of what
 /// its current stamp says*, because a streamed re-emission can move a deduped
 /// stamp across a window edge between reads while the id never changes.
-/// Samples with no id keep the window-only contest semantics (only the Claude
-/// Code parser observes moving stamps, and it always has ids).
+/// Samples with no id keep the window-only contest semantics: there is nothing
+/// to look up in `consumed` and nothing to put in `counted_ids`, so a stamp that
+/// moved on such a sample cannot be caught here and it can be banked a second
+/// time on a later tick. Those samples are not hypothetical —
+/// `claude_code::parse_samples` keeps a line whose `message.id` is absent as its
+/// own reading, and Claude Code is the one parser whose stamps move — so this is
+/// where the identity half stops, not a case the parsers rule out.
 ///
 /// The fourth return is the ids of the samples actually summed, so the caller
 /// can persist which samples this measurement consumed.

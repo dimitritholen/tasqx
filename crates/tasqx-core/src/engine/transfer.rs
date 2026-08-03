@@ -262,7 +262,6 @@ impl Engine {
         // Names minted by inference rather than sent as records. A write the
         // caller did not ask for must be visible, so these are reported.
         let mut projects_created: Vec<String> = Vec::new();
-        // (task_id, its raw `depends_on` value) collected during pass 1.
         // (task_id, its validated `depends_on` ids) — typed at collection time so
         // pass 2 cannot inherit a silently-dropped edge from a wrong-typed value.
         let mut edges: Vec<(String, Vec<String>)> = Vec::new();
@@ -918,7 +917,7 @@ impl Engine {
         let default_project = standing.or_else(|| want_default.clone());
         tx.commit()?;
 
-        // All four always present: a machine consumer must be able to tell "no
+        // All five always present: a machine consumer must be able to tell "no
         // projects in the document" from "this build does not report them", the
         // same reason `dropped_dependencies` and `default_cleared` are never
         // omitted.

@@ -108,10 +108,23 @@ pub struct Setting {
 
 impl Setting {
     /// The `[section]` and key halves of a dotted name.
+    ///
+    /// Only meaningful for a `Home::Toml` setting, and only those may call it:
+    /// a store-homed key has no section because it never reaches a TOML
+    /// document. `default_project` is one such key today, and it carries no
+    /// dot, so calling this on it panics. The old message — "every SETTINGS key
+    /// is section.name" — asserted an invariant of the registry that the
+    /// registry does not have; what actually holds the panic off is that all
+    /// four call sites are Toml-only paths. Say that, so the next caller knows
+    /// which half of the registry it may hand in.
     pub fn parts(&self) -> (&'static str, &'static str) {
-        self.key
-            .split_once('.')
-            .expect("every SETTINGS key is section.name")
+        self.key.split_once('.').unwrap_or_else(|| {
+            panic!(
+                "`{}` is not a dotted name — `parts()` is for Home::Toml settings, \
+                 and a store-homed key has no `[section]` to belong to",
+                self.key
+            )
+        })
     }
 }
 
@@ -466,10 +479,6 @@ fn read_document(path: &std::path::Path) -> Result<toml_edit::DocumentMut, ApiEr
     }
 }
 
-/// Write the document back atomically: a temp file in the same directory, then
-/// a rename. A crash mid-write would otherwise leave no config at all — and the
-/// reader degrades silently, so the user would get no error, just their theme
-/// quietly reverting.
 /// A scratch path in the target's own directory, private to this writer.
 ///
 /// The first version was `path.with_extension("toml.tmp")` — ONE fixed name for
@@ -496,6 +505,10 @@ fn scratch_path(path: &std::path::Path) -> PathBuf {
     dir.join(format!(".{stem}.{}.{n}.tmp", std::process::id()))
 }
 
+/// Write the document back atomically: a temp file in the same directory, then
+/// a rename. A crash mid-write would otherwise leave no config at all — and the
+/// reader degrades silently, so the user would get no error, just their theme
+/// quietly reverting.
 fn write_document(
     path: &std::path::Path,
     doc: &toml_edit::DocumentMut,
@@ -1081,12 +1094,22 @@ name = \"gruvbox\"  # inline note
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The write lands via a temp file and a rename so a crash cannot leave the
-    /// user with no config at all — and the reader degrades silently, so they
-    /// would get no error, just their theme quietly reverting. Nothing checked
-    /// it: replacing the two-step write with a direct `fs::write` left all 330
-    /// tests green, so the doc comment sold a durability property CI could not
-    /// see.
+    /// A successful write publishes to `config.toml` itself and leaves nothing
+    /// beside it. The failure that reaches is a write which creates the scratch
+    /// file and never publishes it: the new value sits in
+    /// `.config.toml.<pid>.0.tmp`, `config.toml` still holds the old theme, and
+    /// no command says a word — the reader degrades silently, so the user only
+    /// ever sees the setting not take.
+    ///
+    /// The temp-file-then-rename shape itself is NOT observable from here.
+    /// Swapping `write_document` for a direct `fs::write` passes both
+    /// assertions below, because a writer that never makes a scratch file never
+    /// leaves one behind either; the atomicity of the publish needs a crash or a
+    /// second writer to observe, and neither is something this test can stage.
+    /// What keeps the shape honest instead is `scratch_path` turning into dead
+    /// code the moment `write_document` stops calling it — fatal under CI's
+    /// `-D warnings` — plus the litter-and-privacy half in
+    /// `the_scratch_file_is_private_and_never_litters`.
     #[test]
     fn writing_leaves_no_temp_file_behind_and_replaces_atomically() {
         let dir = temp_dir("atomic");

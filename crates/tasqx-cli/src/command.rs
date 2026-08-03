@@ -108,20 +108,24 @@ fn scope_parser() -> PossibleValuesParser {
 ///
 /// These exist because the attribution engine builds its candidate set only from
 /// events carrying `client`, `session_id` or `transcript_path`
-/// (`attribution.rs:608`): without them a CLI-driven task is never attributed and
-/// silently measures zero. Every one is optional and none is read from the
-/// environment — `tasqx done 4` must stay a one-word command, and what lands on
-/// the event must stay readable off the command line.
+/// (the "carrying correlation" guard in `attribution::correlated_done_scan`,
+/// which `continue`s past a done event with none of the three): without them a
+/// CLI-driven task is never attributed and silently measures zero. Every one is
+/// optional and none is read from the environment — `tasqx done 4` must stay a
+/// one-word command, and what lands on the event must stay readable off the
+/// command line.
 ///
 /// `--session-id` and `--transcript-path` REQUIRE `--client`, enforced here by
 /// clap rather than discovered later. The engine selects its transcript parser
-/// from `client` alone (`attribution.rs:367`); given the other two without it,
-/// attribution takes that early return and stores a zero-sample marker, which
-/// `has_attributed_event` then makes permanent. So the clientless form is not a
-/// weaker measurement, it is a silent refusal to measure that also poisons the
-/// task against a later, correct attempt — the D33 shape: a value that changes
-/// nothing must not answer `ok`. `--prompt-id` is exempt: it is pure correlation
-/// metadata and drives no parser selection.
+/// from `client` alone (the `parser_for` early return in
+/// `attribution::compute_attribution`, commented "No client, or a client tasqx
+/// has no parser for"); given the other two without it, attribution takes it and
+/// stores a zero-sample marker, which `has_attributed_event` then makes
+/// permanent. So the clientless form is not a weaker measurement, it is a silent
+/// refusal to measure that also poisons the task against a later, correct
+/// attempt — the D33 shape: a value that changes nothing must not answer `ok`.
+/// `--prompt-id` is exempt: it is pure correlation metadata and drives no parser
+/// selection.
 #[derive(Args, Clone, Default)]
 pub(super) struct CorrelationArgs {
     /// Calling tool as "<name> <version>", e.g. "claude-code 2.1". Selects the

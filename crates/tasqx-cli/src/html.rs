@@ -260,8 +260,9 @@ impl<'a> Report<'a> {
     }
 
     /// The header tiles. `buckets` is one `(label, total)` per token bucket, in
-    /// `tokens::BUCKETS` order — cheapest per token first, so the row reads across
-    /// the price gradient in one direction.
+    /// `tokens::BUCKETS` order, so this row and the terminal report name the four
+    /// in the same sequence. That order is fixed but carries no cost meaning —
+    /// see `tokens::BUCKETS` for why it must not be read as a price gradient.
     ///
     /// D48a: four tiles rather than one blended "AI tokens". They are rendered
     /// even when every bucket is zero: a report whose token tiles vanish on an
@@ -1144,8 +1145,11 @@ mod tests {
     /// carefully sanitizes. Markup escaping alone is not enough: a title holding
     /// OSC/CSI bytes (titles arrive via import, the JSON API and MCP) reached the
     /// terminal raw and was executed by it — `ESC ]0;HIJACKED BEL` rewrites the
-    /// window title, `ESC [2J` clears the screen. The terminal path has asserted
-    /// this since render.rs:451; the HTML path holds the same standard now.
+    /// window title, `ESC [2J` clears the screen. The terminal path has held
+    /// this since `render::san`, the analogue `esc` is modelled on, pinned by
+    /// `san_strips_control_and_escape_bytes`; the HTML path holds the same
+    /// standard now. Named rather than cited by line number, because a line
+    /// number is the reference that rots on the next insertion above it.
     #[test]
     fn html_escaper_strips_terminal_control_bytes() {
         let hostile = "pwn\u{1b}]0;HIJACKED\u{7}\u{1b}[2Jgone";
