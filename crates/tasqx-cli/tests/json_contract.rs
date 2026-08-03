@@ -57,6 +57,21 @@ struct Case {
     /// tasks collides on `short_id`, which is a separate question from whether
     /// the command honours `--json`.
     fresh_store: bool,
+    /// The exit code this command is EXPECTED to fail with here, for the one
+    /// shape of command that cannot succeed under a test harness at all.
+    ///
+    /// `pick` is a full-screen chooser: it refuses unless stdin and stdout are
+    /// both terminals (D26), and `Command::output()` gives it neither. There is
+    /// no argument list that makes it succeed, so the alternatives were to
+    /// declare it a `--json` carve-out — which would be false, it returns an
+    /// ordinary result through the same `Exit::Out` terminal every other verb
+    /// uses — or to state what it does do here and check that. The refusal is
+    /// worth checking on its own: it is what a script hits, and it is the half
+    /// of this verb a test CAN reach.
+    ///
+    /// Coverage counts either way, so this does not weaken
+    /// `every_command_is_either_covered_or_a_declared_carve_out`.
+    refuses_with: Option<i32>,
 }
 
 const fn c(verb: &'static str, args: &'static [&'static str]) -> Case {
@@ -64,6 +79,7 @@ const fn c(verb: &'static str, args: &'static [&'static str]) -> Case {
         verb,
         args,
         fresh_store: false,
+        refuses_with: None,
     }
 }
 
@@ -72,6 +88,17 @@ const fn c_fresh(verb: &'static str, args: &'static [&'static str]) -> Case {
         verb,
         args,
         fresh_store: true,
+        refuses_with: None,
+    }
+}
+
+/// A command with no non-interactive success path: driven for its refusal.
+const fn c_refuses(verb: &'static str, args: &'static [&'static str], code: i32) -> Case {
+    Case {
+        verb,
+        args,
+        fresh_store: false,
+        refuses_with: Some(code),
     }
 }
 
@@ -118,6 +145,10 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("undep", &["undep", "1", "2"]),
         c("why", &["why", "1"]),
         c("next", &["next"]),
+        // The one command in the table that cannot succeed here — see
+        // `Case::refuses_with`. Exit 2 is `bad_request`, the same code
+        // `config edit` gives a piped stdout.
+        c_refuses("pick", &["pick"], 2),
         c("projects", &["projects"]),
         c("use", &["use", "guardproj"]),
         // `archive` needs a project of its own: archiving `guardproj` would
@@ -230,6 +261,24 @@ fn every_non_carved_command_emits_json() {
             }
             let out = cmd.output().unwrap_or_else(|e| panic!("run {args:?}: {e}"));
             let stdout = String::from_utf8_lossy(&out.stdout);
+            if let Some(code) = case.refuses_with {
+                // Not "it failed somehow": the exact code, plus a stdout that
+                // stayed empty. A TUI that starts anyway writes `\x1b[?1049h`
+                // into the captured pipe and then blocks on a key that never
+                // comes, which looks like a hang rather than a refusal.
+                assert_eq!(
+                    out.status.code(),
+                    Some(code),
+                    "`tasqx --json {}` must refuse with exit {code}: {}",
+                    args.join(" "),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                assert!(
+                    stdout.is_empty(),
+                    "a refused command wrote to a piped stdout: {stdout:?}"
+                );
+                continue;
+            }
             assert!(
                 out.status.success(),
                 "`tasqx --json {}` must succeed for the guard to judge its output: {}",

@@ -242,6 +242,33 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::GettingStarted,
     },
     CmdDoc {
+        verb: "pick",
+        aliases: &["p", "fzf"],
+        method: "task.list + task.start",
+        summary: "Choose a task on a full-screen list, and start it.",
+        usage: "tasqx pick [filter…]",
+        examples: &[
+            // `NoRun`, like `config edit`, and for the same reason rather than
+            // out of caution: the executable-examples guard runs each Safe
+            // example with `Command::output()`, which gives it a piped stdout —
+            // the exact situation this verb refuses with exit 2. There is no
+            // non-interactive spelling of it to run instead, because the whole
+            // command IS the screen. What the refusal does on that path is
+            // covered for real by `help.rs::pick_refuses_a_piped_stdout_with_a_
+            // nonzero_exit`, which drives the binary and asserts the code.
+            ex_norun("tasqx pick", "choose from the working set and start it"),
+            ex_norun("tasqx pick project:work +api", "narrow the candidates first"),
+        ],
+        notes: &[
+            "Type to narrow: the query is a fuzzy SUBSEQUENCE match over id, title, project and tags, so `wac` finds `Write API conformance tests`. Whitespace splits it into terms that must all match.",
+            "Enter STARTS the highlighted task — the one key on this screen with a side effect, and the same single-active rule `tasqx start` follows. Esc clears the query first, and only then leaves.",
+            "Cancelling, and a filter that matches no task, both exit 4 having started nothing. `pick` exists to produce one task; when it produced none, saying ok would be a command reporting success for work it did not do.",
+            "It needs a real terminal on stdin AND stdout, so `tasqx pick | …` and `$(tasqx pick)` refuse with exit 2 rather than writing escape codes into your pipe (D26). Non-interactively, `tasqx next` answers the same question and `tasqx start <ref>` acts on it.",
+        ],
+        see_also: &["next", "list", "start", "agenda"],
+        topic: Topic::GettingStarted,
+    },
+    CmdDoc {
         verb: "show",
         aliases: &["get"],
         method: "task.get",
