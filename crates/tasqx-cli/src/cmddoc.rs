@@ -419,7 +419,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "Archiving is a shelf, not a delete: the tasks keep their history and their project, and `tasqx projects --all` still lists the project.",
-            "An archived project is out of rotation — `use` refuses it (exit 5), and so does an `add`/`modify` that names it.",
+            "An archived project is out of rotation — `use` refuses it (exit 5), and so does an `add`/`modify` that names it, and so does a second `archive` of it (`project is already archived`, exit 5). No verb may name an archived project, this one included; `store.import` restoring the flag from a document is the one write that still can.",
             "There is no `unarchive` verb and no `project.unarchive` method: among the project methods, archiving is one-way. `store.import` does write a project's `archived` flag from the document, so restoring a saved export un-archives one — a data restore, not an undo.",
             "Archiving the project that IS the default clears the default: a bare `tasqx add` then has no project until `tasqx use <project>`. The line says which of the two happened.",
         ],

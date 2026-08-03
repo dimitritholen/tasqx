@@ -2697,4 +2697,124 @@ fn archive_retires_a_project_and_says_when_it_cleared_the_default() {
         Some(2),
         "an empty name is bad_request, as it is on `use` (D36)"
     );
+
+    // And the refusal this verb shipped without: archiving `side` a SECOND time
+    // changes nothing, so it must not answer like the run that retired it. It
+    // used to print the same success line at exit 0 — see the dedicated test
+    // below, which is where the reasoning lives.
+    let again = run(&["archive", "side"]);
+    assert_eq!(
+        again.status.code(),
+        Some(5),
+        "a second archive changes nothing and must not exit 0; stdout was {}",
+        String::from_utf8_lossy(&again.stdout)
+    );
+}
+
+/// The #53 review's first finding, at the terminal: `tasqx archive old` twice
+/// printed the same success line and exited 0 both times.
+///
+/// Kept apart from the verb's own test because it is a different claim. That one
+/// asks "does the verb do the job and say what it did"; this one asks "can a
+/// human or a script tell the run that retired a project from the run that found
+/// it already retired" — D34's rule, and the one this repo's siblings already
+/// keep (`use <archived>` is exit 5, `untag <tag the task lacks>` is exit 4).
+///
+/// The assertions are on the *pair*, not on either run alone. A fix that made
+/// the second run print something else while still exiting 0 would leave every
+/// script that branches on the exit code exactly as wrong as before, and the
+/// no-op run is the one a script is most likely to take for success.
+#[test]
+fn archiving_an_already_archived_project_is_told_apart_from_archiving_it() {
+    let dir = fresh_config_dir("archivetwice");
+    // `fresh_config_dir` wipes the config dir but not the store beside it, and
+    // this test's very first assertion is that `init work` succeeds — a store
+    // left by a previous run under a recycled pid would make it exit 5 and read
+    // as a failure of the verb rather than of the fixture.
+    let _ = std::fs::remove_file(db_path("archivetwice"));
+    let run = |args: &[&str]| {
+        bin("archivetwice", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    assert!(run(&["init", "work"]).status.success());
+    assert!(run(&["init", "old"]).status.success());
+
+    let first = run(&["archive", "old"]);
+    assert!(
+        first.status.success(),
+        "the archive that does the work must succeed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let second = run(&["archive", "old"]);
+    assert_eq!(
+        second.status.code(),
+        Some(5),
+        "a second archive changes nothing, so it must be a conflict; stdout was {}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    let msg = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        msg.contains("already archived") && msg.contains("old"),
+        "the refusal must name the project and why it was refused: {msg}"
+    );
+    // The two runs must not be confusable on stdout either: the success line is
+    // what a user reads, and printing it again is what made the defect invisible.
+    assert_ne!(
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&first.stdout),
+        "the no-op run printed the same thing the real one did"
+    );
+
+    // The `--json` surface has to refuse too, because that is the one a script
+    // reads: `{"archived": true, "default_cleared": false}` at exit 0 came back
+    // from every repeat. A CLI refusal rides the exit code and stderr rather
+    // than an `ok:false` envelope (that shape belongs to `tasqx api`, D31), so
+    // what is pinned here is that `--json` does not soften it into a payload.
+    let json_again = run(&["--json", "archive", "old"]);
+    assert_eq!(
+        json_again.status.code(),
+        Some(5),
+        "--json must not soften the refusal into ok"
+    );
+    assert!(
+        !String::from_utf8_lossy(&json_again.stdout).contains("archived"),
+        "a refused archive must not print a result payload: {}",
+        String::from_utf8_lossy(&json_again.stdout)
+    );
+
+    // The audit surface D22 points at for "where did the default go" must not
+    // grow a row per no-op: three archive attempts, one archive event.
+    let log = {
+        use std::io::Write;
+        let mut child = bin("archivetwice", &dir)
+            .arg("api")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn tasqx api");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(
+                br#"{"tasqx":"1","id":"e","method":"event.list","params":{"entity":"project","limit":100}}"#,
+            )
+            .expect("write envelope");
+        let out = child.wait_with_output().expect("wait");
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).expect("event.list answers JSON")
+    };
+    let archives = log["result"]["events"]
+        .as_array()
+        .expect("events array")
+        .iter()
+        .filter(|ev| ev["op"] == "archive" && ev["payload"]["name"] == "old")
+        .count();
+    assert_eq!(
+        archives, 1,
+        "a project archived once must have one archive event: {log}"
+    );
 }

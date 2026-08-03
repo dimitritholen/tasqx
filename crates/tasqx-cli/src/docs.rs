@@ -1071,7 +1071,7 @@ fn page_commands() -> String {
     s.push_str(&p(
         "<code>archive</code> takes a project out of rotation. Its tasks are untouched — they keep \
          their history and their project — but the project drops out of <code>tasqx projects</code> \
-         and no write may name it any more. Archiving is a shelf, not a delete.",
+         and no verb may name it any more. Archiving is a shelf, not a delete.",
     ));
     s.push_str(&snippet(
         "tasqx archive prive.klussen\ntasqx use work.tasqx",
@@ -1093,6 +1093,20 @@ fn page_commands() -> String {
         "DEFAULT  PROJECT                   ARCHIVED   DESCRIPTION\n\
          \x20        prive.klussen             yes\n\
          *        work.tasqx                no         The tasqx project itself",
+    ));
+    s.push_str(&p(
+        "\u{201c}No verb may name it\u{201d} includes <code>archive</code> itself. Retiring a \
+         project that is already retired would change nothing, so it is a <code>conflict</code> \
+         (exit 5) rather than a second success — an <code>ok</code> that changed nothing is \
+         byte-identical to the run that did the work, for you and for the event log, which is \
+         where \u{201c}when did the default move?\u{201d} is answered. The one write that still \
+         names an archived project is <code>store.import</code>, which restores the flag from a \
+         document \u{2014} see the note below.",
+    ));
+    s.push_str(&snippet(
+        "tasqx archive prive.klussen",
+        "error [conflict]: project is already archived: prive.klussen (`tasqx projects --all` \
+         lists it; archiving it again would change nothing)",
     ));
     s.push_str(&note(
         "There is no <code>unarchive</code> verb and no <code>project.unarchive</code> method — \
@@ -3900,6 +3914,52 @@ mod tests {
                  Documented inits: {created:?}"
             );
         }
+    }
+
+    /// Three surfaces claim `archive` refuses an already-archived project — the
+    /// Commands page, the terminal note behind `tasqx archive --help`, and the
+    /// worked example's output block — and this asks the engine whether that is
+    /// true, rather than trusting the prose.
+    ///
+    /// The review of #53 is why it exists. Both doc surfaces asserted "no write
+    /// may name it" about an archived project while `project.archive` was itself
+    /// a write that named one and answered `ok`: a documented protection the
+    /// code did not have, which is the failure class this repo fails builds
+    /// over. Deleting the refusal from the engine now reddens the docs too,
+    /// which is the only arrangement in which the sentence stays true.
+    ///
+    /// The output block is compared to the engine's real message rather than to
+    /// a fragment, because the page shows it as literal terminal output — a
+    /// reader who cannot find that string in their own terminal has been taught
+    /// something false about the tool.
+    #[test]
+    fn the_archive_pages_refusal_is_the_one_the_engine_actually_gives() {
+        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        tasqx_core::dispatch(&e, "project.create", &serde_json::json!({ "name": "old" }))
+            .expect("create");
+        tasqx_core::dispatch(&e, "project.archive", &serde_json::json!({ "name": "old" }))
+            .expect("first archive");
+        let err =
+            tasqx_core::dispatch(&e, "project.archive", &serde_json::json!({ "name": "old" }))
+                .expect_err("a second archive of the same project must be refused");
+
+        // The verb's own note in `cmddoc` names the refusal, so a reader of
+        // `--help` learns it without running the command twice.
+        let note = crate::cmddoc::after_help("archive");
+        assert!(
+            note.contains("already archived"),
+            "`tasqx archive --help` does not mention the refusal: {note}"
+        );
+
+        // And the guide's worked output block is the engine's message verbatim,
+        // with only the project name swapped for the one the page uses.
+        let doc = generate();
+        let shown = err.message.replace("old", "prive.klussen");
+        assert!(
+            doc.contains(&esc(&shown)),
+            "the Commands page shows an `archive` refusal the engine does not give.\n\
+             engine: {shown}"
+        );
     }
 
     /// The page must be substantial — a guard against a refactor quietly rendering

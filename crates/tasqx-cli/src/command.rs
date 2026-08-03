@@ -519,10 +519,13 @@ pub(super) enum Command {
     /// project.archive).
     ///
     /// D22: an archived project drops out of `tasqx projects` (`--all` still
-    /// shows it) and no write may name it. Archiving the project that IS the
-    /// default clears the default in the same transaction, and the printed line
-    /// says so — where a bare `tasqx add` lands is the fact this verb is most
-    /// able to change silently.
+    /// shows it) and no verb may name it — including this one, so archiving a
+    /// project that is already archived is a `conflict` (exit 5) rather than a
+    /// second success that changed nothing. (`store.import` restores the flag
+    /// from a document and is the one write that still names one.) Archiving
+    /// the project that IS the default clears the default in the same
+    /// transaction, and the printed line says so — where a bare `tasqx add`
+    /// lands is the fact this verb is most able to change silently.
     #[command(after_help = crate::cmddoc::after_help("archive"))]
     Archive {
         /// An existing project name.
@@ -533,8 +536,8 @@ pub(super) enum Command {
         // membership by the name an argument announces for its value rather
         // than by a list of verbs kept in a test. The candidates deliberately
         // exclude archived projects — see `candidates::projects`, where the
-        // reason for THIS site is written down, since `archive` is the one
-        // attachment that does not refuse one.
+        // reason for THIS site is written down, and where the carve-out this
+        // site used to need is recorded as retired.
         #[arg(value_name = "PROJECT", add = crate::complete::candidates::projects())]
         name: String,
     },
