@@ -1606,6 +1606,13 @@ fn page_daemon() -> String {
         "tasqx daemon: listening on tasqx-docsdemo (Ctrl-C to stop)",
     ));
     s.push_str(&p(
+        "It stays until you stop it. Set <code>[daemon] idle_timeout</code> to a number of \
+         minutes and it will instead exit by itself once that long has passed with no client \
+         connected, no subscriber attached, no reminder about to ripen and no telemetry \
+         receiver open — and it says so on stderr on the way out. <code>0</code>, the default, \
+         means it never does.",
+    ));
+    s.push_str(&p(
         "Now route a command through it — note this is the ordinary <code>add</code>, unchanged:",
     ));
     s.push_str(&snippet(
