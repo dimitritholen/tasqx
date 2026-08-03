@@ -1341,6 +1341,90 @@ pub fn annotated(ctx: &Ctx, result: &Value) -> String {
     )
 }
 
+/// `tasqx undo`.
+///
+/// Names the operation AND the task AND what came back, because "undone" on its
+/// own is the one answer nobody can check: undo takes no argument, so the user
+/// never named the thing it acted on and has only this line to confirm it was
+/// the thing they meant.
+///
+/// The detail line is driven by the reverted op rather than by sniffing which
+/// keys `restored` happens to carry — a response shape that grows a key must not
+/// be able to silently change the sentence. An op this build has no phrasing for
+/// still prints its `restored` object rather than nothing: a new entry in the
+/// core's closed set would otherwise reach the terminal as a blank second line,
+/// which reads as "it restored nothing".
+pub fn undone(ctx: &Ctx, result: &Value) -> String {
+    let op = result
+        .get("reverted")
+        .and_then(|r| r.get("op"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let title = san(result.get("title").and_then(Value::as_str).unwrap_or(""));
+    let restored = result.get("restored").cloned().unwrap_or(Value::Null);
+
+    let tags = |key: &str| -> String {
+        restored
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|t| format!("+{}", san(t)))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default()
+    };
+    let detail = match op {
+        "tag.remove" => format!("tags back: {}", ctx.paint("tag", &tags("tags"))),
+        "dependency.remove" => format!(
+            "depends on {} again",
+            ctx.paint(
+                "accent",
+                &format!(
+                    "#{}",
+                    restored
+                        .get("depends_on")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0)
+                )
+            )
+        ),
+        "stop" => format!(
+            "the timer is running again  ·  {} back on the clock",
+            san(restored
+                .get("tracked")
+                .and_then(Value::as_str)
+                .unwrap_or("PT0S"))
+        ),
+        "annotation.add" => format!(
+            "note removed: {}",
+            ctx.paint(
+                "muted",
+                &san(restored
+                    .get("annotation")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""))
+            )
+        ),
+        _ => format!("restored: {}", san(&restored.to_string())),
+    };
+
+    let arrow = match ctx.caps.unicode {
+        true => "↩",
+        false => "<-",
+    };
+    format!(
+        "{} {}  ·  {} {}\n  {detail}\n",
+        ctx.paint("accent", arrow),
+        ctx.paint("accent", &format!("undid {}", san(op))),
+        ctx.paint("accent", &format!("#{sid}")),
+        title,
+    )
+}
+
 /// `tasqx tag` / `untag`.
 ///
 /// Both halves name what CHANGED and what the task carries now, for the reason
@@ -2667,6 +2751,106 @@ mod tests {
         assert!(ascii.ends_with("...") && !ascii.contains('…'));
         assert!(ascii.is_ascii(), "no non-ASCII in plain path");
         assert_eq!(ascii.chars().count(), 10);
+    }
+
+    // ---- undone (the line that says what undo actually did) -----------------
+
+    /// The whole point of the line: `undo` takes no argument, so unless it names
+    /// the operation, the task and what came back, the user has no way to check
+    /// that it reversed the thing they meant. A bare "undone" is the failure.
+    #[test]
+    fn the_undo_line_names_the_operation_the_task_and_what_came_back() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "reverted": { "event": "e1", "op": "tag.remove", "ts": "2026-08-03T10:00:00Z" },
+            "short_id": 42,
+            "title": "Ship v1",
+            "restored": { "tags": ["api", "release"] },
+        });
+        let out = undone(&ctx, &result);
+        assert!(
+            out.contains("tag.remove"),
+            "the line must name the operation that was reversed: {out:?}"
+        );
+        assert!(
+            out.contains("#42"),
+            "the line must name the task it acted on: {out:?}"
+        );
+        assert!(
+            out.contains("Ship v1"),
+            "the line must carry the title — a short_id alone is not recognizable at a \
+             glance, and undo took no argument to echo back: {out:?}"
+        );
+        assert!(
+            out.contains("+api") && out.contains("+release"),
+            "the line must name what came back, or it says nothing an undo that \
+             restored nothing would not also say: {out:?}"
+        );
+    }
+
+    /// One phrasing per op in the core's closed set, selected by the reverted op
+    /// rather than by sniffing which keys `restored` happens to carry — and a
+    /// fallback that still prints the payload, because an op this build has no
+    /// phrasing for must not reach the terminal as a blank line reading "it
+    /// restored nothing".
+    #[test]
+    fn every_undoable_op_gets_a_line_that_says_what_it_restored() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let line = |op: &str, restored: Value| -> String {
+            undone(
+                &ctx,
+                &json!({
+                    "reverted": { "event": "e1", "op": op, "ts": "t" },
+                    "short_id": 7,
+                    "title": "t",
+                    "restored": restored,
+                }),
+            )
+        };
+
+        assert!(line("dependency.remove", json!({ "depends_on": 3 })).contains("#3"));
+        let stopped = line("stop", json!({ "tracked": "PT30M", "status": "active" }));
+        assert!(
+            stopped.contains("PT30M") && stopped.contains("running"),
+            "{stopped:?}"
+        );
+        let noted = line(
+            "annotation.add",
+            json!({ "annotation": "called the plumber" }),
+        );
+        assert!(noted.contains("called the plumber"), "{noted:?}");
+
+        // The core's closed set can grow; this renderer must degrade to showing
+        // the data rather than to showing nothing.
+        let unknown = line("some.future.op", json!({ "whatever": 1 }));
+        assert!(
+            unknown.contains("whatever"),
+            "an op with no phrasing must still print what it restored: {unknown:?}"
+        );
+    }
+
+    /// An annotation body and a tag are untrusted text — argv, `store.import`,
+    /// an MCP client — and this line goes straight to a terminal.
+    #[test]
+    fn undone_sanitizes_control_bytes_in_the_text_it_echoes() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = undone(
+            &ctx,
+            &json!({
+                "reverted": { "event": "e1", "op": "annotation.add", "ts": "t" },
+                "short_id": 1,
+                "title": "\u{1b}[2Jclear",
+                "restored": { "annotation": "\u{1b}]0;evil\u{7}note" },
+            }),
+        );
+        assert!(
+            !out.contains('\u{1b}'),
+            "escape byte reached the terminal: {out:?}"
+        );
+        assert!(
+            !out.contains('\u{7}'),
+            "bell byte reached the terminal: {out:?}"
+        );
     }
 
     // ---- tag_result (D39: what changed AND what remains) --------------------

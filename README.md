@@ -182,6 +182,6 @@ A good chunk of the suite is drift guards: tests that break the build when the d
 
 ## What's missing
 
-`tasqx pick` is specified and not built, and there's no `undo` — `cancel` and `reopen` are the reversible paths for now. `tasqx agenda` shipped as a day-grouped list, not the week grid `DESIGN.md` sketched. There's no `unarchive`: `tasqx archive` retires a project one way, and importing a saved export is the way back.
+`tasqx pick` is specified and not built. `tasqx undo` is built but narrow on purpose: it reverses the newest event only, over a closed set of four operations (`stop`, `untag`, `undep`, `annotate`), and refuses everything else by name rather than guessing an inverse — undoing a `done` is `tasqx reopen`, undoing a `modify` is a second `modify`. `tasqx agenda` shipped as a day-grouped list, not the week grid `DESIGN.md` sketched. There's no `unarchive`: `tasqx archive` retires a project one way, and importing a saved export is the way back.
 
 The rest of the TUI (the settings screen behind `tasqx config edit` is the only piece built), plugins and sync are all specified in `DESIGN.md` and don't exist. They were designed together so that adding them later doesn't touch the data model, but "designed" is doing a lot of work in that sentence.

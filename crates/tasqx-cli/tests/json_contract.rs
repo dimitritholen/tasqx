@@ -108,6 +108,12 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         // successful run to have any output to judge.
         c("tag", &["tag", "1", "guardtag"]),
         c("untag", &["untag", "1", "guardtag"]),
+        // Directly after `untag`, and that placement is the case: `undo` takes
+        // no arguments and reverses whatever the newest event happens to be, so
+        // the only way to drive it deterministically is to run it where the
+        // preceding case has just written something undoable. It puts
+        // `guardtag` back, which no later case reads.
+        c("undo", &["undo"]),
         c("dep", &["dep", "1", "2"]),
         c("undep", &["undep", "1", "2"]),
         c("why", &["why", "1"]),

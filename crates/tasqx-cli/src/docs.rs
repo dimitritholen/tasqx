@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 36] = [
+const VERBS: [(&str, &str, &str); 37] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -84,6 +84,7 @@ const VERBS: [(&str, &str, &str); 36] = [
         "task.cancel",
     ),
     ("reopen", "—", "task.reopen"),
+    ("undo", "<code>u</code>", "event.revert"),
     ("annotate", "<code>note</code>", "annotation.add"),
     ("tag", "—", "tag.add"),
     ("untag", "—", "tag.remove"),
@@ -109,7 +110,7 @@ const VERBS: [(&str, &str, &str); 36] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 30] = [
+const METHODS: [(&str, &str, &str); 31] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -270,6 +271,16 @@ const METHODS: [(&str, &str, &str); 30] = [
         "event.list",
         "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>",
         "<code>{count, events}</code> — the append-only log.",
+    ),
+    (
+        "event.revert",
+        "—",
+        "<code>{reverted, short_id, title, restored}</code> — <code>reverted</code> carries \
+         the event id, its op and its timestamp. Undoes the <em>newest</em> event by \
+         APPENDING a compensating one, so the reversed event stays in the log. Four ops are \
+         undoable (<code>stop</code>, <code>tag.remove</code>, <code>dependency.remove</code>, \
+         <code>annotation.add</code>); every other one is <code>conflict</code> naming itself \
+         and what does take it back.",
     ),
     (
         "reminder.fire",
@@ -2908,9 +2919,33 @@ mod tests {
     /// observe — proving those names would mean a real call per parameter with a
     /// value round-tripped back out, which is an integration suite, not a
     /// doc-drift guard.
+    /// An in-memory store whose newest event is undoable.
+    ///
+    /// The two guards below probe every method with `{}` and read the answer as
+    /// a statement about its PARAMS. `event.revert` is the one method whose bare
+    /// call can fail for a reason that has nothing to do with params — an empty
+    /// log has nothing to undo — so on a virgin store it would look like a
+    /// method with an undocumented required argument. Seeding one undoable event
+    /// removes that confound without weakening either guard: no other method in
+    /// [`METHODS`] can be called bare AND append an event, so the `tag.remove`
+    /// left here is still the newest event when the loop reaches `event.revert`.
+    #[cfg(test)]
+    fn probe_engine() -> tasqx_core::Engine {
+        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        let sid = e
+            .task_add(&serde_json::json!({ "title": "probe" }))
+            .expect("seed a task")["short_id"]
+            .clone();
+        e.tag_add(&serde_json::json!({ "ref": sid.clone(), "tags": ["probe"] }))
+            .expect("seed a tag");
+        e.tag_remove(&serde_json::json!({ "ref": sid, "tags": ["probe"] }))
+            .expect("seed an undoable event");
+        e
+    }
+
     #[test]
     fn documented_required_params_match_what_the_engine_demands() {
-        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        let e = probe_engine();
 
         for (method, params, _returns) in METHODS {
             let names = param_names(params);
@@ -2960,7 +2995,7 @@ mod tests {
     /// telling every API client to read a field that is no longer there.
     #[test]
     fn documented_return_shapes_match_the_real_response_where_checkable() {
-        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        let e = probe_engine();
         let mut checked = 0;
 
         for (method, params, returns) in METHODS {
@@ -2993,10 +3028,13 @@ mod tests {
         }
 
         // Pin the coverage claim itself. If a future edit makes this loop skip
-        // everything, the test would pass while guarding nothing.
+        // everything, the test would pass while guarding nothing. Re-derive from
+        // the count this guard reports rather than adding the rows you wrote:
+        // it went 7 -> 8 when `event.revert` joined, and a floor that drifts
+        // below the truth is a guard that has stopped guarding.
         assert_eq!(
-            checked, 7,
-            "expected to check all 7 bare-callable return shapes; a row that stopped being \
+            checked, 8,
+            "expected to check all 8 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }
