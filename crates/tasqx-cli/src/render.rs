@@ -12,6 +12,7 @@ use jiff::{Timestamp, ToSpan, Unit};
 use serde_json::Value;
 
 use crate::theme::Ctx;
+use crate::AGENDA_MAX_DAYS;
 
 /// Strip terminal-control bytes from untrusted text before it is painted, so an
 /// imported or agent-authored task field can't smuggle ANSI/OSC escapes that
@@ -576,10 +577,34 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
     out.push_str(&ctx.paint("muted", &format!("{count} task(s)")));
     out.push('\n');
 
-    // The table has no status column, so a row the store could not read would
-    // otherwise sit in the default view indistinguishable from ordinary open
-    // work — the invisible-field failure this project keeps rebuilding. The
-    // note is conditional: on a healthy store it never appears.
+    for note in store_health_notes(tasks) {
+        out.push_str(&ctx.paint("warn", &note));
+        out.push('\n');
+    }
+    out
+}
+
+/// The notes a status-less task table owes its reader about rows the store
+/// could not read back cleanly — one per defect, naming the offending ids and
+/// the way out. Empty for a healthy store, so their presence always means
+/// something.
+///
+/// Shared rather than written per view, and that is the whole point of it being
+/// a function. Both [`task_table`] and [`agenda_text`] draw the same rows
+/// WITHOUT a status column and WITH a title cell that can come out empty, so
+/// each of them can hide exactly these two defects. `agenda` shipped as a second
+/// table over the same rows and did not carry the notes: an unreadable status
+/// sat under `Wed 2026-08-05` looking like ordinary open work, and a blank-title
+/// row drew as an empty TASK cell with nothing under the table to say why —
+/// the invisible-field failure rebuilt one view over, which is what a copied
+/// layout does. A third view gets them by calling this; it cannot get them by
+/// remembering to.
+fn store_health_notes(tasks: &[Value]) -> Vec<String> {
+    let mut notes = Vec::new();
+
+    // Neither table has a status column, so a row the store could not read
+    // would otherwise sit in the default view indistinguishable from ordinary
+    // open work — the invisible-field failure this project keeps rebuilding.
     let broken: Vec<String> = tasks
         .iter()
         .filter(|t| status_is_unrecognized(t))
@@ -596,13 +621,10 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         // "run tasqx modify": status is not freely settable (§10 routes every
         // transition through start/stop/done), and the correct value is the
         // user's call, not ours — export, edit that one field, import.
-        out.push_str(&ctx.paint(
-            "warn",
-            &format!(
-                "unrecognized status in the store: {} — `tasqx export` still works; \
-                 fix the status there and `tasqx import` it back\n",
-                broken.join(", ")
-            ),
+        notes.push(format!(
+            "unrecognized status in the store: {} — `tasqx export` still works; \
+             fix the status there and `tasqx import` it back",
+            broken.join(", ")
         ));
     }
 
@@ -632,16 +654,13 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
         })
         .collect();
     if !blank.is_empty() {
-        out.push_str(&ctx.paint(
-            "warn",
-            &format!(
-                "blank title in the store: {} — written before this rule existed, and an export \
-                 holding one will not import; fix with `tasqx modify <ref> \"<a real title>\"`\n",
-                blank.join(", ")
-            ),
+        notes.push(format!(
+            "blank title in the store: {} — written before this rule existed, and an export \
+             holding one will not import; fix with `tasqx modify <ref> \"<a real title>\"`",
+            blank.join(", ")
         ));
     }
-    out
+    notes
 }
 
 /// True when the core flagged this task's `status` as text it could not
@@ -656,21 +675,6 @@ fn status_is_unrecognized(t: &Value) -> bool {
 // ============================================================================
 // Agenda — the same `task.list` answer, ordered by time instead of urgency
 // ============================================================================
-
-/// How far ahead `tasqx agenda` looks when `--days` is not given.
-///
-/// A fortnight, not a week and not a month. A week ends on a boundary a reader
-/// is standing on top of — on a Friday it shows two working days — so the one
-/// question the view exists to answer ("is next week already full?") is exactly
-/// the one it cannot answer. A month puts thirty headings on the screen for a
-/// store that plans a fortnight out, and the rows worth acting on scroll off the
-/// top. Fourteen days always contains a whole next week from any day of the
-/// current one.
-///
-/// It is a default and not a rule: `--days` moves it, and anything the horizon
-/// cut is COUNTED and reported with the exact `--days` that would reach it, so
-/// the number here can be wrong for a given store without anything being hidden.
-pub const AGENDA_DEFAULT_DAYS: usize = 14;
 
 /// Which dated field put a task on the agenda.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -713,9 +717,20 @@ pub struct Agenda {
     undated: usize,
     /// Tasks dated past the horizon.
     beyond: usize,
-    /// The `--days` that would reach the furthest thing `beyond` is holding.
-    /// `None` when nothing is beyond the horizon.
+    /// Days from `today` to the furthest thing `beyond` is holding. `None` when
+    /// nothing is beyond the horizon.
+    ///
+    /// A distance, NOT necessarily a usable `--days`: it can exceed
+    /// [`AGENDA_MAX_DAYS`], and then no window reaches that row and
+    /// [`Agenda::omissions`] says so instead of quoting a flag value the parser
+    /// refuses. `agenda_json` reports it beside `max_days` so a script can tell
+    /// the two cases apart the same way the footer does.
     reach_days: Option<usize>,
+    /// Store-health notes over every task the filter matched — see
+    /// [`store_health_notes`]. Computed over the whole result and not over
+    /// `entries`, because an unreadable status or a blank title is a fact about
+    /// the store whether or not that row happened to land inside the horizon.
+    health: Vec<String>,
     today: Date,
     through: Date,
     days: usize,
@@ -766,7 +781,7 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda {
     // file the task one day before the date the user typed. Matching the
     // parser's zone is the only arrangement in which a date round-trips.
     let today = now.to_zoned(TimeZone::UTC).date();
-    // `--days` is bounded at parse time (`command::MAX_AGENDA_DAYS`), so this
+    // `--days` is bounded at parse time at `AGENDA_MAX_DAYS`, so this
     // addition cannot overflow. `Date::MAX` on failure anyway, because the
     // failure direction that matters is "show it" — a horizon that cannot be
     // computed must not silently swallow the rows past it.
@@ -777,6 +792,7 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda {
         undated: 0,
         beyond: 0,
         reach_days: None,
+        health: store_health_notes(tasks),
         today,
         through,
         days,
@@ -797,7 +813,10 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda {
             a.beyond += 1;
             // The reach is REPORTED, not guessed: the footer will name the
             // exact `--days` that brings the furthest of these into view, so
-            // the reader does not have to widen the window by trial.
+            // the reader does not have to widen the window by trial. A raw
+            // distance, deliberately — `omissions()` decides what to do with
+            // one that no window can reach, because that is a question about
+            // advice and this loop only knows facts.
             let need = day
                 .since((Unit::Day, today))
                 .map(|s| s.get_days().max(0) as usize)
@@ -976,6 +995,14 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
         out.push_str(&ctx.paint("muted", &note));
         out.push('\n');
     }
+    // Last, and in `warn` rather than `muted`, because these are not this
+    // view's own omissions: they are damage in the store that this layout —
+    // like `list`'s, which it shares — cannot show in a cell. See
+    // `store_health_notes` for why both views read one implementation.
+    for note in &a.health {
+        out.push_str(&ctx.paint("warn", note));
+        out.push('\n');
+    }
     out
 }
 
@@ -1006,12 +1033,40 @@ impl Agenda {
         }
         if self.beyond > 0 {
             // The exact flag that reaches the furthest one, so widening the
-            // window is one paste rather than a guess-and-retry.
+            // window is one paste rather than a guess-and-retry — but only when
+            // the CLI would accept it. `--days` is bounded at 3650
+            // (`AGENDA_MAX_DAYS`) and the reach is a raw distance, so a task due
+            // in 2060 used to print ``tasqx agenda --days 12204``, which exits 2
+            // with `12204 is not in 1..=3650`. A footer that hands out a refused
+            // command is worse than one that admits the row is out of range: the
+            // reader spends the retry before learning anything.
+            //
+            // So past the ceiling the note says the widest window still does not
+            // reach, and names `tasqx list` — the view with no horizon at all —
+            // exactly as the undated note does. The count stays either way,
+            // which is the promise that actually matters: nothing is dropped in
+            // silence.
+            //
+            // One line either way, including the mixed case where some cut rows
+            // ARE reachable and the furthest is not. This note has only ever
+            // named one number — the furthest — so the mixed case loses nothing
+            // it used to have, and a second line ("--days 3650 reaches all but
+            // one") would need a second counter to be true, which is more
+            // machinery than a footer is worth. `tasqx list` shows every one of
+            // them regardless.
             let reach = self.reach_days.unwrap_or(self.days);
-            v.push(format!(
-                "{} further out — `tasqx agenda --days {reach}` reaches the furthest",
-                self.beyond
-            ));
+            v.push(if reach > AGENDA_MAX_DAYS {
+                format!(
+                    "{} further out — past `--days {AGENDA_MAX_DAYS}`, the widest window there \
+                     is; `tasqx list` shows them",
+                    self.beyond
+                )
+            } else {
+                format!(
+                    "{} further out — `tasqx agenda --days {reach}` reaches the furthest",
+                    self.beyond
+                )
+            });
         }
         v
     }
@@ -1038,6 +1093,11 @@ pub fn agenda_json(a: &Agenda) -> Value {
             "undated": a.undated,
             "beyond_horizon": a.beyond,
             "reach_days": a.reach_days,
+            // The ceiling, so a script can make the decision the footer makes.
+            // `reach_days` is a distance and may exceed it, and without this
+            // field the obvious `tasqx agenda --days $(jq .agenda.reach_days)`
+            // is the same exit-2 the text note used to walk the reader into.
+            "max_days": AGENDA_MAX_DAYS,
         }
     })
 }
@@ -1743,6 +1803,7 @@ fn truncate(s: &str, max: usize, unicode: bool) -> String {
 mod tests {
     use super::*;
     use crate::theme::{self, Caps, Ctx};
+    use crate::AGENDA_DEFAULT_DAYS;
     use serde_json::json;
 
     /// The CLI and core are separately deployable — `tasqx` talks to a daemon it
@@ -2952,6 +3013,108 @@ mod tests {
         assert_eq!(v["agenda"]["reach_days"], json!(90));
         assert_eq!(v["agenda"]["through"], json!("2026-08-17"));
         assert_eq!(v["agenda"]["days"], json!(14));
+        // The ceiling too, read out of the constant rather than typed: without
+        // it a script has no way to tell a `reach_days` it can pass to `--days`
+        // from one the parser would refuse.
+        assert_eq!(v["agenda"]["max_days"], json!(AGENDA_MAX_DAYS));
+    }
+
+    /// Both status-less tables print the SAME store-health notes, because they
+    /// call the same function.
+    ///
+    /// The defect this pins: `agenda` shipped as a second table over `list`'s
+    /// rows and carried neither note. An unreadable status has no column to
+    /// appear in and a blank title draws as an empty cell, so the row sat under
+    /// a day heading indistinguishable from ordinary open work and the run
+    /// exited 0 — the invisible-field failure rebuilt one view over. Asserting
+    /// the two views AGREE, rather than asserting each one's text, is what makes
+    /// this a guard: a third view that forgets the notes fails it too, and
+    /// rewording a note cannot pass it on one side only.
+    #[test]
+    fn every_status_less_table_carries_the_same_store_health_notes() {
+        let mut unreadable = dated(7, "important work", "2026-08-05T00:00:00Z", "");
+        unreadable["status"] = json!("Done");
+        unreadable["status_unrecognized"] = json!(true);
+        let untitled = dated(4, "", "2026-08-06T00:00:00Z", "");
+        let tasks = vec![unreadable, untitled];
+
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let list = task_table(&ctx, &json!({ "tasks": tasks, "count": 2 }));
+        let agenda = agenda_out(tasks.clone(), AGENDA_DEFAULT_DAYS);
+
+        let notes = store_health_notes(&tasks);
+        assert_eq!(
+            notes.len(),
+            2,
+            "the fixture must trip both notes: {notes:?}"
+        );
+        for note in &notes {
+            assert!(
+                list.contains(note.as_str()),
+                "`list` dropped a store-health note:\n{list}"
+            );
+            assert!(
+                agenda.contains(note.as_str()),
+                "`agenda` draws the same rows in the same layout, so it owes the \
+                 reader the same note:\n{agenda}"
+            );
+        }
+        // Named ids, not just a count: "1 unreadable row" leaves the reader with
+        // a store to search by hand.
+        assert!(agenda.contains("#7 (Done)"), "{agenda}");
+        assert!(agenda.contains("#4"), "{agenda}");
+    }
+
+    /// A row the horizon cut but no `--days` can reach: the footer must not hand
+    /// the reader a command the CLI refuses.
+    ///
+    /// `--days` is bounded at `AGENDA_MAX_DAYS`, and the reach is a raw distance
+    /// to the furthest cut row, so a task due decades out produced ``tasqx
+    /// agenda --days 12204`` — pasted, that exits 2 with `12204 is not in
+    /// 1..=3650`, and the row was unreachable in this view by any window.
+    /// D53 rule 2 promises the count is unconditional and the advice actionable;
+    /// past the ceiling the actionable advice is a different view.
+    #[test]
+    fn a_row_no_window_can_reach_is_counted_without_quoting_a_refused_days() {
+        // Comfortably past the ceiling from the 2026-08-03 anchor.
+        let out = agenda_out(
+            vec![dated(1, "retirement party", "2060-01-01T00:00:00Z", "")],
+            AGENDA_DEFAULT_DAYS,
+        );
+        assert!(out.contains("1 further out"), "still counted: {out}");
+        assert!(
+            out.contains("tasqx list"),
+            "the note must name a view that actually shows it: {out}"
+        );
+
+        // The real check, and it reads the ceiling rather than a literal: no
+        // `--days N` in the footer may be one `window_parser` would refuse.
+        for n in recommended_days(&out) {
+            assert!(
+                (1..=AGENDA_MAX_DAYS).contains(&n),
+                "the footer recommended `--days {n}`, which the CLI refuses \
+                 (1..={AGENDA_MAX_DAYS}): {out}"
+            );
+        }
+
+        // ...and inside the ceiling the exact window is still quoted, so the
+        // clamp did not buy the fix by making every note useless.
+        let near = agenda_out(
+            vec![dated(1, "far outside", "2026-11-01T00:00:00Z", "")],
+            AGENDA_DEFAULT_DAYS,
+        );
+        assert_eq!(recommended_days(&near), vec![90], "{near}");
+    }
+
+    /// Every `--days N` the rendered footer tells the reader to run.
+    fn recommended_days(out: &str) -> Vec<usize> {
+        out.split("--days ")
+            .skip(1)
+            .filter_map(|tail| {
+                let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().ok()
+            })
+            .collect()
     }
 
     /// Two tasks on the same instant keep the engine's `-urgency` ranking: the

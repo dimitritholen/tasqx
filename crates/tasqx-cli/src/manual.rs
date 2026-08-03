@@ -212,7 +212,9 @@ its `due` and `scheduled` and saying which of the two that was.
 Overdue rows come first and are always shown; the window ahead
 is 14 days (`--days N`). It leaves out tasks with neither date
 and tasks past the horizon — and counts both under the table,
-naming the exact `--days` that would reach the furthest one.
+naming the exact `--days` that would reach the furthest one,
+or saying `tasqx list` when it is further out than `--days`
+goes.
 Days are UTC days, matching the zone the dates above are stored
 in."
         }
