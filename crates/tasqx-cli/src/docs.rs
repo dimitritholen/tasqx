@@ -1015,7 +1015,10 @@ fn page_commands() -> String {
          counts both rather than dropping them in silence: tasks with neither date have no day to \
          sit on (<code>tasqx list</code> shows them), and tasks past the horizon are reported \
          together with the exact <code>--days</code> that reaches the furthest one — here \
-         <code>tasqx agenda --days 90</code>, for a certificate renewal in November.",
+         <code>tasqx agenda --days 90</code>, for a certificate renewal in November. A row \
+         further out than the widest window <code>--days</code> accepts is still counted, and \
+         that line names <code>tasqx list</code> instead of a <code>--days</code> the CLI would \
+         refuse.",
     ));
     s.push_str(&p(
         "Everything before <code>--days</code> is the <a href=\"#filters\">filter</a>, exactly as \

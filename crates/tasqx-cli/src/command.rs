@@ -9,7 +9,7 @@ use clap::{Args, Parser, Subcommand, ValueHint};
 use tasqx_core::engine::MEMORY_SCOPES;
 use tasqx_core::Priority;
 
-use super::{CLEARABLE, VERSION};
+use super::{AGENDA_MAX_DAYS, CLEARABLE, VERSION};
 
 /// The `--priority` vocabulary, built from [`Priority::SPELLINGS`] so it is the
 /// engine's list rather than a copy of it.
@@ -374,8 +374,10 @@ pub(super) enum Command {
     /// day it asks anything of you — and the `WHEN` column says which of the two
     /// that was. A task carrying neither is not on any day, so it is not in the
     /// table; it is counted, and the footer names `tasqx list` as the view that
-    /// shows it. Nothing is dropped without being counted: the same holds for
-    /// rows past the horizon and for done/cancelled work.
+    /// shows it. Rows past the horizon are counted the same way. Those are the
+    /// only two reasons this view holds a row back — done and cancelled work is
+    /// not among them, because it never matched the filter to begin with (see
+    /// the notes below), so there is no count for it here.
     ///
     /// Overdue rows are always shown, whatever `--days` says. A horizon is a
     /// question about the future, and an agenda that hid what you are already
@@ -814,17 +816,18 @@ const MAX_CHART_WEEKS: u64 = 520;
 /// Same reasoning for `burndown --days`, which never passes through
 /// `default_weeks` at all — a decade of daily points.
 const MAX_CHART_DAYS: u64 = 3650;
-/// `agenda --days`, bounded for the same reason and by the same arithmetic:
-/// `render::agenda_select` adds the window to today with `jiff`'s `ToSpan::days`,
-/// which PANICS outside ±7,304,484, so an unbounded flag is an abort whose
-/// message names neither tasqx nor the flag. A decade is already past every
-/// horizon anyone plans against, and the floor is 1 because a zero-day window
-/// asks about no day at all.
+/// `agenda --days`, bounded for the same reason as `chart` and by the same
+/// arithmetic — see [`super::AGENDA_MAX_DAYS`], which is where the value lives
+/// and why. The floor is 1 because a zero-day window asks about no day at all.
 ///
-/// Its own constant rather than a shared one with `chart`: the two happen to
-/// agree today, and a comment explaining why an agenda is bounded by a chart's
-/// limit would be a comment about a coincidence.
-const MAX_AGENDA_DAYS: u64 = 3650;
+/// Read from the crate root rather than written here, and still NOT shared with
+/// `chart`'s: the agenda footer RECOMMENDS a `--days` that reaches a row it cut,
+/// and it can only avoid recommending one this parser refuses if both read the
+/// same number. A second copy is exactly how that footer came to print
+/// `--days 12204` for a task due in 2060 and send the reader into an exit-2.
+/// `chart`'s limit merely happens to agree today; a comment explaining why an
+/// agenda is bounded by a chart's limit would be a comment about a coincidence.
+const MAX_AGENDA_DAYS: u64 = AGENDA_MAX_DAYS as u64;
 
 /// Bound a window flag at parse time. Yields `RangedU64ValueParser<usize>` so
 /// the fields stay `Option<usize>` and every call site keeps its type.
@@ -1048,6 +1051,50 @@ mod tests {
                 "{argv:?} is a supported window"
             );
         }
+    }
+
+    /// The `--days` ceiling has ONE source, and everything that quotes it reads
+    /// that source.
+    ///
+    /// `Agenda::omissions` recommends a `--days` that reaches a row the horizon
+    /// cut. When the parser's bound and the renderer's idea of it were separate
+    /// literals, the footer printed `tasqx agenda --days 12204` for a task due
+    /// in 2060 and pasting it exited 2. The constant moved to the crate root,
+    /// this parser reads it, and this test pins the boundary AND the help prose
+    /// to it — a hand-typed range in a doc comment is the same drift one surface
+    /// over.
+    #[test]
+    fn the_agenda_days_bound_is_the_one_the_renderer_reads() {
+        let max = AGENDA_MAX_DAYS;
+        assert!(
+            Cli::try_parse_from(["tasqx", "agenda", "--days", &max.to_string()]).is_ok(),
+            "the ceiling itself must be accepted, or the renderer can recommend \
+             a value this parser refuses"
+        );
+        let err = Cli::try_parse_from(["tasqx", "agenda", "--days", &(max + 1).to_string()])
+            .err()
+            .expect("one past the ceiling is a usage error");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+
+        let cmd = Cli::command();
+        let help = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "agenda")
+            .expect("agenda is a subcommand")
+            .get_arguments()
+            .find(|a| a.get_id() == "days")
+            .expect("agenda takes --days")
+            .get_help()
+            .expect("--days is documented")
+            .to_string();
+        assert!(
+            help.contains(&format!("1-{max}")),
+            "the `--days` help must name the range this parser enforces, got {help:?}"
+        );
+        assert!(
+            help.contains(&format!("default {}", crate::AGENDA_DEFAULT_DAYS)),
+            "the `--days` help must name the default the renderer applies, got {help:?}"
+        );
     }
 
     /// `--out` is read on the `--html` branch of `execute` only; the terminal

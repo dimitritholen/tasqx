@@ -220,7 +220,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "A task is placed on the EARLIER of its `due` and `scheduled` — the first day it asks anything of you — and the WHEN column says which of the two that was.",
             "Overdue tasks are always shown, whatever `--days` says: a horizon is a question about the future.",
-            "Nothing is dropped in silence. Tasks with no date at all, tasks past the horizon and done/cancelled tasks are each COUNTED under the table, with the command or flag that reveals them — the `--days` line names the exact window that reaches the furthest one.",
+            "This view holds a row back for exactly two reasons, and both are COUNTED under the table rather than dropped in silence: no date at all, and past the horizon. Each count names the way to see them — the horizon line quotes the exact `--days` that reaches the furthest one, or, when the row is further out than the widest window `--days` accepts, says so and points at `tasqx list`.",
             "Done and cancelled tasks are left out unless your filter names a status, the same rule `report` applies to cancelled tasks (D24). `tasqx agenda status:done` shows them.",
             "Days are UTC days, because a date typed without a time is stored as midnight UTC; grouping by local time would file `--due 2026-08-05` under the 4th west of Greenwich.",
         ],
@@ -807,6 +807,68 @@ mod tests {
                     e.cmd
                 );
             }
+        }
+    }
+
+    /// `agenda`'s prose may promise a count only for something the footer
+    /// actually counts.
+    ///
+    /// The shipped note read "Tasks with no date at all, tasks past the horizon
+    /// and done/cancelled tasks are each COUNTED under the table" — and
+    /// `render::Agenda` has no done/cancelled counter at all, because those rows
+    /// are excluded on the wire by the composed filter and never reach the
+    /// renderer. A reader with 500 done tasks looked for that count, found
+    /// nothing, and could not tell an empty store from broken accounting: the
+    /// exact ambiguity the counters exist to remove. The note even contradicted
+    /// the next note in its own array, which correctly says done and cancelled
+    /// are *left out* by the filter.
+    ///
+    /// Asserted over both prose surfaces at once, because they are separate
+    /// strings that drifted together: this array and `command::Command::Agenda`'s
+    /// doc comment (clap's long help). The rule is narrow on purpose — the
+    /// counting sentence must not name the statuses — so rewording the promise
+    /// keeps passing while re-adding the false claim does not.
+    #[test]
+    fn the_agenda_counting_promise_names_only_reasons_the_footer_counts() {
+        let clap_about = include_str!("command.rs");
+        let agenda_about = clap_about
+            .split("What is coming up, when (maps to task.list)")
+            .nth(1)
+            .expect("Command::Agenda's doc comment")
+            .split("#[command(alias = \"ag\"")
+            .next()
+            .expect("the doc comment ends at the attribute");
+
+        let notes = find("agenda").expect("agenda is documented").notes.concat();
+        for (name, surface) in [
+            ("cmddoc notes", notes.as_str()),
+            ("clap help", agenda_about),
+        ] {
+            let mut checked = 0;
+            for sentence in surface.split('.') {
+                let lower = sentence.to_lowercase();
+                if !lower.contains("counted") {
+                    continue;
+                }
+                checked += 1;
+                for status in ["done", "cancelled"] {
+                    assert!(
+                        !lower.contains(status),
+                        "{name}: the agenda counts undated rows and rows past the horizon, \
+                         and nothing else — a sentence promising a count for {status:?} \
+                         sends the reader looking for a number that is not there: \
+                         {sentence:?}"
+                    );
+                }
+            }
+            // Without this the guard passes vacuously the moment someone drops
+            // the promise entirely, which is its own regression: D53's whole
+            // claim is that nothing is dropped in silence.
+            assert!(
+                checked > 0,
+                "{name} no longer promises anything is counted, so this guard is \
+                 asserting nothing"
+            );
         }
     }
 

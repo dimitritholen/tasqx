@@ -78,6 +78,42 @@ const CLEARABLE: [&str; 8] = [
     "estimate",
 ];
 
+/// How far ahead `tasqx agenda` looks when `--days` is not given.
+///
+/// A fortnight, not a week and not a month. A week ends on a boundary a reader
+/// is standing on top of — on a Friday it shows two working days — so the one
+/// question the view exists to answer ("is next week already full?") is exactly
+/// the one it cannot answer. A month puts thirty headings on the screen for a
+/// store that plans a fortnight out, and the rows worth acting on scroll off the
+/// top. Fourteen days always contains a whole next week from any day of the
+/// current one.
+///
+/// It is a default and not a rule: `--days` moves it, and anything the horizon
+/// cut is COUNTED and reported with the exact `--days` that would reach it, so
+/// the number here can be wrong for a given store without anything being hidden.
+const AGENDA_DEFAULT_DAYS: usize = 14;
+
+/// The widest window `--days` accepts, and therefore the furthest `agenda` can
+/// reach at all.
+///
+/// It lives at the crate root because it has two readers in two layers that
+/// `command_declarations_do_not_execute_or_render` forbids from importing each
+/// other: `command::window_parser` refuses a larger value at parse time, and
+/// `render::Agenda::omissions` has to know when the `--days` it is about to
+/// RECOMMEND is one the parser would refuse. When those were separate literals
+/// they were free to disagree, and the footer duly recommended
+/// ``tasqx agenda --days 12204`` for a task due in 2060 — a command that exits 2
+/// with `12204 is not in 1..=3650`, leaving that row unreachable in the view and
+/// D53 rule 2's "widening the window is a paste rather than a guess" false. One
+/// copy, read by both, is the fix; `command::tests` pins the parser boundary and
+/// the `--days` help prose to it, and `render::tests` pins the footer to it.
+///
+/// A decade is already past every horizon anyone plans against, and the value is
+/// bounded at all because `render::agenda_select` adds the window to today with
+/// `jiff`'s `ToSpan::days`, which PANICS outside ±7,304,484 — an unbounded flag
+/// is an abort whose message names neither tasqx nor the flag.
+const AGENDA_MAX_DAYS: usize = 3650;
+
 /// What `--version` prints: the crate version plus the commit it was built from.
 ///
 /// The commit is the load-bearing half. `CARGO_PKG_VERSION` is identical across
@@ -1210,7 +1246,7 @@ fn run_agenda(be: &mut Backend, ctx: &Ctx, filter: &[String], days: Option<usize
     let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
     let result = be.call("task.list", &params)?;
 
-    let a = render::agenda_select(&result, days.unwrap_or(render::AGENDA_DEFAULT_DAYS), now);
+    let a = render::agenda_select(&result, days.unwrap_or(AGENDA_DEFAULT_DAYS), now);
     let text = render::agenda_text(ctx, &a);
     // The result the `--json` terminal prints is the agenda's own, not the raw
     // `task.list` answer: see `render::agenda_json` for why the two flags have
