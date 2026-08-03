@@ -280,17 +280,23 @@ jobs:
   #      mutation-verified: the parenthesised-filter precedence inversion
   #      (filter.rs `parse_and`) and the non-strict `due.before`/`due.after`
   #      boundary. Neither was found by review or by 299 passing tests.
-  #   2. NOT DONE ANY MORE. The two equivalent mutants are still suppressed via
-  #      `exclude_re` in .cargo/mutants.toml, each with a justification, so a
-  #      survivor here still means something real rather than known noise — but
-  #      `missed` is 1, not the 0 this point claimed for as long as it stood.
-  #      `spacing_hint` withholds its "did you mean" advice from any token that
-  #      opens a predicate of its own, and no test pairs a value predicate with
-  #      a following token that BOTH opens a predicate and fails to parse — so
-  #      the guard can weaken to `&&`, never suppress anything again, and leave
-  #      the whole suite green while `project:Home @wroking` starts advising a
-  #      rewrite to `project:"Home @wroking"`. Tracked as tasqx #48. A gate
-  #      switched on today is a gate that is already red.
+  #   2. DONE AGAIN, but not re-measured. The two equivalent mutants are still
+  #      suppressed via `exclude_re` in .cargo/mutants.toml, each with a
+  #      justification, so a survivor here still means something real rather
+  #      than known noise. `missed` was 1 in the sweep quoted above, and that
+  #      survivor is now killed: `spacing_hint` withholds its "did you mean"
+  #      advice from any token that opens a predicate of its own, no test paired
+  #      a value predicate with a following token that BOTH opens a predicate
+  #      and fails to parse, so the guard could weaken to `&&`, never suppress
+  #      anything again, and leave the whole suite green while
+  #      `project:Home @wroking` started advising a rewrite to
+  #      `project:"Home @wroking"`. tasqx #48 closed it with one test per
+  #      disjunct — `a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value`
+  #      and `a_mistyped_at_keyword_is_never_hinted_as_a_split_value` — each
+  #      verified to redden under the `&&` mutation. The count above is left as
+  #      the run printed it, because nobody has re-swept since; what makes this
+  #      point DONE is the two tests, and only the next sweep can make the
+  #      number agree.
   #   3. NOT DONE, and this is the whole remaining blocker. `cargo mutants`
   #      exits 3 on TIMEOUTS as well as on survivors, and the parser's
   #      `pos += 1` mutants time out by design (they make it loop forever).
