@@ -280,7 +280,9 @@ const METHODS: [(&str, &str, &str); 31] = [
          APPENDING a compensating one, so the reversed event stays in the log. Four ops are \
          undoable (<code>stop</code>, <code>tag.remove</code>, <code>dependency.remove</code>, \
          <code>annotation.add</code>); every other one is <code>conflict</code> naming itself \
-         and what does take it back.",
+         and what does take it back. The newest <em>event</em>, not the last call you made: a \
+         call that changed nothing writes no event, so undo reaches past it — which is why the \
+         answer names what it undid instead of saying ok.",
     ),
     (
         "reminder.fire",
