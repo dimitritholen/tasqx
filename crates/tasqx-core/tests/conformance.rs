@@ -47,13 +47,18 @@
 //! in one file would hand MCP the API's immutability guarantee, which nobody
 //! promised and which the protocol's own release cadence would break for us.
 //!
-//! The exclusion is made explicit rather than silent by
-//! [`the_mcp_tool_layer_is_out_of_scope_because_it_bottoms_out_here`]: every
-//! MCP tool routes its call through `dispatch` at a method this file freezes,
-//! so the *data* an MCP host receives is covered here even though the tool
-//! wrapper is not. The day a tool stops bottoming out in a frozen method that
-//! reasoning is false, and the test says so — which is the difference between
-//! an exclusion and a blind spot. MCP's own behaviour lives in `tests/mcp.rs`.
+//! The exclusion is made explicit rather than silent, by two tests that cover
+//! its two halves. [`every_mcp_tool_routes_through_a_frozen_json_api_method`]
+//! checks the routing table: every tool names a method this file freezes.
+//! [`every_mcp_tool_hands_back_the_frozen_result_of_its_method`] checks what
+//! actually comes back: each tool is driven through the real `tools/call` path
+//! and its JSON block checked against the frozen shape. The second exists
+//! because the first was once the whole argument, and a rename inserted between
+//! `dispatch` and the wire sailed through it — a name map cannot see
+//! post-processing, and `tools_call` does post-process (the `task.get` view).
+//! So the *data* an MCP host receives is covered here even though the tool
+//! wrapper is not; the day that stops being true, both halves say so. MCP's own
+//! behaviour lives in `tests/mcp.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -168,6 +173,19 @@ const fn req_of(key: &'static str, ty: Ty, inner: Shape) -> Field {
     Field {
         inner,
         ..req(key, ty)
+    }
+}
+
+/// May be absent; when present it is not `null` and its rows carry `inner`.
+///
+/// The combination is not decoration: `store.export`'s `tokens` is conditional
+/// (omitted when a task has no measurement) *and* a row shape, and it was
+/// declared nowhere at all until a review caught it — which left a rename of
+/// that key green through this whole suite.
+const fn opt_of(key: &'static str, ty: Ty, inner: Shape) -> Field {
+    Field {
+        inner,
+        ..opt(key, ty)
     }
 }
 
@@ -343,6 +361,15 @@ const TASK_RELATIONS: &[Field] = &[
 const TASK_BLOCKED: &[Field] = &[req("blocked", Ty::Bool)];
 
 const TASK_TOKENS: &[Field] = &[req_of("tokens", Ty::Array, MEASUREMENT)];
+
+/// The same measurements on the export row — but OPTIONAL, because
+/// `export_task` omits the key entirely for a task with no measurement rather
+/// than emitting `[]` (an always-present key would change the §3 export shape
+/// for every store that never recorded a token, and `IMPORT_TASK_KEYS` is a
+/// closed gate). Split from [`TASK_TOKENS`] rather than reusing it: the two
+/// differ in exactly the way a client breaks on, and `task.get`'s key is not
+/// allowed to go missing.
+const TASK_EXPORT_TOKENS: &[Field] = &[opt_of("tokens", Ty::Array, MEASUREMENT)];
 
 const PROJECT_LIST_ROW: &[Field] = &[
     req("id", Ty::Str),
@@ -585,6 +612,7 @@ const R_STORE_EXPORT: Shape = &[&[
         &[
             TASK_CORE,
             TASK_EXPORT_TIME,
+            TASK_EXPORT_TOKENS,
             TASK_RELATIONS,
             TASK_STATUS_FLAG,
         ],
@@ -1122,6 +1150,22 @@ fn cases() -> Vec<Case> {
                     .expect("the completed task is in the export");
                 task["tracked_seconds"] = json!(3600);
                 e.store_import(&doc).expect("re-import with banked time");
+                // A measurement, because `tokens` is a THIRD conditional export
+                // key beside `tracked_seconds` and `active_since`, and this
+                // fixture seeded no measurement at all — so the key appeared on
+                // no exported row, and its absence from the frozen shape above
+                // was invisible: renaming `out["tokens"]` in transfer.rs left
+                // this entire suite green (review finding).
+                //
+                // AFTER the re-import above, not before, and the order is the
+                // point. Seeded earlier, the measurement rides along in the
+                // document that gets edited and fed back through `store.import`
+                // — and `IMPORT_TASK_KEYS` is a closed gate, so a renamed export
+                // key would blow up in that helper with a message about an
+                // unknown import field, several steps before the shape check
+                // ever ran. Red either way, but a red run that names the wrong
+                // thing sends the next reader to the wrong file.
+                e.token_add(&self_report(1)).expect("measure");
                 json!({})
             },
             R_STORE_EXPORT,
@@ -1769,27 +1813,19 @@ fn mcp_tool_methods() -> BTreeMap<String, String> {
     out
 }
 
-/// The exclusion, stated as a test rather than as a sentence nobody runs.
+/// The tools a live server actually advertises.
 ///
-/// This suite freezes the JSON API (§4) and not the MCP tool layer (§7). That is
-/// sound only while every MCP tool bottoms out in a method this file freezes:
-/// the tool wrapper may be renamed by a protocol revision, but the *data* an MCP
-/// host receives is `dispatch`'s result, and `dispatch`'s results are pinned
-/// above. A tool that grew a response shape of its own would break that
-/// reasoning silently — so it breaks this test loudly instead.
-#[test]
-fn the_mcp_tool_layer_is_out_of_scope_because_it_bottoms_out_here() {
-    let scanned = mcp_tool_methods();
-
-    // The scan must see every tool the server actually serves. `Scope::Write`
-    // advertises the full registry (a read-only scope filters the write tools
-    // out), so `tools/list` under it is the real set to check against.
+/// `Scope::Write` advertises the full registry (a read-only scope filters the
+/// write tools out), so `tools/list` under it is the real set — asking under
+/// `Read` would silently shrink every conclusion drawn from it to the five read
+/// tools.
+fn live_tool_names() -> BTreeSet<String> {
     let engine = Engine::open_in_memory().expect("in-memory store");
     let server = McpServer::new(&engine, Scope::Write);
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
         .expect("tools/list is a request and yields a response");
-    let live: BTreeSet<String> = listed["result"]["tools"]
+    listed["result"]["tools"]
         .as_array()
         .expect("tools/list returns an array")
         .iter()
@@ -1799,7 +1835,32 @@ fn the_mcp_tool_layer_is_out_of_scope_because_it_bottoms_out_here() {
                 .expect("every tool has a name")
                 .to_string()
         })
-        .collect();
+        .collect()
+}
+
+/// Half the exclusion: every tool *names* a method this file freezes.
+///
+/// This suite freezes the JSON API (§4) and not the MCP tool layer (§7). That is
+/// sound only while every MCP tool bottoms out in a method this file freezes:
+/// the tool wrapper may be renamed by a protocol revision, but the *data* an MCP
+/// host receives is `dispatch`'s result, and `dispatch`'s results are pinned
+/// above.
+///
+/// This test checks the routing table and nothing else. It was, for one commit,
+/// the *whole* justification — and a review showed what that bought: inserting
+/// a `count` → `total` rename into `tools_call`'s success arm left it green,
+/// because a name map cannot see what happens to a result after `dispatch`
+/// returns it. The half it does not cover is
+/// [`every_mcp_tool_hands_back_the_frozen_result_of_its_method`]. Kept separate
+/// rather than folded into it: this one fails in one line without running a
+/// tool, and it is what proves [`mcp_tool_methods`]'s scan still agrees with the
+/// live registry — which the other test *reads*, to find each tool's method, and
+/// would otherwise trust unchecked.
+#[test]
+fn every_mcp_tool_routes_through_a_frozen_json_api_method() {
+    let scanned = mcp_tool_methods();
+
+    let live = live_tool_names();
     let scanned_names: BTreeSet<String> = scanned.keys().cloned().collect();
     assert_eq!(
         scanned_names, live,
@@ -1821,4 +1882,98 @@ fn the_mcp_tool_layer_is_out_of_scope_because_it_bottoms_out_here() {
          through `dispatch`, or extend this suite to freeze the MCP surface too and say so in \
          DESIGN.md §11."
     );
+}
+
+/// The machine-readable block of a `tools/call` result, parsed.
+///
+/// The LAST content block, not the first. `tool_ok` emits one text block;
+/// `tool_ok_with_view` — the `task.get` tool, the one rendered surface — puts a
+/// human markdown view first and the JSON second. Reading `[0]` would work
+/// today for seventeen tools and quietly start checking a markdown table
+/// against a JSON shape the day an eighteenth grows a view.
+fn tool_call_json(call: &Value, label: &str) -> Value {
+    assert_eq!(
+        call["isError"],
+        json!(false),
+        "{label}: the tool answered isError. The content was {:?} — a fixture that stopped \
+         producing a successful call checks no shape at all, so fix the case's setup rather than \
+         this assertion.",
+        call["content"]
+    );
+    let content = call["content"].as_array().unwrap_or_else(|| {
+        panic!("{label}: a CallToolResult carries a `content` array, got {call}")
+    });
+    let text = content
+        .last()
+        .and_then(|b| b.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: the last content block carries no text: {call}"));
+    serde_json::from_str(text)
+        .unwrap_or_else(|e| panic!("{label}: the tool's JSON block does not parse ({e}): {text}"))
+}
+
+/// The other half of the exclusion: what a tool hands back IS the frozen result.
+///
+/// [`every_mcp_tool_routes_through_a_frozen_json_api_method`] proves each tool
+/// *names* a frozen method. That is not the same claim as "an MCP host receives
+/// a frozen shape", and the gap between them is a live seam:
+/// `McpServer::tools_call` already post-processes one method (`task.get`, which
+/// gains a rendered view block), so nothing structural stops a second one from
+/// renaming a key on the way out. A review proved the point by inserting a
+/// `count` → `total` rename into the success arm — every conformance test stayed
+/// green while the doc above went on asserting that the data a host sees is
+/// `dispatch`'s result.
+///
+/// So: drive each tool through the real `tools/call` path with a case's own
+/// fixture and params, and check what comes back against that case's frozen
+/// shape. Params carry over verbatim because §7 maps tool arguments 1:1 onto the
+/// method's params — the same property the tool-schema guard in `src/mcp.rs`
+/// enforces — so this needs no second table of arguments to drift.
+///
+/// Driven from the LIVE `tools/list`, not from the source scan: a scan that
+/// broke and returned nothing would make a scan-driven loop pass over zero
+/// tools, which is the vacuous-green failure this project keeps paying for.
+#[test]
+fn every_mcp_tool_hands_back_the_frozen_result_of_its_method() {
+    let methods = mcp_tool_methods();
+    let all_cases = cases();
+    let live = live_tool_names();
+    assert!(
+        !live.is_empty(),
+        "tools/list advertised no tools, so this test checked nothing"
+    );
+
+    for tool in &live {
+        let method = methods.get(tool).unwrap_or_else(|| {
+            panic!("the source scan of src/mcp.rs has no method for the live tool `{tool}`")
+        });
+        // EVERY case for the method, not the first: `task.get` and `task.done`
+        // each have two, and the second one is where the conditional keys live
+        // (`spawned`, `tokens_hint`). Picking one would leave those unchecked on
+        // the MCP path while reporting a tool covered.
+        let matching: Vec<&Case> = all_cases.iter().filter(|c| c.method == method).collect();
+        assert!(
+            !matching.is_empty(),
+            "the MCP tool `{tool}` routes to `{method}`, which no case in this file covers — \
+             every_frozen_method_is_covered should already be red, and if it is not then \
+             `{method}` is not in PARAMS and this tool reaches something unfrozen"
+        );
+
+        for c in matching {
+            let engine = Engine::open_in_memory().expect("in-memory store");
+            let server = McpServer::new(&engine, Scope::Write);
+            let params = (c.setup)(&engine);
+            let response = server
+                .handle_message(&json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": { "name": tool, "arguments": params },
+                }))
+                .expect("tools/call is a request and yields a response");
+            let label = format!("MCP tool {tool} -> {} ({})", c.method, c.note);
+            let value = tool_call_json(&response["result"], &label);
+            check_shape(&value, c.shape, &format!("{label}: result"));
+        }
+    }
 }
