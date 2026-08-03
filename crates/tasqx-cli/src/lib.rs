@@ -37,6 +37,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::Parser;
@@ -715,6 +716,33 @@ fn config_otlp_port() -> u16 {
             .parse()
             .expect("the registered default is a valid port")
     })
+}
+
+/// Read `[daemon] idle_timeout` from `config.toml` (D5): how long the daemon
+/// may sit with no clients and no work before it exits by itself.
+///
+/// Off unless the user asked for it, and every failure mode lands on off — the
+/// same direction [`config_notify_enabled`] and [`config_tokens_enabled`] fall
+/// in, for a sharper reason: the surprise here is not a missing toast but a
+/// background process that vanishes mid-session, and nothing in a daemon's
+/// output would explain it after the fact.
+fn config_daemon_idle_timeout() -> Option<Duration> {
+    let s =
+        config::find("daemon.idle_timeout").expect("daemon.idle_timeout is a registered setting");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    idle_timeout_from_minutes(&v)
+}
+
+/// The registry's minutes string as the daemon's `Option<Duration>`.
+///
+/// Split out of [`config_daemon_idle_timeout`] because it is the whole of the
+/// decision and the only part testable without a config directory: `0` and
+/// anything unparseable are both "never exit". Unparseable is reachable — the
+/// writer's range check only covers `config set`, and a hand-edited
+/// `idle_timeout = "soon"` reaches here as the default string either way.
+fn idle_timeout_from_minutes(value: &str) -> Option<Duration> {
+    let minutes = value.trim().parse::<u64>().ok()?;
+    (minutes > 0).then(|| Duration::from_secs(minutes * 60))
 }
 
 /// Result of a rendered command: the raw API result (for `--json`) plus the
@@ -2393,12 +2421,48 @@ fn settings_loop(
 /// column is the point — the question behind a surprising setting is always
 /// "which layer won", and a bare value cannot answer it.
 fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
+    // Widths come from the rows about to be printed, floored at the layout this
+    // table has always had (D51's rule, one table over). They were plain `18`
+    // and `22`, and both are guesses about data the renderer is holding: the
+    // registry grew a `daemon.idle_timeout` (19 cells), which overflowed the
+    // key column and shoved SOURCE one cell right on that row alone — the
+    // misalignment `the_config_table_stays_aligned_when_a_value_is_not_ascii`
+    // exists to catch, arriving from the column that was never suspected.
+    // Padded, never truncated: a key and a value are the data the reader came
+    // for, and this table is where they read it.
+    let cells =
+        |v: &Value, field: &str| -> usize { render::width(v[field].as_str().unwrap_or("")) };
+    let key_w = rows
+        .iter()
+        .map(|r| cells(r, "key"))
+        .max()
+        .unwrap_or(0)
+        .max(18);
+    let val_w = rows
+        .iter()
+        .map(|r| {
+            let w = cells(r, "value");
+            // The empty value renders as `(unset)`, which is what has to fit.
+            if w == 0 {
+                render::width("(unset)")
+            } else {
+                w
+            }
+        })
+        .max()
+        .unwrap_or(0)
+        .max(22);
     let mut out = String::new();
     out.push_str(&format!(
         "{}\n",
         ctx.paint(
             "header",
-            &format!("{:<18} {:<22} {}", "SETTING", "VALUE", "SOURCE")
+            &format!(
+                "{} {} {}",
+                render::pad("SETTING", key_w),
+                render::pad("VALUE", val_w),
+                "SOURCE"
+            )
         )
     ));
     for r in rows {
@@ -2408,12 +2472,11 @@ fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
         let shown = if val.is_empty() { "(unset)" } else { val };
         // `render::pad` measures terminal CELLS, not chars, so a value carrying
         // CJK or an emoji — an editor path, a project name — no longer shoves
-        // the SOURCE column sideways. Padded, never truncated: the value is the
-        // data the reader came for, and this table is where they read it.
+        // the SOURCE column sideways.
         out.push_str(&format!(
             "{} {} {}\n",
-            render::pad(key, 18),
-            render::pad(shown, 22),
+            render::pad(key, key_w),
+            render::pad(shown, val_w),
             ctx.paint("muted", src)
         ));
     }
@@ -2481,11 +2544,26 @@ fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
     // telemetry from AI tools; off by default => no listener thread.
     let otlp_port = config_otlp_enabled().then(config_otlp_port);
 
+    // D5: a daemon may self-terminate once nothing needs it. Off unless
+    // `[daemon] idle_timeout` says otherwise — see `DaemonOptions::idle_timeout`
+    // for why the 15 minutes D5 names is the auto-spawn default and not this
+    // one. Announced on its own line only when armed, so the banner an operator
+    // who never configured it sees is byte-for-byte the one they saw before.
+    let idle_timeout = config_daemon_idle_timeout();
+
     eprintln!("tasqx daemon: listening on {socket} (Ctrl-C to stop)");
+    if let Some(idle) = idle_timeout {
+        eprintln!(
+            "tasqx daemon: will exit after {} minute(s) with no clients and no work \
+             (`[daemon] idle_timeout`)",
+            idle.as_secs() / 60
+        );
+    }
     let options = daemon::DaemonOptions {
         notifier,
         tokens_enabled,
         otlp_port,
+        idle_timeout,
     };
     match daemon::serve_with_options(engine, &socket, shutdown, options) {
         Ok(()) => eprintln!("tasqx daemon: stopped"),
@@ -3235,6 +3313,39 @@ mod tests {
         );
     }
 
+    /// The one conversion between `[daemon] idle_timeout` and what the daemon
+    /// takes (D5), including both spellings of "never".
+    ///
+    /// The junk case is not hypothetical: `write_value_in` only guards
+    /// `config set`, so a hand-edited `idle_timeout = "soon"` reaches this
+    /// function as whatever the resolver handed back, and the wrong answer here
+    /// is a daemon that exits at some invented deadline the file never asked
+    /// for. Every failure lands on "never", the same direction
+    /// `config_notify_enabled` falls in.
+    #[test]
+    fn an_idle_timeout_of_zero_or_junk_is_never_and_minutes_become_a_duration() {
+        assert_eq!(idle_timeout_from_minutes("0"), None, "0 means never");
+        assert_eq!(
+            idle_timeout_from_minutes(config::find("daemon.idle_timeout").unwrap().default),
+            None,
+            "and the shipped default is that off switch"
+        );
+        assert_eq!(idle_timeout_from_minutes("soon"), None);
+        assert_eq!(idle_timeout_from_minutes(""), None);
+        assert_eq!(idle_timeout_from_minutes("-5"), None);
+        assert_eq!(
+            idle_timeout_from_minutes("15"),
+            Some(Duration::from_secs(900)),
+            "minutes, not seconds — a daemon that left after 15 seconds would be \
+             indistinguishable from a crash"
+        );
+        assert_eq!(
+            idle_timeout_from_minutes(" 1 "),
+            Some(Duration::from_secs(60)),
+            "the resolver hands back what the file held, whitespace and all"
+        );
+    }
+
     /// The theme validator must not be applied to settings that are not themes.
     ///
     /// `effective_setting` runs for EVERY registered setting, and a first
@@ -3256,6 +3367,7 @@ mod tests {
             let held = match s.kind {
                 config::Kind::Bool => "true",
                 config::Kind::Uint => "4318",
+                config::Kind::Minutes => "15",
                 _ => "a-value-that-is-not-a-theme",
             };
             let (value, source, warning) = effective_setting(s, None, Some(held));

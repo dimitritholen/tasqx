@@ -188,9 +188,10 @@ impl App {
             return None;
         }
         // A row with no closed value set and nothing to toggle. `otlp.port`
-        // (Toml + Uint + Free) lands here today: reachability turns on an empty
-        // `choices` list, not on the kind, which is what the earlier
-        // "`default_project` is the only Str + Free entry" reasoning missed.
+        // (Toml + Uint + Free) and `daemon.idle_timeout` (Toml + Minutes + Free)
+        // land here: reachability turns on an empty `choices` list, not on the
+        // kind, which is what the earlier "`default_project` is the only
+        // Str + Free entry" reasoning missed.
         // Say where to set it instead of doing nothing, because a silent no-op
         // on Enter reads as a broken screen.
         self.status = format!("no inline editor for {} — use `tasqx config set`", s.key);

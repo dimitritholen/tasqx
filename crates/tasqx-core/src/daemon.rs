@@ -38,6 +38,13 @@
 //!    like any other — so the reminder's verification surface is the ordinary
 //!    event stream, not the OS notification. See `reminder_loop` (private: the
 //!    thread body is an implementation detail of [`serve`], not a surface).
+//!  * Idle shutdown (D5, opt-in): with no admitted client, no subscriber and no
+//!    work in hand, a daemon may exit on its own after
+//!    [`DaemonOptions::idle_timeout`]. It is a *server* clock, unrelated to the
+//!    per-connection `CLIENT_IDLE_TIMEOUT`, and it stops the daemon through the
+//!    same shutdown flag Ctrl-C sets — never `exit`. The decision itself is two
+//!    pure predicates, `server_busy` and `idle_shutdown_due` (private, like the
+//!    loops above: the policy is assertable in-crate, not a surface).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
@@ -106,6 +113,13 @@ pub const MAX_CONCURRENT_CLIENTS: usize = 64;
 #[cfg(unix)]
 const CLIENT_IO_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 const CLIENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long ONE connection may hold its admission slot without sending a byte.
+///
+/// A per-connection deadline, and deliberately not the server-level one D5 asks
+/// for: this fires while the daemon is busy serving fifty other clients, and
+/// [`idle_shutdown_due`] fires only when there is no connection left to have a
+/// deadline. Conflating them would either tear down live connections at the
+/// server timeout or keep the daemon alive because one client is talking.
 const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(windows)]
 const CLIENT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(100);
@@ -156,7 +170,14 @@ impl Admission {
         }
     }
 
-    #[cfg(test)]
+    /// How many clients hold a permit right now.
+    ///
+    /// It was `#[cfg(test)]` until the idle-shutdown check (D5) had to ask it in
+    /// production: "is anybody connected" is exactly the permit count, and a
+    /// second tally kept beside it would be one more thing to get out of step
+    /// with [`ClientPermit`]'s `Drop`. The permit is the LAST thing dropped in
+    /// `handle_conn` — after the hub unregister and after the writer thread is
+    /// joined — so a zero here also means no connection is still flushing.
     fn active(&self) -> usize {
         self.active.load(Ordering::Acquire)
     }
@@ -436,6 +457,17 @@ impl Hub {
     fn unregister(&self, id: u64) {
         lock_recover(&self.subs).retain(|s| s.id != id);
     }
+    /// How many subscribers are registered right now.
+    ///
+    /// Asked by the idle-shutdown check (D5). A subscriber always sits on an
+    /// admitted connection today, so this cannot exceed the permit count — but
+    /// the two answer different questions, and the one that matters here is
+    /// this one: a subscriber is a consumer that would silently stop receiving
+    /// `task.changed` frames if the daemon left, which the permit count
+    /// describes only by accident of how registration happens to be wired.
+    fn subscribers(&self) -> usize {
+        lock_recover(&self.subs).len()
+    }
     /// Push a line to every subscriber. Never blocks the daemon: the send is a
     /// non-blocking `try_send` on a bounded queue. A disconnected subscriber is
     /// pruned; a *full* one keeps its slot and misses this event (bounded
@@ -504,6 +536,17 @@ struct Shared {
     /// Highest `events.rowid` already broadcast. Guards against double-sends
     /// when the immediate (post-commit) and poll paths race.
     watermark: Arc<Mutex<i64>>,
+    /// The soonest instant [`ReminderScheduler`] currently holds, republished by
+    /// [`reminder_loop`] after every tick; `None` = nothing scheduled.
+    ///
+    /// A mirror rather than a shared heap because the heap belongs to one
+    /// thread and must stay that way — the accept loop needs one scalar to
+    /// answer "is work coming?" for the idle-shutdown check (D5), and taking
+    /// the scheduler's lock from a second thread to learn it would put the
+    /// notification path behind the accept loop for nothing. Stale by at most
+    /// one `REMINDER_TICK_MS`, which is 200 ms against a timeout measured in
+    /// minutes.
+    next_reminder: Arc<Mutex<Option<jiff::Timestamp>>>,
     /// Fatal component failures are supervised by the serve loop. Tests that
     /// exercise scheduler logic without a server leave this unset.
     fatal: Option<mpsc::Sender<BackgroundFailure>>,
@@ -637,6 +680,7 @@ pub fn serve_with_notifier(
             notifier,
             tokens_enabled: false,
             otlp_port: None,
+            idle_timeout: None,
         },
     )
 }
@@ -657,6 +701,17 @@ pub struct DaemonOptions {
     /// (default) means no listener thread — the receiver is opt-in via
     /// `[otlp] enabled`, off by default (DESIGN §10).
     pub otlp_port: Option<u16>,
+    /// Exit on our own after this long with no clients and no work (D5).
+    ///
+    /// `None` — the default — never exits. D5's 15 minutes is the default for
+    /// the daemon a socket-requiring client *auto-spawns*, and nothing in this
+    /// tree auto-spawns one yet: every daemon that exists today was started by
+    /// a human typing `tasqx daemon`, and a process that walks away from a
+    /// terminal its operator is watching is a bug, not a feature. So the
+    /// default here is off and the CLI arms it from `[daemon] idle_timeout`;
+    /// the auto-spawn half of D5, when it lands, passes the 15 minutes
+    /// explicitly at the spawn site that knows it is a lazily-started daemon.
+    pub idle_timeout: Option<Duration>,
 }
 
 impl Default for DaemonOptions {
@@ -665,6 +720,7 @@ impl Default for DaemonOptions {
             notifier: Arc::new(LogNotifier),
             tokens_enabled: false,
             otlp_port: None,
+            idle_timeout: None,
         }
     }
 }
@@ -682,6 +738,7 @@ pub fn serve_with_options(
         notifier,
         tokens_enabled,
         otlp_port,
+        idle_timeout,
     } = options;
     let listener = bind(socket)?;
     // Non-blocking accept so the loop can observe `shutdown`; accepted streams
@@ -700,6 +757,7 @@ pub fn serve_with_options(
         hub: Hub::new(),
         shutdown: shutdown.clone(),
         watermark: Arc::new(Mutex::new(start)),
+        next_reminder: Arc::new(Mutex::new(None)),
         fatal: Some(fatal_tx),
     };
     let admission = Arc::new(Admission::new(MAX_CONCURRENT_CLIENTS));
@@ -755,6 +813,9 @@ pub fn serve_with_options(
         thread::spawn(move || otlp::run_receiver(engine, port, sd));
     }
 
+    // The server-level idle clock (D5). `None` means "not idle" — either
+    // something is going on, or the feature is off and the value is never read.
+    let mut idle_since: Option<Instant> = None;
     let result = loop {
         if shutdown.load(Ordering::Relaxed) {
             break Ok(());
@@ -764,6 +825,41 @@ pub fn serve_with_options(
                 "{} failed: {}",
                 failure.component, failure.message
             )));
+        }
+        // D5's idle shutdown, asked once per accept attempt (~20 ms while idle).
+        // The whole decision is the two predicates below; this block only
+        // gathers what they judge, so "when does a daemon leave" is assertable
+        // without a socket, a clock or a real minute of waiting.
+        let now = Instant::now();
+        let busy = server_busy(
+            admission.active(),
+            shared.hub.subscribers(),
+            reminder_due_within(
+                *lock_recover(&shared.next_reminder),
+                jiff::Timestamp::now(),
+                // The horizon is the configured timeout itself rather than a
+                // constant of its own: the question is "would leaving now
+                // strand work we would otherwise have been here for", and the
+                // window we would otherwise have been here for is exactly that.
+                idle_timeout.unwrap_or(Duration::ZERO),
+            ),
+            otlp_port.is_some(),
+        );
+        idle_since = advance_idle_clock(idle_since, busy, now);
+        if idle_shutdown_due(idle_timeout, idle_since, now) {
+            // Through the flag, not `process::exit`: a client that connected in
+            // the window between the zero-client reading above and this line
+            // must find the daemon already refusing, so its request comes back
+            // as `unavailable` ("not applied, retry") instead of committing
+            // into a daemon that is walking out. Same reason `writer_loop`
+            // drains rather than drops — see its doc comment.
+            shutdown.store(true, Ordering::Relaxed);
+            eprintln!(
+                "tasqx daemon: no clients and no work for {}s; shutting down \
+                 (`[daemon] idle_timeout`)",
+                idle_timeout.unwrap_or_default().as_secs()
+            );
+            break Ok(());
         }
         match listener.accept() {
             Ok(stream) => {
@@ -787,6 +883,106 @@ pub fn serve_with_options(
     shutdown.store(true, Ordering::Relaxed);
     cleanup(socket);
     result
+}
+
+// ---- idle shutdown (DESIGN.md §12-D5) ---------------------------------------
+
+/// Whether the daemon has anything to be here for right now.
+///
+/// Every argument is a reason to stay, and each one is here because leaving
+/// while it holds loses something the client cannot see:
+///
+///  * `clients` — a connection is admitted, so a request may be in flight or
+///    about to be. This is the permit count, so it also covers the reader that
+///    has read a frame but not answered it yet.
+///  * `subscribers` — someone is watching the push stream. `watch` on a pipe
+///    emits one line per event and never resyncs (see [`OUT_QUEUE_CAP`]), so a
+///    daemon that leaves takes the rest of that stream with it and the consumer
+///    reads silence, not an error. Implied by `clients` as the code stands;
+///    asked separately because it is the property that matters, not the
+///    implication.
+///  * `reminder_due` — a reminder is close enough that we would have delivered
+///    it. It is not lost outright (`ReminderScheduler`'s dedupe fires a
+///    ripened-while-down reminder on the next start), but nothing restarts this
+///    daemon on its own yet, so "late" here means "when a human next runs
+///    `tasqx daemon`", which for a reminder is the same as never.
+///  * `telemetry_listening` — the OTLP receiver (#18) is bound. Its clients are
+///    AI tools posting over TCP, which hold no socket connection and no
+///    subscription, so nothing else in this function can see them: a daemon
+///    that exits while that port is open drops telemetry with no error anywhere.
+///
+/// Deliberately NOT a reason: the token-attribution thread (#17). It rebuilds
+/// its pending set from the store on the tick after any daemon starts, so work
+/// missed while down is picked up in full — its own doc comment states that,
+/// and `attribution_tick` is what keeps it true.
+fn server_busy(
+    clients: usize,
+    subscribers: usize,
+    reminder_due: bool,
+    telemetry_listening: bool,
+) -> bool {
+    clients > 0 || subscribers > 0 || reminder_due || telemetry_listening
+}
+
+/// Whether a scheduled reminder falls inside `horizon` of `now`.
+///
+/// A past-due instant counts (the difference is negative, so it is inside any
+/// horizon): the scheduler is about to fire it on its next tick, and that is
+/// the one moment where a shutdown would race a delivery.
+///
+/// `None` — nothing scheduled — is not work. That is what keeps the feature
+/// from being cancelled by a single task with a reminder set for next year: a
+/// far-future instant is outside every sane horizon and the daemon is free to
+/// go, which is the whole point of D5.
+fn reminder_due_within(
+    next: Option<jiff::Timestamp>,
+    now: jiff::Timestamp,
+    horizon: Duration,
+) -> bool {
+    let Some(at) = next else {
+        return false;
+    };
+    match jiff::SignedDuration::try_from(horizon) {
+        Ok(horizon) => at.duration_since(now) <= horizon,
+        // A horizon too large for a `SignedDuration` (nothing a config file can
+        // express, since the setting is capped in minutes) resolves to "stay",
+        // because the failure direction that costs nothing is the one that
+        // keeps a running daemon running.
+        Err(_) => true,
+    }
+}
+
+/// Advance the idle clock by one observation: `None` while busy, otherwise the
+/// instant the current idle stretch began.
+///
+/// The clock is **not** restarted by a further idle observation — that is the
+/// whole content of this function, and getting it backwards (`Some(now)` on
+/// every quiet tick) is a daemon that can never reach its deadline, with a
+/// suite that stays green because every other part still works.
+///
+/// It starts at boot rather than at the first disconnect, so a daemon nobody
+/// ever connects to still leaves. D5 words the default as "post-last-disconnect"
+/// for the auto-spawned case; a spawner that dies before it connects is exactly
+/// the lingering ghost that entry is about, and it never produces a disconnect.
+fn advance_idle_clock(previous: Option<Instant>, busy: bool, now: Instant) -> Option<Instant> {
+    if busy {
+        return None;
+    }
+    Some(previous.unwrap_or(now))
+}
+
+/// Whether an idle daemon has now been idle long enough to leave.
+///
+/// `timeout` of `None` is the off switch and the reason this is an `Option`
+/// rather than a `Duration` the caller pre-checks: "not configured" has to be
+/// answerable in the same place as "not long enough yet", or the two conditions
+/// end up in two places that must agree — the shape every guard in this file
+/// exists to prevent.
+fn idle_shutdown_due(timeout: Option<Duration>, idle_since: Option<Instant>, now: Instant) -> bool {
+    match (timeout, idle_since) {
+        (Some(timeout), Some(since)) => now.duration_since(since) >= timeout,
+        _ => false,
+    }
 }
 
 // ---- reminder scheduler (DESIGN.md §9) --------------------------------------
@@ -830,6 +1026,11 @@ fn reminder_loop(sh: Shared, notifier: Arc<dyn Notifier>, shutdown: Arc<AtomicBo
                 return;
             }
         }
+        // Republish what the heap is holding, for the idle-shutdown check (D5)
+        // in the accept loop. Written after the tick, so a reminder that just
+        // fired is already gone from it and cannot keep the daemon alive
+        // forever by looking permanently imminent.
+        *lock_recover(&sh.next_reminder) = sched.peek_at();
 
         // Sleep in small steps so shutdown stays responsive.
         for _ in 0..(REMINDER_TICK_MS / 50).max(1) {
@@ -2434,6 +2635,139 @@ mod tests {
         assert!(idle_expired(started, started + CLIENT_IDLE_TIMEOUT));
     }
 
+    // ---- D5 idle shutdown ---------------------------------------------------
+
+    /// Nothing in this tree auto-spawns a daemon yet, so every daemon that runs
+    /// today was started by a human at a terminal. Shipping a default timeout
+    /// would make those exit on their own, which is the surprise this must not
+    /// be — and "off" has to be answerable by the predicate itself, not only by
+    /// a caller that remembers to check first.
+    #[test]
+    fn idle_shutdown_is_off_unless_it_is_configured() {
+        assert!(
+            DaemonOptions::default().idle_timeout.is_none(),
+            "a default daemon must not walk out on its operator"
+        );
+        // A year of quiet, expressed forwards: `Instant` has no representable
+        // past before process start, so the arithmetic that reads naturally
+        // (`now - a year`) panics on the machine this runs on.
+        let quiet_since = Instant::now();
+        assert!(
+            !idle_shutdown_due(
+                None,
+                Some(quiet_since),
+                quiet_since + Duration::from_secs(365 * 24 * 3600)
+            ),
+            "unconfigured means never, however long the quiet has lasted"
+        );
+    }
+
+    /// The clock starts when the quiet starts and is not restarted by the quiet
+    /// continuing. Re-stamping it on every idle observation is the failure that
+    /// keeps a daemon alive forever while every unit around it still works.
+    #[test]
+    fn the_idle_clock_starts_once_and_runs_until_something_happens() {
+        let t0 = Instant::now();
+        let started = advance_idle_clock(None, false, t0).expect("quiet starts the clock");
+        assert_eq!(started, t0);
+
+        let later = t0 + Duration::from_secs(60);
+        assert_eq!(
+            advance_idle_clock(Some(t0), false, later),
+            Some(t0),
+            "still quiet: the deadline is measured from when the quiet began"
+        );
+        assert_eq!(
+            advance_idle_clock(Some(t0), true, later),
+            None,
+            "a client arriving clears the clock"
+        );
+        assert_eq!(
+            advance_idle_clock(None, true, later),
+            None,
+            "and a busy daemon never has one"
+        );
+    }
+
+    /// The deadline is `>=`, like every other deadline in this file
+    /// ([`idle_expired`], [`send_cancel_due`]): a timeout that only fires past
+    /// its own value is a timeout nobody can assert on a boundary.
+    #[test]
+    fn an_idle_daemon_leaves_exactly_at_its_deadline() {
+        let timeout = Duration::from_secs(15 * 60);
+        let since = Instant::now();
+        assert!(!idle_shutdown_due(
+            Some(timeout),
+            Some(since),
+            since + timeout - Duration::from_millis(1)
+        ));
+        assert!(idle_shutdown_due(
+            Some(timeout),
+            Some(since),
+            since + timeout
+        ));
+        assert!(
+            !idle_shutdown_due(Some(timeout), None, since + timeout),
+            "no idle stretch in progress is not an expired one"
+        );
+    }
+
+    /// One assertion per reason to stay, because a dropped disjunct is invisible
+    /// in a test that only checks the all-quiet case: three of the four terms
+    /// could vanish and it would still answer `false` for an empty daemon and
+    /// `true` for a busy one.
+    #[test]
+    fn every_reason_to_stay_up_stands_alone() {
+        assert!(
+            !server_busy(0, 0, false, false),
+            "nothing connected, nothing scheduled, nothing listening: free to go"
+        );
+        assert!(
+            server_busy(1, 0, false, false),
+            "a connected client is work in hand"
+        );
+        assert!(
+            server_busy(0, 1, false, false),
+            "a subscriber would just stop receiving events, with no error to see"
+        );
+        assert!(
+            server_busy(0, 0, true, false),
+            "a reminder about to ripen is a delivery nothing else will make"
+        );
+        assert!(
+            server_busy(0, 0, false, true),
+            "the OTLP receiver's clients hold no connection here, so nothing else \
+             in the predicate can see them"
+        );
+    }
+
+    /// The reminder horizon, at its three interesting points. A reminder that
+    /// already ripened counts: the scheduler fires it on its next tick, and that
+    /// is precisely the moment a shutdown would race a delivery.
+    #[test]
+    fn a_reminder_inside_the_window_is_work_and_one_beyond_it_is_not() {
+        let now: jiff::Timestamp = "2026-08-03T12:00:00Z".parse().unwrap();
+        let horizon = Duration::from_secs(15 * 60);
+        let at = |s: &str| Some(s.parse::<jiff::Timestamp>().unwrap());
+
+        assert!(
+            !reminder_due_within(None, now, horizon),
+            "an empty heap must never pin the daemon"
+        );
+        assert!(
+            reminder_due_within(at("2026-08-03T12:14:59Z"), now, horizon),
+            "inside the window we would otherwise have stayed for"
+        );
+        assert!(
+            !reminder_due_within(at("2026-08-03T12:15:01Z"), now, horizon),
+            "a reminder further out than the timeout must not cancel the feature"
+        );
+        assert!(
+            reminder_due_within(at("2026-08-03T11:59:00Z"), now, horizon),
+            "already ripe, about to fire"
+        );
+    }
+
     fn frame(rx: &mpsc::Receiver<String>, what: &str) -> Value {
         let line = rx
             .recv_timeout(Duration::from_secs(1))
@@ -2514,6 +2848,7 @@ mod tests {
             hub: Hub::new(),
             shutdown: Arc::new(AtomicBool::new(false)),
             watermark: Arc::new(Mutex::new(0)),
+            next_reminder: Arc::new(Mutex::new(None)),
             fatal: None,
         }
     }
