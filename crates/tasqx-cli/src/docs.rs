@@ -1861,16 +1861,17 @@ fn page_api() -> String {
     ));
     s.push_str(&snippet(
         "echo '{\"tasqx\":\"1\",\"id\":\"c1\",\"method\":\"core.capabilities\"}' | tasqx api",
-        "{\"id\":\"c1\",\"ok\":true,\"result\":{\"api\":\"1\",\"default_project\":\"work.tasqx\",\"features\":[\"dependencies\",\"filter.boolean\",\"reminders\"],\"methods\":[\"project.create\",\"project.list\",\"project.use\",\"project.archive\",\"task.add\",\"task.list\",\"task.get\",\"task.start\",\"task.stop\",\"task.done\",\"task.modify\",\"task.cancel\",\"task.reopen\",\"tag.add\",\"annotation.add\",\"token.add\",\"dependency.add\",\"dependency.remove\",\"memory.add\",\"memory.search\",\"memory.remove\",\"memory.import\",\"tokens.recompute\",\"report.summary\",\"store.export\",\"store.import\",\"event.list\",\"reminder.fire\",\"core.capabilities\"],\"params\":{\"annotation.add\":[\"ref\",\"body\"],\"core.capabilities\":[],\"dependency.add\":[\"ref\",\"depends_on\"],\"dependency.remove\":[\"ref\",\"depends_on\"],\"event.list\":[\"limit\",\"ref\",\"entity\"],\"memory.add\":[\"title\",\"body\",\"source\"],\"memory.import\":[\"docs\"],\"memory.remove\":[\"id\"],\"memory.search\":[\"query\",\"limit\",\"scope\",\"raw\"],\"project.archive\":[\"name\"],\"project.create\":[\"name\",\"description\"],\"project.list\":[\"include_archived\"],\"project.use\":[\"name\"],\"reminder.fire\":[\"ref\",\"at\"],\"report.summary\":[\"group_by\",\"filter\",\"metrics\",\"all\"],\"store.export\":[\"filter\"],\"store.import\":[\"tasks\",\"projects\",\"default_project\",\"docs\"],\"tag.add\":[\"ref\",\"tags\"],\"task.add\":[\"title\",\"project\",\"priority\",\"due\",\"scheduled\",\"wait\",\"estimate\",\"tags\",\"recurrence\",\"remind\"],\"task.cancel\":[\"ref\"],\"task.done\":[\"ref\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\",\"tool\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\"],\"task.get\":[\"ref\"],\"task.list\":[\"filter\",\"sort\",\"limit\",\"fields\"],\"task.modify\":[\"ref\",\"set\",\"expected_rev\"],\"task.reopen\":[\"ref\"],\"task.start\":[\"ref\",\"keep\",\"session_id\",\"prompt_id\",\"transcript_path\",\"client\"],\"task.stop\":[\"ref\"],\"token.add\":[\"ref\",\"tool\",\"source\",\"model\",\"input_tokens\",\"output_tokens\",\"cache_read_tokens\",\"cache_creation_tokens\",\"confidence\"],\"tokens.recompute\":[\"dry_run\"]}},\"tasqx\":\"1\"}",
+        &capabilities_snippet(),
     ));
 
     s.push_str(&h3("The methods"));
-    s.push_str(&p(
-        "All twenty-nine — and this table is what the tests compare against \
+    s.push_str(&p(&format!(
+        "All {} — and this table is what the tests compare against \
          <code>core.capabilities</code>: the method names, and (D33) the Params column against its \
          <code>params</code> map, so it cannot describe a method — or a key — this build does not \
          have. A key not in the accepted set is refused, never ignored.",
-    ));
+        METHODS.len()
+    )));
     let method_rows: Vec<Vec<String>> = METHODS
         .iter()
         .map(|(method, params, returns)| {
@@ -2351,6 +2352,34 @@ fn snippet(cmd: &str, output: &str) -> String {
     )
 }
 
+/// The `core.capabilities` handshake, as this build would really answer it.
+///
+/// Derived from [`tasqx_core::capabilities`] instead of pasted, and the reason
+/// is a bug this page shipped: when `tag.remove` was added (D52) the pasted copy
+/// stayed at twenty-nine methods with no `tag.remove` in either `methods` or
+/// `params`. Nothing went red — [`documented_methods_match_core_capabilities`]
+/// compares the [`METHODS`] *table* to the real report and never looks at this
+/// string. So the one section headed "do not guess what a build supports — ask
+/// it" was itself guessing, and an API author reading it would have written a
+/// client that never calls `tag.remove`. A literal that no test can falsify has
+/// to stop being a literal; nothing short of deriving it can rot again.
+///
+/// `default_project` is the single substituted value. The real answer depends on
+/// whichever store the reader happens to have open, and the rest of the page is
+/// written against an example store whose default project is `work.tasqx` — so
+/// printing this machine's answer would be less true, not more.
+fn capabilities_snippet() -> String {
+    let mut caps = tasqx_core::capabilities();
+    caps["default_project"] = serde_json::Value::String("work.tasqx".into());
+    serde_json::to_string(&serde_json::json!({
+        "tasqx": "1",
+        "id": "c1",
+        "ok": true,
+        "result": caps,
+    }))
+    .expect("a serde_json::Value always serialises")
+}
+
 /// A preformatted block with no command line (grammar, config, JSON). Escaped.
 fn pre_plain(text: &str) -> String {
     format!("<pre class=\"plain\"><code>{}</code></pre>", esc(text))
@@ -2800,7 +2829,7 @@ mod tests {
     /// Partial by construction, and worth naming precisely: this only covers the
     /// methods callable with no arguments, because those are the ones a
     /// doc-drift test can invoke without inventing fixture data. That is seven
-    /// of the twenty-nine rows. The write methods' return shapes, and every prose
+    /// of the [`METHODS`] rows. The write methods' return shapes, and every prose
     /// `returns` cell that describes rather than enumerates ("The task, timer
     /// running."), stay unguarded — asserting on English is not a thing a test
     /// can do, and asserting on the write shapes needs a fixture store per
@@ -2895,6 +2924,56 @@ mod tests {
         assert_eq!(
             real, documented,
             "the JSON API page has drifted from core.capabilities"
+        );
+    }
+
+    /// The feature-detection snippet on the API page, against the envelope the
+    /// binary really emits for that exact request.
+    ///
+    /// [`capabilities_snippet`] derives its body, so a new method reaches the
+    /// page for free — but derivation cannot notice the *envelope* drifting
+    /// around it. Rename `ok`, drop `tasqx`, nest `result` one level deeper, and
+    /// the snippet would go on rendering a shape no build has emitted since.
+    /// This pushes the request through `handle_envelope` — the same function
+    /// `tasqx api` calls — and compares the bytes, so the module's claim that
+    /// every block of output here was executed against the real binary holds for
+    /// this block by construction rather than by anyone's diligence.
+    ///
+    /// The method-name assertion is the D52 regression itself: the pasted copy
+    /// this replaced was missing `tag.remove` from both `methods` and `params`,
+    /// and every other guard on this page stayed green through it.
+    #[test]
+    fn the_capabilities_snippet_is_the_envelope_the_api_really_emits() {
+        let e = tasqx_core::Engine::open_in_memory().expect("in-memory store");
+        let mut real = tasqx_core::handle_envelope(
+            &e,
+            r#"{"tasqx":"1","id":"c1","method":"core.capabilities"}"#,
+        );
+        // The one value the page substitutes: it belongs to the reader's store,
+        // not to this test's empty one.
+        real["result"]["default_project"] = serde_json::Value::String("work.tasqx".into());
+        let shown = capabilities_snippet();
+        assert_eq!(
+            serde_json::to_string(&real).expect("a Value serialises"),
+            shown,
+            "the API page's core.capabilities snippet is not what `tasqx api` answers"
+        );
+
+        for m in tasqx_core::capabilities()["methods"]
+            .as_array()
+            .expect("capabilities.methods is an array")
+        {
+            let m = m.as_str().expect("a method name is a string");
+            assert!(
+                shown.contains(&format!("\"{m}\"")),
+                "method `{m}` is missing from the page's core.capabilities handshake — a client \
+                 author reading it would conclude this build cannot do it"
+            );
+        }
+
+        assert!(
+            generate().contains(&esc(&shown)),
+            "the derived capabilities snippet never reaches the rendered page"
         );
     }
 
