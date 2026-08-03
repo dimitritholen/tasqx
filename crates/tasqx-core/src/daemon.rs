@@ -180,6 +180,24 @@ struct ConnectionIoState {
     last_activity: Mutex<Instant>,
     write_started: Mutex<Option<Instant>>,
     done: AtomicBool,
+    /// Set by [`writer_loop`] when — and *only* when — it stops because a write
+    /// to the socket failed.
+    ///
+    /// Without it a dead writer was invisible to the reader until the reader's
+    /// next `out_tx.send(...)`, which needs the client to send another request;
+    /// a client left hanging on the half-frame the failed write truncated sends
+    /// nothing, so the connection survived as a zombie until the 15-minute
+    /// [`CLIENT_IDLE_TIMEOUT`] — holding one of [`MAX_CONCURRENT_CLIENTS`]
+    /// slots and a live hub subscription the whole time, with the client
+    /// hearing silence instead of a transport error.
+    ///
+    /// The distinction from the writer's *other* exit is the entire point: the
+    /// channel closing means the reader already finished and dropped `out_tx`,
+    /// which is the healthy wind-down of every connection that ever ends. A
+    /// flag set on both paths would ask each connection to tear itself down at
+    /// the moment it is already tearing itself down — harmless-looking, and it
+    /// would make this flag useless as evidence of anything.
+    write_failed: AtomicBool,
 }
 
 impl ConnectionIoState {
@@ -188,6 +206,7 @@ impl ConnectionIoState {
             last_activity: Mutex::new(Instant::now()),
             write_started: Mutex::new(None),
             done: AtomicBool::new(false),
+            write_failed: AtomicBool::new(false),
         }
     }
 
@@ -211,6 +230,38 @@ impl ConnectionIoState {
     fn write_timed_out(&self, now: Instant) -> bool {
         lock_recover(&self.write_started)
             .is_some_and(|started| now.duration_since(started) >= CLIENT_SEND_TIMEOUT)
+    }
+
+    fn note_write_failure(&self) {
+        self.write_failed.store(true, Ordering::Release);
+    }
+
+    fn write_failed(&self) -> bool {
+        self.write_failed.load(Ordering::Acquire)
+    }
+
+    /// Spawn this connection's writer thread against *this* state.
+    ///
+    /// The wiring is the whole point of the method existing. `handle_conn` used
+    /// to clone the `Arc` into a local and hand that to `thread::spawn` itself,
+    /// which left one unremarkable line — `let writer_state = io_state.clone()`
+    /// — carrying everything: swap it for a fresh `ConnectionIoState` and
+    /// [`note_write_failure`] writes to an object nobody reads, both consumers
+    /// see `false` forever, and the connection is a zombie for the full
+    /// [`CLIENT_IDLE_TIMEOUT`] again. Nothing catches that. Every test builds
+    /// its own state, so they all keep passing; both call sites still consult
+    /// the policy, so the call-site guard keeps passing; both items are still
+    /// used, so `-D warnings` stays quiet. Taking `self` deletes the
+    /// substitution instead of guarding it — there is no second state to name.
+    ///
+    /// [`note_write_failure`]: Self::note_write_failure
+    fn spawn_writer<W: Write + Send + 'static>(
+        self: &Arc<Self>,
+        mut send: W,
+        out_rx: mpsc::Receiver<String>,
+    ) -> thread::JoinHandle<()> {
+        let state = self.clone();
+        thread::spawn(move || writer_loop(&mut send, &out_rx, &state))
     }
 }
 
@@ -1119,7 +1170,14 @@ fn start_connection_watchdog(
             // Cancelling the *read* is what unblocks the reader loop so the
             // connection can wind down at all, and an aborted read destroys
             // nothing: the request it was waiting for was never dispatched.
-            if stopping || idle {
+            // Windows has no `SO_RCVTIMEO` equivalent for named pipes — the
+            // `set_recv_timeout` call in `handle_conn` is `#[cfg(unix)]` — so a
+            // blocked read here ends only when the peer does something (closing
+            // its end raises `ERROR_BROKEN_PIPE`) or when we cancel it. A client
+            // parked on a truncated frame does neither, which is why the
+            // dead-writer case has to be part of the condition on this side too
+            // and not merely in the reader's timeout arm.
+            if recv_teardown_due(stopping, idle, state.write_failed()) {
                 cancel_io(recv_handle);
             }
             // A write is the opposite. Cancelling it mid-flush throws away a
@@ -1128,6 +1186,13 @@ fn start_connection_watchdog(
             // reintroduced one layer down. Shutdown therefore only cancels
             // writes after the drain grace, while an idle client or a stuck
             // write is still cut immediately.
+            //
+            // A *failed* write is deliberately absent from this second
+            // condition. [`ConnectionIoState::write_failed`] is set only after
+            // [`ConnectionIoState::end_write`], so whenever it is true there is
+            // no in-flight write left on this handle for `CancelIoEx` to abort:
+            // adding it would buy nothing and would widen a predicate whose
+            // entire job is restraint about committed responses.
             if send_cancel_due(shutdown_since, idle, state.write_timed_out(now), now) {
                 cancel_io(send_handle);
             }
@@ -1159,6 +1224,38 @@ fn send_cancel_due(
         || shutdown_since.is_some_and(|since| now.duration_since(since) >= CLIENT_SEND_TIMEOUT)
 }
 
+/// Whether this connection should stop waiting for the client to send anything.
+///
+/// The two platforms reach this policy through different machinery, so it lives
+/// in one function rather than twice. Both used to spell the condition out
+/// inline as `shutdown || idle`, in two places that have to agree — which is
+/// exactly the shape that gets fixed on one platform only.
+///
+/// The machinery differs, but the *arm* does not. On Unix a reader parked in a
+/// read wakes on the `CLIENT_IO_POLL_TIMEOUT` recv timeout and asks this
+/// question directly. On Windows there is no recv timeout at all (the
+/// `set_recv_timeout` call in `handle_conn` is `#[cfg(unix)]`), so the watchdog
+/// asks it first and cancels the blocked read; `CancelIoEx` completes that read
+/// with `ERROR_OPERATION_ABORTED`, which Rust maps to
+/// [`io::ErrorKind::TimedOut`] — so it surfaces in the very same timeout arm,
+/// which asks again and breaks. Windows therefore consults this function twice
+/// per teardown, and that reader arm is load-bearing on both platforms rather
+/// than being the Unix half of anything.
+///
+/// `write_failed` is the third reason and the least obvious one. The other two
+/// are about *us* being finished with the client; this one is about the client
+/// being unable to tell us anything ever again. Its writer thread died mid-frame
+/// (`SO_SNDTIMEO` on Unix, a watchdog `CancelIoEx` on Windows), so the client is
+/// parked reading a truncated line and will not send the next request. The
+/// reader would notice the closed channel on its own — but only on its next
+/// `out_tx.send`, and that needs a request the client is no longer in a position
+/// to send. Without this reason the wait therefore runs to
+/// [`CLIENT_IDLE_TIMEOUT`]: 15 minutes of a held admission slot, a registered
+/// subscription, and silence at the client.
+fn recv_teardown_due(shutting_down: bool, idle: bool, write_failed: bool) -> bool {
+    shutting_down || idle || write_failed
+}
+
 #[cfg(windows)]
 fn cancel_io(raw_handle: usize) {
     use windows_sys::Win32::Foundation::HANDLE;
@@ -1169,6 +1266,48 @@ fn cancel_io(raw_handle: usize) {
     let _ = unsafe { CancelIoEx(raw_handle as HANDLE, std::ptr::null()) };
 }
 
+/// The writer thread's body: drain `out_rx` onto the connection's send half
+/// until the queue closes or a write fails, and record in `state` *which of the
+/// two* happened.
+///
+/// It deliberately does NOT consult the shutdown flag. It used to check it after
+/// dequeuing a line and break *before* writing, which threw away frames whose
+/// transaction had already committed: `handle_conn` releases the engine guard
+/// and only then queues the response, so a Ctrl-C landing in that window made
+/// the daemon commit the write and answer with a bare EOF (`daemon transport
+/// error` client-side — indistinguishable from a failure that never happened).
+/// Shutdown is bounded here by the queue emptying instead: the reader stops
+/// accepting work the moment it sees the flag, drops `out_tx`, and this loop
+/// exits as soon as it has drained what was already queued. A client that has
+/// stopped reading is still bounded by the send timeout (`SO_SNDTIMEO` on Unix,
+/// the watchdog on Windows).
+///
+/// The two exits are not interchangeable, which is why only one of them touches
+/// [`ConnectionIoState::note_write_failure`]. `recv` returning `Err` means the
+/// reader is already gone and closed the channel — the ordinary end of every
+/// connection. A write returning `Err` means the reader is still blocked in a
+/// read that nothing on the wire will ever satisfy, and it is the only party
+/// left that can free the connection's resources; see [`recv_teardown_due`].
+/// The flag is set *after* [`ConnectionIoState::end_write`], so it can never be
+/// observed while a write is still in flight.
+///
+/// Generic over `W: Write` rather than taking `SendHalf` so both exits are
+/// assertable without a socket. The real send timeouts are 5 s and only fire
+/// against a client that has genuinely stopped reading, which is not something a
+/// test can arrange quickly or deterministically on either platform; a sink that
+/// fails its first `write` reproduces the state the daemon ends up in exactly.
+fn writer_loop<W: Write>(send: &mut W, out_rx: &mpsc::Receiver<String>, state: &ConnectionIoState) {
+    while let Ok(line) = out_rx.recv() {
+        state.begin_write();
+        let result = send.write_all(line.as_bytes()).and_then(|_| send.flush());
+        state.end_write();
+        if result.is_err() {
+            state.note_write_failure();
+            break;
+        }
+    }
+}
+
 fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
     // The accept loop's listener is nonblocking, and BSD-derived kernels
     // (macOS) hand every accepted socket the listener's O_NONBLOCK flag —
@@ -1176,9 +1315,11 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
     // flag on accepted streams, never clears it. A stream left nonblocking
     // turns both SO_* timeouts below into no-ops and the first reply larger
     // than the socket buffer (8 KiB on macOS) into a mid-frame WouldBlock
-    // that kills the writer thread; the client then hangs on a truncated
-    // frame until CLIENT_IDLE_TIMEOUT closes the zombie connection. Restore
-    // the blocking contract explicitly instead of assuming the platform did.
+    // that kills the writer thread, leaving the client hanging on a truncated
+    // frame. Restore the blocking contract explicitly instead of assuming the
+    // platform did. (The dead writer no longer strands the *connection* until
+    // the idle deadline — `recv_teardown_due` below ends it at the next poll —
+    // but the truncated reply is still a reply the client never gets.)
     #[cfg(unix)]
     if stream.set_nonblocking(false).is_err()
         || stream
@@ -1197,29 +1338,13 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
     // stalls this one connection); broadcasts use non-blocking `try_send`.
     let (out_tx, out_rx) = mpsc::sync_channel::<String>(OUT_QUEUE_CAP);
 
-    let writer_state = io_state.clone();
-    // The writer deliberately does NOT consult the shutdown flag. It used to
-    // check it after dequeuing a line and break *before* writing, which threw
-    // away frames whose transaction had already committed: `handle_conn`
-    // releases the engine guard and only then queues the response, so a Ctrl-C
-    // landing in that window made the daemon commit the write and answer with a
-    // bare EOF (`daemon transport error` client-side — indistinguishable from a
-    // failure that never happened). Shutdown is bounded here by the queue
-    // emptying instead: the reader stops accepting work the moment it sees the
-    // flag, drops `out_tx`, and this loop exits as soon as it has drained what
-    // was already queued. A client that has stopped reading is still bounded by
-    // the send timeout (`SO_SNDTIMEO` on Unix, the watchdog on Windows).
-    let writer = thread::spawn(move || {
-        let mut send: SendHalf = send;
-        while let Ok(line) = out_rx.recv() {
-            writer_state.begin_write();
-            let result = send.write_all(line.as_bytes()).and_then(|_| send.flush());
-            writer_state.end_write();
-            if result.is_err() {
-                break;
-            }
-        }
-    });
+    // Why the writer must not consult `sh.shutdown`, and why only one of its two
+    // exits is reported back through the connection's state: see [`writer_loop`].
+    // The spawn goes through `io_state` rather than a cloned local so the writer
+    // cannot end up reporting into a state nobody reads — see [`spawn_writer`].
+    //
+    // [`spawn_writer`]: ConnectionIoState::spawn_writer
+    let writer = io_state.spawn_writer(send, out_rx);
 
     let mut sub_id: Option<u64> = None;
     let mut reader = BufReader::new(recv);
@@ -1305,7 +1430,23 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
                     io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
                 ) =>
             {
-                if sh.shutdown.load(Ordering::Relaxed) || io_state.idle(Instant::now()) {
+                // The one moment a reader parked in a read gets to look at
+                // anything — so it is where a dead writer has to be noticed.
+                // This arm is NOT Unix-only despite the recv timeout that names
+                // it being `#[cfg(unix)]`: on Windows the watchdog's
+                // `CancelIoEx` completes the pending read with
+                // `ERROR_OPERATION_ABORTED`, which Rust maps to `TimedOut`, so
+                // the cancel lands right here and this `break` is what actually
+                // ends the connection on that platform too. The `Ok(_)` arm
+                // above would notice the dead writer as well, when its
+                // `out_tx.send` hit the closed channel — but only if the client
+                // sends another request, and it is stuck on the frame the failed
+                // write truncated.
+                if recv_teardown_due(
+                    sh.shutdown.load(Ordering::Relaxed),
+                    io_state.idle(Instant::now()),
+                    io_state.write_failed(),
+                ) {
                     break;
                 }
             }
@@ -1867,6 +2008,252 @@ mod tests {
             send_cancel_due(None, false, true, now),
             "a stuck write is still cut without waiting for shutdown"
         );
+    }
+
+    /// A send half that fails its first write, standing in for the real thing:
+    /// `SO_SNDTIMEO` firing mid-frame on Unix, or the watchdog's `CancelIoEx` on
+    /// a stuck write on Windows. Both surface to [`writer_loop`] as exactly this
+    /// — an `Err` out of `write_all` with the frame only partly on the wire.
+    struct FailingSink;
+
+    impl Write for FailingSink {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::TimedOut, "send timed out"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A send half whose bytes stay observable after the writer thread has taken
+    /// ownership of it and exited. [`ConnectionIoState::spawn_writer`] consumes
+    /// the send half exactly as `handle_conn` hands over the real one, so a bare
+    /// `Vec<u8>` could not be read back afterwards.
+    #[derive(Clone)]
+    struct SharedSink(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedSink {
+        fn new() -> Self {
+            Self(Arc::new(Mutex::new(Vec::new())))
+        }
+
+        fn written(&self) -> String {
+            String::from_utf8(lock_recover(&self.0).clone()).expect("frames are UTF-8")
+        }
+    }
+
+    impl Write for SharedSink {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            lock_recover(&self.0).extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The zombie connection. When the writer died on a write error the reader
+    /// only found out on its next `out_tx.send(...)` — which needs the client to
+    /// send another request, and a client parked on the truncated frame sends
+    /// nothing. So the connection lived on: an admission slot and a hub
+    /// subscription held for the full 15-minute idle deadline, on both
+    /// platforms (Unix waited out its 30 s poll arm, Windows had no recv timeout
+    /// at all and waited for the watchdog's idle check).
+    ///
+    /// `tx` is deliberately still alive across the call: had the loop not left
+    /// on the write error it would still be parked in `recv`, and the deadline
+    /// reports that as a failure rather than hanging the suite.
+    ///
+    /// Spawned through [`ConnectionIoState::spawn_writer`] — production's own
+    /// spawn — rather than by calling [`writer_loop`] with a state built here,
+    /// so what is asserted afterwards is the state the reader and the watchdog
+    /// would actually read. A writer reporting into an orphan state is the one
+    /// way this fix can be inert while every other check still passes.
+    #[test]
+    fn a_writer_that_dies_on_a_write_error_tears_the_connection_down_before_idle() {
+        let state = Arc::new(ConnectionIoState::new());
+        let (tx, rx) = mpsc::sync_channel::<String>(OUT_QUEUE_CAP);
+        tx.send("{\"ok\":true}\n".to_string())
+            .expect("queue a response for the writer");
+
+        let writer = state.spawn_writer(FailingSink, rx);
+        with_deadline(
+            "writer draining onto a socket that stopped accepting",
+            move || writer.join().expect("the writer thread must not panic"),
+        );
+
+        assert!(
+            state.write_failed(),
+            "a write error is the writer's terminal exit and must be recorded; \
+             nothing else on either platform can observe the dead writer"
+        );
+        assert!(
+            lock_recover(&state.write_started).is_none(),
+            "the failure must be recorded only after end_write, so no watchdog \
+             can read it as a write still in flight"
+        );
+        // The decision the Unix reader arm and the Windows watchdog both make.
+        assert!(
+            recv_teardown_due(false, false, state.write_failed()),
+            "the dead writer alone must end the wait — with neither shutdown \
+             nor the 15-minute idle deadline to lean on, it is the only signal \
+             there is"
+        );
+        drop(tx);
+    }
+
+    /// The other exit, which must NOT set the flag. `handle_conn` ends every
+    /// healthy connection by dropping `out_tx` and joining the writer, so a flag
+    /// set on both paths would mark every connection that ever closed as a
+    /// failed writer — and the teardown signal would mean nothing.
+    ///
+    /// Doubles as the guard on the drain contract the shutdown refusal envelope
+    /// depends on: a frame already queued when the channel closes still reaches
+    /// the socket before the loop returns.
+    #[test]
+    fn the_clean_wind_down_is_not_reported_as_a_failed_writer() {
+        let state = Arc::new(ConnectionIoState::new());
+        let (tx, rx) = mpsc::sync_channel::<String>(OUT_QUEUE_CAP);
+        tx.send("{\"ok\":true}\n".to_string())
+            .expect("queue a response for the writer");
+        drop(tx); // exactly what handle_conn does once its reader loop breaks.
+
+        let sink = SharedSink::new();
+        let writer = state.spawn_writer(sink.clone(), rx);
+        with_deadline("writer draining a closed queue", move || {
+            writer.join().expect("the writer thread must not panic")
+        });
+
+        assert_eq!(
+            sink.written(),
+            "{\"ok\":true}\n",
+            "a frame queued before the channel closed must still be flushed"
+        );
+        assert!(
+            !state.write_failed(),
+            "the reader dropping out_tx is the healthy end of every connection, \
+             not a write failure"
+        );
+        assert!(
+            !recv_teardown_due(false, false, state.write_failed()),
+            "a clean wind-down must not ask live connections to tear themselves \
+             down"
+        );
+    }
+
+    /// The shared policy behind the Unix reader's poll arm and the Windows
+    /// watchdog's read-cancel. Each reason has to stand on its own: the defect
+    /// this replaces was `shutdown || idle` written out inline in both places,
+    /// where a dead writer was no reason at all.
+    #[test]
+    fn each_reason_to_stop_waiting_for_the_client_stands_alone() {
+        assert!(
+            !recv_teardown_due(false, false, false),
+            "a healthy connection keeps waiting for its client's next request"
+        );
+        assert!(
+            recv_teardown_due(true, false, false),
+            "shutdown still ends the wait immediately"
+        );
+        assert!(
+            recv_teardown_due(false, true, false),
+            "the idle deadline still ends the wait"
+        );
+        assert!(
+            recv_teardown_due(false, false, true),
+            "a failed write ends the wait on its own: the client is parked on a \
+             truncated frame and will never send the request that would reveal \
+             the closed channel"
+        );
+    }
+
+    /// A policy nobody consults is not a fix. The defect this branch closes was
+    /// `shutdown || idle` written out inline in two places — the Unix reader's
+    /// poll arm and the Windows watchdog's read-cancel — and the failure mode of
+    /// a one-line fix to a duplicated condition is that it lands on one platform
+    /// and the other's CI stays green over the hole. `#[cfg(windows)]` means a
+    /// Linux build cannot even see the watchdog, so `dead_code` only catches
+    /// losing *both* callers; nothing but this notices losing one.
+    ///
+    /// Read off `daemon.rs` itself rather than restated, in the same shape as
+    /// the `dispatch.rs` guards: the call sites are the real thing, so the test
+    /// asks them instead of a hand-copied list.
+    #[test]
+    fn both_platform_teardown_paths_consult_the_shared_policy() {
+        const CALL: &str = "recv_teardown_due(";
+        let production = include_str!("daemon.rs")
+            .split_once("\nmod tests {")
+            .expect("daemon.rs keeps its unit tests in a trailing `mod tests`")
+            .0;
+
+        let mut sites: Vec<(&str, &str)> = Vec::new();
+        let mut at = 0;
+        while let Some(offset) = production[at..].find(CALL) {
+            let start = at + offset;
+            at = start + CALL.len();
+            if production[..start].ends_with("fn ") {
+                continue; // the definition, not a call.
+            }
+            let mut depth = 1usize;
+            let end = production[at..]
+                .char_indices()
+                .find_map(|(i, c)| {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                    (depth == 0).then_some(at + i)
+                })
+                .expect("a call's argument list is parenthesis-balanced");
+            // Nearest preceding `fn` line, indentation and visibility allowed:
+            // matching only column-0 `fn` would walk past a call that moved into
+            // an `impl` block and pin it on the previous top-level function —
+            // a guard that names the wrong caller instead of failing.
+            let enclosing = production[..start]
+                .lines()
+                .rev()
+                .find_map(|line| {
+                    let head = line.trim_start();
+                    let head = head.strip_prefix("pub").map_or(head, |rest| {
+                        rest.split_once(')')
+                            .map_or(rest, |(_, after)| after)
+                            .trim_start()
+                    });
+                    head.strip_prefix("fn ")
+                })
+                .map(|rest| {
+                    &rest[..rest
+                        .find(['<', '('])
+                        .expect("a fn signature is followed by its generics or parameters")]
+                })
+                .expect("every call sits inside a fn");
+            sites.push((enclosing, &production[at..end]));
+        }
+
+        assert_eq!(
+            sites.iter().map(|(f, _)| *f).collect::<Vec<_>>(),
+            ["start_connection_watchdog", "handle_conn"],
+            "both the Windows watchdog and the reader's poll arm must decide \
+             through the shared policy, not re-spell it inline"
+        );
+        for (caller, args) in &sites {
+            let signal = args
+                .split(',')
+                .map(str::trim)
+                .find(|arg| arg.contains("write_failed"))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{caller} passes {args:?}: the dead-writer signal must reach \
+                         the policy, or that platform still waits out the idle deadline"
+                    )
+                });
+            assert!(
+                !signal.starts_with('!'),
+                "{caller} passes {signal:?}: a negated signal tells the policy the \
+                 writer is healthy at exactly the moment it has died"
+            );
+        }
     }
 
     #[test]
