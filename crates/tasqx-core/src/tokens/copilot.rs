@@ -86,9 +86,14 @@ pub fn samples_from_file(path: &Path) -> Result<Vec<UsageSample>, ApiError> {
     // cache_creation split. Collapsing to the first-seen copy would silently
     // drop that detail and misattribute fresh vs. cached input. Instead we
     // accumulate the RAW counts per `gen_ai.response.id`, keeping the largest
-    // value seen for each field, and derive fresh input once at the end. This is
-    // order-independent (whichever copy arrives first, the merged result is the
-    // same) and still counts each response exactly once.
+    // value seen for each field, and derive fresh input once at the end. That
+    // makes the COUNTS order-independent — whichever copy arrives first, the
+    // merged totals are the same — and still counts each response exactly once.
+    // `ts` and `model` are not merged that way: `merge_max` leaves `ts` at the
+    // first copy that carried a usable instant and fills `model` only while it
+    // is still unknown, so for those two the file order decides. That is the
+    // tolerable half, because the copies describe one and the same response —
+    // the choice can move a timestamp, never a token count.
     let mut accs: Vec<ResponseAcc> = Vec::new();
     let mut slot_by_response: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();

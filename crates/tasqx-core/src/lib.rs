@@ -29,6 +29,10 @@
 //!  * [`notify`]    — the `Notifier` trait; log backend always, OS behind `notify-os`.
 //!  * [`daemon`]    — the long-lived socket transport over that same table.
 //!  * [`mcp`]       — the bundled stdio MCP server (§7), a thin dispatch client.
+//!  * [`markdown`]  — the one task-detail rendering: pure, caller-independent.
+//!  * [`tokens`]    — the token vocabulary + the per-tool transcript parsers.
+//!  * [`otlp`]      — the opt-in local OTLP receiver that buffers live samples.
+//!  * [`attribution`] — a task's window turned into a measured token spend (#17).
 //!  * [`util`]      — the shared time/JSON param readers (D17, D32).
 //!
 //! The full §4 method catalogue is implemented (task add/list/get/start/stop/

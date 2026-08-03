@@ -1,11 +1,18 @@
 //! End-to-end guards for bugs found by using the tool, not by reading it.
 //!
-//! Each of these reproduced as a real session: a typo'd theme name that was
+//! The first three reproduced as real sessions: a typo'd theme name that was
 //! answered with a theme the user did not ask for, a wrong-typed config value
 //! that `config` refused to mention, and a saved theme with nothing pointing at
-//! the one command that makes it visible. They run the real binary because all
-//! three are about what reaches a terminal — exit code, stdout, stderr — which
-//! is the surface a unit test cannot see.
+//! the one command that makes it visible. The file has long since grown past
+//! them — argv escaping and quoting, filter spellings, date bounds, table
+//! alignment when a title is not ASCII — and anything else found by using the
+//! tool belongs here too; this is not a theme-and-config file.
+//!
+//! They all run the real binary because every one of them is about what reaches
+//! a terminal — exit code, stdout, stderr — which is the surface a unit test
+//! cannot see. For the argv cases the binary is load-bearing twice over: a
+//! hand-built `Vec` of arguments in a unit test would encode the very splitting
+//! the test exists to check.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -2321,10 +2328,12 @@ fn the_task_table_stays_aligned_when_a_title_is_not_ascii() {
     }
 }
 
-/// P3b: `tasqx why` printed `age  -0.00`. The age term is `(-age_days).max(0.0)`
-/// and a task created inside the second the clock is read has `age_days == 0.0`,
-/// so the negation keeps a sign bit that `{:.2}` faithfully prints — telling the
-/// reader a term subtracted urgency when it contributed none.
+/// P3b: `tasqx why` printed `age  -0.00`. The age term is
+/// `(age_days * 0.01).min(1.0)` over `age_days = (-age).max(0.0)`, and a task
+/// created inside the second the clock is read has `age == 0.0` — so the
+/// negation hands `max` two zeros that compare equal and it is free to return
+/// the `-0.0`, which the multiply carries and `{:.2}` faithfully prints,
+/// telling the reader a term subtracted urgency when it contributed none.
 ///
 /// The unit test in `render` is the one that can SCHEDULE the value; this is the
 /// end-to-end backstop over the whole path, on the input that produced it in the

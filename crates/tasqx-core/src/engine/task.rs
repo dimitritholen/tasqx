@@ -552,8 +552,12 @@ impl Engine {
     }
 
     /// Return short_ids of tasks that depend on `done_id` and now have *all*
-    /// their dependencies completed (i.e. this completion cleared their last
-    /// blocker). With no dependencies in the MVP store this is trivially empty.
+    /// their dependencies resolved (i.e. closing this one cleared their last
+    /// blocker). Both `task.done` and `task.cancel` call this — under D11 a
+    /// cancelled blocker counts as resolved — so `done_id` is whichever task
+    /// just closed, not necessarily a completed one. An empty result is a real
+    /// answer, not a degenerate one: this list is what the CLI prints as "now
+    /// actionable" and what an agent reads to decide what to pick up next.
     fn compute_unblocked(tx: &rusqlite::Transaction, done_id: &str) -> Result<Vec<i64>, ApiError> {
         // Only *open* dependents can "become actionable" — a dependent that is
         // itself already done/cancelled must never be reported as unblocked.
@@ -1171,8 +1175,9 @@ impl Engine {
     // ---- task.get ------------------------------------------------------------
 
     /// `task.get` — one task in full. Param: `ref` (short_id or UUID). Adds the
-    /// three fields the row itself does not carry — `depends_on`, `annotations`,
-    /// `blocked` — and recomputes `urgency` for the same reason `task.list` does.
+    /// four fields the row itself does not carry — `depends_on`, `annotations`,
+    /// `tokens`, `blocked` — and recomputes `urgency` for the same reason
+    /// `task.list` does.
     pub fn task_get(&self, p: &Value) -> Result<Value, ApiError> {
         let task = self.resolve_ref(p)?;
         let tags = task_tags(&self.conn, &task.id)?;

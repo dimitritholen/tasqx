@@ -423,10 +423,17 @@ fn read_line_capped<R: BufRead>(
 
 // ---- OTLP/HTTP JSON -> UsageSample (pure, per-tool) -------------------------
 
-/// The tool label stored for an OTLP export, keyed off its attribute namespace.
-/// Returns the human-facing tool string and a flag for the Codex cache subtree
-/// (its `cached_input_tokens` is a subset of `input_tokens`). `None` for a
-/// namespace tasqx does not recognize — that record is skipped.
+/// The tool label stored for an OTLP export, keyed off the namespace prefix of
+/// the event name (`claude_code…`, `gemini_cli…`, `codex…`, which
+/// `sample_from_record` reads from the record body or the `event.name`
+/// attribute). `None` for a namespace tasqx does not recognize — that record is
+/// skipped rather than bucketed under a guessed tool, because a mislabelled
+/// sample lands in some other tool's cost total where nothing downstream can
+/// tell it from a real reading, and a missing sample is the cheaper failure.
+///
+/// The per-tool token arithmetic — Codex's `cached_input_tokens` being a SUBSET
+/// of `input_tokens`, Gemini's thought tokens billing as output — is applied by
+/// `sample_from_record`, which matches on the label returned here.
 fn tool_of(event: &str) -> Option<&'static str> {
     if event.starts_with("claude_code") {
         Some("claude-code")

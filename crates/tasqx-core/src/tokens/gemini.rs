@@ -265,7 +265,14 @@ mod tests {
         path
     }
 
-    /// One synthetic api_response record in the flat-attributes shape.
+    /// One synthetic api_response record in the nested-`attributes` shape — the
+    /// documented OTLP envelope this module was written against (with the
+    /// SCHEMA-FROM-DOCS caveat at the top of the file). The flattened variant
+    /// has its own fixture in `flattened_attributes_shape_also_parses`, and
+    /// both must stay: they exercise the two halves of `sample_from_record`'s
+    /// attributes-then-record fallback, so relabelling either fixture into the
+    /// other's shape would leave one half untested while the suite stayed
+    /// green.
     fn record(ts: &str, input: u64, output: u64, thoughts: u64, cached: u64) -> String {
         format!(
             r#"{{

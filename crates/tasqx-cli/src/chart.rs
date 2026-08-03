@@ -577,7 +577,15 @@ fn project_finish(series: &[RemainingPoint], mid: &str) -> String {
     format!(" {mid} ~{days}d to clear at current rate")
 }
 
-/// Round a duration to whole days for the default windows.
+/// The chart window length in WEEKS: an explicit `--weeks` wins, otherwise 52
+/// for the year-shaped heatmap and 12 for everything else.
+///
+/// One function rather than a default per call site, because `chart` and
+/// `heatmap` echo this number straight back as `"weeks"` in their JSON: a
+/// second copy of the default is how the window that was drawn and the window
+/// that was reported drift apart with nothing to catch it. It does not clamp —
+/// see `MAX_CHART_WEEKS` in `command.rs` for why an out-of-range `--weeks` is
+/// refused at parse time instead of quietly rewritten here.
 pub fn default_weeks(is_year: bool, weeks: Option<usize>) -> usize {
     if let Some(w) = weeks {
         return w;

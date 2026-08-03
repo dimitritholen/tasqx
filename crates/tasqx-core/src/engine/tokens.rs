@@ -275,21 +275,24 @@ impl Engine {
         // payload so later ticks can refuse a consumed sample by id even after
         // a streamed re-emission moves its re-parsed timestamp across a window
         // edge (banked decisions are final; stamps are not).
-        let sample_ids: Vec<String> = match p.get("sample_ids").and_then(Value::as_array) {
-            Some(a) if a.len() > MAX_SAMPLE_IDS => {
-                return Err(ApiError::bad_request(format!(
-                    "`sample_ids` holds {} entries — send at most {MAX_SAMPLE_IDS} \
-                     (no real transcript window approaches that many samples)",
-                    a.len()
-                )));
-            }
-            Some(a) => a
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect(),
-            None => Vec::new(),
-        };
+        //
+        // Read through the typed layer (D32), not `p.get(…).and_then(as_array)`.
+        // The raw accessor maps a present-but-wrong-typed value onto the same
+        // `None` as an absent one, so `sample_ids: "msg-1"` — or an array with a
+        // number in it, which the old `filter_map(as_str)` dropped silently —
+        // banked the measurement with no ids at all and answered ok. The whole
+        // point of persisting them is refusing a re-emitted sample later; ids
+        // that vanish on the way in take that refusal with them, and nothing
+        // downstream can tell the difference between "the parser had none" and
+        // "the caller sent them wrong".
+        let sample_ids = opt_str_array(p, "sample_ids")?;
+        if sample_ids.len() > MAX_SAMPLE_IDS {
+            return Err(ApiError::bad_request(format!(
+                "`sample_ids` holds {} entries — send at most {MAX_SAMPLE_IDS} \
+                 (no real transcript window approaches that many samples)",
+                sample_ids.len()
+            )));
+        }
         let input = opt_token_count(p, "input_tokens")?.unwrap_or(0);
         let output = opt_token_count(p, "output_tokens")?.unwrap_or(0);
         let cache_read = opt_token_count(p, "cache_read_tokens")?.unwrap_or(0);

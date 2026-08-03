@@ -529,7 +529,6 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     out
 }
 
-/// A generic `{short_id, status}` confirmation line (cancel/reopen).
 /// `tasqx modify` — echo back exactly what changed, and at what rev.
 ///
 /// The echo is the point: `modify` is the one verb that can quietly do the wrong
@@ -937,8 +936,9 @@ fn why_rows(ctx: &Ctx, sid: i64, parts: &[(&'static str, f64)]) -> String {
 /// IEEE 754 has two zeros, and `-0.0` compares EQUAL to `0.0` while keeping its
 /// sign bit, so `{:.2}` renders it `-0.00` — which tells the reader a term
 /// subtracted urgency when it contributed none. The age term reaches that value
-/// honestly: it is `(-age_days).max(0.0)`, and a task created inside the second
-/// the clock is read has `age_days == 0.0`.
+/// honestly: it is scaled from `(-age).max(0.0)`, and a task created inside the
+/// second the clock is read has `age == 0.0`, so `max` may hand back the `-0.0`
+/// the negation just made.
 ///
 /// The sign is judged AFTER rounding rather than on the value, because the two
 /// disagree: `-0.004` is a genuinely negative number that still prints as a row

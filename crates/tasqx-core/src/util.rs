@@ -22,8 +22,20 @@ pub fn parse_ts(s: &str) -> Option<Timestamp> {
 
 /// Parse an ISO-8601 duration (`PT4H`, `P1DT2H30M`, `PT90M`) into whole
 /// seconds. Calendar units use fixed conventions (day=86400s, week=604800s,
-/// month≈30d, year≈365d) — good enough for estimate roll-ups. Returns None on
-/// anything not matching the `P[nY][nM][nW][nD]T[nH][nM][nS]` shape.
+/// month≈30d, year≈365d) — good enough for estimate roll-ups.
+///
+/// Returns None on anything that is not a `P`-prefixed run of digit-runs, each
+/// closed by a unit letter (`Y M W D` before a `T`, `H M S` after one) — which
+/// is what rejects `1H`, `P`, `PT`, `PT1H30` and `PT1X`. Component ORDER and
+/// REPETITION are deliberately not checked: this loop only accumulates, and a
+/// `T` may appear anywhere, flipping which meaning `M` carries. So `PT1H1H`
+/// sums to 7200 rather than being refused, and `PT1M1H` reads as 3660.
+///
+/// That leniency does not stay inside this function. `datetime::parse_duration`
+/// uses `duration_secs` as the validator for a client-supplied ISO string and
+/// then stores that string verbatim, so a `Some` here is proof the value is
+/// READABLE by every consumer that reads it back — not proof that what landed
+/// in the column is canonical ISO-8601.
 pub fn duration_secs(iso: &str) -> Option<i64> {
     let s = iso.trim();
     let mut chars = s.chars();
@@ -374,34 +386,68 @@ mod tests {
     /// alike, and the caller's `.unwrap_or(default)` then swallows the second
     /// case — which is how `expected_rev: "1"` skipped the concurrency guard.
     ///
-    /// Derived, not hand-maintained (D30): it reads the source and bans the
-    /// shape, so a param added tomorrow is covered the day it is written.
+    /// Derived from the source rather than from a list of params (D30): it bans
+    /// the shape, so a param added tomorrow to a file already scanned is covered
+    /// the day it is written. The *file* list is the hand-maintained part, and
+    /// it is the part that has already failed once — see the comment on
+    /// `ENGINE_SOURCES` below.
     #[test]
     fn no_engine_param_is_read_with_a_raw_json_accessor() {
-        // `//` lines are stripped first: the prose in engine.rs *quotes* the
-        // banned shape when explaining why it is banned.
-        let code: String = include_str!("engine.rs")
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        // Collapse whitespace so a chain split across lines reads as one.
-        let flat: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        // `engine` is a directory module: the handlers live in its submodules,
+        // and scanning only `engine.rs` — which is what this did — left seven
+        // eighths of the engine unguarded behind a doc claiming the opposite.
+        // `sample_ids` in engine/tokens.rs sat in that blind spot, reading
+        // `.get("sample_ids").and_then(Value::as_array)`, so a present-but-
+        // wrong-typed value was banked as an absent one at `ok: true`. A new
+        // `engine/*.rs` must be added here or its handlers are simply not
+        // checked; that is the cost of a source scan, and the reason the file
+        // list is spelled out rather than globbed (`include_str!` needs a
+        // literal path, and it is also what makes each file a rebuild
+        // dependency, so the scan can never read a stale copy).
+        const ENGINE_SOURCES: [(&str, &str); 9] = [
+            ("engine.rs", include_str!("engine.rs")),
+            ("engine/commands.rs", include_str!("engine/commands.rs")),
+            ("engine/memory.rs", include_str!("engine/memory.rs")),
+            ("engine/projects.rs", include_str!("engine/projects.rs")),
+            (
+                "engine/relationships.rs",
+                include_str!("engine/relationships.rs"),
+            ),
+            ("engine/reports.rs", include_str!("engine/reports.rs")),
+            ("engine/task.rs", include_str!("engine/task.rs")),
+            ("engine/tokens.rs", include_str!("engine/tokens.rs")),
+            ("engine/transfer.rs", include_str!("engine/transfer.rs")),
+        ];
 
         let mut holes = Vec::new();
-        for (i, _) in flat.match_indices(".get(\"") {
-            let rest = &flat[i + ".get(".len()..];
-            let Some(close) = rest.find(')') else {
-                continue;
-            };
-            let (key, after) = (&rest[..close], &rest[close + 1..]);
-            if after.starts_with(".and_then(") || after.starts_with(".as_") {
-                holes.push(format!(".get({key}){}", &after[..after.len().min(24)]));
+        for (file, source) in ENGINE_SOURCES {
+            // `//` lines are stripped first: the prose in these files *quotes*
+            // the banned shape when explaining why it is banned.
+            let code: String = source
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            // Collapse whitespace so a chain split across lines reads as one.
+            let flat: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+
+            for (i, _) in flat.match_indices(".get(\"") {
+                let rest = &flat[i + ".get(".len()..];
+                let Some(close) = rest.find(')') else {
+                    continue;
+                };
+                let (key, after) = (&rest[..close], &rest[close + 1..]);
+                if after.starts_with(".and_then(") || after.starts_with(".as_") {
+                    holes.push(format!(
+                        "{file}: .get({key}){}",
+                        &after[..after.len().min(24)]
+                    ));
+                }
             }
         }
         assert!(
             holes.is_empty(),
-            "engine.rs reads a param with a raw accessor, which cannot tell an absent value \
+            "the engine reads a param with a raw accessor, which cannot tell an absent value \
              from a wrong-typed one — route it through util's typed layer (opt_i64, opt_bool, \
              opt_u64, opt_str, opt_str_array, opt_array, req_*) instead:\n  {}",
             holes.join("\n  ")

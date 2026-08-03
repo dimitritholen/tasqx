@@ -321,9 +321,25 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
-    /// Every `fn` in `engine.rs` → the literal params keys it reads out of a
-    /// value named `p`, expanded one level through the helpers that take `p`
-    /// whole (`resolve_ref(p)`, `parse_sort(p)`, `parse_fields(p)`).
+    /// Every `fn` in the engine → the literal params keys it reads out of a
+    /// value named `p`, expanded TRANSITIVELY through the helpers that take `p`
+    /// whole (`resolve_ref(p)`, `resolve_ref_on(&tx, p)`, `parse_sort(p)`,
+    /// `parse_fields(p)`).
+    ///
+    /// "The engine" is `engine.rs` AND its `engine/*` submodules, all of them
+    /// `include_str!`ed below: since the split, most of the handlers this guard
+    /// checks do not live in `engine.rs` at all (`store_import` is in
+    /// `engine/transfer.rs`).
+    ///
+    /// Transitively and not one level, because the read is routinely two hops
+    /// down: a handler calls `resolve_ref(p)`, which calls
+    /// `resolve_ref_on(&self.conn, p)`, which is where `ref` is finally read.
+    /// A key read at the bottom of that chain is still a key `PARAMS` has to
+    /// declare, and the assertion below spells out the cost of missing one —
+    /// the engine reads it and the gate silently REFUSES it.
+    ///
+    /// A new `engine/*.rs` has to join that list, or every handler in it drops
+    /// out of this guard without a word.
     ///
     /// Reading the source is the point (D30: derive it, don't keep a list in
     /// sync). The import loop is invisible to this on purpose — it reads its
@@ -470,7 +486,11 @@ mod tests {
                 .get(*method)
                 .unwrap_or_else(|| panic!("`{method}` is in PARAMS but not in the dispatch match"));
             let read = per_fn.get(handler).unwrap_or_else(|| {
-                panic!("dispatch names `engine.{handler}`, which engine.rs lacks")
+                panic!(
+                    "dispatch names `engine.{handler}`, which no scanned engine module \
+                     defines — either the method is gone, or it lives in an `engine/*.rs` \
+                     that is missing from the source list this scan reads"
+                )
             });
             let declared: BTreeSet<String> = accepted.iter().map(|s| s.to_string()).collect();
             assert_eq!(

@@ -1324,7 +1324,7 @@ mod tests {
                 { "id": "a", "name": "work", "archived": false, "default": true },
                 { "id": "b", "name": "work.api", "archived": false, "default": false },
                 // A shell would split this into two words and file the task
-                // under `home`; see `typeable_unquoted`.
+                // under `home`; see `deliverable_as_one_word`.
                 { "id": "c", "name": "home renovation", "archived": false, "default": false },
                 { "id": "d", "archived": false, "default": false },
             ]

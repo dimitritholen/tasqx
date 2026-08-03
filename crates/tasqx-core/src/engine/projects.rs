@@ -152,7 +152,15 @@ impl Engine {
     }
 
     /// The current default project — the project a bare `task.add` inherits.
-    /// Set by the first `project.create` and moved only by `project.use` (D21).
+    ///
+    /// Claimed by any `project.create` made while the store holds no default,
+    /// not just the first create ever (D21); moved explicitly by `project.use`;
+    /// cleared by `project.archive` when the project it archives is the one the
+    /// key names (D22); and cleared again by the stale-default repair on open,
+    /// for a store written by older code whose default points at a project that
+    /// is archived or gone. "The first create wins forever" is therefore the
+    /// wrong thing to reason from: a store whose default an archive cleared has
+    /// its next create claim the key again.
     pub fn default_project(&self) -> Result<Option<String>, ApiError> {
         get_config(&self.conn, DEFAULT_PROJECT_KEY)
     }
