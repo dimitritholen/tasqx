@@ -158,21 +158,19 @@ const MAX_VALUE_CANDIDATES: usize = 200;
 /// `use` is not a filter command at all.
 ///
 /// Archived projects are excluded, and the reason is what the RECEIVING command
-/// does rather than what `project.list` defaults to: `add`, `modify` and `use`
-/// all refuse an archived project outright (`engine.rs`), so offering one would
-/// be a menu entry whose only outcome is an error. It is also the set
-/// `tasqx projects` shows, so the shell and the tool answer "which projects are
-/// there" the same way.
+/// does rather than what `project.list` defaults to: `add`, `modify`, `use` and
+/// `archive` all refuse an archived project outright (`engine.rs`,
+/// `engine/projects.rs`), so offering one would be a menu entry whose only
+/// outcome is an error. It is also the set `tasqx projects` shows, so the shell
+/// and the tool answer "which projects are there" the same way.
 ///
-/// `archive` is the fifth attachment site and the one exception to that
-/// sentence: `project.archive` does NOT refuse a project that is already
-/// archived — it sets `archived = 1` again and answers ok. The narrow set is
-/// still the right menu for it, for the weaker reason that re-archiving is the
-/// one input the verb cannot change anything with, and a completion menu whose
-/// entries are no-ops teaches the wrong thing about what the verb does. Written
-/// down rather than left implied, because "every site here refuses an archived
-/// project" was true when this comment was written and stopped being true when
-/// the verb landed.
+/// `archive` is the fifth attachment site, and it briefly WAS an exception to
+/// that sentence: `project.archive` used to set `archived = 1` again and answer
+/// ok, so its menu entries would have been no-ops rather than errors. It now
+/// refuses with `conflict` like its siblings (D22), which is why this paragraph
+/// no longer carves it out — recorded rather than deleted, because the reason
+/// the narrow set is right here changed, and a reader comparing this comment to
+/// an older revision should find the change explained instead of silent.
 ///
 /// A command that ACCEPTS an archived project therefore needs the other
 /// constructor — see [`projects_including_archived`]. Splitting them rather than

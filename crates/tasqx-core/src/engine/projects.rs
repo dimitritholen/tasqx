@@ -208,26 +208,58 @@ impl Engine {
     /// `name` is read as a LOOKUP rather than validated (D28/D36): retiring a
     /// legacy whitespace-named project is exactly the escape hatch the name
     /// rules must not weld shut.
+    ///
+    /// A project that is ALREADY archived is a `conflict` (D22), not a second
+    /// `ok`: see the refusal below for why.
     pub fn project_archive(&self, p: &Value) -> Result<Value, ApiError> {
         // A lookup, like `project.use`: retiring a legacy whitespace-named
         // project is precisely the escape hatch D36 must not weld shut (D28).
         let name = req_str_lookup(p, "name")?;
-        let id: String = self
-            .conn
-            .query_row(
-                "SELECT id FROM projects WHERE name = ?1",
-                params![name],
-                |r| r.get(0),
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => ApiError::not_found(
-                    format!("no project named {name}"),
-                    Some(json!({ "name": name })),
-                ),
-                other => other.into(),
-            })?;
 
         let tx = self.begin_mutation()?;
+        // Existence + archived state are read inside the IMMEDIATE tx, for the
+        // same reason `project.use` reads them there: the write lock is already
+        // held, so a second `project.archive` racing this one serializes behind
+        // us and observes our committed `archived = 1` instead of passing the
+        // check beside us and committing a second archive of the same project.
+        // The read used to sit outside the transaction, which was harmless only
+        // as long as nothing was decided by it.
+        let row: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT id, archived FROM projects WHERE name = ?1",
+                params![name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let (id, already) = row.ok_or_else(|| {
+            ApiError::not_found(
+                format!("no project named {name}"),
+                Some(json!({ "name": name })),
+            )
+        })?;
+        // D22 both ways, and D33/D34's rule about an unfalsifiable write. This
+        // method used to run `UPDATE ... SET archived = 1` over a project that
+        // already had it and answer `{"archived": true, "default_cleared":
+        // false}` — byte-identical to the run that genuinely retired it. So
+        // `tasqx archive old` printed "Project old archived · your default
+        // project is unchanged" every time, and neither a human nor a script
+        // could tell "I retired it" from "it was already retired", while each
+        // repeat appended another `archive` row to the event log — the audit
+        // surface D22 points at to answer "where did the default go", now
+        // carrying three archives of a project archived once. Refusing also
+        // makes true the sentence D22, `tasqx archive --help` and the user
+        // guide all state — that no verb may name an archived project — which
+        // this method was the single exception to.
+        //
+        // Nothing is welded shut by the refusal: the project is already in the
+        // state the caller asked for, and there is no `unarchive` to reach past
+        // (`store.import` writes the flag, which is the documented way back).
+        if already != 0 {
+            return Err(ApiError::conflict(format!(
+                "project is already archived: {name} (`tasqx projects --all` lists it; \
+                 archiving it again would change nothing)"
+            )));
+        }
         tx.execute(
             "UPDATE projects SET archived = 1 WHERE id = ?1",
             params![id],
