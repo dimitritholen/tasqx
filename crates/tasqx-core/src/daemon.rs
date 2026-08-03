@@ -232,6 +232,15 @@ impl ConnectionIoState {
             .is_some_and(|started| now.duration_since(started) >= CLIENT_SEND_TIMEOUT)
     }
 
+    /// Whether the writer is inside `write_all`/`flush` right now.
+    ///
+    /// Only the Windows watchdog asks, and it asks because on that platform a
+    /// cancel cannot be aimed: see [`recv_cancel_due`].
+    #[cfg(windows)]
+    fn write_in_flight(&self) -> bool {
+        lock_recover(&self.write_started).is_some()
+    }
+
     fn note_write_failure(&self) {
         self.write_failed.store(true, Ordering::Release);
     }
@@ -1167,6 +1176,10 @@ fn start_connection_watchdog(
                 shutdown_since = Some(now);
             }
             let idle = state.idle(now);
+            // Whether the *write* may be cut. Asked first because on this
+            // platform it also governs the read: see below.
+            let may_cut_write =
+                send_cancel_due(shutdown_since, idle, state.write_timed_out(now), now);
             // Cancelling the *read* is what unblocks the reader loop so the
             // connection can wind down at all, and an aborted read destroys
             // nothing: the request it was waiting for was never dispatched.
@@ -1177,7 +1190,11 @@ fn start_connection_watchdog(
             // parked on a truncated frame does neither, which is why the
             // dead-writer case has to be part of the condition on this side too
             // and not merely in the reader's timeout arm.
-            if recv_teardown_due(stopping, idle, state.write_failed()) {
+            if recv_cancel_due(
+                recv_teardown_due(stopping, idle, state.write_failed()),
+                state.write_in_flight(),
+                may_cut_write,
+            ) {
                 cancel_io(recv_handle);
             }
             // A write is the opposite. Cancelling it mid-flush throws away a
@@ -1187,13 +1204,18 @@ fn start_connection_watchdog(
             // writes after the drain grace, while an idle client or a stuck
             // write is still cut immediately.
             //
-            // A *failed* write is deliberately absent from this second
-            // condition. [`ConnectionIoState::write_failed`] is set only after
+            // This second call is now the only one that can end a write, which
+            // is what makes the sentence above true rather than merely
+            // intended: `recv_cancel_due` gates the read-cancel on the same
+            // answer, because both cancels land on the same handle.
+            //
+            // A *failed* write is deliberately absent from this condition.
+            // [`ConnectionIoState::write_failed`] is set only after
             // [`ConnectionIoState::end_write`], so whenever it is true there is
             // no in-flight write left on this handle for `CancelIoEx` to abort:
             // adding it would buy nothing and would widen a predicate whose
             // entire job is restraint about committed responses.
-            if send_cancel_due(shutdown_since, idle, state.write_timed_out(now), now) {
+            if may_cut_write {
                 cancel_io(send_handle);
             }
             thread::sleep(CLIENT_WATCHDOG_INTERVAL);
@@ -1222,6 +1244,38 @@ fn send_cancel_due(
 ) -> bool {
     idle || write_timed_out
         || shutdown_since.is_some_and(|since| now.duration_since(since) >= CLIENT_SEND_TIMEOUT)
+}
+
+/// Whether the watchdog may cancel the blocked *read* right now.
+///
+/// This exists because on Windows a cancel cannot be aimed. `Stream::split()`
+/// hands back two halves that share one `RawPipeStream` — interprocess 2.4.2
+/// `os/windows/named_pipe/stream/impl.rs:35` is `(self.raw.refclone(),
+/// self.raw)`, and `as_handle` returns `self.raw.get().as_handle()` for both —
+/// so `recv_handle` and `send_handle` are the same value, and
+/// `CancelIoEx(h, NULL)` aborts every pending operation on it, reads and writes
+/// alike. `handle_identity_is_what_the_cancel_policy_assumes` pins that.
+///
+/// So the read-cancel was quietly cancelling writes too, and the restraint
+/// [`send_cancel_due`] exists to enforce — shutdown alone must not abort a
+/// response whose transaction already committed — was unreachable on the only
+/// platform that runs it. Ctrl-C set the flag; within one
+/// [`CLIENT_WATCHDOG_INTERVAL`] tick the read-cancel fired on `stopping` alone
+/// and took the in-flight `WriteFile` with it, and the client read a truncated
+/// frame for a mutation that had landed. That is precisely the "applied" versus
+/// "not applied" distinction the shutdown refusal envelope is built to keep.
+///
+/// The fix is not to hesitate about tearing down — it is to wait for the one
+/// moment when cancelling costs nothing. A write in flight is the only thing on
+/// this handle worth protecting, so the read-cancel holds until either there is
+/// no write in flight (the common case: a healthy client's write completes in
+/// microseconds, so this is the very next tick) or the write has forfeited its
+/// grace anyway, which is exactly what `may_cut_write` already decides. The
+/// wait is therefore bounded by [`CLIENT_SEND_TIMEOUT`], not open-ended: a
+/// stuck write is cut at 5 s and the read goes with it.
+#[cfg(any(windows, test))]
+fn recv_cancel_due(want_teardown: bool, write_in_flight: bool, may_cut_write: bool) -> bool {
+    want_teardown && (!write_in_flight || may_cut_write)
 }
 
 /// Whether this connection should stop waiting for the client to send anything.
@@ -1991,8 +2045,10 @@ mod tests {
     /// The Windows watchdog cancels I/O the connection threads cannot interrupt
     /// themselves. Cancelling the *send* handle the moment shutdown is set aborts
     /// a flush of an already-committed response — the platform-specific half of
-    /// the same lost-response bug. Reads may be cut at once; writes only after
-    /// the drain grace, or on the pre-existing idle / stuck-write conditions.
+    /// the same lost-response bug. Writes are cut only after the drain grace, or
+    /// on the pre-existing idle / stuck-write conditions. Reads are not free to
+    /// go first either, because both cancels land on one handle; that half is
+    /// `a_shutdown_read_cancel_waits_for_the_write_it_would_take_with_it`.
     #[test]
     fn shutdown_alone_does_not_cancel_an_in_flight_write() {
         let now = Instant::now();
@@ -2013,6 +2069,113 @@ mod tests {
             send_cancel_due(None, false, true, now),
             "a stuck write is still cut without waiting for shutdown"
         );
+    }
+
+    /// The other half of that restraint, and the one that was missing.
+    ///
+    /// `send_cancel_due` guarded the *send* handle, but on Windows the read and
+    /// the write are the same handle, so the read-cancel above it was cutting
+    /// committed responses on `stopping` alone — within one 100 ms tick, five
+    /// seconds before the drain grace it was supposed to honour. The predicate
+    /// only means something if the read waits too.
+    #[test]
+    fn a_shutdown_read_cancel_waits_for_the_write_it_would_take_with_it() {
+        assert!(
+            !recv_cancel_due(true, true, false),
+            "a teardown that would abort an in-flight write must wait: the frame \
+             on the wire may be a response whose transaction already committed, \
+             and the client cannot tell a truncated one from a failure"
+        );
+        assert!(
+            recv_cancel_due(true, false, false),
+            "with no write in flight the cancel costs nothing and must not be \
+             delayed — this is the common case, and the teardown bound depends \
+             on it firing on the next tick"
+        );
+        assert!(
+            recv_cancel_due(true, true, true),
+            "once the write has forfeited its grace (idle, stuck, or the drain \
+             window elapsed) the read goes with it, so the wait is bounded by \
+             CLIENT_SEND_TIMEOUT rather than open-ended"
+        );
+        assert!(
+            !recv_cancel_due(false, false, true),
+            "nothing wants teardown, so nothing is cancelled — `may_cut_write` \
+             widens when the read may go, never why"
+        );
+    }
+
+    /// The read-cancel must reach `CancelIoEx` through [`recv_cancel_due`], not
+    /// past it.
+    ///
+    /// Dropping the gate and calling `recv_teardown_due` straight — the shape
+    /// this replaces — leaves every test green; `-D warnings` does catch it,
+    /// but only on Windows and only as "function is never used", which says
+    /// nothing about the committed response that just went missing. One line of
+    /// source scan buys the real sentence, in the idiom
+    /// `both_platform_teardown_paths_consult_the_shared_policy` already uses.
+    #[test]
+    fn the_watchdog_cancels_the_read_only_through_the_shared_gate() {
+        let production = include_str!("daemon.rs")
+            .split_once("\nmod tests {")
+            .expect("daemon.rs keeps its unit tests in a trailing `mod tests`")
+            .0;
+        let watchdog = production
+            .split_once("fn start_connection_watchdog(")
+            .expect("the Windows watchdog is still called that")
+            .1
+            .split_once("\nfn ")
+            .map_or("", |(body, _)| body);
+
+        let gate = watchdog
+            .find("recv_cancel_due(")
+            .expect("the watchdog must ask `recv_cancel_due` before cancelling the read");
+        let cancel = watchdog
+            .find("cancel_io(recv_handle)")
+            .expect("the watchdog still cancels the read somewhere");
+        assert!(
+            gate < cancel,
+            "the read-cancel must be gated by `recv_cancel_due`, not merely \
+             preceded by it: on Windows that one syscall aborts the in-flight \
+             write too, so cancelling on `stopping` alone discards a response \
+             whose transaction already committed"
+        );
+    }
+
+    /// The premise the whole cancel policy rests on, asserted rather than
+    /// assumed: on Windows `Stream::split()` does not hand back two handles.
+    ///
+    /// interprocess 2.4.2 splits by `(self.raw.refclone(), self.raw)` and both
+    /// halves answer `self.raw.get().as_handle()`, so one `CancelIoEx` reaches
+    /// reads and writes alike. Every line of [`recv_cancel_due`] is reasoning
+    /// about that. If a future version ever duplicates the handle for real, the
+    /// gate becomes an unnecessary delay on shutdown and this fails to say so —
+    /// which is the only warning a dependency changing underneath a comment
+    /// will ever give.
+    #[cfg(windows)]
+    #[test]
+    fn handle_identity_is_what_the_cancel_policy_assumes() {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+
+        let socket = client_test_socket("handle-identity");
+        let listener = bind(&socket).expect("bind");
+        let client = thread::spawn({
+            let socket = socket.clone();
+            move || connect_stream(&socket).expect("connect")
+        });
+        let stream = listener.accept().expect("accept");
+        let (recv, send) = stream.split();
+        let RecvHalf::NamedPipe(recv) = &recv;
+        let SendHalf::NamedPipe(send) = &send;
+
+        assert_eq!(
+            recv.as_handle().as_raw_handle() as usize,
+            send.as_handle().as_raw_handle() as usize,
+            "the two halves report one handle, which is why cancelling the read \
+             cancels the write — if this ever stops holding, `recv_cancel_due` \
+             is holding shutdown back for nothing"
+        );
+        drop(client.join().expect("client thread"));
     }
 
     /// A send half that fails its first write, standing in for the real thing:
