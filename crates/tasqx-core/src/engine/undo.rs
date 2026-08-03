@@ -39,6 +39,26 @@
 //! because the newest event is then the `undo` itself, and `undo` is not in the
 //! closed set. There is no redo.
 //!
+//! **And the second cost, which is easier to miss.** "The newest event" is not
+//! the same as "the last command you typed". A verb that changed nothing writes
+//! no event — that is the rule every mutation here follows and the one the
+//! whole-surface guard in tests/engine.rs enforces — so a command that answered
+//! ok while doing nothing is invisible to undo, which then reverses the change
+//! BEFORE it. Two verbs reach that state deliberately: `dependency.remove` on an
+//! edge that is not there (a documented no-op, relationships.rs) and `task.start`
+//! on a task already running (idempotent, task.rs). Type `undep 1 2` against an
+//! edge that never existed and then `undo`, and undo takes back the annotation
+//! you wrote before it.
+//!
+//! That is not fixed by teaching undo to guess which command the user meant —
+//! it has no session and no way to know. It is fixed by the answer: undo names
+//! the operation, the task and what it restored precisely so the reader can see
+//! it hit something other than what they were aiming at, while the text it
+//! removed is still in the answer and still in the log's payload. The property
+//! is pinned by
+//! `undo_reaches_past_a_command_that_answered_ok_without_recording_anything`,
+//! so it cannot drift into being untrue in either direction unnoticed.
+//!
 //! **What it covers: task edits.** Projects and memory docs are named things a
 //! user re-states in one word (`tasqx use work`, `tasqx memory rm <id>`), and
 //! both carry effects the log does not fully record — archiving may also have
@@ -217,7 +237,8 @@ impl Engine {
     ///
     /// No `ref`, no `limit`, no `dry_run`: see this module's header for why "the
     /// newest event, or nothing" is the only position from which the inverses
-    /// are exact rather than plausible.
+    /// are exact rather than plausible — and, in the same place, why the newest
+    /// EVENT can be older than the last command the user typed.
     ///
     /// Answers with what it undid — the operation, the task's short_id and
     /// title, and a per-op `restored` object — because "ok" is precisely the
@@ -493,10 +514,19 @@ fn revert_tag_remove(tx: &Transaction, task: &Task, payload: &Value) -> Result<V
 /// Re-insert the dependency edge a `dependency.remove` deleted.
 ///
 /// The payload names the blocker by UUID, which is what makes this replayable at
-/// all — a short_id is a display handle an import may re-mint. No cycle check is
-/// needed and none is run: the edge existed immediately before this event and
-/// nothing has happened since, so the graph it goes back into is the acyclic one
-/// it came out of.
+/// all — a short_id is a display handle an import may re-mint.
+///
+/// Refuses if the edge is back already, and refuses if putting it back would
+/// close a cycle. The second check is `dependency.add`'s own, run again, and it
+/// is here for the reason the other three inverses in this file already act on:
+/// each of them re-verifies its effect is still undone, because an external
+/// SQLite writer, a restore or a half-migrated file may have changed the store
+/// since the event was written. This is the only inverse that writes a GRAPH
+/// edge, so that same actor can have inserted the reverse edge while this one was
+/// gone — and re-inserting without checking mints the mutual cycle
+/// `dependency.add` refuses with `conflict`, leaving both tasks `blocked` with no
+/// verb that unblocks them. D16 records exactly that corruption shipping once,
+/// through `store.import` bypassing this same guard.
 fn revert_dependency_remove(
     tx: &Transaction,
     task: &Task,
@@ -532,6 +562,23 @@ fn revert_dependency_remove(
             Some(json!({ "depends_on": dep_id })),
         ));
     };
+
+    // The same read `dependency.add` makes before the same INSERT, under the
+    // same held write lock: the edge task -> blocker closes a cycle exactly when
+    // the blocker already reaches the task. Skipping it on the strength of
+    // "nothing has happened since" would be trusting a premise the three
+    // siblings above each refuse to trust, on the one inverse where being wrong
+    // costs a graph no verb can repair.
+    if reaches(tx, dep_id, &task.id)? {
+        return Err(ApiError::conflict(format!(
+            "putting this edge back would make #{} and #{blocker_short} block each other: \
+             #{blocker_short} now depends on #{}, which it cannot have done when the edge came \
+             off, so something other than the log has changed the graph. Restoring it would \
+             leave both tasks blocked with no verb that unblocks them. Nothing was changed; \
+             `tasqx undep {blocker_short} {}` breaks the other side first.",
+            task.short_id, task.short_id, task.short_id
+        )));
+    }
 
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",

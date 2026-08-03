@@ -1675,6 +1675,128 @@ fn undo_refuses_when_the_effect_it_would_reverse_is_already_gone() {
     );
 }
 
+/// The one inverse that writes a graph edge must run the acyclicity check every
+/// other writer of that table runs, instead of inheriting "nothing can have
+/// happened since" — because the three siblings beside it each decline to
+/// inherit exactly that, and this is the one where being wrong is unrepairable.
+///
+/// An external writer inserts the REVERSE edge while the forward one is gone.
+/// `dependency.add` refuses to mint that pair with `conflict`; undo restoring the
+/// forward edge would mint it at exit 0, and two tasks that block each other are
+/// `blocked: true` forever — no verb unblocks a cycle. This is D16's shipped
+/// corruption (`store.import` skipping the same guard) arriving by a second door.
+#[test]
+fn undo_refuses_to_restore_a_dependency_edge_that_would_close_a_cycle() {
+    let e = engine();
+    let (task, blocker) = undo_fixture(&e);
+    let edge = json!({
+        "ref": task["short_id"].clone(),
+        "depends_on": blocker["short_id"].clone(),
+    });
+    e.dependency_add(&edge).expect("dependency.add");
+    e.dependency_remove(&edge).expect("dependency.remove");
+
+    // The external SQLite writer this whole family of refusals exists for: the
+    // reverse edge goes in without an event, so `dependency.remove` is still the
+    // newest thing in the log and undo will aim at it.
+    e.conn()
+        .execute(
+            "INSERT INTO dependencies (task_id, depends_on_id) \
+             VALUES ((SELECT id FROM tasks WHERE short_id = ?1), \
+                     (SELECT id FROM tasks WHERE short_id = ?2))",
+            params![
+                blocker["short_id"].as_i64().unwrap(),
+                task["short_id"].as_i64().unwrap()
+            ],
+        )
+        .expect("seed the reverse edge behind the log's back");
+    // The API's own verdict on the pair, stated here rather than assumed: this
+    // is the edge undo is about to be asked to write.
+    let refused = e
+        .dependency_add(&edge)
+        .expect_err("precondition: dependency.add refuses this edge as a cycle");
+    assert_eq!(refused.code, ErrorCode::Conflict, "{}", refused.message);
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    let err = e
+        .event_revert()
+        .expect_err("undo must not insert an edge the API refuses as a cycle");
+
+    assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+    assert!(
+        err.message.contains(&format!("#{}", blocker["short_id"]))
+            && err.message.contains(&format!("#{}", task["short_id"])),
+        "the refusal must name both tasks in the cycle it will not close: {}",
+        err.message
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM dependencies"),
+        1,
+        "the refused undo inserted the edge anyway — both tasks now block each other \
+         and no verb unblocks a cycle"
+    );
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "a refused undo wrote an event"
+    );
+    assert_eq!(
+        e.task_get(&json!({ "ref": task["short_id"].clone() }))
+            .unwrap()["depends_on"],
+        json!([]),
+        "the store must be exactly as the refusal found it"
+    );
+}
+
+/// The cost D54 now states out loud: `undo` reverses the newest *recorded*
+/// event, and a command that changed nothing records nothing — so a verb that
+/// answered ok while doing nothing is invisible to undo, which reaches past it.
+///
+/// Pinned in both directions on purpose. If `dependency.remove` on an absent
+/// edge ever starts writing an event (or refusing), this test goes red and the
+/// paragraph in D54, `tasqx help undo` and the module header stop being true
+/// together — which is the only way a documented cost stays honest.
+#[test]
+fn undo_reaches_past_a_command_that_answered_ok_without_recording_anything() {
+    let e = engine();
+    let (task, blocker) = undo_fixture(&e);
+    let by_ref = json!({ "ref": task["short_id"].clone() });
+    e.annotation_add(&json!({ "ref": task["short_id"].clone(), "body": "called the plumber" }))
+        .expect("annotation.add");
+    let events_before = count(&e, "SELECT COUNT(*) FROM events");
+
+    // No such edge was ever added: a documented no-op that answers ok.
+    e.dependency_remove(&json!({
+        "ref": task["short_id"].clone(),
+        "depends_on": blocker["short_id"].clone(),
+    }))
+    .expect("removing an absent edge is a no-op that answers ok, not an error");
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM events"),
+        events_before,
+        "precondition: the no-op recorded nothing — without that there is no cost to pin"
+    );
+
+    let out = e.event_revert().expect("undo");
+
+    assert_eq!(
+        out["reverted"]["op"], "annotation.add",
+        "undo reverses the newest RECORDED event, so it reached past the no-op"
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["annotations"],
+        json!([]),
+        "and it really removed the older change, not merely reported it"
+    );
+    // The mitigation, asserted rather than assumed: this is the entire reason
+    // the answer names the op and returns the text it took away instead of "ok".
+    assert_eq!(
+        out["restored"]["annotation"], "called the plumber",
+        "a user who was aiming at the `undep` has to be able to SEE what undo hit \
+         instead, and read back the note it removed"
+    );
+}
+
 /// Reachability through the one seam every surface shares. The engine method
 /// existing is not the same as the method being callable: `event.revert` needs a
 /// `PARAMS` row (or the D33 gate refuses it) *and* a match arm (or it is
