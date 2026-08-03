@@ -465,7 +465,7 @@ fn a_partial_subcommand_completes_from_claps_own_tree() {
     );
 }
 
-/// Thirty-odd aliases come free from clap's tree, and they behave in a way
+/// Eighteen aliases come free from clap's tree, and they behave in a way
 /// worth pinning because it is not the obvious one and the README must not
 /// over-promise it.
 ///
@@ -663,7 +663,7 @@ fn a_seeded_store_completes_its_task_ids_with_their_titles() {
 /// One of the projects has a SPACE in its name, and it is the point of the
 /// fixture rather than decoration: it is the value a completion candidate cannot
 /// deliver, because a shell inserts a candidate verbatim and then splits it.
-/// `candidates::typeable_unquoted` withholds it, and
+/// `candidates::deliverable_as_one_word` withholds it, and
 /// `a_project_name_a_shell_would_split_is_never_offered` is what makes that a
 /// decision somebody can find rather than a name that quietly went missing.
 fn seeded_values(label: &str) -> (std::path::PathBuf, String) {
@@ -930,10 +930,10 @@ fn the_capture_sugar_dispatcher_answers_by_prefix() {
 ///
 /// The last assertion is what makes this test honest: the project is read back
 /// out of the store first, so a seeding failure cannot masquerade as the
-/// withholding under test. Read `candidates::typeable_unquoted` for why the
-/// alternatives are worse; the short version is that the candidate would arrive
-/// at the command line as `--project home renovation`, which clap reads as the
-/// project `home` plus two title words, at exit 0.
+/// withholding under test. Read `candidates::deliverable_as_one_word` for why
+/// the alternatives are worse; the short version is that the candidate would
+/// arrive at the command line as `--project home renovation`, which clap reads
+/// as the project `home` plus two title words, at exit 0.
 #[test]
 fn a_project_name_a_shell_would_split_is_never_offered() {
     let (db, socket) = seeded_values("unquotable");
@@ -995,9 +995,9 @@ fn every_offered_candidate_produces_the_command_it_promises() {
             // A shell inserts a candidate verbatim and then word-splits the line,
             // so an unquoted candidate reaches argv as one element per run of
             // non-space characters. Passing the candidate as a single element
-            // would silently repair the exact failure `typeable_unquoted` exists
-            // to prevent, and this test would then pass for a provider that
-            // offered `project:home renovation`.
+            // would silently repair the exact failure that
+            // `deliverable_as_one_word` exists to prevent, and this test would
+            // then pass for a provider that offered `project:home renovation`.
             .args(sugar.split_whitespace())
             .output()
             .expect("add a task using the completed word");
@@ -1421,8 +1421,8 @@ fn a_callback_against_a_live_store_leaves_it_byte_identical_and_unmigrated() {
 
 // ---- the read-side filter grammar ------------------------------------------
 
-/// A store shaped for the filter surface: one live project, one ARCHIVED
-/// project holding a task, and a task carrying four tags chosen to be traps.
+/// A store shaped for the filter surface: two live projects, one ARCHIVED
+/// project holding a task, and a task carrying five tags chosen to be traps.
 ///
 /// Every element earns its place:
 ///
@@ -1545,7 +1545,7 @@ const ARCHIVED_TASK: &str = "a task left in the archive";
 /// Driven through the real binary with `$TASQX_COMPLETE=powershell`, which is
 /// what the shipped registration sets. The bash spelling is asserted in the same
 /// test so the special case is proven to be narrow rather than merely present:
-/// eleven of the thirteen shapes were re-measured in PowerShell and pass through
+/// ten of the twelve shapes were re-measured in PowerShell and pass through
 /// untouched, so quoting them all would be a cost with no defect behind it.
 #[test]
 fn the_at_shapes_are_quoted_for_the_one_shell_that_eats_them() {

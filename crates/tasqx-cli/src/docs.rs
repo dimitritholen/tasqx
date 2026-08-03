@@ -19,9 +19,9 @@
 //! [`DOCUMENTED_CLEAR_FIELDS`] are the lists the page renders *from*, and the
 //! tests at the bottom of this file assert each one equals the real surface it
 //! claims to describe — clap's subcommand table, the core's `core.capabilities`,
-//! and `main::CLEARABLE`. Adding a verb without documenting it fails the build,
-//! which is the cheapest honest guard available: the docs cannot silently fall
-//! behind the CLI, because the CLI's own table is the assertion.
+//! and `crate::CLEARABLE`. Adding a verb without documenting it fails the
+//! build, which is the cheapest honest guard available: the docs cannot
+//! silently fall behind the CLI, because the CLI's own table is the assertion.
 //!
 //! Beyond the *names*, the guards now reach some of the descriptive columns too:
 //! each verb's one-line description is rendered from [`crate::cmddoc`] rather
@@ -29,7 +29,7 @@
 //! method's documented **required** parameters are checked against the engine's
 //! own "missing required field" complaint. Two honest gaps remain, both named at
 //! their tests: *optional* parameter names are unguarded (the engine ignores
-//! unknown keys, so there is no failure to observe), and only the six
+//! unknown keys, so there is no failure to observe), and only the seven
 //! bare-callable methods have their return shapes checked.
 //!
 //! Every command and every block of output on this page was executed against the
@@ -297,7 +297,7 @@ fn verb_summary(verb: &str) -> &'static str {
     crate::cmddoc::find(verb).map(|d| d.summary).unwrap_or("")
 }
 
-/// The fields `modify --clear` accepts. Asserted equal to `main::CLEARABLE`.
+/// The fields `modify --clear` accepts. Asserted equal to `crate::CLEARABLE`.
 pub const DOCUMENTED_CLEAR_FIELDS: [&str; 8] = [
     "project",
     "priority",
@@ -389,7 +389,7 @@ pub(crate) const GLOBAL_FLAGS: [(&str, &str); 5] = [
 /// Single source, same reason as [`VERBS`]. The sugar column is the one place
 /// a reader learns every colon-key alias, and it is bound to the parser's own
 /// key table (`sugar::VALUE_KEYS`) the same way the `--clear` list is bound to
-/// `main::CLEARABLE` — because an alias the parser gains and no page names is
+/// `crate::CLEARABLE` — because an alias the parser gains and no page names is
 /// invisible, and one the parser drops leaves the page teaching a spelling
 /// that silently lands in the title.
 const ADD_FIELDS: [(&str, &str, &str); 9] = [
@@ -1703,7 +1703,18 @@ fn page_mcp() -> String {
     ));
     s.push_str(&snippet(
         "echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"demo\",\"version\":\"1\"}}}' | tasqx mcp serve 2>/dev/null",
-        "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"capabilities\":{\"tools\":{}},\"protocolVersion\":\"2024-11-05\",\"serverInfo\":{\"name\":\"tasqx\",\"version\":\"0.1.0\"}}}",
+        // The version comes from the crate, not from a copy of it. This snippet
+        // shipped `"version":"0.1.0"` for the whole of 0.2.x: a captured output
+        // is a claim about what the binary answers, and a hand-typed one stops
+        // being true at the next release with nothing to notice. `Mcp::initialize`
+        // fills the field from `CARGO_PKG_VERSION`, so read it from the same
+        // place and the page cannot drift again.
+        &format!(
+            "{{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{{\"capabilities\":{{\"tools\":{{}}}},\
+             \"protocolVersion\":\"2024-11-05\",\"serverInfo\":{{\"name\":\"tasqx\",\
+             \"version\":\"{}\"}}}}}}",
+            env!("CARGO_PKG_VERSION")
+        ),
     ));
     s.push_str(&snippet(
         "echo '{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"tasqx_list_tasks\",\"arguments\":{\"filter\":\"+api\"}}}' | tasqx mcp serve 2>/dev/null",
@@ -3180,8 +3191,8 @@ mod tests {
         );
     }
 
-    /// `modify --clear` takes a closed set; the page prints it. If `main::CLEARABLE`
-    /// gains a field, the docs must say so.
+    /// `modify --clear` takes a closed set; the page prints it. If
+    /// `crate::CLEARABLE` gains a field, the docs must say so.
     #[test]
     fn documented_clear_fields_match_the_parser() {
         assert_eq!(
@@ -3263,14 +3274,12 @@ mod tests {
 
     // ---- self-containment ---------------------------------------------------
 
-    /// The whole promise of the file: it opens anywhere, offline, forever. Any
-    /// external reference — a CDN script, a web font, a remote image — breaks it.
+    /// The self-containment and well-formedness guards both pass on an
+    /// over-escaped page — `&lt;code&gt;` is valid HTML, it just renders the tag
+    /// as literal text to the reader. Eleven leads shipped that way. Only a
+    /// check on the *rendered* text catches it.
     #[test]
     fn no_markup_leaks_into_the_page_as_visible_text() {
-        // The self-containment and well-formedness guards both pass on an
-        // over-escaped page — `&lt;code&gt;` is valid HTML, it just renders the tag
-        // as literal text to the reader. Eleven leads shipped that way. Only a
-        // check on the *rendered* text catches it.
         let doc = generate();
         // Only tag names that cannot double as a prose placeholder. `<p>` is out:
         // it is the value placeholder in `--project <p>`, and `<addr>`/`<ref>`/`<n>`
@@ -3410,6 +3419,8 @@ mod tests {
         );
     }
 
+    /// The whole promise of the file: it opens anywhere, offline, forever. Any
+    /// external reference — a CDN script, a web font, a remote image — breaks it.
     #[test]
     fn docs_page_is_self_contained() {
         let doc = generate();
@@ -3551,8 +3562,6 @@ mod tests {
         assert!(snip.contains("a&lt;b"));
     }
 
-    /// The page must be substantial — a guard against a refactor quietly rendering
-    /// an empty shell that still passes every structural assertion above.
     /// Pull every `snippet()` block out of a page as (command, output) pairs.
     /// The page is the only source of truth here — the test reads what a reader
     /// reads, not some parallel list an author has to remember to update.
@@ -3753,6 +3762,8 @@ mod tests {
         }
     }
 
+    /// The page must be substantial — a guard against a refactor quietly rendering
+    /// an empty shell that still passes every structural assertion above.
     #[test]
     fn docs_page_has_real_content() {
         let doc = generate();

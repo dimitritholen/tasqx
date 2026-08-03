@@ -60,10 +60,11 @@ impl Engine {
         let now_ts = parse_ts(&now());
 
         // D24: a report is an *aggregation*, so abandoned work must not inflate
-        // any total. tasqx has no hard delete (DESIGN §725) — cancelling is how
-        // you get rid of a task — so without this every throwaway task counted
-        // forever. `done` deliberately still counts: completed work is real work
-        // and carries nearly all the tracked time.
+        // any total. tasqx has no hard delete (DESIGN.md §7, "No hidden bulk
+        // delete") — cancelling is how you get rid of a task — so without this
+        // every throwaway task counted forever. `done` deliberately still
+        // counts: completed work is real work and carries nearly all the
+        // tracked time.
         //
         // Resolution order (D24): `all` wins; otherwise a caller who already
         // named a status is taken literally, so `status:cancelled` returns

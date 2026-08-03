@@ -26,11 +26,6 @@ use crate::theme::{Caps, ColorDepth};
 /// under `NO_COLOR`. On any of those an alt-screen UI would either dump
 /// `\x1b[?1049h` into a file or paint a screen the terminal cannot clear.
 ///
-/// This reuses `Caps::detect`'s answer rather than asking `IsTerminal` again.
-/// A second detection is how the printed output and the interactive output
-/// start disagreeing about what the terminal is — and `Caps::detect` already
-/// carries the Windows VT probe, which a bare `is_terminal()` does not.
-///
 /// Interactivity is asked of the STREAMS, not of the colour detector.
 ///
 /// This was first written as `*caps != Caps::PLAIN`, reusing `Caps::detect` on
@@ -60,6 +55,13 @@ pub fn is_interactive(caps: &Caps) -> bool {
 /// untestable at exactly the point it just went wrong. Same move `config.rs`
 /// makes by taking an explicit directory and `datetime.rs` by taking an
 /// explicit `now`.
+///
+/// The `*caps != Caps::PLAIN` term survives the `CLICOLOR_FORCE` lesson because
+/// it is not a second answer to "is a human there": `TERM=dumb` and a pre-VT
+/// Windows console under `NO_COLOR` are both real ttys that cannot be painted
+/// on, and only `Caps::detect` — which runs the Windows VT probe a bare
+/// `is_terminal()` knows nothing about — can tell. It narrows the two stream
+/// facts; it never stands in for them.
 pub fn is_interactive_with(caps: &Caps, stdout_tty: bool, stdin_tty: bool) -> bool {
     stdout_tty && stdin_tty && *caps != Caps::PLAIN
 }

@@ -1796,9 +1796,14 @@ impl Conn {
 
 /// A line read from the daemon: either an unsolicited event or a response.
 pub enum Frame {
-    /// An unsolicited push (a `task.changed` broadcast). Carries no request id,
-    /// which is exactly how the reader tells the two apart — correlating a push
-    /// with a pending request is what this enum exists to make impossible.
+    /// An unsolicited push (a `task.changed` broadcast). It carries an `event`
+    /// key and no request id, and it is the `event` key the reader classifies
+    /// on: id-absence cannot be the test, because the transport-level refusal
+    /// `unavailable_envelope` builds is id-less too and has to arrive as a
+    /// [`Frame::Response`] for [`Conn::request`] to turn it into
+    /// `ConnectionRefused` rather than park it as a push nobody is waiting for.
+    /// Correlating a push with a pending request is what this enum exists to
+    /// make impossible.
     Event(Value),
     /// The correlated answer to a request this client sent.
     Response(Value),

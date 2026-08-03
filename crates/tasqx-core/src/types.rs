@@ -595,8 +595,12 @@ mod tests {
         );
     }
 
-    /// `sql_in_list` builds SQL by string concatenation, and four live queries
-    /// now depend on it. Two distinct ways it could go wrong silently: emitting
+    /// `sql_in_list` builds SQL by string concatenation, and every status
+    /// `IN`/`NOT IN` clause in the engine and the scheduler now depends on it.
+    /// The number of those queries is deliberately not stated here: it was
+    /// written as "four" and was five before anyone noticed, and a count that
+    /// drifts silently is exactly what this test exists to stop happening to the
+    /// clause itself. Two distinct ways it could go wrong silently: emitting
     /// the wrong *set* (a filter predicate applied inversely would swap which
     /// tasks a burndown or a blocked-check sees, with no error anywhere), or
     /// emitting the wrong *shape* — a missing quote or a stray separator turns

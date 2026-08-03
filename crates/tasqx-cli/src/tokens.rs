@@ -24,10 +24,18 @@ use serde_json::Value;
 
 /// The four buckets: the `report.summary` key, a short label, and a full one.
 ///
-/// Order is fixed and load-bearing, not alphabetical. It runs cheapest-per-token
-/// to dearest, so a reader scanning left to right crosses the price gradient in
-/// one direction, and `dominant` breaks ties by it — two buckets at exactly the
-/// same count report the cheaper one, which is the reading that cannot flatter.
+/// Order is fixed and load-bearing, not alphabetical: the two cache buckets
+/// lead, then input, then output, and `dominant` breaks ties by that order, so
+/// two buckets at exactly the same count always report the same one on both
+/// surfaces instead of whichever the iteration happened to reach last.
+///
+/// It is NOT a price gradient, and an earlier version of this paragraph claimed
+/// it was. Under the published relative prices the module header's percentages
+/// are computed from, cache WRITE costs more per token than input, so
+/// `cacheR · cacheW · in · out` does not ascend in price and a left-to-right
+/// scan crosses no cost ranking. Do not read one into it: the order carries no
+/// cost meaning at all, which is the same position [`dominant`] takes, for the
+/// same reason — tasqx has no price list, and a stale one is worse than none.
 ///
 /// Two labels because the surfaces have different budgets, and only opening the
 /// page showed it: the terminal has a 12-character cell and needs `cacheR`, while
@@ -54,7 +62,9 @@ pub fn dominant(group: &Value) -> Option<(&'static str, i64)> {
         .map(|(key, short, _)| (*short, group.get(key).and_then(Value::as_i64).unwrap_or(0)))
         .filter(|(_, n)| *n > 0)
         // `max_by_key` returns the LAST maximum, so iterate reversed to keep the
-        // first — which, given BUCKETS' order, is the cheaper of a tied pair.
+        // first — the bucket that comes earliest in BUCKETS, which is a fixed
+        // answer rather than a cost-ranked one (see BUCKETS: that order is not a
+        // price gradient).
         .rev()
         .max_by_key(|(_, n)| *n)
 }

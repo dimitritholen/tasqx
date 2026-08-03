@@ -2077,15 +2077,6 @@ fn unknown_key(key: &str) -> ApiError {
     ))
 }
 
-/// `tasqx config list|get|path`.
-/// Reject a value that would persist but never take effect.
-///
-/// This lives here, shared, because the first version put theme validation
-/// inline in `theme set` only — so `tasqx theme set bogus` was rejected while
-/// `tasqx config set theme.name bogus` wrote it happily and exited 0. The
-/// primitive was looser than its own alias, which is backwards: `theme::load`
-/// falls back to the default for an unknown name, so the write persists a value
-/// that silently does nothing on every run from then on.
 /// Read one setting from `config.toml` strictly, reporting a wrong-typed value
 /// on stderr before returning the fallback.
 ///
@@ -3123,7 +3114,6 @@ mod tests {
         out
     }
 
-    /// Every documented example must at least be a command this binary accepts.
     /// Review findings on `memory import`: the `*.md` filter was
     /// case-sensitive (README.MD silently skipped, on the OS whose filesystems
     /// are case-insensitive), and a UTF-8 BOM defeated the `# ` title match
@@ -3152,6 +3142,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Every documented example must at least be a command this binary accepts.
     ///
     /// The executable guard in `tests/help.rs` only runs the `RunKind::Safe`
     /// half; the `NoRun` half — the mutating and long-running examples, more
@@ -3187,10 +3178,16 @@ mod tests {
         }
         // Both halves of COMMAND_REF are in scope; a filter or iteration bug
         // that checked nothing would otherwise pass silently.
-        // 52 examples (27 Safe + 25 NoRun), two of which are two-command
-        // pipelines and so contribute two segments each.
+        // 72 examples (35 Safe + 37 NoRun), two of which are two-command
+        // pipelines and so contribute two segments each — 74 segments.
+        //
+        // Re-derive this whenever a row is added to COMMAND_REF. It said 52/54
+        // for long enough that twenty examples could have been deleted without
+        // the floor noticing, which is the failure mode a floor exists to
+        // prevent: it kept reporting green while guarding a quarter of what it
+        // claimed to.
         assert!(
-            checked >= 54,
+            checked >= 74,
             "expected every example, only checked {checked}"
         );
     }
@@ -3916,8 +3913,9 @@ mod tests {
     /// `tasqx delete 3` is what a human reaches for, and it exited with
     /// "unrecognized subcommand" while suggesting `complete`, `l` and `d` —
     /// three verbs, none of them the right one. tasqx has no hard delete by
-    /// design (DESIGN.md §725: cancellation is reversible and logged), so the
-    /// fix is to make the word people actually type land on that verb.
+    /// design (DESIGN.md §7, "No hidden bulk delete": cancellation is
+    /// reversible and logged), so the fix is to make the word people actually
+    /// type land on that verb.
     #[test]
     fn delete_aliases_resolve_to_cancel() {
         for verb in ["cancel", "delete", "del", "rm"] {

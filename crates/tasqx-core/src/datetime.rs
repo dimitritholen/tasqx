@@ -302,8 +302,12 @@ pub fn parse_duration(input: &str) -> Result<String, ApiError> {
             return Err(bad());
         }
         let n: i64 = num.parse().map_err(|_| bad())?;
-        // Checked: `1000000000000000000w1000000000000000000w` overflows the
-        // accumulator itself, before the fold below ever runs.
+        // `checked_add`, not `+`: one pair's count always fits, because the
+        // parse above refuses anything wider than an `i64`, but enough repeated
+        // pairs (`…w…w…w…`) sum past it right here, before the fold below is
+        // reached. Note the suite's `1000000000000000000w1000000000000000000w`
+        // is NOT that case — it sums to 2e18, which fits — and is refused one
+        // step later by the `weeks * 7` fold instead.
         let acc = |slot: &mut i64| -> Result<(), ApiError> {
             *slot = slot.checked_add(n).ok_or_else(bad)?;
             Ok(())
