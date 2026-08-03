@@ -111,12 +111,14 @@ and stayed there while the scope grew by dozens of mutants and a survivor
 appeared in two consecutive CI sweeps — which is the failure this page's last
 line warns about, committed on the page itself.
 
-Last sweep: run 30811736799 on `a2f767b` (2026-08-03, 53 minutes on a CI
-runner at `--jobs 2`), count for count identical to the scheduled
-run 30791446542 on `ce3f284` earlier the same morning.
+Last sweep: run 30811736799 on `a2f767b` (2026-08-03, on a CI runner at
+`--jobs 2`), count for count identical to the scheduled run 30791446542 on
+`ce3f284` earlier the same morning. The line below is quoted verbatim from that
+run's log, wall clock and all — the same line appears in the comment on the
+`mutants` job in `.github/workflows/ci.yml`, and a test compares the two.
 
 ```text
-203 mutants tested: 1 missed, 184 caught, 14 unviable, 4 timeouts
+203 mutants tested in 53m: 1 missed, 184 caught, 14 unviable, 4 timeouts
 ```
 
 `types.rs` and `urgency.rs` are clean, and so is every real gap the first sweep
