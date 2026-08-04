@@ -26,7 +26,7 @@ Your tasks are a SQLite file on your disk. It works offline and there's nothing 
 
 ## Install
 
-Tagged releases get prebuilt binaries for Linux, macOS and Windows on the [Releases page](https://github.com/dimitritholen/tasqx/releases) — download, unpack, put `tasqx` on your PATH. There is no runtime to install and no dynamic linking; SQLite is bundled.
+Tagged releases get prebuilt binaries for Linux, macOS and Windows on the [Releases page](https://github.com/dimitritholen/tasqx/releases) — download, unpack, put `tasqx` on your PATH. There is no runtime to install and no dynamic linking; SQLite is bundled. Each archive also carries a `completions/` directory: one line per shell, and `tasqx completions --install` will put the right one in the right file for you.
 
 Or build from source. Needs Rust 1.95 or newer — a measured floor, not a guess — which `Cargo.toml` enforces:
 
@@ -57,6 +57,8 @@ Verbs and flags, closed value sets, file paths, your task ids, project and tag n
 Task ids come with their titles in zsh, fish and PowerShell. bash and elvish show bare ids: their registrations write candidate values only, so there is nowhere for the title to go. That is upstream's protocol rather than a tasqx setting, and it is why `tasqx done 4<TAB>` is more useful in some of these shells than others.
 
 Two details that aren't what you'd guess. Aliases come along, but a canonical name wins the prefix: `tasqx ls<TAB>` gives `ls` and `tasqx mod<TAB>` gives `modify` rather than `mod`. And the id menu is every task sorted by urgency, not just the open ones — `reopen` and `why` want the closed ones, and a menu that hid them would look like an answer.
+
+It is not on when you install tasqx, and no install route can turn it on for you except a package manager. So the binary mentions it: the first interactive run whose shell startup file has no sign of completion prints one line on stderr naming the command below, once, and records that it did. `tasqx config set completion.hint false` stops it before it is ever said. The check reads the one file `--install` would edit, so a line you put somewhere else — `~/.zprofile`, an oh-my-zsh custom file — is invisible to it and you may be told about a thing you already have. Once.
 
 `tasqx completions <shell>` prints one line. Put it in your startup file:
 
