@@ -163,6 +163,7 @@
 //! paste and never type the variable name.
 
 pub(crate) mod candidates;
+pub(crate) mod hint;
 pub(crate) mod install;
 
 use std::ffi::{OsStr, OsString};

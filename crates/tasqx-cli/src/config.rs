@@ -211,6 +211,17 @@ pub const SETTINGS: &[Setting] = &[
                   0 stays up until Ctrl-C (D5).",
     },
     Setting {
+        key: "completion.hint",
+        home: Home::Toml,
+        kind: Kind::Bool,
+        default: "true",
+        env: None,
+        flag: None,
+        choices: Choices::Free,
+        summary: "Mention `tasqx completions --install` once, on a terminal, when Tab completion \
+                  does not look switched on (D57).",
+    },
+    Setting {
         key: "default_project",
         home: Home::Store,
         kind: Kind::Str,

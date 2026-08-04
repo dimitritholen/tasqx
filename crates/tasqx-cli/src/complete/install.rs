@@ -466,6 +466,26 @@ fn target_path(a: &'static Activation) -> Result<PathBuf, ApiError> {
     }
 }
 
+/// The file `--install` would edit for `$SHELL`, for a caller that only wants
+/// to LOOK at it (D57's probe — `hint::state`).
+///
+/// Every refusal this verb makes loudly is a `None` here: no `$SHELL`, a shell
+/// tasqx does not complete, no home directory, and PowerShell's deliberate
+/// refusal to guess a profile path. That is the whole difference between the two
+/// callers. A human who typed `tasqx completions --install` asked a question and
+/// gets the sentence explaining which of those four it was; the hint path is
+/// running on the way out of some unrelated command and has nothing to say about
+/// any of them — it just does not know, and [`super::hint::State::Unknown`] is
+/// where that lands.
+///
+/// Deliberately *not* a second resolution of the same two steps: the drift shape
+/// D30 rules against is exactly a probe that looks in `~/.bashrc` while
+/// `--install` writes somewhere else, which would make the note appear for a user
+/// who is already set up and never appear for one who is not.
+pub(super) fn probe_target() -> Option<PathBuf> {
+    target_path(resolve_shell(None).ok()?).ok()
+}
+
 /// fish's completions file under `xdg_config_home`, falling back to
 /// `~/.config` when the variable is unset or empty.
 ///
