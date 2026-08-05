@@ -225,11 +225,16 @@ fn window(scroll: usize, len: usize, visible: usize) -> (usize, usize, usize) {
     let visible = visible.max(1);
     let start = scroll_start(scroll, len, visible);
     let remaining = len - start;
-    if remaining > visible {
+    // A single-row panel spends its row on DATA, never on the count of the data
+    // it is not showing. With `visible == 1` the marker took the only line
+    // there was, so BLOCKED and RECENT at 80x24 read `…3 more` and `…31 more`
+    // and showed no task at any scroll position — a panel that had become a
+    // counter for its own emptiness.
+    if remaining > visible && visible > 1 {
         let room = visible - 1;
         (start, room, remaining - room)
     } else {
-        (start, remaining, 0)
+        (start, remaining.min(visible), 0)
     }
 }
 
