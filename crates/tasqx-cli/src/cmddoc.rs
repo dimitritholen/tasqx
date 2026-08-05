@@ -242,6 +242,33 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::GettingStarted,
     },
     CmdDoc {
+        verb: "dashboard",
+        aliases: &["dash"],
+        method: "task.list + report.summary + project.list + event.list",
+        summary: "Open the overview screen, or ask for its panels as data.",
+        usage: "tasqx dashboard [--json]",
+        examples: &[
+            // `NoRun` for the screen, and `Safe` for the document — the split
+            // is the point of this verb. The executable-examples guard runs a
+            // Safe example with `Command::output()`, which gives it a piped
+            // stdout; that is the exact situation the screen refuses and the
+            // exact situation `--json` is built for.
+            ex_norun("tasqx dashboard", "open the overview screen"),
+            exn(
+                "tasqx --json dashboard",
+                "the same panels as one JSON document",
+            ),
+        ],
+        notes: &[
+            "The same screen a bare `tasqx` opens on a terminal. Spelling it explicitly works even when `dashboard.enabled` is off — that setting protects the meaning of the BARE invocation, and typing the verb is not a breaking change to anything.",
+            "It needs a terminal of at least 56x14 on stdin AND stdout, and says which it got when it refuses. A bare `tasqx` in a window that small falls back to the working-set table instead, silently: whoever typed nothing did not ask for a dashboard.",
+            "`--json` skips both of those checks, because it opens no screen. It is the only verb where `--json` decides whether the terminal gate applies, and it is what makes the panel data reachable from a script.",
+            "Read-only, with one exception: `p` opens the picker, and Enter there starts the highlighted task. `q`, `esc` and ctrl-c all close.",
+        ],
+        see_also: &["list", "pick", "agenda", "chart"],
+        topic: Topic::GettingStarted,
+    },
+    CmdDoc {
         verb: "pick",
         aliases: &["p", "fzf"],
         method: "task.list + task.start",

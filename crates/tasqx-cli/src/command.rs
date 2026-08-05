@@ -696,6 +696,17 @@ pub(super) enum Command {
     /// Print the single highest-urgency unblocked task (the "what now" button).
     #[command(after_help = crate::cmddoc::after_help("next"))]
     Next,
+    /// Open the dashboard: an overview screen over the working set, deadlines,
+    /// blocked work, projects, burndown and token spend (DESIGN.md §12-D58).
+    ///
+    /// The same screen a bare `tasqx` opens on a terminal, spelled explicitly —
+    /// so it works when the bare invocation is switched off, and so scripts can
+    /// ask for the panels as data with `--json`.
+    ///
+    /// Needs a terminal of at least 56x14, and says so rather than drawing a
+    /// half screen. `--json` needs neither: it opens nothing.
+    #[command(alias = "dash", after_help = crate::cmddoc::after_help("dashboard"))]
+    Dashboard,
     /// Choose a task on a full-screen list and start it (maps to task.list,
     /// then task.start).
     ///
