@@ -202,6 +202,37 @@ fn now_body(
     vec![head, second, third]
 }
 
+/// The first row to draw, clamped so scrolling stops when the last row is on
+/// screen — never at `len - 1`.
+///
+/// Clamping to `len - 1` was a real defect: a panel whose rows all fitted still
+/// scrolled, so one `j` pushed the top row out of a rect with blank space to
+/// spare, and `G` parked the final row alone at the top of an empty panel. The
+/// bound is a function of the VIEWPORT, which is why it lives here and not in
+/// `App` — the state machine is deliberately never told the terminal's height,
+/// the same division `pick::first_visible` makes.
+fn scroll_start(scroll: usize, len: usize, visible: usize) -> usize {
+    scroll.min(len.saturating_sub(visible.max(1)))
+}
+
+/// `(first row, rows to draw, rows still hidden below)` for a list panel.
+///
+/// The marker line is only reserved when there is something to mark. Reserving
+/// it unconditionally left a blank row at the bottom of every panel scrolled to
+/// its end — the marker had nothing to say, and the row it had taken stayed
+/// empty.
+fn window(scroll: usize, len: usize, visible: usize) -> (usize, usize, usize) {
+    let visible = visible.max(1);
+    let start = scroll_start(scroll, len, visible);
+    let remaining = len - start;
+    if remaining > visible {
+        let room = visible - 1;
+        (start, room, remaining - room)
+    } else {
+        (start, remaining, 0)
+    }
+}
+
 /// The id column is sized from EVERY row the panel can scroll to, not from the
 /// screenful being drawn — otherwise the columns re-align on every `j` press.
 fn id_width(rows: &[Task]) -> usize {
@@ -211,16 +242,10 @@ fn id_width(rows: &[Task]) -> usize {
         .unwrap_or(3)
 }
 
-fn more_line(
-    shown: usize,
-    total: usize,
-    s: &Styles,
-    w: usize,
-    unicode: bool,
-) -> Option<Line<'static>> {
-    (total > shown).then(|| {
+fn more_line(hidden: usize, s: &Styles, w: usize, unicode: bool) -> Option<Line<'static>> {
+    (hidden > 0).then(|| {
         Line::from(Span::styled(
-            render::truncate(&format!("…{} more", total - shown), w, unicode),
+            render::truncate(&format!("…{hidden} more"), w, unicode),
             s.muted,
         ))
     })
@@ -248,13 +273,8 @@ fn next_body(
     }
     let idw = id_width(rows);
     let visible = height as usize;
-    let start = scroll.min(rows.len().saturating_sub(1));
     let mut out = Vec::new();
-    let room = if rows.len() > visible {
-        visible - 1
-    } else {
-        visible
-    };
+    let (start, room, hidden) = window(scroll, rows.len(), visible);
     for t in rows.iter().skip(start).take(room) {
         let urg = format!("{:>4.1}", t.urgency);
         let prio = t.priority.map(|p| p.as_str()).unwrap_or("-");
@@ -279,7 +299,7 @@ fn next_body(
             Span::styled(render::truncate(t.title(), rest, unicode), s.plain),
         ]));
     }
-    if let Some(l) = more_line(start + room, rows.len(), s, w, unicode) {
+    if let Some(l) = more_line(hidden, s, w, unicode) {
         out.push(l);
     }
     out
@@ -328,8 +348,15 @@ fn due_body(
     }
     let visible = height as usize;
     if out.len() > visible {
-        let start = scroll.min(out.len() - 1);
-        out = out.into_iter().skip(start).collect();
+        // Keep one row for the marker, so DUE says what it is hiding. Every
+        // other list panel does; this one silently truncated, and on a short
+        // window that meant the tasks due today — the panel's whole point —
+        // vanished with nothing to say they existed.
+        let (start, room, hidden) = window(scroll, out.len(), visible);
+        out = out.into_iter().skip(start).take(room).collect();
+        if let Some(l) = more_line(hidden, s, w, unicode) {
+            out.push(l);
+        }
     }
     out
 }
@@ -347,12 +374,7 @@ fn blocked_body(
         return empty("nothing is blocked", s, w as u16, unicode);
     }
     let visible = height as usize;
-    let room = if rows.len() > visible {
-        visible - 1
-    } else {
-        visible
-    };
-    let start = scroll.min(rows.len().saturating_sub(1));
+    let (start, room, hidden) = window(scroll, rows.len(), visible);
     let mut out: Vec<Line<'static>> = rows
         .iter()
         .skip(start)
@@ -367,7 +389,7 @@ fn blocked_body(
             ])
         })
         .collect();
-    if let Some(l) = more_line(start + room, rows.len(), s, w, unicode) {
+    if let Some(l) = more_line(hidden, s, w, unicode) {
         out.push(l);
     }
     out
@@ -386,12 +408,7 @@ fn recent_body(
         return empty("nothing has changed yet", s, w as u16, unicode);
     }
     let visible = height as usize;
-    let room = if rows.len() > visible {
-        visible - 1
-    } else {
-        visible
-    };
-    let start = scroll.min(rows.len().saturating_sub(1));
+    let (start, room, hidden) = window(scroll, rows.len(), visible);
     let mut out: Vec<Line<'static>> = rows
         .iter()
         .skip(start)
@@ -410,7 +427,7 @@ fn recent_body(
             ])
         })
         .collect();
-    if let Some(l) = more_line(start + room, rows.len(), s, w, unicode) {
+    if let Some(l) = more_line(hidden, s, w, unicode) {
         out.push(l);
     }
     out
@@ -429,10 +446,10 @@ fn projects_body(
         return empty("no projects yet — tasqx init <name>", s, w as u16, unicode);
     }
     let visible = height as usize;
-    let start = scroll.min(rows.len().saturating_sub(1));
+    let (start, room, _) = window(scroll, rows.len(), visible);
     rows.iter()
         .skip(start)
-        .take(visible)
+        .take(room)
         .map(|r| {
             let star = if r.is_default { "*" } else { " " };
             let name = r.name().unwrap_or("(none)");

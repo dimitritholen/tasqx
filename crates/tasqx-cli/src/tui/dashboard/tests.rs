@@ -665,6 +665,104 @@ fn the_panel_vocabulary_round_trips() {
     assert!(PanelId::from_slug("slot").is_none());
 }
 
+/// Scrolling stops when the last row is on screen, not at `len - 1`.
+///
+/// Found by driving the binary, not by a test: with two tasks in a panel with
+/// room for four, one `j` pushed the top row off and left a blank line, and `G`
+/// parked the final row alone at the top of an empty rect. The bound belongs to
+/// the VIEWPORT, so it is clamped where the rows are drawn — `App` is never
+/// told the terminal's height.
+#[test]
+fn a_panel_whose_rows_all_fit_does_not_scroll() {
+    let a = app();
+    let d = a.dash();
+    let rows = d.next.rows.len();
+    assert!(rows >= 2, "the fixture must have rows to scroll");
+
+    // A viewport with room to spare: every row is drawn from index 0 whatever
+    // the scroll offset says.
+    let tall = panels::body(
+        PanelId::Next,
+        model::Detail::Full,
+        d,
+        60,
+        rows as u16 + 3,
+        99,
+        &theme::load("nord", None),
+        &caps(),
+    );
+    let text = tall
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for t in &d.next.rows {
+        assert!(
+            text.contains(&format!("#{}", t.short_id)),
+            "#{} scrolled out of a panel it fits in:\n{text}",
+            t.short_id
+        );
+    }
+}
+
+/// A panel that IS scrolling still shows a full screenful at the bottom.
+#[test]
+fn scrolling_to_the_end_leaves_no_blank_rows() {
+    let a = app();
+    let d = a.dash();
+    let rows = d.recent.rows.len();
+    assert!(rows >= 4, "the fixture must overflow a small viewport");
+
+    let visible = 3u16;
+    let body = panels::body(
+        PanelId::Recent,
+        model::Detail::Full,
+        d,
+        60,
+        visible,
+        999,
+        &theme::load("nord", None),
+        &caps(),
+    );
+    let drawn = body
+        .iter()
+        .filter(|l| !l.to_string().trim().is_empty())
+        .count();
+    assert_eq!(
+        drawn, visible as usize,
+        "scrolled to the end, the panel must still fill its {visible} rows, drew {drawn}"
+    );
+}
+
+/// The help overlay is a bordered box wide enough for its own longest line.
+///
+/// It used to be a fixed 46 cells, which cut `focus a panel (or place it in the
+/// analytics slot)` mid-word at EVERY terminal size — no window revealed the
+/// tail — and it had no border, so the cleared rectangle read as the dashboard
+/// having come apart.
+#[test]
+fn the_help_overlay_is_bordered_and_shows_every_binding_whole() {
+    let mut a = app();
+    a.on_key(key(KeyCode::Char('?')));
+    let text = all_text(&draw_at(&a, 100, 30, &caps()));
+
+    // A corner somewhere INSIDE the frame, not the frame's own. `contains('┌')`
+    // proves nothing here — the dashboard draws one at (0,0) either way.
+    let buf = draw_at(&a, 100, 30, &caps());
+    let inner_corner = (1..29).any(|y| (1..99).any(|x| buf[(x, y)].symbol() == "┌"));
+    assert!(
+        inner_corner,
+        "the overlay must have a border of its own, not just a cleared hole:\n{text}"
+    );
+    for (k, what) in KEYS {
+        assert!(text.contains(k), "help is missing the key {k:?}");
+        assert!(
+            text.contains(what),
+            "help truncates {k:?}'s description — {what:?} is not shown whole:\n{text}"
+        );
+    }
+}
+
 /// An empty panel prints a sentence. A blank body reads as a hung screen.
 #[test]
 fn an_empty_panel_says_so_rather_than_drawing_nothing() {
