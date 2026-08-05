@@ -622,7 +622,9 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     ];
     for (k, what) in KEYS {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {k:<10}"), accent),
+            // Width from the table itself: a hard-coded 10 fused
+            // `tab / S-tab` (11 cells) into the description beside it.
+            Span::styled(format!("  {k:<width$}", width = key_column()), accent),
             Span::styled((*what).to_string(), RtStyle::default()),
         ]));
     }
@@ -632,16 +634,56 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         muted,
     )));
 
+    // Wide enough for the longest line it actually holds. A fixed width cut
+    // `focus a panel (or place it in the analytics slot)` mid-word at EVERY
+    // terminal size, so no window ever revealed the tail.
+    let widest = lines
+        .iter()
+        .map(|l| render::width(&l.to_string()))
+        .max()
+        .unwrap_or(0) as u16;
+    let w = (widest + 4).min(area.width);
     let h = (lines.len() as u16 + 2).min(area.height);
-    let w = 46u16.min(area.width);
     let x = (area.width - w) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let rect = Rect::new(x, y, w, h);
     frame.render_widget(ratatui::widgets::Clear, rect);
-    frame.render_widget(
-        Paragraph::new(lines),
-        Rect::new(x + 1, y + 1, w.saturating_sub(2), h.saturating_sub(1)),
-    );
+    // A BORDER, not just a cleared rectangle. Without one the overlay reads as
+    // the dashboard having come apart: the panels around it keep their rules,
+    // and the blank region in the middle looks like damage rather than like
+    // something drawn on top.
+    let rule = if caps.unicode { '─' } else { '-' };
+    let side = if caps.unicode { '│' } else { '|' };
+    let (tl, tr, bl, br) = if caps.unicode {
+        ('┌', '┐', '└', '┘')
+    } else {
+        ('+', '+', '+', '+')
+    };
+    let inner = w.saturating_sub(2) as usize;
+    let mut framed: Vec<Line> = Vec::with_capacity(lines.len() + 2);
+    framed.push(Line::from(Span::styled(
+        format!("{tl}{}{tr}", rule.to_string().repeat(inner)),
+        muted,
+    )));
+    for l in lines {
+        let text = l.to_string();
+        let pad = inner.saturating_sub(render::width(&text));
+        framed.push(Line::from(vec![
+            Span::styled(side.to_string(), muted),
+            Span::raw(format!("{text}{}", " ".repeat(pad))),
+            Span::styled(side.to_string(), muted),
+        ]));
+    }
+    framed.push(Line::from(Span::styled(
+        format!("{bl}{}{br}", rule.to_string().repeat(inner)),
+        muted,
+    )));
+    frame.render_widget(Paragraph::new(framed), rect);
+}
+
+/// The width the help overlay's key column needs, derived rather than guessed.
+fn key_column() -> usize {
+    KEYS.iter().map(|(k, _)| k.len()).max().unwrap_or(8) + 1
 }
 
 /// Every binding, once. The help overlay renders from this, and a gate asserts
