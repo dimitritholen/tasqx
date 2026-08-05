@@ -23,18 +23,13 @@ use crate::tokens::BUCKETS;
 use super::model::{Dashboard, PanelId, Task};
 
 /// The panel a `PanelId` names, in the document's vocabulary.
+///
+/// One table, on the enum: this used to be a second copy, and a second copy of
+/// a name list is how `dashboard.panels` and this document would come to
+/// disagree about what a panel is called. `Slot` keeps its spelling here
+/// because the document has shipped with it.
 fn panel_name(id: PanelId) -> &'static str {
-    match id {
-        PanelId::Now => "now",
-        PanelId::Next => "next",
-        PanelId::Due => "due",
-        PanelId::Blocked => "blocked",
-        PanelId::Recent => "recent",
-        PanelId::Projects => "projects",
-        PanelId::Burndown => "burndown",
-        PanelId::Tokens => "tokens",
-        PanelId::Slot => "slot",
-    }
+    id.slug().unwrap_or("slot")
 }
 
 /// One task row. The model guarantees there is exactly one row type, so every
