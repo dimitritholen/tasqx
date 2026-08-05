@@ -6,7 +6,7 @@
 //! from the active tasqx theme, so terminal and web match. All data comes from
 //! pure core reads (`report.summary`, `task.list`, `store.export`, `event.list`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde_json::{json, Value};
 use tasqx_core::{dispatch, ApiError, Engine};
@@ -192,12 +192,11 @@ impl<'a> Report<'a> {
         top_tags.truncate(10);
 
         // ---- charts ----
-        let all_ids: HashSet<String> = tasks
-            .iter()
-            .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
-            .collect();
         let throughput = chart::throughput(self.events, 12, today());
-        let burndown = chart::burndown(self.events, &all_ids, 30, today());
+        // Through the shared projection, so the report and the dashboard cannot
+        // disagree about whether a task was open on a given day.
+        let members = chart::members_of(&json!({ "tasks": tasks }));
+        let burndown = chart::burndown(self.events, &members, 30, today());
 
         // ---- assemble ----
         let css = self.css();
