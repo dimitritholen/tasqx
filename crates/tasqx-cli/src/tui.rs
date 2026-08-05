@@ -10,6 +10,7 @@
 //! the untestable surface here is the handful of lines that actually put a real
 //! console into raw mode.
 
+pub mod dashboard;
 pub mod pick;
 pub mod settings;
 

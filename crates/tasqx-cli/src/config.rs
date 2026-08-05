@@ -158,6 +158,23 @@ pub const SETTINGS: &[Setting] = &[
             "Terminal theme: a built-in (nord, gruvbox, dracula, solarized, mono) or a user file.",
     },
     Setting {
+        key: "dashboard.enabled",
+        home: Home::Toml,
+        kind: Kind::Bool,
+        // On, because the dashboard IS the new meaning of a bare `tasqx` (D58).
+        // The setting exists as the escape hatch a breaking change owes its
+        // users, not as an opt-in.
+        default: "true",
+        // The env is what a CI image needs: one line, no config file to write
+        // into an image layer. It is also the reason this row exists at all —
+        // the drift gate refuses a `TASQX_*` the code reads and the registry
+        // does not declare.
+        env: Some("TASQX_DASHBOARD"),
+        flag: None,
+        choices: Choices::Free,
+        summary: "Open the dashboard when `tasqx` is run bare on a terminal (D58).",
+    },
+    Setting {
         key: "notify.enabled",
         home: Home::Toml,
         kind: Kind::Bool,
