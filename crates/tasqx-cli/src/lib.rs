@@ -2473,11 +2473,12 @@ fn run_dashboard_json(be: &mut Backend, _ctx: &Ctx) -> CmdOutcome {
 /// one shared `from` would silently be the narrowest of them.
 ///
 /// `days_back` is passed generously by callers (a week of slack on the
-/// week-bucketed charts). The bound is an optimisation, not semantics: too wide
-/// costs a few rows, too narrow loses history that was supposed to be drawn.
-/// `burndown` additionally survives a clipped window by design — a task whose
-/// `add` fell outside it reads as open rather than unborn, which is what
-/// `Life::born_in_window` is for.
+/// week-bucketed charts). The bound is an optimisation and not semantics —
+/// which became TRUE only with D60: under the forwards reconstruction a
+/// narrower window really did change the answer, and this comment claimed
+/// otherwise for as long as that was the case. Backwards, existence comes from
+/// `created` and today's state from the snapshot, so a clipped window costs
+/// only the days whose changes it hid.
 ///
 /// `limit` stays as the belt to this parameter's braces: `ORDER BY id DESC
 /// LIMIT n` drops the OLDEST rows if it ever binds, which is the direction the
@@ -2496,63 +2497,38 @@ fn events_since(
     )
 }
 
-/// Every status a burndown counts as membership — i.e. everything but
-/// `cancelled`. Spelled out positively because `task.list` keeps its literal
-/// "no filter = all rows" contract (D24 is a *report* rule, applied in core to
-/// `report.summary` only), so the exclusion has to live here, at the CLI.
-///
-/// Derived from `Status::ALL` + `counts_in_reports()` rather than typed out, so
-/// a new variant joins the burndown by construction. The hand-written version of
-/// this constant had already lost `status:backlog` once, and nothing failed —
-/// a burndown silently missing tasks still looks like a valid burndown.
-static NOT_CANCELLED: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    tasqx_core::types::Status::ALL
-        .into_iter()
-        .filter(|s| s.counts_in_reports())
-        .map(|s| format!("status:{}", s.as_str()))
-        .collect::<Vec<_>>()
-        .join(" or ")
-});
-
 /// Resolve the task ids a burndown covers, plus its label. Split out of the
 /// `ChartKind::Burndown` arm so the scope rule is testable on its own.
 ///
-/// Both branches go through `task.list` with [`NOT_CANCELLED`]. The `None`
+/// Both branches go through `task.list` with no status filter (D60). The `None`
 /// branch previously used an unfiltered `store.export`, which is what let
 /// cancelled tasks inflate the whole-store burndown's "remaining work" line.
 fn burndown_members(
     engine: &Engine,
     project: &Option<String>,
-) -> Result<(std::collections::HashSet<String>, String), ApiError> {
+) -> Result<(Vec<chart::Member>, String), ApiError> {
     let (filter, label) = match project {
         // Through `filter::quote`, never interpolated: a project may be named
         // `Home Renovation` or `a (b)`, and a raw `{p}` composes a filter that
         // asks a different question (or none at all) without saying so.
         Some(p) => (
-            format!(
-                "project:{} and ({})",
-                tasqx_core::filter::quote(p),
-                *NOT_CANCELLED
-            ),
+            Some(format!("project:{}", tasqx_core::filter::quote(p))),
             p.clone(),
         ),
-        None => (NOT_CANCELLED.to_string(), "all tasks".to_string()),
+        None => (None, "all tasks".to_string()),
     };
-    let listed = dispatch(
-        engine,
-        "task.list",
-        &json!({ "filter": filter, "fields": ["id"] }),
-    )?;
-    let ids = listed
-        .get("tasks")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
-                .collect::<std::collections::HashSet<String>>()
-        })
-        .unwrap_or_default();
-    Ok((ids, label))
+    // No `NOT_CANCELLED` any more. It existed because the old reconstruction
+    // guessed "open" for a task whose closing event it could not see, so a
+    // cancelled task hung open on the chart forever and had to be excluded
+    // wholesale. Reconstructing backwards from the snapshot status closes it on
+    // its cancel date instead — and keeping the filter would now DELETE the task
+    // from the days it was genuinely open, which is a different wrong answer.
+    let mut params = json!({ "fields": ["id", "status", "created"] });
+    if let Some(f) = filter {
+        params["filter"] = Value::String(f);
+    }
+    let listed = dispatch(engine, "task.list", &params)?;
+    Ok((chart::members_of(&listed), label))
 }
 
 /// `tasqx report --html`: write the self-contained HTML review.
@@ -4900,14 +4876,21 @@ mod tests {
     /// line instead of a burn-down, and the "N left" footer keeps counting work
     /// nobody will ever do. `task.list` keeps its literal "no filter = all rows"
     /// contract (D24 is a *report* rule), so the exclusion is spelled out at the
-    /// CLI, for both the whole-store and the per-project scope.
+    /// The burndown's scope is EVERY task, cancelled ones included.
+    ///
+    /// It used to exclude them, and that was right for the reconstruction it
+    /// was written against: forwards, a task whose closing event fell outside
+    /// the window was guessed to be open, so a cancelled task hung open on the
+    /// chart forever and the only cure was to drop it. Backwards, its cancel
+    /// date closes it like any other close — and excluding it would now delete
+    /// the task from the days it was genuinely open, which is a different wrong
+    /// answer to the same question.
     #[test]
-    fn burndown_scope_excludes_cancelled_tasks() {
-        let e = tasqx_core::Engine::open_in_memory().unwrap();
-        e.project_create(&json!({ "name": "P" })).unwrap(); // D23
-        for title in ["live", "gone", "finished"] {
-            e.task_add(&json!({ "title": title, "project": "P" }))
-                .unwrap();
+    fn the_burndown_scope_is_every_task_and_carries_its_status() {
+        let e = Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "P" })).unwrap();
+        for t in ["one", "two", "three"] {
+            e.task_add(&json!({ "title": t, "project": "P" })).unwrap();
         }
         e.task_cancel(&json!({ "ref": "2" })).unwrap();
         e.task_done(&json!({ "ref": "3" })).unwrap();
@@ -4921,20 +4904,20 @@ mod tests {
 
         for scope in [None, Some("P".to_string())] {
             let (members, _) = burndown_members(&e, &scope).expect("burndown scope resolved");
+            let by_id = |id: &str| members.iter().find(|m| m.id == id);
+
+            let open = by_id(&live).expect("scope {scope:?} lost the open task");
+            assert!(open.open_now, "the open task must be marked open");
+
+            // Present, and marked closed — that is what lets the chart draw it
+            // on the days before it was cancelled and not after.
+            let cancelled = by_id(&gone).expect("scope lost the cancelled task");
             assert!(
-                members.contains(&live),
-                "scope {scope:?} lost the open task"
+                !cancelled.open_now,
+                "a cancelled task must be carried as closed, not excluded"
             );
-            assert!(
-                !members.contains(&gone),
-                "scope {scope:?} still counts a cancelled task as remaining work"
-            );
-            // `done` stays in scope: the burndown needs the completion event to
-            // draw the line coming down. Dropping it would flatten the chart.
-            assert!(
-                members.contains(&finished),
-                "scope {scope:?} lost the done task"
-            );
+            let done = by_id(&finished).expect("scope lost the done task");
+            assert!(!done.open_now, "a done task must be carried as closed");
         }
     }
 
@@ -5007,42 +4990,40 @@ mod tests {
         );
     }
 
-    /// `NOT_CANCELLED` spells out its statuses by hand, and the test above only
-    /// seeds pending/cancelled/done — so dropping `status:backlog` from the
-    /// constant left the whole suite green while every backlog task silently
-    /// vanished from every burndown. A chart missing tasks still looks like a
-    /// valid chart, which is the same silent-omission class D24 exists to fix.
+    /// The burndown scope has no status filter at all, so no status can be
+    /// forgotten by it.
     ///
-    /// This drives the expectation off `Status::ALL` and `counts_in_reports()`
-    /// rather than restating the names. An earlier version of this guard looped
-    /// over a hardcoded `["backlog", "pending", "active", "done"]` while its doc
-    /// comment claimed a new variant would fail loudly — it would not have; the
-    /// guard was the very kind of hand-maintained parallel list it existed to
-    /// police. Adding a `Status` variant now changes this test's expectation
-    /// automatically, so a `NOT_CANCELLED` that forgot it goes red.
+    /// It used to be `NOT_CANCELLED`, a filter spelling out every status that
+    /// counts — and dropping `status:backlog` from it once left the whole suite
+    /// green while every backlog task silently vanished from every chart. D60
+    /// removed the filter rather than guarding it: cancelled tasks close on
+    /// their cancel date now, so there is nothing to exclude, and a class of
+    /// silent omission goes with it. This asserts the absence, because a filter
+    /// creeping back in is exactly how it would return.
     #[test]
-    fn burndown_scope_keeps_every_status_except_cancelled() {
-        // `expect` earns its keep now that parsing is fallible: NOT_CANCELLED is
-        // our own constant, so a malformed one is a bug this guard should fail
-        // on rather than route around.
-        let f = tasqx_core::filter::Filter::parse(&NOT_CANCELLED, jiff::Timestamp::now())
-            .expect("NOT_CANCELLED must be a valid filter");
-        for status in tasqx_core::types::Status::ALL {
-            let ctx = tasqx_core::filter::MatchCtx {
-                status,
-                project: None,
-                tags: &[],
-                due: None,
-                completed: None,
-                blocked: false,
-            };
-            assert_eq!(
-                f.matches(&ctx),
-                status.counts_in_reports(),
-                "NOT_CANCELLED disagrees with Status::counts_in_reports about `{}`",
-                status.as_str()
-            );
+    fn the_burndown_scope_filters_on_no_status_at_all() {
+        let e = Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "P" })).unwrap();
+        for t in ["a", "b"] {
+            e.task_add(&json!({ "title": t, "project": "P" })).unwrap();
         }
+        // A backlog task: the status the old hand-written filter lost.
+        e.task_add(&json!({ "title": "later", "project": "P", "wait": "2099-01-01" }))
+            .unwrap();
+        e.task_cancel(&json!({ "ref": "2" })).unwrap();
+
+        let (members, _) = burndown_members(&e, &None).expect("scope resolved");
+        assert_eq!(
+            members.len(),
+            3,
+            "every task is in scope, whatever its status — got {members:?}"
+        );
+        // And each carries its own openness, which is what replaces the filter.
+        assert_eq!(
+            members.iter().filter(|m| m.open_now).count(),
+            2,
+            "the cancelled one is carried as closed, not dropped"
+        );
     }
 
     /// Regression: clap reads a leading `-` as a flag, so `--remind -1h` parsed

@@ -131,6 +131,9 @@ pub struct Task {
     pub due: Option<Timestamp>,
     pub completed: Option<Timestamp>,
     pub modified: Timestamp,
+    /// When the task was created — where the burndown gets existence from, so a
+    /// window that clipped the `add` event off costs nothing.
+    pub created: Timestamp,
     /// `Some` exactly when the timer is running.
     pub active_since: Option<Timestamp>,
     pub estimate_secs: Option<i64>,
@@ -185,6 +188,11 @@ impl Task {
                 .and_then(Value::as_str)
                 .and_then(|s| s.parse().ok()),
             modified,
+            created: v
+                .get("created")
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(modified),
             active_since: v
                 .get("active_since")
                 .and_then(Value::as_str)
@@ -503,10 +511,19 @@ pub fn build(src: Sources<'_>, now: Timestamp, today: Date) -> Dashboard {
     let (projects_panel, tokens_panel) = build_projects_and_tokens(&all, summary, projects, today);
 
     // ---- BURNDOWN ---------------------------------------------------------
-    let member_ids: HashSet<String> = all.iter().map(|t| t.id.clone()).collect();
+    // Status and creation date come from the SAME snapshot the status bar
+    // counts, which is what stops the two from disagreeing about a task.
+    let members: Vec<chart::Member> = all
+        .iter()
+        .map(|t| chart::Member {
+            id: t.id.clone(),
+            created: t.created.to_zoned(TimeZone::UTC).date(),
+            open_now: t.status.is_open(),
+        })
+        .collect();
     let event_count = events.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
     let burndown = Burndown {
-        series: chart::burndown(events, &member_ids, burndown_days, today),
+        series: chart::burndown(events, &members, burndown_days, today),
         days: burndown_days,
         truncated: event_limit > 0 && event_count >= event_limit,
     };

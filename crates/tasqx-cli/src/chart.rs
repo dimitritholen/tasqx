@@ -398,135 +398,173 @@ enum Lifecycle {
     Closed,
 }
 
-/// A task's status timeline: one entry per day it changed, in date order.
+/// One task the burndown counts, as the caller already knows it.
 ///
-/// This replaces a `{ open, close }` pair, which could not represent a cycle at
-/// all — there was one slot for a close, so the second one had nowhere to go and
-/// a reopen had nothing to undo.
-#[derive(Clone, Debug, Default)]
-struct Life {
-    /// `(date, state after the last event of that date)`, ascending, deduped.
-    days: Vec<(Date, Lifecycle)>,
-    /// Whether the earliest event seen for this task is its birth (`add` /
-    /// `import`). False when the window clipped the birth off — see
-    /// [`Life::open_on`].
-    born_in_window: bool,
+/// The three facts the reconstruction needs, and all three come from the same
+/// `task.list` snapshot the rest of the screen is built from — which is the
+/// point: the burndown and the header can no longer disagree about a task,
+/// because they are reading one answer.
+#[derive(Clone, Debug)]
+pub struct Member {
+    pub id: String,
+    /// When the task was created. Existence comes from here, not from an `add`
+    /// event, so a window that clipped the birth off costs nothing.
+    pub created: Date,
+    /// Whether it is open NOW — `Status::is_open()`, the same predicate the
+    /// status bar counts.
+    pub open_now: bool,
 }
 
-impl Life {
-    /// Whether the task counts open at the end of day `d`.
-    fn open_on(&self, d: Date) -> bool {
-        // The last change on or before D decides D.
-        if let Some((_, state)) = self.days.iter().rev().find(|(date, _)| *date <= d) {
-            return *state == Lifecycle::Open;
-        }
-        // Nothing on or before D. Three cases, and only the middle one is new.
-        if self.days.is_empty() {
-            // A member with no lifecycle events at all: it exists (the caller
-            // put it in `member_ids`) and nothing ever closed it.
-            return true;
-        }
-        if self.born_in_window {
-            // Its first event is its `add`, and that is after D — genuinely not
-            // yet created.
-            return false;
-        }
-        // Its first event is a close or a reopen, so the `add` happened before
-        // the events we were given. That is what `event.list {from}` does to
-        // every long-lived task (D59), and reading it as "not yet born" would
-        // draw a task materialising from nothing already completed. It existed,
-        // and it was open.
-        true
-    }
+/// Project `task.list` rows into burndown members.
+///
+/// One reader, because three surfaces need it — the dashboard, `tasqx chart
+/// burndown` and the HTML report — and three copies of "which tasks, and were
+/// they open" is three chances to answer one question differently. A row
+/// missing `id` or `created` is skipped rather than guessed at.
+pub fn members_of(tasks: &Value) -> Vec<Member> {
+    tasks
+        .get("tasks")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|t| {
+                    Some(Member {
+                        id: t.get("id").and_then(Value::as_str)?.to_string(),
+                        created: t
+                            .get("created")
+                            .and_then(Value::as_str)?
+                            .parse::<Timestamp>()
+                            .ok()?
+                            .to_zoned(TimeZone::UTC)
+                            .date(),
+                        open_now: crate::render::status_is_open(
+                            t.get("status").and_then(Value::as_str).unwrap_or(""),
+                        ),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Historically-correct remaining-open series over the last `days_n` days.
 ///
-/// `member_ids` scopes to a project (the caller resolves membership via
-/// `task.list project:P`); pass all task ids for a global burndown.
+/// **Reconstructed BACKWARDS from today's status, not forwards from a default.**
+/// That inversion is the whole design, and it is what makes the function total:
+/// forwards, a task with no closing event in the window had to be *guessed* at,
+/// and the guess was "open". Three reachable paths made that guess wrong —
 ///
-/// The reconstruction replays each task's lifecycle — `add`/`import` open it,
-/// `done`/`cancel` close it, `reopen` opens it again — and every other op is
-/// status-neutral and ignored. **The last event of a calendar day decides that
-/// day**; the series has one point per day, so a task closed and reopened
-/// between breakfast and dinner has to resolve to one of them, and the day's
-/// final state is the one a reader means by "how many were left".
+/// * `store.import` writes one `import` event per task, for done tasks too
+///   (`engine/transfer.rs`), and the export carries no history, so an imported
+///   done task's only lifecycle row is a birth that nothing ever closes;
+/// * a task added *and* finished before the window has no events in it at all,
+///   and `member_ids` came from an unbounded `task.list` while the events came
+///   from a bounded `event.list {from}` — "no events in the window" is not "no
+///   events";
+/// * `task.modify {status: "cancelled"}` — the JSON API's and MCP's only
+///   cancellation path — writes `op: "modify"`, not `"cancel"`.
+///
+/// each of which drew a closed task as open on every day of the chart, and put
+/// the last point above the number the status bar printed beside it.
+///
+/// Backwards there is nothing to guess. The state on day D is: it did not exist
+/// if `created > D`; otherwise the first close-or-reopen strictly after D says
+/// what it was just before that event (a task that closed was open; a task that
+/// reopened was closed); and if nothing has happened since D, it is whatever it
+/// is now. The inversion is total because the engine's preconditions are:
+/// `done` only from pending/active, `cancel` only from backlog/pending/active,
+/// `reopen` only from done/cancelled.
+///
+/// Births are no longer lifecycle events. `created` answers existence, so
+/// `add`/`import` carry no information the snapshot does not already have —
+/// which is exactly why the import case stops mattering.
 ///
 /// Replay is ordered by parsed `Timestamp`. It cannot be ordered by the `ts`
 /// string (jiff's fractional second is variable-length, so text order is not
 /// time order — see `storage::event_id_floor`) and cannot be ordered by event
 /// id, which the callers do not carry into this function.
 ///
-/// D59 withdrew the previous simplification, which took the earliest close and
-/// ignored `reopen` entirely: a task closed, reopened and still open read as
-/// permanently done, on the panel a user checks to find out whether the pile is
-/// emptying.
+/// **The intra-day rule is unchanged from D59**: the state at the end of day D
+/// is the state before the first event of the next day that has one. What is
+/// kept per member is the raw ascending event list rather than a per-day
+/// collapse, because the inverse of "the last event of this day left it open"
+/// is not well defined, while the inverse of one event always is.
 pub fn burndown(
     result: &Value,
-    member_ids: &std::collections::HashSet<String>,
+    members: &[Member],
     days_n: usize,
     anchor: Date,
 ) -> Vec<RemainingPoint> {
     use std::collections::HashMap;
     let days_n = days_n.max(1);
 
-    // Collect each member's lifecycle events, with the instant they happened.
-    let mut raw: HashMap<&str, Vec<(Timestamp, Lifecycle, bool)>> = HashMap::new();
+    let ids: std::collections::HashSet<&str> = members.iter().map(|m| m.id.as_str()).collect();
+
+    // Each member's close/reopen events, ascending. Births are deliberately
+    // absent — `Member::created` carries existence.
+    let mut moves: HashMap<&str, Vec<(Timestamp, Lifecycle)>> = HashMap::new();
     for ev in events_of(result) {
         let Some(id) = entity_id_of(ev) else { continue };
-        if !member_ids.contains(id) {
-            continue;
-        }
+        let Some(&id) = ids.get(id) else { continue };
         let Some(at) = ts_of(ev).and_then(|s| s.parse::<Timestamp>().ok()) else {
             continue;
         };
-        let (state, is_birth) = match op_of(ev) {
-            "add" | "import" => (Lifecycle::Open, true),
-            "done" | "cancel" => (Lifecycle::Closed, false),
-            "reopen" => (Lifecycle::Open, false),
+        let state = match op_of(ev) {
+            "done" | "cancel" => Lifecycle::Closed,
+            "reopen" => Lifecycle::Open,
+            // `task.modify {status: "cancelled"}` is a cancellation wearing a
+            // `modify`, and it is the only cancel the JSON API and MCP can
+            // write. Read the payload rather than the op name, or every
+            // agent-cancelled task hangs open on the chart forever.
+            "modify" => match ev
+                .get("payload")
+                .and_then(|p| p.get("status"))
+                .and_then(Value::as_str)
+            {
+                Some("done") | Some("cancelled") => Lifecycle::Closed,
+                Some("pending") | Some("active") | Some("backlog") => Lifecycle::Open,
+                _ => continue,
+            },
             _ => continue,
         };
-        raw.entry(id).or_default().push((at, state, is_birth));
+        moves.entry(id).or_default().push((at, state));
     }
-
-    let mut lives: HashMap<&str, Life> = HashMap::new();
-    for (id, mut evs) in raw {
-        // Events arrive newest-first from `event.list`, and the fixtures are in
-        // arbitrary order, so ordering is established here rather than assumed.
-        evs.sort_by_key(|(at, _, _)| *at);
-        let born_in_window = evs.first().is_some_and(|(_, _, birth)| *birth);
-        let mut days: Vec<(Date, Lifecycle)> = Vec::new();
-        for (at, state, _) in evs {
-            let date = at.to_zoned(TimeZone::UTC).date();
-            match days.last_mut() {
-                // Same day: the later event overwrites — last of the day wins.
-                Some((d, s)) if *d == date => *s = state,
-                _ => days.push((date, state)),
-            }
-        }
-        lives.insert(
-            id,
-            Life {
-                days,
-                born_in_window,
-            },
-        );
-    }
-
-    // A member with no lifecycle events at all still counts as open.
-    for id in member_ids {
-        lives.entry(id.as_str()).or_default();
+    for v in moves.values_mut() {
+        v.sort_by_key(|(at, _)| *at);
     }
 
     let start = anchor.saturating_sub(((days_n - 1) as i64).days());
     let mut out = Vec::with_capacity(days_n);
     let mut d = start;
     for _ in 0..days_n {
-        let remaining = lives.values().filter(|life| life.open_on(d)).count() as u32;
+        let remaining = members
+            .iter()
+            .filter(|m| open_on(m, d, moves.get(m.id.as_str()).map(Vec::as_slice)))
+            .count() as u32;
         out.push(RemainingPoint { date: d, remaining });
         d = d.saturating_add(1i64.days());
     }
     out
+}
+
+/// Whether `m` was open at the end of day `d`.
+fn open_on(m: &Member, d: Date, moves: Option<&[(Timestamp, Lifecycle)]>) -> bool {
+    if m.created > d {
+        return false;
+    }
+    // The first change strictly AFTER day d tells us what it was just before:
+    // something that closed had been open, something that reopened had been
+    // closed.
+    let next = moves.and_then(|v| {
+        v.iter()
+            .find(|(at, _)| at.to_zoned(TimeZone::UTC).date() > d)
+            .map(|(_, state)| *state)
+    });
+    match next {
+        Some(Lifecycle::Closed) => true,
+        Some(Lifecycle::Open) => false,
+        None => m.open_now,
+    }
 }
 
 /// Render the burndown series as a labeled sparkline column chart. The data is
@@ -762,8 +800,10 @@ mod tests {
             ev("done", "2026-07-12T09:00:00Z", "a"),
             ev("add", "2026-07-11T09:00:00Z", "b"),
         ];
-        let members: std::collections::HashSet<String> =
-            ["a".to_string(), "b".to_string()].into_iter().collect();
+        let members = [
+            member("a", (2026, 7, 10), false), // done on the 12th
+            member("b", (2026, 7, 11), true),  // still open
+        ];
         let series = burndown(&result(evs), &members, 5, anchor()); // 07-09..07-13
         let by: std::collections::HashMap<Date, u32> =
             series.iter().map(|p| (p.date, p.remaining)).collect();
@@ -774,16 +814,28 @@ mod tests {
         assert_eq!(by.get(&Date::constant(2026, 7, 13)).copied(), Some(1)); // b open
     }
 
+    /// A member born on `created`, open now or not.
+    ///
+    /// Both facts are the caller's, not the event log's — which is the whole
+    /// point of the backwards reconstruction. A test that only listed ids could
+    /// not express "this task is done now", and that is exactly the fact the
+    /// forwards version had to guess at and got wrong.
+    fn member(id: &str, created: (i16, i8, i8), open_now: bool) -> Member {
+        Member {
+            id: id.to_string(),
+            created: Date::constant(created.0, created.1, created.2),
+            open_now,
+        }
+    }
+
     /// Collect a burndown into a date→remaining map, so a case can assert the
     /// days it cares about by name.
     fn series_by_date(
         evs: Vec<Value>,
-        members: &[&str],
+        members: &[Member],
         days: usize,
     ) -> std::collections::HashMap<Date, u32> {
-        let set: std::collections::HashSet<String> =
-            members.iter().map(|s| s.to_string()).collect();
-        burndown(&result(evs), &set, days, anchor())
+        burndown(&result(evs), members, days, anchor())
             .iter()
             .map(|p| (p.date, p.remaining))
             .collect()
@@ -803,7 +855,7 @@ mod tests {
                 ev("done", "2026-07-11T09:00:00Z", "a"),
                 ev("reopen", "2026-07-12T09:00:00Z", "a"),
             ],
-            &["a"],
+            &[member("a", (2026, 7, 10), true)],
             5, // 07-09..07-13
         );
         assert_eq!(by.get(&Date::constant(2026, 7, 9)).copied(), Some(0));
@@ -829,7 +881,7 @@ mod tests {
                 ev("cancel", "2026-07-12T09:00:00Z", "a"),
                 ev("reopen", "2026-07-13T09:00:00Z", "a"),
             ],
-            &["a"],
+            &[member("a", (2026, 7, 9), true)],
             6, // 07-08..07-13
         );
         let want = [(8, 0), (9, 1), (10, 0), (11, 1), (12, 0), (13, 1)];
@@ -855,7 +907,7 @@ mod tests {
                 ev("done", "2026-07-11T09:00:00Z", "a"),
                 ev("reopen", "2026-07-11T17:00:00Z", "a"),
             ],
-            &["a"],
+            &[member("a", (2026, 7, 10), true)],
             4, // 07-10..07-13
         );
         assert_eq!(
@@ -877,7 +929,7 @@ mod tests {
     fn burndown_counts_a_task_whose_add_fell_outside_the_window() {
         let by = series_by_date(
             vec![ev("done", "2026-07-12T09:00:00Z", "a")],
-            &["a"],
+            &[member("a", (2026, 6, 1), false)],
             5, // 07-09..07-13
         );
         for day in [9, 10, 11] {
@@ -897,7 +949,7 @@ mod tests {
     fn burndown_counts_import_as_an_opening_event() {
         let by = series_by_date(
             vec![ev("import", "2026-07-11T09:00:00Z", "a")],
-            &["a"],
+            &[member("a", (2026, 7, 11), true)],
             5, // 07-09..07-13
         );
         assert_eq!(by.get(&Date::constant(2026, 7, 10)).copied(), Some(0));
@@ -925,7 +977,7 @@ mod tests {
                 ev("reopen", "2026-07-11T09:00:00Z", "a"),
                 ev("done", "2026-07-11T09:00:00.5Z", "a"),
             ],
-            &["a"],
+            &[member("a", (2026, 7, 9), false)],
             5, // 07-09..07-13
         );
         assert_eq!(
@@ -958,8 +1010,8 @@ mod tests {
             noisy.push(ev(op, ts, "a"));
         }
         assert_eq!(
-            series_by_date(lifecycle, &["a"], 5),
-            series_by_date(noisy, &["a"], 5),
+            series_by_date(lifecycle, &[member("a", (2026, 7, 10), false)], 5),
+            series_by_date(noisy, &[member("a", (2026, 7, 10), false)], 5),
             "a status-neutral op must leave the series identical"
         );
     }
@@ -1042,13 +1094,97 @@ mod tests {
         }
     }
 
+    /// The last point equals the number of members open now, by construction.
+    ///
+    /// This is the invariant that was violated in the field: the dashboard's
+    /// header said 258 open while the burndown beside it ended at 298. No event
+    /// can be dated after today, so today's state is exactly `open_now` — and
+    /// the three paths that used to break it (an imported done task, a task
+    /// closed before the window, a cancel written as a `modify`) are each a
+    /// case below.
+    #[test]
+    fn the_last_point_equals_the_tasks_open_now() {
+        let members = [
+            member("a", (2026, 7, 1), true),
+            member("b", (2026, 7, 1), false),
+            member("c", (2026, 7, 1), false),
+        ];
+        // No events at all — the import case: a store restored from an export
+        // has one birth per task and no history.
+        let series = burndown(&result(vec![]), &members, 5, anchor());
+        assert_eq!(
+            series.last().unwrap().remaining,
+            1,
+            "with no events, today's count is the tasks open now — not the member count"
+        );
+        // And on every earlier day too: nothing has happened since, so nothing
+        // was different.
+        assert!(series.iter().all(|p| p.remaining == 1));
+    }
+
+    /// A task finished BEFORE the window still draws as closed.
+    ///
+    /// `member_ids` comes from an unbounded `task.list` and the events from a
+    /// bounded `event.list {from}`, so "no events in the window" is not "no
+    /// events". Forwards this drew a task finished a month ago as open on every
+    /// day of the chart.
+    #[test]
+    fn a_task_closed_before_the_window_is_not_drawn_open() {
+        let members = [
+            member("old", (2026, 1, 1), false), // done long ago, event not in window
+            member("live", (2026, 1, 1), true),
+        ];
+        let by = series_by_date(vec![], &members, 5);
+        for day in 9..=13 {
+            assert_eq!(
+                by.get(&Date::constant(2026, 7, day)).copied(),
+                Some(1),
+                "07-{day:02}: only the still-open task counts"
+            );
+        }
+    }
+
+    /// A cancellation written as `task.modify {status: "cancelled"}` closes the
+    /// task — that is the JSON API's and MCP's only cancel path, and reading the
+    /// op name alone missed every one of them.
+    #[test]
+    fn a_cancel_written_as_a_modify_still_closes_the_task() {
+        let mut modify = ev("modify", "2026-07-11T09:00:00Z", "a");
+        modify["payload"] = serde_json::json!({ "status": "cancelled" });
+        let by = series_by_date(vec![modify], &[member("a", (2026, 7, 9), false)], 5);
+        assert_eq!(
+            by.get(&Date::constant(2026, 7, 10)).copied(),
+            Some(1),
+            "open before"
+        );
+        assert_eq!(
+            by.get(&Date::constant(2026, 7, 11)).copied(),
+            Some(0),
+            "closed on the day"
+        );
+        assert_eq!(
+            by.get(&Date::constant(2026, 7, 12)).copied(),
+            Some(0),
+            "and after"
+        );
+    }
+
+    /// A task created after a day was not open on it, whatever its events say.
+    #[test]
+    fn a_task_is_not_open_before_it_was_created() {
+        let by = series_by_date(vec![], &[member("a", (2026, 7, 12), true)], 5);
+        assert_eq!(by.get(&Date::constant(2026, 7, 11)).copied(), Some(0));
+        assert_eq!(by.get(&Date::constant(2026, 7, 12)).copied(), Some(1));
+        assert_eq!(by.get(&Date::constant(2026, 7, 13)).copied(), Some(1));
+    }
+
     #[test]
     fn burndown_scopes_to_members() {
         let evs = vec![
             ev("add", "2026-07-11T09:00:00Z", "a"),
             ev("add", "2026-07-11T09:00:00Z", "x"), // not a member
         ];
-        let members: std::collections::HashSet<String> = ["a".to_string()].into_iter().collect();
+        let members = [member("a", (2026, 7, 11), true)];
         let series = burndown(&result(evs), &members, 3, anchor());
         assert_eq!(series.last().unwrap().remaining, 1);
     }
