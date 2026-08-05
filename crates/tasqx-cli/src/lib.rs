@@ -2016,11 +2016,11 @@ fn pick_result(short_id: i64, title: &str, mut started: Value) -> Value {
 /// looking at it, and a script that wants the numbers should not have to parse
 /// block glyphs back into integers to get them.
 fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
-    let events = dispatch(engine, "event.list", &json!({ "limit": 100000 }))?;
     let anchor = chart::today();
     Ok(match kind {
         ChartKind::Throughput { weeks } => {
             let weeks = chart::default_weeks(false, weeks);
+            let events = events_since(engine, anchor, weeks * 7 + 7)?;
             let series = chart::throughput(&events, weeks, anchor);
             let data = series
                 .iter()
@@ -2036,6 +2036,7 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
         }
         ChartKind::Heatmap { year, weeks } => {
             let weeks = chart::default_weeks(year, weeks);
+            let events = events_since(engine, anchor, weeks * 7 + 7)?;
             let days = chart::heatmap(&events, weeks, anchor);
             let data = days
                 .iter()
@@ -2054,6 +2055,7 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
             // a cleared burndown, which is a wrong answer wearing the costume of
             // a right one.
             let (members, label) = burndown_members(engine, &project)?;
+            let events = events_since(engine, anchor, days_n + 1)?;
             let series = chart::burndown(&events, &members, days_n, anchor);
             let data = series
                 .iter()
@@ -2065,6 +2067,39 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
             )
         }
     })
+}
+
+/// The event log from `days_back` days before `anchor`, for a chart that only
+/// draws that far (D59).
+///
+/// Before `event.list` took a bound, every chart read `{limit: 100000}` — a full
+/// scan of a log that is append-only and never pruned, on a table that grows
+/// with every mutation the store has ever recorded. The bound is per-arm and not
+/// hoisted: throughput, heatmap and burndown draw three different windows, and
+/// one shared `from` would silently be the narrowest of them.
+///
+/// `days_back` is passed generously by callers (a week of slack on the
+/// week-bucketed charts). The bound is an optimisation, not semantics: too wide
+/// costs a few rows, too narrow loses history that was supposed to be drawn.
+/// `burndown` additionally survives a clipped window by design — a task whose
+/// `add` fell outside it reads as open rather than unborn, which is what
+/// `Life::born_in_window` is for.
+///
+/// `limit` stays as the belt to this parameter's braces: `ORDER BY id DESC
+/// LIMIT n` drops the OLDEST rows if it ever binds, which is the direction the
+/// burndown can absorb.
+fn events_since(
+    engine: &Engine,
+    anchor: jiff::civil::Date,
+    days_back: usize,
+) -> Result<Value, ApiError> {
+    use jiff::ToSpan;
+    let from = anchor.saturating_sub((days_back as i64).days());
+    dispatch(
+        engine,
+        "event.list",
+        &json!({ "limit": 100000, "from": format!("{from}T00:00:00Z") }),
+    )
 }
 
 /// Every status a burndown counts as membership — i.e. everything but
