@@ -54,9 +54,21 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
         "task.list",
         &json!({ "filter": actionable_filter, "sort": ["-urgency"], "limit": 12 }),
     )?;
-    let events = dispatch(engine, "event.list", &json!({ "limit": 100000 }))?;
-
+    // ONE clock read, and the event bound is derived from it rather than from a
+    // second one. The report's charts draw 12 weeks of throughput and 30 days of
+    // burndown, so 13 weeks of slack covers the wider of the two; before D59 gave
+    // `event.list` a bound this read the entire log, which grows with every
+    // mutation the store has ever recorded.
     let now = jiff::Timestamp::now().to_string();
+    let from = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date()
+        .saturating_sub(jiff::ToSpan::days(91i64));
+    let events = dispatch(
+        engine,
+        "event.list",
+        &json!({ "limit": 100000, "from": format!("{from}T00:00:00Z") }),
+    )?;
     let doc = Report {
         theme,
         group_by,
