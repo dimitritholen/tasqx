@@ -613,6 +613,54 @@ pub fn insert_event(
     Ok(())
 }
 
+/// The lowest `events.id` that can sort at or below any event written at or
+/// after `ts` — the bound `event.list {from}` filters on (D59).
+///
+/// **The `ts` column cannot do this job, and that is why this exists.** `ts` is
+/// `TEXT` with no `COLLATE`, written by [`crate::util::now`] as
+/// `Timestamp::to_string()`, and jiff prints a *variable-length* fractional
+/// second — omitted entirely when it is zero. Under SQLite's BINARY collation
+/// `'.'` (0x2E) sorts below `'Z'` (0x5A), so:
+///
+/// ```text
+/// sqlite> SELECT '2026-07-15T11:06:10.5Z' >= '2026-07-15T11:06:10Z';
+/// 0
+/// ```
+///
+/// A `WHERE ts >= ?` bound therefore *drops* every event in the boundary second
+/// that carries a fraction — and the caller this parameter was built for passes
+/// a midnight instant, so that is not a rare edge but every event on the first
+/// day of the window. An index on `ts` would only make the wrong answer fast.
+/// `id` is UUIDv7, time-ordered, and already the PRIMARY KEY, so the range is
+/// index-served with no second index to write on every insert.
+///
+/// **The one-second margin is not slack, it is the contract.** [`insert_event`]
+/// reads the clock *twice* — `Uuid::now_v7()` for `id`, then `now()` for `ts`,
+/// with a `payload.to_string()` between them — so a row whose write straddles a
+/// millisecond tick has `ts` one millisecond ahead of the instant inside its own
+/// `id`. Flooring exactly would then exclude a row whose `ts` is inside the
+/// window: an under-inclusion, the direction that loses data. A second of margin
+/// swamps that gap by six orders of magnitude, and over-inclusion is free
+/// because every consumer buckets by `ts` anyway.
+///
+/// So `from` is a **lower bound, not a filter**: it promises no events older
+/// than roughly that instant, not exactly the events at or after it. Callers
+/// that need exactness do not exist, and the store cannot offer it from two
+/// clock reads.
+///
+/// The low bytes are all zero deliberately — any non-zero counter or random
+/// suffix would sort above part of the boundary millisecond and drop it.
+pub fn event_id_floor(ts: Timestamp) -> String {
+    let millis = ts
+        .as_millisecond()
+        .saturating_sub(1_000)
+        .max(0)
+        .unsigned_abs();
+    uuid::Builder::from_unix_timestamp_millis(millis, &[0u8; 10])
+        .into_uuid()
+        .to_string()
+}
+
 /// Map a `SELECT {TASK_COLS}` row into a `Task`.
 pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
     let status: String = row.get(3)?;
@@ -871,6 +919,112 @@ mod tests {
             .map(Result::unwrap)
             .collect::<Vec<_>>()
             .join(" | ")
+    }
+
+    /// The reason `event_id_floor` exists at all, stated as an executable fact
+    /// rather than a comment: the `ts` column's text order is **not** its time
+    /// order, so the obvious `WHERE ts >= ?` bound is wrong.
+    ///
+    /// jiff omits the fractional second when it is zero, and `'.'` sorts below
+    /// `'Z'`, so a bound written as a whole second excludes every event in that
+    /// second that carries a fraction. The caller `from` was built for passes
+    /// exactly such a bound (midnight), which makes this every event on the
+    /// first day of the window rather than an unlucky few.
+    #[test]
+    fn a_ts_text_bound_would_drop_the_fractional_seconds_an_id_bound_keeps() {
+        let conn = open_in_memory().unwrap();
+        let bare = "2026-07-15T11:06:10Z";
+        for frac in ["2026-07-15T11:06:10.5Z", "2026-07-15T11:06:10.123456Z"] {
+            let ge: bool = conn
+                .query_row("SELECT ?1 >= ?2", params![frac, bare], |r| r.get(0))
+                .unwrap();
+            assert!(
+                !ge,
+                "{frac:?} >= {bare:?} is expected to be FALSE under BINARY collation — \
+                 if this ever becomes true the `ts` column grew a fixed width or a \
+                 collation, and `event_id_floor`'s whole reason to exist should be \
+                 re-read before it is kept"
+            );
+        }
+    }
+
+    /// The `from` bound must be *served by* the primary key, not merely correct
+    /// against it — that is the whole reason D59 chose an id range over a second
+    /// index. The unscoped arm is the one that matters: it is what the chart
+    /// callers use, over a log that is append-only and never pruned.
+    ///
+    /// Only the unscoped plan is asserted. The scoped arms legitimately prefer
+    /// their own scope index and take `id >=` as a residual, and demanding the
+    /// PK there would pin a planner choice that is not this decision's business.
+    #[test]
+    fn the_event_from_bound_seeks_the_primary_key_rather_than_scanning() {
+        let conn = open_in_memory().unwrap();
+        // Literals rather than `?1`/`?2`: the `query_plan` helper binds nothing,
+        // and the plan is a property of the statement's shape, which literals
+        // preserve.
+        let sql = "SELECT id, entity, entity_id, op, payload, ts, actor FROM events \
+                   WHERE id >= '019f0000-0000-7000-8000-000000000000' \
+                   ORDER BY id DESC LIMIT 50";
+        let plan = query_plan(&conn, sql);
+        assert!(
+            !plan.contains("SCAN events"),
+            "the bounded read must not walk the whole log, got: {plan}"
+        );
+        assert!(
+            plan.contains("sqlite_autoindex_events_1"),
+            "the bound must be served by the `id` primary key — if this ever fails \
+             because someone reached for `WHERE ts >= ?` and an idx_events_ts, read \
+             `event_id_floor` first: that column's text order is not its time order. \
+             Got: {plan}"
+        );
+    }
+
+    /// The floor sorts below a real id minted at the same instant, which is the
+    /// property the bound depends on.
+    #[test]
+    fn the_event_id_floor_sorts_below_an_id_minted_at_that_instant() {
+        let now = Timestamp::now();
+        let floor = event_id_floor(now);
+        let real = Uuid::now_v7().to_string();
+        assert!(
+            floor < real,
+            "floor {floor} must sort below an id minted now ({real})"
+        );
+        assert!(
+            floor.ends_with("-8000-000000000000"),
+            "the low bytes must be zero or the boundary millisecond is partly \
+             excluded, got {floor}"
+        );
+    }
+
+    /// The margin is deliberate: `insert_event` reads the clock twice, so an
+    /// id can trail its own row's `ts` across a millisecond tick. Flooring
+    /// exactly would exclude that row.
+    #[test]
+    fn the_event_id_floor_leaves_a_margin_below_the_instant_it_is_given() {
+        let ts = Timestamp::from_millisecond(1_800_000_000_000).unwrap();
+        let floor = event_id_floor(ts);
+        let exact = uuid::Builder::from_unix_timestamp_millis(1_800_000_000_000, &[0u8; 10])
+            .into_uuid()
+            .to_string();
+        assert!(
+            floor < exact,
+            "the floor {floor} must sort strictly below an exact floor {exact} — \
+             without the margin a row whose id trails its ts across a tick is dropped"
+        );
+    }
+
+    /// The pre-epoch guard: a `from` before 1970 must not wrap the unsigned
+    /// millisecond conversion into an enormous timestamp, which would floor
+    /// *above* every real event and return an empty page at `ok: true`.
+    #[test]
+    fn an_instant_before_the_epoch_floors_to_the_bottom_rather_than_wrapping() {
+        let ts = Timestamp::from_millisecond(-10_000).unwrap();
+        let floor = event_id_floor(ts);
+        assert!(
+            floor < Uuid::now_v7().to_string(),
+            "a pre-epoch bound must still sort below every real event, got {floor}"
+        );
     }
 
     /// `events` is append-only and never pruned, so a query that filters it by
