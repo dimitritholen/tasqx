@@ -401,11 +401,13 @@ mod tests {
             .iter()
             .map(|s| Row {
                 setting: s,
-                value: match s.key {
-                    "theme.name" => "nord".to_string(),
-                    "notify.enabled" => "false".to_string(),
-                    _ => String::new(),
-                },
+                // Every row starts at its DEFAULT, which is what `resolve`
+                // returns for a store with no config file — the state this
+                // screen is most often opened in. Naming two settings and
+                // leaving the rest empty made the fixture disagree with the
+                // real screen for every setting added afterwards, and left a
+                // Bool row showing `""`, which the screen cannot toggle.
+                value: s.default.to_string(),
                 source: match s.home {
                     Home::Store => "store".to_string(),
                     Home::Toml => "default".to_string(),
@@ -505,7 +507,19 @@ mod tests {
             .iter()
             .position(|r| r.setting.kind == Kind::Bool)
             .unwrap();
-        assert_eq!(a.rows[a.selected].value, "false");
+        // Read the starting value off the row rather than assuming which Bool
+        // sorts first or what its default is. The property under test is that
+        // the shown value and the saved value agree; pinning a literal here made
+        // this test fail the day a Bool was added above it, which taught nobody
+        // anything about the screen.
+        let before = a.rows[a.selected].value.clone();
+        assert!(
+            before == "true" || before == "false",
+            "a Bool row must start at a real boolean, got {before:?}"
+        );
+        let expected = if before == "true" { "false" } else { "true" };
+
+        let key = a.rows[a.selected].setting.key;
 
         let act = a
             .on_key(press(KeyCode::Enter))
@@ -513,12 +527,12 @@ mod tests {
         assert_eq!(
             act,
             Action::Save {
-                key: "notify.enabled",
-                value: "true".into()
+                key,
+                value: expected.into()
             }
         );
         assert_eq!(
-            a.rows[a.selected].value, "true",
+            a.rows[a.selected].value, expected,
             "the screen must show what it saved"
         );
 
@@ -528,8 +542,8 @@ mod tests {
         assert_eq!(
             act,
             Action::Save {
-                key: "notify.enabled",
-                value: "false".into()
+                key,
+                value: before.clone()
             }
         );
     }
@@ -739,14 +753,20 @@ mod tests {
     #[test]
     fn the_selection_marker_sits_on_the_selected_row() {
         let mut a = app();
+        // The first two rows by name, not by guess: naming a specific setting
+        // as "the second row" made this test fail the day one was added above
+        // it, which says nothing about the marker.
+        let first = a.rows[0].setting.key;
+        let second = a.rows[1].setting.key;
+
         let before = draw(&a);
-        assert!(line_at(&before, row_of(&before, "theme.name")).starts_with('▸'));
-        assert!(!line_at(&before, row_of(&before, "notify.enabled")).starts_with('▸'));
+        assert!(line_at(&before, row_of(&before, first)).starts_with('▸'));
+        assert!(!line_at(&before, row_of(&before, second)).starts_with('▸'));
 
         a.on_key(press(KeyCode::Down));
         let after = draw(&a);
-        assert!(line_at(&after, row_of(&after, "notify.enabled")).starts_with('▸'));
-        assert!(!line_at(&after, row_of(&after, "theme.name")).starts_with('▸'));
+        assert!(line_at(&after, row_of(&after, second)).starts_with('▸'));
+        assert!(!line_at(&after, row_of(&after, first)).starts_with('▸'));
     }
 
     /// The picker has to render its candidates, and render them under the row

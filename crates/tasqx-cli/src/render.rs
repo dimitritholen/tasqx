@@ -1869,7 +1869,11 @@ pub fn pad(s: &str, max: usize) -> String {
 /// so a cluster is never sliced. The `pad` that follows it is not redundant:
 /// cutting a budget just before a double-width glyph leaves one cell short, and
 /// the spaces make up the difference.
-fn truncate(s: &str, max: usize, unicode: bool) -> String {
+/// `pub(crate)` for the dashboard, which cannot lean on ratatui's own clipping:
+/// a silent clip loses the ellipsis that says something was cut, and on a
+/// multi-column screen an over-wide string erases the neighbouring column
+/// rather than only the space to its right.
+pub(crate) fn truncate(s: &str, max: usize, unicode: bool) -> String {
     if width(s) <= max {
         return s.to_string();
     }

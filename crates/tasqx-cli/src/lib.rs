@@ -504,6 +504,36 @@ fn execute(cli: Cli) -> Exit {
         }
     };
 
+    // A bare `tasqx` opens the dashboard when — and only when — a human is
+    // watching (D58). Everything else about a bare invocation is unchanged, and
+    // that is the whole promise: `tasqx | cat`, `tasqx > file`, `--json`,
+    // `TERM=dumb`, CI and `TASQX_DASHBOARD=false` all fall through to the
+    // working-set table below, byte for byte.
+    //
+    // `Exit::SelfFramed` rather than a `CmdOutcome`, and it is not decoration:
+    // `hint_occasion` classifies a bare run as `Occasion::Ordinary`, and `run()`
+    // prints the D57 completion note on the `Exit::Out(Ok)` arm — AFTER
+    // `execute` returns. A dashboard handed back as an ordinary outcome would
+    // leave the alternate screen and then write a rendered table and a
+    // completion nudge into the scrollback of a user who had just pressed `q`.
+    //
+    // Constructed directly rather than through `Exit::self_framed`, whose job is
+    // to make a command that accepts `--json` and ignores it impossible. That
+    // cannot happen here: `--json` is in the condition above, so the flag never
+    // reaches this path. There is also no command name to declare — this is the
+    // absence of a command.
+    if cli.command.is_none() && dashboard_active(&ctx.caps, cli.json, dashboard_enabled()) {
+        match run_dashboard(&mut backend, &ctx) {
+            Ok(Some(render)) => emit(&render),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("error [{}]: {}", code_str(&e), e.message);
+                exit(e.exit_code());
+            }
+        }
+        return Exit::SelfFramed;
+    }
+
     Exit::Out(match cli.command {
         None => run_list(&mut backend, &ctx, &[]),
         Some(Command::Init { name, desc }) => run_init(&mut backend, &ctx, name, desc),
@@ -2067,6 +2097,197 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
             )
         }
     })
+}
+
+/// Whether a bare `tasqx` opens the dashboard rather than printing the table.
+///
+/// Three signals, all of which already existed (D58): a human is at the
+/// keyboard, no machine is reading the output, and the user has not switched it
+/// off. Pure, and separate from everything that touches a terminal or a store,
+/// so the condition is testable without either.
+///
+/// `is_interactive` and nothing else answers the first: it asks about **stdout
+/// and stdin both**, because the alternate screen is written to one and the key
+/// loop blocks on the other. `Caps::detect() != PLAIN` is NOT the same question
+/// — `CLICOLOR_FORCE=1` says "colour even when piped", and conflating the two is
+/// what made `config edit | cat` hang forever (D26).
+fn dashboard_active(caps: &Caps, json: bool, enabled: bool) -> bool {
+    enabled && !json && tui::is_interactive(caps)
+}
+
+/// Read `dashboard.enabled` — the escape hatch a breaking change owes its users.
+///
+/// Env before file so a CI image can switch it off in one line, and the default
+/// is on. A malformed value reads as "on" for the same reason D57's hint does:
+/// the failure of a setting that governs one screen must be the screen, not
+/// silence.
+fn dashboard_enabled() -> bool {
+    match std::env::var("TASQX_DASHBOARD") {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no"),
+        Err(_) => true,
+    }
+}
+
+/// The four reads one dashboard refresh makes.
+///
+/// One `task.list {}` — UNFILTERED, because the burndown reconstructs backwards
+/// from current state and needs every task's status — feeding five panels, and
+/// one `report.summary` feeding two. `Engine::task_list` loads every row and
+/// filters in Rust, so five limited calls would be five full scans; and two
+/// summaries would double the heaviest read in the set.
+fn dashboard_data(
+    be: &mut Backend,
+    days: usize,
+    now: jiff::Timestamp,
+    today: jiff::civil::Date,
+) -> Result<tui::dashboard::model::Dashboard, ApiError> {
+    use jiff::ToSpan;
+    const EVENT_LIMIT: usize = 100_000;
+
+    let tasks = be.call("task.list", &json!({}))?;
+    let summary = be.call(
+        "report.summary",
+        &json!({
+            "group_by": "project",
+            "metrics": [
+                "est_total", "tracked_total",
+                "tokens_cache_read", "tokens_cache_creation", "tokens_in", "tokens_out"
+            ]
+        }),
+    )?;
+    // Archived projects still hold tasks and still get a summary group, so
+    // hiding them here would leave that group unjoinable.
+    let projects = be.call("project.list", &json!({ "include_archived": true }))?;
+    let from = today.saturating_sub((days as i64 + 1).days());
+    let events = be.call(
+        "event.list",
+        &json!({ "limit": EVENT_LIMIT, "from": format!("{from}T00:00:00Z") }),
+    )?;
+
+    Ok(tui::dashboard::model::build(
+        tui::dashboard::model::Sources {
+            tasks: &tasks,
+            summary: &summary,
+            projects: &projects,
+            events: &events,
+            event_limit: EVENT_LIMIT,
+            days,
+        },
+        now,
+        today,
+    ))
+}
+
+/// How long the dashboard waits for a key before re-reading, with auto-refresh
+/// on.
+///
+/// Five seconds rather than a configurable interval: every refresh is four
+/// reads, one of which (`report.summary`) aggregates token measurements across
+/// the store, so a knob here is an invitation to set a number that makes the
+/// screen slow and blame the screen. `r` is always available, and `R` turns the
+/// tick off entirely.
+const REFRESH_TICK: u64 = 5;
+
+/// Open the dashboard and stay in it until the user leaves.
+///
+/// Returns whatever should be printed into the scrollback afterwards — nothing,
+/// normally, because a viewer writes nothing and there is nothing to audit.
+fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError> {
+    use ratatui::crossterm::event::{self, Event};
+    use tui::dashboard::{model, Action, App};
+
+    let today = chart::today();
+    let now = jiff::Timestamp::now();
+    let mut app = App::new(dashboard_data(be, 7, now, today)?, default_panel_order(), 7);
+
+    // What the user asked for on the way out, if anything. `Refresh` never
+    // reaches here — it is served inside the loop, because a refresh that tore
+    // the screen down and rebuilt it would flicker on every `r` and on every
+    // tick of auto-refresh.
+    let mut want: Option<Action> = None;
+    let mut failed: Option<ApiError> = None;
+    tui::with_terminal(|term| {
+        loop {
+            let mut placed = Vec::new();
+            let mut has_slot = false;
+            term.draw(|f| {
+                tui::dashboard::render(&app, &ctx.theme, &ctx.caps, f);
+                if let Some(s) = model::layout(f.area().width, f.area().height, app.order()) {
+                    placed = s.panels.iter().map(|p| p.id).collect();
+                    has_slot = s.has_slot();
+                }
+            })?;
+            // The state machine is told what was drawn, as data — that is what
+            // keeps Tab from stopping on a panel this size cannot show.
+            app.observe(&placed, has_slot);
+
+            // With auto-refresh on, wait at most one tick for a key and then
+            // re-read; otherwise block until the user does something. Polling
+            // rather than a background thread keeps this loop the only thing
+            // that touches the terminal, which is the invariant that lets the
+            // existing panic hook and `Restore` guard stay sufficient.
+            if app.auto_refresh() && !event::poll(std::time::Duration::from_secs(REFRESH_TICK))? {
+                match dashboard_data(be, app.window_days(), jiff::Timestamp::now(), today) {
+                    Ok(data) => app.replace(data),
+                    Err(e) => {
+                        failed = Some(e);
+                        return Ok(());
+                    }
+                }
+                continue;
+            }
+            // Resize and paste just redraw; only keys are decisions.
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
+            match app.on_key(key) {
+                Some(Action::Quit) => return Ok(()),
+                Some(Action::Refresh) => {
+                    // A read that fails mid-session ends the session rather
+                    // than redrawing stale numbers under a live-looking screen.
+                    // The error is carried out and reported on the normal
+                    // terminal, because a message printed here is wiped by the
+                    // restore that follows it.
+                    match dashboard_data(be, app.window_days(), jiff::Timestamp::now(), today) {
+                        Ok(data) => app.replace(data),
+                        Err(e) => {
+                            failed = Some(e);
+                            return Ok(());
+                        }
+                    }
+                }
+                Some(a) => {
+                    want = Some(a);
+                    return Ok(());
+                }
+                None => {}
+            }
+        }
+    })
+    .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
+
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    // Both of these open a screen or write output of their own, so they run
+    // only once this one has handed the terminal back. `p` therefore costs a
+    // second alt-screen transition today, where D58 asks for one session with a
+    // `Screen` enum; that is the remaining half of the picker work and is
+    // recorded rather than pretended away.
+    match want {
+        Some(Action::List) => run_list(be, ctx, &[]).map(|(_, r)| Some(r)),
+        Some(Action::Pick) => run_pick(be, ctx, &[]).map(|(_, r)| Some(r)),
+        _ => Ok(None),
+    }
+}
+
+/// The panels a dashboard shows when nothing is configured.
+///
+/// A `dashboard.panels` setting replaces this (a later task); until then the
+/// order lives in one place rather than being spelled out at each call site.
+fn default_panel_order() -> Vec<tui::dashboard::model::PanelId> {
+    use tui::dashboard::model::PanelId::*;
+    vec![Now, Next, Due, Blocked, Recent, Projects, Burndown, Tokens]
 }
 
 /// The event log from `days_back` days before `anchor`, for a chart that only
