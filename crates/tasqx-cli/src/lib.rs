@@ -465,6 +465,29 @@ fn execute(cli: Cli) -> Exit {
         return Exit::Out(Err(ApiError::bad_request(PICK_NEEDS_A_TERMINAL)));
     }
 
+    // The explicit `tasqx dashboard`, gated in the same place and for the same
+    // reason — and with a second refusal `pick` has no equivalent of: a real
+    // terminal can still be too small to draw on.
+    //
+    // `--json` is excluded from the gate, not from the verb. That path opens no
+    // screen, so neither a pipe nor a 40x10 window is an obstacle, and refusing
+    // it would make D58's "carries a real `--json` result document" false in
+    // every context a script runs in. It does make `dashboard` the first verb
+    // where `--json` decides whether the tty gate applies — `tasqx --json pick`
+    // still refuses — which is why it is ruled on in §12 rather than left to be
+    // discovered.
+    if matches!(&cli.command, Some(Command::Dashboard)) && !cli.json {
+        use std::io::IsTerminal;
+        let (out_tty, in_tty) = (
+            std::io::stdout().is_terminal(),
+            std::io::stdin().is_terminal(),
+        );
+        let size = terminal_size(&ctx.caps, out_tty, in_tty);
+        if let Some(msg) = dashboard_refusal(&ctx.caps, out_tty, in_tty, size) {
+            return Exit::Out(Err(ApiError::bad_request(msg)));
+        }
+    }
+
     // Charts and the HTML report are pure local reads; they render straight from
     // a direct Engine (safe under WAL even if a daemon is also running).
     if matches!(
@@ -522,7 +545,27 @@ fn execute(cli: Cli) -> Exit {
     // cannot happen here: `--json` is in the condition above, so the flag never
     // reaches this path. There is also no command name to declare — this is the
     // absence of a command.
-    if cli.command.is_none() && dashboard_active(&ctx.caps, cli.json, dashboard_enabled()) {
+    let (stdout_tty, stdin_tty) = {
+        use std::io::IsTerminal;
+        (
+            std::io::stdout().is_terminal(),
+            std::io::stdin().is_terminal(),
+        )
+    };
+    let fits = terminal_size(&ctx.caps, stdout_tty, stdin_tty).is_some_and(|(w, h)| {
+        dashboard_refusal(&ctx.caps, stdout_tty, stdin_tty, Some((w, h))).is_none()
+    });
+    let verb_screen = matches!(&cli.command, Some(Command::Dashboard)) && !cli.json;
+    let bare_screen = cli.command.is_none()
+        && dashboard_active(
+            &ctx.caps,
+            cli.json,
+            dashboard_enabled(),
+            fits,
+            stdout_tty,
+            stdin_tty,
+        );
+    if verb_screen || bare_screen {
         match run_dashboard(&mut backend, &ctx) {
             Ok(Some(render)) => emit(&render),
             Ok(None) => {}
@@ -536,6 +579,10 @@ fn execute(cli: Cli) -> Exit {
 
     Exit::Out(match cli.command {
         None => run_list(&mut backend, &ctx, &[]),
+        // Only the `--json` spelling reaches here: the screen leaves as
+        // `SelfFramed` above, for the same D57-hint reason the bare invocation
+        // does.
+        Some(Command::Dashboard) => run_dashboard_json(&mut backend, &ctx),
         Some(Command::Init { name, desc }) => run_init(&mut backend, &ctx, name, desc),
         Some(Command::Add {
             title,
@@ -2099,20 +2146,88 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
     })
 }
 
+const DASHBOARD_NEEDS_A_TERMINAL: &str =
+    "`tasqx dashboard` needs an interactive terminal on stdin and stdout \
+     (one of them is piped, redirected, or TERM=dumb). `tasqx --json dashboard` \
+     gives the same panels as data, and `tasqx list` prints the working set.";
+
+/// Why this terminal cannot show the dashboard, or `None` when it can.
+///
+/// The policy, with the two facts it depends on injected — the split
+/// `is_interactive_with` exists for, and for the same reason: under cargo the
+/// process has a piped stdout, so a predicate that asked the process directly
+/// would be untestable at exactly the point it can go wrong.
+///
+/// `size` is `None` when it could not be measured, which is a refusal rather
+/// than a default: entering the alternate screen on a guess is how you paint a
+/// half-drawn frame onto a window nobody can read.
+fn dashboard_refusal(
+    caps: &Caps,
+    stdout_tty: bool,
+    stdin_tty: bool,
+    size: Option<(u16, u16)>,
+) -> Option<String> {
+    use tui::dashboard::model::{MIN_HEIGHT, MIN_WIDTH};
+    if !tui::is_interactive_with(caps, stdout_tty, stdin_tty) {
+        return Some(DASHBOARD_NEEDS_A_TERMINAL.to_string());
+    }
+    match size {
+        Some((w, h)) if w >= MIN_WIDTH && h >= MIN_HEIGHT => None,
+        Some((w, h)) => Some(format!(
+            "this terminal is {w}x{h}; `tasqx dashboard` needs at least \
+             {MIN_WIDTH}x{MIN_HEIGHT}. Resize the window, or run `tasqx list`."
+        )),
+        None => Some(
+            "`tasqx dashboard` could not measure this terminal, so it will not enter \
+             the alternate screen. Run `tasqx list` instead."
+                .to_string(),
+        ),
+    }
+}
+
+/// The terminal's size, asked only once there is a terminal to ask about.
+///
+/// `crossterm::terminal::size()` consults `/dev/tty` and can fall back to
+/// spawning `tput`, so in a pipe it answers about a window the bytes are not
+/// going to. Asking it there would be worse than not asking.
+fn terminal_size(caps: &Caps, stdout_tty: bool, stdin_tty: bool) -> Option<(u16, u16)> {
+    if tui::is_interactive_with(caps, stdout_tty, stdin_tty) {
+        ratatui::crossterm::terminal::size().ok()
+    } else {
+        None
+    }
+}
+
 /// Whether a bare `tasqx` opens the dashboard rather than printing the table.
 ///
-/// Three signals, all of which already existed (D58): a human is at the
-/// keyboard, no machine is reading the output, and the user has not switched it
-/// off. Pure, and separate from everything that touches a terminal or a store,
-/// so the condition is testable without either.
+/// Four signals: a human is at the keyboard, no machine is reading the output,
+/// the user has not switched it off, and the window is big enough to draw on.
+/// Pure, and separate from everything that touches a terminal or a store, so
+/// the condition is testable without either.
+///
+/// `fits` is the one that was missing when the screen first shipped, and its
+/// absence was a real bug rather than a rough edge: bare `tasqx` in a 40x10
+/// window entered the alternate screen, painted NOTHING — `layout` returns
+/// `None` below 56x14 and `render` returns early — blocked until `q`, and
+/// created a 208 KB store on the way in. That is D55's refused-screen-leaves-a-
+/// store failure, rebuilt one screen over. Below the minimum a bare invocation
+/// falls through to `run_list`: whoever typed nothing did not ask for a
+/// dashboard, so silence is the right answer and the table is still useful.
 ///
 /// `is_interactive` and nothing else answers the first: it asks about **stdout
 /// and stdin both**, because the alternate screen is written to one and the key
 /// loop blocks on the other. `Caps::detect() != PLAIN` is NOT the same question
 /// — `CLICOLOR_FORCE=1` says "colour even when piped", and conflating the two is
 /// what made `config edit | cat` hang forever (D26).
-fn dashboard_active(caps: &Caps, json: bool, enabled: bool) -> bool {
-    enabled && !json && tui::is_interactive(caps)
+fn dashboard_active(
+    caps: &Caps,
+    json: bool,
+    enabled: bool,
+    fits: bool,
+    stdout_tty: bool,
+    stdin_tty: bool,
+) -> bool {
+    enabled && !json && fits && tui::is_interactive_with(caps, stdout_tty, stdin_tty)
 }
 
 /// Read `dashboard.enabled` — the escape hatch a breaking change owes its users.
@@ -2279,6 +2394,25 @@ fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError
         Some(Action::Pick) => run_pick(be, ctx, &[]).map(|(_, r)| Some(r)),
         _ => Ok(None),
     }
+}
+
+/// `tasqx --json dashboard` — the panels as data, with no screen involved.
+///
+/// This is why the verb is not a `JSON_CARVE_OUTS` entry (D58): the whole data
+/// layer — every mapper, every join, the burndown reconstruction — becomes
+/// reachable from a script and from a test that has no terminal, which is
+/// otherwise only testable through a pty.
+///
+/// The human rendering is the document too. A `--json` carve-out would have
+/// been dishonest, and a prose summary here would be a second surface to keep
+/// true; anyone who wants prose has the screen.
+fn run_dashboard_json(be: &mut Backend, _ctx: &Ctx) -> CmdOutcome {
+    const DAYS: usize = 7;
+    let order = default_panel_order();
+    let data = dashboard_data(be, DAYS, jiff::Timestamp::now(), chart::today())?;
+    let doc = tui::dashboard::json::document(&data, DAYS, &order);
+    let render = serde_json::to_string_pretty(&doc).unwrap_or_default();
+    Ok((doc, render))
 }
 
 /// The panels a dashboard shows when nothing is configured.
@@ -3629,6 +3763,91 @@ fn db_path_resolved(create_dirs: bool) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tty_caps() -> Caps {
+        Caps {
+            depth: crate::theme::ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        }
+    }
+
+    /// The refusal is a policy over four facts, not a question asked of the
+    /// process — which is what makes it testable at all. Under cargo this
+    /// process has a piped stdout, so a predicate that consulted it directly
+    /// could only ever be exercised on the refusing branch.
+    #[test]
+    fn the_dashboard_refusal_names_what_is_wrong_with_this_terminal() {
+        let caps = tty_caps();
+        // Not a terminal at all: the stream answer wins before size matters.
+        assert_eq!(
+            dashboard_refusal(&caps, false, true, Some((200, 60))).as_deref(),
+            Some(DASHBOARD_NEEDS_A_TERMINAL)
+        );
+        assert_eq!(
+            dashboard_refusal(&caps, true, false, Some((200, 60))).as_deref(),
+            Some(DASHBOARD_NEEDS_A_TERMINAL)
+        );
+
+        // A real terminal, big enough.
+        assert_eq!(dashboard_refusal(&caps, true, true, Some((56, 14))), None);
+        assert_eq!(dashboard_refusal(&caps, true, true, Some((200, 60))), None);
+
+        // A real terminal, too small — and the message says which, because
+        // "too small" without a number leaves the reader guessing at how much
+        // to resize.
+        let msg = dashboard_refusal(&caps, true, true, Some((40, 10))).expect("40x10 refuses");
+        assert!(msg.contains("40x10"), "must name the measured size: {msg}");
+        assert!(msg.contains("56x14"), "must name the required size: {msg}");
+        assert!(msg.contains("tasqx list"), "must name a way through: {msg}");
+        // One cell short on either axis is short.
+        assert!(dashboard_refusal(&caps, true, true, Some((55, 14))).is_some());
+        assert!(dashboard_refusal(&caps, true, true, Some((56, 13))).is_some());
+
+        // Unmeasurable is a refusal, not a default: entering the alternate
+        // screen on a guess is how a half-drawn frame lands on a window nobody
+        // can read.
+        assert!(dashboard_refusal(&caps, true, true, None).is_some());
+    }
+
+    /// A window too small for the screen makes a BARE `tasqx` print the table
+    /// instead — it must never open an alternate screen it cannot draw in.
+    ///
+    /// This is a regression guard with a real failure behind it. Without the
+    /// `fits` term, bare `tasqx` in a 40x10 window entered the alternate
+    /// screen, painted nothing at all (`layout` returns `None` below 56x14 and
+    /// `render` returns early), blocked until `q`, and created a 208 KB store
+    /// on the way in — D55's refused-screen-leaves-a-store failure, one screen
+    /// over.
+    #[test]
+    fn a_window_too_small_to_draw_in_falls_back_to_the_table() {
+        let caps = tty_caps();
+        assert!(
+            dashboard_active(&caps, false, true, true, true, true),
+            "a big enough interactive terminal opens the screen"
+        );
+        assert!(
+            !dashboard_active(&caps, false, true, false, true, true),
+            "a window too small must fall through to run_list, not open a blank screen"
+        );
+        // Every other signal still refuses on its own.
+        assert!(
+            !dashboard_active(&caps, true, true, true, true, true),
+            "--json never opens a screen"
+        );
+        assert!(
+            !dashboard_active(&caps, false, false, true, true, true),
+            "dashboard.enabled = false is the escape hatch"
+        );
+        assert!(
+            !dashboard_active(&caps, false, true, true, false, true),
+            "a piped stdout never opens a screen"
+        );
+        assert!(
+            !dashboard_active(&caps, false, true, true, true, false),
+            "a piped stdin never opens a screen — the key loop would block on it"
+        );
+    }
 
     /// Both halves of the argv escape pair, over the SAME registry.
     ///

@@ -18,6 +18,7 @@
 //! what the ladder cannot afford — `Borders::ALL` costs two rows each, where
 //! this costs three for the whole screen.
 
+pub mod json;
 pub mod model;
 pub mod panels;
 
