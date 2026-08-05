@@ -414,7 +414,7 @@ mod tests {
                 },
                 choices: match s.choices {
                     Choices::Themes => theme::BUILTINS.iter().map(|t| t.to_string()).collect(),
-                    Choices::Free => Vec::new(),
+                    Choices::Free | Choices::ManyOf(_) => Vec::new(),
                     Choices::OneOf(values) => values.iter().map(|v| (*v).to_string()).collect(),
                 },
             })
@@ -432,7 +432,14 @@ mod tests {
         // the user's real theme directory would make this test depend on the
         // machine it runs on.
         let th = theme::load(name, None);
-        let mut term = Terminal::new(TestBackend::new(70, 16)).unwrap();
+        // Tall enough for the whole registry plus the chrome (2 header, 4
+        // footer). A fixed 16 made this helper fail the day a tenth setting was
+        // added — which says nothing about the screen, and hides what the tests
+        // using it actually assert. NOTE: the screen itself does not scroll, so
+        // a real terminal shorter than this cannot reach the last row; that is
+        // a genuine gap, tracked separately rather than papered over here.
+        let rows = config::SETTINGS.len() as u16 + 8;
+        let mut term = Terminal::new(TestBackend::new(70, rows)).unwrap();
         term.draw(|f| render(app, &th, &caps(), f)).unwrap();
         term.backend().buffer().clone()
     }
@@ -470,7 +477,7 @@ mod tests {
         assert_eq!(a.selected, 0);
         assert!(a.on_key(press(KeyCode::Up)).is_none());
         assert_eq!(a.selected, 0, "up at the top row must stay put");
-        for _ in 0..10 {
+        for _ in 0..a.rows.len() + 4 {
             a.on_key(press(KeyCode::Down));
         }
         assert_eq!(

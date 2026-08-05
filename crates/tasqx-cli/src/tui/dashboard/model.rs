@@ -720,7 +720,50 @@ pub enum PanelId {
     Slot,
 }
 
+/// The panels `dashboard.panels` may name, in the built-in order.
+///
+/// Hand-written because a `&'static [&'static str]` cannot be derived from the
+/// enum at const time — so a test binds the two instead
+/// (`the_panel_vocabulary_round_trips`), the shape `docs.rs` already uses
+/// against clap. `Slot` is absent on purpose: it is a layout artefact, not a
+/// panel anyone can ask for.
+pub const PANEL_NAMES: &[&str] = &[
+    "now", "next", "due", "blocked", "recent", "projects", "burndown", "tokens",
+];
+
 impl PanelId {
+    /// The name this panel goes by in config and in the `--json` document.
+    /// `Slot` has none — nothing configures it.
+    pub fn slug(self) -> Option<&'static str> {
+        Some(match self {
+            PanelId::Now => "now",
+            PanelId::Next => "next",
+            PanelId::Due => "due",
+            PanelId::Blocked => "blocked",
+            PanelId::Recent => "recent",
+            PanelId::Projects => "projects",
+            PanelId::Burndown => "burndown",
+            PanelId::Tokens => "tokens",
+            PanelId::Slot => return None,
+        })
+    }
+
+    /// The panel a config value names, or `None` for a word that is not one.
+    pub fn from_slug(s: &str) -> Option<PanelId> {
+        [
+            PanelId::Now,
+            PanelId::Next,
+            PanelId::Due,
+            PanelId::Blocked,
+            PanelId::Recent,
+            PanelId::Projects,
+            PanelId::Burndown,
+            PanelId::Tokens,
+        ]
+        .into_iter()
+        .find(|p| p.slug() == Some(s))
+    }
+
     /// The digit that focuses (or, in the slot, places) this panel.
     pub fn digit(self) -> Option<u8> {
         Some(match self {

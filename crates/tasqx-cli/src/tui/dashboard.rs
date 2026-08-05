@@ -84,7 +84,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(dash: Dashboard, order: Vec<PanelId>, window_days: usize) -> Self {
+    pub fn new(
+        dash: Dashboard,
+        order: Vec<PanelId>,
+        window_days: usize,
+        auto_refresh: bool,
+    ) -> Self {
         let focus = order.first().copied().unwrap_or(PanelId::Now);
         App {
             dash,
@@ -98,7 +103,7 @@ impl App {
                 .iter()
                 .position(|(_, d)| *d == window_days)
                 .unwrap_or(0),
-            auto_refresh: true,
+            auto_refresh,
             help: false,
             status: String::new(),
         }

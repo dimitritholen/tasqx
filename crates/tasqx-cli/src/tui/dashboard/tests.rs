@@ -106,7 +106,7 @@ fn all_panels() -> Vec<PanelId> {
 }
 
 fn app() -> App {
-    App::new(dash(), all_panels(), 7)
+    App::new(dash(), all_panels(), 7, true)
 }
 
 fn draw_at(app: &App, w: u16, h: u16, caps: &Caps) -> Buffer {
@@ -618,6 +618,53 @@ fn the_due_panel_measures_against_the_models_today() {
     );
 }
 
+/// The `w` cycle and the `dashboard.window` vocabulary are one list written
+/// twice. `WINDOW_CHOICES`' own comment has promised this assertion since the
+/// screen landed; until now it was a promise with nothing behind it.
+#[test]
+fn the_window_vocabulary_matches_the_registry() {
+    let s = crate::config::find("dashboard.window").expect("registered");
+    let crate::config::Choices::OneOf(vocab) = s.choices else {
+        panic!(
+            "dashboard.window must carry a closed vocabulary, got {:?}",
+            s.choices
+        );
+    };
+    let cycled: Vec<&str> = WINDOW_CHOICES.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        cycled, vocab,
+        "`w` cycles a different set than `config set dashboard.window` accepts"
+    );
+    assert!(
+        vocab.contains(&s.default),
+        "the default is not in its own vocabulary"
+    );
+}
+
+/// `PANEL_NAMES` is hand-written because a `&[&str]` cannot be sliced out of an
+/// enum at const time. This is what keeps it honest: every name maps to a panel,
+/// every panel but `Slot` has a name, and the two lists are the same length.
+#[test]
+fn the_panel_vocabulary_round_trips() {
+    for name in model::PANEL_NAMES {
+        let id = PanelId::from_slug(name)
+            .unwrap_or_else(|| panic!("PANEL_NAMES has {name:?}, which names no panel"));
+        assert_eq!(id.slug(), Some(*name), "{name:?} does not round-trip");
+    }
+    for id in all_panels() {
+        let slug = id
+            .slug()
+            .unwrap_or_else(|| panic!("{id:?} is configurable but has no name"));
+        assert!(
+            model::PANEL_NAMES.contains(&slug),
+            "{id:?} is a panel the config vocabulary cannot name"
+        );
+    }
+    assert_eq!(model::PANEL_NAMES.len(), all_panels().len());
+    assert_eq!(PanelId::Slot.slug(), None, "the slot is not configurable");
+    assert!(PanelId::from_slug("slot").is_none());
+}
+
 /// An empty panel prints a sentence. A blank body reads as a hung screen.
 #[test]
 fn an_empty_panel_says_so_rather_than_drawing_nothing() {
@@ -633,7 +680,7 @@ fn an_empty_panel_says_so_rather_than_drawing_nothing() {
         "2026-08-05T12:00:00Z".parse().unwrap(),
         date(2026, 8, 5),
     );
-    let a = App::new(empty, all_panels(), 7);
+    let a = App::new(empty, all_panels(), 7, true);
     let text = all_text(&draw_at(&a, 96, 28, &caps()));
     assert!(
         text.contains("no timer running"),

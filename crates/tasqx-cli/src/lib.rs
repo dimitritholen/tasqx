@@ -2243,6 +2243,43 @@ fn dashboard_enabled() -> bool {
     }
 }
 
+/// Read `dashboard.panels` — which panels the screen draws, in which order.
+///
+/// Total rather than fallible, and that is `coerce`'s doing: a value outside the
+/// vocabulary is not a value, so it never reaches here and the resolver hands
+/// back the default. What arrives is either the user's list or the built-in one.
+fn dashboard_panels() -> Vec<tui::dashboard::model::PanelId> {
+    use tui::dashboard::model::PanelId;
+    let s = config::find("dashboard.panels").expect("dashboard.panels is registered");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    v.split(',')
+        .filter_map(|name| PanelId::from_slug(name.trim()))
+        .collect()
+}
+
+/// Read `dashboard.window` as a day count.
+///
+/// Converted through `WINDOW_CHOICES` BY NAME, never by inventing a number:
+/// `App::new` maps a day count back to an index with `unwrap_or(0)`, so a count
+/// that is not in the list would silently become "week" and the `w` key would
+/// start from somewhere the config never asked for.
+fn dashboard_window_days() -> usize {
+    let s = config::find("dashboard.window").expect("dashboard.window is registered");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    tui::dashboard::WINDOW_CHOICES
+        .iter()
+        .find(|(name, _)| *name == v)
+        .map(|(_, days)| *days)
+        .unwrap_or(7)
+}
+
+/// Read `dashboard.refresh` — whether the screen re-reads on a timer.
+fn dashboard_auto_refresh() -> bool {
+    let s = config::find("dashboard.refresh").expect("dashboard.refresh is registered");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    v != "manual"
+}
+
 /// The four reads one dashboard refresh makes.
 ///
 /// One `task.list {}` — UNFILTERED, because the burndown reconstructs backwards
@@ -2313,7 +2350,13 @@ fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError
 
     let today = chart::today();
     let now = jiff::Timestamp::now();
-    let mut app = App::new(dashboard_data(be, 7, now, today)?, default_panel_order(), 7);
+    let days = dashboard_window_days();
+    let mut app = App::new(
+        dashboard_data(be, days, now, today)?,
+        dashboard_panels(),
+        days,
+        dashboard_auto_refresh(),
+    );
 
     // What the user asked for on the way out, if anything. `Refresh` never
     // reaches here — it is served inside the loop, because a refresh that tore
@@ -2407,21 +2450,12 @@ fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError
 /// been dishonest, and a prose summary here would be a second surface to keep
 /// true; anyone who wants prose has the screen.
 fn run_dashboard_json(be: &mut Backend, _ctx: &Ctx) -> CmdOutcome {
-    const DAYS: usize = 7;
-    let order = default_panel_order();
-    let data = dashboard_data(be, DAYS, jiff::Timestamp::now(), chart::today())?;
-    let doc = tui::dashboard::json::document(&data, DAYS, &order);
+    let days = dashboard_window_days();
+    let order = dashboard_panels();
+    let data = dashboard_data(be, days, jiff::Timestamp::now(), chart::today())?;
+    let doc = tui::dashboard::json::document(&data, days, &order);
     let render = serde_json::to_string_pretty(&doc).unwrap_or_default();
     Ok((doc, render))
-}
-
-/// The panels a dashboard shows when nothing is configured.
-///
-/// A `dashboard.panels` setting replaces this (a later task); until then the
-/// order lives in one place rather than being spelled out at each call site.
-fn default_panel_order() -> Vec<tui::dashboard::model::PanelId> {
-    use tui::dashboard::model::PanelId::*;
-    vec![Now, Next, Due, Blocked, Recent, Projects, Burndown, Tokens]
 }
 
 /// The event log from `days_back` days before `anchor`, for a chart that only
@@ -3163,6 +3197,18 @@ fn build_row(
             config::Choices::Themes => themes.to_vec(),
             config::Choices::Free => Vec::new(),
             config::Choices::OneOf(values) => values.iter().map(|v| (*v).to_string()).collect(),
+            // No candidates, so `begin_edit` falls to its existing "no inline
+            // editor — use `tasqx config set`" branch, and the row is still
+            // listed with its value and source.
+            //
+            // Deliberately NOT an ordered multi-select. That would be a fourth
+            // interaction mode in a screen D26 kept to two, to save one
+            // `tasqx config set dashboard.panels now,next,due` — and the panel
+            // order is already discoverable on the dashboard itself, where the
+            // numbers are drawn into the panel headings. The write path
+            // validates the list either way, which is where a typo actually
+            // needs catching.
+            config::Choices::ManyOf(_) => Vec::new(),
         },
     }
 }
