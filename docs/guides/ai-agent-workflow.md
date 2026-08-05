@@ -28,6 +28,32 @@ Leave off `--scope write` and the server is read-only: the write tools are not j
 refused, they are absent from the tool list, so the agent cannot even try. Start
 read-only; grant write once you have watched what the agent does with read.
 
+## Shelling out: always spell the verb
+
+An agent that runs shell commands must write `tasqx list`, never a bare `tasqx`.
+
+A bare `tasqx` opens a full-screen dashboard whenever stdin and stdout are both
+terminals — and a harness that gives its child a pty (pexpect, node-pty, tmux,
+`docker run -t`) satisfies exactly that, however unattended it is. The child then
+switches to the alternate screen and blocks on a keypress that never comes:
+measured at 80x24 and 120x40, no exit, no parseable output, and the tool call
+times out. Setting `CI=true` does not help, because nothing reads it — the stream
+check is the whole condition.
+
+Killing it does not undo the screen either: the leave-alternate-screen sequence
+is never sent, so a harness that reuses one pty runs its *next* command inside
+the alternate buffer.
+
+Either of these is enough:
+
+```console
+tasqx list                    # the verb always means the table
+TASQX_DASHBOARD=false tasqx   # or switch the screen off for the whole image
+```
+
+The MCP server above is unaffected: it speaks JSON-RPC over pipes, so it is on
+the non-interactive side by construction.
+
 ## The loop an agent runs
 
 The tool surface is designed around one loop — work the backlog one task at a time:
