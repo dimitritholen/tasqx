@@ -274,8 +274,10 @@ const METHODS: [(&str, &str, &str); 31] = [
     ),
     (
         "event.list",
-        "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>",
-        "<code>{count, events}</code> — the append-only log.",
+        "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>, <code>from?</code>",
+        "<code>{count, events}</code> — the append-only log. <code>from</code> takes \
+         the usual date grammar and is a lower bound, not an exact filter: it \
+         promises no events older than roughly that instant.",
     ),
     (
         "event.revert",

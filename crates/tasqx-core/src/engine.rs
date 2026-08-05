@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use jiff::Timestamp;
+use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
@@ -303,12 +304,20 @@ impl Engine {
     // ---- event.list ----------------------------------------------------------
 
     /// `event.list` — the audit log, newest first. Params: `limit` (default 50),
-    /// and at most one scope, either `ref` (one task) or `entity` (a whole
-    /// [`Entity`] class).
+    /// at most one scope — either `ref` (one task) or `entity` (a whole
+    /// [`Entity`] class) — and an optional `from` lower bound (D59).
     ///
     /// `entity` is validated against the closed vocabulary rather than passed
     /// into the `WHERE` clause; the comment below records why an empty list was
     /// the wrong answer to a typo.
+    ///
+    /// `from` takes the same date grammar every other caller-picked bound takes
+    /// (D33 — `due.before:` and friends), so `-30d`, `yesterday` and
+    /// `2026-07-20` all work. It is a **lower bound, not an exact filter**: it
+    /// is applied against the time-ordered `id`, and promises no events older
+    /// than roughly that instant. [`storage::event_id_floor`] carries the whole
+    /// argument for why the `ts` column cannot serve this and why the bound
+    /// leans a second the over-inclusive way.
     pub fn event_list(&self, p: &Value) -> Result<Value, ApiError> {
         // Checked, not `as i64`: a value above i64::MAX wrapped negative, and
         // SQLite reads a negative LIMIT as UNLIMITED — the exact opposite of
@@ -322,10 +331,25 @@ impl Engine {
             ))
         })?;
 
+        // Every bound value in one list, and every placeholder index derived
+        // from its position in that list.
+        //
+        // This replaces a hand-written `?1`/`?2` pair whose own comment said it
+        // was readable because there were exactly two arms. `from` combines
+        // independently with both scopes, so two arms became four, and a
+        // hand-indexed placeholder across four arms is how the scope filter ends
+        // up handed the limit and LIMIT handed an entity name — the failure
+        // `event_list_applies_the_limit_in_every_scoping_arm` already exists to
+        // catch once. Deriving the index removes the chance rather than testing
+        // for it.
+        let mut preds: Vec<String> = Vec::new();
+        let mut binds: Vec<SqlValue> = Vec::new();
+
         // Optional scoping: `ref` (a task) or `entity` (a type name).
-        let (where_sql, arg): (String, Option<String>) = if let Some(r) = p.get("ref") {
+        if let Some(r) = p.get("ref") {
             let task = self.resolve_ref_value(r)?;
-            ("WHERE entity_id = ?1".to_string(), Some(task.id))
+            preds.push(format!("entity_id = ?{}", binds.len() + 1));
+            binds.push(SqlValue::Text(task.id));
         } else if let Some(ent) = opt_str(p, "entity")? {
             // `entity` is a CLOSED, compile-time vocabulary — the writers can
             // only ever spell `Entity::ALL` — so a value outside it is a caller
@@ -342,22 +366,38 @@ impl Engine {
                     Entity::accepted()
                 ))
             })?;
-            (
-                "WHERE entity = ?1".to_string(),
-                Some(ent.as_str().to_string()),
-            )
-        } else {
-            ("".to_string(), None)
-        };
+            preds.push(format!("entity = ?{}", binds.len() + 1));
+            binds.push(SqlValue::Text(ent.as_str().to_string()));
+        }
 
-        // The limit is BOUND, not interpolated — it is the only caller-supplied
-        // value in this query, and the placeholder index depends on the arm:
-        // both scoped arms above already spend `?1` on the scope, so their
-        // LIMIT is `?2`, while the unscoped arm's is `?1`. Spelling the index
-        // out (rather than a bare `?`, which happens to number correctly today)
-        // keeps the two `params!` calls below readable against one shared SQL
-        // string.
-        let limit_ph = if arg.is_some() { "?2" } else { "?1" };
+        // `from`, filtered on the time-ordered `id` rather than on `ts` — see
+        // `storage::event_id_floor` for why the obvious column is the wrong one.
+        //
+        // Read as literally `opt_when(p, "from", ...)`: the D33 drift guard in
+        // `dispatch.rs` finds the keys an engine method reads by scanning this
+        // source for `(p,"` and `p.get("`, so spelling it any other way makes
+        // the key invisible to the guard and reddens it blaming PARAMS.
+        if let Some(when) = opt_when(p, "from", Timestamp::now())? {
+            // `parse_when` returns the canonical RFC3339 form, so this cannot
+            // fail — but an `unwrap` here would turn a future grammar change
+            // into a panic in a read path, and the store is the wrong place to
+            // learn that.
+            let ts = parse_ts(&when).ok_or_else(|| {
+                ApiError::bad_request(format!("`from` resolved to an unreadable instant {when:?}"))
+            })?;
+            preds.push(format!("id >= ?{}", binds.len() + 1));
+            binds.push(SqlValue::Text(storage::event_id_floor(ts)));
+        }
+
+        let where_sql = if preds.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", preds.join(" AND "))
+        };
+        // The limit is BOUND, not interpolated, and takes the index after every
+        // predicate's — the one placeholder whose position is not fixed.
+        let limit_ph = format!("?{}", binds.len() + 1);
+        binds.push(SqlValue::Integer(limit));
         // events.id is UUIDv7 (time-ordered), so ORDER BY id DESC = newest first.
         let sql = format!(
             "SELECT id, entity, entity_id, op, payload, ts, actor FROM events \
@@ -381,19 +421,9 @@ impl Engine {
             }))
         };
         let mut out = Vec::new();
-        match arg {
-            Some(a) => {
-                let rows = stmt.query_map(params![a, limit], map)?;
-                for r in rows {
-                    out.push(r?);
-                }
-            }
-            None => {
-                let rows = stmt.query_map(params![limit], map)?;
-                for r in rows {
-                    out.push(r?);
-                }
-            }
+        let rows = stmt.query_map(rusqlite::params_from_iter(binds), map)?;
+        for r in rows {
+            out.push(r?);
         }
         Ok(json!({ "count": out.len(), "events": out }))
     }
@@ -1564,5 +1594,145 @@ mod tests {
         );
         let by_ref = e.event_list(&json!({ "ref": first, "limit": 2 })).unwrap();
         assert_eq!(by_ref["count"], 2, "ref-scoped page must honour limit");
+    }
+
+    /// `from` combines independently with both scopes, so the two placeholder
+    /// arms this method used to have became four. Every combination must bind
+    /// the right value to the right placeholder — the failure being guarded is
+    /// the scope filter receiving the id floor, or LIMIT receiving an entity
+    /// name, which SQLite accepts silently and answers wrongly.
+    ///
+    /// Doubles the coverage of the test above rather than replacing it: that one
+    /// pins the limit in every arm, this one pins the same arms with a bound.
+    #[test]
+    fn event_list_from_bounds_the_page_in_every_scoping_arm() {
+        let e = Engine::open_in_memory().unwrap();
+        let t = e.task_add(&json!({ "title": "seeded" })).unwrap();
+        let short = t["short_id"].clone();
+        e.annotation_add(&json!({ "ref": short.clone(), "body": "n" }))
+            .unwrap();
+
+        // A bound comfortably in the past keeps everything; the assertions are
+        // about which rows come back through which arm, not about the clock.
+        let past = "-1d";
+        let unscoped = e.event_list(&json!({ "from": past })).unwrap();
+        assert!(
+            unscoped["count"].as_u64().unwrap() >= 2,
+            "an unscoped page bounded in the past must still return the seeded events"
+        );
+
+        let by_entity = e
+            .event_list(&json!({ "from": past, "entity": "task" }))
+            .unwrap();
+        assert!(
+            by_entity["count"].as_u64().unwrap() >= 2,
+            "the entity-scoped arm must not lose rows to the bound"
+        );
+        for ev in by_entity["events"].as_array().unwrap() {
+            assert_eq!(
+                ev["entity"], "task",
+                "the entity scope must still filter when `from` is present — \
+                 a swapped placeholder shows up exactly here"
+            );
+        }
+
+        let by_ref = e
+            .event_list(&json!({ "from": past, "ref": short.clone() }))
+            .unwrap();
+        assert!(
+            by_ref["count"].as_u64().unwrap() >= 2,
+            "the ref-scoped arm must not lose rows to the bound"
+        );
+
+        // And the limit still lands on LIMIT rather than on a predicate.
+        let capped = e
+            .event_list(&json!({ "from": past, "entity": "task", "limit": 1 }))
+            .unwrap();
+        assert_eq!(
+            capped["count"], 1,
+            "`limit` must still reach LIMIT when a bound occupies an earlier placeholder"
+        );
+
+        // A bound in the future excludes everything — proof the predicate is
+        // wired at all, rather than being silently dropped from the SQL.
+        let future = e.event_list(&json!({ "from": "+1d" })).unwrap();
+        assert_eq!(
+            future["count"], 0,
+            "a bound in the future must exclude every existing event"
+        );
+    }
+
+    /// The boundary row must survive, which is what the margin in
+    /// `storage::event_id_floor` buys: `insert_event` reads the clock twice, so
+    /// a row's `id` can trail its own `ts` across a millisecond tick.
+    #[test]
+    fn event_list_from_does_not_lose_the_event_at_the_bound() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "boundary" })).unwrap();
+
+        let all = e.event_list(&json!({})).unwrap();
+        let ts = all["events"][0]["ts"].as_str().unwrap().to_string();
+        let id = all["events"][0]["id"].as_str().unwrap().to_string();
+
+        let bounded = e.event_list(&json!({ "from": ts })).unwrap();
+        let ids: Vec<&str> = bounded["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|ev| ev["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&id.as_str()),
+            "the event whose own `ts` is the bound must come back, got {ids:?}"
+        );
+    }
+
+    /// `from` takes the same date grammar every other caller-picked bound takes
+    /// (D33). The failure this prevents is the one D33 records: five of the six
+    /// formats tasqx prints in its own error message silently matching nothing.
+    #[test]
+    fn event_list_from_takes_the_relative_date_grammar_d33_unified() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "grammar" })).unwrap();
+
+        for spelling in ["-1d", "yesterday", "-7d"] {
+            let got = e.event_list(&json!({ "from": spelling })).unwrap();
+            assert!(
+                got["count"].as_u64().unwrap() >= 1,
+                "`from: {spelling:?}` must reach the same grammar `due.before:` does"
+            );
+        }
+
+        let err = e
+            .event_list(&json!({ "from": "yesterdya" }))
+            .expect_err("an unreadable date must be refused, not ignored");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(
+            err.message.contains("could not parse date"),
+            "the refusal must be the shared date message, got {}",
+            err.message
+        );
+    }
+
+    /// D35: an empty string is a caller mistake, not "no bound given". A shell
+    /// variable that expanded to nothing must not silently widen the page to
+    /// the whole log.
+    #[test]
+    fn event_list_refuses_an_empty_from_instead_of_reading_it_as_absent() {
+        let e = Engine::open_in_memory().unwrap();
+        let err = e
+            .event_list(&json!({ "from": "" }))
+            .expect_err("an empty `from` must be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        // The SHARED D35 wording, not merely a message that happens to contain
+        // the field name. Asserting the looser thing was not enough: swapping
+        // `opt_when` for a hand-rolled `opt_str` + parse still produces an error
+        // mentioning `from` (an unreadable-instant one), so the weaker
+        // assertion stayed green through exactly the regression it exists to
+        // catch. Found by running that swap as a bite-check.
+        assert_eq!(
+            err.message, "`from` was given as an empty string — send a value or omit `from`",
+            "the refusal must be D35's shared wording"
+        );
     }
 }
