@@ -763,6 +763,45 @@ fn the_help_overlay_is_bordered_and_shows_every_binding_whole() {
     }
 }
 
+/// A one-row panel shows a task, never just the count of the tasks it is not
+/// showing.
+///
+/// Found by driving the binary: at 80x24 BLOCKED and RECENT each got one body
+/// row, spent it on `…3 more` / `…31 more`, and showed no task at ANY scroll
+/// position — a panel that had become a counter for its own emptiness.
+#[test]
+fn a_single_row_panel_spends_its_row_on_data() {
+    let a = app();
+    let d = a.dash();
+    assert!(d.recent.rows.len() > 1, "the fixture must overflow one row");
+
+    for scroll in [0, 1, 99] {
+        let body = panels::body(
+            PanelId::Recent,
+            model::Detail::OneLine,
+            d,
+            60,
+            1,
+            scroll,
+            &theme::load("nord", None),
+            &caps(),
+        );
+        let text = body
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            text.contains('#'),
+            "scroll {scroll}: one row must carry a task, got {text:?}"
+        );
+        assert!(
+            !text.trim_start().starts_with('…'),
+            "scroll {scroll}: the only row must not be the overflow marker: {text:?}"
+        );
+    }
+}
+
 /// An empty panel prints a sentence. A blank body reads as a hung screen.
 #[test]
 fn an_empty_panel_says_so_rather_than_drawing_nothing() {

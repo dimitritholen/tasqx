@@ -2363,54 +2363,45 @@ fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError
         dashboard_auto_refresh(),
     );
 
-    // What the user asked for on the way out, if anything. `Refresh` never
-    // reaches here — it is served inside the loop, because a refresh that tore
-    // the screen down and rebuilt it would flicker on every `r` and on every
-    // tick of auto-refresh.
-    let mut want: Option<Action> = None;
-    let mut failed: Option<ApiError> = None;
-    tui::with_terminal(|term| {
-        loop {
-            let mut placed = Vec::new();
-            let mut has_slot = false;
-            term.draw(|f| {
-                tui::dashboard::render(&app, &ctx.theme, &ctx.caps, f);
-                if let Some(s) = model::layout(f.area().width, f.area().height, app.order()) {
-                    placed = s.panels.iter().map(|p| p.id).collect();
-                    has_slot = s.has_slot();
-                }
-            })?;
-            // The state machine is told what was drawn, as data — that is what
-            // keeps Tab from stopping on a panel this size cannot show.
-            app.observe(&placed, has_slot);
-
-            // With auto-refresh on, wait at most one tick for a key and then
-            // re-read; otherwise block until the user does something. Polling
-            // rather than a background thread keeps this loop the only thing
-            // that touches the terminal, which is the invariant that lets the
-            // existing panic hook and `Restore` guard stay sufficient.
-            if app.auto_refresh() && !event::poll(std::time::Duration::from_secs(REFRESH_TICK))? {
-                match dashboard_data(be, app.window_days(), jiff::Timestamp::now(), today) {
-                    Ok(data) => app.replace(data),
-                    Err(e) => {
-                        failed = Some(e);
-                        return Ok(());
+    // OUTER loop: the screen comes back after the picker.
+    //
+    // `p` used to hand the terminal back and let `run_pick`'s result become the
+    // command's result — so backing out of the picker exited the whole process
+    // with `not_found` and code 4, and choosing a task started it and then quit.
+    // Neither is what a key on a read-only overview should do. `pick` opens its
+    // own `with_terminal`, so the dashboard's has to be closed first and
+    // reopened after; D58 asks for one session with a `Screen` enum, which is
+    // the remaining half of this work and would remove the flicker.
+    let mut picked: Option<String> = None;
+    loop {
+        // What the user asked for on the way out, if anything. `Refresh` never
+        // reaches here — it is served inside the loop, because a refresh that
+        // tore the screen down and rebuilt it would flicker on every `r` and on
+        // every tick of auto-refresh.
+        let mut want: Option<Action> = None;
+        let mut failed: Option<ApiError> = None;
+        tui::with_terminal(|term| {
+            loop {
+                let mut placed = Vec::new();
+                let mut has_slot = false;
+                term.draw(|f| {
+                    tui::dashboard::render(&app, &ctx.theme, &ctx.caps, f);
+                    if let Some(s) = model::layout(f.area().width, f.area().height, app.order()) {
+                        placed = s.panels.iter().map(|p| p.id).collect();
+                        has_slot = s.has_slot();
                     }
-                }
-                continue;
-            }
-            // Resize and paste just redraw; only keys are decisions.
-            let Event::Key(key) = event::read()? else {
-                continue;
-            };
-            match app.on_key(key) {
-                Some(Action::Quit) => return Ok(()),
-                Some(Action::Refresh) => {
-                    // A read that fails mid-session ends the session rather
-                    // than redrawing stale numbers under a live-looking screen.
-                    // The error is carried out and reported on the normal
-                    // terminal, because a message printed here is wiped by the
-                    // restore that follows it.
+                })?;
+                // The state machine is told what was drawn, as data — that is what
+                // keeps Tab from stopping on a panel this size cannot show.
+                app.observe(&placed, has_slot);
+
+                // With auto-refresh on, wait at most one tick for a key and then
+                // re-read; otherwise block until the user does something. Polling
+                // rather than a background thread keeps this loop the only thing
+                // that touches the terminal, which is the invariant that lets the
+                // existing panic hook and `Restore` guard stay sufficient.
+                if app.auto_refresh() && !event::poll(std::time::Duration::from_secs(REFRESH_TICK))?
+                {
                     match dashboard_data(be, app.window_days(), jiff::Timestamp::now(), today) {
                         Ok(data) => app.replace(data),
                         Err(e) => {
@@ -2418,29 +2409,66 @@ fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError
                             return Ok(());
                         }
                     }
+                    continue;
                 }
-                Some(a) => {
-                    want = Some(a);
-                    return Ok(());
+                // Resize and paste just redraw; only keys are decisions.
+                let Event::Key(key) = event::read()? else {
+                    continue;
+                };
+                match app.on_key(key) {
+                    Some(Action::Quit) => return Ok(()),
+                    Some(Action::Refresh) => {
+                        // A read that fails mid-session ends the session rather
+                        // than redrawing stale numbers under a live-looking screen.
+                        // The error is carried out and reported on the normal
+                        // terminal, because a message printed here is wiped by the
+                        // restore that follows it.
+                        match dashboard_data(be, app.window_days(), jiff::Timestamp::now(), today) {
+                            Ok(data) => app.replace(data),
+                            Err(e) => {
+                                failed = Some(e);
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Some(a) => {
+                        want = Some(a);
+                        return Ok(());
+                    }
+                    None => {}
                 }
-                None => {}
             }
-        }
-    })
-    .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
+        })
+        .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
 
-    if let Some(e) = failed {
-        return Err(e);
-    }
-    // Both of these open a screen or write output of their own, so they run
-    // only once this one has handed the terminal back. `p` therefore costs a
-    // second alt-screen transition today, where D58 asks for one session with a
-    // `Screen` enum; that is the remaining half of the picker work and is
-    // recorded rather than pretended away.
-    match want {
-        Some(Action::List) => run_list(be, ctx, &[]).map(|(_, r)| Some(r)),
-        Some(Action::Pick) => run_pick(be, ctx, &[]).map(|(_, r)| Some(r)),
-        _ => Ok(None),
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        match want {
+            // `l` is the one key that means "leave", so it does.
+            Some(Action::List) => return run_list(be, ctx, &[]).map(|(_, r)| Some(r)),
+            Some(Action::Pick) => {
+                match run_pick(be, ctx, &[]) {
+                    Ok((_, render)) => picked = Some(render),
+                    // Backing out of the picker is not an error HERE. `pick` as
+                    // a command exits 4 having started nothing, because its
+                    // whole output is the choice (D55); reached from a screen
+                    // the user is going back to, cancelling is just cancelling.
+                    Err(e) if e.code == tasqx_core::ErrorCode::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+                // Whatever happened, the screen shows it: a started task turns
+                // up in NOW, and a cancelled pick redraws unchanged.
+                app.replace(dashboard_data(
+                    be,
+                    app.window_days(),
+                    jiff::Timestamp::now(),
+                    chart::today(),
+                )?);
+            }
+            // Quit, or nothing left to do.
+            _ => return Ok(picked),
+        }
     }
 }
 
