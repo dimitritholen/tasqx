@@ -44,11 +44,53 @@ CI runs the suite on Linux, Windows and macOS on every push — the same three p
 tasqx init work              # a project is just a name, no folder
 tasqx use work               # make it the default
 tasqx add Buy milk           # lands in the default project
-tasqx                        # bare `tasqx` lists your working set
 tasqx done 1
+tasqx                        # on a terminal: the dashboard. In a pipe: the table.
 ```
 
 `tasqx manual` is a real manual, not a wall of flags. `tasqx <verb> -h` gives you per-command help with examples you can copy. `tasqx docs` renders the same content as a single HTML file you can open in a browser.
+
+## The dashboard
+
+On a terminal, a bare `tasqx` opens a full-screen overview instead of printing the
+table:
+
+```console
+tasqx                    # the dashboard, on a terminal
+tasqx dashboard          # the same screen, spelled out (alias: dash)
+tasqx --json dashboard   # the panels as one document, no screen
+```
+
+Eight panels over one snapshot — NOW, NEXT UP, DUE, BLOCKED, RECENT, PROJECTS,
+BURNDOWN and TOKENS — under a header that counts them (`17 open · 1 active ·
+2 overdue · 3 blocked · 8 done/week`) and a footer that names every key. It is
+read-only apart from `p`, which opens the picker and starts what you choose.
+`q`, `esc` and ctrl-c all close it. The layout is responsive: three columns on a
+wide window, one on a narrow one, and below 56x14 it does not open at all.
+
+BLOCKED is there because `@working` — the default filter behind `tasqx list` —
+excludes blocked tasks, so work that is standing still is invisible on every
+other surface tasqx has.
+
+**Anything that is not a person at a keyboard still gets the table, byte for
+byte**: piped, redirected, `--json`, `TERM=dumb`, `[dashboard] enabled = false`,
+or a window under 56x14. The condition is stdin *and* stdout both being
+terminals, and nothing else — no `CI` variable is read, so a CI job is safe
+because it redirects rather than because it was recognised. **A script or agent
+that allocates a pty is on the interactive side**, and a bare `tasqx` there
+blocks until someone presses a key. Scripts and agents should spell the verb:
+`tasqx list` always means the table.
+
+Typed on purpose, `tasqx dashboard` refuses rather than falling back, and says
+which terminal it got:
+
+```console
+$ tasqx dashboard | cat
+error [bad_request]: `tasqx dashboard` needs an interactive terminal on stdin and stdout …
+```
+
+Configure it under `[dashboard]`: `enabled`, `panels` (which panels, in which
+order), `refresh` (`auto`/`manual`) and `window` (`week`/`14d`/`30d`).
 
 ## Tab completion
 
@@ -132,6 +174,11 @@ tasqx mcp serve                  # read-only by default
 tasqx mcp serve --scope write    # explicit write access
 ```
 
+MCP speaks JSON-RPC over pipes, so it is unaffected by the dashboard. An agent
+that *shells out* must spell the verb — `tasqx list`, never a bare `tasqx`,
+which opens a blocking full-screen screen whenever the harness gives its child a
+pty. See `docs/guides/ai-agent-workflow.md`.
+
 Wiring it into Claude Code is one line:
 
 ```console
@@ -172,7 +219,7 @@ cargo mutants                    # see docs/mutation-testing.md
 
 CI runs the suite on Linux, Windows and macOS, executes the zsh and fish activation lines in those real shells rather than comparing their text, builds the `notify-os` feature that's off by default, and gates on clippy and rustfmt. A `cargo deny` job gates dependency advisories, licenses and sources (`docs/dependency-policy.md` has the policy), and a coverage job publishes a line-and-branch report on every push — report only, no threshold. Rustc warnings are fatal, which sounds strict until you've had a `#[test]` get separated from its function by a careless edit. The test stops running, rustc says "function is never used" in every build after that, and nobody reads it.
 
-A good chunk of the suite is drift guards: tests that break the build when the docs and the code disagree. Every CLI flag has to show up in its verb's usage line. Every example in the docs has to parse, and the ones marked safe get executed for real. Status sets in SQL, in the filter language and in Rust all come from one enum, so you can't add a status and forget one of them.
+A good chunk of the suite is drift guards: tests that break the build when the docs and the code disagree. Every CLI flag has to show up in its verb's usage line. Every example in the *in-binary* docs — `tasqx <verb> -h`, `tasqx manual`, `tasqx docs` — has to parse, and the ones marked safe get executed for real. The markdown under `docs/` and this file are the exception: a handful of restated figures here are pinned by `tests/readme.rs`, but prose is not, so a sentence about behaviour can go stale without the build noticing. Status sets in SQL, in the filter language and in Rust all come from one enum, so you can't add a status and forget one of them.
 
 `cargo mutants` is the interesting one. It breaks the code on purpose and checks whether any test notices. It found a bug where deleting one line made `(a or b) and c` silently parse as `a or (b and c)`, which would have returned a perfectly normal-looking table full of the rows you filtered out. 316 passing tests hadn't caught it.
 

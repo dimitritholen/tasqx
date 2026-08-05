@@ -471,7 +471,9 @@ $ tasqx list
 ```
 Row 31's `⚠ overdue` renders in red; the urgency column shades hot→cold. Maps to `task.list {filter:"@working", sort:["-urgency"]}`.
 
-A **bare `tasqx`** produces exactly this whenever nobody is watching — piped, redirected, under `--json`, on `TERM=dumb`, in CI, or with `[dashboard] enabled = false`. On an interactive terminal it opens the dashboard instead (**D58**); `tasqx list` is the spelling that always means the table, and is what scripts should use.
+A **bare `tasqx`** produces exactly this whenever nobody is watching: piped, redirected, under `--json`, on `TERM=dumb`, with `[dashboard] enabled = false`, or in a window under 56x14. On an interactive terminal it opens the dashboard instead (**D58**); `tasqx list` is the spelling that always means the table, and is what scripts should use.
+
+The condition is **stdin and stdout both being terminals**, and nothing else. In particular nothing reads a `CI` variable — a CI job is safe because it redirects, not because it was recognised, and a caller that allocates a pty (pexpect, node-pty, tmux, `docker run -t`) is on the *interactive* side however unattended it is. Measured: under a pty with no keys sent, a bare `tasqx` blocks indefinitely.
 
 **3b — The dashboard (bare `tasqx` on a terminal)**
 

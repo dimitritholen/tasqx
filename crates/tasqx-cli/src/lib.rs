@@ -530,8 +530,13 @@ fn execute(cli: Cli) -> Exit {
     // A bare `tasqx` opens the dashboard when — and only when — a human is
     // watching (D58). Everything else about a bare invocation is unchanged, and
     // that is the whole promise: `tasqx | cat`, `tasqx > file`, `--json`,
-    // `TERM=dumb`, CI and `TASQX_DASHBOARD=false` all fall through to the
-    // working-set table below, byte for byte.
+    // `TERM=dumb`, `TASQX_DASHBOARD=false` and a window under 56x14 all fall
+    // through to the working-set table below, byte for byte.
+    //
+    // Note what is NOT in that list: CI. Nothing here reads a `CI` variable, so
+    // a CI job is safe because it redirects rather than because it was
+    // recognised — and a caller that hands its child a pty is interactive by
+    // this test however unattended it is.
     //
     // `Exit::SelfFramed` rather than a `CmdOutcome`, and it is not decoration:
     // `hint_occasion` classifies a bare run as `Occasion::Ordinary`, and `run()`

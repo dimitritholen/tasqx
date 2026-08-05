@@ -447,3 +447,53 @@ fn readme_relative_links_point_at_files_that_exist() {
     );
     assert!(checked >= 7, "the link scan checked only {checked} paths");
 }
+
+/// The README must not tell a reader that a bare `tasqx` prints the table.
+///
+/// D58 gave that invocation a second meaning, and this file is the surface a
+/// visitor reads first. It is pinned here because NOTHING else looks at prose:
+/// mutating any sentence in README.md or under `docs/` leaves the whole suite
+/// green — measured, by rewriting four of them in a scratch clone. That is the
+/// class of drift this repo otherwise has no answer to, and rather than pretend
+/// the general case is covered, this guard pins the one claim that just became
+/// wrong and the one word that makes it conditional.
+#[test]
+fn the_readme_does_not_promise_a_table_from_a_bare_tasqx() {
+    let text = readme();
+
+    // The dashboard must be documented at all.
+    assert!(
+        text.contains("## The dashboard"),
+        "the README must tell a reader what a bare `tasqx` now opens"
+    );
+
+    // And the condition must be stated as the streams, not as a guess about
+    // intent: nothing reads a `CI` variable, so a caller with a pty is on the
+    // interactive side however unattended it is.
+    let dashboard = text
+        .split("## The dashboard")
+        .nth(1)
+        .expect("checked above")
+        .split("\n## ")
+        .next()
+        .expect("a section has a body");
+    for needed in ["stdin", "stdout", "pty", "tasqx list"] {
+        assert!(
+            dashboard.contains(needed),
+            "the dashboard section must mention {needed:?} — a reader who skips it \
+             and shells out from an agent gets a hang, not a table"
+        );
+    }
+
+    // The old sentence, in any of its spellings, is now false.
+    for stale in [
+        "bare `tasqx` lists your working set",
+        "Bare `tasqx` is the working set",
+        "bare `tasqx` shows your working set",
+    ] {
+        assert!(
+            !text.contains(stale),
+            "README still says {stale:?}, which is only true off a terminal"
+        );
+    }
+}
