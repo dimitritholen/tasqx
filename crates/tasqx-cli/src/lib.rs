@@ -2351,7 +2351,7 @@ const REFRESH_TICK: u64 = 5;
 /// normally, because a viewer writes nothing and there is nothing to audit.
 fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError> {
     use ratatui::crossterm::event::{self, Event};
-    use tui::dashboard::{model, Action, App};
+    use tui::dashboard::{Action, App};
 
     let today = chart::today();
     let now = jiff::Timestamp::now();
@@ -2386,7 +2386,7 @@ fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError
                 let mut has_slot = false;
                 term.draw(|f| {
                     tui::dashboard::render(&app, &ctx.theme, &ctx.caps, f);
-                    if let Some(s) = model::layout(f.area().width, f.area().height, app.order()) {
+                    if let Some(s) = app.screen(f.area().width, f.area().height) {
                         placed = s.panels.iter().map(|p| p.id).collect();
                         has_slot = s.has_slot();
                     }

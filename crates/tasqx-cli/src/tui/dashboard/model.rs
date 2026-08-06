@@ -880,11 +880,15 @@ const SPECS: [Spec; 9] = [
         oneline: Some(1),
         grows: true,
     },
-    // No one-line burndown: a sparkline needs an axis to mean anything.
+    // No one-line burndown: a sparkline needs an axis to mean anything. Three
+    // is the whole panel — spark, axis, and the row the "window clipped"
+    // warning uses. `full: 5` with `compact: 3` promised space `burndown_body`
+    // never fills, and the fit dutifully handed it over: two lines of chart in
+    // a five-row box.
     Spec {
         id: PanelId::Burndown,
-        full: 5,
-        compact: Some(3),
+        full: 3,
+        compact: None,
         oneline: None,
         grows: true,
     },
@@ -895,10 +899,15 @@ const SPECS: [Spec; 9] = [
         oneline: Some(1),
         grows: false,
     },
-    // The slot is all-or-nothing: six body lines or it is not drawn.
+    // The slot is all-or-nothing, and the number is the tallest Full among its
+    // members (Projects, Burndown and Tokens are three each) rather than a
+    // round six. Six outlived the burndown spec it was sized against, and on
+    // the one-column rung it spent three blank rows that NEXT UP and RECENT
+    // were being truncated for. `demand` grows it past three whenever the
+    // occupant has more rows to show.
     Spec {
         id: PanelId::Slot,
-        full: 6,
+        full: 3,
         compact: None,
         oneline: None,
         grows: true,
@@ -1039,7 +1048,12 @@ pub const MIN_HEIGHT: u16 = 14;
 /// from it is never placed. The returned rectangles are final — the renderer
 /// does no splitting of its own, which is what keeps this function's tests
 /// meaningful rather than describing a geometry the screen then re-derives.
-pub fn layout(width: u16, height: u16, order: &[PanelId]) -> Option<Screen> {
+pub fn layout(
+    width: u16,
+    height: u16,
+    order: &[PanelId],
+    demand: &dyn Fn(PanelId) -> u16,
+) -> Option<Screen> {
     if width < MIN_WIDTH || height < MIN_HEIGHT {
         return None;
     }
@@ -1121,7 +1135,7 @@ pub fn layout(width: u16, height: u16, order: &[PanelId]) -> Option<Screen> {
                 }
             })
             .collect();
-        for p in fit(&members, column_rows, x, w) {
+        for p in fit(&members, column_rows, x, w, demand) {
             panels.push(p);
         }
     }
@@ -1179,6 +1193,65 @@ const RAISE_ORDER: [PanelId; 9] = [
     PanelId::Slot,
 ];
 
+/// How many body rows `id` could actually fill, given this data.
+///
+/// The ceiling [`layout`] grows a panel to. It counts the lines the matching
+/// builder in `panels` would produce at its richest level — headers included,
+/// because DUE spends a row on each non-empty bucket name and a ceiling that
+/// forgot them would stop the panel one row short of its last task.
+///
+/// Deliberately an over-estimate where it cannot be exact: a panel handed one
+/// row too many shows a blank line, a panel handed one too few hides a task
+/// behind a `…1 more` that the space was there for.
+///
+/// `slot_members` is which analytics panels the reader configured. The slot is
+/// sized for the TALLEST of them, not for whichever one is showing: `6`, `7` and
+/// `8` swap the occupant in place, and a slot that shrank to fit the current one
+/// would have to grow again on the next keypress — or fail to, and vanish. A key
+/// that makes a panel disappear is not a key anybody presses twice.
+/// The body rows a panel costs at the lowest level it can be drawn at.
+///
+/// The bound `fit` never goes under, and the one a test can compare a placement
+/// against without copying the numbers out of `SPECS`.
+pub(crate) fn floor_body(id: PanelId) -> u16 {
+    let s = spec(id);
+    s.body(s.floor()).unwrap_or(0)
+}
+
+pub fn demand(dash: &Dashboard, slot_members: &[PanelId], id: PanelId) -> u16 {
+    let n = |len: usize| -> u16 { u16::try_from(len).unwrap_or(u16::MAX).max(1) };
+    match id {
+        // The card is three lines about one task; there is no fourth. This is
+        // the one panel whose height is a property of the panel rather than of
+        // how much there is to list.
+        PanelId::Now => spec(id).full,
+        // Spark, axis, and the row `burndown_body` uses for the clipped-window
+        // warning. A wider window means a longer sparkline, never a taller one.
+        PanelId::Burndown => {
+            if dash.burndown.truncated {
+                3
+            } else {
+                2
+            }
+        }
+        PanelId::Next => n(dash.next.rows.len()),
+        PanelId::Blocked => n(dash.blocked.rows.len()),
+        PanelId::Recent => n(dash.recent.rows.len()),
+        PanelId::Projects => n(dash.projects.rows.len()),
+        PanelId::Tokens => n(dash.tokens.rows.len()),
+        PanelId::Due => {
+            let d = &dash.due;
+            let bucket = |rows: &Vec<Task>| if rows.is_empty() { 0 } else { rows.len() + 1 };
+            n(bucket(&d.overdue) + bucket(&d.today) + bucket(&d.tomorrow) + bucket(&d.week))
+        }
+        PanelId::Slot => slot_members
+            .iter()
+            .map(|m| demand(dash, &[], *m))
+            .max()
+            .unwrap_or(1),
+    }
+}
+
 /// The body cost of one level, for a test that checks the two agree.
 #[cfg(test)]
 pub(crate) fn spec_body(id: PanelId, d: Detail) -> u16 {
@@ -1208,7 +1281,13 @@ fn detail_for(id: PanelId, body: u16) -> Detail {
 /// three rows for the whole frame rather than two per panel. A `Block` with
 /// `Borders::ALL` would cost two rows each and make this ladder impossible; it
 /// also cannot draw the tee junctions the design calls for.
-fn fit(members: &[PanelId], budget: u16, x: u16, w: u16) -> Vec<Placement> {
+fn fit(
+    members: &[PanelId],
+    budget: u16,
+    x: u16,
+    w: u16,
+    demand: &dyn Fn(PanelId) -> u16,
+) -> Vec<Placement> {
     if members.is_empty() || budget == 0 {
         return Vec::new();
     }
@@ -1269,9 +1348,36 @@ fn fit(members: &[PanelId], budget: u16, x: u16, w: u16) -> Vec<Placement> {
                 break;
             }
             let have = rows[id];
-            // A panel takes rows until it is Full; only a grower takes more.
-            let full = spec(*id).full;
-            if have >= full && !spec(*id).grows {
+            // A panel takes rows until it is Full; a grower then keeps taking
+            // them until it runs out of CONTENT.
+            //
+            // Without the second half a grower took rows forever. At 120x40
+            // against a store with two blocked tasks, BLOCKED was handed a
+            // twelve-row box holding two lines, DUE swallowed the rest of its
+            // column, and BURNDOWN — whose neighbour had nothing left to show —
+            // was left on its floor of two. A third of the screen was blank
+            // INSIDE panels while the panel that could have used the space was
+            // squeezed.
+            //
+            // Capping at demand moves that slack to the bottom of the column,
+            // outside every panel, and lets it reach whichever panel in the
+            // column still has something to put there.
+            //
+            // The floor, not `full`, is the other bound. `Detail` reads as a
+            // richness setting but only [`panels::now_body`] branches on it —
+            // every other builder is handed a height and fills it — so raising
+            // a two-item list to `Full` buys nothing but blank rows. NOW keeps
+            // its three by demanding them, which is where that belongs: it is a
+            // property of the card, not of the ladder.
+            // `grows` is the CEILING, not a switch: every panel takes what it
+            // has content for and at least its floor, and a non-grower simply
+            // stops at `full`. TOKENS saying "no token spend attributed yet" is
+            // one line, and it used to be given three because it was a
+            // non-grower and non-growers took `full` unconditionally.
+            let s = spec(*id);
+            let want = demand(*id).max(floor_body(*id));
+            let want = if s.grows { want } else { want.min(s.full) };
+            if have >= want {
                 continue;
             }
             *rows.get_mut(id).expect("seeded above") = have + 1;

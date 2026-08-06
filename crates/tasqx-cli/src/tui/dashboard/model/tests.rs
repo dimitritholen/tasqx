@@ -7,6 +7,12 @@
 //! a mapper that passes and then reads nothing.
 
 use super::*;
+
+/// Unbounded demand: these tests assert about GEOMETRY, so every panel is
+/// treated as having more content than any terminal could hold. The
+/// content-aware ceiling has its own tests — mixing the two here would make a
+/// pure-arithmetic assertion depend on a fixture's task count.
+const ANY: &dyn Fn(PanelId) -> u16 = &|_| u16::MAX;
 use jiff::civil::date;
 use jiff::Timestamp;
 use serde_json::{json, Value};
@@ -142,7 +148,7 @@ fn all_panels() -> Vec<PanelId> {
 fn every_placement_is_inside_the_frame_and_overlaps_nothing() {
     for w in [56u16, 60, 72, 80, 96, 100, 120, 150, 200] {
         for h in [14u16, 18, 22, 24, 28, 32, 40, 50] {
-            let Some(screen) = layout(w, h, &all_panels()) else {
+            let Some(screen) = layout(w, h, &all_panels(), ANY) else {
                 panic!("{w}x{h} is at or above the floor and must produce a layout");
             };
             for p in &screen.panels {
@@ -189,15 +195,15 @@ fn every_placement_is_inside_the_frame_and_overlaps_nothing() {
 #[test]
 fn the_layout_refuses_below_the_floor_and_accepts_exactly_at_it() {
     assert!(
-        layout(55, 14, &all_panels()).is_none(),
+        layout(55, 14, &all_panels(), ANY).is_none(),
         "55 wide is too narrow"
     );
     assert!(
-        layout(56, 13, &all_panels()).is_none(),
+        layout(56, 13, &all_panels(), ANY).is_none(),
         "13 high is too short"
     );
     assert!(
-        layout(56, 14, &all_panels()).is_some(),
+        layout(56, 14, &all_panels(), ANY).is_some(),
         "56x14 is the floor itself and must draw"
     );
 }
@@ -206,7 +212,7 @@ fn the_layout_refuses_below_the_floor_and_accepts_exactly_at_it() {
 /// from both original plans and is the one a reader is most likely to see.
 #[test]
 fn eighty_by_twentyfour_fills_the_frame_exactly() {
-    let screen = layout(80, 24, &all_panels()).expect("80x24 draws");
+    let screen = layout(80, 24, &all_panels(), ANY).expect("80x24 draws");
     assert_eq!(screen.columns, 1, "80 cells is a single column");
     assert_eq!(screen.rung, Rung::S);
 
@@ -234,7 +240,7 @@ fn eighty_by_twentyfour_fills_the_frame_exactly() {
 /// rectangle, and does not when they can.
 #[test]
 fn the_analytics_slot_appears_only_where_the_three_panels_cannot_fit_separately() {
-    let narrow = layout(80, 24, &all_panels()).unwrap();
+    let narrow = layout(80, 24, &all_panels(), ANY).unwrap();
     assert!(
         narrow.has_slot(),
         "on one column the three analysis panels share a slot"
@@ -246,7 +252,7 @@ fn the_analytics_slot_appears_only_where_the_three_panels_cannot_fit_separately(
         );
     }
 
-    let wide = layout(160, 44, &all_panels()).unwrap();
+    let wide = layout(160, 44, &all_panels(), ANY).unwrap();
     assert!(
         !wide.has_slot(),
         "a wide terminal places all three separately"
@@ -259,18 +265,26 @@ fn the_analytics_slot_appears_only_where_the_three_panels_cannot_fit_separately(
     }
 }
 
-/// The slot is all-or-nothing: six body lines or it is not drawn. A three-line
-/// burndown is not a burndown, and D58 forbids drawing a panel clipped.
+/// The slot is all-or-nothing: its floor or it is not drawn at all. D58 forbids
+/// drawing a panel clipped, and a slot one row short of its occupant is exactly
+/// that.
+///
+/// Asserted against the SPEC rather than a literal. This test read `body >= 6`
+/// under a comment claiming "a three-line burndown is not a burndown" — but
+/// `burndown_body` emits two lines, three when the window is clipped, and never
+/// more however tall the box. The literal outlived the number it was copied
+/// from, and pinned three blank rows in place as if they were a requirement.
 #[test]
 fn the_slot_is_never_drawn_below_its_floor() {
+    let floor = spec_body(PanelId::Slot, Detail::Full);
     for h in 14u16..=40 {
-        let screen = layout(80, h, &all_panels()).unwrap();
+        let screen = layout(80, h, &all_panels(), ANY).unwrap();
         if let Some(slot) = screen.placement(PanelId::Slot) {
             let (_, _, _, body) = slot.body();
             assert!(
-                body >= 6,
-                "80x{h}: the slot was placed with {body} body lines — below its \
-                 floor it must be omitted, not shrunk"
+                body >= floor,
+                "80x{h}: the slot was placed with {body} body lines, under a \
+                 floor of {floor} — below it the slot must be omitted, not shrunk"
             );
         }
     }
@@ -298,7 +312,7 @@ fn every_rung_gives_its_columns_room_to_read() {
     }
     // And the property holds in the built layouts too, at every real width.
     for w in MIN_WIDTH..=200 {
-        for p in &layout(w, 44, &all_panels()).unwrap().panels {
+        for p in &layout(w, 44, &all_panels(), ANY).unwrap().panels {
             assert!(
                 p.w >= MIN_COLUMN,
                 "{w} wide: {:?} got a {}-cell column",
@@ -327,7 +341,7 @@ fn the_fit_drops_panels_from_the_bottom_rather_than_overflowing() {
         PanelId::Recent,
     ];
     // Five panels need 10 rows at their floors. Give them 5.
-    let placed = fit(&members, 5, 0, 80);
+    let placed = fit(&members, 5, 0, 80, ANY);
     let total: u16 = placed.iter().map(|p| p.h).sum();
     assert!(
         total <= 5,
@@ -347,8 +361,8 @@ fn the_fit_drops_panels_from_the_bottom_rather_than_overflowing() {
     );
 
     // And a budget that fits nothing places nothing rather than something broken.
-    assert!(fit(&members, 1, 0, 80).is_empty());
-    assert!(fit(&members, 0, 0, 80).is_empty());
+    assert!(fit(&members, 1, 0, 80, ANY).is_empty());
+    assert!(fit(&members, 0, 0, 80, ANY).is_empty());
 }
 
 /// Configuration decides what exists. A panel absent from `dashboard.panels` is
@@ -356,7 +370,7 @@ fn the_fit_drops_panels_from_the_bottom_rather_than_overflowing() {
 #[test]
 fn a_panel_left_out_of_the_configured_order_is_never_placed() {
     let order = vec![PanelId::Now, PanelId::Next];
-    let screen = layout(120, 40, &order).unwrap();
+    let screen = layout(120, 40, &order, ANY).unwrap();
     for p in &screen.panels {
         assert!(
             p.id == PanelId::Now || p.id == PanelId::Next,
@@ -369,7 +383,7 @@ fn a_panel_left_out_of_the_configured_order_is_never_placed() {
 
     // Dropping all three slot members drops the slot with them.
     let no_analytics = vec![PanelId::Now, PanelId::Next, PanelId::Due];
-    let screen = layout(80, 24, &no_analytics).unwrap();
+    let screen = layout(80, 24, &no_analytics, ANY).unwrap();
     assert!(
         !screen.has_slot(),
         "with no analytics panels configured the slot must not appear"
@@ -820,6 +834,113 @@ fn recent_is_newest_first_and_keeps_finished_work() {
     );
 }
 
+/// No panel is given more rows than it has content for.
+///
+/// Growers used to take rows until the column ran out, so on a big terminal
+/// against a small store the space went to whoever was early in `RAISE_ORDER`
+/// rather than to whoever could use it. Measured at 120x40 before the fix:
+/// BLOCKED held two tasks in a twelve-row box, DUE swallowed the rest of its
+/// column, and BURNDOWN — whose neighbour had nothing left to show — sat on its
+/// floor. A third of the screen was blank INSIDE panels.
+///
+/// The floor is the other half of the bound: a panel is never given LESS than
+/// the level it was placed at costs, or it would be drawn clipped.
+#[test]
+fn no_panel_is_given_more_rows_than_it_has_content_for() {
+    // Deliberately less content than any of these terminals can hold, which is
+    // the case that exposed the bug — a store big enough to fill the screen
+    // hides it completely.
+    let small: &dyn Fn(PanelId) -> u16 = &|id| match id {
+        PanelId::Now => 3,
+        PanelId::Next => 2,
+        PanelId::Due => 2,
+        PanelId::Blocked => 1,
+        PanelId::Recent => 2,
+        PanelId::Projects => 1,
+        PanelId::Tokens => 1,
+        PanelId::Burndown => 2,
+        PanelId::Slot => 2,
+    };
+    for w in [56u16, 80, 96, 120, 160, 200] {
+        for h in [14u16, 20, 24, 30, 40, 50] {
+            let screen = layout(w, h, &all_panels(), small).expect("above the floor");
+            for p in &screen.panels {
+                let (_, _, _, body) = p.body();
+                let floor = floor_body(p.id);
+                let ceiling = small(p.id).max(floor);
+                assert!(
+                    body <= ceiling,
+                    "{w}x{h}: {:?} was given {body} rows for {} lines of content \
+                     (floor {floor})",
+                    p.id,
+                    small(p.id)
+                );
+                assert!(
+                    body >= floor,
+                    "{w}x{h}: {:?} was given {body} rows, under its floor of {floor}",
+                    p.id
+                );
+            }
+        }
+    }
+}
+
+/// The slot is sized for the tallest member the reader configured, not for the
+/// one currently in it.
+///
+/// `6`, `7` and `8` swap the occupant in place. A slot that fitted only the
+/// current one would have to resize under the reader on every such keypress —
+/// or fail to find the rows and vanish, which is a key that deletes a panel.
+#[test]
+fn the_slot_is_sized_for_its_tallest_member() {
+    // Six projects against one token row: PROJECTS is much the taller member,
+    // so a slot sized from any other member — or from whichever happens to be
+    // showing — would come out short.
+    let d = build_with(
+        task_list(vec![task_row(1, "one")]),
+        summary(vec![group("a", "PT1H", "PT0S", [0, 0, 0, 0])]),
+        project_list(vec![
+            project("a", true, false),
+            project("b", false, false),
+            project("c", false, false),
+            project("d", false, false),
+            project("e", false, false),
+            project("f", false, false),
+        ]),
+    );
+    let members = PanelId::SLOT_MEMBERS.to_vec();
+    let tall = demand(&d, &members, PanelId::Projects);
+    // Read off the model, not written down: the panel also carries a row for
+    // the project the task names but the project list does not, and a literal
+    // here would be asserting my count of the fixture rather than the rule.
+    assert_eq!(
+        tall as usize,
+        d.projects.rows.len(),
+        "PROJECTS wants one row per row it holds"
+    );
+    assert!(
+        demand(&d, &members, PanelId::Tokens) < tall
+            && demand(&d, &members, PanelId::Burndown) < tall,
+        "the fixture must have one clearly tallest member for this to mean anything"
+    );
+
+    // The function itself, because the layout below would be satisfied by a
+    // slot that merely happened to be big enough.
+    assert_eq!(
+        demand(&d, &members, PanelId::Slot),
+        tall,
+        "the slot's demand is the tallest member's, not the shortest or the current one"
+    );
+
+    let screen =
+        layout(80, 30, &all_panels(), &|id| demand(&d, &members, id)).expect("above the floor");
+    let slot = screen
+        .placement(PanelId::Slot)
+        .expect("80x30 uses the slot on the one-column rung");
+    let (_, _, _, body) = slot.body();
+    assert_eq!(body, tall, "and the layout gives it those rows");
+}
+
 /// A taller terminal never shows LESS of any panel.
 ///
 /// Within one rung this is absolute. It was not: raising a panel a whole level
@@ -838,7 +959,7 @@ fn a_taller_terminal_never_shrinks_a_panel() {
     for w in [56u16, 60, 80, 96, 120, 150, 200] {
         let mut prev: Option<(Rung, std::collections::HashMap<PanelId, u16>)> = None;
         for h in MIN_HEIGHT..=60 {
-            let screen = layout(w, h, &all_panels()).unwrap();
+            let screen = layout(w, h, &all_panels(), ANY).unwrap();
             let bodies: std::collections::HashMap<PanelId, u16> = screen
                 .panels
                 .iter()
@@ -886,7 +1007,7 @@ fn a_taller_terminal_never_shrinks_a_panel() {
 #[test]
 fn the_detail_level_matches_the_rows_the_panel_actually_got() {
     for (w, h) in [(56u16, 14u16), (80, 24), (96, 28), (120, 32), (200, 50)] {
-        for p in &layout(w, h, &all_panels()).unwrap().panels {
+        for p in &layout(w, h, &all_panels(), ANY).unwrap().panels {
             let (_, _, _, body) = p.body();
             let claimed = spec_body(p.id, p.detail);
             assert!(
