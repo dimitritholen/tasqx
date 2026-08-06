@@ -143,10 +143,11 @@ Two things worth knowing before you switch it on.
 
 ## Use cases
 
-Five worked scenarios, each a five-minute read with copy-pasteable commands:
+Six worked scenarios, each a five-minute read with copy-pasteable commands:
 
 - [Feature development](docs/guides/feature-development.md) — a backlog per feature, tasks ordered by dependencies, acceptance criteria in annotations. The solo alternative to a board.
 - [Driving tasqx from an AI agent](docs/guides/ai-agent-workflow.md) — wire up the MCP server and let an agent work the backlog: read context, do the task, complete it, pick up what that unblocked.
+- [Giving an agent memory in any client](docs/guides/agent-starter-prompt.md) — a paste-anywhere instruction block that makes an agent actually search and write memory, for clients that have no tasqx skill.
 - [Personal task management](docs/guides/personal-gtd.md) — frictionless capture, a working set that hides what you can't act on yet, and a five-minute weekly review.
 - [Standups and reports](docs/guides/standup-reporting.md) — yesterday's output, terminal charts from the event log, and a self-contained HTML review you can send someone.
 - [Token accounting](docs/guides/token-accounting.md) — measuring what agent work costs, and how attribution decides who pays.
