@@ -1223,8 +1223,16 @@ pub fn demand(dash: &Dashboard, slot_members: &[PanelId], id: PanelId) -> u16 {
     match id {
         // The card is three lines about one task; there is no fourth. This is
         // the one panel whose height is a property of the panel rather than of
-        // how much there is to list.
-        PanelId::Now => spec(id).full,
+        // how much there is to list — except when there is no task, where
+        // `now_body` has one sentence and asking for three rows leaves two
+        // blank at the top of the first screen anyone ever sees.
+        PanelId::Now => {
+            if dash.now.is_some() {
+                spec(id).full
+            } else {
+                1
+            }
+        }
         // Spark, axis, and the row `burndown_body` uses for the clipped-window
         // warning. A wider window means a longer sparkline, never a taller one.
         PanelId::Burndown => {

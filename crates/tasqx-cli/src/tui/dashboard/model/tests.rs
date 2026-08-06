@@ -1019,3 +1019,46 @@ fn the_detail_level_matches_the_rows_the_panel_actually_got() {
         }
     }
 }
+
+/// An idle NOW asks for the one row it draws, not the three a running timer
+/// needs.
+///
+/// The empty store is the first screen anybody sees, and NOW is its first
+/// panel. `now_body` answers "no timer running · p to pick one" in one line;
+/// demanding the card's full three left two blank rows directly under the
+/// title on exactly that screen.
+#[test]
+fn an_idle_now_card_asks_for_one_row_not_three() {
+    let members = PanelId::SLOT_MEMBERS.to_vec();
+
+    let idle = build_with(
+        task_list(vec![]),
+        summary(vec![]),
+        project_list(vec![project("a", true, false)]),
+    );
+    assert!(idle.now.is_none(), "the fixture must have no running timer");
+    assert_eq!(
+        demand(&idle, &members, PanelId::Now),
+        1,
+        "an idle NOW draws one sentence"
+    );
+
+    let running = build_with(
+        task_list(vec![with(
+            with(task_row(1, "the running one"), "status", json!("active")),
+            "active_since",
+            json!("2026-08-05T11:00:00Z"),
+        )]),
+        summary(vec![group("work", "PT1H", "PT0S", [0, 0, 0, 0])]),
+        project_list(vec![project("work", true, false)]),
+    );
+    assert!(
+        running.now.is_some(),
+        "the fixture must have a running timer"
+    );
+    assert_eq!(
+        demand(&running, &members, PanelId::Now),
+        spec_body(PanelId::Now, Detail::Full),
+        "a running NOW is a three-line card"
+    );
+}
