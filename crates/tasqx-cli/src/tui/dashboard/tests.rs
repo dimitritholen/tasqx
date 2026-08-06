@@ -1025,3 +1025,107 @@ fn an_empty_panel_says_so_rather_than_drawing_nothing() {
         "BLOCKED must say it is empty:\n{text}"
     );
 }
+
+/// The help overlay and the key handler say the same thing, in both directions.
+///
+/// The overlay is the ONLY place these keys are written down — there is no man
+/// page for a TUI — so a promise it makes that `on_key` does not keep is a
+/// reader pressing a dead key and concluding the screen is broken. The reverse
+/// is quieter and worse: a key that works and is not listed is a feature nobody
+/// finds. Every other table in this repo that a reader depends on is gated
+/// against its implementation (`VERBS`, `METHODS`, `GLOBAL_FLAGS`, `CLEARABLE`);
+/// this one was not.
+///
+/// "Does something" is measured, not declared: press the key on a prepared app
+/// and see whether ANY observable — the returned action, focus, slot, scroll,
+/// help, window, auto-refresh or the status line — moved. That makes the second
+/// direction possible at all, by sweeping every printable key and asking which
+/// ones the screen answers to.
+#[test]
+fn the_help_overlay_and_the_key_handler_agree() {
+    /// Everything a reader could notice about a keypress.
+    fn snapshot(a: &App) -> String {
+        let scrolls: Vec<usize> = all_panels().iter().map(|id| a.scroll_of(*id)).collect();
+        format!(
+            "{:?}|{:?}|{scrolls:?}|{}|{}|{}|{}",
+            a.focus(),
+            a.slot(),
+            a.help_open(),
+            a.window_days(),
+            a.auto_refresh(),
+            a.status_line()
+        )
+    }
+
+    // TWO starting states, because a key is allowed to be a no-op in the state
+    // it already describes: `2` cannot move a focus that is already on panel 2,
+    // and `g` cannot scroll a panel already at the top. The question is whether
+    // the screen answers to the key AT ALL, so it is asked from a state where
+    // the key has somewhere to go.
+    let prepared = |scrolled: bool| {
+        let mut a = app();
+        let screen = a.screen(120, 40).unwrap();
+        let placed: Vec<PanelId> = screen.panels.iter().map(|p| p.id).collect();
+        a.observe(&placed, screen.has_slot());
+        if scrolled {
+            a.on_key(key(KeyCode::Char('2')));
+            a.on_key(key(KeyCode::Char('j')));
+        }
+        a
+    };
+
+    let moves = |code: KeyCode| -> bool {
+        [false, true].into_iter().any(|scrolled| {
+            let mut a = prepared(scrolled);
+            let before = snapshot(&a);
+            let action = a.on_key(key(code));
+            action.is_some() || snapshot(&a) != before
+        })
+    };
+
+    // --- what the overlay promises ------------------------------------------
+    // Tokens are split on `/`; a one-character token is that key, `1-8` is the
+    // range it reads as, and the named ones are spelled out because they are
+    // not `Char` at all.
+    let mut advertised: Vec<char> = Vec::new();
+    let mut named = 0usize;
+    for (label, _) in KEYS {
+        for tok in label.split('/').map(str::trim) {
+            match tok {
+                "1-8" => advertised.extend('1'..='8'),
+                "tab" | "S-tab" | "esc" | "ctrl-c" => named += 1,
+                t if t.chars().count() == 1 => advertised.push(t.chars().next().unwrap()),
+                t => panic!("unreadable key label {t:?} in KEYS — teach this test its shape"),
+            }
+        }
+    }
+    assert_eq!(named, 4, "tab, S-tab, esc and ctrl-c are the non-Char keys");
+    assert!(
+        advertised.len() > 10,
+        "the parse produced almost nothing, so this test proves nothing: {advertised:?}"
+    );
+
+    for c in &advertised {
+        assert!(
+            moves(KeyCode::Char(*c)),
+            "the help promises {c:?} but pressing it changes nothing"
+        );
+    }
+    for code in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Esc] {
+        assert!(
+            moves(code),
+            "the help promises {code:?} but it does nothing"
+        );
+    }
+
+    // --- and what it leaves out ---------------------------------------------
+    for c in ' '..='~' {
+        if advertised.contains(&c) {
+            continue;
+        }
+        assert!(
+            !moves(KeyCode::Char(c)),
+            "{c:?} does something but the help never mentions it"
+        );
+    }
+}
