@@ -1179,7 +1179,28 @@ const RAISE_ORDER: [PanelId; 9] = [
     PanelId::Slot,
 ];
 
-/// Fit one column's panels into `budget` rows, three phases: floor, raise, grow.
+/// The body cost of one level, for a test that checks the two agree.
+#[cfg(test)]
+pub(crate) fn spec_body(id: PanelId, d: Detail) -> u16 {
+    spec(id).body(d).unwrap_or(0)
+}
+
+/// The highest detail level `body` rows can pay for.
+///
+/// Derived rather than tracked, so the level and the space can never disagree:
+/// a panel drawn as `Full` in two rows was possible while the two were decided
+/// separately.
+fn detail_for(id: PanelId, body: u16) -> Detail {
+    let s = spec(id);
+    for level in [Detail::Full, Detail::Compact, Detail::OneLine] {
+        if s.body(level).is_some_and(|n| body >= n) {
+            return level;
+        }
+    }
+    Detail::OneLine
+}
+
+/// Fit one column's panels into `budget` rows: floor, then one row at a time.
 ///
 /// Every placement carries its own title rule, so a panel showing `n` body lines
 /// occupies `n + 1` rows. Adjacent panels share that rule visually — the rule
@@ -1207,50 +1228,72 @@ fn fit(members: &[PanelId], budget: u16, x: u16, w: u16) -> Vec<Placement> {
         return Vec::new();
     }
 
-    // Phase 2 — spend what is left raising panels, most-wanted first.
-    let mut leftover = budget - cost(&live);
-    for want in RAISE_ORDER {
-        let Some(idx) = live.iter().position(|(id, _)| *id == want) else {
-            continue;
-        };
-        for target in [Detail::Compact, Detail::Full] {
-            let (id, current) = live[idx];
-            if target <= current {
-                continue;
-            }
-            let (Some(now_cost), Some(next_cost)) = (spec(id).body(current), spec(id).body(target))
-            else {
-                continue;
-            };
-            let delta = next_cost.saturating_sub(now_cost);
-            if delta <= leftover {
-                leftover -= delta;
-                live[idx].1 = target;
-            }
-        }
-    }
-
-    // Phase 3 — hand any remaining rows to the growers, one at a time, cycling,
-    // so a tall terminal fills rather than leaving a gap under the last panel.
-    let mut extra: HashMap<PanelId, u16> = HashMap::new();
-    let growers: Vec<PanelId> = live
+    // Phase 2 — hand out the leftover rows ONE AT A TIME, in priority order,
+    // cycling until nobody can use another.
+    //
+    // One row at a time is the whole point. This used to be two phases: raise a
+    // panel a whole level (Compact costs +1, Full costs +3), then scatter what
+    // was left over the growers. Both were reasonable and together they were
+    // not MONOTONIC — a taller terminal could show LESS. Measured on the real
+    // ladder at 80 columns:
+    //
+    //     80x28   Now:3  Next:4  Due:2  Blocked:2  Slot:6  Recent:2
+    //     80x29   Now:3  Next:4  Due:5  Blocked:1  Slot:6  Recent:1
+    //
+    // One extra row let DUE jump to Full, which cost three, which emptied the
+    // pool that had been giving BLOCKED and RECENT their extra row each. Five
+    // such inversions existed between 14 and 40 rows.
+    //
+    // Handing out single rows removes the class: one more row in the budget is
+    // one more row for exactly one panel, so no panel can ever lose one.
+    let mut rows: HashMap<PanelId, u16> = live
         .iter()
-        .map(|(id, _)| *id)
-        .filter(|id| spec(*id).grows)
+        .map(|(id, d)| (*id, spec(*id).body(*d).unwrap_or(0)))
         .collect();
-    if !growers.is_empty() {
-        let mut i = 0usize;
-        while leftover > 0 {
-            *extra.entry(growers[i % growers.len()]).or_insert(0) += 1;
+    let mut leftover = budget - cost(&live);
+    // Priority order first, then anything else in column order — a panel absent
+    // from RAISE_ORDER must still be able to grow.
+    let order: Vec<PanelId> = RAISE_ORDER
+        .into_iter()
+        .filter(|id| live.iter().any(|(l, _)| l == id))
+        .chain(
+            live.iter()
+                .map(|(id, _)| *id)
+                .filter(|id| !RAISE_ORDER.contains(id)),
+        )
+        .collect();
+    while leftover > 0 {
+        let mut spent = false;
+        for id in &order {
+            if leftover == 0 {
+                break;
+            }
+            let have = rows[id];
+            // A panel takes rows until it is Full; only a grower takes more.
+            let full = spec(*id).full;
+            if have >= full && !spec(*id).grows {
+                continue;
+            }
+            *rows.get_mut(id).expect("seeded above") = have + 1;
             leftover -= 1;
-            i += 1;
+            spent = true;
+        }
+        // Nobody could take one: stop rather than spin. The rows stay unspent,
+        // which shows as a gap only when every panel in the column is capped.
+        if !spent {
+            break;
         }
     }
 
     let mut out = Vec::with_capacity(live.len());
     let mut y = 1u16; // row 0 is the status bar
-    for (id, detail) in live {
-        let h = spec(id).body(detail).unwrap_or(0) + 1 + extra.get(&id).copied().unwrap_or(0);
+    for (id, _) in live {
+        let body = rows[&id];
+        // The detail level is a FUNCTION of the rows a panel got, not a
+        // separate decision — that is what keeps the two from disagreeing about
+        // what is drawn in the space it was given.
+        let detail = detail_for(id, body);
+        let h = body + 1;
         out.push(Placement {
             id,
             detail,
