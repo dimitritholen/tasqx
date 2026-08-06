@@ -18,8 +18,9 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::config::{self, Choices, Home, Kind, Setting};
+use crate::render;
 use crate::theme::{Caps, Theme};
-use crate::tui::rt_style;
+use crate::tui::{first_visible, rt_style};
 
 /// One editable line: a registry entry plus what it currently resolves to.
 ///
@@ -305,9 +306,40 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     );
 
     // --- rows ----------------------------------------------------------------
+    // `anchor` is the index, among the lines below, of the one carrying the
+    // marker — the row in Browse, the candidate under the picker cursor in
+    // Pick. It is tracked in LINE space rather than row space because the rows
+    // are not uniform height: an open picker inserts one line per candidate
+    // under a single row, so a window computed over `app.selected` would put
+    // the marker back off screen the moment the picker opened.
+    // Measured from the rows about to be drawn, plus two cells of separator.
+    // Both columns used to be `format!("{:<18}")` / `{:<22}`, which is the exact
+    // pair of mistakes `render::pad` exists to end: a MINIMUM width with no gap
+    // after it, padded by CHAR COUNT rather than display width. An 18-character
+    // key therefore butted straight against its value — `detail.time_formatboth`
+    // — and a value holding any wide or combining character mis-aligned every
+    // column to its right.
+    //
+    // The value column keeps a cap. `dashboard.panels` resolves to a
+    // 50-character list, and fitting the column to it would push `source` off
+    // the right edge of EVERY row rather than just its own: pick's
+    // invisible-field failure, reached through the widest value instead of the
+    // widest title. `pad` never truncates, so that one row still overflows its
+    // own line and ratatui clips it there.
+    let key_w = app
+        .rows
+        .iter()
+        .map(|r| render::width(r.setting.key))
+        .max()
+        .unwrap_or(0)
+        + 2;
     let mut lines: Vec<Line> = Vec::new();
+    let mut anchor = 0usize;
     for (i, row) in app.rows.iter().enumerate() {
         let selected = i == app.selected;
+        if selected {
+            anchor = lines.len();
+        }
         let shown = if row.value.is_empty() {
             "(unset)"
         } else {
@@ -331,8 +363,8 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
                 },
                 sty("accent"),
             ),
-            Span::styled(format!("{:<18}", row.setting.key), sty("project")),
-            Span::styled(format!("{shown:<22}"), value_style),
+            Span::styled(render::pad(row.setting.key, key_w), sty("project")),
+            Span::styled(render::pad(shown, 22), value_style),
             Span::styled(row.source.clone(), sty("muted")),
         ]));
 
@@ -342,6 +374,9 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
             if let Mode::Pick { cursor } = app.mode {
                 for (j, cand) in row.choices.iter().enumerate() {
                     let at = j == cursor;
+                    if at {
+                        anchor = lines.len();
+                    }
                     lines.push(Line::from(vec![
                         Span::raw("      "),
                         Span::styled(
@@ -358,7 +393,10 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
             }
         }
     }
-    frame.render_widget(Paragraph::new(lines), body);
+    let height = body.height as usize;
+    let start = first_visible(anchor, lines.len(), height);
+    let visible: Vec<Line> = lines.into_iter().skip(start).take(height).collect();
+    frame.render_widget(Paragraph::new(visible), body);
 
     // --- footer --------------------------------------------------------------
     let help = match app.mode {
@@ -401,18 +439,20 @@ mod tests {
             .iter()
             .map(|s| Row {
                 setting: s,
-                value: match s.key {
-                    "theme.name" => "nord".to_string(),
-                    "notify.enabled" => "false".to_string(),
-                    _ => String::new(),
-                },
+                // Every row starts at its DEFAULT, which is what `resolve`
+                // returns for a store with no config file — the state this
+                // screen is most often opened in. Naming two settings and
+                // leaving the rest empty made the fixture disagree with the
+                // real screen for every setting added afterwards, and left a
+                // Bool row showing `""`, which the screen cannot toggle.
+                value: s.default.to_string(),
                 source: match s.home {
                     Home::Store => "store".to_string(),
                     Home::Toml => "default".to_string(),
                 },
                 choices: match s.choices {
                     Choices::Themes => theme::BUILTINS.iter().map(|t| t.to_string()).collect(),
-                    Choices::Free => Vec::new(),
+                    Choices::Free | Choices::ManyOf(_) => Vec::new(),
                     Choices::OneOf(values) => values.iter().map(|v| (*v).to_string()).collect(),
                 },
             })
@@ -430,7 +470,23 @@ mod tests {
         // the user's real theme directory would make this test depend on the
         // machine it runs on.
         let th = theme::load(name, None);
-        let mut term = Terminal::new(TestBackend::new(70, 16)).unwrap();
+        // Tall enough for the whole registry plus the chrome (2 header, 4
+        // footer). A fixed 16 made this helper fail the day a tenth setting was
+        // added — which says nothing about the screen, and hides what the tests
+        // using it actually assert. Every test using this helper is therefore
+        // asserting about an UNSCROLLED screen; the two that pin the window
+        // itself call `draw_at` with a deliberately short terminal instead.
+        let rows = config::SETTINGS.len() as u16 + 8;
+        let mut term = Terminal::new(TestBackend::new(70, rows)).unwrap();
+        term.draw(|f| render(app, &th, &caps(), f)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    /// The same screen on a terminal of a stated size — the sizes `draw` was
+    /// built to avoid.
+    fn draw_at(app: &App, w: u16, h: u16) -> Buffer {
+        let th = theme::load(app.preview_theme().unwrap_or("nord"), None);
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| render(app, &th, &caps(), f)).unwrap();
         term.backend().buffer().clone()
     }
@@ -468,7 +524,7 @@ mod tests {
         assert_eq!(a.selected, 0);
         assert!(a.on_key(press(KeyCode::Up)).is_none());
         assert_eq!(a.selected, 0, "up at the top row must stay put");
-        for _ in 0..10 {
+        for _ in 0..a.rows.len() + 4 {
             a.on_key(press(KeyCode::Down));
         }
         assert_eq!(
@@ -505,7 +561,19 @@ mod tests {
             .iter()
             .position(|r| r.setting.kind == Kind::Bool)
             .unwrap();
-        assert_eq!(a.rows[a.selected].value, "false");
+        // Read the starting value off the row rather than assuming which Bool
+        // sorts first or what its default is. The property under test is that
+        // the shown value and the saved value agree; pinning a literal here made
+        // this test fail the day a Bool was added above it, which taught nobody
+        // anything about the screen.
+        let before = a.rows[a.selected].value.clone();
+        assert!(
+            before == "true" || before == "false",
+            "a Bool row must start at a real boolean, got {before:?}"
+        );
+        let expected = if before == "true" { "false" } else { "true" };
+
+        let key = a.rows[a.selected].setting.key;
 
         let act = a
             .on_key(press(KeyCode::Enter))
@@ -513,12 +581,12 @@ mod tests {
         assert_eq!(
             act,
             Action::Save {
-                key: "notify.enabled",
-                value: "true".into()
+                key,
+                value: expected.into()
             }
         );
         assert_eq!(
-            a.rows[a.selected].value, "true",
+            a.rows[a.selected].value, expected,
             "the screen must show what it saved"
         );
 
@@ -528,8 +596,8 @@ mod tests {
         assert_eq!(
             act,
             Action::Save {
-                key: "notify.enabled",
-                value: "false".into()
+                key,
+                value: before.clone()
             }
         );
     }
@@ -733,20 +801,227 @@ mod tests {
         );
     }
 
+    /// Every key is separated from its value by whitespace.
+    ///
+    /// The key column was a literal `{:<18}`, which is a MINIMUM width with no
+    /// separator after it, so an 18-character key butted straight against its
+    /// value: `detail.time_formatboth` and `daemon.idle_timeout0` were both on
+    /// screen at every terminal size. The test the screen already had passed
+    /// throughout, because `contains(s.key)` is satisfied by a key with the
+    /// value glued to it — the value is what got lost, not the key.
+    #[test]
+    fn every_key_is_separated_from_its_value() {
+        let buf = draw(&app());
+        for s in config::SETTINGS {
+            let line = line_at(&buf, row_of(&buf, s.key));
+            let after = line
+                .split_once(s.key)
+                .expect("row_of found the key on this line")
+                .1;
+            assert!(
+                after.starts_with(' '),
+                "{} runs straight into its value:\n{line}",
+                s.key
+            );
+        }
+    }
+
+    /// And the column is derived from the registry rather than assumed.
+    ///
+    /// A wider fixed number would fix today's two keys and break again on the
+    /// next long one, with nothing to warn anybody: the fixed 18 was wide
+    /// enough for every key that existed when it was written, too. The row here
+    /// carries a key longer than anything in the registry, so it can only pass
+    /// if the width is measured.
+    #[test]
+    fn the_key_column_is_measured_not_assumed() {
+        static LONG: Setting = Setting {
+            key: "a.deliberately.very.long.setting.key",
+            home: Home::Toml,
+            kind: Kind::Bool,
+            default: "false",
+            env: None,
+            flag: None,
+            choices: Choices::Free,
+            summary: "Only ever drawn by this test.",
+        };
+        let mut a = app();
+        a.rows.push(Row {
+            setting: &LONG,
+            value: "false".to_string(),
+            source: "default".to_string(),
+            choices: Vec::new(),
+        });
+
+        let buf = draw_at(&a, 100, config::SETTINGS.len() as u16 + 9);
+        for key in config::SETTINGS
+            .iter()
+            .map(|s| s.key)
+            .chain(std::iter::once(LONG.key))
+        {
+            let line = line_at(&buf, row_of(&buf, key));
+            let after = line.split_once(key).expect("found on this line").1;
+            assert!(
+                after.starts_with(' '),
+                "{key} runs into its value once a longer key exists:\n{line}"
+            );
+        }
+    }
+
+    /// Columns are measured in CELLS, not in `char`s.
+    ///
+    /// `format!("{v:<22}")` counts chars, so a value of six CJK characters —
+    /// twelve cells — was padded as though it were six, and every column to its
+    /// right on that row alone sat six cells further across than on its
+    /// neighbours. `render::pad` exists precisely to end this, and its own doc
+    /// names the macro as the bug; this screen was still using it.
+    #[test]
+    fn a_double_width_value_does_not_shift_the_columns_after_it() {
+        static WIDE: Setting = Setting {
+            key: "wide.value",
+            home: Home::Toml,
+            kind: Kind::Bool,
+            default: "false",
+            env: None,
+            flag: None,
+            choices: Choices::Free,
+            summary: "Only ever drawn by this test.",
+        };
+        let mut a = app();
+        a.rows.push(Row {
+            setting: &WIDE,
+            // Six characters, twelve cells.
+            value: "日本語テスト".to_string(),
+            source: "default".to_string(),
+            choices: Vec::new(),
+        });
+
+        let buf = draw_at(&a, 100, config::SETTINGS.len() as u16 + 9);
+        // The source column is last, so its start is where every earlier column
+        // has finished. `rfind`, because a VALUE may also read "default".
+        let source_x = |key: &str| {
+            let line = line_at(&buf, row_of(&buf, key));
+            // `line_at` returns ONE char per screen CELL — a double-width glyph
+            // is its own char plus the continuation cell's space — so the column
+            // is a char count here. `render::width` would count that glyph as
+            // two and report a shift the screen does not have, which is how
+            // this assertion first failed against a render that was correct.
+            line.rfind("default")
+                .map(|b| line[..b].chars().count())
+                .unwrap_or_else(|| panic!("no source column on the {key} row:\n{line}"))
+        };
+        let plain = source_x("theme.name");
+        assert_eq!(
+            source_x(WIDE.key),
+            plain,
+            "a double-width value moved the source column:\n{}",
+            all_text(&buf)
+        );
+    }
+
     /// The selection marker is the only thing telling the user which row Enter
     /// will act on. A marker that did not move — or moved on the wrong row —
     /// makes every subsequent keystroke a guess.
     #[test]
     fn the_selection_marker_sits_on_the_selected_row() {
         let mut a = app();
+        // The first two rows by name, not by guess: naming a specific setting
+        // as "the second row" made this test fail the day one was added above
+        // it, which says nothing about the marker.
+        let first = a.rows[0].setting.key;
+        let second = a.rows[1].setting.key;
+
         let before = draw(&a);
-        assert!(line_at(&before, row_of(&before, "theme.name")).starts_with('▸'));
-        assert!(!line_at(&before, row_of(&before, "notify.enabled")).starts_with('▸'));
+        assert!(line_at(&before, row_of(&before, first)).starts_with('▸'));
+        assert!(!line_at(&before, row_of(&before, second)).starts_with('▸'));
 
         a.on_key(press(KeyCode::Down));
         let after = draw(&a);
-        assert!(line_at(&after, row_of(&after, "notify.enabled")).starts_with('▸'));
-        assert!(!line_at(&after, row_of(&after, "theme.name")).starts_with('▸'));
+        assert!(line_at(&after, row_of(&after, second)).starts_with('▸'));
+        assert!(!line_at(&after, row_of(&after, first)).starts_with('▸'));
+    }
+
+    /// Every row is reachable on a terminal too short to hold the registry.
+    ///
+    /// This screen pushed all its rows into one `Paragraph` starting at index 0
+    /// while [`App::step`] clamped the selection to the number of SETTINGS, not
+    /// to what fits. Past the last visible row nothing on screen was marked at
+    /// all, and Enter then edited a setting the user had never seen — the same
+    /// failure `pick` shipped once and D55 fixed there with `first_visible`.
+    ///
+    /// Driven through the REAL render at every selection, because the pure
+    /// window function can be right while `render` ignores it. That is exactly
+    /// the shape the bug took in both screens.
+    #[test]
+    fn a_registry_taller_than_the_terminal_scrolls_the_marker_into_view() {
+        // 6 rows of chrome (2 header, 4 footer) leave 6 body rows here, so half
+        // the registry is below the fold at this size.
+        let (w, h) = (70, 12);
+        for n in 0..config::SETTINGS.len() {
+            let mut a = app();
+            for _ in 0..n {
+                a.on_key(press(KeyCode::Down));
+            }
+            let key = a.rows[a.selected].setting.key;
+            let text = all_text(&draw_at(&a, w, h));
+            assert!(
+                text.lines().any(|l| l.starts_with('▸') && l.contains(key)),
+                "after {n} Down the marker on {key} was not drawn at {w}x{h}:\n{text}"
+            );
+        }
+    }
+
+    /// And the candidate under the picker's own cursor, which is a second list
+    /// nested inside the first.
+    ///
+    /// The rows are not uniform height: an open picker inserts a line per
+    /// candidate under one row, so a window computed over row INDICES would put
+    /// the marker back off screen the moment the picker opened. The window is
+    /// therefore computed over drawn LINES, and this is what says so.
+    #[test]
+    fn an_open_picker_keeps_its_own_cursor_on_screen_too() {
+        let (w, h) = (70, 12);
+        let mut a = app();
+        // The LAST row that has candidates, found rather than named: a picker
+        // opening at the top of the registry fits on any terminal and proves
+        // nothing. This one opens below the fold and then extends further down.
+        let deep = a
+            .rows
+            .iter()
+            .rposition(|r| !r.choices.is_empty())
+            .expect("the registry has at least one row with candidates");
+        for _ in 0..deep {
+            a.on_key(press(KeyCode::Down));
+        }
+        a.on_key(press(KeyCode::Enter));
+        assert!(
+            matches!(a.mode, Mode::Pick { .. }),
+            "the picker must be open for this test to mean anything"
+        );
+
+        let names: Vec<String> = a.rows[deep].choices.clone();
+        // The picker opens on the CURRENT value, not on index 0 — walk to the
+        // top first so the loop below starts where it thinks it does.
+        for _ in 0..names.len() {
+            a.on_key(press(KeyCode::Up));
+        }
+        for (n, name) in names.iter().enumerate() {
+            if n > 0 {
+                a.on_key(press(KeyCode::Down));
+            }
+            // The indented CANDIDATE line, not any marked line containing the
+            // name: the setting row above shows its current value in the same
+            // column vocabulary, so `▸ detail.time_format  both` satisfies a
+            // looser needle while the candidate `both` is off screen — which
+            // is exactly how this assertion first passed against a broken
+            // window.
+            let want = format!("      ▸ {name}");
+            let text = all_text(&draw_at(&a, w, h));
+            assert!(
+                text.lines().any(|l| l.starts_with(&want)),
+                "candidate {n} ({name}) is not on screen at {w}x{h}:\n{text}"
+            );
+        }
     }
 
     /// The picker has to render its candidates, and render them under the row

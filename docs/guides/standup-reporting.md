@@ -8,7 +8,7 @@ What you finished, what is in flight, what is stuck:
 
 ```console
 tasqx list "status:done completed.after:yesterday"    # yesterday's output
-tasqx                                                 # today's working set
+tasqx list                                            # today's working set
 tasqx list "status:pending" --json | jq '[.tasks[] | select(.blocked)]'
 ```
 

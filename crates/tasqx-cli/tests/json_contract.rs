@@ -145,6 +145,13 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("undep", &["undep", "1", "2"]),
         c("why", &["why", "1"]),
         c("next", &["next"]),
+        // Driven as an ordinary case, NOT a `c_refuses` like `pick` below, and
+        // that difference is the verb's whole point: `--json dashboard` opens
+        // no screen, so a piped stdout is not an obstacle to it. This guard is
+        // therefore the one thing that exercises the dashboard's entire data
+        // layer — every mapper, the projects join, the burndown — end to end
+        // without a terminal.
+        c("dashboard", &["dashboard"]),
         // The one command in the table that cannot succeed here — see
         // `Case::refuses_with`. Exit 2 is `bad_request`, the same code
         // `config edit` gives a piped stdout.

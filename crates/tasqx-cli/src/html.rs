@@ -6,7 +6,7 @@
 //! from the active tasqx theme, so terminal and web match. All data comes from
 //! pure core reads (`report.summary`, `task.list`, `store.export`, `event.list`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde_json::{json, Value};
 use tasqx_core::{dispatch, ApiError, Engine};
@@ -54,9 +54,21 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
         "task.list",
         &json!({ "filter": actionable_filter, "sort": ["-urgency"], "limit": 12 }),
     )?;
-    let events = dispatch(engine, "event.list", &json!({ "limit": 100000 }))?;
-
+    // ONE clock read, and the event bound is derived from it rather than from a
+    // second one. The report's charts draw 12 weeks of throughput and 30 days of
+    // burndown, so 13 weeks of slack covers the wider of the two; before D59 gave
+    // `event.list` a bound this read the entire log, which grows with every
+    // mutation the store has ever recorded.
     let now = jiff::Timestamp::now().to_string();
+    let from = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date()
+        .saturating_sub(jiff::ToSpan::days(91i64));
+    let events = dispatch(
+        engine,
+        "event.list",
+        &json!({ "limit": 100000, "from": format!("{from}T00:00:00Z") }),
+    )?;
     let doc = Report {
         theme,
         group_by,
@@ -180,12 +192,11 @@ impl<'a> Report<'a> {
         top_tags.truncate(10);
 
         // ---- charts ----
-        let all_ids: HashSet<String> = tasks
-            .iter()
-            .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
-            .collect();
         let throughput = chart::throughput(self.events, 12, today());
-        let burndown = chart::burndown(self.events, &all_ids, 30, today());
+        // Through the shared projection, so the report and the dashboard cannot
+        // disagree about whether a task was open on a given day.
+        let members = chart::members_of(&json!({ "tasks": tasks }));
+        let burndown = chart::burndown(self.events, &members, 30, today());
 
         // ---- assemble ----
         let css = self.css();
