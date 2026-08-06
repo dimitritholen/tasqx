@@ -92,6 +92,51 @@ fn dash() -> Dashboard {
     )
 }
 
+/// A store whose DUE panel genuinely overflows: two tasks in each of the four
+/// buckets, so twelve body lines behind four bucket names.
+fn deadline_heavy() -> Dashboard {
+    let due = |id: i64, title: &str, when: &str| {
+        json!({
+            "_rev": 1, "active_since": null, "blocked": false, "completed": null,
+            "created": "2026-08-01T09:00:00Z", "due": when, "estimate": null,
+            "id": format!("019fd213-0000-7000-8000-{id:012}"),
+            "modified": "2026-08-01T09:00:00Z", "priority": "M", "project": "work",
+            "recurrence": null, "remind": null, "scheduled": null, "short_id": id,
+            "status": "pending", "tags": [], "title": title, "tracked": "PT0S",
+            "urgency": id as f64, "wait": null
+        })
+    };
+    let rows = vec![
+        due(1, "overdue one", "2026-08-01T00:00:00Z"),
+        due(2, "overdue two", "2026-08-02T00:00:00Z"),
+        due(3, "today one", "2026-08-05T00:00:00Z"),
+        due(4, "today two", "2026-08-05T00:00:00Z"),
+        due(5, "tomorrow one", "2026-08-06T00:00:00Z"),
+        due(6, "tomorrow two", "2026-08-06T00:00:00Z"),
+        due(7, "this week one", "2026-08-09T00:00:00Z"),
+        due(8, "LAST DEADLINE", "2026-08-10T00:00:00Z"),
+    ];
+    model::build(
+        Sources {
+            tasks: &json!({ "count": rows.len(), "tasks": rows }),
+            summary: &json!({ "groups": [{
+                "count": 8, "project": "work", "est_total": "PT4H", "tracked_total": "PT1H",
+                "tokens_cache_read": 0, "tokens_cache_creation": 0,
+                "tokens_in": 0, "tokens_out": 0
+            }]}),
+            projects: &json!({ "count": 1, "projects": [{
+                "archived": false, "default": true, "description": null,
+                "id": "019fd213-0001-7000-8000-000000000001", "name": "work"
+            }]}),
+            events: &json!({ "count": 0, "events": [] }),
+            event_limit: 100,
+            days: 7,
+        },
+        "2026-08-05T12:00:00Z".parse().unwrap(),
+        date(2026, 8, 5),
+    )
+}
+
 fn all_panels() -> Vec<PanelId> {
     vec![
         PanelId::Now,
@@ -1128,4 +1173,70 @@ fn the_help_overlay_and_the_key_handler_agree() {
             "{c:?} does something but the help never mentions it"
         );
     }
+}
+
+/// `G` reaches the actual bottom of a panel whose body has more lines than it
+/// has tasks.
+///
+/// DUE spends a row on each non-empty bucket name, so four tasks are seven
+/// lines. The scroll ceiling counted the TASKS, so `G` stopped three lines
+/// short and left the panel reading `…3 more` — the help promises "jump to the
+/// bottom" and this was a jump to somewhere near it. Every other list panel has
+/// one line per row and hid the mismatch.
+#[test]
+fn jumping_to_the_bottom_reaches_it_on_a_panel_with_section_headers() {
+    let (w, h) = (80u16, 24u16);
+    // Its own fixture: the shared one has a single deadline, so DUE fits in
+    // whatever it is given and the scroll ceiling never matters. Eight tasks
+    // across all four buckets is twelve body lines against the two or three
+    // rows this size affords.
+    let mut a = App::new(deadline_heavy(), all_panels(), 7, true);
+    let screen = a.screen(w, h).unwrap();
+    let placed: Vec<PanelId> = screen.panels.iter().map(|p| p.id).collect();
+    a.observe(&placed, screen.has_slot());
+
+    // The fixture must actually have more body lines than tasks, or this
+    // proves nothing about the mismatch.
+    let lines = model::demand(a.dash(), &[], PanelId::Due);
+    let tasks = {
+        let d = &a.dash().due;
+        d.overdue.len() + d.today.len() + d.tomorrow.len() + d.week.len()
+    };
+    assert!(
+        lines as usize > tasks,
+        "DUE must have bucket headers for this test to mean anything: \
+         {lines} lines for {tasks} tasks"
+    );
+
+    a.on_key(key(KeyCode::Char('3')));
+    assert_eq!(a.focus(), PanelId::Due);
+    a.on_key(key(KeyCode::Char('G')));
+
+    // Read DUE's OWN rectangle, not the screen. NEXT UP and RECENT list the
+    // same tasks, so a whole-buffer search finds the last deadline whatever
+    // DUE is showing — which is how this assertion first passed against a
+    // scroll that stopped four lines short.
+    let laid_out = a.screen(w, h).unwrap();
+    let due = laid_out
+        .placement(PanelId::Due)
+        .expect("DUE is placed at this size");
+    let buf = draw_at(&a, w, h, &caps());
+    let (bx, by, bw, bh) = due.body();
+    let panel = cell_text(&buf, bx, by, bw, bh);
+
+    let last = a
+        .dash()
+        .due
+        .week
+        .last()
+        .expect("the fixture's last bucket is THIS WEEK");
+    assert!(
+        panel.contains(last.title()),
+        "G must reach the last deadline ({}) inside DUE itself:\n{panel}",
+        last.title()
+    );
+    assert!(
+        !panel.contains("more"),
+        "and at the bottom nothing may still be hidden below:\n{panel}"
+    );
 }

@@ -213,17 +213,24 @@ impl App {
     }
 
     /// How many rows the focused panel could scroll through.
+    ///
+    /// The panel's BODY LINES, which is what `panels` scrolls, and therefore
+    /// [`model::demand`] — not a second count of the same thing. It was one:
+    /// DUE counted its four tasks while its body is seven lines, because each
+    /// non-empty bucket spends a row on its name. `G` therefore stopped three
+    /// lines short of the end, on a panel still reading `…3 more` — a "jump to
+    /// the bottom" that does not.
+    ///
+    /// NOW and BURNDOWN are excluded rather than given a count: both draw a
+    /// fixed body that scrolling cannot reveal more of.
     fn rows_in(&self, id: PanelId) -> usize {
         match id {
-            PanelId::Next => self.dash.next.rows.len(),
-            PanelId::Blocked => self.dash.blocked.rows.len(),
-            PanelId::Recent => self.dash.recent.rows.len(),
-            PanelId::Projects => self.dash.projects.rows.len(),
-            PanelId::Tokens => self.dash.tokens.rows.len(),
-            PanelId::Due => {
-                let d = &self.dash.due;
-                d.overdue.len() + d.today.len() + d.tomorrow.len() + d.week.len()
-            }
+            PanelId::Next
+            | PanelId::Blocked
+            | PanelId::Recent
+            | PanelId::Projects
+            | PanelId::Tokens
+            | PanelId::Due => model::demand(&self.dash, &[], id) as usize,
             _ => 0,
         }
     }
