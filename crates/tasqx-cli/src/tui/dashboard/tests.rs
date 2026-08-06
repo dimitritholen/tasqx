@@ -802,6 +802,109 @@ fn a_single_row_panel_spends_its_row_on_data() {
     }
 }
 
+/// The help overlay is modal: any key closes it, and no key reaches the screen
+/// behind it.
+///
+/// Both halves were false. Only `?`, `q` and `esc` closed it — while its own
+/// last line said "any key closes this" — and every other key fell through and
+/// acted: `2` moved a focus nobody could see, `j` scrolled a hidden panel, `p`
+/// opened the picker over the top of the help text, and `l` left the dashboard
+/// from behind a modal the reader was still looking at.
+#[test]
+fn the_help_overlay_is_modal_and_no_key_reaches_behind_it() {
+    // Every key the screen answers to, plus a few it does not.
+    for k in [
+        KeyCode::Char('1'),
+        KeyCode::Char('8'),
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Char('j'),
+        KeyCode::Char('k'),
+        KeyCode::Char('g'),
+        KeyCode::Char('G'),
+        KeyCode::Char('r'),
+        KeyCode::Char('R'),
+        KeyCode::Char('w'),
+        KeyCode::Char('p'),
+        KeyCode::Char('l'),
+        KeyCode::Char('?'),
+        KeyCode::Char('q'),
+        KeyCode::Esc,
+        KeyCode::Char('z'),
+        KeyCode::Down,
+    ] {
+        let mut a = app();
+        a.observe(&all_panels(), false);
+        a.on_key(key(KeyCode::Char('?')));
+        assert!(a.help_open(), "the fixture must have help open");
+
+        let (focus, scroll, window, auto) = (
+            a.focus(),
+            a.scroll_of(PanelId::Next),
+            a.window_days(),
+            a.auto_refresh(),
+        );
+
+        let action = a.on_key(key(k));
+
+        assert!(
+            !a.help_open(),
+            "{k:?} must close the overlay — it promises any key does"
+        );
+        assert_eq!(
+            action, None,
+            "{k:?} must not reach the screen behind the overlay"
+        );
+        assert_eq!(
+            a.focus(),
+            focus,
+            "{k:?} moved focus from behind the overlay"
+        );
+        assert_eq!(
+            a.scroll_of(PanelId::Next),
+            scroll,
+            "{k:?} scrolled from behind it"
+        );
+        assert_eq!(
+            a.window_days(),
+            window,
+            "{k:?} changed the window from behind it"
+        );
+        assert_eq!(
+            a.auto_refresh(),
+            auto,
+            "{k:?} toggled auto-refresh from behind it"
+        );
+    }
+}
+
+/// Ctrl-C is the one exception, and it closes the PROGRAM rather than the
+/// overlay — an interrupt that only dismissed a help box would read as ignored.
+#[test]
+fn ctrl_c_still_quits_from_behind_the_help_overlay() {
+    let mut a = app();
+    a.on_key(key(KeyCode::Char('?')));
+    let ctrl_c = KeyEvent {
+        code: KeyCode::Char('c'),
+        modifiers: KeyModifiers::CONTROL,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    };
+    assert_eq!(a.on_key(ctrl_c), Some(Action::Quit));
+}
+
+/// The overlay's own last line makes a promise; this is what keeps it true.
+#[test]
+fn the_overlay_only_claims_what_the_state_machine_does() {
+    let mut a = app();
+    a.on_key(key(KeyCode::Char('?')));
+    let text = all_text(&draw_at(&a, 100, 30, &caps()));
+    assert!(
+        text.contains("any key closes this"),
+        "the overlay must say how to dismiss it:\n{text}"
+    );
+}
+
 /// An empty panel prints a sentence. A blank body reads as a hung screen.
 #[test]
 fn an_empty_panel_says_so_rather_than_drawing_nothing() {

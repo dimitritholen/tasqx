@@ -213,17 +213,23 @@ impl App {
             };
         }
 
+        // The overlay is MODAL, and it says so on its own last line: "any key
+        // closes this". It used to be a lie in both directions — only `?`, `q`
+        // and `esc` closed it, and every other key fell through and acted on
+        // the screen behind it. `2` moved a focus nobody could see, `j` scrolled
+        // a hidden panel, `p` opened the picker over the top of the help text,
+        // and `l` left the dashboard from behind a modal the reader was still
+        // looking at.
+        //
+        // Ctrl-C is the exception and is handled above: it is never "close the
+        // overlay", it is always "close the program".
+        if self.help {
+            self.help = false;
+            return None;
+        }
+
         match key.code {
-            // Narrower-thing-first, the rule `pick`'s Esc already follows: a
-            // reader who opened help and wants it gone must not lose the screen.
-            KeyCode::Char('q') | KeyCode::Esc => {
-                if self.help {
-                    self.help = false;
-                    None
-                } else {
-                    Some(Action::Quit)
-                }
-            }
+            KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
             KeyCode::Char(c @ '1'..='8') => {
                 let id = panel_of_digit(c as u8 - b'0')?;
                 if self.reachable(id) {
