@@ -125,8 +125,28 @@ impl App {
         &self.dash
     }
 
-    pub fn order(&self) -> &[PanelId] {
-        &self.order
+    /// The screen this state would draw at this size.
+    ///
+    /// The one place `model::layout` is called from. Both the renderer and the
+    /// event loop need the answer — the loop feeds `placed` back through
+    /// [`App::observe`] — and a second call site is a second chance to pass
+    /// different arguments, which would tell the state machine about a screen
+    /// nobody drew.
+    ///
+    /// It also owns the demand closure, which needs the CONFIGURED slot
+    /// members: the analytics slot is one rectangle for three panels, and it is
+    /// sized for the tallest of them so that `6`/`7`/`8` swap the occupant
+    /// without resizing the box under the reader.
+    pub fn screen(&self, width: u16, height: u16) -> Option<Screen> {
+        let members: Vec<PanelId> = self
+            .order
+            .iter()
+            .copied()
+            .filter(|id| PanelId::SLOT_MEMBERS.contains(id))
+            .collect();
+        model::layout(width, height, &self.order, &|id| {
+            model::demand(&self.dash, &members, id)
+        })
     }
 
     #[cfg(test)]
@@ -539,7 +559,7 @@ fn draw_chrome(screen: &Screen, app: &App, theme: &Theme, caps: &Caps, frame: &m
 /// Draw the whole screen.
 pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     let area = frame.area();
-    let Some(screen) = model::layout(area.width, area.height, &app.order) else {
+    let Some(screen) = app.screen(area.width, area.height) else {
         // Unreachable in practice — the caller refuses a terminal this small
         // before entering the alternate screen — but a return is the only
         // honest answer if it ever is reached.

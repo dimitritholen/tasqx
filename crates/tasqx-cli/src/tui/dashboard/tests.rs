@@ -160,7 +160,7 @@ fn every_panel_draws_its_rule_where_the_layout_put_it() {
     for (w, h) in SIZES {
         let a = app();
         let buf = draw_at(&a, w, h, &caps());
-        let screen = model::layout(w, h, a.order()).unwrap();
+        let screen = a.screen(w, h).unwrap();
         let cols = chrome_cols(w, screen.columns);
         for p in &screen.panels {
             let id = if p.id == PanelId::Slot {
@@ -191,7 +191,7 @@ fn no_panel_is_drawn_that_the_layout_did_not_place() {
     for (w, h) in SIZES {
         let a = app();
         let buf = draw_at(&a, w, h, &caps());
-        let screen = model::layout(w, h, a.order()).unwrap();
+        let screen = a.screen(w, h).unwrap();
         for id in all_panels() {
             // Positional, not a free-text census: a hostile task title spelling
             // `──8─ TOKENS ` in a body row would forge a header that a
@@ -234,7 +234,7 @@ fn a_panel_paints_only_inside_its_own_rectangle() {
     let th = theme::load("nord", None);
     for (w, h) in SIZES {
         let a = app();
-        let screen = model::layout(w, h, a.order()).unwrap();
+        let screen = a.screen(w, h).unwrap();
         for p in &screen.panels {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
             term.draw(|f| draw_panel(p, &a, &th, &caps(), f)).unwrap();
@@ -273,7 +273,7 @@ fn the_body_in_each_rect_is_the_panel_the_layout_placed_there() {
     for (w, h) in SIZES {
         let a = app();
         let full = draw_at(&a, w, h, &caps());
-        let screen = model::layout(w, h, a.order()).unwrap();
+        let screen = a.screen(w, h).unwrap();
         for p in &screen.panels {
             let mut solo = Terminal::new(TestBackend::new(w, h)).unwrap();
             solo.draw(|f| draw_panel(p, &a, &th, &caps(), f)).unwrap();
@@ -297,7 +297,7 @@ fn the_body_in_each_rect_is_the_panel_the_layout_placed_there() {
 fn the_chrome_columns_agree_with_every_placement() {
     for (w, h) in SIZES {
         let a = app();
-        let screen = model::layout(w, h, a.order()).unwrap();
+        let screen = a.screen(w, h).unwrap();
         let cols = chrome_cols(w, screen.columns);
         for p in &screen.panels {
             assert!(
@@ -316,7 +316,7 @@ fn the_chrome_columns_agree_with_every_placement() {
 fn a_junction_reflects_the_panels_on_both_sides_of_it() {
     let a = app();
     let buf = draw_at(&a, 160, 44, &caps());
-    let screen = model::layout(160, 44, a.order()).unwrap();
+    let screen = a.screen(160, 44).unwrap();
     let cols = chrome_cols(160, screen.columns);
     let seam = cols[1];
 
@@ -347,7 +347,7 @@ fn a_junction_reflects_the_panels_on_both_sides_of_it() {
 fn a_rule_that_ends_mid_screen_terminates_in_a_tee() {
     let a = app();
     let buf = draw_at(&a, 160, 44, &caps());
-    let screen = model::layout(160, 44, a.order()).unwrap();
+    let screen = a.screen(160, 44).unwrap();
     let cols = chrome_cols(160, screen.columns);
     let seam = cols[1];
 
@@ -454,7 +454,7 @@ fn a_key_release_is_not_a_second_key_press() {
 #[test]
 fn a_digit_places_its_panel_into_the_analytics_slot() {
     let mut a = app();
-    let screen = model::layout(80, 24, a.order()).unwrap();
+    let screen = a.screen(80, 24).unwrap();
     let placed: Vec<PanelId> = screen.panels.iter().map(|p| p.id).collect();
     a.observe(&placed, screen.has_slot());
     assert!(screen.has_slot(), "80x24 uses the slot");
@@ -484,7 +484,7 @@ fn a_digit_places_its_panel_into_the_analytics_slot() {
 #[test]
 fn a_digit_for_an_unreachable_panel_reports_instead_of_moving_focus() {
     let mut a = app();
-    let screen = model::layout(56, 14, a.order()).unwrap();
+    let screen = a.screen(56, 14).unwrap();
     let placed: Vec<PanelId> = screen.panels.iter().map(|p| p.id).collect();
     a.observe(&placed, screen.has_slot());
     assert!(!screen.has_slot(), "the XS rung has no slot");
@@ -541,7 +541,7 @@ fn the_slot_opens_on_a_configured_member_not_a_hard_coded_one() {
 fn a_digit_for_an_unconfigured_panel_neither_places_it_nor_blames_the_size() {
     let order = vec![PanelId::Now, PanelId::Next, PanelId::Due, PanelId::Projects];
     let mut a = App::new(dash(), order, 7, true);
-    let screen = model::layout(80, 24, a.order()).unwrap();
+    let screen = a.screen(80, 24).unwrap();
     let placed: Vec<PanelId> = screen.panels.iter().map(|p| p.id).collect();
     a.observe(&placed, screen.has_slot());
     assert!(
