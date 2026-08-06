@@ -18,6 +18,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::config::{self, Choices, Home, Kind, Setting};
+use crate::render;
 use crate::theme::{Caps, Theme};
 use crate::tui::{first_visible, rt_style};
 
@@ -311,6 +312,27 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     // are not uniform height: an open picker inserts one line per candidate
     // under a single row, so a window computed over `app.selected` would put
     // the marker back off screen the moment the picker opened.
+    // Measured from the rows about to be drawn, plus two cells of separator.
+    // Both columns used to be `format!("{:<18}")` / `{:<22}`, which is the exact
+    // pair of mistakes `render::pad` exists to end: a MINIMUM width with no gap
+    // after it, padded by CHAR COUNT rather than display width. An 18-character
+    // key therefore butted straight against its value — `detail.time_formatboth`
+    // — and a value holding any wide or combining character mis-aligned every
+    // column to its right.
+    //
+    // The value column keeps a cap. `dashboard.panels` resolves to a
+    // 50-character list, and fitting the column to it would push `source` off
+    // the right edge of EVERY row rather than just its own: pick's
+    // invisible-field failure, reached through the widest value instead of the
+    // widest title. `pad` never truncates, so that one row still overflows its
+    // own line and ratatui clips it there.
+    let key_w = app
+        .rows
+        .iter()
+        .map(|r| render::width(r.setting.key))
+        .max()
+        .unwrap_or(0)
+        + 2;
     let mut lines: Vec<Line> = Vec::new();
     let mut anchor = 0usize;
     for (i, row) in app.rows.iter().enumerate() {
@@ -341,8 +363,8 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
                 },
                 sty("accent"),
             ),
-            Span::styled(format!("{:<18}", row.setting.key), sty("project")),
-            Span::styled(format!("{shown:<22}"), value_style),
+            Span::styled(render::pad(row.setting.key, key_w), sty("project")),
+            Span::styled(render::pad(shown, 22), value_style),
             Span::styled(row.source.clone(), sty("muted")),
         ]));
 
@@ -776,6 +798,124 @@ mod tests {
         assert!(
             text.contains("esc quit"),
             "the key hints must be on screen:\n{text}"
+        );
+    }
+
+    /// Every key is separated from its value by whitespace.
+    ///
+    /// The key column was a literal `{:<18}`, which is a MINIMUM width with no
+    /// separator after it, so an 18-character key butted straight against its
+    /// value: `detail.time_formatboth` and `daemon.idle_timeout0` were both on
+    /// screen at every terminal size. The test the screen already had passed
+    /// throughout, because `contains(s.key)` is satisfied by a key with the
+    /// value glued to it — the value is what got lost, not the key.
+    #[test]
+    fn every_key_is_separated_from_its_value() {
+        let buf = draw(&app());
+        for s in config::SETTINGS {
+            let line = line_at(&buf, row_of(&buf, s.key));
+            let after = line
+                .split_once(s.key)
+                .expect("row_of found the key on this line")
+                .1;
+            assert!(
+                after.starts_with(' '),
+                "{} runs straight into its value:\n{line}",
+                s.key
+            );
+        }
+    }
+
+    /// And the column is derived from the registry rather than assumed.
+    ///
+    /// A wider fixed number would fix today's two keys and break again on the
+    /// next long one, with nothing to warn anybody: the fixed 18 was wide
+    /// enough for every key that existed when it was written, too. The row here
+    /// carries a key longer than anything in the registry, so it can only pass
+    /// if the width is measured.
+    #[test]
+    fn the_key_column_is_measured_not_assumed() {
+        static LONG: Setting = Setting {
+            key: "a.deliberately.very.long.setting.key",
+            home: Home::Toml,
+            kind: Kind::Bool,
+            default: "false",
+            env: None,
+            flag: None,
+            choices: Choices::Free,
+            summary: "Only ever drawn by this test.",
+        };
+        let mut a = app();
+        a.rows.push(Row {
+            setting: &LONG,
+            value: "false".to_string(),
+            source: "default".to_string(),
+            choices: Vec::new(),
+        });
+
+        let buf = draw_at(&a, 100, config::SETTINGS.len() as u16 + 9);
+        for key in config::SETTINGS
+            .iter()
+            .map(|s| s.key)
+            .chain(std::iter::once(LONG.key))
+        {
+            let line = line_at(&buf, row_of(&buf, key));
+            let after = line.split_once(key).expect("found on this line").1;
+            assert!(
+                after.starts_with(' '),
+                "{key} runs into its value once a longer key exists:\n{line}"
+            );
+        }
+    }
+
+    /// Columns are measured in CELLS, not in `char`s.
+    ///
+    /// `format!("{v:<22}")` counts chars, so a value of six CJK characters —
+    /// twelve cells — was padded as though it were six, and every column to its
+    /// right on that row alone sat six cells further across than on its
+    /// neighbours. `render::pad` exists precisely to end this, and its own doc
+    /// names the macro as the bug; this screen was still using it.
+    #[test]
+    fn a_double_width_value_does_not_shift_the_columns_after_it() {
+        static WIDE: Setting = Setting {
+            key: "wide.value",
+            home: Home::Toml,
+            kind: Kind::Bool,
+            default: "false",
+            env: None,
+            flag: None,
+            choices: Choices::Free,
+            summary: "Only ever drawn by this test.",
+        };
+        let mut a = app();
+        a.rows.push(Row {
+            setting: &WIDE,
+            // Six characters, twelve cells.
+            value: "日本語テスト".to_string(),
+            source: "default".to_string(),
+            choices: Vec::new(),
+        });
+
+        let buf = draw_at(&a, 100, config::SETTINGS.len() as u16 + 9);
+        // The source column is last, so its start is where every earlier column
+        // has finished. `rfind`, because a VALUE may also read "default".
+        let source_x = |key: &str| {
+            let line = line_at(&buf, row_of(&buf, key));
+            // `line_at` returns ONE char per screen CELL — a double-width glyph
+            // is its own char plus the continuation cell's space — so the column
+            // is a char count here. `render::width` would count that glyph as
+            // two and report a shift the screen does not have, which is how
+            // this assertion first failed against a render that was correct.
+            line.rfind("default")
+                .map(|b| line[..b].chars().count())
+                .unwrap_or_else(|| panic!("no source column on the {key} row:\n{line}"))
+        };
+        let plain = source_x("theme.name");
+        assert_eq!(
+            source_x(WIDE.key),
+            plain,
+            "a double-width value moved the source column:\n{}",
+            all_text(&buf)
         );
     }
 
