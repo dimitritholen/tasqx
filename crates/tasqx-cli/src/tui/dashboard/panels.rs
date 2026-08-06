@@ -71,13 +71,13 @@ pub fn when_cell(task: &Task, today: jiff::civil::Date) -> String {
 }
 
 /// Pad `s` to `cells`, measuring in cells.
+/// Pad to `cells`, never truncating — [`render::pad`] under a local name.
+///
+/// A thin wrapper rather than a second implementation: this module is entirely
+/// cell arithmetic, and the file it lives beside already carries the one
+/// function whose doc explains why `format!("{s:<n}")` is wrong here.
 fn pad(s: &str, cells: usize) -> String {
-    let w = render::width(s);
-    if w >= cells {
-        s.to_string()
-    } else {
-        format!("{s}{}", " ".repeat(cells - w))
-    }
+    render::pad(s, cells)
 }
 
 /// Right-align `right` against `left` inside `cells`, cutting `left` if needed.
@@ -242,7 +242,7 @@ fn window(scroll: usize, len: usize, visible: usize) -> (usize, usize, usize) {
 /// screenful being drawn — otherwise the columns re-align on every `j` press.
 fn id_width(rows: &[Task]) -> usize {
     rows.iter()
-        .map(|t| format!("#{}", t.short_id).len())
+        .map(|t| render::width(&format!("#{}", t.short_id)))
         .max()
         .unwrap_or(3)
 }
@@ -421,7 +421,7 @@ fn recent_body(
         .map(|t| {
             let status = t.status.as_str().to_string();
             let head = format!("#{} ", t.short_id);
-            let rest = w.saturating_sub(render::width(&head) + status.len() + 1);
+            let rest = w.saturating_sub(render::width(&head) + render::width(&status) + 1);
             Line::from(vec![
                 Span::styled(head, s.accent),
                 Span::styled(
@@ -479,7 +479,7 @@ fn projects_body(
             Line::from(vec![
                 Span::styled(star.to_string(), s.accent),
                 Span::styled(
-                    render::truncate(name, w.saturating_sub(tail.len() + 2), unicode),
+                    render::truncate(name, w.saturating_sub(render::width(&tail) + 2), unicode),
                     if r.archived { s.muted } else { s.project },
                 ),
                 Span::styled(

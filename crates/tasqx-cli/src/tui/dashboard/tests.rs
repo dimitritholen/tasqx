@@ -1240,3 +1240,117 @@ fn jumping_to_the_bottom_reaches_it_on_a_panel_with_section_headers() {
         "and at the bottom nothing may still be hidden below:\n{panel}"
     );
 }
+
+/// The PROJECTS panel measures the summary beside a name in cells, not bytes.
+///
+/// `projects_body` computes the room left for the name as
+/// `w - tail.len() - 2` while deciding two statements earlier whether the tail
+/// fits with `render::width(&tail)` — the same variable, two different rulers,
+/// seven lines apart. The tail is built around `·` (U+00B7: two bytes, one
+/// cell), so every separator over-counts by one and the name is truncated
+/// shorter than the space it had. It never overflows, which is why nothing
+/// caught it: the panel quietly drops the last characters of a name that fitted.
+///
+/// The assertion pins the RULE rather than asking whether a name fits — an
+/// off-by-one in a truncation is invisible to "does it appear", and this one is
+/// exactly one cell per separator.
+#[test]
+fn a_project_name_is_measured_against_its_summary_in_cells_not_bytes() {
+    let d = model::build(
+        Sources {
+            tasks: &json!({ "count": 0, "tasks": [] }),
+            summary: &json!({ "groups": [{
+                "count": 9, "project": "NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN",
+                "est_total": "PT4H", "tracked_total": "PT1H",
+                "tokens_cache_read": 0, "tokens_cache_creation": 0,
+                "tokens_in": 0, "tokens_out": 0
+            }]}),
+            projects: &json!({ "count": 1, "projects": [{
+                "archived": false, "default": true, "description": null,
+                "id": "019fd213-0001-7000-8000-000000000001",
+                // Longer than any body this test draws into, so the cut LENGTH
+                // is what the assertion reads rather than "did it fit".
+                "name": "NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN"
+            }]}),
+            events: &json!({ "count": 0, "events": [] }),
+            event_limit: 100,
+            days: 7,
+        },
+        "2026-08-05T12:00:00Z".parse().unwrap(),
+        date(2026, 8, 5),
+    );
+    assert_eq!(
+        d.projects.rows.len(),
+        1,
+        "two rows would put a second run of Ns on screen and the count below \
+         would stop meaning the truncation"
+    );
+    let row = d.projects.rows.first().expect("one project");
+    assert!(
+        row.tracked_secs > 0 || row.est_secs > 0 || row.overdue > 0,
+        "the fixture must produce a tail containing `·`, or the byte and cell \
+         counts are equal and this test cannot fail"
+    );
+
+    let mut a = App::new(d, vec![PanelId::Projects], 7, true);
+    a.on_key(key(KeyCode::Char('6')));
+    let (w, h) = (100u16, 24u16);
+    let laid_out = a.screen(w, h).unwrap();
+    // Its own rectangle where there is room, the analytics slot where there is
+    // not — either way it is the rectangle PROJECTS draws into.
+    let p = laid_out
+        .placement(PanelId::Projects)
+        .or_else(|| laid_out.placement(PanelId::Slot))
+        .expect("PROJECTS is drawn, in its own rectangle or in the slot");
+    assert_eq!(a.slot(), PanelId::Projects, "and it is the slot's occupant");
+    let buf = draw_at(&a, w, h, &caps());
+    let (bx, by, bw, bh) = p.body();
+    let panel = cell_text(&buf, bx, by, bw, bh);
+
+    // The tail as the panel builds it, rebuilt here from the model so the
+    // expected room is derived rather than copied.
+    let tail = format!(
+        "{} open · {}/{}",
+        a.dash().projects.rows[0].open,
+        panels::dur_compact(a.dash().projects.rows[0].tracked_secs),
+        panels::dur_compact(a.dash().projects.rows[0].est_secs)
+    );
+    assert!(
+        panel.contains(&tail),
+        "the fixture no longer produces the tail this test derives ({tail:?}):\n{panel}"
+    );
+
+    // The panel's own rectangle spans the chrome columns, so the text lives
+    // between them. Reading the whole row is how the first version of this
+    // assertion ended up measuring the borders as content.
+    let first = panel.lines().next().expect("PROJECTS drew a row");
+    let inner: String = first
+        .chars()
+        .skip(1)
+        .take(first.chars().count().saturating_sub(2))
+        .collect();
+
+    // The tell is a line that does not reach the right edge. The name is longer
+    // than any room this size offers, so the row must be packed solid: star,
+    // name cut to the last cell that fits, a space, then the summary flush
+    // against the border. Over-counting the summary by one cell per `·` leaves
+    // exactly that many cells empty at the end — a gap no reader would read as
+    // a bug, and the name one character shorter than it had room for.
+    // The summary is the last thing on the row either way; what moves is how
+    // much empty space follows it.
+    assert!(
+        inner.trim_end().ends_with(&tail),
+        "the row does not end with the summary, so this test is reading \
+         something other than the layout it means to:\n[{inner}]"
+    );
+    let gap = inner.len() - inner.trim_end().len();
+    assert_eq!(
+        gap,
+        0,
+        "PROJECTS left {gap} cell(s) empty at the end of the row: the summary \
+         ({tail:?}) is {} cells but was measured as {} bytes, so the name was \
+         cut that much shorter than it had room for:\n[{inner}]",
+        render::width(&tail),
+        tail.len()
+    );
+}
