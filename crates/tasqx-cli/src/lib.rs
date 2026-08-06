@@ -2241,11 +2241,32 @@ fn dashboard_active(
 /// is on. A malformed value reads as "on" for the same reason D57's hint does:
 /// the failure of a setting that governs one screen must be the screen, not
 /// silence.
+///
+/// The doc above said "env before file" while the code read the environment and
+/// stopped. `dashboard.enabled` is a registered `Home::Toml` setting: `config
+/// edit` draws it, `config list` prints it, `config set` writes it to
+/// `config.toml` and reports success — and none of that did anything. A setting
+/// that acknowledges a write and then ignores it is worse than one that does not
+/// exist. It now goes through `config::resolve` like its three siblings, which
+/// is where the precedence lives.
 fn dashboard_enabled() -> bool {
-    match std::env::var("TASQX_DASHBOARD") {
-        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no"),
-        Err(_) => true,
-    }
+    let s = config::find("dashboard.enabled").expect("dashboard.enabled is registered");
+    dashboard_enabled_with(config::toml_value(s).as_deref())
+}
+
+/// [`dashboard_enabled`] over an explicit file value.
+///
+/// Split for the reason `config::toml_value_in` is: the file half must be
+/// testable without mutating process-global env, which cargo's parallel test
+/// threads make racy.
+fn dashboard_enabled_with(file: Option<&str>) -> bool {
+    let s = config::find("dashboard.enabled").expect("dashboard.enabled is registered");
+    let (v, _) = config::resolve(s, None, file);
+    // The env layer arrives verbatim — `resolve` does not coerce it — so the
+    // three spellings a shell user reaches for are matched here rather than
+    // leaving `TASQX_DASHBOARD=0` reading as "on". The file layer is already
+    // normalised to `true`/`false` by `coerce`.
+    !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no")
 }
 
 /// Read `dashboard.panels` — which panels the screen draws, in which order.
@@ -3902,6 +3923,43 @@ mod tests {
             !dashboard_active(&caps, false, true, true, true, false),
             "a piped stdin never opens a screen — the key loop would block on it"
         );
+    }
+
+    /// `dashboard.enabled` is read from the config FILE, not only the
+    /// environment.
+    ///
+    /// `dashboard_active` took `enabled` as a parameter and the test above pins
+    /// what it does with it — but nothing pinned where the caller got it, and
+    /// the caller read `TASQX_DASHBOARD` and stopped. `config edit` drew the
+    /// row, `config set dashboard.enabled false` wrote it to `config.toml` and
+    /// printed the new value, and the next bare `tasqx` opened the dashboard
+    /// anyway. A setting that acknowledges a write and ignores it is worse than
+    /// one that was never offered.
+    ///
+    /// The file value is passed in rather than written to disk under
+    /// `$TASQX_CONFIG_DIR`: cargo runs these threads in one process, and a test
+    /// that mutates env is a test that flakes when another one reads it.
+    #[test]
+    fn the_escape_hatch_is_read_from_the_config_file() {
+        assert!(
+            !dashboard_enabled_with(Some("false")),
+            "`dashboard.enabled = false` in config.toml must switch the screen off"
+        );
+        assert!(
+            dashboard_enabled_with(Some("true")),
+            "and `true` must switch it back on"
+        );
+        assert!(
+            dashboard_enabled_with(None),
+            "with nothing in the file the default is on — the dashboard IS a bare tasqx"
+        );
+        // The shell spellings `resolve` hands through uncoerced from the env.
+        for off in ["false", "0", "no", "NO", " false "] {
+            assert!(
+                !dashboard_enabled_with(Some(off)),
+                "{off:?} must read as off"
+            );
+        }
     }
 
     /// Both halves of the argv escape pair, over the SAME registry.
