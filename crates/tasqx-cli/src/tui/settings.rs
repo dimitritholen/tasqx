@@ -19,7 +19,7 @@ use ratatui::Frame;
 
 use crate::config::{self, Choices, Home, Kind, Setting};
 use crate::theme::{Caps, Theme};
-use crate::tui::rt_style;
+use crate::tui::{first_visible, rt_style};
 
 /// One editable line: a registry entry plus what it currently resolves to.
 ///
@@ -305,9 +305,19 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     );
 
     // --- rows ----------------------------------------------------------------
+    // `anchor` is the index, among the lines below, of the one carrying the
+    // marker — the row in Browse, the candidate under the picker cursor in
+    // Pick. It is tracked in LINE space rather than row space because the rows
+    // are not uniform height: an open picker inserts one line per candidate
+    // under a single row, so a window computed over `app.selected` would put
+    // the marker back off screen the moment the picker opened.
     let mut lines: Vec<Line> = Vec::new();
+    let mut anchor = 0usize;
     for (i, row) in app.rows.iter().enumerate() {
         let selected = i == app.selected;
+        if selected {
+            anchor = lines.len();
+        }
         let shown = if row.value.is_empty() {
             "(unset)"
         } else {
@@ -342,6 +352,9 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
             if let Mode::Pick { cursor } = app.mode {
                 for (j, cand) in row.choices.iter().enumerate() {
                     let at = j == cursor;
+                    if at {
+                        anchor = lines.len();
+                    }
                     lines.push(Line::from(vec![
                         Span::raw("      "),
                         Span::styled(
@@ -358,7 +371,10 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
             }
         }
     }
-    frame.render_widget(Paragraph::new(lines), body);
+    let height = body.height as usize;
+    let start = first_visible(anchor, lines.len(), height);
+    let visible: Vec<Line> = lines.into_iter().skip(start).take(height).collect();
+    frame.render_widget(Paragraph::new(visible), body);
 
     // --- footer --------------------------------------------------------------
     let help = match app.mode {
@@ -435,11 +451,20 @@ mod tests {
         // Tall enough for the whole registry plus the chrome (2 header, 4
         // footer). A fixed 16 made this helper fail the day a tenth setting was
         // added — which says nothing about the screen, and hides what the tests
-        // using it actually assert. NOTE: the screen itself does not scroll, so
-        // a real terminal shorter than this cannot reach the last row; that is
-        // a genuine gap, tracked separately rather than papered over here.
+        // using it actually assert. Every test using this helper is therefore
+        // asserting about an UNSCROLLED screen; the two that pin the window
+        // itself call `draw_at` with a deliberately short terminal instead.
         let rows = config::SETTINGS.len() as u16 + 8;
         let mut term = Terminal::new(TestBackend::new(70, rows)).unwrap();
+        term.draw(|f| render(app, &th, &caps(), f)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    /// The same screen on a terminal of a stated size — the sizes `draw` was
+    /// built to avoid.
+    fn draw_at(app: &App, w: u16, h: u16) -> Buffer {
+        let th = theme::load(app.preview_theme().unwrap_or("nord"), None);
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| render(app, &th, &caps(), f)).unwrap();
         term.backend().buffer().clone()
     }
@@ -774,6 +799,89 @@ mod tests {
         let after = draw(&a);
         assert!(line_at(&after, row_of(&after, second)).starts_with('▸'));
         assert!(!line_at(&after, row_of(&after, first)).starts_with('▸'));
+    }
+
+    /// Every row is reachable on a terminal too short to hold the registry.
+    ///
+    /// This screen pushed all its rows into one `Paragraph` starting at index 0
+    /// while [`App::step`] clamped the selection to the number of SETTINGS, not
+    /// to what fits. Past the last visible row nothing on screen was marked at
+    /// all, and Enter then edited a setting the user had never seen — the same
+    /// failure `pick` shipped once and D55 fixed there with `first_visible`.
+    ///
+    /// Driven through the REAL render at every selection, because the pure
+    /// window function can be right while `render` ignores it. That is exactly
+    /// the shape the bug took in both screens.
+    #[test]
+    fn a_registry_taller_than_the_terminal_scrolls_the_marker_into_view() {
+        // 6 rows of chrome (2 header, 4 footer) leave 6 body rows here, so half
+        // the registry is below the fold at this size.
+        let (w, h) = (70, 12);
+        for n in 0..config::SETTINGS.len() {
+            let mut a = app();
+            for _ in 0..n {
+                a.on_key(press(KeyCode::Down));
+            }
+            let key = a.rows[a.selected].setting.key;
+            let text = all_text(&draw_at(&a, w, h));
+            assert!(
+                text.lines().any(|l| l.starts_with('▸') && l.contains(key)),
+                "after {n} Down the marker on {key} was not drawn at {w}x{h}:\n{text}"
+            );
+        }
+    }
+
+    /// And the candidate under the picker's own cursor, which is a second list
+    /// nested inside the first.
+    ///
+    /// The rows are not uniform height: an open picker inserts a line per
+    /// candidate under one row, so a window computed over row INDICES would put
+    /// the marker back off screen the moment the picker opened. The window is
+    /// therefore computed over drawn LINES, and this is what says so.
+    #[test]
+    fn an_open_picker_keeps_its_own_cursor_on_screen_too() {
+        let (w, h) = (70, 12);
+        let mut a = app();
+        // The LAST row that has candidates, found rather than named: a picker
+        // opening at the top of the registry fits on any terminal and proves
+        // nothing. This one opens below the fold and then extends further down.
+        let deep = a
+            .rows
+            .iter()
+            .rposition(|r| !r.choices.is_empty())
+            .expect("the registry has at least one row with candidates");
+        for _ in 0..deep {
+            a.on_key(press(KeyCode::Down));
+        }
+        a.on_key(press(KeyCode::Enter));
+        assert!(
+            matches!(a.mode, Mode::Pick { .. }),
+            "the picker must be open for this test to mean anything"
+        );
+
+        let names: Vec<String> = a.rows[deep].choices.clone();
+        // The picker opens on the CURRENT value, not on index 0 — walk to the
+        // top first so the loop below starts where it thinks it does.
+        for _ in 0..names.len() {
+            a.on_key(press(KeyCode::Up));
+        }
+        for (n, name) in names.iter().enumerate() {
+            if n > 0 {
+                a.on_key(press(KeyCode::Down));
+            }
+            // The indented CANDIDATE line, not any marked line containing the
+            // name: the setting row above shows its current value in the same
+            // column vocabulary, so `▸ detail.time_format  both` satisfies a
+            // looser needle while the candidate `both` is off screen — which
+            // is exactly how this assertion first passed against a broken
+            // window.
+            let want = format!("      ▸ {name}");
+            let text = all_text(&draw_at(&a, w, h));
+            assert!(
+                text.lines().any(|l| l.starts_with(&want)),
+                "candidate {n} ({name}) is not on screen at {w}x{h}:\n{text}"
+            );
+        }
     }
 
     /// The picker has to render its candidates, and render them under the row
