@@ -819,3 +819,82 @@ fn recent_is_newest_first_and_keeps_finished_work() {
         "finished work belongs here"
     );
 }
+
+/// A taller terminal never shows LESS of any panel.
+///
+/// Within one rung this is absolute. It was not: raising a panel a whole level
+/// cost up to three rows at once and emptied the pool feeding its neighbours,
+/// so one extra row of terminal could take a row away from two panels at once.
+/// Measured before the fix, at 80 columns:
+///
+///     80x28   Now:3  Next:4  Due:2  Blocked:2  Slot:6  Recent:2
+///     80x29   Now:3  Next:4  Due:5  Blocked:1  Slot:6  Recent:1
+///
+/// Five such inversions existed between 14 and 40 rows. Rows are handed out one
+/// at a time now, so one more row in the budget is one more row for exactly one
+/// panel and no panel can lose one.
+#[test]
+fn a_taller_terminal_never_shrinks_a_panel() {
+    for w in [56u16, 60, 80, 96, 120, 150, 200] {
+        let mut prev: Option<(Rung, std::collections::HashMap<PanelId, u16>)> = None;
+        for h in MIN_HEIGHT..=60 {
+            let screen = layout(w, h, &all_panels()).unwrap();
+            let bodies: std::collections::HashMap<PanelId, u16> = screen
+                .panels
+                .iter()
+                .map(|p| {
+                    let (_, _, _, body) = p.body();
+                    (p.id, body)
+                })
+                .collect();
+
+            if let Some((prev_rung, prev_bodies)) = &prev {
+                if *prev_rung == screen.rung {
+                    for (id, was) in prev_bodies {
+                        let now = bodies.get(id).copied().unwrap_or(0);
+                        assert!(
+                            now >= *was,
+                            "{w}x{h}: {id:?} shrank from {was} to {now} when the terminal \
+                             grew by one row (rung {:?})",
+                            screen.rung
+                        );
+                    }
+                } else {
+                    // Across a rung boundary the panel SET changes — the
+                    // analytics slot appears and claims its floor — so a light
+                    // panel giving rows back is a deliberate trade. The trade
+                    // still has to be worth something: it may not lose a panel.
+                    assert!(
+                        bodies.len() >= prev_bodies.len(),
+                        "{w}x{h}: crossing into {:?} dropped a panel ({} -> {})",
+                        screen.rung,
+                        prev_bodies.len(),
+                        bodies.len()
+                    );
+                }
+            }
+            prev = Some((screen.rung, bodies));
+        }
+    }
+}
+
+/// A panel's detail level is what its rows can pay for.
+///
+/// The two used to be decided separately, which allowed a panel labelled `Full`
+/// to be drawn in two rows. The level is derived from the allocation now, so
+/// they cannot disagree.
+#[test]
+fn the_detail_level_matches_the_rows_the_panel_actually_got() {
+    for (w, h) in [(56u16, 14u16), (80, 24), (96, 28), (120, 32), (200, 50)] {
+        for p in &layout(w, h, &all_panels()).unwrap().panels {
+            let (_, _, _, body) = p.body();
+            let claimed = spec_body(p.id, p.detail);
+            assert!(
+                body >= claimed,
+                "{w}x{h}: {:?} claims {:?} ({claimed} rows) but was given {body}",
+                p.id,
+                p.detail
+            );
+        }
+    }
+}
