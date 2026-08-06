@@ -10,6 +10,7 @@
 //! the untestable surface here is the handful of lines that actually put a real
 //! console into raw mode.
 
+pub mod dashboard;
 pub mod pick;
 pub mod settings;
 
@@ -197,6 +198,51 @@ fn panic_restore(w: &mut impl Write, disable_raw: impl FnOnce()) -> bool {
 /// the settings screen and `tasqx list` render "nord accent" as two different
 /// colors on a 256-color terminal — and the live theme preview exists precisely
 /// to show the user the colors they are about to commit to.
+/// The index of the first list entry that fits on screen — the scroll window,
+/// shared by every screen here that draws a marked list taller than its area.
+///
+/// A pure function of the cursor, the length of the list and the number of body
+/// rows, which is what lets each screen's `App` stay terminal-free while still
+/// scrolling. An `App` cannot hold a scroll offset without being told the
+/// terminal's height, and the moment it is told that it stops being a state
+/// machine a test can drive with nothing but key presses.
+///
+/// # The failure this closes
+///
+/// `pick` pushed every match into one `Paragraph` starting at index 0 while its
+/// `step` clamped the cursor to the number of MATCHES, not to what fits. On a
+/// 24-row terminal that is about 20 visible rows, and `@working` routinely holds
+/// more: pressing Down past row 20 moved a cursor nobody could see, no row on
+/// screen was marked at all, and `⏎` started a task that had never been drawn.
+///
+/// `settings` had the identical bug and did not get the identical fix, which is
+/// why this function now lives here instead of in `pick`: one rule in one place
+/// cannot be applied to one screen and forgotten on the other. There the units
+/// are drawn LINES rather than list entries, because an open picker inserts a
+/// line per candidate under one row — see `settings::render`.
+///
+/// # Why centred, and not "scroll only when the cursor would fall off"
+///
+/// The minimal rule (`start = cursor + 1 - height` once the cursor passes the
+/// bottom) is also pure, and it pins the highlight to the last visible row for
+/// the whole rest of the list: moving UP then scrolls the list under a cursor
+/// that never moves, which reads as the screen ignoring the key. Centring keeps
+/// the highlight in the middle of the window while scrolling in either
+/// direction, with context above and below it, and degrades to "no scrolling at
+/// all" whenever the list fits — which is the common case and the one the
+/// existing render tests pin.
+///
+/// The invariant, asserted exhaustively by `the_cursor_is_always_inside_the_
+/// viewport`: for `height >= 1` and a non-empty list, `start <= cursor` and
+/// `cursor - start < height`. The marker is therefore on screen for every
+/// (cursor, length, height) any of these screens can be in.
+pub fn first_visible(cursor: usize, len: usize, height: usize) -> usize {
+    // `min` against the tail: without it the last screenful would scroll past
+    // the end of the list and draw blank rows below the final entry.
+    len.saturating_sub(height)
+        .min(cursor.saturating_sub(height / 2))
+}
+
 pub fn rt_style(s: crate::theme::Style, caps: &Caps) -> ratatui::style::Style {
     let mut out = ratatui::style::Style::default();
     if !caps.ansi {
@@ -266,6 +312,48 @@ pub fn with_terminal<T>(
 mod tests {
     use super::*;
     use crate::theme::{ColorDepth, Rgb, Style};
+
+    /// The viewport invariant, exhaustively: whatever the cursor, the length of
+    /// the list and the number of body rows, the highlighted entry is inside the
+    /// window that gets drawn.
+    ///
+    /// Asserted over every combination rather than at a few sizes, because the
+    /// bug it replaces was invisible at every size the screens' other render
+    /// tests use — each fixture fits its own body — and appeared only when the
+    /// list outgrew the area. The two halves are what "on screen" means:
+    /// `start <= cursor` (the marker is not above the window) and
+    /// `cursor - start < height` (not below it).
+    ///
+    /// It lives here rather than beside one screen because the function does:
+    /// `pick` and `settings` had the same bug, and only one of them got the fix.
+    #[test]
+    fn the_cursor_is_always_inside_the_viewport() {
+        for len in 1..40usize {
+            for height in 1..24usize {
+                for cursor in 0..len {
+                    let start = first_visible(cursor, len, height);
+                    assert!(
+                        start <= cursor,
+                        "len {len} height {height} cursor {cursor}: window starts at {start}, \
+                         below the cursor — the marker is off the top"
+                    );
+                    assert!(
+                        cursor - start < height,
+                        "len {len} height {height} cursor {cursor}: window starts at {start}, \
+                         so the cursor is {} rows past the bottom",
+                        cursor - start - height + 1
+                    );
+                    // And the window may not run off the end of the list, which
+                    // would draw blank rows under the last entry.
+                    assert!(
+                        start + height <= len || start == 0,
+                        "len {len} height {height} cursor {cursor}: window {start}..{} overruns",
+                        start + height
+                    );
+                }
+            }
+        }
+    }
 
     fn caps(depth: ColorDepth, ansi: bool) -> Caps {
         Caps {

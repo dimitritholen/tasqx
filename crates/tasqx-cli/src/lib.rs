@@ -307,6 +307,7 @@ pub fn run() {
 
     // Read before `cli` is moved into `execute`, which consumes it by value.
     let json = cli.json;
+    let occasion = hint_occasion(&cli);
 
     // THE terminal. Every command reaches exactly this point, whether it was
     // dispatched early or fell through to the bottom match, which is what makes
@@ -323,11 +324,36 @@ pub fn run() {
             } else {
                 emit(&render);
             }
+            // D57, and it sits HERE for the same reason the JSON terminal does:
+            // one place every command passes through. Only on the success arm —
+            // `Exit::Out(Err)` exits above, and a nudge printed under an error
+            // message competes with the thing the user is actually reading —
+            // and never for `SelfFramed`, whose members own stdout (a protocol),
+            // never return (`daemon`, `watch`), or are prose the user asked for.
+            if let Some(occasion) = occasion {
+                complete::hint::offer(occasion, json);
+            }
         }
         Exit::Out(Err(e)) => {
             eprintln!("error [{}]: {}", code_str(&e), e.message);
             exit(e.exit_code());
         }
+    }
+}
+
+/// Which D57 occasion this invocation is, or `None` for the commands that must
+/// never carry the note.
+///
+/// `completions` is the exclusion that is not about output at all: a user
+/// running the verb is already holding the answer the note would give them, and
+/// on `--uninstall` the note would contradict what they just deliberately did.
+/// `init` is [`complete::hint::Occasion::Setup`] — the one moment a user is
+/// reading setup output — and everything else is ordinary.
+fn hint_occasion(cli: &Cli) -> Option<complete::hint::Occasion> {
+    match &cli.command {
+        Some(Command::Completions { .. }) => None,
+        Some(Command::Init { .. }) => Some(complete::hint::Occasion::Setup),
+        _ => Some(complete::hint::Occasion::Ordinary),
     }
 }
 
@@ -439,6 +465,29 @@ fn execute(cli: Cli) -> Exit {
         return Exit::Out(Err(ApiError::bad_request(PICK_NEEDS_A_TERMINAL)));
     }
 
+    // The explicit `tasqx dashboard`, gated in the same place and for the same
+    // reason — and with a second refusal `pick` has no equivalent of: a real
+    // terminal can still be too small to draw on.
+    //
+    // `--json` is excluded from the gate, not from the verb. That path opens no
+    // screen, so neither a pipe nor a 40x10 window is an obstacle, and refusing
+    // it would make D58's "carries a real `--json` result document" false in
+    // every context a script runs in. It does make `dashboard` the first verb
+    // where `--json` decides whether the tty gate applies — `tasqx --json pick`
+    // still refuses — which is why it is ruled on in §12 rather than left to be
+    // discovered.
+    if matches!(&cli.command, Some(Command::Dashboard)) && !cli.json {
+        use std::io::IsTerminal;
+        let (out_tty, in_tty) = (
+            std::io::stdout().is_terminal(),
+            std::io::stdin().is_terminal(),
+        );
+        let size = terminal_size(&ctx.caps, out_tty, in_tty);
+        if let Some(msg) = dashboard_refusal(&ctx.caps, out_tty, in_tty, size) {
+            return Exit::Out(Err(ApiError::bad_request(msg)));
+        }
+    }
+
     // Charts and the HTML report are pure local reads; they render straight from
     // a direct Engine (safe under WAL even if a daemon is also running).
     if matches!(
@@ -478,8 +527,67 @@ fn execute(cli: Cli) -> Exit {
         }
     };
 
+    // A bare `tasqx` opens the dashboard when — and only when — a human is
+    // watching (D58). Everything else about a bare invocation is unchanged, and
+    // that is the whole promise: `tasqx | cat`, `tasqx > file`, `--json`,
+    // `TERM=dumb`, `TASQX_DASHBOARD=false` and a window under 56x14 all fall
+    // through to the working-set table below, byte for byte.
+    //
+    // Note what is NOT in that list: CI. Nothing here reads a `CI` variable, so
+    // a CI job is safe because it redirects rather than because it was
+    // recognised — and a caller that hands its child a pty is interactive by
+    // this test however unattended it is.
+    //
+    // `Exit::SelfFramed` rather than a `CmdOutcome`, and it is not decoration:
+    // `hint_occasion` classifies a bare run as `Occasion::Ordinary`, and `run()`
+    // prints the D57 completion note on the `Exit::Out(Ok)` arm — AFTER
+    // `execute` returns. A dashboard handed back as an ordinary outcome would
+    // leave the alternate screen and then write a rendered table and a
+    // completion nudge into the scrollback of a user who had just pressed `q`.
+    //
+    // Constructed directly rather than through `Exit::self_framed`, whose job is
+    // to make a command that accepts `--json` and ignores it impossible. That
+    // cannot happen here: `--json` is in the condition above, so the flag never
+    // reaches this path. There is also no command name to declare — this is the
+    // absence of a command.
+    let (stdout_tty, stdin_tty) = {
+        use std::io::IsTerminal;
+        (
+            std::io::stdout().is_terminal(),
+            std::io::stdin().is_terminal(),
+        )
+    };
+    let fits = terminal_size(&ctx.caps, stdout_tty, stdin_tty).is_some_and(|(w, h)| {
+        dashboard_refusal(&ctx.caps, stdout_tty, stdin_tty, Some((w, h))).is_none()
+    });
+    let verb_screen = matches!(&cli.command, Some(Command::Dashboard)) && !cli.json;
+    let bare_screen = cli.command.is_none()
+        && dashboard_active(
+            &ctx.caps,
+            cli.json,
+            dashboard_enabled(),
+            fits,
+            stdout_tty,
+            stdin_tty,
+        );
+    if verb_screen || bare_screen {
+        match run_dashboard(&mut backend, &ctx) {
+            Ok(Some(render)) => emit(&render),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("error [{}]: {}", code_str(&e), e.message);
+                exit(e.exit_code());
+            }
+        }
+        return Exit::SelfFramed;
+    }
+
     Exit::Out(match cli.command {
         None => run_list(&mut backend, &ctx, &[]),
+        // Only the `--json` spelling reaches here: the screen leaves as
+        // `SelfFramed` above, for the same D57-hint reason the bare invocation
+        // does.
+        Some(Command::Dashboard) => run_dashboard_json(&mut backend, &ctx),
         Some(Command::Init { name, desc }) => run_init(&mut backend, &ctx, name, desc),
         Some(Command::Add {
             title,
@@ -1990,11 +2098,11 @@ fn pick_result(short_id: i64, title: &str, mut started: Value) -> Value {
 /// looking at it, and a script that wants the numbers should not have to parse
 /// block glyphs back into integers to get them.
 fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
-    let events = dispatch(engine, "event.list", &json!({ "limit": 100000 }))?;
     let anchor = chart::today();
     Ok(match kind {
         ChartKind::Throughput { weeks } => {
             let weeks = chart::default_weeks(false, weeks);
+            let events = events_since(engine, anchor, weeks * 7 + 7)?;
             let series = chart::throughput(&events, weeks, anchor);
             let data = series
                 .iter()
@@ -2010,6 +2118,7 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
         }
         ChartKind::Heatmap { year, weeks } => {
             let weeks = chart::default_weeks(year, weeks);
+            let events = events_since(engine, anchor, weeks * 7 + 7)?;
             let days = chart::heatmap(&events, weeks, anchor);
             let data = days
                 .iter()
@@ -2028,6 +2137,7 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
             // a cleared burndown, which is a wrong answer wearing the costume of
             // a right one.
             let (members, label) = burndown_members(engine, &project)?;
+            let events = events_since(engine, anchor, days_n + 1)?;
             let series = chart::burndown(&events, &members, days_n, anchor);
             let data = series
                 .iter()
@@ -2041,63 +2151,433 @@ fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutcome {
     })
 }
 
-/// Every status a burndown counts as membership — i.e. everything but
-/// `cancelled`. Spelled out positively because `task.list` keeps its literal
-/// "no filter = all rows" contract (D24 is a *report* rule, applied in core to
-/// `report.summary` only), so the exclusion has to live here, at the CLI.
+const DASHBOARD_NEEDS_A_TERMINAL: &str =
+    "`tasqx dashboard` needs an interactive terminal on stdin and stdout \
+     (one of them is piped, redirected, or TERM=dumb). `tasqx --json dashboard` \
+     gives the same panels as data, and `tasqx list` prints the working set.";
+
+/// Why this terminal cannot show the dashboard, or `None` when it can.
 ///
-/// Derived from `Status::ALL` + `counts_in_reports()` rather than typed out, so
-/// a new variant joins the burndown by construction. The hand-written version of
-/// this constant had already lost `status:backlog` once, and nothing failed —
-/// a burndown silently missing tasks still looks like a valid burndown.
-static NOT_CANCELLED: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    tasqx_core::types::Status::ALL
-        .into_iter()
-        .filter(|s| s.counts_in_reports())
-        .map(|s| format!("status:{}", s.as_str()))
-        .collect::<Vec<_>>()
-        .join(" or ")
-});
+/// The policy, with the two facts it depends on injected — the split
+/// `is_interactive_with` exists for, and for the same reason: under cargo the
+/// process has a piped stdout, so a predicate that asked the process directly
+/// would be untestable at exactly the point it can go wrong.
+///
+/// `size` is `None` when it could not be measured, which is a refusal rather
+/// than a default: entering the alternate screen on a guess is how you paint a
+/// half-drawn frame onto a window nobody can read.
+fn dashboard_refusal(
+    caps: &Caps,
+    stdout_tty: bool,
+    stdin_tty: bool,
+    size: Option<(u16, u16)>,
+) -> Option<String> {
+    use tui::dashboard::model::{MIN_HEIGHT, MIN_WIDTH};
+    if !tui::is_interactive_with(caps, stdout_tty, stdin_tty) {
+        return Some(DASHBOARD_NEEDS_A_TERMINAL.to_string());
+    }
+    match size {
+        Some((w, h)) if w >= MIN_WIDTH && h >= MIN_HEIGHT => None,
+        Some((w, h)) => Some(format!(
+            "this terminal is {w}x{h}; `tasqx dashboard` needs at least \
+             {MIN_WIDTH}x{MIN_HEIGHT}. Resize the window, or run `tasqx list`."
+        )),
+        None => Some(
+            "`tasqx dashboard` could not measure this terminal, so it will not enter \
+             the alternate screen. Run `tasqx list` instead."
+                .to_string(),
+        ),
+    }
+}
+
+/// The terminal's size, asked only once there is a terminal to ask about.
+///
+/// `crossterm::terminal::size()` consults `/dev/tty` and can fall back to
+/// spawning `tput`, so in a pipe it answers about a window the bytes are not
+/// going to. Asking it there would be worse than not asking.
+fn terminal_size(caps: &Caps, stdout_tty: bool, stdin_tty: bool) -> Option<(u16, u16)> {
+    if tui::is_interactive_with(caps, stdout_tty, stdin_tty) {
+        ratatui::crossterm::terminal::size().ok()
+    } else {
+        None
+    }
+}
+
+/// Whether a bare `tasqx` opens the dashboard rather than printing the table.
+///
+/// Four signals: a human is at the keyboard, no machine is reading the output,
+/// the user has not switched it off, and the window is big enough to draw on.
+/// Pure, and separate from everything that touches a terminal or a store, so
+/// the condition is testable without either.
+///
+/// `fits` is the one that was missing when the screen first shipped, and its
+/// absence was a real bug rather than a rough edge: bare `tasqx` in a 40x10
+/// window entered the alternate screen, painted NOTHING — `layout` returns
+/// `None` below 56x14 and `render` returns early — blocked until `q`, and
+/// created a 208 KB store on the way in. That is D55's refused-screen-leaves-a-
+/// store failure, rebuilt one screen over. Below the minimum a bare invocation
+/// falls through to `run_list`: whoever typed nothing did not ask for a
+/// dashboard, so silence is the right answer and the table is still useful.
+///
+/// `is_interactive` and nothing else answers the first: it asks about **stdout
+/// and stdin both**, because the alternate screen is written to one and the key
+/// loop blocks on the other. `Caps::detect() != PLAIN` is NOT the same question
+/// — `CLICOLOR_FORCE=1` says "colour even when piped", and conflating the two is
+/// what made `config edit | cat` hang forever (D26).
+fn dashboard_active(
+    caps: &Caps,
+    json: bool,
+    enabled: bool,
+    fits: bool,
+    stdout_tty: bool,
+    stdin_tty: bool,
+) -> bool {
+    enabled && !json && fits && tui::is_interactive_with(caps, stdout_tty, stdin_tty)
+}
+
+/// Read `dashboard.enabled` — the escape hatch a breaking change owes its users.
+///
+/// Env before file so a CI image can switch it off in one line, and the default
+/// is on. A malformed value reads as "on" for the same reason D57's hint does:
+/// the failure of a setting that governs one screen must be the screen, not
+/// silence.
+///
+/// The doc above said "env before file" while the code read the environment and
+/// stopped. `dashboard.enabled` is a registered `Home::Toml` setting: `config
+/// edit` draws it, `config list` prints it, `config set` writes it to
+/// `config.toml` and reports success — and none of that did anything. A setting
+/// that acknowledges a write and then ignores it is worse than one that does not
+/// exist. It now goes through `config::resolve` like its three siblings, which
+/// is where the precedence lives.
+fn dashboard_enabled() -> bool {
+    let s = config::find("dashboard.enabled").expect("dashboard.enabled is registered");
+    dashboard_enabled_with(config::toml_value(s).as_deref())
+}
+
+/// [`dashboard_enabled`] over an explicit file value.
+///
+/// Split for the reason `config::toml_value_in` is: the file half must be
+/// testable without mutating process-global env, which cargo's parallel test
+/// threads make racy.
+fn dashboard_enabled_with(file: Option<&str>) -> bool {
+    let s = config::find("dashboard.enabled").expect("dashboard.enabled is registered");
+    let (v, _) = config::resolve(s, None, file);
+    // The env layer arrives verbatim — `resolve` does not coerce it — so the
+    // three spellings a shell user reaches for are matched here rather than
+    // leaving `TASQX_DASHBOARD=0` reading as "on". The file layer is already
+    // normalised to `true`/`false` by `coerce`.
+    !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no")
+}
+
+/// Read `dashboard.panels` — which panels the screen draws, in which order.
+///
+/// Total rather than fallible, and that is `coerce`'s doing: a value outside the
+/// vocabulary is not a value, so it never reaches here and the resolver hands
+/// back the default. What arrives is either the user's list or the built-in one.
+fn dashboard_panels() -> Vec<tui::dashboard::model::PanelId> {
+    use tui::dashboard::model::PanelId;
+    let s = config::find("dashboard.panels").expect("dashboard.panels is registered");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    v.split(',')
+        .filter_map(|name| PanelId::from_slug(name.trim()))
+        .collect()
+}
+
+/// Read `dashboard.window` as a day count.
+///
+/// Converted through `WINDOW_CHOICES` BY NAME, never by inventing a number:
+/// `App::new` maps a day count back to an index with `unwrap_or(0)`, so a count
+/// that is not in the list would silently become "week" and the `w` key would
+/// start from somewhere the config never asked for.
+fn dashboard_window_days() -> usize {
+    let s = config::find("dashboard.window").expect("dashboard.window is registered");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    tui::dashboard::WINDOW_CHOICES
+        .iter()
+        .find(|(name, _)| *name == v)
+        .map(|(_, days)| *days)
+        .unwrap_or(7)
+}
+
+/// Read `dashboard.refresh` — whether the screen re-reads on a timer.
+fn dashboard_auto_refresh() -> bool {
+    let s = config::find("dashboard.refresh").expect("dashboard.refresh is registered");
+    let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    v != "manual"
+}
+
+/// The four reads one dashboard refresh makes.
+///
+/// One `task.list {}` — UNFILTERED, because the burndown reconstructs backwards
+/// from current state and needs every task's status — feeding five panels, and
+/// one `report.summary` feeding two. `Engine::task_list` loads every row and
+/// filters in Rust, so five limited calls would be five full scans; and two
+/// summaries would double the heaviest read in the set.
+fn dashboard_data(
+    be: &mut Backend,
+    days: usize,
+    now: jiff::Timestamp,
+    today: jiff::civil::Date,
+) -> Result<tui::dashboard::model::Dashboard, ApiError> {
+    use jiff::ToSpan;
+    const EVENT_LIMIT: usize = 100_000;
+
+    let tasks = be.call("task.list", &json!({}))?;
+    let summary = be.call(
+        "report.summary",
+        &json!({
+            "group_by": "project",
+            "metrics": [
+                "est_total", "tracked_total",
+                "tokens_cache_read", "tokens_cache_creation", "tokens_in", "tokens_out"
+            ]
+        }),
+    )?;
+    // Archived projects still hold tasks and still get a summary group, so
+    // hiding them here would leave that group unjoinable.
+    let projects = be.call("project.list", &json!({ "include_archived": true }))?;
+    let from = today.saturating_sub((days as i64 + 1).days());
+    let events = be.call(
+        "event.list",
+        &json!({ "limit": EVENT_LIMIT, "from": format!("{from}T00:00:00Z") }),
+    )?;
+
+    Ok(tui::dashboard::model::build(
+        tui::dashboard::model::Sources {
+            tasks: &tasks,
+            summary: &summary,
+            projects: &projects,
+            events: &events,
+            event_limit: EVENT_LIMIT,
+            days,
+        },
+        now,
+        today,
+    ))
+}
+
+/// How long the dashboard waits for a key before re-reading, with auto-refresh
+/// on.
+///
+/// Five seconds rather than a configurable interval: every refresh is four
+/// reads, one of which (`report.summary`) aggregates token measurements across
+/// the store, so a knob here is an invitation to set a number that makes the
+/// screen slow and blame the screen. `r` is always available, and `R` turns the
+/// tick off entirely.
+const REFRESH_TICK: u64 = 5;
+
+/// Open the dashboard and stay in it until the user leaves.
+///
+/// Returns whatever should be printed into the scrollback afterwards — nothing,
+/// normally, because a viewer writes nothing and there is nothing to audit.
+fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError> {
+    use ratatui::crossterm::event::{self, Event};
+    use tui::dashboard::{Action, App};
+
+    let today = chart::today();
+    let now = jiff::Timestamp::now();
+    let days = dashboard_window_days();
+    let mut app = App::new(
+        dashboard_data(be, days, now, today)?,
+        dashboard_panels(),
+        days,
+        dashboard_auto_refresh(),
+    );
+
+    // OUTER loop: the screen comes back after the picker.
+    //
+    // `p` used to hand the terminal back and let `run_pick`'s result become the
+    // command's result — so backing out of the picker exited the whole process
+    // with `not_found` and code 4, and choosing a task started it and then quit.
+    // Neither is what a key on a read-only overview should do. `pick` opens its
+    // own `with_terminal`, so the dashboard's has to be closed first and
+    // reopened after; D58 asks for one session with a `Screen` enum, which is
+    // the remaining half of this work and would remove the flicker.
+    let mut picked: Option<String> = None;
+    loop {
+        // What the user asked for on the way out, if anything. `Refresh` never
+        // reaches here — it is served inside the loop, because a refresh that
+        // tore the screen down and rebuilt it would flicker on every `r` and on
+        // every tick of auto-refresh.
+        let mut want: Option<Action> = None;
+        let mut failed: Option<ApiError> = None;
+        tui::with_terminal(|term| {
+            loop {
+                let mut placed = Vec::new();
+                let mut has_slot = false;
+                term.draw(|f| {
+                    tui::dashboard::render(&app, &ctx.theme, &ctx.caps, f);
+                    if let Some(s) = app.screen(f.area().width, f.area().height) {
+                        placed = s.panels.iter().map(|p| p.id).collect();
+                        has_slot = s.has_slot();
+                    }
+                })?;
+                // The state machine is told what was drawn, as data — that is what
+                // keeps Tab from stopping on a panel this size cannot show.
+                app.observe(&placed, has_slot);
+
+                // With auto-refresh on, wait at most one tick for a key and then
+                // re-read; otherwise block until the user does something. Polling
+                // rather than a background thread keeps this loop the only thing
+                // that touches the terminal, which is the invariant that lets the
+                // existing panic hook and `Restore` guard stay sufficient.
+                if app.auto_refresh() && !event::poll(std::time::Duration::from_secs(REFRESH_TICK))?
+                {
+                    match dashboard_data(be, app.window_days(), jiff::Timestamp::now(), today) {
+                        Ok(data) => app.replace(data),
+                        Err(e) => {
+                            failed = Some(e);
+                            return Ok(());
+                        }
+                    }
+                    continue;
+                }
+                // Resize and paste just redraw; only keys are decisions.
+                let Event::Key(key) = event::read()? else {
+                    continue;
+                };
+                match app.on_key(key) {
+                    Some(Action::Quit) => return Ok(()),
+                    Some(Action::Refresh) => {
+                        // A read that fails mid-session ends the session rather
+                        // than redrawing stale numbers under a live-looking screen.
+                        // The error is carried out and reported on the normal
+                        // terminal, because a message printed here is wiped by the
+                        // restore that follows it.
+                        match dashboard_data(be, app.window_days(), jiff::Timestamp::now(), today) {
+                            Ok(data) => app.replace(data),
+                            Err(e) => {
+                                failed = Some(e);
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Some(a) => {
+                        want = Some(a);
+                        return Ok(());
+                    }
+                    None => {}
+                }
+            }
+        })
+        .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
+
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        match want {
+            // `l` is the one key that means "leave", so it does.
+            Some(Action::List) => return run_list(be, ctx, &[]).map(|(_, r)| Some(r)),
+            Some(Action::Pick) => {
+                match run_pick(be, ctx, &[]) {
+                    Ok((_, render)) => picked = Some(render),
+                    // Backing out of the picker is not an error HERE. `pick` as
+                    // a command exits 4 having started nothing, because its
+                    // whole output is the choice (D55); reached from a screen
+                    // the user is going back to, cancelling is just cancelling.
+                    Err(e) if e.code == tasqx_core::ErrorCode::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+                // Whatever happened, the screen shows it: a started task turns
+                // up in NOW, and a cancelled pick redraws unchanged.
+                app.replace(dashboard_data(
+                    be,
+                    app.window_days(),
+                    jiff::Timestamp::now(),
+                    chart::today(),
+                )?);
+            }
+            // Quit, or nothing left to do.
+            _ => return Ok(picked),
+        }
+    }
+}
+
+/// `tasqx --json dashboard` — the panels as data, with no screen involved.
+///
+/// This is why the verb is not a `JSON_CARVE_OUTS` entry (D58): the whole data
+/// layer — every mapper, every join, the burndown reconstruction — becomes
+/// reachable from a script and from a test that has no terminal, which is
+/// otherwise only testable through a pty.
+///
+/// The human rendering is the document too. A `--json` carve-out would have
+/// been dishonest, and a prose summary here would be a second surface to keep
+/// true; anyone who wants prose has the screen.
+fn run_dashboard_json(be: &mut Backend, _ctx: &Ctx) -> CmdOutcome {
+    let days = dashboard_window_days();
+    let order = dashboard_panels();
+    let data = dashboard_data(be, days, jiff::Timestamp::now(), chart::today())?;
+    let doc = tui::dashboard::json::document(&data, days, &order);
+    let render = serde_json::to_string_pretty(&doc).unwrap_or_default();
+    Ok((doc, render))
+}
+
+/// The event log from `days_back` days before `anchor`, for a chart that only
+/// draws that far (D59).
+///
+/// Before `event.list` took a bound, every chart read `{limit: 100000}` — a full
+/// scan of a log that is append-only and never pruned, on a table that grows
+/// with every mutation the store has ever recorded. The bound is per-arm and not
+/// hoisted: throughput, heatmap and burndown draw three different windows, and
+/// one shared `from` would silently be the narrowest of them.
+///
+/// `days_back` is passed generously by callers (a week of slack on the
+/// week-bucketed charts). The bound is an optimisation and not semantics —
+/// which became TRUE only with D60: under the forwards reconstruction a
+/// narrower window really did change the answer, and this comment claimed
+/// otherwise for as long as that was the case. Backwards, existence comes from
+/// `created` and today's state from the snapshot, so a clipped window costs
+/// only the days whose changes it hid.
+///
+/// `limit` stays as the belt to this parameter's braces: `ORDER BY id DESC
+/// LIMIT n` drops the OLDEST rows if it ever binds, which is the direction the
+/// burndown can absorb.
+fn events_since(
+    engine: &Engine,
+    anchor: jiff::civil::Date,
+    days_back: usize,
+) -> Result<Value, ApiError> {
+    use jiff::ToSpan;
+    let from = anchor.saturating_sub((days_back as i64).days());
+    dispatch(
+        engine,
+        "event.list",
+        &json!({ "limit": 100000, "from": format!("{from}T00:00:00Z") }),
+    )
+}
 
 /// Resolve the task ids a burndown covers, plus its label. Split out of the
 /// `ChartKind::Burndown` arm so the scope rule is testable on its own.
 ///
-/// Both branches go through `task.list` with [`NOT_CANCELLED`]. The `None`
+/// Both branches go through `task.list` with no status filter (D60). The `None`
 /// branch previously used an unfiltered `store.export`, which is what let
 /// cancelled tasks inflate the whole-store burndown's "remaining work" line.
 fn burndown_members(
     engine: &Engine,
     project: &Option<String>,
-) -> Result<(std::collections::HashSet<String>, String), ApiError> {
+) -> Result<(Vec<chart::Member>, String), ApiError> {
     let (filter, label) = match project {
         // Through `filter::quote`, never interpolated: a project may be named
         // `Home Renovation` or `a (b)`, and a raw `{p}` composes a filter that
         // asks a different question (or none at all) without saying so.
         Some(p) => (
-            format!(
-                "project:{} and ({})",
-                tasqx_core::filter::quote(p),
-                *NOT_CANCELLED
-            ),
+            Some(format!("project:{}", tasqx_core::filter::quote(p))),
             p.clone(),
         ),
-        None => (NOT_CANCELLED.to_string(), "all tasks".to_string()),
+        None => (None, "all tasks".to_string()),
     };
-    let listed = dispatch(
-        engine,
-        "task.list",
-        &json!({ "filter": filter, "fields": ["id"] }),
-    )?;
-    let ids = listed
-        .get("tasks")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| t.get("id").and_then(Value::as_str).map(str::to_string))
-                .collect::<std::collections::HashSet<String>>()
-        })
-        .unwrap_or_default();
-    Ok((ids, label))
+    // No `NOT_CANCELLED` any more. It existed because the old reconstruction
+    // guessed "open" for a task whose closing event it could not see, so a
+    // cancelled task hung open on the chart forever and had to be excluded
+    // wholesale. Reconstructing backwards from the snapshot status closes it on
+    // its cancel date instead — and keeping the filter would now DELETE the task
+    // from the days it was genuinely open, which is a different wrong answer.
+    let mut params = json!({ "fields": ["id", "status", "created"] });
+    if let Some(f) = filter {
+        params["filter"] = Value::String(f);
+    }
+    let listed = dispatch(engine, "task.list", &params)?;
+    Ok((chart::members_of(&listed), label))
 }
 
 /// `tasqx report --html`: write the self-contained HTML review.
@@ -2747,6 +3227,18 @@ fn build_row(
             config::Choices::Themes => themes.to_vec(),
             config::Choices::Free => Vec::new(),
             config::Choices::OneOf(values) => values.iter().map(|v| (*v).to_string()).collect(),
+            // No candidates, so `begin_edit` falls to its existing "no inline
+            // editor — use `tasqx config set`" branch, and the row is still
+            // listed with its value and source.
+            //
+            // Deliberately NOT an ordered multi-select. That would be a fourth
+            // interaction mode in a screen D26 kept to two, to save one
+            // `tasqx config set dashboard.panels now,next,due` — and the panel
+            // order is already discoverable on the dashboard itself, where the
+            // numbers are drawn into the panel headings. The write path
+            // validates the list either way, which is where a typo actually
+            // needs catching.
+            config::Choices::ManyOf(_) => Vec::new(),
         },
     }
 }
@@ -3347,6 +3839,128 @@ fn db_path_resolved(create_dirs: bool) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tty_caps() -> Caps {
+        Caps {
+            depth: crate::theme::ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        }
+    }
+
+    /// The refusal is a policy over four facts, not a question asked of the
+    /// process — which is what makes it testable at all. Under cargo this
+    /// process has a piped stdout, so a predicate that consulted it directly
+    /// could only ever be exercised on the refusing branch.
+    #[test]
+    fn the_dashboard_refusal_names_what_is_wrong_with_this_terminal() {
+        let caps = tty_caps();
+        // Not a terminal at all: the stream answer wins before size matters.
+        assert_eq!(
+            dashboard_refusal(&caps, false, true, Some((200, 60))).as_deref(),
+            Some(DASHBOARD_NEEDS_A_TERMINAL)
+        );
+        assert_eq!(
+            dashboard_refusal(&caps, true, false, Some((200, 60))).as_deref(),
+            Some(DASHBOARD_NEEDS_A_TERMINAL)
+        );
+
+        // A real terminal, big enough.
+        assert_eq!(dashboard_refusal(&caps, true, true, Some((56, 14))), None);
+        assert_eq!(dashboard_refusal(&caps, true, true, Some((200, 60))), None);
+
+        // A real terminal, too small — and the message says which, because
+        // "too small" without a number leaves the reader guessing at how much
+        // to resize.
+        let msg = dashboard_refusal(&caps, true, true, Some((40, 10))).expect("40x10 refuses");
+        assert!(msg.contains("40x10"), "must name the measured size: {msg}");
+        assert!(msg.contains("56x14"), "must name the required size: {msg}");
+        assert!(msg.contains("tasqx list"), "must name a way through: {msg}");
+        // One cell short on either axis is short.
+        assert!(dashboard_refusal(&caps, true, true, Some((55, 14))).is_some());
+        assert!(dashboard_refusal(&caps, true, true, Some((56, 13))).is_some());
+
+        // Unmeasurable is a refusal, not a default: entering the alternate
+        // screen on a guess is how a half-drawn frame lands on a window nobody
+        // can read.
+        assert!(dashboard_refusal(&caps, true, true, None).is_some());
+    }
+
+    /// A window too small for the screen makes a BARE `tasqx` print the table
+    /// instead — it must never open an alternate screen it cannot draw in.
+    ///
+    /// This is a regression guard with a real failure behind it. Without the
+    /// `fits` term, bare `tasqx` in a 40x10 window entered the alternate
+    /// screen, painted nothing at all (`layout` returns `None` below 56x14 and
+    /// `render` returns early), blocked until `q`, and created a 208 KB store
+    /// on the way in — D55's refused-screen-leaves-a-store failure, one screen
+    /// over.
+    #[test]
+    fn a_window_too_small_to_draw_in_falls_back_to_the_table() {
+        let caps = tty_caps();
+        assert!(
+            dashboard_active(&caps, false, true, true, true, true),
+            "a big enough interactive terminal opens the screen"
+        );
+        assert!(
+            !dashboard_active(&caps, false, true, false, true, true),
+            "a window too small must fall through to run_list, not open a blank screen"
+        );
+        // Every other signal still refuses on its own.
+        assert!(
+            !dashboard_active(&caps, true, true, true, true, true),
+            "--json never opens a screen"
+        );
+        assert!(
+            !dashboard_active(&caps, false, false, true, true, true),
+            "dashboard.enabled = false is the escape hatch"
+        );
+        assert!(
+            !dashboard_active(&caps, false, true, true, false, true),
+            "a piped stdout never opens a screen"
+        );
+        assert!(
+            !dashboard_active(&caps, false, true, true, true, false),
+            "a piped stdin never opens a screen — the key loop would block on it"
+        );
+    }
+
+    /// `dashboard.enabled` is read from the config FILE, not only the
+    /// environment.
+    ///
+    /// `dashboard_active` took `enabled` as a parameter and the test above pins
+    /// what it does with it — but nothing pinned where the caller got it, and
+    /// the caller read `TASQX_DASHBOARD` and stopped. `config edit` drew the
+    /// row, `config set dashboard.enabled false` wrote it to `config.toml` and
+    /// printed the new value, and the next bare `tasqx` opened the dashboard
+    /// anyway. A setting that acknowledges a write and ignores it is worse than
+    /// one that was never offered.
+    ///
+    /// The file value is passed in rather than written to disk under
+    /// `$TASQX_CONFIG_DIR`: cargo runs these threads in one process, and a test
+    /// that mutates env is a test that flakes when another one reads it.
+    #[test]
+    fn the_escape_hatch_is_read_from_the_config_file() {
+        assert!(
+            !dashboard_enabled_with(Some("false")),
+            "`dashboard.enabled = false` in config.toml must switch the screen off"
+        );
+        assert!(
+            dashboard_enabled_with(Some("true")),
+            "and `true` must switch it back on"
+        );
+        assert!(
+            dashboard_enabled_with(None),
+            "with nothing in the file the default is on — the dashboard IS a bare tasqx"
+        );
+        // The shell spellings `resolve` hands through uncoerced from the env.
+        for off in ["false", "0", "no", "NO", " false "] {
+            assert!(
+                !dashboard_enabled_with(Some(off)),
+                "{off:?} must read as off"
+            );
+        }
+    }
 
     /// Both halves of the argv escape pair, over the SAME registry.
     ///
@@ -4348,14 +4962,21 @@ mod tests {
     /// line instead of a burn-down, and the "N left" footer keeps counting work
     /// nobody will ever do. `task.list` keeps its literal "no filter = all rows"
     /// contract (D24 is a *report* rule), so the exclusion is spelled out at the
-    /// CLI, for both the whole-store and the per-project scope.
+    /// The burndown's scope is EVERY task, cancelled ones included.
+    ///
+    /// It used to exclude them, and that was right for the reconstruction it
+    /// was written against: forwards, a task whose closing event fell outside
+    /// the window was guessed to be open, so a cancelled task hung open on the
+    /// chart forever and the only cure was to drop it. Backwards, its cancel
+    /// date closes it like any other close — and excluding it would now delete
+    /// the task from the days it was genuinely open, which is a different wrong
+    /// answer to the same question.
     #[test]
-    fn burndown_scope_excludes_cancelled_tasks() {
-        let e = tasqx_core::Engine::open_in_memory().unwrap();
-        e.project_create(&json!({ "name": "P" })).unwrap(); // D23
-        for title in ["live", "gone", "finished"] {
-            e.task_add(&json!({ "title": title, "project": "P" }))
-                .unwrap();
+    fn the_burndown_scope_is_every_task_and_carries_its_status() {
+        let e = Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "P" })).unwrap();
+        for t in ["one", "two", "three"] {
+            e.task_add(&json!({ "title": t, "project": "P" })).unwrap();
         }
         e.task_cancel(&json!({ "ref": "2" })).unwrap();
         e.task_done(&json!({ "ref": "3" })).unwrap();
@@ -4369,20 +4990,20 @@ mod tests {
 
         for scope in [None, Some("P".to_string())] {
             let (members, _) = burndown_members(&e, &scope).expect("burndown scope resolved");
+            let by_id = |id: &str| members.iter().find(|m| m.id == id);
+
+            let open = by_id(&live).expect("scope {scope:?} lost the open task");
+            assert!(open.open_now, "the open task must be marked open");
+
+            // Present, and marked closed — that is what lets the chart draw it
+            // on the days before it was cancelled and not after.
+            let cancelled = by_id(&gone).expect("scope lost the cancelled task");
             assert!(
-                members.contains(&live),
-                "scope {scope:?} lost the open task"
+                !cancelled.open_now,
+                "a cancelled task must be carried as closed, not excluded"
             );
-            assert!(
-                !members.contains(&gone),
-                "scope {scope:?} still counts a cancelled task as remaining work"
-            );
-            // `done` stays in scope: the burndown needs the completion event to
-            // draw the line coming down. Dropping it would flatten the chart.
-            assert!(
-                members.contains(&finished),
-                "scope {scope:?} lost the done task"
-            );
+            let done = by_id(&finished).expect("scope lost the done task");
+            assert!(!done.open_now, "a done task must be carried as closed");
         }
     }
 
@@ -4455,42 +5076,40 @@ mod tests {
         );
     }
 
-    /// `NOT_CANCELLED` spells out its statuses by hand, and the test above only
-    /// seeds pending/cancelled/done — so dropping `status:backlog` from the
-    /// constant left the whole suite green while every backlog task silently
-    /// vanished from every burndown. A chart missing tasks still looks like a
-    /// valid chart, which is the same silent-omission class D24 exists to fix.
+    /// The burndown scope has no status filter at all, so no status can be
+    /// forgotten by it.
     ///
-    /// This drives the expectation off `Status::ALL` and `counts_in_reports()`
-    /// rather than restating the names. An earlier version of this guard looped
-    /// over a hardcoded `["backlog", "pending", "active", "done"]` while its doc
-    /// comment claimed a new variant would fail loudly — it would not have; the
-    /// guard was the very kind of hand-maintained parallel list it existed to
-    /// police. Adding a `Status` variant now changes this test's expectation
-    /// automatically, so a `NOT_CANCELLED` that forgot it goes red.
+    /// It used to be `NOT_CANCELLED`, a filter spelling out every status that
+    /// counts — and dropping `status:backlog` from it once left the whole suite
+    /// green while every backlog task silently vanished from every chart. D60
+    /// removed the filter rather than guarding it: cancelled tasks close on
+    /// their cancel date now, so there is nothing to exclude, and a class of
+    /// silent omission goes with it. This asserts the absence, because a filter
+    /// creeping back in is exactly how it would return.
     #[test]
-    fn burndown_scope_keeps_every_status_except_cancelled() {
-        // `expect` earns its keep now that parsing is fallible: NOT_CANCELLED is
-        // our own constant, so a malformed one is a bug this guard should fail
-        // on rather than route around.
-        let f = tasqx_core::filter::Filter::parse(&NOT_CANCELLED, jiff::Timestamp::now())
-            .expect("NOT_CANCELLED must be a valid filter");
-        for status in tasqx_core::types::Status::ALL {
-            let ctx = tasqx_core::filter::MatchCtx {
-                status,
-                project: None,
-                tags: &[],
-                due: None,
-                completed: None,
-                blocked: false,
-            };
-            assert_eq!(
-                f.matches(&ctx),
-                status.counts_in_reports(),
-                "NOT_CANCELLED disagrees with Status::counts_in_reports about `{}`",
-                status.as_str()
-            );
+    fn the_burndown_scope_filters_on_no_status_at_all() {
+        let e = Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "P" })).unwrap();
+        for t in ["a", "b"] {
+            e.task_add(&json!({ "title": t, "project": "P" })).unwrap();
         }
+        // A backlog task: the status the old hand-written filter lost.
+        e.task_add(&json!({ "title": "later", "project": "P", "wait": "2099-01-01" }))
+            .unwrap();
+        e.task_cancel(&json!({ "ref": "2" })).unwrap();
+
+        let (members, _) = burndown_members(&e, &None).expect("scope resolved");
+        assert_eq!(
+            members.len(),
+            3,
+            "every task is in scope, whatever its status — got {members:?}"
+        );
+        // And each carries its own openness, which is what replaces the filter.
+        assert_eq!(
+            members.iter().filter(|m| m.open_now).count(),
+            2,
+            "the cancelled one is carried as closed, not dropped"
+        );
     }
 
     /// Regression: clap reads a leading `-` as a flag, so `--remind -1h` parsed

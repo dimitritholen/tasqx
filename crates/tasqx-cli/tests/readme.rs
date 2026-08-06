@@ -438,12 +438,196 @@ fn readme_relative_links_point_at_files_that_exist() {
             }
         }
     }
-    // Floors: five worked guides plus the skill and the license. A scan that
-    // finds fewer has lost links, not gained tidiness — lower these on purpose
-    // or not at all.
+    // Floors: six worked guides plus the skill and the license. A scan that
+    // finds fewer has lost links, not gained tidiness — move these on purpose
+    // or not at all, in either direction: a floor left behind when a guide is
+    // added is a guide that can silently vanish again.
     assert!(
-        guides >= 5,
+        guides >= 6,
         "the README links only {guides} guides under docs/guides/"
     );
     assert!(checked >= 7, "the link scan checked only {checked} paths");
+}
+
+/// The README must not tell a reader that a bare `tasqx` prints the table.
+///
+/// D58 gave that invocation a second meaning, and this file is the surface a
+/// visitor reads first. It is pinned here because NOTHING else looks at prose:
+/// mutating any sentence in README.md or under `docs/` leaves the whole suite
+/// green — measured, by rewriting four of them in a scratch clone. That is the
+/// class of drift this repo otherwise has no answer to, and rather than pretend
+/// the general case is covered, this guard pins the one claim that just became
+/// wrong and the one word that makes it conditional.
+#[test]
+fn the_readme_does_not_promise_a_table_from_a_bare_tasqx() {
+    let text = readme();
+
+    // The dashboard must be documented at all.
+    assert!(
+        text.contains("## The dashboard"),
+        "the README must tell a reader what a bare `tasqx` now opens"
+    );
+
+    // And the condition must be stated as the streams, not as a guess about
+    // intent: nothing reads a `CI` variable, so a caller with a pty is on the
+    // interactive side however unattended it is.
+    let dashboard = text
+        .split("## The dashboard")
+        .nth(1)
+        .expect("checked above")
+        .split("\n## ")
+        .next()
+        .expect("a section has a body");
+    for needed in ["stdin", "stdout", "pty", "tasqx list"] {
+        assert!(
+            dashboard.contains(needed),
+            "the dashboard section must mention {needed:?} — a reader who skips it \
+             and shells out from an agent gets a hang, not a table"
+        );
+    }
+
+    // The old sentence, in any of its spellings, is now false.
+    for stale in [
+        "bare `tasqx` lists your working set",
+        "Bare `tasqx` is the working set",
+        "bare `tasqx` shows your working set",
+    ] {
+        assert!(
+            !text.contains(stale),
+            "README still says {stale:?}, which is only true off a terminal"
+        );
+    }
+}
+
+/// Every `tasqx_*` tool the agent starter prompt tells an agent to call must
+/// exist, and the two halves it splits on must have the scopes it claims.
+///
+/// That guide is a block of text a reader pastes into a client's instructions
+/// file, where it becomes the only thing telling an agent to use memory at all.
+/// Nothing downstream validates it: a renamed tool leaves the paste naming a
+/// method the server answers `unknown tool` to, and the reader finds out when an
+/// agent stops storing anything — which looks exactly like an agent that chose
+/// not to. Prose is the one surface in this repo with no generator behind it,
+/// so it gets a gate instead.
+///
+/// The scope halves are pinned as well as the names, because the guide's whole
+/// structure rests on them: it promises the searching half works under a
+/// read-only server and that the storing half is what `--scope write` buys. If
+/// `tasqx_search_memory` ever became a write tool, the advice to run read-only
+/// first would quietly stop working while every name in the file still resolved.
+#[test]
+fn the_agent_starter_prompt_names_tools_that_exist() {
+    let guide = fs::read_to_string(root().join("docs/guides/agent-starter-prompt.md"))
+        .expect("docs/guides/agent-starter-prompt.md is readable");
+
+    let roster = tasqx_core::mcp::tool_roster();
+    let scope_of = |name: &str| roster.iter().find(|(n, _)| *n == name).map(|(_, w)| *w);
+
+    // Every `tasqx_…` run in the prose, however it is punctuated around.
+    let mut named: Vec<String> = Vec::new();
+    let mut rest = guide.as_str();
+    while let Some(i) = rest.find("tasqx_") {
+        let tail = &rest[i..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(tail.len());
+        let run = &tail[..end];
+        // The guide writes `tasqx_*` for "the tool family", which stops the run
+        // at the underscore and is not a tool name. Anything with nothing after
+        // the prefix is that, not a rename to chase.
+        if run.len() > "tasqx_".len() {
+            named.push(run.to_string());
+        }
+        rest = &tail[end..];
+    }
+    named.sort();
+    named.dedup();
+    assert!(
+        named.len() >= 5,
+        "the scan found only {named:?} — an empty scan must not pass as a clean one"
+    );
+
+    for name in &named {
+        assert!(
+            scope_of(name).is_some(),
+            "the starter prompt tells an agent to call {name:?}, which is not in \
+             the MCP roster: {:?}",
+            roster.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+        );
+    }
+
+    assert_eq!(
+        scope_of("tasqx_search_memory"),
+        Some(false),
+        "the guide promises the searching half works under a read-only server"
+    );
+    for w in ["tasqx_add_memory", "tasqx_annotate_task"] {
+        assert_eq!(
+            scope_of(w),
+            Some(true),
+            "the guide promises {w} is what `--scope write` buys"
+        );
+    }
+}
+
+/// Every archive the Homebrew formula points at is one the release workflow
+/// actually builds.
+///
+/// `scripts/brew-formula.sh` names three targets and `release.yml` builds four;
+/// nothing connected the two lists. A target renamed or dropped in the matrix
+/// leaves the formula rendering URLs to files the release never published, and
+/// the formula is generated per tag precisely so that it is never checked in
+/// and never reviewed — so the first reader of the mistake is somebody running
+/// `brew install`, getting a 404, and having no reason to suspect the tap.
+///
+/// One-directional on purpose, like the CI-platform guard above: it fails when
+/// the formula names something the matrix does not build, which is the
+/// direction that ships a broken install. The matrix building a target the
+/// formula ignores is deliberate — Homebrew has nowhere to put the Windows zip.
+#[test]
+fn the_brew_formula_names_targets_the_release_workflow_builds() {
+    let script = fs::read_to_string(root().join("scripts/brew-formula.sh"))
+        .expect("scripts/brew-formula.sh is readable");
+    let workflow = fs::read_to_string(root().join(".github/workflows/release.yml"))
+        .expect("the release workflow is readable");
+
+    let built: Vec<&str> = workflow
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("target: "))
+        .map(str::trim)
+        .collect();
+    assert!(
+        built.len() >= 3,
+        "parsed {built:?} out of release.yml — the matrix format changed and this \
+         guard is checking almost nothing"
+    );
+
+    // The archive names the script builds its URLs from, read out of the
+    // `tasqx-${TAG}-<target>.tar.gz` assignments rather than re-listed here.
+    let named: Vec<&str> = script
+        .lines()
+        .filter_map(|l| l.split_once("=\"tasqx-${TAG}-"))
+        .filter_map(|(_, rest)| rest.split(".tar.gz").next())
+        .collect();
+    assert_eq!(
+        named.len(),
+        3,
+        "found {named:?} archive names in brew-formula.sh; expected the three \
+         Homebrew can serve"
+    );
+
+    for target in &named {
+        assert!(
+            built.contains(target),
+            "the formula points at a {target} archive, which release.yml does not \
+             build — it builds {built:?}. `brew install` would 404."
+        );
+    }
+
+    // And the stem the script assumes is the stem the workflow writes.
+    assert!(
+        workflow.contains("STAGE=\"tasqx-${VERSION}-${{ matrix.target }}\""),
+        "release.yml no longer names archives `tasqx-<version>-<target>`, which is \
+         the shape brew-formula.sh builds its URLs from"
+    );
 }

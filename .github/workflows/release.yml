@@ -94,6 +94,54 @@ jobs:
       - name: Build
         run: cargo build --release -p tasqx-cli --target ${{ matrix.target }}
 
+      # An archive holding only a binary makes Tab completion something the user
+      # has to go and find; `completions/` is the half a packager (or a person
+      # with a `~/.bashrc`) can act on without running anything (D57).
+      #
+      # What ships is the ACTIVATION LINE — `tasqx completions <shell>` — and not
+      # the registration script `TASQX_COMPLETE=<shell> tasqx` prints. The
+      # registration embeds `current_exe()`, so a copy generated here would name
+      # a path on this runner (`/home/runner/work/…/target/…/tasqx`) and be dead
+      # on arrival everywhere else. The activation line invokes `tasqx` by name
+      # off `$PATH`, which is the only form that survives being moved.
+      #
+      # The binary that prints them is chosen by TRYING the one just built rather
+      # than by reading `matrix.test`: the cross-compiled entry cannot execute
+      # here, and a runtime probe stays right if the matrix changes. The text is
+      # target-independent — five `const` strings of shell source, no machine
+      # code — so a host build answers for the cross-compiled archive.
+      - name: Completion snippets
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/tasqx"
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN="$BIN.exe"; fi
+          if ! "$BIN" --version >/dev/null 2>&1; then
+            cargo build --release -p tasqx-cli
+            BIN="target/release/tasqx"
+          fi
+          mkdir -p completions
+          for shell in bash elvish fish powershell zsh; do
+            "$BIN" completions "$shell" > "completions/tasqx.$shell"
+          done
+          # No table of destinations here on purpose: install.rs already holds
+          # one, per shell, and a second copy in a release script is the drift
+          # D30 rules against. Point at the command that reads the real one.
+          cat > completions/README.md <<'EOF'
+          # Tab completion
+
+          One line per shell. The command that knows where each of them goes —
+          and that will put it there, after showing you the block and asking —
+          is:
+
+              tasqx completions --install
+
+          Run `tasqx completions <shell>` to print the line for any shell
+          without installing it, and `tasqx manual completion` for the rest:
+          what a Tab press reads, why the variable is `TASQX_COMPLETE`, and
+          which shells are gaps rather than oversights.
+          EOF
+
       # Archive name: tasqx-<tag>-<target>.{tar.gz,zip}. The version comes from
       # the ref so the filename can never disagree with the tag that built it;
       # a dispatch run (no tag) stamps the short SHA instead.
@@ -106,6 +154,7 @@ jobs:
           mkdir "$STAGE"
           cp "target/${{ matrix.target }}/release/tasqx" "$STAGE/"
           cp README.md LICENSE.md "$STAGE/"
+          cp -R completions "$STAGE/"
           tar czf "$STAGE.tar.gz" "$STAGE"
           shasum -a 256 "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
       - name: Package (windows)
@@ -118,6 +167,7 @@ jobs:
           New-Item -ItemType Directory $stage | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/tasqx.exe" $stage
           Copy-Item README.md, LICENSE.md $stage
+          Copy-Item completions $stage -Recurse
           Compress-Archive -Path $stage -DestinationPath "$stage.zip"
           (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower() + "  $stage.zip" | Set-Content "$stage.zip.sha256"
 

@@ -21,8 +21,9 @@ with it.
 
 ## Look only at what matters
 
-Bare `tasqx` is the working set: pending and active tasks that are not blocked,
-hottest first. Urgency is computed from priority, due proximity and age — and
+`tasqx list` is the working set: pending and active tasks that are not blocked,
+hottest first. (A bare `tasqx` opens the dashboard on a terminal, and prints this
+same table everywhere else — in a pipe, a redirect, or under `--json`.) Urgency is computed from priority, due proximity and age — and
 `tasqx why 42` shows the arithmetic, so the ordering is never a mystery.
 
 Things you cannot act on yet stay out of sight until they become actionable:

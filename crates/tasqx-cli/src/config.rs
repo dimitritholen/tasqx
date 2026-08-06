@@ -105,6 +105,13 @@ pub enum Choices {
     /// typo is persisted and then read as the default on every run — a write
     /// that answers `ok` and changes nothing.
     OneOf(&'static [&'static str]),
+    /// An ORDERED, non-empty comma list drawn from a closed vocabulary.
+    ///
+    /// Enforced at write time for `OneOf`'s reason, plus two rules a single
+    /// value cannot break: a name may not repeat, because position carries
+    /// meaning and a thing has one position; and the list may not be empty,
+    /// because "show nothing" is a different setting saying so.
+    ManyOf(&'static [&'static str]),
 }
 
 /// One setting. The `[section] key` form in `config.toml` is derived by
@@ -158,6 +165,66 @@ pub const SETTINGS: &[Setting] = &[
             "Terminal theme: a built-in (nord, gruvbox, dracula, solarized, mono) or a user file.",
     },
     Setting {
+        key: "dashboard.enabled",
+        home: Home::Toml,
+        kind: Kind::Bool,
+        // On, because the dashboard IS the new meaning of a bare `tasqx` (D58).
+        // The setting exists as the escape hatch a breaking change owes its
+        // users, not as an opt-in.
+        default: "true",
+        // The env is what a CI image needs: one line, no config file to write
+        // into an image layer. It is also the reason this row exists at all —
+        // the drift gate refuses a `TASQX_*` the code reads and the registry
+        // does not declare.
+        env: Some("TASQX_DASHBOARD"),
+        flag: None,
+        choices: Choices::Free,
+        summary: "Open the dashboard when `tasqx` is run bare on a terminal (D58).",
+    },
+    Setting {
+        key: "dashboard.panels",
+        home: Home::Toml,
+        kind: Kind::Str,
+        // Spelled out rather than "" standing for the built-in order (D58): an
+        // empty string is already taken — `pick` filters it out, so `panels = ""`
+        // would resolve to this very string and report its source as `default`.
+        // There is deliberately no way to spell "no panels"; a dashboard nobody
+        // wants is `dashboard.enabled = false`.
+        default: "now,next,due,blocked,recent,projects,burndown,tokens",
+        // No TASQX_*: `dashboard.enabled` carries one because a CI image needs a
+        // one-line off switch, and a panel list is not a CI concern. The env
+        // drift gate only demands a row for a variable the code actually reads.
+        env: None,
+        flag: None,
+        choices: Choices::ManyOf(crate::tui::dashboard::model::PANEL_NAMES),
+        summary: "Panels the dashboard draws; membership is visibility, position is \
+                  focus and tab order (D58).",
+    },
+    Setting {
+        key: "dashboard.refresh",
+        home: Home::Toml,
+        kind: Kind::Str,
+        default: "auto",
+        env: None,
+        flag: None,
+        choices: Choices::OneOf(&["auto", "manual"]),
+        summary: "Whether the dashboard re-reads on a timer, or only on `r` (D58).",
+    },
+    Setting {
+        key: "dashboard.window",
+        home: Home::Toml,
+        kind: Kind::Str,
+        default: "week",
+        env: None,
+        flag: None,
+        // Must equal `tui::dashboard::WINDOW_CHOICES`, which the `w` key cycles.
+        // `the_window_vocabulary_matches_the_registry` asserts it rather than
+        // trusting two lists to stay in step — the comment on that const has
+        // promised this since D58 and had nothing behind it until now.
+        choices: Choices::OneOf(&["week", "14d", "30d"]),
+        summary: "The burndown window the dashboard opens on; `w` cycles it live (D58).",
+    },
+    Setting {
         key: "notify.enabled",
         home: Home::Toml,
         kind: Kind::Bool,
@@ -209,6 +276,17 @@ pub const SETTINGS: &[Setting] = &[
         choices: Choices::Free,
         summary: "Minutes with no clients and no work after which `tasqx daemon` exits by itself; \
                   0 stays up until Ctrl-C (D5).",
+    },
+    Setting {
+        key: "completion.hint",
+        home: Home::Toml,
+        kind: Kind::Bool,
+        default: "true",
+        env: None,
+        flag: None,
+        choices: Choices::Free,
+        summary: "Mention `tasqx completions --install` once, on a terminal, when Tab completion \
+                  does not look switched on (D57).",
     },
     Setting {
         key: "default_project",
@@ -296,9 +374,19 @@ pub fn config_path() -> Option<PathBuf> {
 /// which is the parallel-list problem one layer down: a mutation test aimed at
 /// the coercion rule hit one copy and passed, because the other still enforced
 /// it.
-fn coerce(kind: Kind, v: toml::Value) -> Option<String> {
-    match (kind, v) {
-        (Kind::Str, toml::Value::String(x)) => Some(x),
+fn coerce(s: &Setting, v: toml::Value) -> Option<String> {
+    match (s.kind, v) {
+        // A string outside its own closed vocabulary is NOT a value, by the
+        // same doctrine the kinds already apply to `enabled = "true"` and to an
+        // out-of-range port. Without this, `config set` refused a typo with
+        // exit 2 while `config get` and `config list` reported the very same
+        // typo — hand-written into the file — as live with exit 0. The two
+        // surfaces disagreed about what the store's configuration was.
+        (Kind::Str, toml::Value::String(x)) => match s.choices {
+            Choices::Free | Choices::Themes => Some(x),
+            Choices::OneOf(allowed) => allowed.contains(&x.as_str()).then_some(x),
+            Choices::ManyOf(allowed) => parse_many(allowed, &x).ok().map(|v| v.join(",")),
+        },
         (Kind::Bool, toml::Value::Boolean(b)) => Some(b.to_string()),
         // A port is a TOML integer within the valid range; anything else (a
         // string "4318", or an out-of-range number) is not a value and falls to
@@ -384,12 +472,95 @@ fn is_valid_minutes(n: i64) -> bool {
 ///
 /// Carried out of the reader instead of printed inside it so `config.rs` stays
 /// free of I/O and a test can assert the detection without capturing stderr.
+/// Split, trim and check an ordered comma list against a closed vocabulary.
+///
+/// One implementation because three callers need the same answer: the writer,
+/// the reader (`coerce`) and the dashboard. `is_valid_port` established the
+/// shape — a validator shared by the silent coercion and the `config set` path,
+/// so the two cannot come to disagree about what counts as a value.
+pub fn parse_many<'a>(allowed: &[&str], value: &'a str) -> Result<Vec<&'a str>, ManyError> {
+    let mut out: Vec<&str> = Vec::new();
+    for part in value.split(',') {
+        let word = part.trim();
+        if word.is_empty() {
+            continue;
+        }
+        if !allowed.contains(&word) {
+            return Err(ManyError::Unknown(word.to_string()));
+        }
+        if out.contains(&word) {
+            return Err(ManyError::Repeated(word.to_string()));
+        }
+        out.push(word);
+    }
+    if out.is_empty() {
+        return Err(ManyError::Empty);
+    }
+    Ok(out)
+}
+
+/// Why a comma list was refused. Carries the offending word so every surface
+/// can name it — a refusal that says only "no" leaves the user guessing at a
+/// vocabulary the binary is holding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ManyError {
+    Unknown(String),
+    Repeated(String),
+    Empty,
+}
+
+impl ManyError {
+    /// The reason on its own, for a context that has already named the setting.
+    pub fn reason(&self, allowed: &[&str]) -> String {
+        match self {
+            ManyError::Unknown(word) => {
+                format!(
+                    "unknown {word:?} — expected a comma list of {}",
+                    allowed.join(", ")
+                )
+            }
+            ManyError::Repeated(word) => {
+                format!("{word:?} appears twice; position is meaning, so a name appears once")
+            }
+            ManyError::Empty => "the list is empty".to_string(),
+        }
+    }
+
+    /// The message, with the setting and its vocabulary filled in.
+    pub fn message(&self, key: &str, allowed: &[&str]) -> String {
+        match self {
+            ManyError::Unknown(word) => format!(
+                "{key} takes a comma list of {} — unknown {word:?}",
+                allowed.join(", ")
+            ),
+            ManyError::Repeated(word) => {
+                format!("{key} lists {word:?} twice; position is meaning, so a name appears once")
+            }
+            ManyError::Empty => format!("{key} takes at least one value, or omit the key"),
+        }
+    }
+}
+
+/// [`parse_many`] rejoined into the spelling that goes on disk.
+pub fn canonical_many(s: &Setting, allowed: &[&str], value: &str) -> Result<String, ApiError> {
+    parse_many(allowed, value)
+        .map(|v| v.join(","))
+        .map_err(|e| ApiError::bad_request(e.message(s.key, allowed)))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mismatch {
     pub key: &'static str,
     pub declared: &'static str,
     pub found: &'static str,
     pub path: PathBuf,
+    /// Why the value was rejected, when the type was not the problem.
+    ///
+    /// A closed vocabulary refuses a value of exactly the declared type, so
+    /// without this the warning read "expected string, found string" — a
+    /// sentence that tells the reader nothing and reads as a bug in tasqx
+    /// rather than a typo in their file.
+    pub reason: Option<String>,
 }
 
 impl std::fmt::Display for Mismatch {
@@ -402,14 +573,22 @@ impl std::fmt::Display for Mismatch {
         // template produces, and the set of found types is open enough
         // (integer, array, …) that hand-picking articles is a bug waiting to
         // happen for one word of polish.
-        write!(
-            f,
-            "{} in {}: expected {}, found {} — the file's value is ignored",
-            self.key,
-            self.path.display(),
-            self.declared,
-            self.found
-        )
+        match &self.reason {
+            Some(why) => write!(
+                f,
+                "{} in {}: {why} — the file's value is ignored",
+                self.key,
+                self.path.display()
+            ),
+            None => write!(
+                f,
+                "{} in {}: expected {}, found {} — the file's value is ignored",
+                self.key,
+                self.path.display(),
+                self.declared,
+                self.found
+            ),
+        }
     }
 }
 
@@ -456,7 +635,21 @@ pub fn toml_value_strict_in(dir: &std::path::Path, s: &Setting) -> Result<FileVa
         return Ok(FileValue::default());
     };
     let found = v.type_str();
-    match coerce(s.kind, v) {
+    // A vocabulary refusal knows more than "wrong type" — carry its own words.
+    let reason = match (&v, s.choices) {
+        (toml::Value::String(x), Choices::OneOf(allowed)) if !allowed.contains(&x.as_str()) => {
+            Some(format!(
+                "{:?} is not one of {}",
+                x.as_str(),
+                allowed.join(", ")
+            ))
+        }
+        (toml::Value::String(x), Choices::ManyOf(allowed)) => {
+            parse_many(allowed, x).err().map(|e| e.reason(allowed))
+        }
+        _ => None,
+    };
+    match coerce(s, v) {
         Some(value) => Ok(FileValue {
             value: Some(value),
             mismatch: None,
@@ -468,6 +661,7 @@ pub fn toml_value_strict_in(dir: &std::path::Path, s: &Setting) -> Result<FileVa
                 declared: s.kind.type_str(),
                 found,
                 path: dir.join("config.toml"),
+                reason,
             }),
         }),
     }
@@ -490,7 +684,7 @@ pub fn toml_value_strict_in(dir: &std::path::Path, s: &Setting) -> Result<FileVa
 pub fn toml_value_in(dir: &std::path::Path, s: &Setting) -> Option<String> {
     let (section, name) = s.parts();
     let v = read_table_in(dir)?.get(section)?.get(name)?.clone();
-    coerce(s.kind, v)
+    coerce(s, v)
 }
 
 /// One setting's raw value from the user's real `config.toml`.
@@ -638,7 +832,12 @@ pub fn write_value_in(
         // which case the list is the validator — the same shape as the `Bool`
         // and `Uint` arms above, just with the vocabulary carried in `choices`
         // instead of implied by the type.
+        // Exhaustive over `Choices` rather than ending in `_ =>`: a wildcard
+        // here is how a new variant lands unvalidated and silently, which is
+        // the failure this whole field exists to prevent. The next variant is
+        // a compile error instead.
         Kind::Str => match s.choices {
+            Choices::Free | Choices::Themes => value.into(),
             Choices::OneOf(allowed) if !allowed.contains(&value) => {
                 return Err(ApiError::bad_request(format!(
                     "{} takes one of {}, got {value:?}",
@@ -646,7 +845,11 @@ pub fn write_value_in(
                     allowed.join(", ")
                 )))
             }
-            _ => value.into(),
+            Choices::OneOf(_) => value.into(),
+            // Normalised on the way in: a human hand-edits `panels = "now, next"`
+            // and `resolve` only trims the outer edges, so what lands on disk is
+            // the canonical spelling and every reader sees the same string.
+            Choices::ManyOf(allowed) => canonical_many(s, allowed, value)?.into(),
         },
     };
     let path = dir.join("config.toml");
@@ -950,6 +1153,79 @@ name = broken",
     /// had been silent since install would start getting OS toasts after an
     /// upgrade. Found by a differential test against the pre-registry reader,
     /// not by review: no test in the suite covered a wrong-typed value.
+    /// A comma list is checked at write time, and the refusal names the word
+    /// that was wrong plus the vocabulary the binary is already holding — a
+    /// refusal that says only "no" makes the user guess at a list tasqx knows.
+    #[test]
+    fn a_comma_list_is_refused_by_the_word_that_is_wrong() {
+        let s = find("dashboard.panels").expect("registered");
+        let Choices::ManyOf(allowed) = s.choices else {
+            panic!("dashboard.panels must carry an ordered vocabulary");
+        };
+        let dir = temp_dir("manyof");
+
+        // A typo names itself, and the valid set is in the message.
+        let err = write_value_in(&dir, s, "now,nwo,due").unwrap_err().message;
+        assert!(err.contains("\"nwo\""), "must name the bad word: {err}");
+        assert!(err.contains("blocked"), "must name the vocabulary: {err}");
+
+        // Position is meaning, so a name has one position.
+        let err = write_value_in(&dir, s, "now,due,now").unwrap_err().message;
+        assert!(err.contains("twice"), "a repeat must be refused: {err}");
+
+        // "Show nothing" is a different setting saying so.
+        for empty in ["", " ", ",", " , "] {
+            assert!(
+                write_value_in(&dir, s, empty).is_err(),
+                "an empty list must be refused, got ok for {empty:?}"
+            );
+        }
+
+        // A good list round-trips, normalised: a human hand-edits with spaces.
+        write_value_in(&dir, s, "now, due , next").expect("a spaced list is accepted");
+        assert_eq!(
+            toml_value_in(&dir, s).as_deref(),
+            Some("now,due,next"),
+            "the spelling on disk is canonical, so every reader sees one string"
+        );
+        assert_eq!(parse_many(allowed, "now,due").unwrap(), vec!["now", "due"]);
+    }
+
+    /// A value the writer refuses must not be reported as live by the readers.
+    ///
+    /// This was a real, shipped disagreement: `config set` exited 2 on a bad
+    /// `detail.time_format` while `config get` and `config list` reported the
+    /// same word — hand-written into the file — as the setting's value, exit 0.
+    /// `coerce` had no `Choices` guard, so the two surfaces disagreed about
+    /// what the configuration was.
+    #[test]
+    fn a_value_outside_its_vocabulary_is_not_a_value_when_read_back() {
+        let dir = temp_dir("badvocab");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[detail]\ntime_format = \"iso8601\"\n\n\
+             [dashboard]\npanels = \"burndwon,nwo\"\nwindow = \"fortnight\"\n",
+        )
+        .unwrap();
+
+        for key in ["detail.time_format", "dashboard.panels", "dashboard.window"] {
+            let s = find(key).expect("registered");
+            assert_eq!(
+                toml_value_in(&dir, s),
+                None,
+                "{key}: a word outside the vocabulary is not a value"
+            );
+            let (v, src) = resolve(s, None, toml_value_in(&dir, s).as_deref());
+            assert_eq!(v, s.default, "{key} must fall to its default");
+            assert_eq!(
+                src,
+                Source::Default,
+                "{key} must report the default as its source"
+            );
+        }
+    }
+
     #[test]
     fn a_wrong_typed_value_falls_back_to_the_default_rather_than_being_coerced() {
         let dir = temp_dir("wrongtype");
@@ -1237,17 +1513,14 @@ name = \"nord\"
         }
 
         // The silent reader agrees on the same range, including the zero.
+        assert_eq!(coerce(s, toml::Value::Integer(0)), Some("0".to_string()));
+        assert_eq!(coerce(s, toml::Value::Integer(-1)), None);
         assert_eq!(
-            coerce(Kind::Minutes, toml::Value::Integer(0)),
-            Some("0".to_string())
-        );
-        assert_eq!(coerce(Kind::Minutes, toml::Value::Integer(-1)), None);
-        assert_eq!(
-            coerce(Kind::Minutes, toml::Value::Integer(MAX_TIMEOUT_MINUTES + 1)),
+            coerce(s, toml::Value::Integer(MAX_TIMEOUT_MINUTES + 1)),
             None
         );
         assert_eq!(
-            coerce(Kind::Minutes, toml::Value::String("15".into())),
+            coerce(s, toml::Value::String("15".into())),
             None,
             "a quoted number is the wrong type, exactly as it is for a port"
         );

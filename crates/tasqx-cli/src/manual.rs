@@ -6,6 +6,7 @@
 //! For the exhaustive browser guide, `tasqx docs`.
 
 use crate::cmddoc::{self, CmdDoc, Topic};
+use crate::render;
 use crate::theme::Ctx;
 
 pub fn render(ctx: &Ctx, arg: Option<&str>) -> Result<String, String> {
@@ -28,20 +29,41 @@ fn toc(ctx: &Ctx) -> String {
     s.push_str(&ctx.paint("header", "TASQX MANUAL"));
     s.push('\n');
     s.push_str(&ctx.paint("muted", &ctx.hrule(40)));
+    // Both columns are measured from their own table plus two cells. The verb
+    // column was a literal `{:<9}` — a minimum width that `dashboard` (9) and
+    // `completions` (11) had already outgrown — and the slug column was not
+    // padded at all, so all eleven topic titles began somewhere different. A
+    // wider constant would only move the day it breaks; `render::pad` is the
+    // repo's answer to both halves, and pads in CELLS rather than chars.
+    //
+    // Padded before painting, as the verb column already was: `paint` wraps the
+    // string in escape sequences, and padding after that would count them.
     s.push_str("\n\nTOPICS\n");
+    let slug_w = Topic::ALL
+        .iter()
+        .map(|t| render::width(t.slug()))
+        .max()
+        .unwrap_or(0)
+        + 2;
     for (i, t) in Topic::ALL.iter().enumerate() {
         s.push_str(&format!(
-            "  {:>2}  {}   {}\n",
+            "  {:>2}  {}{}\n",
             i + 1,
-            ctx.paint("accent", t.slug()),
+            ctx.paint("accent", &render::pad(t.slug(), slug_w)),
             ctx.paint("muted", t.title()),
         ));
     }
     s.push_str("\nCOMMANDS\n");
+    let verb_w = cmddoc::COMMAND_REF
+        .iter()
+        .map(|d| render::width(d.verb))
+        .max()
+        .unwrap_or(0)
+        + 2;
     for d in cmddoc::COMMAND_REF {
         s.push_str(&format!(
-            "  {}   {}\n",
-            ctx.paint("accent", &format!("{:<9}", d.verb)),
+            "  {}{}\n",
+            ctx.paint("accent", &render::pad(d.verb, verb_w)),
             d.summary,
         ));
     }
@@ -430,6 +452,73 @@ mod tests {
         assert!(s.contains("Getting started"));
         assert!(s.contains("init"));
         assert!(s.contains("tasqx manual"), "footer points at itself");
+    }
+
+    /// Both TOC columns line up, whatever the longest entry happens to be.
+    ///
+    /// The COMMANDS column was a literal `{:<9}`, so `completions` (11) and
+    /// `dashboard` (9) pushed their summaries out of line with the other 37;
+    /// TOPICS was not padded at all, so every one of its eleven titles started
+    /// somewhere different. Both are the fixed-width mistake `render::pad`
+    /// exists to end, and both are invisible to a `contains` test — which is
+    /// why `toc_lists_topics_and_commands` passed throughout.
+    ///
+    /// Asserted as "every row in the block agrees", not against a number: a
+    /// hard-coded expected column is the same mistake in the test.
+    #[test]
+    fn both_toc_columns_start_their_text_at_one_column() {
+        let s = render(&plain(), None).unwrap();
+        let block = |from: &str, to: Option<&str>| -> Vec<String> {
+            let rest = &s[s.find(from).expect("block header") + from.len()..];
+            let rest = match to {
+                Some(end) => &rest[..rest.find(end).expect("block end")],
+                None => rest,
+            };
+            rest.lines()
+                .filter(|l| l.starts_with("  ") && !l.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+
+        // TOPICS: numbered, so the text column is where the TITLE begins.
+        let topics = block("TOPICS\n", Some("\nCOMMANDS"));
+        assert!(topics.len() > 1, "need several topics to compare:\n{s}");
+        let title_x: Vec<usize> = topics
+            .iter()
+            .map(|l| {
+                let after_num = l.trim_start().split_once(' ').expect("index then slug").1;
+                let slug = after_num.trim_start();
+                let (slug, _) = slug.split_once(' ').expect("slug then title");
+                l.find(slug).expect("slug on its own line")
+                    + slug.len()
+                    + (after_num.trim_start()[slug.len()..].len()
+                        - after_num.trim_start()[slug.len()..].trim_start().len())
+            })
+            .collect();
+        assert!(
+            title_x.windows(2).all(|w| w[0] == w[1]),
+            "topic titles start at {title_x:?}, not one column:\n{s}"
+        );
+
+        // COMMANDS: verb then summary.
+        let cmds = block("COMMANDS\n", Some("\n\n"));
+        assert_eq!(
+            cmds.len(),
+            cmddoc::COMMAND_REF.len(),
+            "the block must hold every command:\n{s}"
+        );
+        let summary_x: Vec<usize> = cmds
+            .iter()
+            .zip(cmddoc::COMMAND_REF)
+            .map(|(l, d)| {
+                let after = &l[l.find(d.verb).expect("verb on its line") + d.verb.len()..];
+                l.len() - after.trim_start().len()
+            })
+            .collect();
+        assert!(
+            summary_x.windows(2).all(|w| w[0] == w[1]),
+            "command summaries start at {summary_x:?}, not one column:\n{s}"
+        );
     }
 
     #[test]

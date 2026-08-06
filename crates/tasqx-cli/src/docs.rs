@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 38] = [
+const VERBS: [(&str, &str, &str); 39] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -69,6 +69,11 @@ const VERBS: [(&str, &str, &str); 38] = [
     ("list", "<code>ls</code>, <code>l</code>", "task.list"),
     ("agenda", "<code>ag</code>, <code>cal</code>", "task.list"),
     ("next", "—", "task.list"),
+    (
+        "dashboard",
+        "<code>dash</code>",
+        "task.list + report.summary + project.list + event.list",
+    ),
     (
         "pick",
         "<code>p</code>, <code>fzf</code>",
@@ -274,8 +279,10 @@ const METHODS: [(&str, &str, &str); 31] = [
     ),
     (
         "event.list",
-        "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>",
-        "<code>{count, events}</code> — the append-only log.",
+        "<code>limit?</code>, <code>ref?</code>, <code>entity?</code>, <code>from?</code>",
+        "<code>{count, events}</code> — the append-only log. <code>from</code> takes \
+         the usual date grammar and is a lower bound, not an exact filter: it \
+         promises no events older than roughly that instant.",
     ),
     (
         "event.revert",
@@ -742,11 +749,13 @@ fn page_install() -> String {
 
     s.push_str(&h3("Look at the working set"));
     s.push_str(&p(
-        "Bare <code>tasqx</code> is <code>tasqx list</code> with the <code>@working</code> filter: \
-         everything pending or active that is not blocked, hottest first.",
+        "<code>tasqx list</code> shows the <code>@working</code> filter: everything pending or \
+         active that is not blocked, hottest first. A bare <code>tasqx</code> prints the same \
+         table wherever it is not talking to a person — piped, redirected, or under \
+         <code>--json</code> — and opens the <a href=\"#dashboard\">dashboard</a> when it is.",
     ));
     s.push_str(&snippet(
-        "tasqx",
+        "tasqx list",
         "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
          -----------------------------------------------------------------------------------------\n\
          \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
@@ -3913,10 +3922,16 @@ mod tests {
             "no add blocks found — did the page change shape?"
         );
 
-        // Rows of the bare-`tasqx` working-set table.
+        // Rows of the working-set table.
+        //
+        // Matched on either spelling: the quickstart showed a bare `tasqx` until
+        // D58 gave that a second meaning on a terminal, and the page now spells
+        // the verb. What this guard is about — D20, a documented table showing a
+        // task no documented command creates — is the same either way, so it
+        // accepts both rather than pinning the page to one wording.
         let (_, table) = snips
             .iter()
-            .find(|(cmd, _)| cmd.trim() == "tasqx")
+            .find(|(cmd, _)| matches!(cmd.trim(), "tasqx" | "tasqx list"))
             .expect("the quickstart must show the working set");
         let rows: Vec<&str> = table
             .lines()

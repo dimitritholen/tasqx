@@ -34,7 +34,7 @@ use ratatui::Frame;
 
 use crate::render;
 use crate::theme::{Caps, Theme};
-use crate::tui::rt_style;
+use crate::tui::{first_visible, rt_style};
 
 /// One candidate task, flattened out of a `task.list` row.
 ///
@@ -276,47 +276,6 @@ impl App {
             .unwrap_or(0)
             .min(self.matches.len().saturating_sub(1));
     }
-}
-
-/// The index within the match list of the first row that fits on screen.
-///
-/// A pure function of the cursor, the number of matches and the number of body
-/// rows — which is what lets [`App`] stay terminal-free while the screen still
-/// scrolls. `App` cannot hold a scroll offset without being told the terminal's
-/// height, and the moment it is told that it stops being a state machine that a
-/// test can drive with nothing but key presses.
-///
-/// # The failure this closes
-///
-/// Every match used to be pushed into one `Paragraph` starting at index 0, and
-/// [`App::step`] clamps the cursor to the number of MATCHES, not to what fits.
-/// On a 24-row terminal that is about 20 visible rows, and `@working` routinely
-/// holds more: pressing Down past row 20 moved a cursor nobody could see, no row
-/// on screen was marked at all, and `⏎` started a task that had never been
-/// drawn. That is the same outcome `narrowing_keeps_the_highlight_on_the_same_
-/// task` calls the worst this screen has, reached through the viewport instead
-/// of through the index.
-///
-/// # Why centred, and not "scroll only when the cursor would fall off"
-///
-/// The minimal rule (`start = cursor + 1 - height` once the cursor passes the
-/// bottom) is also pure, and it pins the highlight to the last visible row for
-/// the whole rest of the list: moving UP then scrolls the list under a cursor
-/// that never moves, which reads as the screen ignoring the key. Centring keeps
-/// the highlight in the middle of the window while scrolling in either
-/// direction, with context above and below it, and degrades to "no scrolling at
-/// all" whenever the matches fit — which is the common case and the one the
-/// existing render tests pin.
-///
-/// The invariant, asserted exhaustively by `the_cursor_is_always_inside_the_
-/// viewport`: for `height >= 1` and a non-empty list, `start <= cursor` and
-/// `cursor - start < height`. The marker is therefore on screen for every
-/// (cursor, length, height) this screen can be in.
-fn first_visible(cursor: usize, len: usize, height: usize) -> usize {
-    // `min` against the tail: without it the last screenful would scroll past
-    // the end of the list and draw blank rows below the final task.
-    len.saturating_sub(height)
-        .min(cursor.saturating_sub(height / 2))
 }
 
 /// Are `needle`'s characters present in `haystack`, in order but not
@@ -997,45 +956,6 @@ mod tests {
             text.lines().any(|l| l.starts_with("> #42")),
             "no ASCII marker on the highlighted row:\n{text}"
         );
-    }
-
-    /// The viewport invariant, exhaustively: whatever the cursor, the number of
-    /// matches and the number of body rows, the highlighted row is inside the
-    /// window that gets drawn.
-    ///
-    /// Asserted over every combination rather than at a few sizes, because the
-    /// bug it replaces was invisible at every size the other render tests use
-    /// (100x12 fits the whole fixture) and appeared only when the list outgrew
-    /// the body. The two halves are what "on screen" means: `start <= cursor`
-    /// (the marker is not above the window) and `cursor - start < height` (not
-    /// below it).
-    #[test]
-    fn the_cursor_is_always_inside_the_viewport() {
-        for len in 1..40usize {
-            for height in 1..24usize {
-                for cursor in 0..len {
-                    let start = first_visible(cursor, len, height);
-                    assert!(
-                        start <= cursor,
-                        "len {len} height {height} cursor {cursor}: window starts at {start}, \
-                         below the cursor — the marker is off the top"
-                    );
-                    assert!(
-                        cursor - start < height,
-                        "len {len} height {height} cursor {cursor}: window starts at {start}, \
-                         so the cursor is {} rows past the bottom",
-                        cursor - start - height + 1
-                    );
-                    // And the window may not run off the end of the list, which
-                    // would draw blank rows under the last task.
-                    assert!(
-                        start + height <= len || start == 0,
-                        "len {len} height {height} cursor {cursor}: window {start}..{} overruns",
-                        start + height
-                    );
-                }
-            }
-        }
     }
 
     /// The same property through the REAL render, on a terminal too short for
