@@ -18,7 +18,7 @@ name = "tasqx"
 path = "src/main.rs"
 
 [dependencies]
-tasqx-core = { path = "../tasqx-core", version = "0.2.0" }
+tasqx-core = { path = "../tasqx-core", version = "0.3.0" }
 serde_json = { workspace = true }
 clap = { version = "4.6.1", features = ["derive"] }
 # PINNED EXACTLY, and the `=` is the guard, not a style choice.
