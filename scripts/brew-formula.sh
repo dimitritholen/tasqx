@@ -55,7 +55,11 @@ cat <<EOF
 class Tasqx < Formula
   desc "Task manager that lives in the terminal and treats an AI agent as a normal user"
   homepage "https://github.com/${REPO}"
-  version "${VERSION}"
+  # No \`version\`: Homebrew scans it out of the URL, and \`brew audit\` rejects
+  # the field as redundant — the first check a tap maintainer runs, failing on
+  # the formula this script exists to produce. Verified rather than assumed:
+  # with the line gone, \`brew info --json\` still reports ${VERSION}.
+  #
   # Not an OSI-approved license, so homebrew-core is not a route this can ever
   # take. A tap is the whole distribution story, and that is a licensing
   # consequence rather than an omission.
