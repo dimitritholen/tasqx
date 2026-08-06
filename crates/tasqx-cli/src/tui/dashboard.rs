@@ -164,6 +164,14 @@ impl App {
         self.help
     }
 
+    /// The transient footer line, or empty. Read by the gate that checks every
+    /// advertised key does something — for a digit naming an unreachable panel,
+    /// this line IS the whole effect.
+    #[cfg(test)]
+    pub fn status_line(&self) -> &str {
+        &self.status
+    }
+
     pub fn auto_refresh(&self) -> bool {
         self.auto_refresh
     }
