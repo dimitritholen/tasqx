@@ -438,11 +438,12 @@ fn readme_relative_links_point_at_files_that_exist() {
             }
         }
     }
-    // Floors: five worked guides plus the skill and the license. A scan that
-    // finds fewer has lost links, not gained tidiness — lower these on purpose
-    // or not at all.
+    // Floors: six worked guides plus the skill and the license. A scan that
+    // finds fewer has lost links, not gained tidiness — move these on purpose
+    // or not at all, in either direction: a floor left behind when a guide is
+    // added is a guide that can silently vanish again.
     assert!(
-        guides >= 5,
+        guides >= 6,
         "the README links only {guides} guides under docs/guides/"
     );
     assert!(checked >= 7, "the link scan checked only {checked} paths");
@@ -494,6 +495,77 @@ fn the_readme_does_not_promise_a_table_from_a_bare_tasqx() {
         assert!(
             !text.contains(stale),
             "README still says {stale:?}, which is only true off a terminal"
+        );
+    }
+}
+
+/// Every `tasqx_*` tool the agent starter prompt tells an agent to call must
+/// exist, and the two halves it splits on must have the scopes it claims.
+///
+/// That guide is a block of text a reader pastes into a client's instructions
+/// file, where it becomes the only thing telling an agent to use memory at all.
+/// Nothing downstream validates it: a renamed tool leaves the paste naming a
+/// method the server answers `unknown tool` to, and the reader finds out when an
+/// agent stops storing anything — which looks exactly like an agent that chose
+/// not to. Prose is the one surface in this repo with no generator behind it,
+/// so it gets a gate instead.
+///
+/// The scope halves are pinned as well as the names, because the guide's whole
+/// structure rests on them: it promises the searching half works under a
+/// read-only server and that the storing half is what `--scope write` buys. If
+/// `tasqx_search_memory` ever became a write tool, the advice to run read-only
+/// first would quietly stop working while every name in the file still resolved.
+#[test]
+fn the_agent_starter_prompt_names_tools_that_exist() {
+    let guide = fs::read_to_string(root().join("docs/guides/agent-starter-prompt.md"))
+        .expect("docs/guides/agent-starter-prompt.md is readable");
+
+    let roster = tasqx_core::mcp::tool_roster();
+    let scope_of = |name: &str| roster.iter().find(|(n, _)| *n == name).map(|(_, w)| *w);
+
+    // Every `tasqx_…` run in the prose, however it is punctuated around.
+    let mut named: Vec<String> = Vec::new();
+    let mut rest = guide.as_str();
+    while let Some(i) = rest.find("tasqx_") {
+        let tail = &rest[i..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(tail.len());
+        let run = &tail[..end];
+        // The guide writes `tasqx_*` for "the tool family", which stops the run
+        // at the underscore and is not a tool name. Anything with nothing after
+        // the prefix is that, not a rename to chase.
+        if run.len() > "tasqx_".len() {
+            named.push(run.to_string());
+        }
+        rest = &tail[end..];
+    }
+    named.sort();
+    named.dedup();
+    assert!(
+        named.len() >= 5,
+        "the scan found only {named:?} — an empty scan must not pass as a clean one"
+    );
+
+    for name in &named {
+        assert!(
+            scope_of(name).is_some(),
+            "the starter prompt tells an agent to call {name:?}, which is not in \
+             the MCP roster: {:?}",
+            roster.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+        );
+    }
+
+    assert_eq!(
+        scope_of("tasqx_search_memory"),
+        Some(false),
+        "the guide promises the searching half works under a read-only server"
+    );
+    for w in ["tasqx_add_memory", "tasqx_annotate_task"] {
+        assert_eq!(
+            scope_of(w),
+            Some(true),
+            "the guide promises {w} is what `--scope write` buys"
         );
     }
 }
