@@ -91,11 +91,22 @@ impl App {
         auto_refresh: bool,
     ) -> Self {
         let focus = order.first().copied().unwrap_or(PanelId::Now);
+        // The slot opens on the first slot member the reader CONFIGURED, in
+        // their own ordering. It used to open on a hard-coded Burndown, so a
+        // `dashboard.panels` naming only `projects` drew the excluded panel and
+        // hid the requested one — and the slot is sticky, so it stayed wrong.
+        // The fallback is unreachable in practice: with no slot member
+        // configured `layout` builds no slot, so nothing ever draws from here.
+        let slot = order
+            .iter()
+            .copied()
+            .find(|id| PanelId::SLOT_MEMBERS.contains(id))
+            .unwrap_or(PanelId::Burndown);
         App {
             dash,
             order,
             focus,
-            slot: PanelId::Burndown,
+            slot,
             scroll: HashMap::new(),
             placed: Vec::new(),
             has_slot: false,
@@ -162,8 +173,15 @@ impl App {
 
     /// Whether `id` can be reached right now — either it has its own rectangle,
     /// or it can be summoned into the analytics slot.
+    ///
+    /// The slot half is guarded by `order` as well, and that is not belt and
+    /// braces: the slot is one rectangle shared by three panels, so "a slot
+    /// exists" says nothing about WHICH members were configured. Without the
+    /// guard a digit summoned any of the three into it, overriding
+    /// `dashboard.panels` from the keyboard.
     fn reachable(&self, id: PanelId) -> bool {
-        self.placed.contains(&id) || (self.has_slot && PanelId::SLOT_MEMBERS.contains(&id))
+        self.placed.contains(&id)
+            || (self.has_slot && PanelId::SLOT_MEMBERS.contains(&id) && self.order.contains(&id))
     }
 
     /// How many rows the focused panel could scroll through.
@@ -234,8 +252,15 @@ impl App {
                 let id = panel_of_digit(c as u8 - b'0')?;
                 if self.reachable(id) {
                     self.aim(id);
-                } else {
+                } else if self.order.contains(&id) {
                     self.status = format!("{} does not fit at this size", id.title());
+                } else {
+                    // A DIFFERENT refusal, and conflating the two sent readers
+                    // off resizing a window that was never the problem: this
+                    // panel is not in `dashboard.panels`, so no terminal is
+                    // ever big enough to bring it back. Name the setting —
+                    // it is the only thing that fixes this.
+                    self.status = format!("{} is not in dashboard.panels", id.title());
                 }
                 None
             }

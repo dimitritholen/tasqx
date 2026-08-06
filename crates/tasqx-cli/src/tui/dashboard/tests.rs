@@ -492,6 +492,96 @@ fn a_digit_for_an_unreachable_panel_reports_instead_of_moving_focus() {
     let before = a.focus();
     assert_eq!(a.on_key(key(KeyCode::Char('7'))), None);
     assert_eq!(a.focus(), before, "focus must not move to a hidden panel");
+
+    // The reason is the SIZE, and the footer has to say so: BURNDOWN is
+    // configured, it just has nowhere to go on this rung. Growing the terminal
+    // is what fixes it.
+    let text = all_text(&draw_at(&a, 56, 14, &caps()));
+    assert!(
+        text.contains("does not fit"),
+        "an excluded-by-size panel must blame the size:\n{text}"
+    );
+}
+
+/// A configuration that names one slot member must not be answered with a
+/// different one.
+///
+/// The slot used to open on a hard-coded [`PanelId::Burndown`] regardless of
+/// `dashboard.panels`. With `projects` configured and `burndown` left out, the
+/// screen opened showing the panel the reader had excluded and hiding the one
+/// they had asked for — and because the slot is sticky, it stayed that way
+/// until they found a key that changed it.
+#[test]
+fn the_slot_opens_on_a_configured_member_not_a_hard_coded_one() {
+    let order = vec![PanelId::Now, PanelId::Next, PanelId::Due, PanelId::Projects];
+    let a = App::new(dash(), order, 7, true);
+    assert_eq!(
+        a.slot(),
+        PanelId::Projects,
+        "the only configured slot member must be the one the slot opens on"
+    );
+
+    let text = all_text(&draw_at(&a, 80, 24, &caps()));
+    assert!(
+        text.contains("PROJECTS") && !text.contains("BURNDOWN"),
+        "the screen must draw the configured member and not the excluded one:\n{text}"
+    );
+}
+
+/// The same key, the other reason — and the other failure.
+///
+/// `reachable` waved through EVERY slot member as soon as a slot existed, so
+/// `7` placed BURNDOWN into it even with `burndown` left out of
+/// `dashboard.panels`: a key that overrode the configuration rather than
+/// reporting against it. And the report it should have made was the wrong one,
+/// because "does not fit at this size" sends the reader off resizing a window
+/// that was never the problem. No terminal is ever big enough to bring back a
+/// panel nobody configured; only the setting is.
+#[test]
+fn a_digit_for_an_unconfigured_panel_neither_places_it_nor_blames_the_size() {
+    let order = vec![PanelId::Now, PanelId::Next, PanelId::Due, PanelId::Projects];
+    let mut a = App::new(dash(), order, 7, true);
+    let screen = model::layout(80, 24, a.order()).unwrap();
+    let placed: Vec<PanelId> = screen.panels.iter().map(|p| p.id).collect();
+    a.observe(&placed, screen.has_slot());
+    assert!(
+        screen.has_slot(),
+        "PROJECTS is configured, so there is a slot"
+    );
+
+    let before = a.focus();
+    assert_eq!(a.on_key(key(KeyCode::Char('7'))), None);
+    assert_eq!(
+        a.focus(),
+        before,
+        "focus must not move to a panel nobody asked for"
+    );
+    assert_eq!(
+        a.slot(),
+        PanelId::Projects,
+        "and the slot must keep the member that WAS configured"
+    );
+
+    let text = all_text(&draw_at(&a, 80, 24, &caps()));
+    // The RULE, not the bare word: the footer message names BURNDOWN on
+    // purpose, and a plain `contains` cannot tell the panel that must not be
+    // there from the message that must.
+    assert!(
+        !text.contains(&rule_label(PanelId::Burndown, false, true)),
+        "an unconfigured panel must not be drawn by a keypress:\n{text}"
+    );
+    assert!(
+        text.contains(&rule_label(PanelId::Projects, false, true)),
+        "and the configured member must still hold the slot:\n{text}"
+    );
+    assert!(
+        text.contains("dashboard.panels"),
+        "the message must name the setting that would bring it back:\n{text}"
+    );
+    assert!(
+        !text.contains("does not fit"),
+        "and must not blame the terminal size, which cannot fix this:\n{text}"
+    );
 }
 
 /// Tab only stops where something is drawn.
