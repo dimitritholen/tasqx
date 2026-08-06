@@ -569,3 +569,65 @@ fn the_agent_starter_prompt_names_tools_that_exist() {
         );
     }
 }
+
+/// Every archive the Homebrew formula points at is one the release workflow
+/// actually builds.
+///
+/// `scripts/brew-formula.sh` names three targets and `release.yml` builds four;
+/// nothing connected the two lists. A target renamed or dropped in the matrix
+/// leaves the formula rendering URLs to files the release never published, and
+/// the formula is generated per tag precisely so that it is never checked in
+/// and never reviewed — so the first reader of the mistake is somebody running
+/// `brew install`, getting a 404, and having no reason to suspect the tap.
+///
+/// One-directional on purpose, like the CI-platform guard above: it fails when
+/// the formula names something the matrix does not build, which is the
+/// direction that ships a broken install. The matrix building a target the
+/// formula ignores is deliberate — Homebrew has nowhere to put the Windows zip.
+#[test]
+fn the_brew_formula_names_targets_the_release_workflow_builds() {
+    let script = fs::read_to_string(root().join("scripts/brew-formula.sh"))
+        .expect("scripts/brew-formula.sh is readable");
+    let workflow = fs::read_to_string(root().join(".github/workflows/release.yml"))
+        .expect("the release workflow is readable");
+
+    let built: Vec<&str> = workflow
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("target: "))
+        .map(str::trim)
+        .collect();
+    assert!(
+        built.len() >= 3,
+        "parsed {built:?} out of release.yml — the matrix format changed and this \
+         guard is checking almost nothing"
+    );
+
+    // The archive names the script builds its URLs from, read out of the
+    // `tasqx-${TAG}-<target>.tar.gz` assignments rather than re-listed here.
+    let named: Vec<&str> = script
+        .lines()
+        .filter_map(|l| l.split_once("=\"tasqx-${TAG}-"))
+        .filter_map(|(_, rest)| rest.split(".tar.gz").next())
+        .collect();
+    assert_eq!(
+        named.len(),
+        3,
+        "found {named:?} archive names in brew-formula.sh; expected the three \
+         Homebrew can serve"
+    );
+
+    for target in &named {
+        assert!(
+            built.contains(target),
+            "the formula points at a {target} archive, which release.yml does not \
+             build — it builds {built:?}. `brew install` would 404."
+        );
+    }
+
+    // And the stem the script assumes is the stem the workflow writes.
+    assert!(
+        workflow.contains("STAGE=\"tasqx-${VERSION}-${{ matrix.target }}\""),
+        "release.yml no longer names archives `tasqx-<version>-<target>`, which is \
+         the shape brew-formula.sh builds its URLs from"
+    );
+}
