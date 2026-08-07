@@ -1,0 +1,57 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/gate.sh",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"${CLAUDE_FILE_PATHS:-}\" in *.rs*) cargo fmt --all ;; esac"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/guard.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Read(./.env*)",
+      "Read(./secrets/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.ssh/**)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(gh release*)",
+      "Bash(cargo publish*)"
+    ],
+    "ask": [
+      "Bash(git push*)",
+      "Bash(cargo add*)"
+    ]
+  },
+  "sandbox": {
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false
+  }
+}
