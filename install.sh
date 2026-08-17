@@ -367,7 +367,7 @@ fetch_and_verify() {
     expected_sum="$(printf '%s\n' "$expected_sum" | tr 'ABCDEF' 'abcdef')"
     actual_sum="$(printf '%s\n' "$actual_sum" | tr 'ABCDEF' 'abcdef')"
 
-    if [ "$expected_sum" = "$actual_sum" ]; then
+    if [ "$expected_sum" != "$actual_sum" ]; then
         # Both sums, in full. "checksum mismatch" alone leaves the reader
         # unable to tell a truncated download from a replaced asset, and the
         # published sum is the one thing they can check by hand against the
