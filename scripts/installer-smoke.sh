@@ -43,6 +43,10 @@
 # Also not covered: install.ps1. It is driven by the Windows leg of the CI
 # installers job, because a PowerShell script wants a PowerShell host.
 #
+# And the last case cannot run at all on a host whose /bin/sh is bash, macOS
+# included — see the comment above it. It says so on its own line when that
+# happens rather than passing; a green run there has one case fewer in it.
+#
 # SAFETY. This never touches the caller's installation, PATH, dotfiles or store.
 # Every run happens inside one `mktemp -d` with a `trap` cleanup, with
 # `TASQX_INSTALL`, `TASQX_DB` and `HOME` all pointed inside it, and the binaries
@@ -163,7 +167,41 @@ sandbox_path() {
 # `gzip` is in the list because `tar xzf` shells out to it rather than
 # decompressing itself: without it tar reports "gzip: Cannot exec", the install
 # fails, and the case below would blame the completion step for it.
-base_tools=(sh uname mktemp chmod grep awk sed tr rm cat mkdir cp mv tar gzip gunzip find wc dirname basename curl wget)
+#
+# `dash` and `ash` are in it for probe_sh_without_shell_var, which needs a
+# candidate to find before it can pick one.
+base_tools=(sh dash ash uname mktemp chmod grep awk sed tr rm cat mkdir cp mv tar gzip gunzip find wc dirname basename curl wget)
+
+# The name of a POSIX sh inside $1 that arrives with $SHELL EMPTY, or "" if this
+# host has none.
+#
+# MEASURED, never assumed from the operating system, because the answer is a
+# property of the shell binary: bash calls getpwuid at startup and binds $SHELL
+# to the login shell out of the passwd entry whenever the environment does not
+# already carry one, and macOS ships bash as /bin/sh. Verified rather than read
+# off the manual — invoked through a symlink named `sh`, bash still reports
+# `SHELL=[/bin/bash]`, so the value comes from the passwd database and not from
+# argv[0]. That is also why install.sh's `sh | dash | ash` guard does not catch
+# it: the name it sees is a real shell.
+#
+# dash and ash leave it empty, which is the ordinary `curl … | sh` case on every
+# Debian, Ubuntu and Alpine host.
+probe_sh_without_shell_var() {
+  local sandbox=$1 home=$2 probe candidate out
+  probe="$tmp/probe-shell-var.sh"
+  cat > "$probe" <<'PROBE'
+printf 'SHELL=[%s]\n' "${SHELL:-}"
+PROBE
+  for candidate in sh dash ash; do
+    [ -x "$sandbox/$candidate" ] || continue
+    out=$(env -i PATH="$sandbox" HOME="$home" "$sandbox/$candidate" "$probe" 2>&1) || continue
+    if [ "$out" = "SHELL=[]" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s\n' ""
+}
 
 # ---- case: the dry-run contract ---------------------------------------------
 #
@@ -314,27 +352,43 @@ $(printf '%s\n' "$out" | sed 's/^/      /')"
 # failure in it is a warning and an exit 0: the install succeeded, and the only
 # thing that did not happen is a convenience one command adds.
 #
-# `$SHELL` is unset AND `ps` is off PATH, because install.sh falls back to the
-# parent process name when $SHELL is empty — and the parent here is this bash
-# script, which would answer "bash" and send the case down the success path
+# The environment is emptied AND `ps` is off PATH, because install.sh falls back
+# to the parent process name when $SHELL is empty — and the parent here is this
+# bash script, which would answer "bash" and send the case down the success path
 # instead. A container image with no procps and no $SHELL is the population
 # install.sh's own comment names for that fallback, and it is the one this case
 # reproduces.
 #
-# If this case ever goes red, the fix is install.sh's skip path. Setting $SHELL
-# in this harness would turn it green while proving nothing about a real user.
+# WHICH sh RUNS IT IS PART OF THE CASE, and this is the correction a macOS runner
+# made to an earlier version that ran `sh` and assumed the rest. An empty
+# environment is not enough: bash binds $SHELL from the passwd entry on the way
+# up, so on a host whose /bin/sh is bash — every Mac — install.sh arrived with
+# $SHELL=/bin/bash, identified a shell, wrote the block, and this case failed
+# holding the evidence that install.sh had behaved correctly. So the shell is
+# probed for rather than named, and where no shell on the host leaves $SHELL
+# empty the case reports NOT COVERED.
+#
+# It skips rather than adapting because the only remaining way to create the
+# condition is to set $SHELL in this harness, and that is the one fix this case
+# forbids: it would turn the run green while proving nothing about a real user.
 case_completions_without_shell() {
   local name="--completions with no shell to set up" dest="$tmp/nocomp/bin"
-  local home="$tmp/nocomp/home" sandbox out code
+  local home="$tmp/nocomp/home" sandbox posix_sh out code
   if [ -z "$fetcher" ] || [ -z "$hasher" ] || ! have tar; then
     skip "$name" "a real install is needed first, and curl/wget, a hasher or tar is missing"
     return
   fi
   mkdir -p "$home"
   sandbox=$(sandbox_path noshell "${base_tools[@]}" sha256sum shasum openssl)
+  posix_sh=$(probe_sh_without_shell_var "$sandbox" "$home")
+  if [ -z "$posix_sh" ]; then
+    skip "$name" "every POSIX sh on this host arrives with \$SHELL already populated — bash binds it from the passwd entry, and this host's /bin/sh is bash. The condition cannot be created without setting \$SHELL, which is the one fix this case forbids"
+    return
+  fi
+  say "  driving install.sh with '$posix_sh', which leaves \$SHELL empty"
   out=$(env -i PATH="$sandbox" HOME="$home" TASQX_DB="$tmp/nocomp/tasks.db" \
     TASQX_VERSION="$PINNED_TAG" TASQX_INSTALL="$dest" \
-    sh "$install_sh" --completions 2>&1) && code=0 || code=$?
+    "$sandbox/$posix_sh" "$install_sh" --completions 2>&1) && code=0 || code=$?
   if [ "$code" -ne 0 ]; then
     fail "$name: exited $code; a completion it could not switch on must not fail the install:
 $(printf '%s\n' "$out" | sed 's/^/      /')"
