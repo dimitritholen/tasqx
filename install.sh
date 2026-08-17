@@ -811,6 +811,3 @@ main() {
 }
 
 main "$@"
-
-# watched-fail: unquoted expansion for shellcheck
-watched_fail_probe() { local p=$1; echo $p; }
