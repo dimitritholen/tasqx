@@ -13,3 +13,13 @@
 # whoever commits next decide what lands in the blob. `eol=lf` takes that
 # decision away from the local config.
 *.sh text eol=lf
+
+# PowerShell scripts get LF too, and for the opposite reason: nothing breaks.
+#
+# PowerShell reads CRLF and LF alike, so `install.ps1` has no failure to point
+# at — which is exactly why it needs a rule. Without one, the same
+# `core.autocrlf=true` drift applies, and the bytes raw.githubusercontent serves
+# to every Windows user running the documented one-liner become a function of
+# one developer's local git config. `eol=lf` makes the blob, the working copy
+# and what the CDN hands out the same file.
+*.ps1 text eol=lf

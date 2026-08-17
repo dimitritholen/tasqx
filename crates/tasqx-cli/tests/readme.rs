@@ -9,6 +9,7 @@
 //! markdown model), and every scan pins a floor so an empty iteration cannot
 //! pass as a clean one.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -630,4 +631,157 @@ fn the_brew_formula_names_targets_the_release_workflow_builds() {
         "release.yml no longer names archives `tasqx-<version>-<target>`, which is \
          the shape brew-formula.sh builds its URLs from"
     );
+}
+
+/// Every target triple an installer script can emit, read out of the script
+/// rather than re-listed here.
+///
+/// A triple is recognised as a maximal run of `[a-z0-9_-]` that is a *whole*
+/// quoted string — a quote character immediately on both sides — and that splits
+/// into three or more non-empty `-` components. Both halves of that rule are
+/// load-bearing:
+///
+/// - Quoted-content-only, because the scripts *talk about* triples they do not
+///   map. `install.ps1` explains in a comment that "there is no
+///   aarch64-pc-windows-msvc in the release matrix", and a scan that matched
+///   triples anywhere in the file would read that sentence as a mapping and
+///   redden a clean tree.
+/// - Whole-string, because a bare run scan also matches the `0-9a-f` inside a
+///   `[0-9a-fA-F]{64}` character class.
+///
+/// The cost of the rule is that a quoted string with three or more hyphenated
+/// lowercase parts and no other characters would be read as a target. Nothing in
+/// either script is shaped that way today, and the failure mode is a loud red
+/// build naming the string, not a silent miss.
+fn targets_a_script_can_emit(script: &str) -> BTreeSet<&str> {
+    let bytes = script.as_bytes();
+    let in_run = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-';
+    let is_quote = |c: u8| c == b'\'' || c == b'"';
+
+    let mut found = BTreeSet::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !in_run(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && in_run(bytes[i]) {
+            i += 1;
+        }
+        let quoted =
+            start > 0 && is_quote(bytes[start - 1]) && i < bytes.len() && is_quote(bytes[i]);
+        // Every byte of the run is ASCII, so these indices are char boundaries.
+        let span = &script[start..i];
+        if quoted && span.split('-').count() >= 3 && !span.split('-').any(str::is_empty) {
+            found.insert(span);
+        }
+    }
+    found
+}
+
+/// Every target an installer can hand to the download URL is one the release
+/// workflow actually builds.
+///
+/// The installers are a third and fourth declaration site for the platform list,
+/// after the release matrix and the Homebrew formula, and they are the two that
+/// run on a stranger's machine with a pipe into `sh`. Adding a mapping here
+/// costs one line and looks harmless; if the matrix has no matching job the
+/// script resolves a real-looking archive name, requests it, and the user gets a
+/// 404 from a URL that reads correctly. Nothing else in the tree would have
+/// noticed — the scripts are shell and PowerShell that no Rust test parses.
+///
+/// One-directional on purpose, exactly like the brew guard above: it fails when
+/// an installer names something the matrix does not build, which is the
+/// direction that ships a broken install. A matrix target no installer maps yet
+/// is the opposite case and is deliberate — the user gets the scripts' own "no
+/// prebuilt binary for <platform>" message, which is a clean answer rather than
+/// a broken one, and is not this test's business.
+///
+/// Read at runtime rather than through `include_str!`. The `include_str!` gates
+/// live in `tasqx-core` and every file they embed is part of that crate's own
+/// testing regime; pulling shell scripts in there would make the headless engine
+/// fail to *compile* when an installer is renamed, and would turn a missing file
+/// into a compile error instead of a readable message.
+///
+/// It also checks the other end of the same two files: the release job attaches
+/// them to every tagged release, so a pinned URL exists beside the `main` one the
+/// README fetches, and rename either end alone and this reddens. That half is a
+/// read of the workflow's *text* — it never reaches the network, so it says
+/// nothing about whether any published release really carries the assets. Only a
+/// tag can answer that.
+#[test]
+fn the_installers_map_only_targets_the_release_workflow_builds() {
+    let sh = fs::read_to_string(root().join("install.sh")).expect("install.sh is readable");
+    let ps1 = fs::read_to_string(root().join("install.ps1")).expect("install.ps1 is readable");
+    let workflow = fs::read_to_string(root().join(".github/workflows/release.yml"))
+        .expect("the release workflow is readable");
+
+    let built: Vec<&str> = workflow
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("target: "))
+        .map(str::trim)
+        .collect();
+    assert!(
+        built.len() >= 3,
+        "parsed {built:?} out of release.yml — the matrix format changed and this \
+         guard is checking almost nothing"
+    );
+
+    for (name, script) in [("install.sh", &sh), ("install.ps1", &ps1)] {
+        let mapped = targets_a_script_can_emit(script);
+        println!("{name} can emit {mapped:?}; release.yml builds {built:?}");
+        assert!(
+            !mapped.is_empty(),
+            "parsed no target triples out of {name} — the way it names targets \
+             changed and this guard is now checking nothing"
+        );
+
+        for target in &mapped {
+            assert!(
+                built.contains(target),
+                "{name} maps {target}, which release.yml does not build — it builds \
+                 {built:?}. The installer would resolve a download URL that 404s."
+            );
+        }
+    }
+
+    // And every script the README bootstraps from is one the release job
+    // attaches, so the tagged URL and the moving `main` one name the same file.
+    // The names come out of the README's raw `.../main/<file>` URLs rather than
+    // being re-listed here, and are matched as whole arguments of the publish
+    // command — renaming the file on either side alone reddens.
+    let readme = readme();
+    let bootstrapped: BTreeSet<&str> = readme
+        .match_indices("/main/")
+        .filter_map(|(at, sep)| {
+            let rest = &readme[at + sep.len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-'))
+                .unwrap_or(rest.len());
+            (end > 0).then_some(&rest[..end])
+        })
+        .collect();
+    assert_eq!(
+        bootstrapped.len(),
+        2,
+        "found {bootstrapped:?} behind the README's raw `/main/` URLs; expected the \
+         two bootstrap scripts, and a scan that finds anything else is reading \
+         something other than the one-liners"
+    );
+
+    let publish = workflow
+        .lines()
+        .find(|l| l.trim_start().starts_with("gh release create"))
+        .expect("release.yml still publishes with `gh release create`");
+    let attached: BTreeSet<&str> = publish.split_whitespace().collect();
+    for script in &bootstrapped {
+        assert!(
+            attached.contains(script),
+            "the README bootstraps from {script}, which the release job does not \
+             upload — it runs `{}`. Anyone pinning a tagged installer URL would get \
+             a 404 while the `main` one kept working.",
+            publish.trim()
+        );
+    }
 }

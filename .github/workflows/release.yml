@@ -198,11 +198,19 @@ jobs:
       # tagger can edit afterwards. Draft-free on purpose: if the suite and
       # four builds passed, the release IS ready, and a draft step that a
       # human must remember to click is where releases go to be forgotten.
+      #
+      # The two bootstrap scripts ride along as assets. The URL the README
+      # shows is the one on `main`, which moves under anybody who pins it;
+      # attaching the same bytes to the tag gives a second URL that never
+      # does, for a CI job or a Dockerfile that wants the installer it was
+      # tested against. They are named straight off the checkout above rather
+      # than copied into `dist/` first: one argument, and a file that is not
+      # there stops the release instead of quietly publishing without it.
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/* \
+          gh release create "${GITHUB_REF_NAME}" dist/* install.sh install.ps1 \
             --verify-tag \
             --title "tasqx ${GITHUB_REF_NAME}" \
             --generate-notes
