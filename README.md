@@ -26,7 +26,49 @@ Your tasks are a SQLite file on your disk. It works offline and there's nothing 
 
 ## Install
 
-Tagged releases get prebuilt binaries for Linux, macOS and Windows on the [Releases page](https://github.com/dimitritholen/tasqx/releases) — download, unpack, put `tasqx` on your PATH. There is no runtime to install and no dynamic linking; SQLite is bundled. Each archive also carries a `completions/` directory: one line per shell, and `tasqx completions --install` will put the right one in the right file for you.
+Linux and macOS:
+
+```console
+curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh
+```
+
+Windows:
+
+```console
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1 | iex
+```
+
+The TLS line is not decoration. Windows PowerShell 5.1 is still the default shell on Windows 11 and frequently will not negotiate TLS 1.2 on its own, so the bare `irm | iex` fails while *fetching the script* — with an error about a secure channel that names neither tasqx nor the reason.
+
+Both scripts pick the newest release, resolve your target triple, verify the archive against its published checksum, and write nothing outside the install directory — `~/.local/bin`, or `%LOCALAPPDATA%\Programs\tasqx\bin` on Windows, where the installer also adds that one directory to your user PATH and `-Uninstall` takes it back out. `install.sh` adds nothing to any PATH; it tells you if the directory isn't on yours. Neither script touches a shell startup file unless you ask it to.
+
+Neither one-liner can carry an argument — a pipe passes none, and `iex` binds no parameters — so a flag needs the longer form:
+
+```console
+curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh -s -- --dry-run
+```
+
+```console
+&([scriptblock]::Create((irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1))) -DryRun
+```
+
+On Windows PowerShell 5.1 the TLS line goes in front of that too; it configures the session, not the command. A dry run prints the tag, target, URL and destination and stops. The rest are `--uninstall`/`-Uninstall`, `--completions`/`-Completions` and `--help`/`-Help`, and every switch also has an environment variable (`TASQX_UNINSTALL`, `TASQX_DRY_RUN`, …) for a caller that can pass neither. `TASQX_VERSION` pins the tag, `TASQX_INSTALL` moves the destination.
+
+### What that install does and doesn't promise
+
+**The checksum is integrity, not provenance.** The `.sha256` file is produced by the same workflow job that built the archive and served from the same host, so anyone who could substitute the archive could substitute the checksum in the same breath. It catches a truncated transfer and a corrupt CDN object. That is the whole claim it can make, and nothing here signs anything.
+
+**The binaries are unsigned.** On macOS that matters more than it sounds: a browser download would carry `com.apple.quarantine` and Gatekeeper would stop the first run of an unsigned, un-notarized binary. `curl` sets no such attribute, so this route goes *around* that check rather than passing it. That is why the install just works, and it is the honest reason.
+
+**The Linux build links your system glibc.** SQLite is bundled and there is no runtime to install, but the `x86_64-unknown-linux-gnu` target is not static. The release is built on GitHub's `ubuntu-latest`, so the floor is whatever that image currently provides — glibc 2.39 as this was written, and GitHub moves the image. Re-derive it from a release binary rather than trusting this line:
+
+```console
+objdump -T tasqx | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+```
+
+There is no musl build. An older distro builds from source.
+
+Tagged releases also put the same prebuilt binaries for Linux, macOS and Windows on the [Releases page](https://github.com/dimitritholen/tasqx/releases) — download, unpack, put `tasqx` on your PATH. Each archive carries a `completions/` directory: one line per shell, and `tasqx completions --install` will put the right one in the right file for you.
 
 Or build from source. Needs Rust 1.95 or newer — a measured floor, not a guess — which `Cargo.toml` enforces:
 
