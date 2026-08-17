@@ -703,6 +703,13 @@ fn targets_a_script_can_emit(script: &str) -> BTreeSet<&str> {
 /// testing regime; pulling shell scripts in there would make the headless engine
 /// fail to *compile* when an installer is renamed, and would turn a missing file
 /// into a compile error instead of a readable message.
+///
+/// It also checks the other end of the same two files: the release job attaches
+/// them to every tagged release, so a pinned URL exists beside the `main` one the
+/// README fetches, and rename either end alone and this reddens. That half is a
+/// read of the workflow's *text* — it never reaches the network, so it says
+/// nothing about whether any published release really carries the assets. Only a
+/// tag can answer that.
 #[test]
 fn the_installers_map_only_targets_the_release_workflow_builds() {
     let sh = fs::read_to_string(root().join("install.sh")).expect("install.sh is readable");
@@ -737,5 +744,44 @@ fn the_installers_map_only_targets_the_release_workflow_builds() {
                  {built:?}. The installer would resolve a download URL that 404s."
             );
         }
+    }
+
+    // And every script the README bootstraps from is one the release job
+    // attaches, so the tagged URL and the moving `main` one name the same file.
+    // The names come out of the README's raw `.../main/<file>` URLs rather than
+    // being re-listed here, and are matched as whole arguments of the publish
+    // command — renaming the file on either side alone reddens.
+    let readme = readme();
+    let bootstrapped: BTreeSet<&str> = readme
+        .match_indices("/main/")
+        .filter_map(|(at, sep)| {
+            let rest = &readme[at + sep.len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-'))
+                .unwrap_or(rest.len());
+            (end > 0).then_some(&rest[..end])
+        })
+        .collect();
+    assert_eq!(
+        bootstrapped.len(),
+        2,
+        "found {bootstrapped:?} behind the README's raw `/main/` URLs; expected the \
+         two bootstrap scripts, and a scan that finds anything else is reading \
+         something other than the one-liners"
+    );
+
+    let publish = workflow
+        .lines()
+        .find(|l| l.trim_start().starts_with("gh release create"))
+        .expect("release.yml still publishes with `gh release create`");
+    let attached: BTreeSet<&str> = publish.split_whitespace().collect();
+    for script in &bootstrapped {
+        assert!(
+            attached.contains(script),
+            "the README bootstraps from {script}, which the release job does not \
+             upload — it runs `{}`. Anyone pinning a tagged installer URL would get \
+             a 404 while the `main` one kept working.",
+            publish.trim()
+        );
     }
 }
