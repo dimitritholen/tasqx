@@ -38,6 +38,9 @@ HANDOFF.md
 # Execution plans: agent task-checklists for work already shipped.
 docs/plans/
 
+# The same, written at the root instead of under docs/. Work lives in tasqx.
+/plans/
+
 # Console logs and page snapshots a browser agent writes while verifying a page.
 .playwright-mcp/
 
