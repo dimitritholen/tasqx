@@ -347,3 +347,253 @@ jobs:
         with:
           name: mutants-report
           path: mutants.out/
+
+  # The two installers, EXECUTED rather than read.
+  #
+  # `install.sh` and `install.ps1` are the first code a new user runs, and they
+  # are invisible to every gate above: nothing compiles them, so `cargo test`
+  # cannot see a break in either. Without this job the cheapest place a broken
+  # installer surfaces is a user's terminal, on the one command that has to work
+  # before anything else can.
+  #
+  # THREE RUNNERS, for the reason the test matrix above records at length rather
+  # than a new one. `release.yml` ships four targets, two of them Darwin, and the
+  # v0.2.0 release exposed a macOS-only daemon bug by shipping it — "the most
+  # expensive place to find anything". An installer is per-platform by
+  # construction: the Unix half reads a triple out of `uname` and unpacks a
+  # tarball, the Windows half reads one out of the processor architecture and
+  # unpacks a zip, and Darwin is neither covered by the ubuntu leg nor merely
+  # "Unix like ubuntu" — `shasum` instead of `sha256sum` and bash 3.2 are both
+  # live differences in the script this job runs.
+  #
+  # fail-fast: false matches the test job and is load-bearing for the same
+  # reason: one broken runner must not hide what the other two would have said,
+  # and on a per-platform script the other two are where the answer usually is.
+  #
+  # No toolchain and no cache: nothing here compiles Rust. This job tests the
+  # scripts against a PUBLISHED archive, which is the artefact a user receives.
+  installers:
+    name: installers (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    # The two forms of one instruction, each written down ONCE and referenced by
+    # the steps below. Both used to live inline, and a literal repeated across
+    # two steps is how an assertion ends up gating a line that nothing runs: the
+    # step that executes drifts, the step that checks does not, and the check
+    # stays green about a string it no longer describes.
+    env:
+      # What README.md documents, `main` and all. README is canonical — this is
+      # the copy, and the identity step below asserts in that direction.
+      README_ONE_LINER: '[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1 | iex'
+      # What CI runs. Identical to the line above except for the ref, and the ref
+      # is the entire reason this is a second string rather than the same one.
+      #
+      # `main` cannot gate a pull request, in both directions: the URL 404s until
+      # the branch merges, so the step reds on the very PR that introduces it,
+      # and once merged it fetches main rather than the change under review — so
+      # a later edit that breaks install.ps1 would be downloaded from somewhere
+      # other than where it broke, and sail past a green tick. $GITHUB_SHA is the
+      # commit `actions/checkout` above just checked out, so the script that is
+      # fetched and the tree that is tested are the same code. A SHA is also
+      # immutable, which a branch ref is not: the CDN has no stale copy to serve.
+      #
+      # $env:GITHUB_SHA is left literal here and expanded by PowerShell rather
+      # than by GitHub, because `irm`'s argument is a bareword and barewords
+      # interpolate. Substituting it in YAML would make this a template, and the
+      # identity assertion below compares strings.
+      CI_ONE_LINER: '[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/dimitritholen/tasqx/$env:GITHUB_SHA/install.ps1 | iex'
+    steps:
+      - uses: actions/checkout@v4
+
+      # shellcheck ships on GitHub's ubuntu image. The conditional install is
+      # not a formality: if the image ever drops it, the two honest outcomes are
+      # "installed it" and "red", and neither of them is a step that silently
+      # linted nothing. A linter that skips is indistinguishable from a linter
+      # that found nothing, which is the failure shape `REQUIRE=` exists to end
+      # further down this same job.
+      - name: shellcheck install.sh and the smoke script
+        if: runner.os == 'Linux'
+        run: |
+          command -v shellcheck >/dev/null 2>&1 || {
+            sudo apt-get update && sudo apt-get install -y shellcheck
+          }
+          shellcheck --version
+          shellcheck install.sh scripts/installer-smoke.sh
+
+      # `Invoke-ScriptAnalyzer` writes its findings to the pipeline and exits 0
+      # whatever it found, so the `if` below is the entire difference between a
+      # gate and a report nobody reads. -Severity Error keeps it to defects
+      # rather than style, because a linter that is yellow on every run teaches
+      # everyone to scroll past it — the same reasoning that kept clippy
+      # advisory until its findings were actually cleaned.
+      - name: Invoke-ScriptAnalyzer on install.ps1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+            Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          }
+          Import-Module PSScriptAnalyzer
+          $findings = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error
+          if ($findings) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Output
+            throw "Invoke-ScriptAnalyzer reported $($findings.Count) Error-severity finding(s) in install.ps1."
+          }
+          Write-Output 'PSScriptAnalyzer: no Error-severity findings in install.ps1'
+
+      # The four field labels are a CONTRACT between the two installers, not a
+      # debugging aid. Both scripts print the same four, so a field renamed on
+      # one platform and not the other is caught here instead of by a user
+      # comparing two pages of output. Asserting them on all three runners is
+      # what makes the two scripts one documented format rather than two that
+      # drift apart quietly.
+      #
+      # Deliberately NOT pinned to a tag: a dry run touches nothing, so it is
+      # the one place this job can afford to exercise the `/releases/latest`
+      # redirect that scripts/installer-smoke.sh says out loud it does not cover.
+      - name: dry run (sh install.sh --dry-run)
+        if: runner.os != 'Windows'
+        run: |
+          out=$(sh install.sh --dry-run 2>&1)
+          printf '%s\n' "$out"
+          for label in version platform archive 'install to'; do
+            printf '%s\n' "$out" | grep -q "^  ${label} " || {
+              printf 'no %s line in the dry run above\n' "'$label'" >&2
+              exit 1
+            }
+          done
+
+      - name: dry run (install.ps1 -DryRun)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $out = (& .\install.ps1 -DryRun 2>&1 | Out-String)
+          Write-Output $out
+          foreach ($label in @('version', 'platform', 'archive', 'install to')) {
+            if ($out -notmatch "(?m)^  $label ") {
+              throw "no '$label' line in the dry run above"
+            }
+          }
+
+      # The real thing: download, compare the checksum, unpack, run the binary.
+      # The cases live in scripts/installer-smoke.sh rather than inline here, so
+      # a developer runs exactly what CI runs — a check only CI can run is one
+      # nobody debugs.
+      #
+      # REQUIRE=curl is what stops this degrading into a green run that measured
+      # nothing. Without it, a runner image without curl leaves the script
+      # reporting "NOT COVERED" per case and exiting 0, and the job reports
+      # success for having skipped everything.
+      #
+      # The completions case runs with `$SHELL` deliberately unset. If it goes
+      # red, the fix is install.sh's skip path — never `SHELL=/bin/bash` in this
+      # workflow. Setting it here turns the case green while proving nothing
+      # about the container with no procps and no $SHELL that the case exists to
+      # reproduce.
+      - name: real install, truncated pipe, no hasher, completions (installer-smoke.sh)
+        if: runner.os != 'Windows'
+        run: REQUIRE=curl scripts/installer-smoke.sh
+
+      # The instruction is the thing under test, so it is checked before it is
+      # run, in a step of its own: a drifted one-liner must be reported as a
+      # drifted one-liner, not as a download that failed forty lines later.
+      #
+      # TWO assertions, and neither one covers the other:
+      #
+      #   1. the documented line is in README.md verbatim, which catches an edit
+      #      to the documentation that this workflow was never told about;
+      #   2. the line CI runs is that same line with ONLY the ref changed, which
+      #      catches the drift in the other direction — a TLS prelude dropped
+      #      here, a flag quietly added there. That is why the ref is normalised
+      #      out and nothing else is: swapping `main` for a commit is the one
+      #      difference this job is entitled to, and every remaining byte has to
+      #      match, or CI is proving an invocation no user was ever given.
+      - name: the one-liner CI runs is README.md's, modulo the ref
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $documented = $env:README_ONE_LINER
+          $executed = $env:CI_ONE_LINER
+          if (-not (Select-String -Path README.md -SimpleMatch -Pattern $documented -Quiet)) {
+            throw ("README.md no longer contains the documented one-liner verbatim.`n" +
+                   "  expected in README.md: $documented`n" +
+                   "README is canonical: copy the line out of it into this job's " +
+                   "README_ONE_LINER, not the other way round.")
+          }
+          # Only the ref segment of the raw URL is normalised. The host and the
+          # path are deliberately part of the pattern: if either moves, neither
+          # string is rewritten, the comparison below fails, and the message
+          # names both -- which is the right answer, because a one-liner
+          # pointing somewhere else is a different instruction.
+          $refPattern = 'raw\.githubusercontent\.com/dimitritholen/tasqx/[^/]+/install\.ps1'
+          $refNormal = 'raw.githubusercontent.com/dimitritholen/tasqx/<REF>/install.ps1'
+          $a = $documented -replace $refPattern, $refNormal
+          $b = $executed -replace $refPattern, $refNormal
+          if ($a -ne $b) {
+            throw ("the line CI runs differs from the one README.md documents by more than the ref.`n" +
+                   "  README.md documents: $documented`n" +
+                   "  this job runs      : $executed`n" +
+                   "  normalised (README): $a`n" +
+                   "  normalised (CI)    : $b`n" +
+                   "Only the ref may differ. Everything else, the TLS prelude included, " +
+                   "is the instruction a user pastes.")
+          }
+          Write-Output "README.md documents: $documented"
+          Write-Output "this job runs      : $executed"
+          Write-Output 'identity (ref normalised): PASS'
+
+      # `shell: powershell` is Windows PowerShell 5.1, NOT pwsh, and that choice
+      # is the point of this step rather than an incidental. 5.1 is still the
+      # default shell on Windows 11, it is the shell a reader of the README is
+      # standing in, and it is where the bare `irm | iex` fails first — on
+      # negotiating TLS 1.2, with an error naming neither tasqx nor the cause.
+      # Under pwsh this step would prove the script and not the instruction.
+      #
+      # Only the Windows leg fetches its script over the network, and that
+      # asymmetry is deliberate rather than an omission: the Unix steps run the
+      # checked-out `install.sh` directly, so they already test the tree under
+      # review. `iex` has no equivalent — the instruction IS the download — so
+      # here the commit has to be named in the URL for the same guarantee.
+      - name: real install (the documented one-liner, fetched at this commit)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          # PINNED, and not to "latest". This job has to be able to gate the pull
+          # request that introduces it, which a dependency on a release cut
+          # afterwards makes impossible.
+          $env:TASQX_VERSION = 'v0.3.0'
+          Write-Output "GITHUB_SHA: $env:GITHUB_SHA"
+          Write-Output "running: $env:CI_ONE_LINER"
+          Invoke-Expression $env:CI_ONE_LINER
+
+      # A SEPARATE STEP, and that is the whole reason this one exists rather
+      # than four more lines above. `install.ps1` ends its success path with
+      # `exit 0`, and `iex` runs it IN THIS PROCESS — so an assertion written
+      # after the `Invoke-Expression` above is never reached, never fails, and
+      # cannot be told apart from an assertion that passed. That was not
+      # theory: it was written that way first and found by running it, where
+      # the read-back below printed nothing and the step still exited 0. A step
+      # boundary is a new process, which is what makes `exit 0` mean "that step
+      # finished" instead of "stop measuring".
+      #
+      # Read back through the ABSOLUTE PATH rather than the name. The installer
+      # edits the USER PATH, which is a registry write a step already running
+      # does not see, so `tasqx --version` here would be resolving whatever else
+      # is on the runner's PATH. "A file arrived" and "the right file arrived,
+      # executable, reporting the pinned version" are different claims.
+      - name: the binary that one-liner installed answers --version with 0.3.0
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\tasqx\bin\tasqx.exe'
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "nothing at $exe after an install that reported success"
+          }
+          $version = (& $exe --version 2>&1 | Out-String).Trim()
+          Write-Output "installed binary reports: $version"
+          if ($version -notmatch '0\.3\.0') {
+            throw "the installed binary reports '$version', which does not name 0.3.0"
+          }
