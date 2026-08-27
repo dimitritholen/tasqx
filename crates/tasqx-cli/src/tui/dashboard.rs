@@ -54,6 +54,15 @@ pub enum Action {
     List,
     /// Re-read the four results and rebuild the model.
     Refresh,
+    /// Fetch `task.get` for this short_id and hand it back through
+    /// [`App::show_detail`] — the lazy read D58 specified for the focused row
+    /// and never made.
+    ///
+    /// Served inside the event loop like [`Action::Refresh`], not on the way
+    /// out like [`Action::Pick`]: the overlay is drawn on the screen it belongs
+    /// to, so tearing the terminal down for it would flicker the whole
+    /// dashboard to show one card.
+    Detail(i64),
 }
 
 /// The screen's state. A pure state machine: keys in, intents out, no terminal.
@@ -92,6 +101,13 @@ pub struct App {
     window: usize,
     auto_refresh: bool,
     help: bool,
+    /// The open detail card, or nothing.
+    ///
+    /// State and not a flag, because the card is a fetch: the loop answers
+    /// [`Action::Detail`] by calling `task.get` and handing the result to
+    /// [`App::show_detail`]. Modal on the terms `?` established, and checked
+    /// beside `help` so the two cannot both be open.
+    detail: Option<model::TaskDetail>,
     /// One transient line, shown in the footer instead of the key hints.
     status: String,
 }
@@ -129,6 +145,7 @@ impl App {
                 .unwrap_or(0),
             auto_refresh,
             help: false,
+            detail: None,
             status: String::new(),
         }
     }
@@ -202,6 +219,30 @@ impl App {
     pub fn cursor_of(&self, id: PanelId) -> usize {
         let stored = self.cursor.get(&id).copied().unwrap_or(0);
         stored.min(self.rows_in(id).saturating_sub(1))
+    }
+
+    /// Open the detail overlay on a card the loop has fetched.
+    ///
+    /// The state machine asked for it ([`Action::Detail`]) and the loop did the
+    /// I/O — the same division `Refresh` runs on, and the reason this module
+    /// still touches no backend.
+    pub fn show_detail(&mut self, card: model::TaskDetail) {
+        self.detail = Some(card);
+    }
+
+    /// Tell the reader why the card they asked for never opened.
+    ///
+    /// A row can be gone by the time `⏎` reaches the store — auto-refresh redraws
+    /// every five seconds and another terminal can finish the task in between —
+    /// so a stale row is expected, not exceptional, and it is a message rather
+    /// than the end of the session.
+    pub fn say(&mut self, message: impl Into<String>) {
+        self.status = message.into();
+    }
+
+    #[cfg(test)]
+    pub fn detail_open(&self) -> bool {
+        self.detail.is_some()
     }
 
     /// Replace the data after a refresh, keeping focus, slot and cursor.
@@ -285,8 +326,15 @@ impl App {
         //
         // Ctrl-C is the exception and is handled above: it is never "close the
         // overlay", it is always "close the program".
+        //
+        // The detail card is modal on exactly those terms, and is checked in
+        // the same place so the two can never be open at once.
         if self.help {
             self.help = false;
+            return None;
+        }
+        if self.detail.is_some() {
+            self.detail = None;
             return None;
         }
 
@@ -348,6 +396,19 @@ impl App {
                     "auto-refresh off".into()
                 };
                 None
+            }
+            KeyCode::Enter => {
+                match model::row_at(&self.dash, self.focus, self.cursor_of(self.focus)) {
+                    Some(t) => Some(Action::Detail(t.short_id)),
+                    // Named, not silent. A key that advertises itself in the footer
+                    // and then does nothing is this repository's recurring
+                    // silent-drop shape, and the digit refusals already answer the
+                    // same question the same way.
+                    None => {
+                        self.status = format!("{} has no row to open", self.focus.title());
+                        None
+                    }
+                }
             }
             KeyCode::Char('p') => Some(Action::Pick),
             KeyCode::Char('l') => Some(Action::List),
@@ -595,8 +656,13 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     }
     draw_status(&screen, app, theme, caps, frame);
     draw_footer(&screen, app, theme, caps, frame);
+    // `on_key` closes one before the other can open, so the order here settles
+    // nothing at runtime — it is written down so a future edit that breaks that
+    // invariant still draws one overlay rather than two overlapping boxes.
     if app.help {
         draw_help(area, theme, caps, frame);
+    } else if let Some(card) = &app.detail {
+        draw_detail(card, area, theme, caps, frame);
     }
 }
 
@@ -731,11 +797,26 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         ]));
     }
     lines.push(Line::from(Span::styled(String::new(), muted)));
-    lines.push(Line::from(Span::styled(
-        "  any key closes this".to_string(),
-        muted,
-    )));
+    lines.push(Line::from(Span::styled(MODAL_FOOT.to_string(), muted)));
+    draw_overlay(lines, area, theme, caps, frame);
+}
 
+/// The last line of every modal, and the sentence its behaviour is held to.
+///
+/// A constant because it is a promise `on_key` keeps: any key closes, `ctrl-c`
+/// excepted, and nothing falls through to the screen behind. It was a lie once
+/// in both directions — only `?`, `q` and `esc` closed the help, and every
+/// other key acted on the dashboard underneath it.
+const MODAL_FOOT: &str = "  any key closes this";
+
+/// Draw `lines` as a centred, bordered box over `area`.
+///
+/// One frame for both overlays. It was written once for `?` and the detail card
+/// would have been the second copy — the same second-literal drift the footer
+/// was just rebuilt to end (D62), in the code that draws rather than in the code
+/// that lists.
+fn draw_overlay(lines: Vec<Line>, area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
+    let muted = rt_style(theme.role("muted"), caps);
     // Wide enough for the longest line it actually holds. A fixed width cut
     // `focus a panel (or place it in the analytics slot)` mid-word at EVERY
     // terminal size, so no window ever revealed the tail.
@@ -768,7 +849,10 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         muted,
     )));
     for l in lines {
-        let text = l.to_string();
+        // Cut to the box, not clipped by it: a card holds an annotation body
+        // nobody wrote to fit, and ratatui's own clip would lose the ellipsis
+        // that says something was cut.
+        let text = render::truncate(&l.to_string(), inner, caps.unicode);
         let pad = inner.saturating_sub(render::width(&text));
         framed.push(Line::from(vec![
             Span::styled(side.to_string(), muted),
@@ -781,6 +865,142 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         muted,
     )));
     frame.render_widget(Paragraph::new(framed), rect);
+}
+
+/// The detail overlay: one `task.get`, and the `depends_on` that is the only
+/// answer BLOCKED has ever been able to give.
+fn draw_detail(
+    card: &model::TaskDetail,
+    area: Rect,
+    theme: &Theme,
+    caps: &Caps,
+    frame: &mut Frame,
+) {
+    let accent = rt_style(theme.role("accent"), caps);
+    let muted = rt_style(theme.role("muted"), caps);
+    let header = rt_style(theme.role("header"), caps);
+    let danger = rt_style(theme.role("danger"), caps);
+    let plain = RtStyle::default();
+    let dash = "—";
+
+    // The running marker is NOW's, reused rather than invented: one glyph means
+    // "the timer is on this" everywhere on the screen.
+    let running = if card.active_since.is_some() {
+        if caps.unicode {
+            "▶ "
+        } else {
+            "> "
+        }
+    } else {
+        ""
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            running.to_string(),
+            rt_style(theme.role("timer.active"), caps),
+        ),
+        Span::styled(format!("#{} ", card.short_id), accent),
+        Span::styled(card.title().to_string(), header),
+    ])];
+
+    let mut facts = vec![
+        card.project().unwrap_or(dash).to_string(),
+        card.status.as_str().to_string(),
+    ];
+    if let Some(p) = card.priority {
+        facts.push(p.as_str().to_string());
+    }
+    facts.push(format!("urgency {:.1}", card.urgency));
+    lines.push(Line::from(Span::styled(
+        format!("  {}", facts.join(" · ")),
+        muted,
+    )));
+
+    // The reason this overlay exists. It is drawn before the dates, and in
+    // `danger`, because a reader who pressed ⏎ on a BLOCKED row asked exactly
+    // one question.
+    if !card.depends_on().is_empty() {
+        let ids: Vec<String> = card.depends_on().iter().map(|n| format!("#{n}")).collect();
+        lines.push(Line::from(vec![
+            Span::styled("  blocked by ".to_string(), danger),
+            Span::styled(ids.join(" "), accent),
+        ]));
+    } else if card.blocked {
+        // `blocked` and no edges is not a contradiction to hide: D11 computes
+        // it, and a reader looking at a BLOCKED row deserves to be told the
+        // panel and the task disagree rather than shown a card with a gap.
+        lines.push(Line::from(Span::styled(
+            "  blocked, with no dependency recorded".to_string(),
+            danger,
+        )));
+    }
+
+    let when = |t: Option<jiff::Timestamp>| {
+        t.map(|t| t.to_zoned(jiff::tz::TimeZone::UTC).date().to_string())
+            .unwrap_or_else(|| dash.to_string())
+    };
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  due {}   scheduled {}   wait {}",
+            when(card.due),
+            when(card.scheduled),
+            when(card.wait)
+        ),
+        muted,
+    )));
+    let est = card
+        .estimate_secs
+        .map(panels::dur_compact)
+        .unwrap_or_else(|| dash.to_string());
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  est {est}   tracked {}",
+            panels::dur_compact(card.tracked_secs)
+        ),
+        muted,
+    )));
+    // `completed` where there is one, `modified` where there is not: a closed
+    // task's last edit is rarely the fact anybody wants, and an open task has no
+    // completion date to show. Both are on the card because both are on
+    // `task.get`, and a field fetched and never drawn is a field the reader was
+    // told nothing about.
+    let last = match card.completed {
+        Some(t) => format!("completed {}", when(Some(t))),
+        None => format!("modified {}", when(Some(card.modified))),
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  created {}   {last}", when(Some(card.created))),
+        muted,
+    )));
+    if let Some(r) = card.recurrence() {
+        lines.push(Line::from(Span::styled(format!("  repeats {r}"), muted)));
+    }
+    if !card.tags().is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  tags ".to_string(), muted),
+            Span::styled(card.tags().join("  "), plain),
+        ]));
+    }
+
+    // Newest last, which is the order they were written and the order every
+    // other surface in this program prints them.
+    if !card.annotations().is_empty() {
+        lines.push(Line::from(Span::styled(String::new(), muted)));
+        for n in card.annotations() {
+            let stamp = n
+                .created
+                .map(|t| t.to_zoned(jiff::tz::TimeZone::UTC).date().to_string())
+                .unwrap_or_else(|| dash.to_string());
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {stamp}  "), muted),
+                Span::styled(n.body.clone(), plain),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(Span::styled(String::new(), muted)));
+    lines.push(Line::from(Span::styled(MODAL_FOOT.to_string(), muted)));
+    draw_overlay(lines, area, theme, caps, frame);
 }
 
 /// The width the help overlay's key column needs, derived rather than guessed.
@@ -842,7 +1062,7 @@ pub const KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "1-8",
             word: "panel",
-            rank: 3,
+            rank: 4,
         }),
     },
     Key {
@@ -851,7 +1071,7 @@ pub const KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "tab",
             word: "cycle",
-            rank: 4,
+            rank: 5,
         }),
     },
     Key {
@@ -860,7 +1080,7 @@ pub const KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "j/k",
             word: "move",
-            rank: 5,
+            rank: 6,
         }),
     },
     Key {
@@ -869,7 +1089,7 @@ pub const KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "g/G",
             word: "ends",
-            rank: 9,
+            rank: 10,
         }),
     },
     Key {
@@ -878,7 +1098,7 @@ pub const KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "r",
             word: "refresh",
-            rank: 6,
+            rank: 7,
         }),
     },
     Key {
@@ -887,7 +1107,7 @@ pub const KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "R",
             word: "auto",
-            rank: 10,
+            rank: 11,
         }),
     },
     Key {
@@ -896,7 +1116,16 @@ pub const KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "w",
             word: "window",
-            rank: 8,
+            rank: 9,
+        }),
+    },
+    Key {
+        keys: "enter",
+        help: "open the row under the cursor",
+        footer: Some(Hint {
+            keys: "enter",
+            word: "open",
+            rank: 3,
         }),
     },
     Key {
@@ -914,7 +1143,7 @@ pub const KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "l",
             word: "list",
-            rank: 7,
+            rank: 8,
         }),
     },
     Key {
