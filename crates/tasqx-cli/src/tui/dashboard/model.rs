@@ -1295,6 +1295,187 @@ pub fn row_count(dash: &Dashboard, id: PanelId) -> usize {
     }
 }
 
+/// One annotation, as `task.get` returns it.
+#[derive(Clone, Debug)]
+pub struct Note {
+    pub created: Option<Timestamp>,
+    pub body: String,
+}
+
+/// What `⏎` shows: one `task.get`, mapped.
+///
+/// A second reader beside [`Task`] rather than fields bolted onto it, because
+/// the two come from different calls and the difference matters. `task.list`
+/// fills every panel and carries no `depends_on`, no tags and no annotations;
+/// `task.get` is one row, fetched once, and carries all three. Widening `Task`
+/// would give every row on the screen three fields that are `None` for all of
+/// them and populated for one.
+///
+/// `depends_on` is why this exists. It lives on `task.get` alone, so it is the
+/// first thing on this screen that can answer BLOCKED's question.
+#[derive(Clone, Debug)]
+pub struct TaskDetail {
+    pub short_id: i64,
+    title: String,
+    project: Option<String>,
+    pub status: Status,
+    pub priority: Option<Prio>,
+    pub urgency: f64,
+    pub blocked: bool,
+    pub due: Option<Timestamp>,
+    pub scheduled: Option<Timestamp>,
+    pub wait: Option<Timestamp>,
+    pub created: Timestamp,
+    pub modified: Timestamp,
+    pub completed: Option<Timestamp>,
+    pub active_since: Option<Timestamp>,
+    pub estimate_secs: Option<i64>,
+    pub tracked_secs: i64,
+    recurrence: Option<String>,
+    depends_on: Vec<i64>,
+    tags: Vec<String>,
+    annotations: Vec<Note>,
+}
+
+impl TaskDetail {
+    /// Sanitised title. The only way to read it.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Sanitised project name, `None` for the project-less bucket.
+    pub fn project(&self) -> Option<&str> {
+        self.project.as_deref()
+    }
+
+    /// Sanitised recurrence rule, `None` where the task does not repeat.
+    pub fn recurrence(&self) -> Option<&str> {
+        self.recurrence.as_deref()
+    }
+
+    /// The short_ids this task waits on — the answer BLOCKED could never give.
+    pub fn depends_on(&self) -> &[i64] {
+        &self.depends_on
+    }
+
+    /// Sanitised tag names.
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
+
+    /// Annotations, newest last, bodies sanitised.
+    pub fn annotations(&self) -> &[Note] {
+        &self.annotations
+    }
+
+    /// Map one `task.get` result.
+    ///
+    /// Every display string goes through the shared sanitiser HERE (D19), not
+    /// at draw time — a ratatui cell is written to the terminal verbatim, and
+    /// annotation bodies and tag names arrive on this call and on no other, so
+    /// [`Task::from_json`]'s care does not cover them.
+    pub fn from_json(v: &Value) -> Option<Self> {
+        let ts = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_str)
+                .and_then(|s| s.parse().ok())
+        };
+        let modified: Timestamp = ts("modified")?;
+        Some(TaskDetail {
+            short_id: v.get("short_id").and_then(Value::as_i64)?,
+            title: render::san(v.get("title").and_then(Value::as_str).unwrap_or("")),
+            project: v.get("project").and_then(Value::as_str).map(render::san),
+            status: Status::parse(v.get("status").and_then(Value::as_str).unwrap_or("")),
+            priority: v
+                .get("priority")
+                .and_then(Value::as_str)
+                .and_then(Prio::parse),
+            urgency: v.get("urgency").and_then(Value::as_f64).unwrap_or(0.0),
+            blocked: v.get("blocked").and_then(Value::as_bool).unwrap_or(false),
+            due: ts("due"),
+            scheduled: ts("scheduled"),
+            wait: ts("wait"),
+            created: ts("created").unwrap_or(modified),
+            modified,
+            completed: ts("completed"),
+            active_since: ts("active_since"),
+            // The one checked duration reader (D17/D14), for the reason
+            // `Task::from_json` gives: a hand-rolled parse here would be the
+            // next copy, and a previous copy was a bug.
+            estimate_secs: v
+                .get("estimate")
+                .and_then(Value::as_str)
+                .and_then(tasqx_core::util::duration_secs),
+            tracked_secs: v
+                .get("tracked")
+                .and_then(Value::as_str)
+                .and_then(tasqx_core::util::duration_secs)
+                .unwrap_or(0),
+            recurrence: v.get("recurrence").and_then(Value::as_str).map(render::san),
+            depends_on: v
+                .get("depends_on")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_i64).collect())
+                .unwrap_or_default(),
+            tags: v
+                .get("tags")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(render::san)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            annotations: v
+                .get("annotations")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .map(|n| Note {
+                            created: n
+                                .get("created")
+                                .and_then(Value::as_str)
+                                .and_then(|s| s.parse().ok()),
+                            body: render::san(n.get("body").and_then(Value::as_str).unwrap_or("")),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+    }
+}
+
+/// The task at row `idx` of `id`, or `None` where that row is not a task.
+///
+/// The other half of [`row_count`], and the reason the cursor counts rows: this
+/// is what `⏎` opens. DUE walks its four buckets in the order `due_body` draws
+/// them, so the index the reader moved is the index resolved here — the same
+/// map, not a second one that agrees today.
+///
+/// PROJECTS answers `None` on every row. It has rows and a cursor, and they are
+/// projects; a detail overlay for one is a different decision and is not this
+/// one.
+pub fn row_at(dash: &Dashboard, id: PanelId, idx: usize) -> Option<&Task> {
+    match id {
+        PanelId::Next => dash.next.rows.get(idx),
+        PanelId::Blocked => dash.blocked.rows.get(idx),
+        PanelId::Recent => dash.recent.rows.get(idx),
+        PanelId::Due => {
+            let d = &dash.due;
+            let mut n = idx;
+            for rows in [&d.overdue, &d.today, &d.tomorrow, &d.week] {
+                if n < rows.len() {
+                    return rows.get(n);
+                }
+                n -= rows.len();
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// The body cost of one level, for a test that checks the two agree.
 #[cfg(test)]
 pub(crate) fn spec_body(id: PanelId, d: Detail) -> u16 {
