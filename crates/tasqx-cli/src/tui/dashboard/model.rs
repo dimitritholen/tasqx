@@ -973,10 +973,43 @@ pub enum Rung {
     Xl,
 }
 
+/// Which rung a terminal of this size lands on.
+///
+/// A function rather than a field on `Screen`, because the renderer stopped
+/// asking: the footer used to branch on the rung to choose between two literal
+/// hint lists, and now the width alone decides how many hints fit (D62). The
+/// layout still classifies, and the ladder guards still assert against the
+/// classification — so it lives where both can call it rather than as a field
+/// only the tests read.
+pub fn rung_for(width: u16, height: u16) -> Rung {
+    // Read out of the table rather than repeated as an if-chain: the same
+    // numbers used to live in both, and `every_rung_gives_its_columns_room_to_read`
+    // asserts against the table — so a lowered breakpoint here would have passed
+    // the guard that exists to catch exactly that.
+    let by_width = RUNG_MIN_WIDTH
+        .iter()
+        .find(|(_, min)| width >= *min)
+        .map(|(r, _)| *r)
+        .unwrap_or(Rung::Xs);
+    let by_height = if height >= 40 {
+        Rung::Xl
+    } else if height >= 32 {
+        Rung::L
+    } else if height >= 28 {
+        Rung::M
+    } else if height >= 22 {
+        Rung::S
+    } else {
+        Rung::Xs
+    };
+    // The most constraining axis wins: a 200x16 tmux split has room for columns
+    // and none for panels.
+    by_width.min(by_height)
+}
+
 /// The whole screen's geometry.
 #[derive(Clone, Debug)]
 pub struct Screen {
-    pub rung: Rung,
     pub columns: u16,
     /// Row 0, full width.
     pub status: Placement,
@@ -1058,29 +1091,7 @@ pub fn layout(
         return None;
     }
 
-    // Read out of the table rather than repeated as an if-chain: the same
-    // numbers used to live in both, and `every_rung_gives_its_columns_room_to_read`
-    // asserts against the table — so a lowered breakpoint here would have passed
-    // the guard that exists to catch exactly that.
-    let by_width = RUNG_MIN_WIDTH
-        .iter()
-        .find(|(_, min)| width >= *min)
-        .map(|(r, _)| *r)
-        .unwrap_or(Rung::Xs);
-    let by_height = if height >= 40 {
-        Rung::Xl
-    } else if height >= 32 {
-        Rung::L
-    } else if height >= 28 {
-        Rung::M
-    } else if height >= 22 {
-        Rung::S
-    } else {
-        Rung::Xs
-    };
-    // The most constraining axis wins: a 200x16 tmux split has room for columns
-    // and none for panels.
-    let rung = by_width.min(by_height);
+    let rung = rung_for(width, height);
     let columns = columns_for(rung);
     let column_rows = height - CHROME_ROWS;
 
@@ -1141,7 +1152,6 @@ pub fn layout(
     }
 
     Some(Screen {
-        rung,
         columns,
         status: Placement {
             id: PanelId::Now, // the status bar is not a panel; `id` is unused

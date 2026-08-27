@@ -214,7 +214,7 @@ fn the_layout_refuses_below_the_floor_and_accepts_exactly_at_it() {
 fn eighty_by_twentyfour_fills_the_frame_exactly() {
     let screen = layout(80, 24, &all_panels(), ANY).expect("80x24 draws");
     assert_eq!(screen.columns, 1, "80 cells is a single column");
-    assert_eq!(screen.rung, Rung::S);
+    assert_eq!(rung_for(80, 24), Rung::S);
 
     // Panels occupy every row between the status bar and the closing rule, with
     // no gap and no overlap — asserted by walking them rather than by trusting
@@ -970,14 +970,14 @@ fn a_taller_terminal_never_shrinks_a_panel() {
                 .collect();
 
             if let Some((prev_rung, prev_bodies)) = &prev {
-                if *prev_rung == screen.rung {
+                if *prev_rung == rung_for(w, h) {
                     for (id, was) in prev_bodies {
                         let now = bodies.get(id).copied().unwrap_or(0);
                         assert!(
                             now >= *was,
                             "{w}x{h}: {id:?} shrank from {was} to {now} when the terminal \
                              grew by one row (rung {:?})",
-                            screen.rung
+                            rung_for(w, h)
                         );
                     }
                 } else {
@@ -988,13 +988,13 @@ fn a_taller_terminal_never_shrinks_a_panel() {
                     assert!(
                         bodies.len() >= prev_bodies.len(),
                         "{w}x{h}: crossing into {:?} dropped a panel ({} -> {})",
-                        screen.rung,
+                        rung_for(w, h),
                         prev_bodies.len(),
                         bodies.len()
                     );
                 }
             }
-            prev = Some((screen.rung, bodies));
+            prev = Some((rung_for(w, h), bodies));
         }
     }
 }
