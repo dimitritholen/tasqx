@@ -1,7 +1,7 @@
 //! One body-builder per panel: model in, styled lines out.
 //!
 //! Nothing here draws chrome, and nothing here knows where on the screen it is
-//! — a builder is handed a width, a height and a scroll offset, and returns at
+//! — a builder is handed a width, a height and a cursor, and returns at
 //! most that many lines. The screen composites; these fill.
 //!
 //! **Every string is cut in Rust before it becomes a `Span`.** ratatui does clip
@@ -16,9 +16,44 @@ use ratatui::text::{Line, Span};
 use crate::render;
 use crate::theme::{Caps, Theme};
 use crate::tokens;
-use crate::tui::rt_style;
+use crate::tui::{first_visible, rt_style};
 
 use super::model::{Dashboard, Detail, PanelId, StatusBar, Task};
+
+/// Where the reader is in this panel, and whether this panel is the one they
+/// are reading.
+///
+/// `row` places the viewport in every list panel — a panel keeps its position
+/// while focus is elsewhere, so Tab comes back to where you left off. `shown`
+/// only decides whether the glyph is drawn: eight panels each drawing a cursor
+/// would say nothing about which one the keys act on, and the rule already
+/// carries panel focus.
+///
+/// The two-cell column is reserved on EVERY row of a list panel whether or not
+/// the glyph lands on it — the `id_width` lesson, one column over. A column that
+/// appears only under the cursor reflows the panel on every `j`, and a column
+/// that appears only on focus makes Tab shift the text sideways.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Cursor {
+    pub row: usize,
+    pub shown: bool,
+}
+
+/// The reserved cursor cell for one row: the glyph, or the space it would take.
+///
+/// A glyph and not a colour. `theme::Style` has no `bg` field so `rt_style` can
+/// never produce one, and a cursor drawn in colour alone is invisible under
+/// `NO_COLOR` — the reasoning `rule_label` already records for panel focus.
+fn cursor_cell(at: bool, s: &Styles, unicode: bool) -> Span<'static> {
+    let glyph = if !at {
+        "  "
+    } else if unicode {
+        "▸ "
+    } else {
+        "> "
+    };
+    Span::styled(glyph, if at { s.accent } else { s.muted })
+}
 
 /// `01:23:07` — a running clock.
 pub fn hms(secs: i64) -> String {
@@ -134,7 +169,7 @@ pub fn body(
     dash: &Dashboard,
     width: u16,
     height: u16,
-    scroll: usize,
+    cursor: Cursor,
     theme: &Theme,
     caps: &Caps,
 ) -> Vec<Line<'static>> {
@@ -142,11 +177,11 @@ pub fn body(
     let w = width as usize;
     let mut lines = match id {
         PanelId::Now => now_body(dash, detail, &s, w, caps.unicode),
-        PanelId::Next => next_body(dash, &s, w, height, scroll, caps.unicode, theme, caps),
-        PanelId::Due => due_body(dash, &s, w, height, scroll, caps.unicode),
-        PanelId::Blocked => blocked_body(dash, &s, w, height, scroll, caps.unicode),
-        PanelId::Recent => recent_body(dash, &s, w, height, scroll, caps.unicode),
-        PanelId::Projects => projects_body(dash, &s, w, height, scroll, caps.unicode),
+        PanelId::Next => next_body(dash, &s, w, height, cursor, caps.unicode, theme, caps),
+        PanelId::Due => due_body(dash, &s, w, height, cursor, caps.unicode),
+        PanelId::Blocked => blocked_body(dash, &s, w, height, cursor, caps.unicode),
+        PanelId::Recent => recent_body(dash, &s, w, height, cursor, caps.unicode),
+        PanelId::Projects => projects_body(dash, &s, w, height, cursor, caps.unicode),
         PanelId::Burndown => burndown_body(dash, &s, w, height, caps.unicode),
         PanelId::Tokens => tokens_body(dash, &s, w, height, caps.unicode),
         PanelId::Slot => Vec::new(),
@@ -202,40 +237,49 @@ fn now_body(
     vec![head, second, third]
 }
 
-/// The first row to draw, clamped so scrolling stops when the last row is on
-/// screen — never at `len - 1`.
+/// `(first line, lines to draw, lines still hidden below)` for a list panel,
+/// placed so the cursor's line is on screen.
 ///
-/// Clamping to `len - 1` was a real defect: a panel whose rows all fitted still
-/// scrolled, so one `j` pushed the top row out of a rect with blank space to
-/// spare, and `G` parked the final row alone at the top of an empty panel. The
-/// bound is a function of the VIEWPORT, which is why it lives here and not in
-/// `App` — the state machine is deliberately never told the terminal's height,
-/// the same division `pick::first_visible` makes.
-fn scroll_start(scroll: usize, len: usize, visible: usize) -> usize {
-    scroll.min(len.saturating_sub(visible.max(1)))
-}
-
-/// `(first row, rows to draw, rows still hidden below)` for a list panel.
+/// The viewport is DERIVED here and stored nowhere. `App` keeps a row index and
+/// is deliberately never told the terminal's height — the same division
+/// `pick::first_visible` makes, and this is that function, reused rather than
+/// re-derived.
 ///
-/// The marker line is only reserved when there is something to mark. Reserving
-/// it unconditionally left a blank row at the bottom of every panel scrolled to
-/// its end — the marker had nothing to say, and the row it had taken stayed
-/// empty.
-fn window(scroll: usize, len: usize, visible: usize) -> (usize, usize, usize) {
+/// Two shipped defects are encoded in the arithmetic and must survive:
+///
+/// * The marker line is only reserved when there is something to mark.
+///   Reserving it unconditionally left a blank row at the bottom of every panel
+///   scrolled to its end — the marker had nothing to say, and the row it had
+///   taken stayed empty.
+/// * A single-row panel spends its row on DATA, never on the count of the data
+///   it is not showing. With `visible == 1` the marker took the only line there
+///   was, so BLOCKED and RECENT at 80x24 read `…3 more` and `…31 more` and
+///   showed no task at any position — panels that had become counters for their
+///   own emptiness.
+///
+/// The marker line is reserved BEFORE the viewport is placed, not after. Sized
+/// against the unreduced height, the last screenful puts the cursor on the
+/// `…N more` row.
+fn window(cursor: usize, len: usize, visible: usize) -> (usize, usize, usize) {
     let visible = visible.max(1);
-    let start = scroll_start(scroll, len, visible);
-    let remaining = len - start;
-    // A single-row panel spends its row on DATA, never on the count of the data
-    // it is not showing. With `visible == 1` the marker took the only line
-    // there was, so BLOCKED and RECENT at 80x24 read `…3 more` and `…31 more`
-    // and showed no task at any scroll position — a panel that had become a
-    // counter for its own emptiness.
-    if remaining > visible && visible > 1 {
-        let room = visible - 1;
-        (start, room, remaining - room)
-    } else {
-        (start, remaining.min(visible), 0)
+    let start = first_visible(cursor, len, visible);
+    if len - start <= visible || visible == 1 {
+        // The last screenful, or a viewport with no line to spare: nothing is
+        // hidden below, so no line is reserved and the panel fills.
+        return (start, (len - start).min(visible), 0);
     }
+    // Something IS hidden below, so the marker takes a line and the viewport is
+    // placed AGAIN against the room that is left. Placed once, against the
+    // unreduced height, the last row of a scrolled panel is the `…N more` line
+    // and the cursor sits on it.
+    let room = visible - 1;
+    let start = first_visible(cursor, len, room);
+    let drawn = if len - start > room {
+        room
+    } else {
+        (len - start).min(visible)
+    };
+    (start, drawn, len - start - drawn)
 }
 
 /// The id column is sized from EVERY row the panel can scroll to, not from the
@@ -262,7 +306,7 @@ fn next_body(
     s: &Styles,
     w: usize,
     height: u16,
-    scroll: usize,
+    cursor: Cursor,
     unicode: bool,
     theme: &Theme,
     caps: &Caps,
@@ -279,11 +323,15 @@ fn next_body(
     let idw = id_width(rows);
     let visible = height as usize;
     let mut out = Vec::new();
-    let (start, room, hidden) = window(scroll, rows.len(), visible);
-    for t in rows.iter().skip(start).take(room) {
+    let (start, room, hidden) = window(cursor.row, rows.len(), visible);
+    // `n` stays the index into the FULL row list — it is what the cursor is
+    // compared against — so the skip/take pair goes after the `enumerate`,
+    // never before it. `pick` records the same ordering trap.
+    for (n, t) in rows.iter().enumerate().skip(start).take(room) {
+        let at = cursor.shown && n == cursor.row;
         let urg = format!("{:>4.1}", t.urgency);
         let prio = t.priority.map(|p| p.as_str()).unwrap_or("-");
-        let head = format!("{} {urg} {prio} ", pad(&format!("#{}", t.short_id), idw));
+        let head = format!("  {} {urg} {prio} ", pad(&format!("#{}", t.short_id), idw));
         let rest = w.saturating_sub(render::width(&head));
         // The ramp, over the same denominator `render` uses, so the dashboard
         // and `tasqx list` shade the same task the same colour. `ramp_style`
@@ -298,6 +346,7 @@ fn next_body(
             .map(|p| rt_style(theme.role(&format!("priority.{}", p.as_str())), caps))
             .unwrap_or(s.muted);
         out.push(Line::from(vec![
+            cursor_cell(at, s, unicode),
             Span::styled(pad(&format!("#{}", t.short_id), idw), s.accent),
             Span::styled(format!(" {urg} "), ramp),
             Span::styled(format!("{prio} "), prio_style),
@@ -315,7 +364,7 @@ fn due_body(
     s: &Styles,
     w: usize,
     height: u16,
-    scroll: usize,
+    cursor: Cursor,
     unicode: bool,
 ) -> Vec<Line<'static>> {
     let d = &dash.due;
@@ -330,6 +379,13 @@ fn due_body(
         ("TOMORROW", &d.tomorrow, s.muted),
         ("THIS WEEK", &d.week, s.muted),
     ];
+    // The cursor counts TASKS and the viewport is placed in LINES, so the one
+    // thing this panel owes the rest of the screen is the map between them. It
+    // is kept here, in the loop that builds the lines, rather than recomputed
+    // from the bucket lengths somewhere else — a second derivation of the same
+    // number is the drift this codebase keeps paying for.
+    let mut cursor_line = 0;
+    let mut row = 0usize;
     for (name, rows, style) in buckets {
         if rows.is_empty() {
             continue;
@@ -339,16 +395,23 @@ fn due_body(
             style,
         )));
         for t in rows {
+            if row == cursor.row {
+                cursor_line = out.len();
+            }
             let when = when_cell(t, today);
-            out.push(Line::from(Span::styled(
-                split_row(
-                    &format!(" #{} {}", t.short_id, t.title()),
-                    &when,
-                    w,
-                    unicode,
+            out.push(Line::from(vec![
+                cursor_cell(cursor.shown && row == cursor.row, s, unicode),
+                Span::styled(
+                    split_row(
+                        &format!("#{} {}", t.short_id, t.title()),
+                        &when,
+                        w.saturating_sub(2),
+                        unicode,
+                    ),
+                    s.plain,
                 ),
-                s.plain,
-            )));
+            ]));
+            row += 1;
         }
     }
     let visible = height as usize;
@@ -357,7 +420,7 @@ fn due_body(
         // other list panel does; this one silently truncated, and on a short
         // window that meant the tasks due today — the panel's whole point —
         // vanished with nothing to say they existed.
-        let (start, room, hidden) = window(scroll, out.len(), visible);
+        let (start, room, hidden) = window(cursor_line, out.len(), visible);
         out = out.into_iter().skip(start).take(room).collect();
         if let Some(l) = more_line(hidden, s, w, unicode) {
             out.push(l);
@@ -371,7 +434,7 @@ fn blocked_body(
     s: &Styles,
     w: usize,
     height: u16,
-    scroll: usize,
+    cursor: Cursor,
     unicode: bool,
 ) -> Vec<Line<'static>> {
     let rows = &dash.blocked.rows;
@@ -379,16 +442,18 @@ fn blocked_body(
         return empty("nothing is blocked", s, w as u16, unicode);
     }
     let visible = height as usize;
-    let (start, room, hidden) = window(scroll, rows.len(), visible);
+    let (start, room, hidden) = window(cursor.row, rows.len(), visible);
     let mut out: Vec<Line<'static>> = rows
         .iter()
+        .enumerate()
         .skip(start)
         .take(room)
-        .map(|t| {
+        .map(|(n, t)| {
             Line::from(vec![
+                cursor_cell(cursor.shown && n == cursor.row, s, unicode),
                 Span::styled(format!("#{} ", t.short_id), s.danger),
                 Span::styled(
-                    render::truncate(t.title(), w.saturating_sub(6), unicode),
+                    render::truncate(t.title(), w.saturating_sub(8), unicode),
                     s.plain,
                 ),
             ])
@@ -405,7 +470,7 @@ fn recent_body(
     s: &Styles,
     w: usize,
     height: u16,
-    scroll: usize,
+    cursor: Cursor,
     unicode: bool,
 ) -> Vec<Line<'static>> {
     let rows = &dash.recent.rows;
@@ -413,16 +478,18 @@ fn recent_body(
         return empty("nothing has changed yet", s, w as u16, unicode);
     }
     let visible = height as usize;
-    let (start, room, hidden) = window(scroll, rows.len(), visible);
+    let (start, room, hidden) = window(cursor.row, rows.len(), visible);
     let mut out: Vec<Line<'static>> = rows
         .iter()
+        .enumerate()
         .skip(start)
         .take(room)
-        .map(|t| {
+        .map(|(n, t)| {
             let status = t.status.as_str().to_string();
             let head = format!("#{} ", t.short_id);
-            let rest = w.saturating_sub(render::width(&head) + render::width(&status) + 1);
+            let rest = w.saturating_sub(render::width(&head) + render::width(&status) + 3);
             Line::from(vec![
+                cursor_cell(cursor.shown && n == cursor.row, s, unicode),
                 Span::styled(head, s.accent),
                 Span::styled(
                     pad(&render::truncate(t.title(), rest, unicode), rest),
@@ -443,7 +510,7 @@ fn projects_body(
     s: &Styles,
     w: usize,
     height: u16,
-    scroll: usize,
+    cursor: Cursor,
     unicode: bool,
 ) -> Vec<Line<'static>> {
     let rows = &dash.projects.rows;
@@ -451,11 +518,12 @@ fn projects_body(
         return empty("no projects yet — tasqx init <name>", s, w as u16, unicode);
     }
     let visible = height as usize;
-    let (start, room, _) = window(scroll, rows.len(), visible);
+    let (start, room, _) = window(cursor.row, rows.len(), visible);
     rows.iter()
+        .enumerate()
         .skip(start)
         .take(room)
-        .map(|r| {
+        .map(|(n, r)| {
             let star = if r.is_default { "*" } else { " " };
             let name = r.name().unwrap_or("(none)");
             let mut tail = if r.overdue > 0 {
@@ -472,14 +540,15 @@ fn projects_body(
                     dur_compact(r.tracked_secs),
                     dur_compact(r.est_secs)
                 );
-                if render::width(&tail) + render::width(&extra) + 4 <= w {
+                if render::width(&tail) + render::width(&extra) + 6 <= w {
                     tail.push_str(&extra);
                 }
             }
             Line::from(vec![
+                cursor_cell(cursor.shown && n == cursor.row, s, unicode),
                 Span::styled(star.to_string(), s.accent),
                 Span::styled(
-                    render::truncate(name, w.saturating_sub(render::width(&tail) + 2), unicode),
+                    render::truncate(name, w.saturating_sub(render::width(&tail) + 4), unicode),
                     if r.archived { s.muted } else { s.project },
                 ),
                 Span::styled(

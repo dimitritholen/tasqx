@@ -68,7 +68,20 @@ pub struct App {
     focus: PanelId,
     /// Which slot member the analytics slot shows. Sticky across refreshes.
     slot: PanelId,
-    scroll: HashMap<PanelId, usize>,
+    /// Where the reader is in each panel, as a SELECTABLE-ROW index — never a
+    /// body-line index and never a scroll offset.
+    ///
+    /// It was a scroll offset, and a scroll offset has nothing to point at: the
+    /// content moved past the viewport with no row marked, so "where am I" had
+    /// no answer on the screen. Rows and not lines because `due_body` puts its
+    /// bucket names (`OVERDUE`, `TODAY`, …) and its `…N more` marker in the
+    /// same `Vec<Line>` as its tasks, and a cursor that can land on either is a
+    /// cursor `Enter` cannot use (D58).
+    ///
+    /// The offset that used to live here is now DERIVED, in `panels`, from this
+    /// index and the viewport — the state machine is still never told the
+    /// terminal's height.
+    cursor: HashMap<PanelId, usize>,
     /// What the last draw actually placed, fed back by the event loop.
     ///
     /// Data in, exactly like a key press. Without it Tab has dead stops: on the
@@ -107,7 +120,7 @@ impl App {
             order,
             focus,
             slot,
-            scroll: HashMap::new(),
+            cursor: HashMap::new(),
             placed: Vec::new(),
             has_slot: false,
             window: WINDOW_CHOICES
@@ -180,11 +193,18 @@ impl App {
         WINDOW_CHOICES[self.window].1
     }
 
-    pub fn scroll_of(&self, id: PanelId) -> usize {
-        self.scroll.get(&id).copied().unwrap_or(0)
+    /// Where the reader is in `id`, clamped to the data as it stands NOW.
+    ///
+    /// Clamped on the way out and not on the way in, because the data can shrink
+    /// under a cursor that nobody touched: `replace` swaps the whole `Dashboard`
+    /// on every auto-refresh, and a task completed elsewhere shortens a panel.
+    /// A stored index is a claim about a list that no longer exists.
+    pub fn cursor_of(&self, id: PanelId) -> usize {
+        let stored = self.cursor.get(&id).copied().unwrap_or(0);
+        stored.min(self.rows_in(id).saturating_sub(1))
     }
 
-    /// Replace the data after a refresh, keeping focus, slot and scroll.
+    /// Replace the data after a refresh, keeping focus, slot and cursor.
     ///
     /// A screen that jumped back to the top on every interval would be
     /// unreadable with auto-refresh on.
@@ -212,27 +232,16 @@ impl App {
             || (self.has_slot && PanelId::SLOT_MEMBERS.contains(&id) && self.order.contains(&id))
     }
 
-    /// How many rows the focused panel could scroll through.
+    /// How many rows the cursor can reach in `id` — [`model::row_count`], the
+    /// one count of selectable rows.
     ///
-    /// The panel's BODY LINES, which is what `panels` scrolls, and therefore
-    /// [`model::demand`] — not a second count of the same thing. It was one:
-    /// DUE counted its four tasks while its body is seven lines, because each
-    /// non-empty bucket spends a row on its name. `G` therefore stopped three
-    /// lines short of the end, on a panel still reading `…3 more` — a "jump to
-    /// the bottom" that does not.
-    ///
-    /// NOW and BURNDOWN are excluded rather than given a count: both draw a
-    /// fixed body that scrolling cannot reveal more of.
+    /// It used to be [`model::demand`], the count of body LINES, because the
+    /// thing being clamped was a scroll offset and lines are what scrolls. A
+    /// cursor is not an offset: DUE's body is twelve lines over eight tasks,
+    /// each non-empty bucket spending a row on its name, so a cursor clamped to
+    /// twelve walks four rows past its last task onto headings.
     fn rows_in(&self, id: PanelId) -> usize {
-        match id {
-            PanelId::Next
-            | PanelId::Blocked
-            | PanelId::Recent
-            | PanelId::Projects
-            | PanelId::Tokens
-            | PanelId::Due => model::demand(&self.dash, &[], id) as usize,
-            _ => 0,
-        }
+        model::row_count(&self.dash, id)
     }
 
     /// Point focus at `id`, and if it lives in the analytics slot, put it there.
@@ -309,25 +318,25 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let max = self.rows_in(self.focus).saturating_sub(1);
-                let cur = self.scroll_of(self.focus);
-                self.scroll.insert(self.focus, (cur + 1).min(max));
+                let cur = self.cursor_of(self.focus);
+                self.cursor.insert(self.focus, (cur + 1).min(max));
                 None
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 // Saturating, not `- 1`: an underflow here panics inside a raw
                 // mode alt screen, where the message is wiped before it can be
                 // read.
-                let cur = self.scroll_of(self.focus);
-                self.scroll.insert(self.focus, cur.saturating_sub(1));
+                let cur = self.cursor_of(self.focus);
+                self.cursor.insert(self.focus, cur.saturating_sub(1));
                 None
             }
             KeyCode::Char('g') => {
-                self.scroll.insert(self.focus, 0);
+                self.cursor.insert(self.focus, 0);
                 None
             }
             KeyCode::Char('G') => {
                 let max = self.rows_in(self.focus).saturating_sub(1);
-                self.scroll.insert(self.focus, max);
+                self.cursor.insert(self.focus, max);
                 None
             }
             KeyCode::Char('r') => Some(Action::Refresh),
@@ -612,7 +621,12 @@ pub(crate) fn draw_panel(p: &Placement, app: &App, theme: &Theme, caps: &Caps, f
         &app.dash,
         inner.width,
         inner.height,
-        app.scroll_of(id),
+        panels::Cursor {
+            row: app.cursor_of(id),
+            // The rule already says which panel the keys act on; the glyph says
+            // which ROW. Drawn in eight panels at once it would say neither.
+            shown: id == app.focus,
+        },
         theme,
         caps,
     );
@@ -842,16 +856,16 @@ pub const KEYS: &[Key] = &[
     },
     Key {
         keys: "j / k",
-        help: "scroll the focused panel",
+        help: "move the cursor in the focused panel",
         footer: Some(Hint {
             keys: "j/k",
-            word: "scroll",
+            word: "move",
             rank: 5,
         }),
     },
     Key {
         keys: "g / G",
-        help: "jump to the top / bottom",
+        help: "cursor to the first / last row",
         footer: Some(Hint {
             keys: "g/G",
             word: "ends",
