@@ -711,7 +711,7 @@ fn a_refresh_keeps_focus_and_scroll() {
 /// names a binding that works. The docs-drift idiom, inside the TUI.
 #[test]
 fn every_binding_is_documented_in_the_help_overlay() {
-    let documented: String = KEYS.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(" ");
+    let documented: String = KEYS.iter().map(|k| k.keys).collect::<Vec<_>>().join(" ");
     for probe in [
         "1-8", "tab", "j / k", "g / G", "r", "R", "w", "p", "l", "?", "q", "ctrl-c",
     ] {
@@ -724,8 +724,12 @@ fn every_binding_is_documented_in_the_help_overlay() {
     let mut a = app();
     a.on_key(key(KeyCode::Char('?')));
     let text = all_text(&draw_at(&a, 96, 28, &caps()));
-    for (k, _) in KEYS {
-        assert!(text.contains(k), "help overlay is missing {k:?}:\n{text}");
+    for k in KEYS {
+        assert!(
+            text.contains(k.keys),
+            "help overlay is missing {:?}:\n{text}",
+            k.keys
+        );
     }
 }
 
@@ -889,11 +893,17 @@ fn the_help_overlay_is_bordered_and_shows_every_binding_whole() {
         inner_corner,
         "the overlay must have a border of its own, not just a cleared hole:\n{text}"
     );
-    for (k, what) in KEYS {
-        assert!(text.contains(k), "help is missing the key {k:?}");
+    for k in KEYS {
         assert!(
-            text.contains(what),
-            "help truncates {k:?}'s description — {what:?} is not shown whole:\n{text}"
+            text.contains(k.keys),
+            "help is missing the key {:?}",
+            k.keys
+        );
+        assert!(
+            text.contains(k.help),
+            "help truncates {:?}'s description — {:?} is not shown whole:\n{text}",
+            k.keys,
+            k.help
         );
     }
 }
@@ -1134,8 +1144,8 @@ fn the_help_overlay_and_the_key_handler_agree() {
     // not `Char` at all.
     let mut advertised: Vec<char> = Vec::new();
     let mut named = 0usize;
-    for (label, _) in KEYS {
-        for tok in label.split('/').map(str::trim) {
+    for k in KEYS {
+        for tok in k.keys.split('/').map(str::trim) {
             match tok {
                 "1-8" => advertised.extend('1'..='8'),
                 "tab" | "S-tab" | "esc" | "ctrl-c" => named += 1,
@@ -1352,5 +1362,75 @@ fn a_project_name_is_measured_against_its_summary_in_cells_not_bytes() {
          cut that much shorter than it had room for:\n[{inner}]",
         render::width(&tail),
         tail.len()
+    );
+}
+
+/// The footer row, which is the last one the dashboard draws.
+fn footer_text(app: &App, w: u16, h: u16) -> String {
+    let buf = draw_at(app, w, h, &caps());
+    (0..w).map(|x| buf[(x, h - 1)].symbol()).collect()
+}
+
+/// A terminal wide enough leaves no binding out of the footer.
+///
+/// This is the guard the doc comment above `draw_help` already claimed and did
+/// not have. The overlay read `KEYS` — twelve rows — while the footer built
+/// from a `hints` literal of eight, so `w`, `R` and `g`/`G` were reachable only
+/// through `?`: a burndown window nothing on the screen ever mentioned, and a
+/// reader who never pressed `?` had no way to learn it existed (D62).
+#[test]
+fn the_footer_advertises_every_binding_that_fits() {
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    let text = footer_text(&a, 200, 40);
+    for word in [
+        "panel", "cycle", "scroll", "ends", "refresh", "auto", "window", "pick", "list", "help",
+        "close",
+    ] {
+        assert!(
+            text.contains(word),
+            "the footer withholds {word:?} at 200 columns:\n{text}"
+        );
+    }
+}
+
+/// A footer too narrow for eleven hints keeps the three a reader cannot do
+/// without, and keeps them because the table ranked them — not because a
+/// `Rung::Xs` arm held a second list of strings saying so.
+#[test]
+fn a_narrow_footer_keeps_the_three_that_matter() {
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    let text = footer_text(&a, 56, 14);
+    for word in ["help", "close", "pick"] {
+        assert!(
+            text.contains(word),
+            "a 56-column footer dropped {word:?}:\n{text}"
+        );
+    }
+    // And it is not simply drawing all of them anyway.
+    assert!(
+        !text.contains("refresh"),
+        "56 columns cannot hold every hint, so this proves nothing:\n{text}"
+    );
+}
+
+/// Two hints at the same rank make "which survives a narrow footer" a question
+/// the table cannot answer, so the order would fall to `sort_by_key`'s
+/// stability rather than to a decision anybody made.
+#[test]
+fn every_footer_hint_has_a_rank_of_its_own() {
+    let mut ranks: Vec<u8> = KEYS
+        .iter()
+        .filter_map(|k| k.footer.as_ref())
+        .map(|h| h.rank)
+        .collect();
+    let total = ranks.len();
+    ranks.sort_unstable();
+    ranks.dedup();
+    assert_eq!(
+        ranks.len(),
+        total,
+        "two footer hints share a rank: {ranks:?}"
     );
 }

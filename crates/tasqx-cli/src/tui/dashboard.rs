@@ -645,35 +645,54 @@ fn draw_footer(screen: &Screen, app: &App, theme: &Theme, caps: &Caps, frame: &m
             render::truncate(&t, width as usize, caps.unicode),
             accent,
         )),
-        None => {
-            // Eight hints do not fit in 56 cells, and a footer cut mid-word
-            // reads as a broken screen. The narrow rungs keep the three a
-            // reader cannot do without.
-            let hints: &[(&str, &str)] = match screen.rung {
-                model::Rung::Xs | model::Rung::S => &[("?", "help"), ("q", "quit"), ("p", "pick")],
-                _ => &[
-                    ("1-8", "panel"),
-                    ("tab", "cycle"),
-                    ("j/k", "scroll"),
-                    ("p", "pick"),
-                    ("l", "list"),
-                    ("r", "refresh"),
-                    ("?", "help"),
-                    ("q", "quit"),
-                ],
-            };
-            let mut spans = Vec::new();
-            for (k, what) in hints {
-                spans.push(Span::styled((*k).to_string(), accent));
-                spans.push(Span::styled(format!(" {what}   "), muted));
-            }
-            Line::from(spans)
-        }
+        None => Line::from(footer_spans(KEYS, width, accent, muted)),
     };
     frame.render_widget(
         Paragraph::new(line),
         Rect::new(1, screen.footer_y, width.saturating_sub(1), 1),
     );
+}
+
+/// The footer's spans: as many of `keys` as the width affords, lowest rank
+/// first, drawn in table order.
+///
+/// The width decides, not the rung. A rung match here would be the second list
+/// again in a different costume — and it made the wide footer a fixed eight
+/// even on a 200-column terminal with room for every one of them. What the rank
+/// buys is that the *narrow* end keeps `?`, `q` and `p`: the three a reader
+/// cannot do without, chosen by the table rather than by a literal beside it.
+///
+/// A hint is taken whole or not at all. A footer cut mid-word reads as a broken
+/// screen, which is why this measures before it pushes rather than truncating
+/// afterwards — the idiom `build_bar` established for the status line.
+fn footer_spans(keys: &[Key], width: u16, accent: RtStyle, muted: RtStyle) -> Vec<Span<'static>> {
+    let mut ranked: Vec<(usize, &Hint)> = keys
+        .iter()
+        .enumerate()
+        .filter_map(|(i, k)| k.footer.as_ref().map(|h| (i, h)))
+        .collect();
+    ranked.sort_by_key(|(_, h)| h.rank);
+
+    let mut budget = width as usize;
+    let mut taken: Vec<(usize, &Hint)> = Vec::new();
+    for (i, h) in ranked {
+        // The keys, a space, the word, and the three cells of gutter that
+        // separate this hint from the next one.
+        let need = render::width(h.keys) + 1 + render::width(h.word) + 3;
+        if need > budget {
+            continue;
+        }
+        budget -= need;
+        taken.push((i, h));
+    }
+    taken.sort_by_key(|(i, _)| *i);
+
+    let mut spans = Vec::new();
+    for (_, h) in taken {
+        spans.push(Span::styled(h.keys.to_string(), accent));
+        spans.push(Span::styled(format!(" {}   ", h.word), muted));
+    }
+    spans
 }
 
 /// The help overlay: every binding, from the one table that also drives the
@@ -686,12 +705,15 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         Line::from(Span::styled("tasqx dashboard".to_string(), header)),
         Line::from(Span::styled(String::new(), muted)),
     ];
-    for (k, what) in KEYS {
+    for k in KEYS {
         lines.push(Line::from(vec![
             // Width from the table itself: a hard-coded 10 fused
             // `tab / S-tab` (11 cells) into the description beside it.
-            Span::styled(format!("  {k:<width$}", width = key_column()), accent),
-            Span::styled((*what).to_string(), RtStyle::default()),
+            Span::styled(
+                format!("  {:<width$}", k.keys, width = key_column()),
+                accent,
+            ),
+            Span::styled(k.help.to_string(), RtStyle::default()),
         ]));
     }
     lines.push(Line::from(Span::styled(String::new(), muted)));
@@ -749,24 +771,161 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
 
 /// The width the help overlay's key column needs, derived rather than guessed.
 fn key_column() -> usize {
-    KEYS.iter().map(|(k, _)| k.len()).max().unwrap_or(8) + 1
+    KEYS.iter().map(|k| k.keys.len()).max().unwrap_or(8) + 1
 }
 
 /// Every binding, once. The help overlay renders from this, and a gate asserts
 /// the two agree — the docs-drift idiom, applied inside the TUI.
-pub const KEYS: &[(&str, &str)] = &[
-    ("1-8", "focus a panel (or place it in the analytics slot)"),
-    ("tab / S-tab", "next / previous panel"),
-    ("j / k", "scroll the focused panel"),
-    ("g / G", "jump to the top / bottom"),
-    ("r", "refresh now"),
-    ("R", "toggle auto-refresh"),
-    ("w", "cycle the burndown window"),
-    ("p", "pick a task and start it"),
-    ("l", "leave and print the task list"),
-    ("?", "this help"),
-    ("q / esc", "close"),
-    ("ctrl-c", "close, always"),
+/// One binding, in the ONE table the help overlay and the footer both read.
+///
+/// They used to be two. The overlay iterated `KEYS`; the footer built from a
+/// `hints` literal of its own, under a doc comment asserting the two "cannot
+/// drift". They had: `w`, `R`, `g`/`G` and `S-tab` were advertised nowhere but
+/// behind `?`, so the burndown window was a control the screen never mentioned
+/// and a reader who did not open the help had no way to learn it was there
+/// (D62). A second list of strings is a second path to the data, and this is
+/// that rule from `CLAUDE.md` applied to the key vocabulary.
+pub struct Key {
+    /// The binding as a reader types it, e.g. `"j / k"`. Parsed by the tests
+    /// that bind this table to `on_key`, so the shape is load-bearing: tokens
+    /// split on `/`, and anything that is not a single character or one of the
+    /// named non-`Char` keys makes them fail loudly rather than skip it.
+    pub keys: &'static str,
+    /// The overlay's line — a sentence, because the overlay has the room.
+    pub help: &'static str,
+    /// How the footer spells this binding, or `None` for one it deliberately
+    /// withholds.
+    ///
+    /// `ctrl-c` is the only `None`, because `q` already answers "how do I
+    /// leave" — an omission this table states rather than one the footer
+    /// arrives at by drifting.
+    pub footer: Option<Hint>,
+}
+
+/// A binding as the footer draws it: shorter than the overlay's spelling, and
+/// ranked, because a 56-column footer cannot hold eleven of them.
+pub struct Hint {
+    /// The keys the footer prints, which is not always the overlay's spelling.
+    /// `tab / S-tab` prints as `tab` and `q / esc` as `q` — the second half of
+    /// each is a variant of the first. `j / k` prints as `j/k` and `g / G` as
+    /// `g/G`, because there the second half is the other direction and a
+    /// footer naming one of a pair is a footer that has hidden the other.
+    pub keys: &'static str,
+    /// The word beside the keys. One word: the footer is a reminder, and the
+    /// sentence lives in `Key::help`.
+    pub word: &'static str,
+    /// Which hints survive a narrow footer — low numbers first. `?`, `q` and
+    /// `p` are ranked ahead of everything because they are the three a reader
+    /// cannot do without, which is the judgement the deleted `Rung::Xs` arm
+    /// used to carry as a literal.
+    pub rank: u8,
+}
+
+pub const KEYS: &[Key] = &[
+    Key {
+        keys: "1-8",
+        help: "focus a panel (or place it in the analytics slot)",
+        footer: Some(Hint {
+            keys: "1-8",
+            word: "panel",
+            rank: 3,
+        }),
+    },
+    Key {
+        keys: "tab / S-tab",
+        help: "next / previous panel",
+        footer: Some(Hint {
+            keys: "tab",
+            word: "cycle",
+            rank: 4,
+        }),
+    },
+    Key {
+        keys: "j / k",
+        help: "scroll the focused panel",
+        footer: Some(Hint {
+            keys: "j/k",
+            word: "scroll",
+            rank: 5,
+        }),
+    },
+    Key {
+        keys: "g / G",
+        help: "jump to the top / bottom",
+        footer: Some(Hint {
+            keys: "g/G",
+            word: "ends",
+            rank: 9,
+        }),
+    },
+    Key {
+        keys: "r",
+        help: "refresh now",
+        footer: Some(Hint {
+            keys: "r",
+            word: "refresh",
+            rank: 6,
+        }),
+    },
+    Key {
+        keys: "R",
+        help: "toggle auto-refresh",
+        footer: Some(Hint {
+            keys: "R",
+            word: "auto",
+            rank: 10,
+        }),
+    },
+    Key {
+        keys: "w",
+        help: "cycle the burndown window",
+        footer: Some(Hint {
+            keys: "w",
+            word: "window",
+            rank: 8,
+        }),
+    },
+    Key {
+        keys: "p",
+        help: "pick a task and start it",
+        footer: Some(Hint {
+            keys: "p",
+            word: "pick",
+            rank: 2,
+        }),
+    },
+    Key {
+        keys: "l",
+        help: "leave and print the task list",
+        footer: Some(Hint {
+            keys: "l",
+            word: "list",
+            rank: 7,
+        }),
+    },
+    Key {
+        keys: "?",
+        help: "this help",
+        footer: Some(Hint {
+            keys: "?",
+            word: "help",
+            rank: 0,
+        }),
+    },
+    Key {
+        keys: "q / esc",
+        help: "close",
+        footer: Some(Hint {
+            keys: "q",
+            word: "close",
+            rank: 1,
+        }),
+    },
+    Key {
+        keys: "ctrl-c",
+        help: "close, always",
+        footer: None,
+    },
 ];
 
 #[cfg(test)]
