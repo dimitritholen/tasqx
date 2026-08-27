@@ -645,27 +645,371 @@ fn tab_visits_only_reachable_panels_and_wraps() {
 /// `k` at the top must not underflow. A panic here happens inside a raw-mode
 /// alternate screen, where the message is wiped before it can be read.
 #[test]
-fn scrolling_clamps_at_both_ends_without_underflowing() {
+fn the_cursor_clamps_at_both_ends_without_underflowing() {
     let mut a = app();
     a.observe(&all_panels(), false);
     a.on_key(key(KeyCode::Char('2')));
-    assert_eq!(a.scroll_of(PanelId::Next), 0);
+    assert_eq!(a.cursor_of(PanelId::Next), 0);
     a.on_key(key(KeyCode::Char('k')));
-    assert_eq!(a.scroll_of(PanelId::Next), 0, "k at the top is a no-op");
+    assert_eq!(a.cursor_of(PanelId::Next), 0, "k at the top is a no-op");
 
     for _ in 0..50 {
         a.on_key(key(KeyCode::Char('j')));
     }
     let rows = a.dash().next.rows.len();
     assert_eq!(
-        a.scroll_of(PanelId::Next),
+        a.cursor_of(PanelId::Next),
         rows.saturating_sub(1),
         "j clamps to the last row"
     );
     a.on_key(key(KeyCode::Char('g')));
-    assert_eq!(a.scroll_of(PanelId::Next), 0);
+    assert_eq!(a.cursor_of(PanelId::Next), 0);
     a.on_key(key(KeyCode::Char('G')));
-    assert_eq!(a.scroll_of(PanelId::Next), rows.saturating_sub(1));
+    assert_eq!(a.cursor_of(PanelId::Next), rows.saturating_sub(1));
+}
+
+/// Something on the screen must say WHICH row the reader is on.
+///
+/// Panel focus is drawn in the rule; row focus was drawn nowhere at all. `j`
+/// moved an offset and the content slid past a viewport with nothing marked,
+/// so "where am I" had no answer. D58 already describes a focused row — this
+/// is the mechanism that paragraph assumed. The marker, not colour: `pick`
+/// reserves a two-cell column on every row for exactly this reason, and a
+/// cursor drawn in colour alone would vanish under `NO_COLOR`.
+#[test]
+fn the_cursor_marks_the_row_the_reader_is_on() {
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.on_key(key(KeyCode::Char('2')));
+    a.on_key(key(KeyCode::Char('j')));
+    a.on_key(key(KeyCode::Char('j')));
+
+    let (w, h) = (160, 44);
+    let buf = draw_at(&a, w, h, &caps());
+    let screen = a.screen(w, h).unwrap();
+    let p = screen
+        .placement(PanelId::Next)
+        .expect("NEXT UP has its own rectangle at 160x44");
+    let r = interior(p);
+    let body = cell_text(&buf, r.x, r.y, r.width, r.height);
+
+    let marked: Vec<&str> = body
+        .lines()
+        .filter(|l| l.trim_start().starts_with('▸'))
+        .collect();
+    assert_eq!(
+        marked.len(),
+        1,
+        "exactly one row must carry the cursor:\n{body}"
+    );
+    // The row it sits on has to be the row the state machine says, or the
+    // marker is decoration: the row→line mapping is the thing under test.
+    let id = format!("#{}", a.dash().next.rows[2].short_id);
+    assert!(
+        marked[0].contains(&id),
+        "two `j` from the top is row 3, {id}, but the cursor is on:\n{}",
+        marked[0]
+    );
+}
+
+/// The cursor counts TASKS, and DUE is where that distinction bites.
+///
+/// `due_body` puts its bucket names (`OVERDUE`, `TODAY`, …) and its `…N more`
+/// marker in the same `Vec<Line>` as its tasks. A cursor that indexed lines
+/// would stop on a heading, and `G` would end on one — a row `Enter` has
+/// nothing to open (D58). Every step of `j` must land on a task, and on the
+/// task in reading order, whether or not it was on screen before the press.
+#[test]
+fn the_due_cursor_steps_through_tasks_and_never_onto_a_bucket_name() {
+    let mut a = App::new(deadline_heavy(), all_panels(), 7, true);
+    a.observe(&all_panels(), false);
+    a.on_key(key(KeyCode::Char('3')));
+
+    let (w, h) = (160, 44);
+    for expected in 1..=8u16 {
+        let buf = draw_at(&a, w, h, &caps());
+        let screen = a.screen(w, h).unwrap();
+        let p = screen
+            .placement(PanelId::Due)
+            .expect("DUE has its own rectangle at 160x44");
+        let r = interior(p);
+        let body = cell_text(&buf, r.x, r.y, r.width, r.height);
+        let marked: Vec<&str> = body
+            .lines()
+            .filter(|l| l.trim_start().starts_with('▸'))
+            .collect();
+        assert_eq!(
+            marked.len(),
+            1,
+            "task {expected}: exactly one row carries the cursor:\n{body}"
+        );
+        assert!(
+            marked[0].contains(&format!("#{expected}")),
+            "the {expected}th `j` must land on #{expected}, not on:\n{}",
+            marked[0]
+        );
+        for name in ["OVERDUE", "TODAY", "TOMORROW", "THIS WEEK", "more"] {
+            assert!(
+                !marked[0].contains(name),
+                "the cursor landed on {name:?}, which is not a task:\n{}",
+                marked[0]
+            );
+        }
+        a.on_key(key(KeyCode::Char('j')));
+    }
+    // And `j` at the last task stays there rather than walking into the lines
+    // below it.
+    assert_eq!(a.cursor_of(PanelId::Due), 7, "j clamps at the last TASK");
+
+    // Twelve lines fit at 160x44, so the loop above never made the panel
+    // scroll. The map from rows to lines is only load-bearing when it does:
+    // placed by row index into a list of lines, the viewport is short by one
+    // line for every bucket name above the cursor.
+    for row in [0usize, 3, 7] {
+        let body = panels::body(
+            PanelId::Due,
+            model::Detail::Full,
+            a.dash(),
+            60,
+            5,
+            panels::Cursor { row, shown: true },
+            &theme::load("nord", None),
+            &caps(),
+        );
+        let text = body
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let marked: Vec<&str> = text
+            .lines()
+            .filter(|l| l.trim_start().starts_with('▸'))
+            .collect();
+        assert_eq!(
+            marked.len(),
+            1,
+            "row {row} is not on a scrolling DUE panel at all:\n{text}"
+        );
+        assert!(
+            marked[0].contains(&format!("#{}", row + 1)),
+            "row {row} is task #{}, but the cursor is on:\n{}",
+            row + 1,
+            marked[0]
+        );
+    }
+}
+
+/// Every panel the cursor can enter draws it — not just the one that was built
+/// first.
+///
+/// `model::row_count` decides which panels have a cursor at all, and a panel
+/// counted there but drawing no marker is the drift this repo organises itself
+/// against: the keys work, the state moves, and the screen says nothing. The
+/// digits are the ones `KEYS` documents, so the test also fails if a panel
+/// stops being reachable.
+#[test]
+fn every_panel_with_a_cursor_draws_it() {
+    let (w, h) = (160, 44);
+    for (digit, id) in [
+        ('2', PanelId::Next),
+        ('3', PanelId::Due),
+        ('4', PanelId::Blocked),
+        ('5', PanelId::Recent),
+        ('6', PanelId::Projects),
+    ] {
+        let mut a = app();
+        a.observe(&all_panels(), false);
+        a.on_key(key(KeyCode::Char(digit)));
+        assert!(
+            model::row_count(a.dash(), id) > 0,
+            "{id:?}: the fixture must give this panel a row to sit on"
+        );
+
+        let buf = draw_at(&a, w, h, &caps());
+        let screen = a.screen(w, h).unwrap();
+        let p = screen
+            .placement(id)
+            .or_else(|| screen.placement(PanelId::Slot))
+            .unwrap_or_else(|| panic!("{id:?} is drawn nowhere at {w}x{h}"));
+        let r = interior(p);
+        let body = cell_text(&buf, r.x, r.y, r.width, r.height);
+        let marked = body
+            .lines()
+            .filter(|l| l.trim_start().starts_with('▸'))
+            .count();
+        assert_eq!(marked, 1, "{id:?} draws no cursor:\n{body}");
+    }
+}
+
+/// The viewport follows the cursor. That is the whole trade: `App` gives up
+/// storing an offset, and gets it derived from a row index and a height.
+///
+/// A cursor below the fold with the window left where it was is worse than the
+/// offset it replaced — the state moves and the screen does not.
+#[test]
+fn the_viewport_follows_the_cursor_to_a_row_below_the_fold() {
+    let a = app();
+    let d = a.dash();
+    let rows = d.recent.rows.len();
+    assert!(rows >= 4, "the fixture must overflow a 3-row viewport");
+    let last = rows - 1;
+
+    let body = panels::body(
+        PanelId::Recent,
+        model::Detail::Full,
+        d,
+        60,
+        3,
+        panels::Cursor {
+            row: last,
+            shown: true,
+        },
+        &theme::load("nord", None),
+        &caps(),
+    );
+    let text = body
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let id = format!("#{}", d.recent.rows[last].short_id);
+    assert!(
+        text.contains(&id),
+        "the last row, {id}, was not scrolled into view:\n{text}"
+    );
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.trim_start().starts_with('▸'))
+            .count(),
+        1,
+        "and it must carry the cursor, not merely be on screen:\n{text}"
+    );
+}
+
+/// Tab must not move the text sideways.
+///
+/// The cursor's column is reserved on every row of every list panel, focused or
+/// not. Drawn only where the glyph lands, it would reflow the panel on each `j`
+/// — the `id_width` defect one column over — and drawn only on focus, every Tab
+/// would shift the whole panel by two cells.
+#[test]
+fn an_unfocused_panel_reserves_the_cursor_column_without_drawing_it() {
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.on_key(key(KeyCode::Char('2')));
+
+    let d = a.dash();
+    let th = theme::load("nord", None);
+    let render_one = |shown: bool| {
+        panels::body(
+            PanelId::Blocked,
+            model::Detail::Full,
+            d,
+            60,
+            6,
+            panels::Cursor { row: 0, shown },
+            &th,
+            &caps(),
+        )
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+    };
+    let (away, here) = (render_one(false), render_one(true));
+    assert!(
+        !away.contains('▸'),
+        "an unfocused panel must draw no cursor:\n{away}"
+    );
+    assert!(here.contains('▸'), "a focused one must:\n{here}");
+    assert_eq!(
+        away.lines().count(),
+        here.lines().count(),
+        "focus must not change how many rows a panel draws:\n{away}\n---\n{here}"
+    );
+    for (l, r) in away.lines().zip(here.lines()) {
+        assert_eq!(
+            render::width(l),
+            render::width(r),
+            "focus changed a row's width — the column is not reserved:\n{l}\n{r}"
+        );
+        // Cells, not bytes: `▸` is three bytes wide and one cell, which is the
+        // whole reason the column is measured rather than counted.
+        let tail = |s: &str| s.chars().skip(2).collect::<String>();
+        assert_eq!(
+            tail(l),
+            tail(r),
+            "everything after the cursor column must sit in the same place"
+        );
+    }
+}
+
+/// The cursor survives a terminal that cannot draw `▸`, and one that cannot
+/// draw colour.
+///
+/// `rt_style` returns an unstyled `Style` under `NO_COLOR`, so a cursor
+/// signalled by colour alone is a cursor that does not exist there — the
+/// reasoning `rule_label` already records for panel focus, and the reason this
+/// is a glyph.
+#[test]
+fn the_cursor_is_a_glyph_so_it_survives_ascii_and_no_color() {
+    let a = app();
+    let d = a.dash();
+    let body = panels::body(
+        PanelId::Recent,
+        model::Detail::Full,
+        d,
+        60,
+        6,
+        panels::Cursor {
+            row: 1,
+            shown: true,
+        },
+        &theme::load("nord", None),
+        &ascii_caps(),
+    );
+    let text = body
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let marked: Vec<&str> = text
+        .lines()
+        .filter(|l| l.trim_start().starts_with('>'))
+        .collect();
+    assert_eq!(marked.len(), 1, "no ASCII cursor on any row:\n{text}");
+    assert!(
+        !text.contains('▸'),
+        "and no Unicode glyph on a terminal that cannot draw one:\n{text}"
+    );
+    assert!(
+        marked[0].contains(&format!("#{}", d.recent.rows[1].short_id)),
+        "the ASCII cursor is on the wrong row:\n{}",
+        marked[0]
+    );
+}
+
+/// A cursor is a claim about a list, and the list changes under it.
+///
+/// `replace` swaps the whole `Dashboard` on every auto-refresh tick. A task
+/// completed in another terminal shortens a panel, and a stored index past the
+/// new end would point at a row nobody has.
+#[test]
+fn the_cursor_is_clamped_to_data_that_shrank_under_it() {
+    let mut a = App::new(deadline_heavy(), all_panels(), 7, true);
+    a.observe(&all_panels(), false);
+    a.on_key(key(KeyCode::Char('3')));
+    a.on_key(key(KeyCode::Char('G')));
+    assert_eq!(a.cursor_of(PanelId::Due), 7, "G ends on the last task");
+
+    a.replace(dash());
+    let rows = model::row_count(a.dash(), PanelId::Due);
+    assert!(rows > 0 && rows < 8, "the second fixture must be shorter");
+    assert_eq!(
+        a.cursor_of(PanelId::Due),
+        rows - 1,
+        "the cursor must come back inside the list it now points into"
+    );
 }
 
 /// `w` must re-read, because the window changes which events are fetched
@@ -693,18 +1037,18 @@ fn the_intents_the_loop_has_to_act_on_are_returned_not_swallowed() {
     assert!(!a.auto_refresh());
 }
 
-/// Scroll and focus survive a refresh; a screen that jumped to the top on every
+/// Cursor and focus survive a refresh; a screen that jumped to the top on every
 /// interval would be unreadable with auto-refresh on.
 #[test]
-fn a_refresh_keeps_focus_and_scroll() {
+fn a_refresh_keeps_focus_and_cursor() {
     let mut a = app();
     a.observe(&all_panels(), false);
     a.on_key(key(KeyCode::Char('2')));
     a.on_key(key(KeyCode::Char('j')));
-    let (f, s) = (a.focus(), a.scroll_of(PanelId::Next));
+    let (f, s) = (a.focus(), a.cursor_of(PanelId::Next));
     a.replace(dash());
     assert_eq!(a.focus(), f);
-    assert_eq!(a.scroll_of(PanelId::Next), s);
+    assert_eq!(a.cursor_of(PanelId::Next), s);
 }
 
 /// Every binding the screen answers to appears in the help, and every help line
@@ -818,15 +1162,18 @@ fn a_panel_whose_rows_all_fit_does_not_scroll() {
     let rows = d.next.rows.len();
     assert!(rows >= 2, "the fixture must have rows to scroll");
 
-    // A viewport with room to spare: every row is drawn from index 0 whatever
-    // the scroll offset says.
+    // A viewport with room to spare: every row is drawn from index 0 wherever
+    // the cursor is.
     let tall = panels::body(
         PanelId::Next,
         model::Detail::Full,
         d,
         60,
         rows as u16 + 3,
-        99,
+        panels::Cursor {
+            row: 99,
+            shown: false,
+        },
         &theme::load("nord", None),
         &caps(),
     );
@@ -859,7 +1206,10 @@ fn scrolling_to_the_end_leaves_no_blank_rows() {
         d,
         60,
         visible,
-        999,
+        panels::Cursor {
+            row: 999,
+            shown: false,
+        },
         &theme::load("nord", None),
         &caps(),
     );
@@ -927,7 +1277,10 @@ fn a_single_row_panel_spends_its_row_on_data() {
             d,
             60,
             1,
-            scroll,
+            panels::Cursor {
+                row: scroll,
+                shown: false,
+            },
             &theme::load("nord", None),
             &caps(),
         );
@@ -985,7 +1338,7 @@ fn the_help_overlay_is_modal_and_no_key_reaches_behind_it() {
 
         let (focus, scroll, window, auto) = (
             a.focus(),
-            a.scroll_of(PanelId::Next),
+            a.cursor_of(PanelId::Next),
             a.window_days(),
             a.auto_refresh(),
         );
@@ -1006,7 +1359,7 @@ fn the_help_overlay_is_modal_and_no_key_reaches_behind_it() {
             "{k:?} moved focus from behind the overlay"
         );
         assert_eq!(
-            a.scroll_of(PanelId::Next),
+            a.cursor_of(PanelId::Next),
             scroll,
             "{k:?} scrolled from behind it"
         );
@@ -1100,7 +1453,7 @@ fn an_empty_panel_says_so_rather_than_drawing_nothing() {
 fn the_help_overlay_and_the_key_handler_agree() {
     /// Everything a reader could notice about a keypress.
     fn snapshot(a: &App) -> String {
-        let scrolls: Vec<usize> = all_panels().iter().map(|id| a.scroll_of(*id)).collect();
+        let scrolls: Vec<usize> = all_panels().iter().map(|id| a.cursor_of(*id)).collect();
         format!(
             "{:?}|{:?}|{scrolls:?}|{}|{}|{}|{}",
             a.focus(),
@@ -1384,7 +1737,7 @@ fn the_footer_advertises_every_binding_that_fits() {
     a.observe(&all_panels(), false);
     let text = footer_text(&a, 200, 40);
     for word in [
-        "panel", "cycle", "scroll", "ends", "refresh", "auto", "window", "pick", "list", "help",
+        "panel", "cycle", "move", "ends", "refresh", "auto", "window", "pick", "list", "help",
         "close",
     ] {
         assert!(

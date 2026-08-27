@@ -1270,6 +1270,31 @@ pub fn demand(dash: &Dashboard, slot_members: &[PanelId], id: PanelId) -> u16 {
     }
 }
 
+/// How many SELECTABLE rows `id` has — what the cursor counts.
+///
+/// A sibling of [`demand`] and not a use of it: `demand` counts body LINES,
+/// because that is what a rectangle has to be tall enough to hold, and for DUE
+/// the two differ by one line per non-empty bucket name. A cursor clamped to
+/// the line count walks onto a heading; `Enter` then has nothing to open.
+///
+/// The panels absent from the match have no selectable row at all. NOW and
+/// BURNDOWN draw a fixed body. TOKENS is here for a duller reason: `panels::body`
+/// hands `tokens_body` no position and never has, so a cursor in it moved an
+/// integer that nothing read.
+pub fn row_count(dash: &Dashboard, id: PanelId) -> usize {
+    match id {
+        PanelId::Next => dash.next.rows.len(),
+        PanelId::Blocked => dash.blocked.rows.len(),
+        PanelId::Recent => dash.recent.rows.len(),
+        PanelId::Projects => dash.projects.rows.len(),
+        PanelId::Due => {
+            let d = &dash.due;
+            d.overdue.len() + d.today.len() + d.tomorrow.len() + d.week.len()
+        }
+        _ => 0,
+    }
+}
+
 /// The body cost of one level, for a test that checks the two agree.
 #[cfg(test)]
 pub(crate) fn spec_body(id: PanelId, d: Detail) -> u16 {
