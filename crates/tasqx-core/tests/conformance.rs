@@ -540,7 +540,13 @@ const R_TASK_CANCEL: Shape = &[&[
     req("unblocked", Ty::Array),
 ]];
 
-const R_TASK_REOPEN: Shape = &[&[req("short_id", Ty::Int), req("status", Ty::Str)]];
+const R_TASK_REOPEN: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("status", Ty::Str),
+    // The inverse of `task.done`'s `unblocked` (D69): the open dependents this
+    // reopen put back into `blocked`. Always present, empty when none.
+    req("blocked", Ty::Array),
+]];
 
 const R_TAG_ADD: Shape = &[&[req("short_id", Ty::Int), req("tags", Ty::Array)]];
 
@@ -592,6 +598,9 @@ const R_MEMORY_ADD: Shape = &[&[
 const R_MEMORY_SEARCH: Shape = &[&[
     req("count", Ty::Int),
     req_of("hits", Ty::Array, &[MEMORY_HIT_ROW]),
+    // The FTS5 expression this search actually ran (D69), so `count: 0` can be
+    // told apart from a store that holds nothing on the subject.
+    req("matched", Ty::Str),
 ]];
 
 const R_MEMORY_REMOVE: Shape = &[&[req("id", Ty::Str), req("removed", Ty::Bool)]];
@@ -620,6 +629,10 @@ const SUMMARY_GROUP_ROW: &[Field] = &[
 const R_REPORT_SUMMARY: Shape = &[&[
     req_of("groups", Ty::Array, &[SUMMARY_GROUP_ROW]),
     req("generated", Ty::Str),
+    // The scope this total was taken over (D69). `generated` is the time of
+    // the call and was being read as the window boundary.
+    req("filter", Ty::Str),
+    req("all", Ty::Bool),
 ]];
 
 const R_STORE_EXPORT: Shape = &[&[
@@ -988,9 +1001,12 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "task.reopen",
-            "done -> pending",
+            "done -> pending, with a dependent that goes back to blocked",
             |e| {
                 plain_task(e);
+                e.task_add(&json!({ "title": "dependent" })).expect("add");
+                e.dependency_add(&json!({ "ref": 2, "depends_on": 1 }))
+                    .expect("dep");
                 e.task_done(&json!({ "ref": 1 })).expect("done");
                 json!({ "ref": 1 })
             },

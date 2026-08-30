@@ -418,3 +418,42 @@ fn a_limit_beyond_i64_is_refused_not_unlimited() {
     .expect_err("an unrepresentable limit is a caller error");
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
+
+/// `memory.search` echoes the FTS5 expression it actually ran.
+///
+/// Every word of a plain query becomes a required quoted phrase, so a question
+/// asked the way an agent would ask it is thirteen AND terms and comes back
+/// `count: 0` — byte-identical to the answer for a subject nobody wrote down.
+/// The echo is what tells those two apart.
+#[test]
+fn search_echoes_the_expression_that_produced_the_result() {
+    let e = Engine::open_in_memory().expect("open");
+    e.memory_add(&json!({
+        "title": "the daemon transport",
+        "body": "the dashboard talks to the tasqx daemon over the local socket / named pipe",
+    }))
+    .expect("doc");
+
+    let hit = e
+        .memory_search(&json!({ "query": "named pipe" }))
+        .expect("search");
+    assert_eq!(hit["count"], json!(1));
+    assert_eq!(hit["matched"], json!("\"named\" \"pipe\""));
+
+    // The same store, the same subject, asked as a sentence.
+    let miss = e
+        .memory_search(&json!({ "query": "why did we choose a named pipe instead of TCP" }))
+        .expect("search");
+    assert_eq!(miss["count"], json!(0));
+    let matched = miss["matched"].as_str().expect("the expression");
+    assert!(
+        matched.contains("\"why\"") && matched.contains("\"TCP\""),
+        "the required terms are what explain the zero: {matched}"
+    );
+
+    // In raw mode the caller owns the syntax, so the echo is their expression.
+    let raw = e
+        .memory_search(&json!({ "query": "named OR nothingmatchesthis", "raw": true }))
+        .expect("search");
+    assert_eq!(raw["matched"], json!("named OR nothingmatchesthis"));
+}

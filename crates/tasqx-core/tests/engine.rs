@@ -1831,3 +1831,118 @@ fn event_revert_is_reachable_through_dispatch_and_takes_no_params() {
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(err.message.contains("ref"), "{}", err.message);
 }
+
+// ---- D69: three results that name their own scope ---------------------------
+
+/// `task.reopen` reports what it put back into `blocked`, the way `task.done`
+/// reports what it released.
+///
+/// The reported failure: completing #1 answered `unblocked: [2]`, reopening it
+/// answered `{short_id, status}`, and #2 went back to blocked with nothing
+/// saying so. An agent that reopens a task it closed too early was removing
+/// work from its own actionable set unannounced.
+#[test]
+fn reopen_names_the_dependents_it_put_back_into_blocked() {
+    let e = Engine::open_in_memory().expect("open");
+    e.task_add(&json!({ "title": "blocker" })).expect("add");
+    e.task_add(&json!({ "title": "dependent" })).expect("add");
+    e.task_add(&json!({ "title": "unrelated" })).expect("add");
+    e.dependency_add(&json!({ "ref": 2, "depends_on": 1 }))
+        .expect("dep");
+
+    let done = e.task_done(&json!({ "ref": 1 })).expect("done");
+    assert_eq!(done["unblocked"], json!([2]), "completing releases #2");
+
+    let back = e.task_reopen(&json!({ "ref": 1 })).expect("reopen");
+    assert_eq!(
+        back["blocked"],
+        json!([2]),
+        "reopening the blocker puts #2 back, and has to say so"
+    );
+}
+
+/// Only the dependents that actually flipped, and only the open ones.
+///
+/// A dependent held by a SECOND unresolved blocker was blocked before this
+/// reopen and is blocked after it: nothing changed for it, so naming it would
+/// be a claim the caller could not act on. A dependent that is itself done is
+/// not waiting on anything.
+#[test]
+fn reopen_names_only_the_dependents_whose_state_actually_changed() {
+    let e = Engine::open_in_memory().expect("open");
+    for title in [
+        "blocker",
+        "other blocker",
+        "flips",
+        "already stuck",
+        "closed",
+    ] {
+        e.task_add(&json!({ "title": title })).expect("add");
+    }
+    // #3 waits on #1 alone; #4 waits on #1 AND #2 (open); #5 waits on #1 but is done.
+    e.dependency_add(&json!({ "ref": 3, "depends_on": 1 }))
+        .expect("dep");
+    e.dependency_add(&json!({ "ref": 4, "depends_on": 1 }))
+        .expect("dep");
+    e.dependency_add(&json!({ "ref": 4, "depends_on": 2 }))
+        .expect("dep");
+    e.dependency_add(&json!({ "ref": 5, "depends_on": 1 }))
+        .expect("dep");
+    e.task_done(&json!({ "ref": 1 })).expect("done blocker");
+    e.task_done(&json!({ "ref": 5 })).expect("done dependent");
+
+    let back = e.task_reopen(&json!({ "ref": 1 })).expect("reopen");
+    assert_eq!(
+        back["blocked"],
+        json!([3]),
+        "#4 was already blocked by #2 and #5 is closed; only #3 flipped"
+    );
+}
+
+/// A reopen that releases nothing still answers the key, empty.
+///
+/// Absent-when-empty would make every client branch on presence for a list
+/// that is empty most of the time — the shape D63 rejected for
+/// `annotations_next_offset`.
+#[test]
+fn reopen_answers_an_empty_blocked_list_rather_than_omitting_it() {
+    let e = Engine::open_in_memory().expect("open");
+    e.task_add(&json!({ "title": "alone" })).expect("add");
+    e.task_done(&json!({ "ref": 1 })).expect("done");
+    let back = e.task_reopen(&json!({ "ref": 1 })).expect("reopen");
+    assert_eq!(back["blocked"], json!([]));
+}
+
+/// `report.summary` names the scope its totals were taken over.
+///
+/// The filter DSL carries `completed.after:`, so "what did this week cost" is
+/// one call — and the answer came back carrying `generated` (the time of the
+/// call) and nothing about the window, so a total quoted into a note could be
+/// read against the wrong period by anyone who did not write the call.
+#[test]
+fn report_summary_echoes_the_scope_it_applied() {
+    let e = Engine::open_in_memory().expect("open");
+    e.project_create(&json!({ "name": "work" }))
+        .expect("project");
+    e.task_add(&json!({ "title": "one", "project": "work" }))
+        .expect("add");
+    let r = e
+        .report_summary(&json!({
+            "group_by": "project",
+            "filter": "completed.after:2026-08-23",
+            "metrics": ["count"],
+        }))
+        .expect("summary");
+    assert_eq!(r["filter"], json!("completed.after:2026-08-23"));
+    assert_eq!(
+        r["all"],
+        json!(false),
+        "the default, stated rather than implied"
+    );
+
+    let unscoped = e
+        .report_summary(&json!({ "group_by": "project", "all": true }))
+        .expect("summary");
+    assert_eq!(unscoped["filter"], json!(""), "no filter is a scope too");
+    assert_eq!(unscoped["all"], json!(true));
+}

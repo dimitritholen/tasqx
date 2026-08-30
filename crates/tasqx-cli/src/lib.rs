@@ -1636,6 +1636,18 @@ fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome {
             }
             let count = result["count"].as_u64().unwrap_or(0);
             text.push_str(&format!("{count} hit(s)\n"));
+            // On a miss, name the expression that produced it (D69). Every
+            // word of a plain query is a required phrase, so a question typed
+            // as a sentence comes back exactly as empty as a subject nobody
+            // ever wrote down — and the two need different next moves.
+            if count == 0 {
+                if let Some(matched) = result["matched"].as_str() {
+                    text.push_str(&format!(
+                        "  every term was required: {}\n",
+                        render::san(matched)
+                    ));
+                }
+            }
             Ok((result, text))
         }
         MemoryAction::Rm { id } => {
