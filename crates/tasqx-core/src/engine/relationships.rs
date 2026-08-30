@@ -185,6 +185,19 @@ impl Engine {
         )?;
         tx.commit()?;
 
+        // The body comes BACK, and that is a ruling rather than an oversight
+        // (D72). It reads as drift beside `memory.add`, which takes a longer
+        // body and answers `{created, id, title}` — a field report measured
+        // 594-680 bytes for a ~350-byte annotation against 292 for a ~700-byte
+        // doc, and called the echo waste, which for the caller's own bytes it
+        // is. Two things outrank that. The tool promises the body is stored
+        // *verbatim*, newlines and markdown included, and the echo is the only
+        // evidence of it a caller ever gets; and the annotation object here is
+        // the same `ANNOTATION` shape `task.get` returns, frozen by D56, so
+        // dropping the field would be a removal from a v1 result — the one
+        // thing the freeze does not permit — while eliding it above some size
+        // would make a frozen field's value depend on its length, which is
+        // worse than the bytes.
         Ok(json!({
             "short_id": task.short_id,
             "annotation": { "id": id, "body": body, "created": ts },
