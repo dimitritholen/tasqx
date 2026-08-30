@@ -1037,13 +1037,19 @@ impl<'e> McpServer<'e> {
                 .unwrap_or(0)
         };
 
+        // Measured on the FINISHED block, never on the bare view: dropping the
+        // JSON adds a sentence saying so, and a view that fits by less than that
+        // sentence produced a response over the budget — the payload bound
+        // defeated by the notice explaining the payload bound.
+        let view_only_fits = |view: &str| view_only_text(view).len() <= RESPONSE_BUDGET_BYTES;
+
         let view = render(&first);
         if !paged_by_us || view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
             return tool_ok_with_view(view, &first);
         }
         // Step 2: the same page, without the duplicate.
-        if view.len() <= RESPONSE_BUDGET_BYTES {
-            return tool_ok_view_only(view);
+        if view_only_fits(&view) {
+            return tool_ok_view_only(&view);
         }
 
         // Step 3: the largest page that fits, found by BISECTION rather than by
@@ -1070,7 +1076,7 @@ impl<'e> McpServer<'e> {
                 break;
             };
             let rendered = render(&candidate);
-            if rendered.len() <= RESPONSE_BUDGET_BYTES {
+            if view_only_fits(&rendered) {
                 best = Some(rendered);
                 lo = mid + 1;
             } else {
@@ -1084,7 +1090,7 @@ impl<'e> McpServer<'e> {
                 hi = mid - 1;
             }
         }
-        tool_ok_view_only(best.unwrap_or(view))
+        tool_ok_view_only(&best.unwrap_or(view))
     }
 
     /// The captured clientInfo as one display string, `"<name> <version>"`
@@ -1180,20 +1186,30 @@ fn tool_ok_with_view(view: String, result: &Value) -> Value {
 /// stops looking for the field they need. It is appended HERE rather than in
 /// `markdown::task_detail`, which is pure and golden-tested and knows nothing
 /// about transports or budgets.
-fn tool_ok_view_only(view: String) -> Value {
+fn tool_ok_view_only(view: &str) -> Value {
     if view.is_empty() {
         return tool_ok(&Value::Null);
     }
     json!({
-        "content": [
-            { "type": "text", "text": format!(
-                "{view}
-_Machine-readable JSON omitted: both blocks together exceeded this                  tool's response budget, and the rendered view above carries the same                  annotations. Pass `annotations_limit` to get the JSON block back._
-"
-            ) }
-        ],
+        "content": [ { "type": "text", "text": view_only_text(view) } ],
         "isError": false
     })
+}
+
+/// The view plus the omission notice, as one block — the exact bytes
+/// [`tool_ok_view_only`] sends.
+///
+/// One function so the budget and the answer measure the same string. They did
+/// not: `fit_to_budget` compared the bare view against
+/// [`RESPONSE_BUDGET_BYTES`] and the notice was appended afterwards, so a view
+/// landing just under the limit produced a response just over it — the payload
+/// bound defeated by the sentence explaining the payload bound.
+fn view_only_text(view: &str) -> String {
+    format!(
+        "{view}\n_Machine-readable JSON omitted: both blocks together exceeded this tool's \
+         response budget, and the rendered view above carries the same annotations. Pass \
+         `annotations_limit` to get the JSON block back._\n"
+    )
 }
 
 /// An error `tools/call` result (scope denial, unknown tool, or a core
@@ -1558,30 +1574,187 @@ mod tests {
     #[test]
     fn every_dispatch_method_is_exposed_or_listed_as_deliberately_unexposed() {
         let exposed: Vec<&str> = tool_specs().into_iter().map(|s| s.method).collect();
+        let methods: Vec<&str> = crate::dispatch::PARAMS.iter().map(|(m, _, _)| *m).collect();
+        assert_eq!(
+            exposure_faults(&methods, &exposed, UNEXPOSED_METHODS),
+            Vec::<String>::new()
+        );
+    }
 
-        for (method, _, _) in crate::dispatch::PARAMS {
+    /// The invariant itself, as a function of its three tables, so it can be
+    /// run against inconsistent ones.
+    ///
+    /// Split out for exactly one reason: a guard asserted only over the real
+    /// tables is a guard nobody has seen fail. Delete its assertions and the
+    /// suite stays green, which is the failure mode this project already has a
+    /// rule about — a test watched red is the only test whose behaviour is
+    /// known. `every_dispatch_method_is_exposed_or_listed_as_deliberately_unexposed`
+    /// drives it with the shipping tables; the fixtures below drive it with
+    /// broken ones and assert it complains.
+    fn exposure_faults(
+        methods: &[&str],
+        exposed: &[&str],
+        unexposed: &[(&str, &str)],
+    ) -> Vec<String> {
+        let mut faults = Vec::new();
+        for method in methods {
             let has_tool = exposed.contains(method);
-            let listed = UNEXPOSED_METHODS.iter().any(|(m, _)| m == method);
-            assert!(
-                has_tool || listed,
-                "`{method}` is in PARAMS, has no MCP tool, and is not in UNEXPOSED_METHODS.                  Expose it, or add it there with the reason — an omission nobody wrote down                  is how this surface became additive-only in the first place"
-            );
-            assert!(
-                !(has_tool && listed),
-                "`{method}` is BOTH exposed and listed as deliberately unexposed; the reason                  beside it is now false and the next reader will believe it"
-            );
+            let listed = unexposed.iter().any(|(m, _)| m == method);
+            if !has_tool && !listed {
+                faults.push(format!(
+                    "`{method}` is in PARAMS, has no MCP tool, and is not in \
+                     UNEXPOSED_METHODS. Expose it, or add it there with the reason — an \
+                     omission nobody wrote down is how this surface became additive-only \
+                     in the first place"
+                ));
+            }
+            if has_tool && listed {
+                faults.push(format!(
+                    "`{method}` is BOTH exposed and listed as deliberately unexposed; the \
+                     reason beside it is now false and the next reader will believe it"
+                ));
+            }
         }
+        for (method, reason) in unexposed {
+            if !methods.contains(method) {
+                faults.push(format!(
+                    "UNEXPOSED_METHODS names `{method}`, which is not a dispatch method — a \
+                     renamed or deleted method leaves a reason behind that reads as current"
+                ));
+            }
+            if reason.len() <= 40 {
+                faults.push(format!(
+                    "`{method}` is excused in {} characters. A reason short enough to be a \
+                     label is a label, and the point of this table is the argument",
+                    reason.len()
+                ));
+            }
+        }
+        faults
+    }
 
-        for (method, reason) in UNEXPOSED_METHODS {
-            assert!(
-                crate::dispatch::PARAMS.iter().any(|(m, _, _)| m == method),
-                "UNEXPOSED_METHODS names `{method}`, which is not a dispatch method — a                  renamed or deleted method leaves a reason behind that reads as current"
-            );
-            assert!(
-                reason.len() > 40,
-                "`{method}` is excused in {} characters. A reason short enough to be a label                  is a label, and the point of this table is the argument",
-                reason.len()
-            );
+    /// Each way the exposure table can be wrong, proved to be caught.
+    ///
+    /// Without this, the guard above is a test of the current tables rather
+    /// than a test of the rule: it passes today, it passes with its assertions
+    /// deleted, and nobody finds out until a method ships unreachable again.
+    #[test]
+    fn the_exposure_guard_catches_every_way_the_tables_can_disagree() {
+        let long = "a reason long enough to clear the floor this guard sets on excuses";
+
+        // A method with neither a tool nor a written reason: the original
+        // defect, and the one that arrives by doing nothing at all.
+        let faults = exposure_faults(&["task.add", "task.reopen"], &["task.add"], &[]);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("task.reopen"), "{faults:?}");
+
+        // A reason that has stopped being true because the method was exposed.
+        let faults = exposure_faults(&["task.add"], &["task.add"], &[("task.add", long)]);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("BOTH exposed and listed"), "{faults:?}");
+
+        // A reason left behind by a method that no longer exists.
+        let faults = exposure_faults(&["task.add"], &["task.add"], &[("task.ghost", long)]);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("not a dispatch method"), "{faults:?}");
+
+        // An excuse short enough to be a label.
+        let faults = exposure_faults(&["task.add"], &[], &[("task.add", "internal")]);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(
+            faults[0].contains("short enough to be a label"),
+            "{faults:?}"
+        );
+
+        // And consistent tables produce nothing, so the fixtures above are
+        // failing for their own reason rather than because anything complains.
+        assert_eq!(
+            exposure_faults(
+                &["task.add", "task.cancel"],
+                &["task.add"],
+                &[("task.cancel", long)]
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The response budget counts the notice the response adds.
+    ///
+    /// `fit_to_budget` measured the bare view and `tool_ok_view_only` appended
+    /// the JSON-omission sentence afterwards, so a view landing within that
+    /// sentence's length of the limit shipped over it — the payload bound
+    /// defeated by the text explaining the payload bound. The window is
+    /// narrower than any hand-written fixture would reliably hit, so the
+    /// fixture is searched for.
+    #[test]
+    fn a_view_that_only_fits_without_its_own_notice_is_still_shrunk() {
+        let notice = view_only_text("").len();
+        assert!(
+            notice > 0,
+            "the notice must cost something to be worth guarding"
+        );
+
+        // Two annotations: an old fat one and a new small one, with the fat
+        // body sized so the two-annotation view lands in the danger window —
+        // under the budget on its own, over it once the notice is added.
+        let target = RESPONSE_BUDGET_BYTES - notice / 2;
+        let (mut lo, mut hi) = (1usize, RESPONSE_BUDGET_BYTES);
+        let mut fixture = None;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let e = engine();
+            e.task_add(&json!({ "title": "boundary" })).expect("task");
+            e.annotation_add(&json!({ "ref": 1, "body": "x".repeat(mid) }))
+                .expect("the old fat one");
+            e.annotation_add(&json!({ "ref": 1, "body": "the newest, and small" }))
+                .expect("the new small one");
+            let full = dispatch(&e, "task.get", &json!({ "ref": 1 })).expect("get");
+            let len = crate::markdown::task_detail(&full, &iso_opts()).len();
+            if len <= target {
+                fixture = Some((mid, len));
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let (body, view_len) = fixture.expect("a body size landing under the budget exists");
+        assert!(
+            view_len > RESPONSE_BUDGET_BYTES - notice,
+            "the search did not reach the window this guards: view {view_len}, budget \
+             {RESPONSE_BUDGET_BYTES}, notice {notice}"
+        );
+
+        let e = engine();
+        e.task_add(&json!({ "title": "boundary" })).expect("task");
+        e.annotation_add(&json!({ "ref": 1, "body": "x".repeat(body) }))
+            .expect("the old fat one");
+        e.annotation_add(&json!({ "ref": 1, "body": "the newest, and small" }))
+            .expect("the new small one");
+        let server = McpServer::new(&e, Scope::Read);
+        let out = server
+            .handle_message(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "tasqx_get_task", "arguments": { "ref": 1 } }
+            }))
+            .expect("tools/call is a request");
+        let bytes: usize = out["result"]["result"]["content"]
+            .as_array()
+            .or_else(|| out["result"]["content"].as_array())
+            .expect("content blocks")
+            .iter()
+            .map(|b| b["text"].as_str().unwrap_or("").len())
+            .sum();
+        assert!(
+            bytes <= RESPONSE_BUDGET_BYTES,
+            "the finished response is {bytes} bytes against a {RESPONSE_BUDGET_BYTES} budget: \
+             the notice was added after the fit was decided"
+        );
+    }
+
+    fn iso_opts() -> crate::markdown::DetailOpts {
+        crate::markdown::DetailOpts {
+            time: crate::markdown::TimeFormat::Iso,
+            now: jiff::Timestamp::UNIX_EPOCH,
         }
     }
 

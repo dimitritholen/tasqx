@@ -1267,6 +1267,21 @@ impl Engine {
     /// one, and `null` once there is none — a next page that keeps being
     /// advertised at the end of the history is a loop, not a hint.
     pub fn task_get(&self, p: &Value) -> Result<Value, ApiError> {
+        // One point in time for the whole detail. This response is assembled
+        // from six separate reads — the task row, its tags, its dependencies,
+        // its annotations, the count of those annotations, and its
+        // measurements — and without a snapshot a write landing between any two
+        // of them ships an answer that never existed. The pagination made that
+        // visible rather than theoretical: `annotations_total` and the page
+        // itself are two statements, so a concurrent `annotation.add` produced a
+        // total the rows disagreed with and an `annotations_next_offset`
+        // computed from both.
+        //
+        // DEFERRED, exactly as `store_export` does it and for the same reason
+        // (§2: concurrent readers never block) — the snapshot pins at the first
+        // read and holds without taking the write lock. Bound to a NAME: `let _`
+        // drops the guard on the spot and turns the whole thing into a no-op.
+        let _snapshot = self.conn.unchecked_transaction()?;
         let task = self.resolve_ref(p)?;
         let tags = task_tags(&self.conn, &task.id)?;
         let mut obj = task_to_json(&task, &tags);
@@ -1284,6 +1299,13 @@ impl Engine {
         let returned = annotations.len() as u64;
         obj["annotations"] = json!(annotations);
         obj["annotations_total"] = json!(total);
+        // Echoed, not merely accepted. A page carries no evidence of where it
+        // sits: the rendered view assumed every page started at the newest
+        // annotation, so on the second page of ten it announced "newest first"
+        // and called all six missing rows older, while four of them were newer
+        // than anything on the page. A reader — human or model — cannot
+        // reconstruct the offset from the rows, and neither could the renderer.
+        obj["annotations_offset"] = json!(offset);
         // An empty page never advertises a successor: past the end of the
         // history `offset` would otherwise be handed straight back and the
         // caller would page in place forever.
@@ -1519,6 +1541,77 @@ mod tests {
             .unwrap();
         assert_eq!(none["annotations"].as_array().unwrap().len(), 0);
         assert_eq!(none["annotations_total"], json!(10));
+    }
+
+    /// `task.get` must read every part of its answer from ONE snapshot.
+    ///
+    /// The response is assembled from six statements — the task row, tags,
+    /// dependencies, the annotation page, the count behind it, and the
+    /// measurements — and in WAL each takes its own snapshot, so a writer
+    /// committing between two of them ships an answer that never existed. The
+    /// pagination is what made it observable rather than theoretical:
+    /// `annotations_total` and the page are separate reads, so a concurrent
+    /// `annotation.add` yields a total the returned rows disagree with, and an
+    /// `annotations_next_offset` computed from both.
+    ///
+    /// Structural, for the same reason `store_export_opens_its_snapshot_before_the_first_read`
+    /// is: the interleaving point is inside SQLite and rusqlite's `hooks`
+    /// feature — the only way to drive a write from between two of our reads —
+    /// is not compiled in.
+    #[test]
+    fn task_get_opens_its_snapshot_before_the_first_read() {
+        let source = include_str!("task.rs");
+        // Assembled rather than written out: `dispatch`'s accepted-key guard
+        // splits this same source at every `fn NAME(`, so a marker spelled in
+        // full would register here as a second definition of the handler.
+        let marker = format!("pub fn {}(", "task_get");
+        let marker = marker.as_str();
+        let start = source.find(marker).expect("task_get exists");
+        let rest = &source[start..];
+        // BOTH visibilities, unlike the `store_export` scan: the next item after
+        // `task_get` is `pub fn task_cancel`, so a terminator of `\n    fn `
+        // alone runs the slice on into every later handler — and one of those
+        // opens a write transaction, which this guard then reports as a defect
+        // in a function that never had one.
+        let end = ["\n    pub fn ", "\n    fn "]
+            .iter()
+            .filter_map(|t| rest[marker.len()..].find(t))
+            .min()
+            .map(|offset| marker.len() + offset)
+            .unwrap_or(rest.len());
+        // Comments out: this function's prose names the constructor it does not
+        // use, and a scanner that cannot tell code from a comment would read
+        // that as the defect it warns about.
+        let body: String = rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = body.as_str();
+
+        let guard = body
+            .find("unchecked_transaction()")
+            .expect("task.get must open a transaction so its reads share one snapshot");
+        let first_read = body
+            .find("self.resolve_ref(p)")
+            .expect("task.get resolves the ref before anything else");
+        assert!(
+            guard < first_read,
+            "the snapshot pins at the first read, so the transaction must be opened before it"
+        );
+        assert!(
+            !body.contains("let _ = self.conn.unchecked_transaction"),
+            "a `_` binding drops the transaction on the spot, making the guard a no-op"
+        );
+        // DEFERRED, never IMMEDIATE: a reader that takes the write lock blocks
+        // every writer for its duration, which §2's "concurrent readers never
+        // block" forbids.
+        for forbidden in ["begin_mutation", "Immediate"] {
+            assert!(
+                !body.contains(forbidden),
+                "task.get is a read and must not take the write lock (`{forbidden}`)"
+            );
+        }
     }
 
     /// A negative page size is refused at the edge, not cast into a huge one.

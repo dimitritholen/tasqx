@@ -163,27 +163,52 @@ fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
     // behind it would be invisible to exactly the reader it protects: someone
     // reading twenty annotations of two hundred with nothing to tell them the
     // story continues.
+    //
+    // BOTH sides are counted, because a page has two of them. The first version
+    // assumed every page started at the newest annotation: it printed "newest
+    // first" and called everything missing "older", which on the second page of
+    // ten was false twice over — the page was not the newest, and four of the
+    // six it called older were newer than anything on it. `annotations_offset`
+    // is echoed by `task.get` so this can say where the page actually sits.
     let shown = rows.len();
     let total = result
         .get("annotations_total")
         .and_then(Value::as_u64)
         .map_or(shown, |t| t as usize);
+    let offset = result
+        .get("annotations_offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
     let next = result
         .get("annotations_next_offset")
         .and_then(Value::as_u64);
-    if total > shown {
-        out.push_str(&format!(
-            "\n### Annotations ({shown} of {total}, newest first)\n\n"
-        ));
-        if let Some(offset) = next {
-            out.push_str(&format!(
-                "_{} older annotations elided — re-read this task with `annotations_offset: \
-                 {offset}` for the next page._\n\n",
-                total - shown
-            ));
-        }
-    } else {
+    let newer = offset.min(total);
+    let older = total.saturating_sub(offset + shown);
+
+    if newer == 0 && older == 0 {
         out.push_str(&format!("\n### Annotations ({shown})\n\n"));
+    } else {
+        out.push_str(&format!("\n### Annotations ({shown} of {total})\n\n"));
+        // "oldest first" is said out loud: the window is taken from the recent
+        // end and then reversed back into reading order, so a heading naming
+        // the recent end and a body running the other way is a contradiction a
+        // reader would otherwise have to resolve for themselves.
+        let mut note = if newer == 0 {
+            format!("_Showing the {shown} most recent, oldest first.")
+        } else {
+            format!("_Showing {shown}, oldest first, after the {newer} most recent.")
+        };
+        if older > 0 {
+            note.push_str(&format!(" {older} older elided"));
+            match next {
+                Some(n) => note.push_str(&format!(
+                    " — re-read this task with `annotations_offset: {n}` for the next page."
+                )),
+                None => note.push('.'),
+            }
+        }
+        note.push_str("_\n\n");
+        out.push_str(&note);
     }
     for a in rows {
         let when = fmt_instant(a.get("created").and_then(Value::as_str).unwrap_or(""), opts);

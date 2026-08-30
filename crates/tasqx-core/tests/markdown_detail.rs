@@ -540,13 +540,15 @@ const RENDERED_AS: &[(&str, Shows)] = &[
     // the paged fixture's own numbers, so a header that kept its shape and lost
     // the total, or a notice that stopped naming the offset that continues the
     // history, fails here rather than passing on structure alone.
-    (
-        "annotations_total",
-        Shows::Cell("### Annotations (1 of 3, newest first)"),
-    ),
+    ("annotations_total", Shows::Cell("### Annotations (1 of 3)")),
+    // The page's own position. Its needle is the clause that only appears when
+    // the offset is non-zero, so a renderer that went back to assuming every
+    // page starts at the newest annotation fails here rather than shipping a
+    // heading that is false on every page but the first.
+    ("annotations_offset", Shows::Cell("after the 1 most recent")),
     (
         "annotations_next_offset",
-        Shows::Cell("`annotations_offset: 1`"),
+        Shows::Cell("`annotations_offset: 2`"),
     ),
     (
         "tokens",
@@ -628,7 +630,13 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
             &json!({ "ref": 4, "body": format!("note {i}") }),
         );
     }
-    let elided = d("task.get", &json!({ "ref": 4, "annotations_limit": 1 }));
+    // Offset 1, not 0: a page at the newest end leaves `annotations_offset`
+    // invisible in the view, and a key whose value never shows is a key this
+    // guard cannot account for.
+    let elided = d(
+        "task.get",
+        &json!({ "ref": 4, "annotations_limit": 1, "annotations_offset": 1 }),
+    );
 
     d("task.start", &json!({ "ref": 2 }));
     let running = d("task.get", &json!({ "ref": 2 }));
@@ -749,11 +757,11 @@ fn an_elided_annotation_history_names_its_total_and_how_to_continue() {
             { "id": "a9", "created": "2026-07-29T09:01:45Z", "body": "the newest note\n" }
         ],
         "annotations_total": 200,
+        "annotations_offset": 0,
         "annotations_next_offset": 1
     });
 
-    let expected = "\
-## #59 · A task with a long history
+    let expected = "## #59 · A task with a long history
 
 | | |
 |---|---|
@@ -764,9 +772,9 @@ fn an_elided_annotation_history_names_its_total_and_how_to_continue() {
 | modified | 2026-07-29T09:01:45Z |
 | rev | 2 |
 
-### Annotations (1 of 200, newest first)
+### Annotations (1 of 200)
 
-_199 older annotations elided — re-read this task with `annotations_offset: 1` for the next page._
+_Showing the 1 most recent, oldest first. 199 older elided — re-read this task with `annotations_offset: 1` for the next page._
 
 ---
 **2026-07-29T09:01:45Z**
@@ -775,6 +783,85 @@ the newest note
 ";
 
     assert_eq!(task_detail(&task, &iso_opts()), expected);
+}
+
+/// A page past the first must not claim to be the newest, and must not call
+/// the annotations it skipped "older".
+///
+/// It said both. With `annotations_limit: 4, annotations_offset: 4` over ten
+/// annotations the heading read "4 of 10, newest first" and the note read "6
+/// older annotations elided" — while four of those six were NEWER than
+/// everything on the page, and the page was the second-newest four, not the
+/// newest anything. The renderer had no offset to reason with, so it assumed
+/// zero; `task.get` now echoes the offset it paged from.
+#[test]
+fn a_page_past_the_first_says_what_it_skipped_on_both_sides() {
+    let task = json!({
+        "short_id": 59,
+        "title": "A task with a long history",
+        "status": "pending",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 2,
+        "annotations": [
+            { "id": "a3", "created": "2026-07-29T09:01:45Z", "body": "note 3\n" }
+        ],
+        "annotations_total": 10,
+        "annotations_offset": 4,
+        "annotations_next_offset": 5
+    });
+
+    let out = task_detail(&task, &iso_opts());
+    assert!(
+        out.contains(
+            "### Annotations (1 of 10)
+"
+        ),
+        "got:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "_Showing 1, oldest first, after the 4 most recent. 5 older elided — re-read \
+             this task with `annotations_offset: 5` for the next page._"
+        ),
+        "got:\n{out}"
+    );
+    assert!(!out.contains("newest first"), "got:\n{out}");
+}
+
+/// The oldest page has nothing behind it, and says so by not offering a next
+/// one — a "next page" advertised at the end of the history is a loop.
+#[test]
+fn the_oldest_page_names_what_it_skipped_and_offers_no_next() {
+    let task = json!({
+        "short_id": 59,
+        "title": "A task with a long history",
+        "status": "pending",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 2,
+        "annotations": [
+            { "id": "a1", "created": "2026-07-29T09:01:45Z", "body": "note 1\n" }
+        ],
+        "annotations_total": 10,
+        "annotations_offset": 9,
+        "annotations_next_offset": Value::Null
+    });
+
+    let out = task_detail(&task, &iso_opts());
+    assert!(
+        out.contains(
+            "### Annotations (1 of 10)
+"
+        ),
+        "got:\n{out}"
+    );
+    assert!(
+        out.contains("_Showing 1, oldest first, after the 9 most recent._"),
+        "got:\n{out}"
+    );
+    assert!(!out.contains("elided"), "got:\n{out}");
+    assert!(!out.contains("annotations_offset"), "got:\n{out}");
 }
 
 /// A history returned whole must read exactly as it always has: no count of a
