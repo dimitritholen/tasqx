@@ -1919,6 +1919,14 @@ fn tool_call_json(call: &Value, label: &str) -> Value {
     let content = call["content"].as_array().unwrap_or_else(|| {
         panic!("{label}: a CallToolResult carries a `content` array, got {call}")
     });
+    // The JSON block is the LAST one, and `tasqx_get_task` is now allowed to
+    // omit it: over the response budget, the transport spends the duplicate
+    // block before it spends annotations (D66). Every case in this file is
+    // small enough to stay under that budget and therefore still carries both
+    // blocks — which is what keeps this guard live rather than quietly
+    // checking a view. D56 pre-committed to saying so if that ever changed:
+    // a fixture that grows past the budget will land here as "does not parse",
+    // and the answer is to shrink the fixture, never to read a different block.
     let text = content
         .last()
         .and_then(|b| b.get("text"))
