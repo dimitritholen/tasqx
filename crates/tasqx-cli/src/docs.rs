@@ -151,8 +151,13 @@ const METHODS: [(&str, &str, &str); 31] = [
     ),
     (
         "task.list",
-        "<code>filter?</code>, <code>sort?</code>, <code>limit?</code>, <code>fields?</code>",
-        "<code>{count, tasks}</code>. An omitted <code>filter</code> matches everything.",
+        "<code>filter?</code>, <code>sort?</code>, <code>limit?</code>, <code>offset?</code>, \
+         <code>fields?</code>",
+        "<code>{count, total, next_offset, tasks}</code>. An omitted <code>filter</code> matches \
+         everything; <code>count</code> is how many rows came back and <code>total</code> how many \
+         matched, so a windowed list is never mistaken for a complete one. \
+         <code>next_offset</code> is null once nothing is left. \
+         <code>fields</code> may include <code>depends_on</code>, which no other projection emits.",
     ),
     (
         "task.get",
@@ -199,7 +204,8 @@ const METHODS: [(&str, &str, &str); 31] = [
     (
         "task.reopen",
         "<code>ref</code>",
-        "<code>{short_id, status}</code>.",
+        "<code>{short_id, status, blocked}</code>. <code>blocked</code> names the open dependents \
+         this reopen put back — the mirror of <code>unblocked</code> on <code>task.done</code>.",
     ),
     (
         "tag.add",
@@ -244,7 +250,9 @@ const METHODS: [(&str, &str, &str); 31] = [
     (
         "memory.search",
         "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>",
-        "<code>{count, hits}</code> — bm25-ranked over docs + annotations.",
+        "<code>{count, hits, matched}</code> — bm25-ranked over docs + annotations. \
+         <code>matched</code> is the FTS5 expression actually run, which is how \
+         <code>count: 0</code> is told apart from a store holding nothing on the subject.",
     ),
     (
         "memory.remove",
@@ -268,8 +276,9 @@ const METHODS: [(&str, &str, &str); 31] = [
     (
         "report.summary",
         "<code>group_by?</code>, <code>filter?</code>, <code>metrics?</code>, <code>all?</code>",
-        "<code>{groups, generated}</code>. <code>group_by</code> defaults to \
-         <code>project</code>.",
+        "<code>{groups, generated, filter, all}</code>. <code>group_by</code> defaults to \
+         <code>project</code>; the result echoes the scope it applied, so a total cannot be read \
+         against the wrong period.",
     ),
     (
         "store.export",

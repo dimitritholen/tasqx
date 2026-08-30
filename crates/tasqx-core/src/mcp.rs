@@ -132,6 +132,23 @@ const WHEN_GRAMMAR: &str = "Date/time in the tool's date grammar: \"tomorrow\", 
 /// nothing.
 const ANNOTATION_PAGE: u64 = 20;
 
+/// How many tasks `tasqx_list_tasks` returns when the caller names no `limit`.
+///
+/// A STARTING page, not the answer: like [`ANNOTATION_PAGE`] it bounds rows,
+/// and rows are not the unit a client's limit is expressed in, so the response
+/// is then shrunk to fit [`RESPONSE_BUDGET_BYTES`] by bisection. Sized to be
+/// generous enough that an ordinary store never notices, because the byte fit
+/// is what actually holds.
+///
+/// The failure it exists to prevent, measured on a real store of 223 tasks:
+/// `tasqx_list_tasks {}` — the first call an agent makes, and the one the
+/// tool's own schema invites with "no filter means no filtering" — answered
+/// **180,412 bytes** in one block, past most clients' tool-output limit, with
+/// no elision and nothing saying anything had been large. This is the shape
+/// D63 fixed for `task.get`; `task.list`'s worst case is bigger and grows with
+/// the store rather than with one task's history.
+const LIST_PAGE: u64 = 100;
+
 /// The size a `tasqx_get_task` response is shrunk to fit, counting BOTH content
 /// blocks — the rendered view and the JSON behind it, which D49 ships together.
 ///
@@ -300,7 +317,10 @@ fn tool_specs() -> Vec<ToolSpec> {
             idempotent: true,
             description: "List tasks matching a filter-DSL query. The filter is \
                 the same grammar the CLI takes, e.g. \
-                \"project:work.tasqx status:pending +api due.before:tomorrow\".",
+                \"project:work.tasqx status:pending +api due.before:tomorrow\". \
+                Rows come back in pages: the response carries `count` (returned), `total` \
+                (matched) and `next_offset`, null once nothing is left. Project \
+                `depends_on` with `fields` to see what a blocked row is waiting on.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -326,7 +346,24 @@ fn tool_specs() -> Vec<ToolSpec> {
                     // own refusal for a negative limit says "send 0 or more".
                     // A schema that contradicts the sentence the engine prints
                     // denies an agent a call that works.
-                    "limit": { "type": "integer", "minimum": 0 },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": format!(
+                            "How many rows to return. Omit and this tool applies its own page \
+                             ({LIST_PAGE}), shrunk further if the response would exceed its byte \
+                             budget; the answer always carries `total` and a `next_offset` that \
+                             is null once nothing is left. A limit you name is answered exactly, \
+                             however large."
+                        )
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How many matching rows to skip. Pass the `next_offset` of \
+                             the previous response to walk the rest; ordering is stable across \
+                             pages, so a row is never shown twice or missed."
+                    },
                     "fields": {
                         "type": "array",
                         "items": { "type": "string", "enum": enum_of(TASK_FIELDS.iter().map(String::as_str)) },
@@ -986,6 +1023,23 @@ impl<'e> McpServer<'e> {
         // have read it that way since v1 was frozen — and the page size is
         // supplied HERE, where the payload limit actually lives. A caller that
         // names its own is respected as-is, including one asking for the lot.
+        // The same pattern for the collection reader, and for the same
+        // reason one relation over: `task.list` had no default bound at all,
+        // and the escape hatch it did have truncated silently — `count` was
+        // the number of rows RETURNED, with no total and no offset anywhere in
+        // the answer. The core still answers whole when asked; the page is
+        // supplied HERE, where the payload limit lives, and `total` /
+        // `next_offset` make what was left out both visible and reachable.
+        let mut paged_list_by_us = false;
+        if spec.method == "task.list" {
+            if let Some(obj) = args.as_object_mut() {
+                if !obj.contains_key("limit") {
+                    obj.insert("limit".to_string(), json!(LIST_PAGE));
+                    paged_list_by_us = true;
+                }
+            }
+        }
+
         let mut paged_by_us = false;
         if spec.method == "task.get" {
             if let Some(obj) = args.as_object_mut() {
@@ -1027,6 +1081,9 @@ impl<'e> McpServer<'e> {
                         now: jiff::Timestamp::now(),
                     };
                     return self.fit_to_budget(result, &args, &opts, paged_by_us);
+                }
+                if paged_list_by_us {
+                    return self.fit_list_to_budget(result, &args);
                 }
                 tool_ok(&result)
             }
@@ -1146,6 +1203,95 @@ impl<'e> McpServer<'e> {
             }
         }
         tool_ok_view_only(&best.unwrap_or(view))
+    }
+
+    /// Fit a `task.list` response to [`RESPONSE_BUDGET_BYTES`] by re-cutting
+    /// the page this transport supplied.
+    ///
+    /// Only for a caller who named no `limit`. One that did is answered
+    /// exactly as asked, however large — the same rule `fit_to_budget` keeps
+    /// for `annotations_limit`, and for the same reason: a request
+    /// second-guessed is a caller who can never fetch a big page on purpose.
+    ///
+    /// # Why this re-cuts instead of re-dispatching
+    ///
+    /// `limit` is a *prefix* of a fully determined order — `compare_by` ends on
+    /// an unconditional `short_id`, so there are no ties left for a second
+    /// query to resolve differently. The `k`-row answer is therefore
+    /// byte-identical to what the engine would return for `limit: k`, and can
+    /// be produced by truncating the array already in hand. D66's bisection
+    /// re-dispatches because a `task.get` page is taken from the *newest* end
+    /// and a shorter page is not a prefix of a longer one; here it is. The
+    /// difference is worth the paragraph: the first version of this function
+    /// did re-dispatch, which is up to seven whole-store scans per call to
+    /// answer a question the first scan had already answered — invisible at
+    /// 233 tasks (re-measured warm, both versions land at the same 38 ms for
+    /// nine reads) and linear in the store from there. Re-cutting is not a
+    /// speed trick either way; it is the version whose answer is exact by
+    /// construction rather than by a second query agreeing with the first.
+    ///
+    /// `count` and `next_offset` are recomputed with the array, because a
+    /// shortened page whose own count still describes the long one is the
+    /// silent-drop shape this whole entry exists to remove. `total` is a
+    /// property of the filter and does not move.
+    ///
+    /// There is no notice block and there does not need to be one:
+    /// `task.list` answers `total` and `next_offset`, so a shortened response
+    /// states the elision in its own machine-readable shape and names the
+    /// offset that reaches the rest — where `task.get` had to say it in prose
+    /// because a rendered view has nowhere else to put it. That also keeps
+    /// this tool's single content block parseable as the frozen result, which
+    /// the conformance guard reads.
+    ///
+    /// The floor is one whole row: below it the only lever left is cutting a
+    /// task in half, and a row that stops mid-field is worse than an oversized
+    /// answer. `fields` is the caller's lever for a store whose single row
+    /// exceeds the budget, and the schema says so.
+    fn fit_list_to_budget(&self, first: Value, args: &Value) -> Value {
+        let size = |result: &Value| {
+            serde_json::to_string_pretty(result)
+                .map(|s| s.len())
+                .unwrap_or(0)
+        };
+        if size(&first) <= RESPONSE_BUDGET_BYTES {
+            return tool_ok(&first);
+        }
+
+        let Some(rows) = first.get("tasks").and_then(Value::as_array).cloned() else {
+            return tool_ok(&first);
+        };
+        let total = first.get("total").and_then(Value::as_u64).unwrap_or(0);
+        let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0);
+        let cut = |k: usize| -> Value {
+            let reached = offset + k as u64;
+            json!({
+                "count": k,
+                "total": total,
+                "next_offset": if reached < total { json!(reached) } else { Value::Null },
+                "tasks": rows[..k].to_vec(),
+            })
+        };
+
+        // Bisection rather than halving, for the reason D66 records: halving
+        // lands on a power-of-two fraction of the page and stops there, which
+        // on a store of few-and-enormous rows returns a fraction of what fits.
+        // Each candidate here is a serialization, not a query.
+        let (mut lo, mut hi) = (1usize, rows.len());
+        let mut best: Option<Value> = None;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let candidate = cut(mid);
+            if size(&candidate) <= RESPONSE_BUDGET_BYTES {
+                best = Some(candidate);
+                lo = mid + 1;
+            } else {
+                if mid == 1 {
+                    return tool_ok(&candidate);
+                }
+                hi = mid - 1;
+            }
+        }
+        tool_ok(&best.unwrap_or(first))
     }
 
     /// The captured clientInfo as one display string, `"<name> <version>"`

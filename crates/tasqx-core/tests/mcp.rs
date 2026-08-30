@@ -1434,3 +1434,111 @@ fn the_behaviour_hints_are_not_the_write_flag_under_another_name() {
         "every annotation is a new row"
     );
 }
+
+/// D70: an unbounded `tasqx_list_tasks` is bounded by the transport, and the
+/// answer says what it withheld.
+///
+/// Measured on a real store of 223 tasks, `tasqx_list_tasks {}` — the first
+/// call an agent makes, and the one this tool's own schema invites with "no
+/// filter means no filtering" — returned 180,412 bytes in one block, past most
+/// clients' tool-output limit, with no elision and nothing saying anything had
+/// been large.
+#[test]
+fn an_unbounded_task_list_is_bounded_by_the_transport() {
+    let engine = engine();
+    // Bodies large enough that the whole store cannot fit the budget, in a
+    // field every row carries.
+    let long = "x".repeat(400);
+    for i in 0..400 {
+        engine
+            .task_add(&json!({ "title": format!("{long} #{i}") }))
+            .expect("add");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let result = call(&server, 1, "tasqx_list_tasks", json!({}));
+    let bytes = serde_json::to_string(&result).expect("serialize").len();
+    assert!(
+        bytes <= 32_768,
+        "an unbounded list must not blow a client's limit: {bytes} bytes"
+    );
+
+    let body = tool_json(&result);
+    assert_eq!(body["total"], json!(400), "the answer names what matched");
+    let count = body["count"].as_u64().expect("count");
+    assert!(count < 400, "the page is smaller than the store: {count}");
+    assert_eq!(
+        body["next_offset"],
+        json!(count),
+        "and it names the offset that reaches the rest"
+    );
+}
+
+/// A caller that names its own `limit` is answered exactly, however large —
+/// the rule `fit_to_budget` already keeps for `annotations_limit`.
+#[test]
+fn a_named_limit_on_task_list_is_answered_as_asked() {
+    let engine = engine();
+    let long = "y".repeat(400);
+    for i in 0..300 {
+        engine
+            .task_add(&json!({ "title": format!("{long} #{i}") }))
+            .expect("add");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let body = tool_json(&call(
+        &server,
+        1,
+        "tasqx_list_tasks",
+        json!({ "limit": 300 }),
+    ));
+    assert_eq!(
+        body["count"],
+        json!(300),
+        "a request second-guessed is a caller who can never page big on purpose"
+    );
+    assert_eq!(body["next_offset"], Value::Null);
+}
+
+/// A small store never notices the transport page exists.
+#[test]
+fn a_small_store_is_answered_whole_with_the_walk_already_closed() {
+    let engine = engine();
+    for i in 0..3 {
+        engine
+            .task_add(&json!({ "title": format!("t{i}") }))
+            .expect("add");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let body = tool_json(&call(&server, 1, "tasqx_list_tasks", json!({})));
+    assert_eq!(body["count"], json!(3));
+    assert_eq!(body["total"], json!(3));
+    assert_eq!(body["next_offset"], Value::Null);
+}
+
+/// The re-cut page is the page the engine would have returned.
+///
+/// `fit_list_to_budget` shortens the array it already holds instead of asking
+/// the engine again, on the claim that `limit` is a prefix of a fully
+/// determined order. That claim is the whole basis for not re-dispatching —
+/// and it is only true because `compare_by` ends on an unconditional
+/// `short_id`, so this test is what stops the tiebreak being removed as
+/// "cosmetic" later.
+#[test]
+fn the_transport_recut_page_equals_a_real_limited_call() {
+    let engine = engine();
+    let long = "z".repeat(400);
+    for i in 0..400 {
+        engine
+            .task_add(&json!({ "title": format!("{long} #{i}") }))
+            .expect("add");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let recut = tool_json(&call(&server, 1, "tasqx_list_tasks", json!({})));
+    let k = recut["count"].as_u64().expect("count");
+
+    let asked = tool_json(&call(&server, 2, "tasqx_list_tasks", json!({ "limit": k })));
+    assert_eq!(
+        recut, asked,
+        "the shortened answer must be the answer, not an approximation of it"
+    );
+}
