@@ -71,6 +71,23 @@ struct ToolSpec {
     name: &'static str,
     method: &'static str,
     write: bool,
+    /// Whether this call can destroy or overwrite information the store
+    /// already holds — the MCP `destructiveHint`, and the thing a host's
+    /// confirmation policy keys off (§7, D64).
+    ///
+    /// It is a per-tool fact and not `write` restated. Derived from the write
+    /// flag it said the same thing twice and therefore said nothing: creating
+    /// a task, appending an annotation and opening a timer carried the label
+    /// reserved for permanently deleting a memory doc, so an operator gating
+    /// on it gated all fourteen writes or none, and turned the gate off.
+    destructive: bool,
+    /// Whether repeating the call with identical arguments leaves the store in
+    /// the state one call left it in — the MCP `idempotentHint`.
+    ///
+    /// A refusal is not an effect: `tasqx_stop_timer` on an already-stopped
+    /// task conflicts and writes nothing, which is idempotent by this
+    /// definition. Reads are trivially true.
+    idempotent: bool,
     description: &'static str,
     schema: Value,
 }
@@ -279,6 +296,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_list_tasks",
             method: "task.list",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "List tasks matching a filter-DSL query. The filter is \
                 the same grammar the CLI takes, e.g. \
                 \"project:work.tasqx status:pending +api due.before:tomorrow\".",
@@ -320,6 +339,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_get_task",
             method: "task.get",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "Get one task's full detail: fields, tags, annotations, and \
                 dependencies. A long annotation history is returned newest-first in pages — \
                 the response always carries `annotations_total`, and `annotations_next_offset` \
@@ -356,6 +377,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_summary",
             method: "report.summary",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "Aggregate report grouped by project, status, or priority. Pure read, no side effects.",
             schema: json!({
                 "type": "object",
@@ -384,6 +407,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_list_projects",
             method: "project.list",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "List projects. By default excludes archived projects.",
             schema: json!({
                 "type": "object",
@@ -398,6 +423,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_search_memory",
             method: "memory.search",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "Search the memory store: imported docs/patterns and \
                 task annotations, bm25-ranked with snippets. Plain text queries \
                 are matched as phrases; set raw=true for FTS5 operator syntax \
@@ -430,6 +457,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_add_task",
             method: "task.add",
             write: true,
+            destructive: false,
+            idempotent: false,
             description: "Create a new task. Returns its short_id, urgency and status — which \
                 is `backlog`, not `pending`, when `scheduled` or `wait` is in the future, and a \
                 backlog task is outside the `@working` set until that date passes.",
@@ -482,6 +511,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_modify_task",
             method: "task.modify",
             write: true,
+            destructive: true,
+            idempotent: false,
             description: "Change fields on a task via a `set` map. Pass expected_rev \
                 for optimistic concurrency (a stale rev yields a conflict instead of clobbering).",
             schema: json!({
@@ -501,6 +532,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_complete_task",
             method: "task.done",
             write: true,
+            destructive: true,
+            idempotent: false,
             description: "Mark a task done. Returns any tasks newly unblocked by its \
                 completion. Report the tokens this task cost via the *_tokens params — \
                 the caller is the only party that knows which task a turn's spend \
@@ -558,6 +591,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_reopen_task",
             method: "task.reopen",
             write: true,
+            destructive: true,
+            idempotent: false,
             // The inverse of the two closes an agent can reach: `task.done` has
             // its own tool and cancellation goes through `task.modify
             // status:cancelled` (§7). Both were reachable and neither could be
@@ -576,6 +611,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_start_timer",
             method: "task.start",
             write: true,
+            destructive: false,
+            idempotent: false,
             description: "Start the timer on a task (moves it to active). Correlation \
                 params (session_id, prompt_id, transcript_path, client) are recorded on \
                 the start event for token attribution.",
@@ -595,6 +632,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_stop_timer",
             method: "task.stop",
             write: true,
+            destructive: false,
+            idempotent: true,
             description: "Stop the timer on a task. Returns the tracked duration.",
             schema: json!({
                 "type": "object",
@@ -606,6 +645,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_tag_task",
             method: "tag.add",
             write: true,
+            destructive: false,
+            idempotent: true,
             description: "Add one or more tags to a task. Returns the resulting tag set.",
             schema: json!({
                 "type": "object",
@@ -620,6 +661,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_untag_task",
             method: "tag.remove",
             write: true,
+            destructive: true,
+            idempotent: true,
             description: "Remove one or more tags from a task. Returns the resulting tag set. \
                 Removing a tag the task does not carry is not an error.",
             schema: json!({
@@ -635,6 +678,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_annotate_task",
             method: "annotation.add",
             write: true,
+            destructive: false,
+            idempotent: false,
             description: "Attach a timestamped note to a task. The body is \
                 stored verbatim (newlines and markdown included), so this is \
                 where long-form context lives: acceptance criteria, links, \
@@ -652,6 +697,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_add_dependency",
             method: "dependency.add",
             write: true,
+            destructive: false,
+            idempotent: true,
             description: "Make one task depend on another: `ref` is blocked \
                 until `depends_on` is done or cancelled. Returns the resulting \
                 dependency list and blocked state. A cycle is refused as a \
@@ -672,6 +719,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_remove_dependency",
             method: "dependency.remove",
             write: true,
+            destructive: true,
+            idempotent: true,
             description: "Cut a dependency edge: `ref` stops waiting on `depends_on`. Returns \
                 the remaining dependency list and blocked state, so the answer says whether the \
                 task is actually actionable now or still waiting on something else.",
@@ -691,6 +740,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_add_memory",
             method: "memory.add",
             write: true,
+            destructive: false,
+            idempotent: false,
             description: "Store a knowledge document in memory: company \
                 patterns, documentation, decisions worth finding again. Body is \
                 stored verbatim (markdown fine) and becomes searchable via \
@@ -709,6 +760,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_remove_memory",
             method: "memory.remove",
             write: true,
+            destructive: true,
+            idempotent: true,
             // The permanence is stated because it is the one property of this
             // tool a caller cannot learn by trying: every other write reachable
             // through this server is either revertible or restatable, so an
@@ -738,6 +791,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_create_project",
             method: "project.create",
             write: true,
+            destructive: false,
+            idempotent: true,
             description: "Create a project. Returns its id and name.",
             schema: json!({
                 "type": "object",
@@ -1136,8 +1191,8 @@ fn tools_list(scope: Scope) -> Vec<Value> {
                 "annotations": {
                     "title": s.name,
                     "readOnlyHint": !s.write,
-                    "destructiveHint": s.write,
-                    "idempotentHint": false,
+                    "destructiveHint": s.destructive,
+                    "idempotentHint": s.idempotent,
                     "openWorldHint": false
                 }
             })
