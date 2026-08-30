@@ -1043,6 +1043,11 @@ pub(super) enum MemoryAction {
         #[arg(long)]
         raw: bool,
     },
+    /// Show one doc whole, by id (maps to memory.get).
+    Show {
+        /// The doc UUID, as printed by `memory add` and `memory search`.
+        id: String,
+    },
     /// Remove a doc by id (maps to memory.remove).
     Rm {
         /// The doc UUID, as printed by `memory add` and `memory search`.

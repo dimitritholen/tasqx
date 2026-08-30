@@ -627,6 +627,11 @@ const R_MEMORY_SEARCH: Shape = &[&[
 
 const R_MEMORY_REMOVE: Shape = &[&[req("id", Ty::Str), req("removed", Ty::Bool)]];
 
+/// One doc, whole. The same six columns `store.export` emits per doc, because
+/// they are the same row — a per-document read and a whole-store dump that
+/// disagreed about what a document IS would be two answers to one question.
+const R_MEMORY_GET: Shape = &[DOC_EXPORT_ROW];
+
 const IMPORTED_DOC_ROW: &[Field] = &[
     req("id", Ty::Str),
     req("title", Ty::Str),
@@ -1156,6 +1161,21 @@ fn cases() -> Vec<Case> {
                 json!({ "query": "conformance", "limit": 10, "scope": "all", "raw": false })
             },
             R_MEMORY_SEARCH,
+        ),
+        case(
+            "memory.get",
+            "one doc, whole — the body a search hit only excerpts",
+            |e| {
+                let added = e
+                    .memory_add(&json!({
+                        "title": "the freeze",
+                        "body": "conformance is the contract of record",
+                        "source": "DESIGN.md",
+                    }))
+                    .expect("doc");
+                json!({ "id": added["id"] })
+            },
+            R_MEMORY_GET,
         ),
         case(
             "memory.remove",

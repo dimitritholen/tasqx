@@ -81,12 +81,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 19 tools present, each with an inputSchema.
+    // 3. tools/list — all 20 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 19, "expected 19 tools");
+    assert_eq!(tools.len(), 20, "expected 20 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -108,6 +108,7 @@ fn full_protocol_sequence() {
         "tasqx_add_memory",
         "tasqx_remove_memory",
         "tasqx_create_project",
+        "tasqx_get_memory",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
@@ -253,9 +254,10 @@ fn read_scope_tools_list_hides_write_tools() {
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    // A read-only session advertises only the five read tools — including
-    // memory search: a read-only agent may consult knowledge (D41).
-    assert_eq!(tools.len(), 5, "read scope should list only the read tools");
+    // A read-only session advertises only the six read tools — including both
+    // memory readers: a read-only agent may consult knowledge (D41), and D71
+    // made "consult" mean the document rather than an excerpt of it.
+    assert_eq!(tools.len(), 6, "read scope should list only the read tools");
     for t in tools {
         assert_eq!(
             t["annotations"]["readOnlyHint"], true,
