@@ -357,7 +357,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 8] = [
 /// free-prose rows nothing compared, which is the same shape the verb table was
 /// in before the drift guards: a tool could be added, renamed, or moved across
 /// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 16] = [
+const MCP_TOOLS: [(&str, bool, &str); 19] = [
     (
         "tasqx_list_tasks",
         false,
@@ -382,15 +382,26 @@ const MCP_TOOLS: [(&str, bool, &str); 16] = [
         true,
         "Complete a task; self-report its token cost (the primary channel).",
     ),
+    (
+        "tasqx_reopen_task",
+        true,
+        "Reopen a done or cancelled task; clears the completion timestamp.",
+    ),
     ("tasqx_start_timer", true, "Start the timer."),
     ("tasqx_stop_timer", true, "Stop the timer."),
     ("tasqx_tag_task", true, "Add tags."),
+    ("tasqx_untag_task", true, "Remove tags."),
     (
         "tasqx_annotate_task",
         true,
         "Attach a note (markdown-friendly).",
     ),
     ("tasqx_add_dependency", true, "Block one task on another."),
+    (
+        "tasqx_remove_dependency",
+        true,
+        "Cut a dependency edge; says whether the task is actionable now.",
+    ),
     ("tasqx_add_memory", true, "Store a knowledge doc."),
     (
         "tasqx_remove_memory",

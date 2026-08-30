@@ -81,12 +81,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 16 tools present, each with an inputSchema.
+    // 3. tools/list — all 19 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 16, "expected 16 tools");
+    assert_eq!(tools.len(), 19, "expected 19 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -97,11 +97,14 @@ fn full_protocol_sequence() {
         "tasqx_add_task",
         "tasqx_modify_task",
         "tasqx_complete_task",
+        "tasqx_reopen_task",
         "tasqx_start_timer",
         "tasqx_stop_timer",
         "tasqx_tag_task",
+        "tasqx_untag_task",
         "tasqx_annotate_task",
         "tasqx_add_dependency",
+        "tasqx_remove_dependency",
         "tasqx_add_memory",
         "tasqx_remove_memory",
         "tasqx_create_project",
@@ -1189,4 +1192,122 @@ fn a_response_within_budget_still_carries_both_blocks() {
     let blocks = out["result"]["content"].as_array().expect("content");
     assert_eq!(blocks.len(), 2);
     assert!(!blocks[0]["text"].as_str().unwrap().contains("omitted"));
+}
+
+// ---- the corrective half of every exposed pair --------------------------------
+
+/// An agent that can add a tag can take one off again.
+///
+/// The MCP surface was additive-only: `tag.add`, `dependency.add` and the
+/// completion were reachable and their inverses were not, so an agent that
+/// filed something wrong could describe the mistake and never undo it.
+#[test]
+fn untag_removes_what_tag_added() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    engine
+        .task_add(&json!({ "title": "mislabelled" }))
+        .expect("add");
+
+    call(
+        &server,
+        1,
+        "tasqx_tag_task",
+        json!({ "ref": 1, "tags": ["api", "typo"] }),
+    );
+    let out = call(
+        &server,
+        2,
+        "tasqx_untag_task",
+        json!({ "ref": 1, "tags": ["typo"] }),
+    );
+    assert!(!is_error(&out));
+    let tags = tool_text(&out)["tags"]
+        .as_array()
+        .expect("the resulting set")
+        .clone();
+    assert_eq!(tags, vec![json!("api")]);
+}
+
+/// A dependency added by mistake blocks the task forever unless it can be cut.
+#[test]
+fn remove_dependency_unblocks_what_add_dependency_blocked() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    engine
+        .task_add(&json!({ "title": "blocker" }))
+        .expect("add");
+    engine
+        .task_add(&json!({ "title": "dependent" }))
+        .expect("add");
+
+    let blocked = tool_text(&call(
+        &server,
+        1,
+        "tasqx_add_dependency",
+        json!({ "ref": 2, "depends_on": 1 }),
+    ));
+    assert_eq!(blocked["blocked"], json!(true));
+
+    let out = call(
+        &server,
+        2,
+        "tasqx_remove_dependency",
+        json!({ "ref": 2, "depends_on": 1 }),
+    );
+    assert!(!is_error(&out));
+    let after = tool_text(&out);
+    assert_eq!(after["blocked"], json!(false));
+    assert_eq!(after["depends_on"].as_array().unwrap().len(), 0);
+}
+
+/// Completion and cancellation both had reachable destructive halves and no
+/// inverse: `task.modify status:cancelled` is exposed by design (§7) and
+/// `task.reopen` was not, so an agent could close a task it should not have and
+/// had no way back.
+#[test]
+fn reopen_undoes_a_completion_and_a_cancellation() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    engine
+        .task_add(&json!({ "title": "closed too early" }))
+        .expect("add");
+    engine
+        .task_add(&json!({ "title": "cancelled too early" }))
+        .expect("add");
+
+    call(&server, 1, "tasqx_complete_task", json!({ "ref": 1 }));
+    let reopened = tool_text(&call(&server, 2, "tasqx_reopen_task", json!({ "ref": 1 })));
+    assert_eq!(reopened["status"], json!("pending"));
+
+    call(
+        &server,
+        3,
+        "tasqx_modify_task",
+        json!({ "ref": 2, "set": { "status": "cancelled" } }),
+    );
+    let back = tool_text(&call(&server, 4, "tasqx_reopen_task", json!({ "ref": 2 })));
+    assert_eq!(back["status"], json!("pending"));
+}
+
+/// All three are writes, and a read-only server refuses them before the engine
+/// is touched.
+#[test]
+fn the_corrective_tools_are_write_scoped() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Read);
+    for (tool, args) in [
+        ("tasqx_untag_task", json!({ "ref": 1, "tags": ["x"] })),
+        (
+            "tasqx_remove_dependency",
+            json!({ "ref": 1, "depends_on": 1 }),
+        ),
+        ("tasqx_reopen_task", json!({ "ref": 1 })),
+    ] {
+        assert!(
+            is_error(&call(&server, 1, tool, args)),
+            "`{tool}` must not be reachable from a read-only server"
+        );
+    }
 }
