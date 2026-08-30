@@ -149,6 +149,11 @@ impl Engine {
                 MEMORY_SCOPES.join(", ")
             )));
         }
+        // Echoed on the result (D69). Every word of a plain query becomes a
+        // required quoted phrase, so a thirteen-word question is thirteen AND
+        // terms and comes back `count: 0` — byte-identical to the answer for a
+        // subject nobody ever wrote down. The caller could not tell those two
+        // apart, and only one of them is worth retrying.
         let match_expr = if raw { query } else { phrase_escape(&query)? };
 
         // `bm25()` is aliased `score`, not `rank`: `rank` is a live column on
@@ -196,7 +201,7 @@ impl Engine {
             Err(e) => return Err(e.into()),
         };
 
-        Ok(json!({ "count": hits.len(), "hits": hits }))
+        Ok(json!({ "count": hits.len(), "hits": hits, "matched": match_expr }))
     }
 
     // ---- memory.remove -------------------------------------------------------

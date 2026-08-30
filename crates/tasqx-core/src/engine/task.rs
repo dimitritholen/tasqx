@@ -1404,12 +1404,49 @@ impl Engine {
             "reopen",
             &json!({ "from": task.status.as_str() }),
         )?;
+        // Read AFTER the UPDATE, so the reopened task is already back among
+        // its dependents' unresolved blockers and the count below is the one
+        // the store now holds.
+        let blocked = Self::compute_reblocked(&tx, &task.id)?;
         tx.commit()?;
 
         Ok(commands::TaskReopened {
             short_id: task.short_id,
+            blocked,
         }
         .into())
+    }
+
+    /// short_ids of the open dependents this reopen just put back into
+    /// `blocked` — the inverse of [`Engine::compute_unblocked`].
+    ///
+    /// Run inside the reopening transaction and AFTER the status write, so a
+    /// dependent flipped by this call is exactly one whose count of
+    /// still-unresolved blockers is now **one**: the reopened task is back
+    /// among them, and if it were not the only one the dependent was already
+    /// blocked and nothing changed for it.
+    ///
+    /// It exists because `task.done` has always answered `unblocked` and its
+    /// inverse answered nothing (D69). Reopening is what an agent does the
+    /// moment it finds it closed a task too early, and it was removing work
+    /// from its own actionable set with no signal: the next `@working` list
+    /// came back shorter and no response said why.
+    fn compute_reblocked(
+        tx: &rusqlite::Transaction,
+        reopened_id: &str,
+    ) -> Result<Vec<i64>, ApiError> {
+        // Enum-derived, never caller text — see `Status::sql_in_list`.
+        let open = Status::sql_in_list(Status::is_open);
+        let terminal = Status::sql_in_list(Status::is_terminal);
+        let mut stmt = tx.prepare(&format!(
+            "SELECT t.short_id FROM dependencies d              JOIN tasks t ON t.id = d.task_id              WHERE d.depends_on_id = ?1 AND t.status IN ({open})              AND ( SELECT COUNT(*) FROM dependencies d2                    JOIN tasks b ON b.id = d2.depends_on_id                    WHERE d2.task_id = t.id AND b.status NOT IN ({terminal}) ) = 1              ORDER BY t.short_id",
+        ))?;
+        let rows = stmt.query_map(params![reopened_id], |r| r.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 }
 
