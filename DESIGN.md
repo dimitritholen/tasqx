@@ -772,11 +772,14 @@ An agent must never dither over *which* tool. So: **one verb = one tool**, names
 | `tasqx_add_task` | W | `title`, `project?`, `priority?`, `due?`, `tags?`, `estimate?` | `{short_id, urgency}` | `task.add` |
 | `tasqx_modify_task` | W | `ref`, `set{}`, `expected_rev?` | `{short_id, _rev}` | `task.modify` |
 | `tasqx_complete_task` | W | `ref` | `{status, unblocked[]}` | `task.done` |
+| `tasqx_reopen_task` | W | `ref` | `{short_id, status}` (D67) — done\|cancelled → pending | `task.reopen` |
 | `tasqx_start_timer` / `tasqx_stop_timer` | W | `ref` | interval / `tracked` | `task.start` / `task.stop` |
 | `tasqx_tag_task` | W | `ref`, `tags[]` | resulting tag set | `tag.add` |
+| `tasqx_untag_task` | W | `ref`, `tags[]` | resulting tag set (D67) | `tag.remove` |
 | `tasqx_search_memory` | R | `query`, `limit?`, `scope?`, `raw?` | `{count, hits[]}` bm25-ranked (D41) | `memory.search` |
 | `tasqx_annotate_task` | W | `ref`, `body` (verbatim text; markdown fine) | `{short_id, annotation{id, body, created}}` | `annotation.add` |
 | `tasqx_add_dependency` | W | `ref`, `depends_on` (short_id or UUID) | `{short_id, depends_on[], blocked}`; cycle → `conflict` | `dependency.add` |
+| `tasqx_remove_dependency` | W | `ref`, `depends_on` | `{short_id, depends_on[], blocked}` (D67) | `dependency.remove` |
 | `tasqx_add_memory` | W | `title`, `body`, `source?` | `{id, title, created}` (D41) | `memory.add` |
 | `tasqx_remove_memory` | W | `id` | `{id, removed}` (D64) — permanent, outside `undo` | `memory.remove` |
 | `tasqx_create_project` | W | `name`, `description?` | `{id, name}` | `project.create` |
@@ -1776,3 +1779,17 @@ The verb also ignores `dashboard.enabled`. That setting is the escape hatch a br
 **Bisection, not halving.** D63's first implementation halved the page until something fit, which lands on a power-of-two fraction of the starting page and stops there — on the few-and-enormous shape that provoked all of this it showed two annotations where four fit. Bisecting for the largest page that fits costs the same number of dispatches and returns an answer that is actually the largest. Still no extrapolation from a measured size-per-row: bodies vary by orders of magnitude, so an estimate is wrong in the case that matters, while a measured yes/no per candidate never is.
 
 **What this costs the conformance guard, stated rather than discovered later.** `every_mcp_tool_hands_back_the_frozen_result_of_its_method` reads the LAST content block and checks it against the method's frozen shape. Every case in that file is small enough to stay under the budget, so `task.get` still arrives with both blocks and the guard still bites — but its claim is now "verified on responses that carry the JSON block", and D56's own note ("the day that stops being true, both halves say so") is what obliges this paragraph and the comment beside the assertion. A fixture that ever grows past the budget will surface there as JSON that does not parse; the answer is to shrink the fixture, never to read a different block.
+
+### D67 — every destructive tool gets its inverse, and a method that ships without one has to say why
+
+**Decision:** `tag.remove`, `dependency.remove` and `task.reopen` are exposed as `tasqx_untag_task`, `tasqx_remove_dependency` and `tasqx_reopen_task`. `UNEXPOSED_METHODS` in `mcp.rs` names every remaining dispatch method that has no tool, each with the reason it does not, and a guard asserts that table against the tool list in both directions.
+
+**Nobody decided the MCP surface would be additive-only; it accumulated.** Of the methods in `dispatch::PARAMS`, the ones that had gone unexposed were — with the internal ones set aside — the corrective or destructive half of a pair whose other half was reachable. An agent could tag and not untag, block and not unblock, close and not reopen, write a memory and not retract it (D64). That is not a missing convenience: an agent that writes something wrong has no path back, and the store gets less true every time it is wrong. It happened because exposing a tool is an edit and *not* exposing one is silence, and nothing in the build could see silence.
+
+**So silence stops being available.** The guard is the same shape the repo already runs over its docs pages: a method added tomorrow either ships a tool or lands in `UNEXPOSED_METHODS` with an argument, and an entry that stops being true — the method got exposed after all, or was renamed away — fails the build rather than sitting on as a note nobody re-reads. A reason under forty characters is refused, because a reason short enough to be a label is a label.
+
+**"Few, unambiguous tools" survives, and is the reason this is three tools rather than ten.** §7's principle is not "small for its own sake"; it is that an agent must never dither over which tool. Each of these three passes a test the remaining twelve do not: **its destructive half is already exposed**. Adding the inverse of a reachable operation cannot create ambiguity, because the pair reads as one behaviour with two directions. The methods that failed that test stayed off, with the argument written beside each — including `event.revert`, the sharpest one on the list, which stays off until the tool can show what it is about to undo: it acts on the last matching event, and its blast radius depends on store state the calling agent has not read. A destructive one-shot whose effect the caller cannot see is not a tool.
+
+**`task.cancel` is on the unexposed list and is not a gap.** §7 routes cancellation through `task.modify status:cancelled`, and `task_modify` accepts exactly that one transition and refuses every other. The field report counted it as a missing corrective; checking the engine showed it was reachable all along. A second spelling of a reachable behaviour is the drift D30 warns about.
+
+**What the roster costs to change, and why that is the point.** Three tools meant walking four guards that all bind prose to the running server: the protocol test's count, `docs.rs`'s `MCP_TOOLS` with its per-tool read/write fence, the README's spelled-out counts ("Nineteen tools", "Fourteen writes"), and now `UNEXPOSED_METHODS`. Each one had to be told, and each one refused to be skipped. That is four places that can no longer quietly disagree with what an agent actually sees.

@@ -201,6 +201,74 @@ fn with_correlation(mut schema: Value) -> Value {
     schema
 }
 
+/// Every dispatch method that deliberately has **no** MCP tool, and why.
+///
+/// The MCP surface drifted into additive-only without anybody deciding it: of
+/// the methods `dispatch::PARAMS` carries, the ones that had quietly gone
+/// unexposed were, with the exception of the internal ones, the corrective or
+/// destructive half of a pair whose other half was reachable. An agent could
+/// tag and not untag, block and not unblock, close and not reopen, write a
+/// memory and not retract it. Nobody chose that; it accumulated, because
+/// exposing a tool was a decision and NOT exposing one was silence.
+///
+/// This table is what turns the silence into a decision. `every_dispatch_method_is_exposed_or_listed_here`
+/// asserts it against [`tool_specs`] in both directions, so a new method must
+/// either ship a tool or land here with a reason, and an entry that stops being
+/// true fails the build rather than sitting as a stale note.
+///
+/// A reason is not a formality. "Nobody asked for it" is a fine reason and is
+/// written as such; what is not allowed is an omission with nothing beside it.
+const UNEXPOSED_METHODS: &[(&str, &str)] = &[
+    (
+        "core.capabilities",
+        "the MCP handshake already answers this question: `initialize` reports the protocol          revision and scope, and `tools/list` reports the surface. A second, differently          shaped capability document is a second thing to keep in sync.",
+    ),
+    (
+        "event.list",
+        "the audit log is unbounded and has no paging, so exposing it would repeat the          `task.get` mistake D63 fixed. It needs the same limit/offset treatment before it          can be a tool; no client has asked for it yet.",
+    ),
+    (
+        "event.revert",
+        "tasqx has an undo (D54) and an agent cannot reach it, which is the sharpest single          omission on this list. It stays off until the tool can show what it is about to          undo: `event.revert` acts on the last matching event, and its blast radius depends          on store state the calling agent has not read. A destructive one-shot whose effect          the caller cannot see is not a tool, it is a coin flip.",
+    ),
+    (
+        "memory.import",
+        "it takes a batch of documents read off a filesystem, and the filesystem the CLI          reads is not the one an MCP client is on. `memory.add` is the per-document tool          that does reach across the wire.",
+    ),
+    (
+        "project.archive",
+        "retiring a project is a decision about the human's workspace, not about the work.          An agent asked to tidy the project list is being asked to make that decision on          their behalf, and the CLI is where it belongs.",
+    ),
+    (
+        "project.use",
+        "ruled out by D22: an agent has `project` on `task.add` and should name it, rather          than silently re-aiming the human's default for every later call, including the          human's own.",
+    ),
+    (
+        "reminder.fire",
+        "daemon-internal. Its `reminded` event is a dedupe key and a push surface, not a          thing a client asks for.",
+    ),
+    (
+        "store.export",
+        "an agent cannot snapshot what it just wrote, and that is a real gap — but the          payload is the whole store, which is exactly the size problem D63 and D66 spent          two rounds on. It needs a filter and a budget before it is a tool rather than a          way to blow a client's limit in one call.",
+    ),
+    (
+        "store.import",
+        "it overwrites, in bulk, from a document nobody has reviewed. The confirmation model          (§7) defers to the host's gate, and a host gate on a call whose diff nobody can see          is not a safeguard.",
+    ),
+    (
+        "task.cancel",
+        "already reachable: §7 routes cancellation through `task.modify status:cancelled`,          and the engine accepts exactly that one transition. A second spelling of a reachable          behaviour is the drift D30 warns about, not a missing capability.",
+    ),
+    (
+        "token.add",
+        "a measurement after the fact, and D50 makes the completion's self-report the primary          channel precisely so one task never mixes channels. An agent with a count to report          has `tasqx_complete_task`.",
+    ),
+    (
+        "tokens.recompute",
+        "a maintenance pass over the whole store's attribution. It is an operator action with          a runtime proportional to history, not a step in anybody's task.",
+    ),
+];
+
 /// The full §7 tool surface. Each entry maps 1:1 onto a core dispatch method;
 /// the tool `arguments` object is passed straight through as the method params
 /// (argument names are identical to the core param names by design).
@@ -487,6 +555,24 @@ fn tool_specs() -> Vec<ToolSpec> {
             })),
         },
         ToolSpec {
+            name: "tasqx_reopen_task",
+            method: "task.reopen",
+            write: true,
+            // The inverse of the two closes an agent can reach: `task.done` has
+            // its own tool and cancellation goes through `task.modify
+            // status:cancelled` (§7). Both were reachable and neither could be
+            // taken back, which is the additive-only shape D67 removes.
+            description: "Reopen a closed task: done or cancelled goes back to pending, and the \
+                completion timestamp is cleared so the task stops answering questions about a \
+                week it is no longer finished in. Use it when a task was closed or cancelled in \
+                error. A task that is not closed is a conflict, not a no-op.",
+            schema: json!({
+                "type": "object",
+                "properties": { "ref": ref_schema() },
+                "required": ["ref"]
+            }),
+        },
+        ToolSpec {
             name: "tasqx_start_timer",
             method: "task.start",
             write: true,
@@ -531,6 +617,21 @@ fn tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "tasqx_untag_task",
+            method: "tag.remove",
+            write: true,
+            description: "Remove one or more tags from a task. Returns the resulting tag set. \
+                Removing a tag the task does not carry is not an error.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "tags": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["ref", "tags"]
+            }),
+        },
+        ToolSpec {
             name: "tasqx_annotate_task",
             method: "annotation.add",
             write: true,
@@ -562,6 +663,25 @@ fn tool_specs() -> Vec<ToolSpec> {
                     "depends_on": {
                         "type": ["integer", "string"],
                         "description": "The task `ref` must wait for: short_id (integer) or full UUID (string)."
+                    }
+                },
+                "required": ["ref", "depends_on"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_remove_dependency",
+            method: "dependency.remove",
+            write: true,
+            description: "Cut a dependency edge: `ref` stops waiting on `depends_on`. Returns \
+                the remaining dependency list and blocked state, so the answer says whether the \
+                task is actually actionable now or still waiting on something else.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "depends_on": {
+                        "type": ["integer", "string"],
+                        "description": "The blocker to stop waiting for: short_id (integer) or full UUID (string)."
                     }
                 },
                 "required": ["ref", "depends_on"]
@@ -640,6 +760,16 @@ fn tool_specs() -> Vec<ToolSpec> {
 /// a quiet disagreement between the server and its documentation.
 pub fn tool_roster() -> Vec<(&'static str, bool)> {
     tool_specs().iter().map(|s| (s.name, s.write)).collect()
+}
+
+/// The methods deliberately left off the tool surface, as `(method, why)`.
+///
+/// Public for the same reason [`tool_roster`] is: the guards that hold this
+/// decision still live outside the module that makes it. It is also the honest
+/// answer to "why can't the agent do X" — the reasons are written for a reader,
+/// not for a compiler.
+pub fn unexposed_methods() -> &'static [(&'static str, &'static str)] {
+    UNEXPOSED_METHODS
 }
 
 /// A long-lived MCP session over one [`Engine`], fenced to one [`Scope`]. It is
@@ -1406,6 +1536,53 @@ mod tests {
             probed > 0,
             "no numeric bound was probed; this guard has gone vacuous"
         );
+    }
+
+    /// Every method `dispatch::PARAMS` carries either has a tool or is listed
+    /// in [`UNEXPOSED_METHODS`] with a reason. Both directions.
+    ///
+    /// The failure this guards is not a bug in any one call — it is a surface
+    /// that drifts by omission. Ten of the methods on this table had gone
+    /// unexposed without anybody ruling on it, and with the internal ones set
+    /// aside they were the corrective or destructive half of a pair that WAS
+    /// exposed: tag and no untag, block and no unblock, close and no reopen,
+    /// write a memory and no way to retract it. Nothing failed while that was
+    /// true, because adding a tool is an edit and leaving one out is silence.
+    ///
+    /// So silence stops being an option. A method added tomorrow must ship a
+    /// tool or say why not, and a reason that stops being true — the method is
+    /// exposed after all, or deleted — fails here rather than sitting on as a
+    /// note nobody re-reads. The repo already runs this shape over the docs
+    /// pages (`docs.rs`'s `VERBS`/`METHODS` guards); this is the same guard
+    /// pointed at the tool table.
+    #[test]
+    fn every_dispatch_method_is_exposed_or_listed_as_deliberately_unexposed() {
+        let exposed: Vec<&str> = tool_specs().into_iter().map(|s| s.method).collect();
+
+        for (method, _, _) in crate::dispatch::PARAMS {
+            let has_tool = exposed.contains(method);
+            let listed = UNEXPOSED_METHODS.iter().any(|(m, _)| m == method);
+            assert!(
+                has_tool || listed,
+                "`{method}` is in PARAMS, has no MCP tool, and is not in UNEXPOSED_METHODS.                  Expose it, or add it there with the reason — an omission nobody wrote down                  is how this surface became additive-only in the first place"
+            );
+            assert!(
+                !(has_tool && listed),
+                "`{method}` is BOTH exposed and listed as deliberately unexposed; the reason                  beside it is now false and the next reader will believe it"
+            );
+        }
+
+        for (method, reason) in UNEXPOSED_METHODS {
+            assert!(
+                crate::dispatch::PARAMS.iter().any(|(m, _, _)| m == method),
+                "UNEXPOSED_METHODS names `{method}`, which is not a dispatch method — a                  renamed or deleted method leaves a reason behind that reads as current"
+            );
+            assert!(
+                reason.len() > 40,
+                "`{method}` is excused in {} characters. A reason short enough to be a label                  is a label, and the point of this table is the argument",
+                reason.len()
+            );
+        }
     }
 
     /// A tool's properties must be EXACTLY the params its method accepts.
