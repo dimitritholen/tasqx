@@ -138,7 +138,7 @@ pub static TASK_FIELDS: LazyLock<Vec<String>> = LazyLock::new(|| {
         modified: String::new(),
         completed: None,
     };
-    match list_row_json(&probe, &[], false) {
+    match list_row_json(&probe, &[], false, Some(&[])) {
         Value::Object(m) => m.keys().cloned().collect(),
         // Unreachable: `task_to_json` builds an object literal.
         _ => Vec::new(),
@@ -907,9 +907,19 @@ pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
 /// than two lines in the loop so [`TASK_FIELDS`] can be read off the very
 /// object the loop projects — one call site's keys, not a second list that has
 /// to be remembered.
-fn list_row_json(t: &Task, tags: &[String], blocked: bool) -> Value {
+fn list_row_json(t: &Task, tags: &[String], blocked: bool, depends_on: Option<&[i64]>) -> Value {
     let mut v = task_to_json(t, tags);
     v["blocked"] = json!(blocked);
+    // Emitted only when the caller projected it (D70). It is a name
+    // `TASK_FIELDS` publishes and `parse_fields` accepts, and it is absent from
+    // the default row on purpose: the edge list costs a statement and a
+    // per-row array that every unfiltered `tasqx list` would pay for, on a
+    // surface whose default response was already the largest thing this server
+    // sends. Conditional emission has precedent one function down in
+    // `status_unrecognized`.
+    if let Some(d) = depends_on {
+        v["depends_on"] = json!(d);
+    }
     v
 }
 
@@ -988,6 +998,15 @@ fn parse_sort(p: &Value) -> Result<Vec<SortKey>, ApiError> {
 ///
 /// A non-string entry is refused for the same reason rather than skipped: it is
 /// a caller asking for something that cannot be a field name.
+/// Whether a parsed `fields` projection asks for the dependency edge list.
+///
+/// Named rather than inlined because two things read it: the snapshot loader
+/// (which must fetch the edges) and the projection loop (which must emit them),
+/// and the two disagreeing is a row that promises a field it does not carry.
+pub(super) fn fields_want_depends_on(fields: Option<&Vec<String>>) -> bool {
+    fields.is_some_and(|keys| keys.iter().any(|k| k == "depends_on"))
+}
+
 fn parse_fields(p: &Value) -> Result<Option<Vec<String>>, ApiError> {
     // D32: the array-ness and the string-ness of every entry are the typed
     // layer's job now; only the *name* check is specific to this param.
@@ -1038,7 +1057,14 @@ fn compare_by(a: &Task, b: &Task, keys: &[SortKey]) -> std::cmp::Ordering {
             return ord;
         }
     }
-    Ordering::Equal
+    // The final tiebreak, unconditional and never reversed by `desc` (D70).
+    // Every published sort key has ties — the live store holds six tasks at
+    // urgency 6.2 — and a tie broken by whatever order the rows arrived in is
+    // an order that can differ between two calls. That is invisible on one
+    // whole answer and corrupting the moment `offset` walks pages over it: a
+    // row shows up twice, or never, with nothing for the reader to notice.
+    // Same correction D63 made for the annotation window, one relation over.
+    a.short_id.cmp(&b.short_id)
 }
 
 /// Compare two optional strings, ordering `None` last regardless of direction.
@@ -1055,6 +1081,76 @@ fn opt_cmp(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `compare_by` is a TOTAL order: it never calls two distinct tasks equal,
+    /// on any published sort key, in either direction.
+    ///
+    /// Without that, `offset` paging is unsound. Two tasks tying on the sort
+    /// key are ordered by whatever the underlying sort does with equals, which
+    /// is not a contract — and a page boundary landing inside a tie shows a row
+    /// twice or skips it, with nothing in either response for a reader to
+    /// notice. Same correction D63 made for the annotation window, which
+    /// carries `id` as a tiebreak in both directions for exactly this reason.
+    #[test]
+    fn compare_by_never_calls_two_distinct_tasks_equal() {
+        use std::cmp::Ordering;
+
+        let a = Task {
+            id: "a".to_string(),
+            short_id: 1,
+            title: "same".to_string(),
+            status: Status::Pending,
+            status_raw: None,
+            priority: Some(Priority::M),
+            project: None,
+            due: None,
+            scheduled: None,
+            wait: None,
+            estimate: None,
+            recurrence: None,
+            remind: None,
+            urgency: 6.2,
+            active_since: None,
+            tracked_seconds: 0,
+            rev: 1,
+            created: "2026-08-30T12:00:00Z".to_string(),
+            modified: "2026-08-30T12:00:00Z".to_string(),
+            completed: None,
+        };
+        let mut b = a.clone();
+        b.id = "b".to_string();
+        b.short_id = 2;
+
+        for key in SORT_KEYS.iter() {
+            for desc in [false, true] {
+                let keys = vec![SortKey {
+                    key: (*key).to_string(),
+                    desc,
+                }];
+                let ord = compare_by(&a, &b, &keys);
+                assert_ne!(
+                    ord,
+                    Ordering::Equal,
+                    "sort key `{key}` (desc={desc}) leaves #1 and #2 unordered"
+                );
+                assert_eq!(
+                    compare_by(&b, &a, &keys),
+                    ord.reverse(),
+                    "sort key `{key}` (desc={desc}) is not antisymmetric"
+                );
+            }
+        }
+
+        // And the tiebreak is ascending short_id whichever way the named key
+        // points: it is a stabiliser, not a second sort the caller asked for.
+        for desc in [false, true] {
+            let keys = vec![SortKey {
+                key: "urgency".to_string(),
+                desc,
+            }];
+            assert_eq!(compare_by(&a, &b, &keys), Ordering::Less);
+        }
+    }
     use crate::error::ErrorCode;
 
     #[test]

@@ -493,10 +493,32 @@ const R_TASK_ADD: Shape = &[&[
 
 const R_TASK_LIST: Shape = &[&[
     req("count", Ty::Int),
+    // How many rows MATCHED, against `count`'s how many were RETURNED (D70).
+    // Under a limit those differ, and without this one a caller could not tell
+    // a complete list from a truncated one.
+    req("total", Ty::Int),
+    // Nullable rather than absent, exactly as `annotations_next_offset` is: a
+    // key that comes and goes makes every client branch on presence, and this
+    // one flips on the last page of every walk.
+    nul("next_offset", Ty::Int),
     req_of(
         "tasks",
         Ty::Array,
         &[TASK_CORE, TASK_LIVE_TIME, TASK_BLOCKED, TASK_STATUS_FLAG],
+    ),
+]];
+
+/// `task.list` under an explicit `fields`, which is the only way `depends_on`
+/// reaches a row. The envelope is the same; the row is exactly what was asked
+/// for, and nothing else.
+const R_TASK_LIST_PROJECTED: Shape = &[&[
+    req("count", Ty::Int),
+    req("total", Ty::Int),
+    nul("next_offset", Ty::Int),
+    req_of(
+        "tasks",
+        Ty::Array,
+        &[&[req("short_id", Ty::Int), req("depends_on", Ty::Array)]],
     ),
 ]];
 
@@ -897,6 +919,29 @@ fn cases() -> Vec<Case> {
                 json!({ "filter": "", "sort": ["-urgency"], "limit": 20 })
             },
             R_TASK_LIST,
+        ),
+        case(
+            "task.list",
+            "a window: `offset` past the first row, with `next_offset` still set",
+            |e| {
+                rich_task(e);
+                plain_task(e);
+                e.task_add(&json!({ "title": "third" })).expect("add");
+                json!({ "sort": ["short_id"], "offset": 1, "limit": 1 })
+            },
+            R_TASK_LIST,
+        ),
+        case(
+            "task.list",
+            "`depends_on` projected, which is the only way it reaches a row",
+            |e| {
+                rich_task(e);
+                plain_task(e);
+                e.dependency_add(&json!({ "ref": 2, "depends_on": 1 }))
+                    .expect("dep");
+                json!({ "fields": ["short_id", "depends_on"] })
+            },
+            R_TASK_LIST_PROJECTED,
         ),
         case(
             "task.get",

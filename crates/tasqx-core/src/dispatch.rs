@@ -60,7 +60,11 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         ],
         false,
     ),
-    ("task.list", &["filter", "sort", "limit", "fields"], false),
+    (
+        "task.list",
+        &["filter", "sort", "limit", "offset", "fields"],
+        false,
+    ),
     (
         "task.get",
         &["ref", "annotations_limit", "annotations_offset"],
