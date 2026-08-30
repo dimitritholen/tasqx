@@ -17,13 +17,25 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// A fresh, isolated config directory. Named per test so cargo's parallel
-/// threads cannot share one `config.toml` and race on its contents.
+/// A fresh, isolated config directory AND a fresh store. Named per test so
+/// cargo's parallel threads cannot share one `config.toml` and race on its
+/// contents.
+///
+/// The store is removed here too, and that is not tidiness. Both names carry
+/// the pid, and nothing ever deleted the `.db`: a run that leaves
+/// `tasqx-reg-work-<pid>.db` behind poisons the next run that happens to draw
+/// the same pid, where `init work` answers `conflict: project already exists`
+/// and the test fails on its fixture rather than on its subject. Observed once
+/// on this branch, across four tests at once, and not reproducible on the next
+/// three runs — which is the whole problem with it.
 fn fresh_config_dir(tag: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!("tasqx-reg-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).expect("create config dir");
+    let _ = std::fs::remove_file(db_path(tag));
+    // Same tag, same pid, same formula as `db_path` — which is why that is a
+    // function and not a formula repeated here.
     p
 }
 
@@ -2828,11 +2840,6 @@ fn archive_retires_a_project_and_says_when_it_cleared_the_default() {
 #[test]
 fn archiving_an_already_archived_project_is_told_apart_from_archiving_it() {
     let dir = fresh_config_dir("archivetwice");
-    // `fresh_config_dir` wipes the config dir but not the store beside it, and
-    // this test's very first assertion is that `init work` succeeds — a store
-    // left by a previous run under a recycled pid would make it exit 5 and read
-    // as a failure of the verb rather than of the fixture.
-    let _ = std::fs::remove_file(db_path("archivetwice"));
     let run = |args: &[&str]| {
         bin("archivetwice", &dir)
             .args(args)
@@ -2938,7 +2945,6 @@ fn archiving_an_already_archived_project_is_told_apart_from_archiving_it() {
 fn agenda_shows_what_is_scheduled_and_counts_what_it_could_not_place() {
     let dir = fresh_config_dir("agenda");
     let run = |args: &[&str]| bin("agenda", &dir).args(args).output().expect("run tasqx");
-    let _ = std::fs::remove_file(db_path("agenda"));
 
     assert!(run(&["init", "agendaproj"]).status.success());
     // Every date is a signed offset from now rather than a literal, so the
@@ -3073,5 +3079,41 @@ fn agenda_shows_what_is_scheduled_and_counts_what_it_could_not_place() {
         String::from_utf8_lossy(&excluded.stdout).contains("Scheduled only"),
         "excluding a tag nothing carries must exclude nothing: {}",
         String::from_utf8_lossy(&excluded.stdout)
+    );
+}
+
+/// The fixture hands out a CLEAN store, not merely a clean config dir.
+///
+/// Both names carry the pid and nothing used to delete the `.db`, so a run
+/// that left `tasqx-reg-<tag>-<pid>.db` behind poisoned the next run drawing
+/// the same pid: `init work` answered `conflict: project already exists` and
+/// four tests failed on their fixture rather than on their subject. It is not
+/// reproducible on demand — that is exactly why it needs a test that does not
+/// depend on reproducing it. Calling the fixture twice in one process is the
+/// same condition without the coincidence.
+#[test]
+fn the_fixture_hands_out_a_clean_store_even_after_a_previous_run_left_one() {
+    let init = |dir: &std::path::Path| {
+        bin("fixture-reuse", dir)
+            .args(["init", "work"])
+            .output()
+            .expect("run tasqx")
+    };
+
+    let dir = fresh_config_dir("fixture-reuse");
+    assert!(init(&dir).status.success(), "the first run creates `work`");
+    assert!(
+        db_path("fixture-reuse").exists(),
+        "the premise: the first run leaves a store behind"
+    );
+
+    // A second run, same tag, same pid — which is exactly what a recycled pid
+    // looks like from inside the fixture.
+    let dir = fresh_config_dir("fixture-reuse");
+    let second = init(&dir);
+    assert!(
+        second.status.success(),
+        "the fixture handed back the previous run's store: {}",
+        String::from_utf8_lossy(&second.stderr)
     );
 }

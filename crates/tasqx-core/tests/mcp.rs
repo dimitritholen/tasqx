@@ -1544,3 +1544,157 @@ fn the_transport_recut_page_equals_a_real_limited_call() {
         "the shortened answer must be the answer, not an approximation of it"
     );
 }
+
+// ---- D72: the bytes the caller already holds --------------------------------
+
+/// `include_json: false` returns the rendered view alone, at any size.
+///
+/// D49 ships the result twice — once formatted, once as escaped JSON — and D66
+/// spends the duplicate only once the budget is already blown. Below it every
+/// ordinary read paid in full with no way to decline: measured on a live task
+/// with ONE annotation, the JSON block was 54% of a 6,375-byte response, and
+/// 66% of a 1,351-byte one read with `annotations_limit: 0`.
+#[test]
+fn include_json_false_returns_the_view_alone() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "parse the statements" }))
+        .expect("add");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "a".repeat(600) }))
+        .expect("annotate");
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let both = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    let blocks = both["result"]["content"].as_array().expect("blocks");
+    assert_eq!(blocks.len(), 2, "the default is unchanged");
+
+    let view_only = call(
+        &server,
+        2,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": false }),
+    );
+    let one = view_only["result"]["content"].as_array().expect("blocks");
+    assert_eq!(one.len(), 1, "the view, and nothing restating it");
+    assert!(
+        !is_error(&view_only),
+        "`include_json` must never reach the params gate: {view_only}"
+    );
+
+    let big = serde_json::to_string(&both).expect("json").len();
+    let small = serde_json::to_string(&view_only).expect("json").len();
+    assert!(
+        small * 2 <= big,
+        "dropping the duplicate has to actually drop it: {small} vs {big}"
+    );
+
+    // And it is the bare view: the over-budget notice explains an omission the
+    // caller did not choose, so appending it here would be a false sentence
+    // charged at ~300 bytes — most of what declining the block was to save.
+    let text = one[0]["text"].as_str().expect("text");
+    assert!(
+        !text.contains("response budget"),
+        "a chosen omission is not an over-budget omission: {}",
+        &text[text.len().saturating_sub(300)..]
+    );
+}
+
+/// The argument is consumed by the transport, never forwarded.
+///
+/// `check_params` refuses any key the method does not accept, so a forwarded
+/// `include_json` would be an instant `bad_request` — which is the failure
+/// mode this test pins, alongside the one where a caller who names it also
+/// names a page size.
+#[test]
+fn include_json_is_stripped_before_the_params_gate_on_every_path() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    for i in 0..3 {
+        engine
+            .annotation_add(&json!({ "ref": 1, "body": format!("note {i}") }))
+            .expect("annotate");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    for (id, args) in [
+        (1, json!({ "ref": 1, "include_json": false })),
+        (2, json!({ "ref": 1, "include_json": true })),
+        (
+            3,
+            json!({ "ref": 1, "include_json": false, "annotations_limit": 2 }),
+        ),
+        (
+            4,
+            json!({ "ref": 1, "include_json": false, "annotations_offset": 1 }),
+        ),
+    ] {
+        let result = call(&server, id, "tasqx_get_task", args.clone());
+        assert!(
+            !is_error(&result),
+            "`{args}` was refused: {}",
+            result["result"]["content"][0]["text"]
+        );
+        let want = if args["include_json"] == json!(true) {
+            2
+        } else {
+            1
+        };
+        assert_eq!(
+            result["result"]["content"]
+                .as_array()
+                .expect("blocks")
+                .len(),
+            want,
+            "block count for {args}"
+        );
+    }
+}
+
+/// The omission notice says what naming a limit COSTS.
+///
+/// It read as a bounded retry — "Pass `annotations_limit` to get the JSON
+/// block back" — and the obvious value to retry with is the page size printed
+/// two lines above it. Measured on a live task: the budgeted answer was 22,932
+/// bytes, the same call with the page size it had just been shown was 46,512,
+/// and with `annotations_total` (which the tool's own description recommends
+/// for a whole history) 173,032 — seven times the budget the server had just
+/// refused to exceed.
+#[test]
+fn the_json_omission_notice_says_that_naming_a_limit_removes_the_budget() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "long" })).expect("add");
+    for i in 0..12 {
+        engine
+            .annotation_add(&json!({ "ref": 1, "body": format!("{} #{i}", "z".repeat(3000)) }))
+            .expect("annotate");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let result = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    let blocks = result["result"]["content"].as_array().expect("blocks");
+    assert_eq!(blocks.len(), 1, "the premise: this response is over budget");
+    let text = blocks[0]["text"].as_str().expect("text");
+    assert!(
+        text.contains("unbounded"),
+        "the notice must say the escape hatch is an opt-out, not a page: {}",
+        &text[text.len().saturating_sub(400)..]
+    );
+    assert!(
+        text.contains("include_json"),
+        "and name the way to keep the budget: {}",
+        &text[text.len().saturating_sub(400)..]
+    );
+
+    // And the claim the notice now makes is true.
+    let unbounded = call(
+        &server,
+        2,
+        "tasqx_get_task",
+        json!({ "ref": 1, "annotations_limit": 12 }),
+    );
+    let big = serde_json::to_string(&unbounded).expect("json").len();
+    let budgeted = serde_json::to_string(&result).expect("json").len();
+    assert!(
+        big > budgeted * 2,
+        "naming a limit really is several times the budgeted answer: {big} vs {budgeted}"
+    );
+}

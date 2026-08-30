@@ -15,7 +15,7 @@
 //! Transport (per the MCP stdio spec): newline-delimited JSON, one JSON object
 //! per line, on stdin/stdout. Logs go to stderr only.
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::dispatch::dispatch;
 use crate::engine::{
@@ -303,9 +303,32 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Tool arguments this server READS AND DOES NOT FORWARD, each with the reason
+/// it belongs to the transport rather than to the method.
+///
+/// §7's 1:1 mapping — the arguments object *is* the method's params — is what
+/// makes every tool answerable from `dispatch::PARAMS`, and D64 leaned on it
+/// when it declined to add a second identifying field to `tasqx_remove_memory`.
+/// This narrows it rather than abandoning it: an entry here names a property of
+/// the RESPONSE ENVELOPE, which is the transport's own subject and nothing the
+/// engine could answer, and `check_params` would refuse it as an unknown key if
+/// it were forwarded. Everything else still passes straight through.
+///
+/// The table exists so the narrowing cannot spread by accident. A guard asserts
+/// it against the schemas in both directions, so an argument added to a schema
+/// and not forwarded either lands here with an argument or reddens the build —
+/// the `UNEXPOSED_METHODS` move, applied to the other end of the same seam.
+const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[(
+    "tasqx_get_task",
+    "include_json",
+    "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
+)];
+
 /// The full §7 tool surface. Each entry maps 1:1 onto a core dispatch method;
 /// the tool `arguments` object is passed straight through as the method params
-/// (argument names are identical to the core param names by design).
+/// (argument names are identical to the core param names by design), except for
+/// the arguments listed in [`TRANSPORT_ONLY_ARGS`], which this server reads and
+/// consumes.
 fn tool_specs() -> Vec<ToolSpec> {
     vec![
         // ---- reads ----------------------------------------------------------
@@ -397,6 +420,15 @@ fn tool_specs() -> Vec<ToolSpec> {
                              0 returns none, which is how you read a task's fields without its \
                              history."
                         )
+                    },
+                    "include_json": {
+                        "type": "boolean",
+                        "description": "Send the machine-readable JSON block as well as the \
+                             rendered view. Default true. The two blocks are the same result \
+                             twice, so on a task whose bulk is annotation prose the JSON is \
+                             that prose again — measured at 54% of a 6.4 KB response for one \
+                             annotation, and 66% for a task read with `annotations_limit: 0`. \
+                             Send false when you are going to read the view."
                     },
                     "annotations_offset": {
                         "type": "integer",
@@ -1064,6 +1096,30 @@ impl<'e> McpServer<'e> {
             }
         }
 
+        // Arguments this server READS AND DOES NOT FORWARD. The removal is
+        // driven by [`TRANSPORT_ONLY_ARGS`] rather than written out per key,
+        // so the table is load-bearing instead of a note beside the code: a
+        // listed argument is stripped whether or not anything below reads it,
+        // and `check_params` — which refuses any key the method does not
+        // accept — can never see one. Only the *meaning* is per-argument.
+        let mut consumed: Map<String, Value> = Map::new();
+        if let Some(obj) = args.as_object_mut() {
+            for (_, arg, _) in TRANSPORT_ONLY_ARGS
+                .iter()
+                .filter(|(tool, _, _)| *tool == spec.name)
+            {
+                if let Some(v) = obj.remove(*arg) {
+                    consumed.insert((*arg).to_string(), v);
+                }
+            }
+        }
+        // Default true: the second block has been there since D49 and a caller
+        // that says nothing gets what it has always got.
+        let include_json = consumed
+            .get("include_json")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+
         let mut paged_by_us = false;
         if spec.method == "task.get" {
             if let Some(obj) = args.as_object_mut() {
@@ -1104,6 +1160,16 @@ impl<'e> McpServer<'e> {
                         // keeps `task_detail` pure and its golden tests stable.
                         now: jiff::Timestamp::now(),
                     };
+                    // No notice: `tool_ok_view_only` explains an omission the
+                    // caller did not choose, and here the caller chose it.
+                    // Saying "both blocks together exceeded this tool's
+                    // response budget" over a 400-byte answer is a false
+                    // sentence AND a bill — the notice is ~300 bytes, which on
+                    // a small task is most of what declining the duplicate was
+                    // meant to save.
+                    if !include_json {
+                        return tool_ok_text(&crate::markdown::task_detail(&result, &opts));
+                    }
                     return self.fit_to_budget(result, &args, &opts, paged_by_us);
                 }
                 if paged_list_by_us {
@@ -1421,6 +1487,15 @@ fn tool_ok_view_only(view: &str) -> Value {
     })
 }
 
+/// One text block, verbatim. The `task.get` view when the caller declined the
+/// JSON block, where there is no omission to explain.
+fn tool_ok_text(text: &str) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false
+    })
+}
+
 /// The view plus the omission notice, as one block — the exact bytes
 /// [`tool_ok_view_only`] sends.
 ///
@@ -1432,8 +1507,10 @@ fn tool_ok_view_only(view: &str) -> Value {
 fn view_only_text(view: &str) -> String {
     format!(
         "{view}\n_Machine-readable JSON omitted: both blocks together exceeded this tool's \
-         response budget, and the rendered view above carries the same annotations. Pass \
-         `annotations_limit` to get the JSON block back._\n"
+         response budget, and the rendered view above carries the same annotations. Naming \
+         `annotations_limit` returns both blocks **unbounded** — that is an opt-out of the \
+         budget, not a page within it, and on a long history it is several times this \
+         response. `include_json: false` keeps the budget and asks for this view on purpose._\n"
     )
 }
 
@@ -2014,13 +2091,57 @@ mod tests {
                 .collect();
             advertised.sort_unstable();
             let mut expected: Vec<&str> = accepted.to_vec();
+            expected.extend(
+                TRANSPORT_ONLY_ARGS
+                    .iter()
+                    .filter(|(tool, _, _)| *tool == spec.name)
+                    .map(|(_, arg, _)| *arg),
+            );
             expected.sort_unstable();
             assert_eq!(
                 advertised, expected,
                 "tool `{}` and {} disagree about the argument set: a property the method refuses \
                  fails every call that uses it, and a param the schema omits is a capability no \
-                 agent will ever discover",
+                 agent will ever discover. An argument this server consumes instead of \
+                 forwarding belongs in TRANSPORT_ONLY_ARGS, with the reason it is not the \
+                 method's business",
                 spec.name, spec.method
+            );
+        }
+    }
+
+    /// `TRANSPORT_ONLY_ARGS` is read in both directions, so neither half can
+    /// drift: an entry naming a tool or a property that no longer exists fails
+    /// here, exactly as `UNEXPOSED_METHODS` fails when a method it excuses gets
+    /// exposed after all. A reason under forty characters is refused for the
+    /// same reason it is there: a reason short enough to be a label is a label.
+    #[test]
+    fn every_transport_only_argument_is_real_and_argued_for() {
+        let specs = tool_specs();
+        for (tool, arg, why) in TRANSPORT_ONLY_ARGS {
+            let spec = specs
+                .iter()
+                .find(|s| s.name == *tool)
+                .unwrap_or_else(|| panic!("TRANSPORT_ONLY_ARGS names an unlisted tool `{tool}`"));
+            assert!(
+                spec.schema["properties"]
+                    .as_object()
+                    .expect("an object schema")
+                    .contains_key(*arg),
+                "`{tool}` no longer advertises `{arg}`, so this excuse is stale"
+            );
+            let (_, accepted, _) = crate::dispatch::PARAMS
+                .iter()
+                .find(|(m, _, _)| *m == spec.method)
+                .expect("a listed method");
+            assert!(
+                !accepted.contains(arg),
+                "`{arg}` IS a param of {} now — forward it and drop this entry",
+                spec.method
+            );
+            assert!(
+                why.len() >= 40,
+                "`{tool}.{arg}` needs a reason, not a label: {why:?}"
             );
         }
     }
