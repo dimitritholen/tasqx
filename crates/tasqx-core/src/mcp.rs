@@ -98,6 +98,52 @@ fn enum_of(values: impl IntoIterator<Item = &'static str>) -> Value {
 const WHEN_GRAMMAR: &str = "Date/time in the tool's date grammar: \"tomorrow\", \
     \"friday\", \"2026-07-20\", \"in 3 days\", \"eom\", or \"2026-07-20T17:00\".";
 
+/// How many annotations `tasqx_get_task` returns when the caller names no page
+/// size.
+///
+/// Sized against the failure it exists to prevent rather than by taste: a task
+/// whose annotations had accumulated over five days of real work returned tens
+/// of kilobytes and exceeded an MCP client's tool-output limit. The regression
+/// test in `tests/mcp.rs` builds a history of that shape and asserts the whole
+/// response against a byte budget, so this number is answerable rather than
+/// merely chosen — re-run it before changing the value.
+///
+/// It bounds ROWS, and rows are not the unit the problem is expressed in, which
+/// is why [`RESPONSE_BUDGET_BYTES`] sits beside it: the task that produced the
+/// field report carried eleven enormous annotations rather than two hundred
+/// small ones, so this number alone returned every one of them and bounded
+/// nothing.
+const ANNOTATION_PAGE: u64 = 20;
+
+/// The size a `tasqx_get_task` response is shrunk to fit, counting BOTH content
+/// blocks — the rendered view and the JSON behind it, which D49 ships together.
+///
+/// Measured against the failure rather than chosen: the reported response was
+/// ~58 KB and exceeded a client's tool-output limit, and its JSON half alone
+/// measured ~29 KB on the live store. A budget under that half is what makes the
+/// first, uninstructed call fit, which matters because a client that hard-fails
+/// on an oversized result never gets to retry with a smaller page.
+///
+/// It is a budget, not a guarantee. A single annotation larger than this still
+/// exceeds it: the floor is one whole annotation, because truncating a body
+/// would hand the reader prose that stops mid-sentence with no marker, and a
+/// silently altered body is worse than a large one.
+const RESPONSE_BUDGET_BYTES: usize = 24_576;
+
+/// A date field's schema: what *this* field does, then the grammar every date
+/// field shares.
+///
+/// The grammar stays in one place for D33's reason, and the effect clause is
+/// per field for the opposite one. [`WHEN_GRAMMAR`] alone fits `due`,
+/// `scheduled` and `wait` equally well, so three identical descriptions left an
+/// agent no way to choose between them: an MCP client set `scheduled` to a
+/// four-week review date meaning "check back then" and parked the work in
+/// `backlog`, invisible to `@working` until that date, and found out only by
+/// reading `status` back out of the response.
+fn when_schema(effect: &str) -> Value {
+    json!({ "type": "string", "description": format!("{effect} {WHEN_GRAMMAR}") })
+}
+
 /// Schema fragment for a `ref` argument (short_id int OR full UUID string).
 fn ref_schema() -> Value {
     json!({
@@ -155,6 +201,74 @@ fn with_correlation(mut schema: Value) -> Value {
     schema
 }
 
+/// Every dispatch method that deliberately has **no** MCP tool, and why.
+///
+/// The MCP surface drifted into additive-only without anybody deciding it: of
+/// the methods `dispatch::PARAMS` carries, the ones that had quietly gone
+/// unexposed were, with the exception of the internal ones, the corrective or
+/// destructive half of a pair whose other half was reachable. An agent could
+/// tag and not untag, block and not unblock, close and not reopen, write a
+/// memory and not retract it. Nobody chose that; it accumulated, because
+/// exposing a tool was a decision and NOT exposing one was silence.
+///
+/// This table is what turns the silence into a decision. `every_dispatch_method_is_exposed_or_listed_here`
+/// asserts it against [`tool_specs`] in both directions, so a new method must
+/// either ship a tool or land here with a reason, and an entry that stops being
+/// true fails the build rather than sitting as a stale note.
+///
+/// A reason is not a formality. "Nobody asked for it" is a fine reason and is
+/// written as such; what is not allowed is an omission with nothing beside it.
+const UNEXPOSED_METHODS: &[(&str, &str)] = &[
+    (
+        "core.capabilities",
+        "the MCP handshake already answers this question: `initialize` reports the protocol          revision and scope, and `tools/list` reports the surface. A second, differently          shaped capability document is a second thing to keep in sync.",
+    ),
+    (
+        "event.list",
+        "the audit log is unbounded and has no paging, so exposing it would repeat the          `task.get` mistake D63 fixed. It needs the same limit/offset treatment before it          can be a tool; no client has asked for it yet.",
+    ),
+    (
+        "event.revert",
+        "tasqx has an undo (D54) and an agent cannot reach it, which is the sharpest single          omission on this list. It stays off until the tool can show what it is about to          undo: `event.revert` acts on the last matching event, and its blast radius depends          on store state the calling agent has not read. A destructive one-shot whose effect          the caller cannot see is not a tool, it is a coin flip.",
+    ),
+    (
+        "memory.import",
+        "it takes a batch of documents read off a filesystem, and the filesystem the CLI          reads is not the one an MCP client is on. `memory.add` is the per-document tool          that does reach across the wire.",
+    ),
+    (
+        "project.archive",
+        "retiring a project is a decision about the human's workspace, not about the work.          An agent asked to tidy the project list is being asked to make that decision on          their behalf, and the CLI is where it belongs.",
+    ),
+    (
+        "project.use",
+        "ruled out by D22: an agent has `project` on `task.add` and should name it, rather          than silently re-aiming the human's default for every later call, including the          human's own.",
+    ),
+    (
+        "reminder.fire",
+        "daemon-internal. Its `reminded` event is a dedupe key and a push surface, not a          thing a client asks for.",
+    ),
+    (
+        "store.export",
+        "an agent cannot snapshot what it just wrote, and that is a real gap — but the          payload is the whole store, which is exactly the size problem D63 and D66 spent          two rounds on. It needs a filter and a budget before it is a tool rather than a          way to blow a client's limit in one call.",
+    ),
+    (
+        "store.import",
+        "it overwrites, in bulk, from a document nobody has reviewed. The confirmation model          (§7) defers to the host's gate, and a host gate on a call whose diff nobody can see          is not a safeguard.",
+    ),
+    (
+        "task.cancel",
+        "already reachable: §7 routes cancellation through `task.modify status:cancelled`,          and the engine accepts exactly that one transition. A second spelling of a reachable          behaviour is the drift D30 warns about, not a missing capability.",
+    ),
+    (
+        "token.add",
+        "a measurement after the fact, and D50 makes the completion's self-report the primary          channel precisely so one task never mixes channels. An agent with a count to report          has `tasqx_complete_task`.",
+    ),
+    (
+        "tokens.recompute",
+        "a maintenance pass over the whole store's attribution. It is an operator action with          a runtime proportional to history, not a step in anybody's task.",
+    ),
+];
+
 /// The full §7 tool surface. Each entry maps 1:1 onto a core dispatch method;
 /// the tool `arguments` object is passed straight through as the method params
 /// (argument names are identical to the core param names by design).
@@ -206,10 +320,35 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_get_task",
             method: "task.get",
             write: false,
-            description: "Get one task's full detail: fields, tags, annotations, and dependencies.",
+            description: "Get one task's full detail: fields, tags, annotations, and \
+                dependencies. A long annotation history is returned newest-first in pages — \
+                the response always carries `annotations_total`, and `annotations_next_offset` \
+                whenever older annotations were left out.",
             schema: json!({
                 "type": "object",
-                "properties": { "ref": ref_schema() },
+                "properties": {
+                    "ref": ref_schema(),
+                    "annotations_limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": format!(
+                            "How many of the MOST RECENT annotations to return. Omit and this \
+                             tool applies its own page size ({ANNOTATION_PAGE}), because an \
+                             unbounded history can exceed a client's tool-output limit; pass \
+                             `annotations_total` from a previous response to get every one. \
+                             0 returns none, which is how you read a task's fields without its \
+                             history."
+                        )
+                    },
+                    "annotations_offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How many annotations to skip, counted back from the \
+                            newest. Pass the `annotations_next_offset` of the previous response \
+                            to walk further into the history; that field is null once there is \
+                            nothing older."
+                    }
+                },
                 "required": ["ref"]
             }),
         },
@@ -291,7 +430,9 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_add_task",
             method: "task.add",
             write: true,
-            description: "Create a new task. Returns its short_id and urgency.",
+            description: "Create a new task. Returns its short_id, urgency and status — which \
+                is `backlog`, not `pending`, when `scheduled` or `wait` is in the future, and a \
+                backlog task is outside the `@working` set until that date passes.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -305,10 +446,24 @@ fn tool_specs() -> Vec<ToolSpec> {
                     // Every date field names the SAME grammar, because they all
                     // run through `datetime::parse_when` (D33). Advertising
                     // RFC3339 alone was a schema narrower than the engine: an
-                    // agent would never send `tomorrow`, which works.
-                    "due": { "type": "string", "description": WHEN_GRAMMAR },
-                    "scheduled": { "type": "string", "description": WHEN_GRAMMAR },
-                    "wait": { "type": "string", "description": WHEN_GRAMMAR },
+                    // agent would never send `tomorrow`, which works. What the
+                    // grammar cannot say is which field to reach for, so each
+                    // one now leads with its own effect — see `when_schema`.
+                    "due": when_schema(
+                        "The deadline. Drives the urgency score and anchors relative reminders; \
+                         it does not hide the task, so an overdue one stays in the working set."
+                    ),
+                    "scheduled": when_schema(
+                        "When you intend to start. A future value holds the task in `backlog`, \
+                         out of the `@working` set, until it arrives; `agenda` then places the \
+                         task on the earlier of `due` and `scheduled`."
+                    ),
+                    "wait": when_schema(
+                        "Hide the task until then. A future value holds it in `backlog` exactly \
+                         as `scheduled` does; the difference is intent — `wait` is \"not my \
+                         problem yet\", `scheduled` is \"I plan to start then\" and is the one \
+                         `agenda` places on."
+                    ),
                     "tags": { "type": "array", "items": { "type": "string" } },
                     "estimate": { "type": "string", "description": "Duration: \"4h\", \"90m\", \"1h30m\", \"2d\", \"1w\", or ISO-8601 \"PT4H\"." },
                     "recurrence": {
@@ -350,9 +505,11 @@ fn tool_specs() -> Vec<ToolSpec> {
                 completion. Report the tokens this task cost via the *_tokens params — \
                 the caller is the only party that knows which task a turn's spend \
                 served, so self-report is the primary measurement channel; any present \
-                count records a measurement. Correlation params (session_id, prompt_id, \
-                transcript_path, client) are recorded on the completion event; without \
-                a self-report, log-parse attribution is a fallback that refuses \
+                count records a measurement. If you cannot observe your token spend, still \
+                send `tool` and `model` — they are recorded on the completion event without \
+                any count, and the response says what was recorded. Correlation params \
+                (session_id, prompt_id, transcript_path, client) land on that same event; \
+                without a self-report, log-parse attribution is a fallback that refuses \
                 samples claimed by more than one task's window.",
             // The token-count fields carry no `minimum`: the numeric-minimum
             // drift guard cannot probe a bound on a tool with required args,
@@ -364,14 +521,18 @@ fn tool_specs() -> Vec<ToolSpec> {
                     "ref": ref_schema(),
                     "tool": {
                         "type": "string",
-                        "description": "Self-report: the AI tool that spent the tokens, \
-                            free-form (e.g. \"claude-code\"). Defaults to `client` when \
-                            token counts are present."
+                        "description": "The AI tool doing the work, free-form (e.g. \
+                            \"claude-code\"). Recorded on the completion event on its own; \
+                            when token counts are present it also names the measurement, \
+                            defaulting to `client` if you omit it. You do NOT need a token \
+                            count to send it."
                     },
                     "model": {
                         "type": "string",
-                        "description": "Self-report: the model that spent the tokens, \
-                            e.g. \"claude-fable-5\"."
+                        "description": "The model doing the work, e.g. \"claude-opus-5\". \
+                            Recorded on the completion event on its own, and carried on the \
+                            measurement when token counts are present. You do NOT need a \
+                            token count to send it."
                     },
                     "input_tokens": {
                         "type": "integer",
@@ -392,6 +553,24 @@ fn tool_specs() -> Vec<ToolSpec> {
                 },
                 "required": ["ref"]
             })),
+        },
+        ToolSpec {
+            name: "tasqx_reopen_task",
+            method: "task.reopen",
+            write: true,
+            // The inverse of the two closes an agent can reach: `task.done` has
+            // its own tool and cancellation goes through `task.modify
+            // status:cancelled` (§7). Both were reachable and neither could be
+            // taken back, which is the additive-only shape D67 removes.
+            description: "Reopen a closed task: done or cancelled goes back to pending, and the \
+                completion timestamp is cleared so the task stops answering questions about a \
+                week it is no longer finished in. Use it when a task was closed or cancelled in \
+                error. A task that is not closed is a conflict, not a no-op.",
+            schema: json!({
+                "type": "object",
+                "properties": { "ref": ref_schema() },
+                "required": ["ref"]
+            }),
         },
         ToolSpec {
             name: "tasqx_start_timer",
@@ -428,6 +607,21 @@ fn tool_specs() -> Vec<ToolSpec> {
             method: "tag.add",
             write: true,
             description: "Add one or more tags to a task. Returns the resulting tag set.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "tags": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["ref", "tags"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_untag_task",
+            method: "tag.remove",
+            write: true,
+            description: "Remove one or more tags from a task. Returns the resulting tag set. \
+                Removing a tag the task does not carry is not an error.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -475,6 +669,25 @@ fn tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "tasqx_remove_dependency",
+            method: "dependency.remove",
+            write: true,
+            description: "Cut a dependency edge: `ref` stops waiting on `depends_on`. Returns \
+                the remaining dependency list and blocked state, so the answer says whether the \
+                task is actually actionable now or still waiting on something else.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "depends_on": {
+                        "type": ["integer", "string"],
+                        "description": "The blocker to stop waiting for: short_id (integer) or full UUID (string)."
+                    }
+                },
+                "required": ["ref", "depends_on"]
+            }),
+        },
+        ToolSpec {
             name: "tasqx_add_memory",
             method: "memory.add",
             write: true,
@@ -490,6 +703,35 @@ fn tool_specs() -> Vec<ToolSpec> {
                     "source": { "type": "string", "description": "Where this came from: a path, URL, or ticket." }
                 },
                 "required": ["title", "body"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_remove_memory",
+            method: "memory.remove",
+            write: true,
+            // The permanence is stated because it is the one property of this
+            // tool a caller cannot learn by trying: every other write reachable
+            // through this server is either revertible or restatable, so an
+            // agent handed a delete with nothing said reads it as reversible.
+            // D54's `undo` covers task edits and deliberately not memory docs —
+            // the event log records that a doc went and does not carry its body,
+            // so there is nothing to put back.
+            description: "Remove one knowledge document from memory by id, the id \
+                tasqx_search_memory returns. Use it to retract something you wrote that turned \
+                out to be wrong — a correction written as a second document leaves both in the \
+                store, and search ranks them together with nothing to say which is true. The \
+                removal is permanent: `tasqx undo` does not cover memory documents, and the \
+                body is not recoverable from the event log.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The document's id, as tasqx_search_memory reports it \
+                            on a `doc` hit."
+                    }
+                },
+                "required": ["id"]
             }),
         },
         ToolSpec {
@@ -518,6 +760,16 @@ fn tool_specs() -> Vec<ToolSpec> {
 /// a quiet disagreement between the server and its documentation.
 pub fn tool_roster() -> Vec<(&'static str, bool)> {
     tool_specs().iter().map(|s| (s.name, s.write)).collect()
+}
+
+/// The methods deliberately left off the tool surface, as `(method, why)`.
+///
+/// Public for the same reason [`tool_roster`] is: the guards that hold this
+/// decision still live outside the module that makes it. It is also the honest
+/// answer to "why can't the agent do X" — the reasons are written for a reader,
+/// not for a compiler.
+pub fn unexposed_methods() -> &'static [(&'static str, &'static str)] {
+    UNEXPOSED_METHODS
 }
 
 /// A long-lived MCP session over one [`Engine`], fenced to one [`Scope`]. It is
@@ -671,6 +923,24 @@ impl<'e> McpServer<'e> {
             }
         }
 
+        // The expected_rev pattern a third time, for the one field with no
+        // bound: a task's annotations are unbounded text, and the tasks worth
+        // reading are the ones that have the most of them, so `task.get`
+        // answered whole is how the richest history became the one this
+        // transport could not carry. The core keeps answering whole — clients
+        // have read it that way since v1 was frozen — and the page size is
+        // supplied HERE, where the payload limit actually lives. A caller that
+        // names its own is respected as-is, including one asking for the lot.
+        let mut paged_by_us = false;
+        if spec.method == "task.get" {
+            if let Some(obj) = args.as_object_mut() {
+                if !obj.contains_key("annotations_limit") {
+                    obj.insert("annotations_limit".to_string(), json!(ANNOTATION_PAGE));
+                    paged_by_us = true;
+                }
+            }
+        }
+
         // #12, the expected_rev pattern again: lifecycle calls are stamped
         // with the tool captured at initialize, so the start/done events name
         // who did the work even when the agent passes nothing. A caller that
@@ -701,10 +971,7 @@ impl<'e> McpServer<'e> {
                         // keeps `task_detail` pure and its golden tests stable.
                         now: jiff::Timestamp::now(),
                     };
-                    return tool_ok_with_view(
-                        crate::markdown::task_detail(&result, &opts),
-                        &result,
-                    );
+                    return self.fit_to_budget(result, &args, &opts, paged_by_us);
                 }
                 tool_ok(&result)
             }
@@ -716,6 +983,114 @@ impl<'e> McpServer<'e> {
                 tool_error(&code, e.message)
             }
         }
+    }
+
+    /// Fit a `task.get` response to [`RESPONSE_BUDGET_BYTES`], spending the
+    /// duplicate JSON block before it spends any of the history.
+    ///
+    /// Only for a caller who named no page size. An explicit `annotations_limit`
+    /// is answered exactly as asked, both blocks included, however large: a
+    /// request second-guessed is a caller who can never fetch a big page on
+    /// purpose, and it is what keeps the frozen machine-readable shape reachable
+    /// for every task rather than only the small ones.
+    ///
+    /// # The order the budget spends in
+    ///
+    /// 1. both blocks at the default page — an ordinary task never notices this
+    ///    function exists;
+    /// 2. the view alone at that same page, because on a task whose bulk is
+    ///    annotation prose the second block is that prose *again* (D49 renders
+    ///    the same result twice, once formatted and once as escaped JSON), and
+    ///    paying for a duplicate in history the reader never sees is the worse
+    ///    trade;
+    /// 3. the view alone, halving to a floor of one whole annotation.
+    ///
+    /// Dropping the JSON is a one-way door inside a single response: once gone
+    /// it stays gone while the page shrinks, so the answer cannot flip shape
+    /// halfway through its own search. D49's ordering is what makes this safe —
+    /// the view leads *because* it is the block a model reads, so the block that
+    /// survives is the one that was already doing the work.
+    ///
+    /// Bisection rather than extrapolation: bodies vary by orders of magnitude,
+    /// so a size-per-row taken from the newest annotations is wrong in exactly
+    /// the case that matters, while a measured yes/no per candidate is never
+    /// wrong. Five dispatches is the worst case, each a read of one task from a
+    /// local store, and only ever on a task already large enough to have failed
+    /// outright.
+    ///
+    /// The floor is one whole annotation: below that the only lever left is
+    /// cutting a body, and prose that stops mid-sentence with nothing marking
+    /// the cut is worse than an oversized answer. A task whose newest single
+    /// annotation exceeds the budget therefore still exceeds it — `0` is the
+    /// caller's own escape, and it is documented on the parameter.
+    fn fit_to_budget(
+        &self,
+        first: Value,
+        args: &Value,
+        opts: &crate::markdown::DetailOpts,
+        paged_by_us: bool,
+    ) -> Value {
+        let render = |result: &Value| crate::markdown::task_detail(result, opts);
+        let json_len = |result: &Value| {
+            serde_json::to_string_pretty(result)
+                .map(|s| s.len())
+                .unwrap_or(0)
+        };
+
+        // Measured on the FINISHED block, never on the bare view: dropping the
+        // JSON adds a sentence saying so, and a view that fits by less than that
+        // sentence produced a response over the budget — the payload bound
+        // defeated by the notice explaining the payload bound.
+        let view_only_fits = |view: &str| view_only_text(view).len() <= RESPONSE_BUDGET_BYTES;
+
+        let view = render(&first);
+        if !paged_by_us || view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
+            return tool_ok_with_view(view, &first);
+        }
+        // Step 2: the same page, without the duplicate.
+        if view_only_fits(&view) {
+            return tool_ok_view_only(&view);
+        }
+
+        // Step 3: the largest page that fits, found by BISECTION rather than by
+        // halving until something works. Halving lands on a power-of-two
+        // fraction of the starting page and stops there, which on the shape
+        // that provoked all this — a handful of very long bodies — overshoots
+        // by a factor of two: it would show two annotations where four fit.
+        // Same number of dispatches, an answer that is actually the largest.
+        let mut view = view;
+        let mut lo = 1u64;
+        let mut hi = ANNOTATION_PAGE;
+        let mut best: Option<String> = None;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let mut retry = args.clone();
+            match retry.as_object_mut() {
+                Some(obj) => obj.insert("annotations_limit".to_string(), json!(mid)),
+                // Unreachable for a real call — `args` is the tool's arguments
+                // object — and a fall-through beats a panic in a presentation
+                // path that must never make a working call look broken.
+                None => break,
+            };
+            let Ok(candidate) = dispatch(self.engine, "task.get", &retry) else {
+                break;
+            };
+            let rendered = render(&candidate);
+            if view_only_fits(&rendered) {
+                best = Some(rendered);
+                lo = mid + 1;
+            } else {
+                // `mid` is the floor and it still does not fit: one whole
+                // annotation is larger than the budget, and cutting into a body
+                // is the one thing this will not do.
+                if mid == 1 {
+                    view = rendered;
+                    break;
+                }
+                hi = mid - 1;
+            }
+        }
+        tool_ok_view_only(&best.unwrap_or(view))
     }
 
     /// The captured clientInfo as one display string, `"<name> <version>"`
@@ -799,6 +1174,42 @@ fn tool_ok_with_view(view: String, result: &Value) -> Value {
         ],
         "isError": false
     })
+}
+
+/// A `tools/call` result carrying the rendered view ALONE, with a line saying
+/// the machine-readable block is missing and how to ask for it.
+///
+/// Emitted only when both blocks together exceed the response budget on a call
+/// that named no page size (see [`McpServer::fit_to_budget`]). The note is not
+/// optional politeness: a response silently one block short is indistinguishable
+/// from a server that never sends JSON, and a reader who cannot tell those apart
+/// stops looking for the field they need. It is appended HERE rather than in
+/// `markdown::task_detail`, which is pure and golden-tested and knows nothing
+/// about transports or budgets.
+fn tool_ok_view_only(view: &str) -> Value {
+    if view.is_empty() {
+        return tool_ok(&Value::Null);
+    }
+    json!({
+        "content": [ { "type": "text", "text": view_only_text(view) } ],
+        "isError": false
+    })
+}
+
+/// The view plus the omission notice, as one block — the exact bytes
+/// [`tool_ok_view_only`] sends.
+///
+/// One function so the budget and the answer measure the same string. They did
+/// not: `fit_to_budget` compared the bare view against
+/// [`RESPONSE_BUDGET_BYTES`] and the notice was appended afterwards, so a view
+/// landing just under the limit produced a response just over it — the payload
+/// bound defeated by the sentence explaining the payload bound.
+fn view_only_text(view: &str) -> String {
+    format!(
+        "{view}\n_Machine-readable JSON omitted: both blocks together exceeded this tool's \
+         response budget, and the rendered view above carries the same annotations. Pass \
+         `annotations_limit` to get the JSON block back._\n"
+    )
 }
 
 /// An error `tools/call` result (scope denial, unknown tool, or a core
@@ -1081,11 +1492,17 @@ mod tests {
     #[test]
     fn every_numeric_minimum_in_a_schema_is_the_engine_s_own_floor() {
         let e = engine();
+        // One real task, so a bound sitting behind a required `ref` is probed
+        // against a live row rather than against a `not_found` that would pass
+        // the "below the floor is refused" half for the wrong reason.
+        e.task_add(&json!({ "title": "probe" }))
+            .expect("seed a task");
         let mut probed = 0;
         for spec in tool_specs() {
-            let requires = spec.schema["required"]
+            let required: Vec<&str> = spec.schema["required"]
                 .as_array()
-                .is_some_and(|a| !a.is_empty());
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
             for (name, node) in spec.schema["properties"]
                 .as_object()
                 .expect("an object schema")
@@ -1093,21 +1510,38 @@ mod tests {
                 let Some(min) = node.get("minimum").and_then(Value::as_i64) else {
                     continue;
                 };
-                assert!(
-                    !requires,
-                    "tool `{}` bounds `{name}` at {min} but also has required arguments, so this \
-                     guard cannot probe the boundary with a one-key call",
-                    spec.name
-                );
+                // A bound behind a required argument is probed WITH that
+                // argument rather than skipped: a skip is how a guard goes
+                // vacuous with nothing to show for it. A required key this
+                // fixture has no value for still fails, loudly — that is a
+                // request to extend the fixture, not to drop the bound.
+                let mut call = serde_json::Map::new();
+                for key in &required {
+                    match *key {
+                        "ref" => {
+                            call.insert("ref".to_string(), json!(1));
+                        }
+                        other => panic!(
+                            "tool `{}` bounds `{name}` at {min} behind a required `{other}` this \
+                             guard has no fixture value for — give it one, do not skip the bound",
+                            spec.name
+                        ),
+                    }
+                }
+                let with = |v: Value| {
+                    let mut p = call.clone();
+                    p.insert(name.clone(), v);
+                    Value::Object(p)
+                };
                 probed += 1;
                 assert!(
-                    dispatch(&e, spec.method, &json!({ name.as_str(): min })).is_ok(),
+                    dispatch(&e, spec.method, &with(json!(min))).is_ok(),
                     "schema says `{}`.{name} accepts {min}; the engine refuses it",
                     spec.name
                 );
                 let below = min - 1;
                 assert!(
-                    dispatch(&e, spec.method, &json!({ name.as_str(): below })).is_err(),
+                    dispatch(&e, spec.method, &with(json!(below))).is_err(),
                     "schema forbids `{}`.{name} below {min}, but the engine accepts {below} — an \
                      agent is denied a call that works",
                     spec.name
@@ -1118,6 +1552,210 @@ mod tests {
             probed > 0,
             "no numeric bound was probed; this guard has gone vacuous"
         );
+    }
+
+    /// Every method `dispatch::PARAMS` carries either has a tool or is listed
+    /// in [`UNEXPOSED_METHODS`] with a reason. Both directions.
+    ///
+    /// The failure this guards is not a bug in any one call — it is a surface
+    /// that drifts by omission. Ten of the methods on this table had gone
+    /// unexposed without anybody ruling on it, and with the internal ones set
+    /// aside they were the corrective or destructive half of a pair that WAS
+    /// exposed: tag and no untag, block and no unblock, close and no reopen,
+    /// write a memory and no way to retract it. Nothing failed while that was
+    /// true, because adding a tool is an edit and leaving one out is silence.
+    ///
+    /// So silence stops being an option. A method added tomorrow must ship a
+    /// tool or say why not, and a reason that stops being true — the method is
+    /// exposed after all, or deleted — fails here rather than sitting on as a
+    /// note nobody re-reads. The repo already runs this shape over the docs
+    /// pages (`docs.rs`'s `VERBS`/`METHODS` guards); this is the same guard
+    /// pointed at the tool table.
+    #[test]
+    fn every_dispatch_method_is_exposed_or_listed_as_deliberately_unexposed() {
+        let exposed: Vec<&str> = tool_specs().into_iter().map(|s| s.method).collect();
+        let methods: Vec<&str> = crate::dispatch::PARAMS.iter().map(|(m, _, _)| *m).collect();
+        assert_eq!(
+            exposure_faults(&methods, &exposed, UNEXPOSED_METHODS),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The invariant itself, as a function of its three tables, so it can be
+    /// run against inconsistent ones.
+    ///
+    /// Split out for exactly one reason: a guard asserted only over the real
+    /// tables is a guard nobody has seen fail. Delete its assertions and the
+    /// suite stays green, which is the failure mode this project already has a
+    /// rule about — a test watched red is the only test whose behaviour is
+    /// known. `every_dispatch_method_is_exposed_or_listed_as_deliberately_unexposed`
+    /// drives it with the shipping tables; the fixtures below drive it with
+    /// broken ones and assert it complains.
+    fn exposure_faults(
+        methods: &[&str],
+        exposed: &[&str],
+        unexposed: &[(&str, &str)],
+    ) -> Vec<String> {
+        let mut faults = Vec::new();
+        for method in methods {
+            let has_tool = exposed.contains(method);
+            let listed = unexposed.iter().any(|(m, _)| m == method);
+            if !has_tool && !listed {
+                faults.push(format!(
+                    "`{method}` is in PARAMS, has no MCP tool, and is not in \
+                     UNEXPOSED_METHODS. Expose it, or add it there with the reason — an \
+                     omission nobody wrote down is how this surface became additive-only \
+                     in the first place"
+                ));
+            }
+            if has_tool && listed {
+                faults.push(format!(
+                    "`{method}` is BOTH exposed and listed as deliberately unexposed; the \
+                     reason beside it is now false and the next reader will believe it"
+                ));
+            }
+        }
+        for (method, reason) in unexposed {
+            if !methods.contains(method) {
+                faults.push(format!(
+                    "UNEXPOSED_METHODS names `{method}`, which is not a dispatch method — a \
+                     renamed or deleted method leaves a reason behind that reads as current"
+                ));
+            }
+            if reason.len() <= 40 {
+                faults.push(format!(
+                    "`{method}` is excused in {} characters. A reason short enough to be a \
+                     label is a label, and the point of this table is the argument",
+                    reason.len()
+                ));
+            }
+        }
+        faults
+    }
+
+    /// Each way the exposure table can be wrong, proved to be caught.
+    ///
+    /// Without this, the guard above is a test of the current tables rather
+    /// than a test of the rule: it passes today, it passes with its assertions
+    /// deleted, and nobody finds out until a method ships unreachable again.
+    #[test]
+    fn the_exposure_guard_catches_every_way_the_tables_can_disagree() {
+        let long = "a reason long enough to clear the floor this guard sets on excuses";
+
+        // A method with neither a tool nor a written reason: the original
+        // defect, and the one that arrives by doing nothing at all.
+        let faults = exposure_faults(&["task.add", "task.reopen"], &["task.add"], &[]);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("task.reopen"), "{faults:?}");
+
+        // A reason that has stopped being true because the method was exposed.
+        let faults = exposure_faults(&["task.add"], &["task.add"], &[("task.add", long)]);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("BOTH exposed and listed"), "{faults:?}");
+
+        // A reason left behind by a method that no longer exists.
+        let faults = exposure_faults(&["task.add"], &["task.add"], &[("task.ghost", long)]);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("not a dispatch method"), "{faults:?}");
+
+        // An excuse short enough to be a label.
+        let faults = exposure_faults(&["task.add"], &[], &[("task.add", "internal")]);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(
+            faults[0].contains("short enough to be a label"),
+            "{faults:?}"
+        );
+
+        // And consistent tables produce nothing, so the fixtures above are
+        // failing for their own reason rather than because anything complains.
+        assert_eq!(
+            exposure_faults(
+                &["task.add", "task.cancel"],
+                &["task.add"],
+                &[("task.cancel", long)]
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The response budget counts the notice the response adds.
+    ///
+    /// `fit_to_budget` measured the bare view and `tool_ok_view_only` appended
+    /// the JSON-omission sentence afterwards, so a view landing within that
+    /// sentence's length of the limit shipped over it — the payload bound
+    /// defeated by the text explaining the payload bound. The window is
+    /// narrower than any hand-written fixture would reliably hit, so the
+    /// fixture is searched for.
+    #[test]
+    fn a_view_that_only_fits_without_its_own_notice_is_still_shrunk() {
+        let notice = view_only_text("").len();
+        assert!(
+            notice > 0,
+            "the notice must cost something to be worth guarding"
+        );
+
+        // Two annotations: an old fat one and a new small one, with the fat
+        // body sized so the two-annotation view lands in the danger window —
+        // under the budget on its own, over it once the notice is added.
+        let target = RESPONSE_BUDGET_BYTES - notice / 2;
+        let (mut lo, mut hi) = (1usize, RESPONSE_BUDGET_BYTES);
+        let mut fixture = None;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let e = engine();
+            e.task_add(&json!({ "title": "boundary" })).expect("task");
+            e.annotation_add(&json!({ "ref": 1, "body": "x".repeat(mid) }))
+                .expect("the old fat one");
+            e.annotation_add(&json!({ "ref": 1, "body": "the newest, and small" }))
+                .expect("the new small one");
+            let full = dispatch(&e, "task.get", &json!({ "ref": 1 })).expect("get");
+            let len = crate::markdown::task_detail(&full, &iso_opts()).len();
+            if len <= target {
+                fixture = Some((mid, len));
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let (body, view_len) = fixture.expect("a body size landing under the budget exists");
+        assert!(
+            view_len > RESPONSE_BUDGET_BYTES - notice,
+            "the search did not reach the window this guards: view {view_len}, budget \
+             {RESPONSE_BUDGET_BYTES}, notice {notice}"
+        );
+
+        let e = engine();
+        e.task_add(&json!({ "title": "boundary" })).expect("task");
+        e.annotation_add(&json!({ "ref": 1, "body": "x".repeat(body) }))
+            .expect("the old fat one");
+        e.annotation_add(&json!({ "ref": 1, "body": "the newest, and small" }))
+            .expect("the new small one");
+        let server = McpServer::new(&e, Scope::Read);
+        let out = server
+            .handle_message(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "tasqx_get_task", "arguments": { "ref": 1 } }
+            }))
+            .expect("tools/call is a request");
+        let bytes: usize = out["result"]["result"]["content"]
+            .as_array()
+            .or_else(|| out["result"]["content"].as_array())
+            .expect("content blocks")
+            .iter()
+            .map(|b| b["text"].as_str().unwrap_or("").len())
+            .sum();
+        assert!(
+            bytes <= RESPONSE_BUDGET_BYTES,
+            "the finished response is {bytes} bytes against a {RESPONSE_BUDGET_BYTES} budget: \
+             the notice was added after the fit was decided"
+        );
+    }
+
+    fn iso_opts() -> crate::markdown::DetailOpts {
+        crate::markdown::DetailOpts {
+            time: crate::markdown::TimeFormat::Iso,
+            now: jiff::Timestamp::UNIX_EPOCH,
+        }
     }
 
     /// A tool's properties must be EXACTLY the params its method accepts.
@@ -1160,5 +1798,70 @@ mod tests {
                 spec.name, spec.method
             );
         }
+    }
+
+    /// Each date field must say what it *does*, not only what it takes.
+    ///
+    /// `due`, `scheduled` and `wait` shared one description — the grammar
+    /// sentence and nothing else — so all three read identically to an agent
+    /// choosing between them. An MCP client picked `scheduled` for "check back
+    /// in four weeks" and put the work in `backlog`, invisible to `@working`
+    /// until late September; it noticed only by reading `status` back out of
+    /// the response. A field whose effect is discoverable only by inspecting
+    /// what it did is this repo's recurring defect, one layer earlier.
+    ///
+    /// The shared grammar stays (D33: three sentences were three chances to
+    /// advertise three grammars for one parser). What is asserted here is that
+    /// the effect clause is *added* to it and differs per field.
+    #[test]
+    fn every_date_field_names_its_own_effect_beside_the_shared_grammar() {
+        let specs = tool_specs();
+        let add = specs
+            .iter()
+            .find(|s| s.name == "tasqx_add_task")
+            .expect("tasqx_add_task");
+        let describe = |field: &str| {
+            add.schema["properties"][field]["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("`{field}` has no description"))
+                .to_string()
+        };
+        let (due, scheduled, wait) = (describe("due"), describe("scheduled"), describe("wait"));
+
+        for (field, text) in [("due", &due), ("scheduled", &scheduled), ("wait", &wait)] {
+            assert!(
+                text.contains(WHEN_GRAMMAR),
+                "`{field}` dropped the shared grammar sentence: D33 exists because three \
+                 hand-written grammars drifted into three different claims about one parser"
+            );
+            assert!(
+                text.len() > WHEN_GRAMMAR.len(),
+                "`{field}` says what it takes and not what it does — the grammar alone fits \
+                 all three fields, which is exactly why a caller cannot choose between them"
+            );
+        }
+        assert_ne!(due, scheduled, "`due` and `scheduled` read identically");
+        assert_ne!(due, wait, "`due` and `wait` read identically");
+        assert_ne!(scheduled, wait, "`scheduled` and `wait` read identically");
+
+        // The two that move a task out of the working set must say so by name,
+        // because `backlog` is the observable the client had to reverse-engineer.
+        for (field, text) in [("scheduled", &scheduled), ("wait", &wait)] {
+            assert!(
+                text.contains("backlog"),
+                "`{field}` holds a task in backlog until it passes \
+                 (`types::effective_status`) and never says so"
+            );
+        }
+        assert!(
+            due.contains("urgency"),
+            "`due` drives the urgency score and anchors relative reminders; the description \
+             names neither"
+        );
+        assert!(
+            add.description.contains("backlog"),
+            "`tasqx_add_task` returns `status: \"backlog\"` for a future `scheduled` or `wait` \
+             and its description never warns that a date can park the task"
+        );
     }
 }

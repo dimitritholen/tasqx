@@ -119,16 +119,17 @@ impl SelfReport {
             || self.cache_read_tokens.is_some()
             || self.cache_creation_tokens.is_some();
         if !any_count {
-            if let Some(orphan) = [("tool", &self.tool), ("model", &self.model)]
-                .into_iter()
-                .find_map(|(k, v)| v.as_ref().map(|_| k))
-            {
-                return Err(ApiError::bad_request(format!(
-                    "`{orphan}` was given without any token count — send input_tokens, \
-                     output_tokens, cache_read_tokens or cache_creation_tokens alongside it, \
-                     or drop `{orphan}`"
-                )));
-            }
+            // No counts, no measurement — a zero-count `token_usage` row is a
+            // phantom every later sum treats as real, which is worse than none.
+            //
+            // `tool`/`model` without a count used to be REFUSED here, on the
+            // D33 rule that a value which changes nothing must not answer `ok`.
+            // The rule was right and applied to the wrong half: an agent does
+            // not know its own token spend, so the refusal read "supply a
+            // number you cannot observe, or forfeit the tool and model you
+            // can", and callers took the second option. `task.done` now writes
+            // both onto the completion event (D65), so the value changes
+            // something and the D33 objection is answered rather than waived.
             return Ok(None);
         }
         let tool = self

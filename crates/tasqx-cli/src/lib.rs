@@ -2452,6 +2452,32 @@ fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String>, ApiError
                             }
                         }
                     }
+                    Some(Action::Detail(id)) => {
+                        // Served HERE, beside `Refresh`, and not carried out
+                        // through `want`: everything that reaches the outer
+                        // loop leaves this screen, so a missing arm would make
+                        // `⏎` quit the dashboard.
+                        match be.call("task.get", &json!({ "ref": id })) {
+                            Ok(v) => match tui::dashboard::model::TaskDetail::from_json(&v) {
+                                Some(card) => app.show_detail(card),
+                                None => app.say(format!(
+                                    "#{id} came back in a shape this build cannot read"
+                                )),
+                            },
+                            // A row can be gone by the time the key arrives —
+                            // auto-refresh redraws every five seconds and
+                            // another terminal can finish the task in between.
+                            // Expected, so it is a line in the footer; anything
+                            // else ends the session as `Refresh` does.
+                            Err(e) if e.code == tasqx_core::ErrorCode::NotFound => {
+                                app.say(format!("#{id} is gone — r to refresh"));
+                            }
+                            Err(e) => {
+                                failed = Some(e);
+                                return Ok(());
+                            }
+                        }
+                    }
                     Some(a) => {
                         want = Some(a);
                         return Ok(());

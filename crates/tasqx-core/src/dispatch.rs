@@ -61,7 +61,11 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         false,
     ),
     ("task.list", &["filter", "sort", "limit", "fields"], false),
-    ("task.get", &["ref"], false),
+    (
+        "task.get",
+        &["ref", "annotations_limit", "annotations_offset"],
+        false,
+    ),
     // task.start/task.done also take the #12 correlation params: they are
     // stored in the start/done event payloads, the durable per-occurrence
     // record the async token-attribution engine reads later.
