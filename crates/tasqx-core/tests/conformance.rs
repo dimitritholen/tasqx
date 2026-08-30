@@ -493,10 +493,32 @@ const R_TASK_ADD: Shape = &[&[
 
 const R_TASK_LIST: Shape = &[&[
     req("count", Ty::Int),
+    // How many rows MATCHED, against `count`'s how many were RETURNED (D70).
+    // Under a limit those differ, and without this one a caller could not tell
+    // a complete list from a truncated one.
+    req("total", Ty::Int),
+    // Nullable rather than absent, exactly as `annotations_next_offset` is: a
+    // key that comes and goes makes every client branch on presence, and this
+    // one flips on the last page of every walk.
+    nul("next_offset", Ty::Int),
     req_of(
         "tasks",
         Ty::Array,
         &[TASK_CORE, TASK_LIVE_TIME, TASK_BLOCKED, TASK_STATUS_FLAG],
+    ),
+]];
+
+/// `task.list` under an explicit `fields`, which is the only way `depends_on`
+/// reaches a row. The envelope is the same; the row is exactly what was asked
+/// for, and nothing else.
+const R_TASK_LIST_PROJECTED: Shape = &[&[
+    req("count", Ty::Int),
+    req("total", Ty::Int),
+    nul("next_offset", Ty::Int),
+    req_of(
+        "tasks",
+        Ty::Array,
+        &[&[req("short_id", Ty::Int), req("depends_on", Ty::Array)]],
     ),
 ]];
 
@@ -540,7 +562,13 @@ const R_TASK_CANCEL: Shape = &[&[
     req("unblocked", Ty::Array),
 ]];
 
-const R_TASK_REOPEN: Shape = &[&[req("short_id", Ty::Int), req("status", Ty::Str)]];
+const R_TASK_REOPEN: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("status", Ty::Str),
+    // The inverse of `task.done`'s `unblocked` (D69): the open dependents this
+    // reopen put back into `blocked`. Always present, empty when none.
+    req("blocked", Ty::Array),
+]];
 
 const R_TAG_ADD: Shape = &[&[req("short_id", Ty::Int), req("tags", Ty::Array)]];
 
@@ -592,9 +620,17 @@ const R_MEMORY_ADD: Shape = &[&[
 const R_MEMORY_SEARCH: Shape = &[&[
     req("count", Ty::Int),
     req_of("hits", Ty::Array, &[MEMORY_HIT_ROW]),
+    // The FTS5 expression this search actually ran (D69), so `count: 0` can be
+    // told apart from a store that holds nothing on the subject.
+    req("matched", Ty::Str),
 ]];
 
 const R_MEMORY_REMOVE: Shape = &[&[req("id", Ty::Str), req("removed", Ty::Bool)]];
+
+/// One doc, whole. The same six columns `store.export` emits per doc, because
+/// they are the same row — a per-document read and a whole-store dump that
+/// disagreed about what a document IS would be two answers to one question.
+const R_MEMORY_GET: Shape = &[DOC_EXPORT_ROW];
 
 const IMPORTED_DOC_ROW: &[Field] = &[
     req("id", Ty::Str),
@@ -620,6 +656,10 @@ const SUMMARY_GROUP_ROW: &[Field] = &[
 const R_REPORT_SUMMARY: Shape = &[&[
     req_of("groups", Ty::Array, &[SUMMARY_GROUP_ROW]),
     req("generated", Ty::Str),
+    // The scope this total was taken over (D69). `generated` is the time of
+    // the call and was being read as the window boundary.
+    req("filter", Ty::Str),
+    req("all", Ty::Bool),
 ]];
 
 const R_STORE_EXPORT: Shape = &[&[
@@ -886,6 +926,29 @@ fn cases() -> Vec<Case> {
             R_TASK_LIST,
         ),
         case(
+            "task.list",
+            "a window: `offset` past the first row, with `next_offset` still set",
+            |e| {
+                rich_task(e);
+                plain_task(e);
+                e.task_add(&json!({ "title": "third" })).expect("add");
+                json!({ "sort": ["short_id"], "offset": 1, "limit": 1 })
+            },
+            R_TASK_LIST,
+        ),
+        case(
+            "task.list",
+            "`depends_on` projected, which is the only way it reaches a row",
+            |e| {
+                rich_task(e);
+                plain_task(e);
+                e.dependency_add(&json!({ "ref": 2, "depends_on": 1 }))
+                    .expect("dep");
+                json!({ "fields": ["short_id", "depends_on"] })
+            },
+            R_TASK_LIST_PROJECTED,
+        ),
+        case(
             "task.get",
             "a pending task with tags, a dependency, an annotation and a measurement",
             |e| {
@@ -988,9 +1051,12 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "task.reopen",
-            "done -> pending",
+            "done -> pending, with a dependent that goes back to blocked",
             |e| {
                 plain_task(e);
+                e.task_add(&json!({ "title": "dependent" })).expect("add");
+                e.dependency_add(&json!({ "ref": 2, "depends_on": 1 }))
+                    .expect("dep");
                 e.task_done(&json!({ "ref": 1 })).expect("done");
                 json!({ "ref": 1 })
             },
@@ -1095,6 +1161,21 @@ fn cases() -> Vec<Case> {
                 json!({ "query": "conformance", "limit": 10, "scope": "all", "raw": false })
             },
             R_MEMORY_SEARCH,
+        ),
+        case(
+            "memory.get",
+            "one doc, whole — the body a search hit only excerpts",
+            |e| {
+                let added = e
+                    .memory_add(&json!({
+                        "title": "the freeze",
+                        "body": "conformance is the contract of record",
+                        "source": "DESIGN.md",
+                    }))
+                    .expect("doc");
+                json!({ "id": added["id"] })
+            },
+            R_MEMORY_GET,
         ),
         case(
             "memory.remove",

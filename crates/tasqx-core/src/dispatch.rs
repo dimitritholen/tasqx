@@ -60,7 +60,11 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         ],
         false,
     ),
-    ("task.list", &["filter", "sort", "limit", "fields"], false),
+    (
+        "task.list",
+        &["filter", "sort", "limit", "offset", "fields"],
+        false,
+    ),
     (
         "task.get",
         &["ref", "annotations_limit", "annotations_offset"],
@@ -127,6 +131,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("dependency.remove", &["ref", "depends_on"], false),
     ("memory.add", &["title", "body", "source"], false),
     ("memory.search", &["query", "limit", "scope", "raw"], false),
+    ("memory.get", &["id"], false),
     ("memory.remove", &["id"], false),
     ("memory.import", &["docs"], false),
     // The D50 Decision 3 one-shot history repair. `dry_run` defaults to TRUE —
@@ -240,6 +245,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "dependency.remove" => engine.dependency_remove(params),
         "memory.add" => engine.memory_add(params),
         "memory.search" => engine.memory_search(params),
+        "memory.get" => engine.memory_get(params),
         "memory.remove" => engine.memory_remove(params),
         "memory.import" => engine.memory_import(params),
         "report.summary" => engine.report_summary(params),

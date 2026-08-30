@@ -149,6 +149,11 @@ impl Engine {
                 MEMORY_SCOPES.join(", ")
             )));
         }
+        // Echoed on the result (D69). Every word of a plain query becomes a
+        // required quoted phrase, so a thirteen-word question is thirteen AND
+        // terms and comes back `count: 0` — byte-identical to the answer for a
+        // subject nobody ever wrote down. The caller could not tell those two
+        // apart, and only one of them is worth retrying.
         let match_expr = if raw { query } else { phrase_escape(&query)? };
 
         // `bm25()` is aliased `score`, not `rank`: `rank` is a live column on
@@ -196,7 +201,79 @@ impl Engine {
             Err(e) => return Err(e.into()),
         };
 
-        Ok(json!({ "count": hits.len(), "hits": hits }))
+        Ok(json!({ "count": hits.len(), "hits": hits, "matched": match_expr }))
+    }
+
+    // ---- memory.get ----------------------------------------------------------
+
+    /// `memory.get` — read one knowledge document whole, by the `id`
+    /// `memory.search` printed.
+    ///
+    /// The subsystem could store prose and could not hand it back. A search hit
+    /// carries a `snippet()` excerpt — measured at 60 to 88 characters on real
+    /// documents — plus an id that no verb accepted, so a doc written over MCP
+    /// in the morning was, by the afternoon, findable and unreadable. Its
+    /// author had no route to it at all; a reader on the same machine had
+    /// `store.export`, which dumps every task, project and document in the
+    /// store to recover one of them, and which `UNEXPOSED_METHODS` withholds
+    /// from MCP for exactly that size. That table also already concedes the
+    /// client is elsewhere — it withholds `memory.import` because "the
+    /// filesystem the CLI reads is not the one an MCP client is on".
+    ///
+    /// This is D64's asymmetry one noun over. That entry fixed writing without
+    /// retracting; writing without reading was the other half, and a retrieval
+    /// surface whose whole value is that what it returns can be trusted is
+    /// worth nothing if what it returns is 8% of the document.
+    ///
+    /// **Docs only.** An annotation id is refused with the route that does
+    /// work rather than served here: annotations already have a read path
+    /// (`memory.search` names their task as `task:#<short_id>`, and `task.get`
+    /// returns the bodies), and a second spelling of a reachable behaviour is
+    /// the drift D30 warns about. The refusal names `task.get`, because an id
+    /// that is real and rejected with a bare "not found" is the worst of both.
+    pub fn memory_get(&self, p: &Value) -> Result<Value, ApiError> {
+        let id = req_str(p, "id")?;
+        let found = self
+            .conn
+            .query_row(
+                "SELECT id, source, title, body, created, modified FROM docs WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok(json!({
+                        "id": r.get::<_, String>(0)?,
+                        "source": r.get::<_, Option<String>>(1)?,
+                        "title": r.get::<_, String>(2)?,
+                        "body": r.get::<_, String>(3)?,
+                        "created": r.get::<_, String>(4)?,
+                        "modified": r.get::<_, String>(5)?,
+                    }))
+                },
+            )
+            .optional()?;
+        if let Some(doc) = found {
+            return Ok(doc);
+        }
+        // The id might be a real annotation, which `memory.search` returns
+        // alongside docs and which this method deliberately does not serve.
+        let annotation_task: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT t.short_id FROM annotations a JOIN tasks t ON t.id = a.task_id \
+                 WHERE a.id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Err(match annotation_task {
+            Some(short_id) => ApiError::not_found(
+                format!(
+                    "{id} is an annotation on task #{short_id}, not a memory doc — \
+                     read it with task.get on #{short_id}"
+                ),
+                Some(json!({ "id": id, "task": short_id })),
+            ),
+            None => ApiError::not_found(format!("no memory doc with id {id}"), None),
+        })
     }
 
     // ---- memory.remove -------------------------------------------------------

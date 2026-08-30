@@ -196,10 +196,20 @@ impl From<TaskCancelled> for Value {
 
 pub(super) struct TaskReopened {
     pub(super) short_id: i64,
+    /// short_ids of the open dependents this reopen put back into `blocked`.
+    ///
+    /// The inverse of [`TaskDone::unblocked`], and it exists for the same
+    /// reason: a caller that reopens a task has just changed which work is
+    /// actionable, and used to be told nothing about it (D69).
+    pub(super) blocked: Vec<i64>,
 }
 
 impl From<TaskReopened> for Value {
     fn from(result: TaskReopened) -> Self {
-        json!({ "short_id": result.short_id, "status": "pending" })
+        json!({
+            "short_id": result.short_id,
+            "status": "pending",
+            "blocked": result.blocked,
+        })
     }
 }

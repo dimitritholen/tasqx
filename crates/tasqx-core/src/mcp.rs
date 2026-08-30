@@ -15,7 +15,7 @@
 //! Transport (per the MCP stdio spec): newline-delimited JSON, one JSON object
 //! per line, on stdin/stdout. Logs go to stderr only.
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::dispatch::dispatch;
 use crate::engine::{
@@ -71,6 +71,23 @@ struct ToolSpec {
     name: &'static str,
     method: &'static str,
     write: bool,
+    /// Whether this call can destroy or overwrite information the store
+    /// already holds — the MCP `destructiveHint`, and the thing a host's
+    /// confirmation policy keys off (§7, D64).
+    ///
+    /// It is a per-tool fact and not `write` restated. Derived from the write
+    /// flag it said the same thing twice and therefore said nothing: creating
+    /// a task, appending an annotation and opening a timer carried the label
+    /// reserved for permanently deleting a memory doc, so an operator gating
+    /// on it gated all fourteen writes or none, and turned the gate off.
+    destructive: bool,
+    /// Whether repeating the call with identical arguments leaves the store in
+    /// the state one call left it in — the MCP `idempotentHint`.
+    ///
+    /// A refusal is not an effect: `tasqx_stop_timer` on an already-stopped
+    /// task conflicts and writes nothing, which is idempotent by this
+    /// definition. Reads are trivially true.
+    idempotent: bool,
     description: &'static str,
     schema: Value,
 }
@@ -114,6 +131,23 @@ const WHEN_GRAMMAR: &str = "Date/time in the tool's date grammar: \"tomorrow\", 
 /// small ones, so this number alone returned every one of them and bounded
 /// nothing.
 const ANNOTATION_PAGE: u64 = 20;
+
+/// How many tasks `tasqx_list_tasks` returns when the caller names no `limit`.
+///
+/// A STARTING page, not the answer: like [`ANNOTATION_PAGE`] it bounds rows,
+/// and rows are not the unit a client's limit is expressed in, so the response
+/// is then shrunk to fit [`RESPONSE_BUDGET_BYTES`] by bisection. Sized to be
+/// generous enough that an ordinary store never notices, because the byte fit
+/// is what actually holds.
+///
+/// The failure it exists to prevent, measured on a real store of 223 tasks:
+/// `tasqx_list_tasks {}` — the first call an agent makes, and the one the
+/// tool's own schema invites with "no filter means no filtering" — answered
+/// **180,412 bytes** in one block, past most clients' tool-output limit, with
+/// no elision and nothing saying anything had been large. This is the shape
+/// D63 fixed for `task.get`; `task.list`'s worst case is bigger and grows with
+/// the store rather than with one task's history.
+const LIST_PAGE: u64 = 100;
 
 /// The size a `tasqx_get_task` response is shrunk to fit, counting BOTH content
 /// blocks — the rendered view and the JSON behind it, which D49 ships together.
@@ -269,9 +303,32 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Tool arguments this server READS AND DOES NOT FORWARD, each with the reason
+/// it belongs to the transport rather than to the method.
+///
+/// §7's 1:1 mapping — the arguments object *is* the method's params — is what
+/// makes every tool answerable from `dispatch::PARAMS`, and D64 leaned on it
+/// when it declined to add a second identifying field to `tasqx_remove_memory`.
+/// This narrows it rather than abandoning it: an entry here names a property of
+/// the RESPONSE ENVELOPE, which is the transport's own subject and nothing the
+/// engine could answer, and `check_params` would refuse it as an unknown key if
+/// it were forwarded. Everything else still passes straight through.
+///
+/// The table exists so the narrowing cannot spread by accident. A guard asserts
+/// it against the schemas in both directions, so an argument added to a schema
+/// and not forwarded either lands here with an argument or reddens the build —
+/// the `UNEXPOSED_METHODS` move, applied to the other end of the same seam.
+const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[(
+    "tasqx_get_task",
+    "include_json",
+    "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
+)];
+
 /// The full §7 tool surface. Each entry maps 1:1 onto a core dispatch method;
 /// the tool `arguments` object is passed straight through as the method params
-/// (argument names are identical to the core param names by design).
+/// (argument names are identical to the core param names by design), except for
+/// the arguments listed in [`TRANSPORT_ONLY_ARGS`], which this server reads and
+/// consumes.
 fn tool_specs() -> Vec<ToolSpec> {
     vec![
         // ---- reads ----------------------------------------------------------
@@ -279,9 +336,14 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_list_tasks",
             method: "task.list",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "List tasks matching a filter-DSL query. The filter is \
                 the same grammar the CLI takes, e.g. \
-                \"project:work.tasqx status:pending +api due.before:tomorrow\".",
+                \"project:work.tasqx status:pending +api due.before:tomorrow\". \
+                Rows come back in pages: the response carries `count` (returned), `total` \
+                (matched) and `next_offset`, null once nothing is left. Project \
+                `depends_on` with `fields` to see what a blocked row is waiting on.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -307,7 +369,24 @@ fn tool_specs() -> Vec<ToolSpec> {
                     // own refusal for a negative limit says "send 0 or more".
                     // A schema that contradicts the sentence the engine prints
                     // denies an agent a call that works.
-                    "limit": { "type": "integer", "minimum": 0 },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": format!(
+                            "How many rows to return. Omit and this tool applies its own page \
+                             ({LIST_PAGE}), shrunk further if the response would exceed its byte \
+                             budget; the answer always carries `total` and a `next_offset` that \
+                             is null once nothing is left. A limit you name is answered exactly, \
+                             however large."
+                        )
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How many matching rows to skip. Pass the `next_offset` of \
+                             the previous response to walk the rest; ordering is stable across \
+                             pages, so a row is never shown twice or missed."
+                    },
                     "fields": {
                         "type": "array",
                         "items": { "type": "string", "enum": enum_of(TASK_FIELDS.iter().map(String::as_str)) },
@@ -320,6 +399,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_get_task",
             method: "task.get",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "Get one task's full detail: fields, tags, annotations, and \
                 dependencies. A long annotation history is returned newest-first in pages — \
                 the response always carries `annotations_total`, and `annotations_next_offset` \
@@ -340,6 +421,15 @@ fn tool_specs() -> Vec<ToolSpec> {
                              history."
                         )
                     },
+                    "include_json": {
+                        "type": "boolean",
+                        "description": "Send the machine-readable JSON block as well as the \
+                             rendered view. Default true. The two blocks are the same result \
+                             twice, so on a task whose bulk is annotation prose the JSON is \
+                             that prose again — measured at 54% of a 6.4 KB response for one \
+                             annotation, and 66% for a task read with `annotations_limit: 0`. \
+                             Send false when you are going to read the view."
+                    },
                     "annotations_offset": {
                         "type": "integer",
                         "minimum": 0,
@@ -356,6 +446,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_summary",
             method: "report.summary",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "Aggregate report grouped by project, status, or priority. Pure read, no side effects.",
             schema: json!({
                 "type": "object",
@@ -384,6 +476,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_list_projects",
             method: "project.list",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "List projects. By default excludes archived projects.",
             schema: json!({
                 "type": "object",
@@ -398,10 +492,16 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_search_memory",
             method: "memory.search",
             write: false,
+            destructive: false,
+            idempotent: true,
             description: "Search the memory store: imported docs/patterns and \
                 task annotations, bm25-ranked with snippets. Plain text queries \
                 are matched as phrases; set raw=true for FTS5 operator syntax \
-                (prefix*, AND/OR, column filters).",
+                (prefix*, AND/OR, column filters). A hit carries a short excerpt: \
+                read a doc whole with `tasqx_get_memory` on its `id`, and an \
+                annotation whole with `tasqx_get_task` on the task its `source` \
+                names. Every word of a plain query is REQUIRED, so `matched` on the \
+                result is what explains a zero-hit answer.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -427,9 +527,31 @@ fn tool_specs() -> Vec<ToolSpec> {
         },
         // ---- writes ---------------------------------------------------------
         ToolSpec {
+            name: "tasqx_get_memory",
+            method: "memory.get",
+            write: false,
+            destructive: false,
+            idempotent: true,
+            description: "Read one knowledge doc whole, by the `id` a search hit carries. \
+                `tasqx_search_memory` returns a short excerpt and this is how you get the rest; \
+                an annotation id is refused, naming the task to read it from instead.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The doc UUID, as printed by a search hit or by `tasqx_add_memory`."
+                    }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolSpec {
             name: "tasqx_add_task",
             method: "task.add",
             write: true,
+            destructive: false,
+            idempotent: false,
             description: "Create a new task. Returns its short_id, urgency and status — which \
                 is `backlog`, not `pending`, when `scheduled` or `wait` is in the future, and a \
                 backlog task is outside the `@working` set until that date passes.",
@@ -482,6 +604,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_modify_task",
             method: "task.modify",
             write: true,
+            destructive: true,
+            idempotent: false,
             description: "Change fields on a task via a `set` map. Pass expected_rev \
                 for optimistic concurrency (a stale rev yields a conflict instead of clobbering).",
             schema: json!({
@@ -501,6 +625,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_complete_task",
             method: "task.done",
             write: true,
+            destructive: true,
+            idempotent: false,
             description: "Mark a task done. Returns any tasks newly unblocked by its \
                 completion. Report the tokens this task cost via the *_tokens params — \
                 the caller is the only party that knows which task a turn's spend \
@@ -558,6 +684,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_reopen_task",
             method: "task.reopen",
             write: true,
+            destructive: true,
+            idempotent: false,
             // The inverse of the two closes an agent can reach: `task.done` has
             // its own tool and cancellation goes through `task.modify
             // status:cancelled` (§7). Both were reachable and neither could be
@@ -576,6 +704,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_start_timer",
             method: "task.start",
             write: true,
+            destructive: false,
+            idempotent: false,
             description: "Start the timer on a task (moves it to active). Correlation \
                 params (session_id, prompt_id, transcript_path, client) are recorded on \
                 the start event for token attribution.",
@@ -595,6 +725,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_stop_timer",
             method: "task.stop",
             write: true,
+            destructive: false,
+            idempotent: true,
             description: "Stop the timer on a task. Returns the tracked duration.",
             schema: json!({
                 "type": "object",
@@ -606,6 +738,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_tag_task",
             method: "tag.add",
             write: true,
+            destructive: false,
+            idempotent: true,
             description: "Add one or more tags to a task. Returns the resulting tag set.",
             schema: json!({
                 "type": "object",
@@ -620,6 +754,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_untag_task",
             method: "tag.remove",
             write: true,
+            destructive: true,
+            idempotent: true,
             description: "Remove one or more tags from a task. Returns the resulting tag set. \
                 Removing a tag the task does not carry is not an error.",
             schema: json!({
@@ -635,6 +771,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_annotate_task",
             method: "annotation.add",
             write: true,
+            destructive: false,
+            idempotent: false,
             description: "Attach a timestamped note to a task. The body is \
                 stored verbatim (newlines and markdown included), so this is \
                 where long-form context lives: acceptance criteria, links, \
@@ -652,6 +790,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_add_dependency",
             method: "dependency.add",
             write: true,
+            destructive: false,
+            idempotent: true,
             description: "Make one task depend on another: `ref` is blocked \
                 until `depends_on` is done or cancelled. Returns the resulting \
                 dependency list and blocked state. A cycle is refused as a \
@@ -672,6 +812,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_remove_dependency",
             method: "dependency.remove",
             write: true,
+            destructive: true,
+            idempotent: true,
             description: "Cut a dependency edge: `ref` stops waiting on `depends_on`. Returns \
                 the remaining dependency list and blocked state, so the answer says whether the \
                 task is actually actionable now or still waiting on something else.",
@@ -691,6 +833,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_add_memory",
             method: "memory.add",
             write: true,
+            destructive: false,
+            idempotent: false,
             description: "Store a knowledge document in memory: company \
                 patterns, documentation, decisions worth finding again. Body is \
                 stored verbatim (markdown fine) and becomes searchable via \
@@ -709,6 +853,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_remove_memory",
             method: "memory.remove",
             write: true,
+            destructive: true,
+            idempotent: true,
             // The permanence is stated because it is the one property of this
             // tool a caller cannot learn by trying: every other write reachable
             // through this server is either revertible or restatable, so an
@@ -738,6 +884,8 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_create_project",
             method: "project.create",
             write: true,
+            destructive: false,
+            idempotent: true,
             description: "Create a project. Returns its id and name.",
             schema: json!({
                 "type": "object",
@@ -931,6 +1079,47 @@ impl<'e> McpServer<'e> {
         // have read it that way since v1 was frozen — and the page size is
         // supplied HERE, where the payload limit actually lives. A caller that
         // names its own is respected as-is, including one asking for the lot.
+        // The same pattern for the collection reader, and for the same
+        // reason one relation over: `task.list` had no default bound at all,
+        // and the escape hatch it did have truncated silently — `count` was
+        // the number of rows RETURNED, with no total and no offset anywhere in
+        // the answer. The core still answers whole when asked; the page is
+        // supplied HERE, where the payload limit lives, and `total` /
+        // `next_offset` make what was left out both visible and reachable.
+        let mut paged_list_by_us = false;
+        if spec.method == "task.list" {
+            if let Some(obj) = args.as_object_mut() {
+                if !obj.contains_key("limit") {
+                    obj.insert("limit".to_string(), json!(LIST_PAGE));
+                    paged_list_by_us = true;
+                }
+            }
+        }
+
+        // Arguments this server READS AND DOES NOT FORWARD. The removal is
+        // driven by [`TRANSPORT_ONLY_ARGS`] rather than written out per key,
+        // so the table is load-bearing instead of a note beside the code: a
+        // listed argument is stripped whether or not anything below reads it,
+        // and `check_params` — which refuses any key the method does not
+        // accept — can never see one. Only the *meaning* is per-argument.
+        let mut consumed: Map<String, Value> = Map::new();
+        if let Some(obj) = args.as_object_mut() {
+            for (_, arg, _) in TRANSPORT_ONLY_ARGS
+                .iter()
+                .filter(|(tool, _, _)| *tool == spec.name)
+            {
+                if let Some(v) = obj.remove(*arg) {
+                    consumed.insert((*arg).to_string(), v);
+                }
+            }
+        }
+        // Default true: the second block has been there since D49 and a caller
+        // that says nothing gets what it has always got.
+        let include_json = consumed
+            .get("include_json")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+
         let mut paged_by_us = false;
         if spec.method == "task.get" {
             if let Some(obj) = args.as_object_mut() {
@@ -971,7 +1160,20 @@ impl<'e> McpServer<'e> {
                         // keeps `task_detail` pure and its golden tests stable.
                         now: jiff::Timestamp::now(),
                     };
+                    // No notice: `tool_ok_view_only` explains an omission the
+                    // caller did not choose, and here the caller chose it.
+                    // Saying "both blocks together exceeded this tool's
+                    // response budget" over a 400-byte answer is a false
+                    // sentence AND a bill — the notice is ~300 bytes, which on
+                    // a small task is most of what declining the duplicate was
+                    // meant to save.
+                    if !include_json {
+                        return tool_ok_text(&crate::markdown::task_detail(&result, &opts));
+                    }
                     return self.fit_to_budget(result, &args, &opts, paged_by_us);
+                }
+                if paged_list_by_us {
+                    return self.fit_list_to_budget(result, &args);
                 }
                 tool_ok(&result)
             }
@@ -1093,6 +1295,95 @@ impl<'e> McpServer<'e> {
         tool_ok_view_only(&best.unwrap_or(view))
     }
 
+    /// Fit a `task.list` response to [`RESPONSE_BUDGET_BYTES`] by re-cutting
+    /// the page this transport supplied.
+    ///
+    /// Only for a caller who named no `limit`. One that did is answered
+    /// exactly as asked, however large — the same rule `fit_to_budget` keeps
+    /// for `annotations_limit`, and for the same reason: a request
+    /// second-guessed is a caller who can never fetch a big page on purpose.
+    ///
+    /// # Why this re-cuts instead of re-dispatching
+    ///
+    /// `limit` is a *prefix* of a fully determined order — `compare_by` ends on
+    /// an unconditional `short_id`, so there are no ties left for a second
+    /// query to resolve differently. The `k`-row answer is therefore
+    /// byte-identical to what the engine would return for `limit: k`, and can
+    /// be produced by truncating the array already in hand. D66's bisection
+    /// re-dispatches because a `task.get` page is taken from the *newest* end
+    /// and a shorter page is not a prefix of a longer one; here it is. The
+    /// difference is worth the paragraph: the first version of this function
+    /// did re-dispatch, which is up to seven whole-store scans per call to
+    /// answer a question the first scan had already answered — invisible at
+    /// 233 tasks (re-measured warm, both versions land at the same 38 ms for
+    /// nine reads) and linear in the store from there. Re-cutting is not a
+    /// speed trick either way; it is the version whose answer is exact by
+    /// construction rather than by a second query agreeing with the first.
+    ///
+    /// `count` and `next_offset` are recomputed with the array, because a
+    /// shortened page whose own count still describes the long one is the
+    /// silent-drop shape this whole entry exists to remove. `total` is a
+    /// property of the filter and does not move.
+    ///
+    /// There is no notice block and there does not need to be one:
+    /// `task.list` answers `total` and `next_offset`, so a shortened response
+    /// states the elision in its own machine-readable shape and names the
+    /// offset that reaches the rest — where `task.get` had to say it in prose
+    /// because a rendered view has nowhere else to put it. That also keeps
+    /// this tool's single content block parseable as the frozen result, which
+    /// the conformance guard reads.
+    ///
+    /// The floor is one whole row: below it the only lever left is cutting a
+    /// task in half, and a row that stops mid-field is worse than an oversized
+    /// answer. `fields` is the caller's lever for a store whose single row
+    /// exceeds the budget, and the schema says so.
+    fn fit_list_to_budget(&self, first: Value, args: &Value) -> Value {
+        let size = |result: &Value| {
+            serde_json::to_string_pretty(result)
+                .map(|s| s.len())
+                .unwrap_or(0)
+        };
+        if size(&first) <= RESPONSE_BUDGET_BYTES {
+            return tool_ok(&first);
+        }
+
+        let Some(rows) = first.get("tasks").and_then(Value::as_array).cloned() else {
+            return tool_ok(&first);
+        };
+        let total = first.get("total").and_then(Value::as_u64).unwrap_or(0);
+        let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0);
+        let cut = |k: usize| -> Value {
+            let reached = offset + k as u64;
+            json!({
+                "count": k,
+                "total": total,
+                "next_offset": if reached < total { json!(reached) } else { Value::Null },
+                "tasks": rows[..k].to_vec(),
+            })
+        };
+
+        // Bisection rather than halving, for the reason D66 records: halving
+        // lands on a power-of-two fraction of the page and stops there, which
+        // on a store of few-and-enormous rows returns a fraction of what fits.
+        // Each candidate here is a serialization, not a query.
+        let (mut lo, mut hi) = (1usize, rows.len());
+        let mut best: Option<Value> = None;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let candidate = cut(mid);
+            if size(&candidate) <= RESPONSE_BUDGET_BYTES {
+                best = Some(candidate);
+                lo = mid + 1;
+            } else {
+                if mid == 1 {
+                    return tool_ok(&candidate);
+                }
+                hi = mid - 1;
+            }
+        }
+        tool_ok(&best.unwrap_or(first))
+    }
+
     /// The captured clientInfo as one display string, `"<name> <version>"`
     /// (or just the name when the version is absent/empty). `None` until a
     /// client introduces itself with a non-empty name — injecting an empty
@@ -1136,8 +1427,8 @@ fn tools_list(scope: Scope) -> Vec<Value> {
                 "annotations": {
                     "title": s.name,
                     "readOnlyHint": !s.write,
-                    "destructiveHint": s.write,
-                    "idempotentHint": false,
+                    "destructiveHint": s.destructive,
+                    "idempotentHint": s.idempotent,
                     "openWorldHint": false
                 }
             })
@@ -1196,6 +1487,15 @@ fn tool_ok_view_only(view: &str) -> Value {
     })
 }
 
+/// One text block, verbatim. The `task.get` view when the caller declined the
+/// JSON block, where there is no omission to explain.
+fn tool_ok_text(text: &str) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false
+    })
+}
+
 /// The view plus the omission notice, as one block — the exact bytes
 /// [`tool_ok_view_only`] sends.
 ///
@@ -1207,8 +1507,10 @@ fn tool_ok_view_only(view: &str) -> Value {
 fn view_only_text(view: &str) -> String {
     format!(
         "{view}\n_Machine-readable JSON omitted: both blocks together exceeded this tool's \
-         response budget, and the rendered view above carries the same annotations. Pass \
-         `annotations_limit` to get the JSON block back._\n"
+         response budget, and the rendered view above carries the same annotations. Naming \
+         `annotations_limit` returns both blocks **unbounded** — that is an opt-out of the \
+         budget, not a page within it, and on a long history it is several times this \
+         response. `include_json: false` keeps the budget and asks for this view on purpose._\n"
     )
 }
 
@@ -1789,13 +2091,57 @@ mod tests {
                 .collect();
             advertised.sort_unstable();
             let mut expected: Vec<&str> = accepted.to_vec();
+            expected.extend(
+                TRANSPORT_ONLY_ARGS
+                    .iter()
+                    .filter(|(tool, _, _)| *tool == spec.name)
+                    .map(|(_, arg, _)| *arg),
+            );
             expected.sort_unstable();
             assert_eq!(
                 advertised, expected,
                 "tool `{}` and {} disagree about the argument set: a property the method refuses \
                  fails every call that uses it, and a param the schema omits is a capability no \
-                 agent will ever discover",
+                 agent will ever discover. An argument this server consumes instead of \
+                 forwarding belongs in TRANSPORT_ONLY_ARGS, with the reason it is not the \
+                 method's business",
                 spec.name, spec.method
+            );
+        }
+    }
+
+    /// `TRANSPORT_ONLY_ARGS` is read in both directions, so neither half can
+    /// drift: an entry naming a tool or a property that no longer exists fails
+    /// here, exactly as `UNEXPOSED_METHODS` fails when a method it excuses gets
+    /// exposed after all. A reason under forty characters is refused for the
+    /// same reason it is there: a reason short enough to be a label is a label.
+    #[test]
+    fn every_transport_only_argument_is_real_and_argued_for() {
+        let specs = tool_specs();
+        for (tool, arg, why) in TRANSPORT_ONLY_ARGS {
+            let spec = specs
+                .iter()
+                .find(|s| s.name == *tool)
+                .unwrap_or_else(|| panic!("TRANSPORT_ONLY_ARGS names an unlisted tool `{tool}`"));
+            assert!(
+                spec.schema["properties"]
+                    .as_object()
+                    .expect("an object schema")
+                    .contains_key(*arg),
+                "`{tool}` no longer advertises `{arg}`, so this excuse is stale"
+            );
+            let (_, accepted, _) = crate::dispatch::PARAMS
+                .iter()
+                .find(|(m, _, _)| *m == spec.method)
+                .expect("a listed method");
+            assert!(
+                !accepted.contains(arg),
+                "`{arg}` IS a param of {} now — forward it and drop this entry",
+                spec.method
+            );
+            assert!(
+                why.len() >= 40,
+                "`{tool}.{arg}` needs a reason, not a label: {why:?}"
             );
         }
     }
