@@ -54,6 +54,15 @@ pub enum Action {
     List,
     /// Re-read the four results and rebuild the model.
     Refresh,
+    /// Fetch `task.get` for this short_id and hand it back through
+    /// [`App::show_detail`] — the lazy read D58 specified for the focused row
+    /// and never made.
+    ///
+    /// Served inside the event loop like [`Action::Refresh`], not on the way
+    /// out like [`Action::Pick`]: the overlay is drawn on the screen it belongs
+    /// to, so tearing the terminal down for it would flicker the whole
+    /// dashboard to show one card.
+    Detail(i64),
 }
 
 /// The screen's state. A pure state machine: keys in, intents out, no terminal.
@@ -68,7 +77,20 @@ pub struct App {
     focus: PanelId,
     /// Which slot member the analytics slot shows. Sticky across refreshes.
     slot: PanelId,
-    scroll: HashMap<PanelId, usize>,
+    /// Where the reader is in each panel, as a SELECTABLE-ROW index — never a
+    /// body-line index and never a scroll offset.
+    ///
+    /// It was a scroll offset, and a scroll offset has nothing to point at: the
+    /// content moved past the viewport with no row marked, so "where am I" had
+    /// no answer on the screen. Rows and not lines because `due_body` puts its
+    /// bucket names (`OVERDUE`, `TODAY`, …) and its `…N more` marker in the
+    /// same `Vec<Line>` as its tasks, and a cursor that can land on either is a
+    /// cursor `Enter` cannot use (D58).
+    ///
+    /// The offset that used to live here is now DERIVED, in `panels`, from this
+    /// index and the viewport — the state machine is still never told the
+    /// terminal's height.
+    cursor: HashMap<PanelId, usize>,
     /// What the last draw actually placed, fed back by the event loop.
     ///
     /// Data in, exactly like a key press. Without it Tab has dead stops: on the
@@ -79,6 +101,13 @@ pub struct App {
     window: usize,
     auto_refresh: bool,
     help: bool,
+    /// The open detail card, or nothing.
+    ///
+    /// State and not a flag, because the card is a fetch: the loop answers
+    /// [`Action::Detail`] by calling `task.get` and handing the result to
+    /// [`App::show_detail`]. Modal on the terms `?` established, and checked
+    /// beside `help` so the two cannot both be open.
+    detail: Option<model::TaskDetail>,
     /// One transient line, shown in the footer instead of the key hints.
     status: String,
 }
@@ -107,7 +136,7 @@ impl App {
             order,
             focus,
             slot,
-            scroll: HashMap::new(),
+            cursor: HashMap::new(),
             placed: Vec::new(),
             has_slot: false,
             window: WINDOW_CHOICES
@@ -116,6 +145,7 @@ impl App {
                 .unwrap_or(0),
             auto_refresh,
             help: false,
+            detail: None,
             status: String::new(),
         }
     }
@@ -180,11 +210,42 @@ impl App {
         WINDOW_CHOICES[self.window].1
     }
 
-    pub fn scroll_of(&self, id: PanelId) -> usize {
-        self.scroll.get(&id).copied().unwrap_or(0)
+    /// Where the reader is in `id`, clamped to the data as it stands NOW.
+    ///
+    /// Clamped on the way out and not on the way in, because the data can shrink
+    /// under a cursor that nobody touched: `replace` swaps the whole `Dashboard`
+    /// on every auto-refresh, and a task completed elsewhere shortens a panel.
+    /// A stored index is a claim about a list that no longer exists.
+    pub fn cursor_of(&self, id: PanelId) -> usize {
+        let stored = self.cursor.get(&id).copied().unwrap_or(0);
+        stored.min(self.rows_in(id).saturating_sub(1))
     }
 
-    /// Replace the data after a refresh, keeping focus, slot and scroll.
+    /// Open the detail overlay on a card the loop has fetched.
+    ///
+    /// The state machine asked for it ([`Action::Detail`]) and the loop did the
+    /// I/O — the same division `Refresh` runs on, and the reason this module
+    /// still touches no backend.
+    pub fn show_detail(&mut self, card: model::TaskDetail) {
+        self.detail = Some(card);
+    }
+
+    /// Tell the reader why the card they asked for never opened.
+    ///
+    /// A row can be gone by the time `⏎` reaches the store — auto-refresh redraws
+    /// every five seconds and another terminal can finish the task in between —
+    /// so a stale row is expected, not exceptional, and it is a message rather
+    /// than the end of the session.
+    pub fn say(&mut self, message: impl Into<String>) {
+        self.status = message.into();
+    }
+
+    #[cfg(test)]
+    pub fn detail_open(&self) -> bool {
+        self.detail.is_some()
+    }
+
+    /// Replace the data after a refresh, keeping focus, slot and cursor.
     ///
     /// A screen that jumped back to the top on every interval would be
     /// unreadable with auto-refresh on.
@@ -212,27 +273,16 @@ impl App {
             || (self.has_slot && PanelId::SLOT_MEMBERS.contains(&id) && self.order.contains(&id))
     }
 
-    /// How many rows the focused panel could scroll through.
+    /// How many rows the cursor can reach in `id` — [`model::row_count`], the
+    /// one count of selectable rows.
     ///
-    /// The panel's BODY LINES, which is what `panels` scrolls, and therefore
-    /// [`model::demand`] — not a second count of the same thing. It was one:
-    /// DUE counted its four tasks while its body is seven lines, because each
-    /// non-empty bucket spends a row on its name. `G` therefore stopped three
-    /// lines short of the end, on a panel still reading `…3 more` — a "jump to
-    /// the bottom" that does not.
-    ///
-    /// NOW and BURNDOWN are excluded rather than given a count: both draw a
-    /// fixed body that scrolling cannot reveal more of.
+    /// It used to be [`model::demand`], the count of body LINES, because the
+    /// thing being clamped was a scroll offset and lines are what scrolls. A
+    /// cursor is not an offset: DUE's body is twelve lines over eight tasks,
+    /// each non-empty bucket spending a row on its name, so a cursor clamped to
+    /// twelve walks four rows past its last task onto headings.
     fn rows_in(&self, id: PanelId) -> usize {
-        match id {
-            PanelId::Next
-            | PanelId::Blocked
-            | PanelId::Recent
-            | PanelId::Projects
-            | PanelId::Tokens
-            | PanelId::Due => model::demand(&self.dash, &[], id) as usize,
-            _ => 0,
-        }
+        model::row_count(&self.dash, id)
     }
 
     /// Point focus at `id`, and if it lives in the analytics slot, put it there.
@@ -276,8 +326,15 @@ impl App {
         //
         // Ctrl-C is the exception and is handled above: it is never "close the
         // overlay", it is always "close the program".
+        //
+        // The detail card is modal on exactly those terms, and is checked in
+        // the same place so the two can never be open at once.
         if self.help {
             self.help = false;
+            return None;
+        }
+        if self.detail.is_some() {
+            self.detail = None;
             return None;
         }
 
@@ -309,25 +366,25 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let max = self.rows_in(self.focus).saturating_sub(1);
-                let cur = self.scroll_of(self.focus);
-                self.scroll.insert(self.focus, (cur + 1).min(max));
+                let cur = self.cursor_of(self.focus);
+                self.cursor.insert(self.focus, (cur + 1).min(max));
                 None
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 // Saturating, not `- 1`: an underflow here panics inside a raw
                 // mode alt screen, where the message is wiped before it can be
                 // read.
-                let cur = self.scroll_of(self.focus);
-                self.scroll.insert(self.focus, cur.saturating_sub(1));
+                let cur = self.cursor_of(self.focus);
+                self.cursor.insert(self.focus, cur.saturating_sub(1));
                 None
             }
             KeyCode::Char('g') => {
-                self.scroll.insert(self.focus, 0);
+                self.cursor.insert(self.focus, 0);
                 None
             }
             KeyCode::Char('G') => {
                 let max = self.rows_in(self.focus).saturating_sub(1);
-                self.scroll.insert(self.focus, max);
+                self.cursor.insert(self.focus, max);
                 None
             }
             KeyCode::Char('r') => Some(Action::Refresh),
@@ -339,6 +396,19 @@ impl App {
                     "auto-refresh off".into()
                 };
                 None
+            }
+            KeyCode::Enter => {
+                match model::row_at(&self.dash, self.focus, self.cursor_of(self.focus)) {
+                    Some(t) => Some(Action::Detail(t.short_id)),
+                    // Named, not silent. A key that advertises itself in the footer
+                    // and then does nothing is this repository's recurring
+                    // silent-drop shape, and the digit refusals already answer the
+                    // same question the same way.
+                    None => {
+                        self.status = format!("{} has no row to open", self.focus.title());
+                        None
+                    }
+                }
             }
             KeyCode::Char('p') => Some(Action::Pick),
             KeyCode::Char('l') => Some(Action::List),
@@ -586,8 +656,13 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     }
     draw_status(&screen, app, theme, caps, frame);
     draw_footer(&screen, app, theme, caps, frame);
+    // `on_key` closes one before the other can open, so the order here settles
+    // nothing at runtime — it is written down so a future edit that breaks that
+    // invariant still draws one overlay rather than two overlapping boxes.
     if app.help {
         draw_help(area, theme, caps, frame);
+    } else if let Some(card) = &app.detail {
+        draw_detail(card, area, theme, caps, frame);
     }
 }
 
@@ -612,7 +687,12 @@ pub(crate) fn draw_panel(p: &Placement, app: &App, theme: &Theme, caps: &Caps, f
         &app.dash,
         inner.width,
         inner.height,
-        app.scroll_of(id),
+        panels::Cursor {
+            row: app.cursor_of(id),
+            // The rule already says which panel the keys act on; the glyph says
+            // which ROW. Drawn in eight panels at once it would say neither.
+            shown: id == app.focus,
+        },
         theme,
         caps,
     );
@@ -645,35 +725,54 @@ fn draw_footer(screen: &Screen, app: &App, theme: &Theme, caps: &Caps, frame: &m
             render::truncate(&t, width as usize, caps.unicode),
             accent,
         )),
-        None => {
-            // Eight hints do not fit in 56 cells, and a footer cut mid-word
-            // reads as a broken screen. The narrow rungs keep the three a
-            // reader cannot do without.
-            let hints: &[(&str, &str)] = match screen.rung {
-                model::Rung::Xs | model::Rung::S => &[("?", "help"), ("q", "quit"), ("p", "pick")],
-                _ => &[
-                    ("1-8", "panel"),
-                    ("tab", "cycle"),
-                    ("j/k", "scroll"),
-                    ("p", "pick"),
-                    ("l", "list"),
-                    ("r", "refresh"),
-                    ("?", "help"),
-                    ("q", "quit"),
-                ],
-            };
-            let mut spans = Vec::new();
-            for (k, what) in hints {
-                spans.push(Span::styled((*k).to_string(), accent));
-                spans.push(Span::styled(format!(" {what}   "), muted));
-            }
-            Line::from(spans)
-        }
+        None => Line::from(footer_spans(KEYS, width, accent, muted)),
     };
     frame.render_widget(
         Paragraph::new(line),
         Rect::new(1, screen.footer_y, width.saturating_sub(1), 1),
     );
+}
+
+/// The footer's spans: as many of `keys` as the width affords, lowest rank
+/// first, drawn in table order.
+///
+/// The width decides, not the rung. A rung match here would be the second list
+/// again in a different costume — and it made the wide footer a fixed eight
+/// even on a 200-column terminal with room for every one of them. What the rank
+/// buys is that the *narrow* end keeps `?`, `q` and `p`: the three a reader
+/// cannot do without, chosen by the table rather than by a literal beside it.
+///
+/// A hint is taken whole or not at all. A footer cut mid-word reads as a broken
+/// screen, which is why this measures before it pushes rather than truncating
+/// afterwards — the idiom `build_bar` established for the status line.
+fn footer_spans(keys: &[Key], width: u16, accent: RtStyle, muted: RtStyle) -> Vec<Span<'static>> {
+    let mut ranked: Vec<(usize, &Hint)> = keys
+        .iter()
+        .enumerate()
+        .filter_map(|(i, k)| k.footer.as_ref().map(|h| (i, h)))
+        .collect();
+    ranked.sort_by_key(|(_, h)| h.rank);
+
+    let mut budget = width as usize;
+    let mut taken: Vec<(usize, &Hint)> = Vec::new();
+    for (i, h) in ranked {
+        // The keys, a space, the word, and the three cells of gutter that
+        // separate this hint from the next one.
+        let need = render::width(h.keys) + 1 + render::width(h.word) + 3;
+        if need > budget {
+            continue;
+        }
+        budget -= need;
+        taken.push((i, h));
+    }
+    taken.sort_by_key(|(i, _)| *i);
+
+    let mut spans = Vec::new();
+    for (_, h) in taken {
+        spans.push(Span::styled(h.keys.to_string(), accent));
+        spans.push(Span::styled(format!(" {}   ", h.word), muted));
+    }
+    spans
 }
 
 /// The help overlay: every binding, from the one table that also drives the
@@ -686,20 +785,38 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         Line::from(Span::styled("tasqx dashboard".to_string(), header)),
         Line::from(Span::styled(String::new(), muted)),
     ];
-    for (k, what) in KEYS {
+    for k in KEYS {
         lines.push(Line::from(vec![
             // Width from the table itself: a hard-coded 10 fused
             // `tab / S-tab` (11 cells) into the description beside it.
-            Span::styled(format!("  {k:<width$}", width = key_column()), accent),
-            Span::styled((*what).to_string(), RtStyle::default()),
+            Span::styled(
+                format!("  {:<width$}", k.keys, width = key_column()),
+                accent,
+            ),
+            Span::styled(k.help.to_string(), RtStyle::default()),
         ]));
     }
     lines.push(Line::from(Span::styled(String::new(), muted)));
-    lines.push(Line::from(Span::styled(
-        "  any key closes this".to_string(),
-        muted,
-    )));
+    lines.push(Line::from(Span::styled(MODAL_FOOT.to_string(), muted)));
+    draw_overlay(lines, area, theme, caps, frame);
+}
 
+/// The last line of every modal, and the sentence its behaviour is held to.
+///
+/// A constant because it is a promise `on_key` keeps: any key closes, `ctrl-c`
+/// excepted, and nothing falls through to the screen behind. It was a lie once
+/// in both directions — only `?`, `q` and `esc` closed the help, and every
+/// other key acted on the dashboard underneath it.
+const MODAL_FOOT: &str = "  any key closes this";
+
+/// Draw `lines` as a centred, bordered box over `area`.
+///
+/// One frame for both overlays. It was written once for `?` and the detail card
+/// would have been the second copy — the same second-literal drift the footer
+/// was just rebuilt to end (D62), in the code that draws rather than in the code
+/// that lists.
+fn draw_overlay(lines: Vec<Line>, area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
+    let muted = rt_style(theme.role("muted"), caps);
     // Wide enough for the longest line it actually holds. A fixed width cut
     // `focus a panel (or place it in the analytics slot)` mid-word at EVERY
     // terminal size, so no window ever revealed the tail.
@@ -732,7 +849,10 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         muted,
     )));
     for l in lines {
-        let text = l.to_string();
+        // Cut to the box, not clipped by it: a card holds an annotation body
+        // nobody wrote to fit, and ratatui's own clip would lose the ellipsis
+        // that says something was cut.
+        let text = render::truncate(&l.to_string(), inner, caps.unicode);
         let pad = inner.saturating_sub(render::width(&text));
         framed.push(Line::from(vec![
             Span::styled(side.to_string(), muted),
@@ -747,26 +867,308 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(framed), rect);
 }
 
+/// The detail overlay: one `task.get`, and the `depends_on` that is the only
+/// answer BLOCKED has ever been able to give.
+fn draw_detail(
+    card: &model::TaskDetail,
+    area: Rect,
+    theme: &Theme,
+    caps: &Caps,
+    frame: &mut Frame,
+) {
+    let accent = rt_style(theme.role("accent"), caps);
+    let muted = rt_style(theme.role("muted"), caps);
+    let header = rt_style(theme.role("header"), caps);
+    let danger = rt_style(theme.role("danger"), caps);
+    let plain = RtStyle::default();
+    let dash = "—";
+
+    // The running marker is NOW's, reused rather than invented: one glyph means
+    // "the timer is on this" everywhere on the screen.
+    let running = if card.active_since.is_some() {
+        if caps.unicode {
+            "▶ "
+        } else {
+            "> "
+        }
+    } else {
+        ""
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            running.to_string(),
+            rt_style(theme.role("timer.active"), caps),
+        ),
+        Span::styled(format!("#{} ", card.short_id), accent),
+        Span::styled(card.title().to_string(), header),
+    ])];
+
+    let mut facts = vec![
+        card.project().unwrap_or(dash).to_string(),
+        card.status.as_str().to_string(),
+    ];
+    if let Some(p) = card.priority {
+        facts.push(p.as_str().to_string());
+    }
+    facts.push(format!("urgency {:.1}", card.urgency));
+    lines.push(Line::from(Span::styled(
+        format!("  {}", facts.join(" · ")),
+        muted,
+    )));
+
+    // The reason this overlay exists. It is drawn before the dates, and in
+    // `danger`, because a reader who pressed ⏎ on a BLOCKED row asked exactly
+    // one question.
+    if !card.depends_on().is_empty() {
+        let ids: Vec<String> = card.depends_on().iter().map(|n| format!("#{n}")).collect();
+        lines.push(Line::from(vec![
+            Span::styled("  blocked by ".to_string(), danger),
+            Span::styled(ids.join(" "), accent),
+        ]));
+    } else if card.blocked {
+        // `blocked` and no edges is not a contradiction to hide: D11 computes
+        // it, and a reader looking at a BLOCKED row deserves to be told the
+        // panel and the task disagree rather than shown a card with a gap.
+        lines.push(Line::from(Span::styled(
+            "  blocked, with no dependency recorded".to_string(),
+            danger,
+        )));
+    }
+
+    let when = |t: Option<jiff::Timestamp>| {
+        t.map(|t| t.to_zoned(jiff::tz::TimeZone::UTC).date().to_string())
+            .unwrap_or_else(|| dash.to_string())
+    };
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  due {}   scheduled {}   wait {}",
+            when(card.due),
+            when(card.scheduled),
+            when(card.wait)
+        ),
+        muted,
+    )));
+    let est = card
+        .estimate_secs
+        .map(panels::dur_compact)
+        .unwrap_or_else(|| dash.to_string());
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  est {est}   tracked {}",
+            panels::dur_compact(card.tracked_secs)
+        ),
+        muted,
+    )));
+    // `completed` where there is one, `modified` where there is not: a closed
+    // task's last edit is rarely the fact anybody wants, and an open task has no
+    // completion date to show. Both are on the card because both are on
+    // `task.get`, and a field fetched and never drawn is a field the reader was
+    // told nothing about.
+    let last = match card.completed {
+        Some(t) => format!("completed {}", when(Some(t))),
+        None => format!("modified {}", when(Some(card.modified))),
+    };
+    lines.push(Line::from(Span::styled(
+        format!("  created {}   {last}", when(Some(card.created))),
+        muted,
+    )));
+    if let Some(r) = card.recurrence() {
+        lines.push(Line::from(Span::styled(format!("  repeats {r}"), muted)));
+    }
+    if !card.tags().is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  tags ".to_string(), muted),
+            Span::styled(card.tags().join("  "), plain),
+        ]));
+    }
+
+    // Newest last, which is the order they were written and the order every
+    // other surface in this program prints them.
+    if !card.annotations().is_empty() {
+        lines.push(Line::from(Span::styled(String::new(), muted)));
+        for n in card.annotations() {
+            let stamp = n
+                .created
+                .map(|t| t.to_zoned(jiff::tz::TimeZone::UTC).date().to_string())
+                .unwrap_or_else(|| dash.to_string());
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {stamp}  "), muted),
+                Span::styled(n.body.clone(), plain),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(Span::styled(String::new(), muted)));
+    lines.push(Line::from(Span::styled(MODAL_FOOT.to_string(), muted)));
+    draw_overlay(lines, area, theme, caps, frame);
+}
+
 /// The width the help overlay's key column needs, derived rather than guessed.
 fn key_column() -> usize {
-    KEYS.iter().map(|(k, _)| k.len()).max().unwrap_or(8) + 1
+    KEYS.iter().map(|k| k.keys.len()).max().unwrap_or(8) + 1
 }
 
 /// Every binding, once. The help overlay renders from this, and a gate asserts
 /// the two agree — the docs-drift idiom, applied inside the TUI.
-pub const KEYS: &[(&str, &str)] = &[
-    ("1-8", "focus a panel (or place it in the analytics slot)"),
-    ("tab / S-tab", "next / previous panel"),
-    ("j / k", "scroll the focused panel"),
-    ("g / G", "jump to the top / bottom"),
-    ("r", "refresh now"),
-    ("R", "toggle auto-refresh"),
-    ("w", "cycle the burndown window"),
-    ("p", "pick a task and start it"),
-    ("l", "leave and print the task list"),
-    ("?", "this help"),
-    ("q / esc", "close"),
-    ("ctrl-c", "close, always"),
+/// One binding, in the ONE table the help overlay and the footer both read.
+///
+/// They used to be two. The overlay iterated `KEYS`; the footer built from a
+/// `hints` literal of its own, under a doc comment asserting the two "cannot
+/// drift". They had: `w`, `R`, `g`/`G` and `S-tab` were advertised nowhere but
+/// behind `?`, so the burndown window was a control the screen never mentioned
+/// and a reader who did not open the help had no way to learn it was there
+/// (D62). A second list of strings is a second path to the data, and this is
+/// that rule from `CLAUDE.md` applied to the key vocabulary.
+pub struct Key {
+    /// The binding as a reader types it, e.g. `"j / k"`. Parsed by the tests
+    /// that bind this table to `on_key`, so the shape is load-bearing: tokens
+    /// split on `/`, and anything that is not a single character or one of the
+    /// named non-`Char` keys makes them fail loudly rather than skip it.
+    pub keys: &'static str,
+    /// The overlay's line — a sentence, because the overlay has the room.
+    pub help: &'static str,
+    /// How the footer spells this binding, or `None` for one it deliberately
+    /// withholds.
+    ///
+    /// `ctrl-c` is the only `None`, because `q` already answers "how do I
+    /// leave" — an omission this table states rather than one the footer
+    /// arrives at by drifting.
+    pub footer: Option<Hint>,
+}
+
+/// A binding as the footer draws it: shorter than the overlay's spelling, and
+/// ranked, because a 56-column footer cannot hold eleven of them.
+pub struct Hint {
+    /// The keys the footer prints, which is not always the overlay's spelling.
+    /// `tab / S-tab` prints as `tab` and `q / esc` as `q` — the second half of
+    /// each is a variant of the first. `j / k` prints as `j/k` and `g / G` as
+    /// `g/G`, because there the second half is the other direction and a
+    /// footer naming one of a pair is a footer that has hidden the other.
+    pub keys: &'static str,
+    /// The word beside the keys. One word: the footer is a reminder, and the
+    /// sentence lives in `Key::help`.
+    pub word: &'static str,
+    /// Which hints survive a narrow footer — low numbers first. `?`, `q` and
+    /// `p` are ranked ahead of everything because they are the three a reader
+    /// cannot do without, which is the judgement the deleted `Rung::Xs` arm
+    /// used to carry as a literal.
+    pub rank: u8,
+}
+
+pub const KEYS: &[Key] = &[
+    Key {
+        keys: "1-8",
+        help: "focus a panel (or place it in the analytics slot)",
+        footer: Some(Hint {
+            keys: "1-8",
+            word: "panel",
+            rank: 4,
+        }),
+    },
+    Key {
+        keys: "tab / S-tab",
+        help: "next / previous panel",
+        footer: Some(Hint {
+            keys: "tab",
+            word: "cycle",
+            rank: 5,
+        }),
+    },
+    Key {
+        keys: "j / k",
+        help: "move the cursor in the focused panel",
+        footer: Some(Hint {
+            keys: "j/k",
+            word: "move",
+            rank: 6,
+        }),
+    },
+    Key {
+        keys: "g / G",
+        help: "cursor to the first / last row",
+        footer: Some(Hint {
+            keys: "g/G",
+            word: "ends",
+            rank: 10,
+        }),
+    },
+    Key {
+        keys: "r",
+        help: "refresh now",
+        footer: Some(Hint {
+            keys: "r",
+            word: "refresh",
+            rank: 7,
+        }),
+    },
+    Key {
+        keys: "R",
+        help: "toggle auto-refresh",
+        footer: Some(Hint {
+            keys: "R",
+            word: "auto",
+            rank: 11,
+        }),
+    },
+    Key {
+        keys: "w",
+        help: "cycle the burndown window",
+        footer: Some(Hint {
+            keys: "w",
+            word: "window",
+            rank: 9,
+        }),
+    },
+    Key {
+        keys: "enter",
+        help: "open the row under the cursor",
+        footer: Some(Hint {
+            keys: "enter",
+            word: "open",
+            rank: 3,
+        }),
+    },
+    Key {
+        keys: "p",
+        help: "pick a task and start it",
+        footer: Some(Hint {
+            keys: "p",
+            word: "pick",
+            rank: 2,
+        }),
+    },
+    Key {
+        keys: "l",
+        help: "leave and print the task list",
+        footer: Some(Hint {
+            keys: "l",
+            word: "list",
+            rank: 8,
+        }),
+    },
+    Key {
+        keys: "?",
+        help: "this help",
+        footer: Some(Hint {
+            keys: "?",
+            word: "help",
+            rank: 0,
+        }),
+    },
+    Key {
+        keys: "q / esc",
+        help: "close",
+        footer: Some(Hint {
+            keys: "q",
+            word: "close",
+            rank: 1,
+        }),
+    },
+    Key {
+        keys: "ctrl-c",
+        help: "close, always",
+        footer: None,
+    },
 ];
 
 #[cfg(test)]

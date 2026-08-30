@@ -362,7 +362,13 @@ impl Engine {
         // self-reported token usage are validated before the write lock,
         // exactly like every other parse-then-lock mutation.
         let correlation = commands::parse_correlation(p)?;
-        let usage = commands::parse_self_report(p)?.into_usage(&correlation)?;
+        let report = commands::parse_self_report(p)?;
+        // D65: `tool` and `model` are facts about the completion, kept whether
+        // or not the caller could also count tokens. Read off the report before
+        // it is consumed, because `into_usage` folds them into a measurement
+        // that only exists when a count was given.
+        let (named_tool, named_model) = (report.tool.clone(), report.model.clone());
+        let usage = report.into_usage(&correlation)?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
@@ -397,6 +403,17 @@ impl Engine {
         // event payload rather than on the task row.
         let mut done_payload = json!({ "completed": ts });
         correlation.apply(&mut done_payload);
+        // One rule, not two: what the caller named is on the event whether or
+        // not a measurement was written beside it. The measurement is the fact
+        // about spend; the event is the audit of the call. They can differ —
+        // the measurement's `tool` falls back to `client` and this does not —
+        // and that is not drift to reconcile: this key records what was said,
+        // the measurement records what was concluded.
+        for (key, value) in [("tool", &named_tool), ("model", &named_model)] {
+            if let Some(v) = value {
+                done_payload[key] = json!(v);
+            }
+        }
         // #13: a self-report is one measurement row in the SAME transaction,
         // echoed in this done event's payload — NOT a second `token.add`
         // event, because one mutation writes exactly one event (the invariant
@@ -428,13 +445,30 @@ impl Engine {
         // commit, so it can never leak into the done event — and it asserts
         // nothing about ownership or spend: whether tokens were spent at all
         // is exactly what nobody but the caller knows.
+        // D65: three states, and the response names which one it is. Saying
+        // only what is missing is what made the old refusal feel arbitrary —
+        // a caller who supplied everything it could observe was told, twice,
+        // about the one thing it could not.
         if usage.is_none() {
-            out["tokens_hint"] = json!(
+            let recorded: Vec<&str> = [("tool", &named_tool), ("model", &named_model)]
+                .into_iter()
+                .filter_map(|(k, v)| v.as_ref().map(|_| k))
+                .collect();
+            out["tokens_hint"] = json!(if recorded.is_empty() {
                 "no token counts were self-reported; log-parse attribution is \
                  a best-effort fallback — pass input_tokens/output_tokens/\
                  cache_read_tokens/cache_creation_tokens on completion for a \
                  reliable measurement"
-            );
+                    .to_string()
+            } else {
+                format!(
+                    "recorded {} on the completion event; no measurement was made because no \
+                     token count was given — log-parse attribution is a best-effort fallback, \
+                     and input_tokens/output_tokens/cache_read_tokens/cache_creation_tokens \
+                     make it a measurement",
+                    recorded.join(" and ")
+                )
+            });
         }
         Ok(out)
     }
@@ -1154,11 +1188,44 @@ impl Engine {
     }
 
     /// Annotations of a task as `[{id, body, created}]`, oldest first.
-    fn annotations_of(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, body, created FROM annotations WHERE task_id = ?1 ORDER BY created, id",
+    /// One page of a task's annotations, newest end first, plus how many there
+    /// are in total.
+    ///
+    /// `limit` is `None` for "all of them" — the JSON API answered `task.get`
+    /// whole from v1 onwards and may not start dropping rows on its own. The
+    /// window is taken from the RECENT end and the page is then reversed back
+    /// into chronological order, because the page is read as a history while
+    /// the interesting end of a long one is the near end.
+    ///
+    /// The ordering carries `id` as a tiebreak in BOTH directions. `created`
+    /// alone is not unique — several annotations can share a timestamp — and a
+    /// window whose tie order differs between two queries pages inconsistently:
+    /// a row is shown twice, or skipped, and the reader has no way to notice.
+    fn annotations_page(
+        &self,
+        task_id: &str,
+        limit: Option<u64>,
+        offset: u64,
+    ) -> Result<(Vec<Value>, u64), ApiError> {
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM annotations WHERE task_id = ?1",
+            params![task_id],
+            |r| r.get(0),
         )?;
-        let rows = stmt.query_map(params![task_id], |r| {
+        let total = total.max(0) as u64;
+        // SQLite reads a negative LIMIT as "no limit", which is how "all of
+        // them" and "the newest N" stay one query rather than two that could
+        // disagree about the ordering.
+        let sql_limit = match limit {
+            Some(n) => i64::try_from(n).unwrap_or(i64::MAX),
+            None => -1,
+        };
+        let sql_offset = i64::try_from(offset).unwrap_or(i64::MAX);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, body, created FROM annotations WHERE task_id = ?1 \
+             ORDER BY created DESC, id DESC LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = stmt.query_map(params![task_id, sql_limit, sql_offset], |r| {
             Ok(json!({
                 "id": r.get::<_, String>(0)?,
                 "body": r.get::<_, String>(1)?,
@@ -1169,16 +1236,52 @@ impl Engine {
         for r in rows {
             v.push(r?);
         }
-        Ok(v)
+        v.reverse();
+        Ok((v, total))
     }
 
     // ---- task.get ------------------------------------------------------------
 
-    /// `task.get` — one task in full. Param: `ref` (short_id or UUID). Adds the
-    /// four fields the row itself does not carry — `depends_on`, `annotations`,
-    /// `tokens`, `blocked` — and recomputes `urgency` for the same reason
-    /// `task.list` does.
+    /// `task.get` — one task in full. Params: `ref` (short_id or UUID),
+    /// `annotations_limit?`, `annotations_offset?`. Adds the four fields the row
+    /// itself does not carry — `depends_on`, `annotations`, `tokens`,
+    /// `blocked` — and recomputes `urgency` for the same reason `task.list`
+    /// does.
+    ///
+    /// # The history is pageable, and an elided one says so
+    ///
+    /// A task's annotations are unbounded and the tasks worth reading are the
+    /// ones that have most of them, so the richest history was the one a caller
+    /// with a payload limit could not fetch — and there was no smaller answer to
+    /// ask for. `annotations_limit` takes the newest N; `annotations_offset`
+    /// walks back from there.
+    ///
+    /// Both defaults keep the frozen v1 answer intact: absent `annotations_limit`
+    /// is every annotation, exactly what clients have read since the API was
+    /// declared stable. The bound belongs to the transport that has a payload
+    /// limit, and the MCP server supplies it there.
+    ///
+    /// `annotations_total` is present on every response, elided or not, because
+    /// a count only a truncated caller sees is a count nobody compares against.
+    /// `annotations_next_offset` is the offset that fetches the page behind this
+    /// one, and `null` once there is none — a next page that keeps being
+    /// advertised at the end of the history is a loop, not a hint.
     pub fn task_get(&self, p: &Value) -> Result<Value, ApiError> {
+        // One point in time for the whole detail. This response is assembled
+        // from six separate reads — the task row, its tags, its dependencies,
+        // its annotations, the count of those annotations, and its
+        // measurements — and without a snapshot a write landing between any two
+        // of them ships an answer that never existed. The pagination made that
+        // visible rather than theoretical: `annotations_total` and the page
+        // itself are two statements, so a concurrent `annotation.add` produced a
+        // total the rows disagreed with and an `annotations_next_offset`
+        // computed from both.
+        //
+        // DEFERRED, exactly as `store_export` does it and for the same reason
+        // (§2: concurrent readers never block) — the snapshot pins at the first
+        // read and holds without taking the write lock. Bound to a NAME: `let _`
+        // drops the guard on the spot and turns the whole thing into a no-op.
+        let _snapshot = self.conn.unchecked_transaction()?;
         let task = self.resolve_ref(p)?;
         let tags = task_tags(&self.conn, &task.id)?;
         let mut obj = task_to_json(&task, &tags);
@@ -1189,7 +1292,28 @@ impl Engine {
             &task.created
         ));
         obj["depends_on"] = json!(self.depends_on_short_ids(&task.id)?);
-        obj["annotations"] = json!(self.annotations_of(&task.id)?);
+
+        let limit = opt_u64(p, "annotations_limit")?;
+        let offset = opt_u64(p, "annotations_offset")?.unwrap_or(0);
+        let (annotations, total) = self.annotations_page(&task.id, limit, offset)?;
+        let returned = annotations.len() as u64;
+        obj["annotations"] = json!(annotations);
+        obj["annotations_total"] = json!(total);
+        // Echoed, not merely accepted. A page carries no evidence of where it
+        // sits: the rendered view assumed every page started at the newest
+        // annotation, so on the second page of ten it announced "newest first"
+        // and called all six missing rows older, while four of them were newer
+        // than anything on the page. A reader — human or model — cannot
+        // reconstruct the offset from the rows, and neither could the renderer.
+        obj["annotations_offset"] = json!(offset);
+        // An empty page never advertises a successor: past the end of the
+        // history `offset` would otherwise be handed straight back and the
+        // caller would page in place forever.
+        obj["annotations_next_offset"] = if returned > 0 && offset + returned < total {
+            json!(offset + returned)
+        } else {
+            Value::Null
+        };
         obj["tokens"] = json!(self.tokens_of(&task.id)?);
         obj["blocked"] = json!(self.is_blocked(&task.id)?);
         Ok(obj)
@@ -1309,6 +1433,195 @@ mod tests {
         e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
             .unwrap();
         e
+    }
+
+    /// One task carrying `n` annotations, bodies numbered so an assertion can
+    /// name which ones came back.
+    fn with_annotations(n: usize) -> Engine {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "long-running" })).unwrap();
+        for i in 0..n {
+            e.annotation_add(&json!({ "ref": 1, "body": format!("note {i}") }))
+                .unwrap();
+        }
+        e
+    }
+
+    /// A caller who knows the history is long must be able to ask for less of
+    /// it, and what they get must be the RECENT end.
+    ///
+    /// `task.get` had no bound of any kind: no limit, no offset, no
+    /// newest-first. An MCP client hit its tool-output limit on a real task
+    /// whose annotations had accumulated over five days and could not ask for a
+    /// smaller answer — the task with the richest history was the one the tool
+    /// could not return. Newest-first because in every use that hit this, the
+    /// recent annotations were the wanted ones and the oldest were the reason
+    /// the payload was large.
+    ///
+    /// The page itself stays in chronological order: it is read as a history,
+    /// and reversing it would make the rendered view disagree with every other
+    /// surface that prints annotations.
+    #[test]
+    fn task_get_returns_the_newest_annotations_when_a_limit_is_given() {
+        let e = with_annotations(10);
+        let out = e
+            .task_get(&json!({ "ref": 1, "annotations_limit": 3 }))
+            .unwrap();
+        let bodies: Vec<&str> = out["annotations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(bodies, ["note 7", "note 8", "note 9"]);
+        assert_eq!(out["annotations_total"], json!(10));
+    }
+
+    /// An offset walks BACKWARDS from the newest, so the caller pages into
+    /// history without having to know how much of it there is first.
+    #[test]
+    fn annotations_offset_pages_back_through_the_history() {
+        let e = with_annotations(10);
+        let out = e
+            .task_get(&json!({ "ref": 1, "annotations_limit": 3, "annotations_offset": 3 }))
+            .unwrap();
+        let bodies: Vec<&str> = out["annotations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(bodies, ["note 4", "note 5", "note 6"]);
+    }
+
+    /// Elision must be SAID, not merely done.
+    ///
+    /// Silent truncation is worse than the 58 KB payload it replaces: a reader
+    /// who cannot tell a short history from a trimmed one draws conclusions
+    /// from the half they were given. This project has paid for that shape
+    /// repeatedly — a field that drives behaviour and appears on no read
+    /// surface — so the response names the total and the offset that fetches
+    /// the next page, and stops naming a next page once there is none.
+    #[test]
+    fn an_elided_history_names_its_total_and_the_offset_that_continues_it() {
+        let e = with_annotations(10);
+        let first = e
+            .task_get(&json!({ "ref": 1, "annotations_limit": 4 }))
+            .unwrap();
+        assert_eq!(first["annotations_total"], json!(10));
+        assert_eq!(first["annotations_next_offset"], json!(4));
+
+        let last = e
+            .task_get(&json!({ "ref": 1, "annotations_limit": 4, "annotations_offset": 8 }))
+            .unwrap();
+        assert_eq!(last["annotations"].as_array().unwrap().len(), 2);
+        assert!(
+            last["annotations_next_offset"].is_null(),
+            "the oldest page must not advertise a page behind it"
+        );
+    }
+
+    /// Absent means ALL, and it must keep meaning that.
+    ///
+    /// The bound is transport policy, applied by the MCP server where the
+    /// payload limit lives (see `mcp::tools_call`); the JSON API itself may not
+    /// start dropping rows from an answer clients have been reading whole since
+    /// v1 was frozen. `0` therefore means zero rows, exactly as it does for
+    /// `task.list`'s `limit` — one sentinel spelling across the API.
+    #[test]
+    fn an_absent_limit_returns_the_whole_history_and_zero_returns_none() {
+        let e = with_annotations(10);
+        let all = e.task_get(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(all["annotations"].as_array().unwrap().len(), 10);
+        assert_eq!(all["annotations_total"], json!(10));
+        assert!(all["annotations_next_offset"].is_null());
+
+        let none = e
+            .task_get(&json!({ "ref": 1, "annotations_limit": 0 }))
+            .unwrap();
+        assert_eq!(none["annotations"].as_array().unwrap().len(), 0);
+        assert_eq!(none["annotations_total"], json!(10));
+    }
+
+    /// `task.get` must read every part of its answer from ONE snapshot.
+    ///
+    /// The response is assembled from six statements — the task row, tags,
+    /// dependencies, the annotation page, the count behind it, and the
+    /// measurements — and in WAL each takes its own snapshot, so a writer
+    /// committing between two of them ships an answer that never existed. The
+    /// pagination is what made it observable rather than theoretical:
+    /// `annotations_total` and the page are separate reads, so a concurrent
+    /// `annotation.add` yields a total the returned rows disagree with, and an
+    /// `annotations_next_offset` computed from both.
+    ///
+    /// Structural, for the same reason `store_export_opens_its_snapshot_before_the_first_read`
+    /// is: the interleaving point is inside SQLite and rusqlite's `hooks`
+    /// feature — the only way to drive a write from between two of our reads —
+    /// is not compiled in.
+    #[test]
+    fn task_get_opens_its_snapshot_before_the_first_read() {
+        let source = include_str!("task.rs");
+        // Assembled rather than written out: `dispatch`'s accepted-key guard
+        // splits this same source at every `fn NAME(`, so a marker spelled in
+        // full would register here as a second definition of the handler.
+        let marker = format!("pub fn {}(", "task_get");
+        let marker = marker.as_str();
+        let start = source.find(marker).expect("task_get exists");
+        let rest = &source[start..];
+        // BOTH visibilities, unlike the `store_export` scan: the next item after
+        // `task_get` is `pub fn task_cancel`, so a terminator of `\n    fn `
+        // alone runs the slice on into every later handler — and one of those
+        // opens a write transaction, which this guard then reports as a defect
+        // in a function that never had one.
+        let end = ["\n    pub fn ", "\n    fn "]
+            .iter()
+            .filter_map(|t| rest[marker.len()..].find(t))
+            .min()
+            .map(|offset| marker.len() + offset)
+            .unwrap_or(rest.len());
+        // Comments out: this function's prose names the constructor it does not
+        // use, and a scanner that cannot tell code from a comment would read
+        // that as the defect it warns about.
+        let body: String = rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = body.as_str();
+
+        let guard = body
+            .find("unchecked_transaction()")
+            .expect("task.get must open a transaction so its reads share one snapshot");
+        let first_read = body
+            .find("self.resolve_ref(p)")
+            .expect("task.get resolves the ref before anything else");
+        assert!(
+            guard < first_read,
+            "the snapshot pins at the first read, so the transaction must be opened before it"
+        );
+        assert!(
+            !body.contains("let _ = self.conn.unchecked_transaction"),
+            "a `_` binding drops the transaction on the spot, making the guard a no-op"
+        );
+        // DEFERRED, never IMMEDIATE: a reader that takes the write lock blocks
+        // every writer for its duration, which §2's "concurrent readers never
+        // block" forbids.
+        for forbidden in ["begin_mutation", "Immediate"] {
+            assert!(
+                !body.contains(forbidden),
+                "task.get is a read and must not take the write lock (`{forbidden}`)"
+            );
+        }
+    }
+
+    /// A negative page size is refused at the edge, not cast into a huge one.
+    #[test]
+    fn a_negative_annotations_limit_is_refused() {
+        let e = with_annotations(3);
+        let err = e
+            .task_get(&json!({ "ref": 1, "annotations_limit": -1 }))
+            .unwrap_err();
+        assert_eq!(err.code, crate::error::ErrorCode::BadRequest);
     }
 
     #[test]

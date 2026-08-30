@@ -40,7 +40,7 @@ Two kinds of knowledge, one search index:
 - **Docs** — things worth finding again independent of any task: decisions, conventions, runbooks, lessons learned. Store them with `tasqx_add_memory` (title, body, and a `source` — a path, URL, or ticket). When a project has relevant markdown lying around (ADRs, docs/, guides), feed the directory via the CLI: `tasqx memory import <dir>`. Import is not recursive — a directory means its own `*.md` files, so run it once per folder that holds docs. It is one transaction — a bad file imports nothing — and re-importing the same directory replaces docs from the same source instead of duplicating, so it's safe to re-run after the docs change.
 - **Annotations** — the automatic byproduct of step 4 above. You never add these to memory explicitly; completing tasks well is what builds this half of the index.
 
-Removal is CLI-only: `tasqx memory rm <id>`, using the id that search printed. The MCP deliberately has no remove tool.
+Wrote something that turned out to be wrong? Retract it with `tasqx_remove_memory` (D64), using the id search printed — or `tasqx memory rm <id>` from the shell. Do retract rather than filing a correction beside it: search ranks both and says nothing about which is true. The removal is **permanent** — `tasqx undo` does not cover memory documents and the body is not recoverable from the event log — so read the doc before removing it.
 
 ## Reporting
 

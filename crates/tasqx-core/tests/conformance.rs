@@ -358,6 +358,22 @@ const TASK_RELATIONS: &[Field] = &[
     req_of("annotations", Ty::Array, ANNOTATION),
 ];
 
+/// What `task.get` says about the history it did NOT return.
+///
+/// `annotations_total` is required, not optional, and present whether the page
+/// was elided or not: a count only a truncated caller sees is a count nobody can
+/// compare `annotations.len()` against, so "did I get all of it?" would stay
+/// unanswerable for exactly the client that needs to ask.
+///
+/// `annotations_next_offset` is nullable rather than absent for the same reason
+/// every other nullable key here is: a key that appears and disappears makes a
+/// client branch on presence, and this one flips on every read of the last page.
+const TASK_ANNOTATION_PAGE: &[Field] = &[
+    req("annotations_total", Ty::Int),
+    req("annotations_offset", Ty::Int),
+    nul("annotations_next_offset", Ty::Int),
+];
+
 const TASK_BLOCKED: &[Field] = &[req("blocked", Ty::Bool)];
 
 const TASK_TOKENS: &[Field] = &[req_of("tokens", Ty::Array, MEASUREMENT)];
@@ -488,6 +504,7 @@ const R_TASK_GET: Shape = &[
     TASK_CORE,
     TASK_LIVE_TIME,
     TASK_RELATIONS,
+    TASK_ANNOTATION_PAGE,
     TASK_TOKENS,
     TASK_BLOCKED,
     TASK_STATUS_FLAG,
@@ -1903,6 +1920,14 @@ fn tool_call_json(call: &Value, label: &str) -> Value {
     let content = call["content"].as_array().unwrap_or_else(|| {
         panic!("{label}: a CallToolResult carries a `content` array, got {call}")
     });
+    // The JSON block is the LAST one, and `tasqx_get_task` is now allowed to
+    // omit it: over the response budget, the transport spends the duplicate
+    // block before it spends annotations (D66). Every case in this file is
+    // small enough to stay under that budget and therefore still carries both
+    // blocks — which is what keeps this guard live rather than quietly
+    // checking a view. D56 pre-committed to saying so if that ever changed:
+    // a fixture that grows past the budget will land here as "does not parse",
+    // and the answer is to shrink the fixture, never to read a different block.
     let text = content
         .last()
         .and_then(|b| b.get("text"))
