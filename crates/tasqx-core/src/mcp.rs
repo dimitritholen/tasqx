@@ -98,6 +98,38 @@ fn enum_of(values: impl IntoIterator<Item = &'static str>) -> Value {
 const WHEN_GRAMMAR: &str = "Date/time in the tool's date grammar: \"tomorrow\", \
     \"friday\", \"2026-07-20\", \"in 3 days\", \"eom\", or \"2026-07-20T17:00\".";
 
+/// How many annotations `tasqx_get_task` returns when the caller names no page
+/// size.
+///
+/// Sized against the failure it exists to prevent rather than by taste: a task
+/// whose annotations had accumulated over five days of real work returned tens
+/// of kilobytes and exceeded an MCP client's tool-output limit. The regression
+/// test in `tests/mcp.rs` builds a history of that shape and asserts the whole
+/// response against a byte budget, so this number is answerable rather than
+/// merely chosen — re-run it before changing the value.
+///
+/// It bounds ROWS, and rows are not the unit the problem is expressed in, which
+/// is why [`RESPONSE_BUDGET_BYTES`] sits beside it: the task that produced the
+/// field report carried eleven enormous annotations rather than two hundred
+/// small ones, so this number alone returned every one of them and bounded
+/// nothing.
+const ANNOTATION_PAGE: u64 = 20;
+
+/// The size a `tasqx_get_task` response is shrunk to fit, counting BOTH content
+/// blocks — the rendered view and the JSON behind it, which D49 ships together.
+///
+/// Measured against the failure rather than chosen: the reported response was
+/// ~58 KB and exceeded a client's tool-output limit, and its JSON half alone
+/// measured ~29 KB on the live store. A budget under that half is what makes the
+/// first, uninstructed call fit, which matters because a client that hard-fails
+/// on an oversized result never gets to retry with a smaller page.
+///
+/// It is a budget, not a guarantee. A single annotation larger than this still
+/// exceeds it: the floor is one whole annotation, because truncating a body
+/// would hand the reader prose that stops mid-sentence with no marker, and a
+/// silently altered body is worse than a large one.
+const RESPONSE_BUDGET_BYTES: usize = 24_576;
+
 /// A date field's schema: what *this* field does, then the grammar every date
 /// field shares.
 ///
@@ -220,10 +252,35 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_get_task",
             method: "task.get",
             write: false,
-            description: "Get one task's full detail: fields, tags, annotations, and dependencies.",
+            description: "Get one task's full detail: fields, tags, annotations, and \
+                dependencies. A long annotation history is returned newest-first in pages — \
+                the response always carries `annotations_total`, and `annotations_next_offset` \
+                whenever older annotations were left out.",
             schema: json!({
                 "type": "object",
-                "properties": { "ref": ref_schema() },
+                "properties": {
+                    "ref": ref_schema(),
+                    "annotations_limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": format!(
+                            "How many of the MOST RECENT annotations to return. Omit and this \
+                             tool applies its own page size ({ANNOTATION_PAGE}), because an \
+                             unbounded history can exceed a client's tool-output limit; pass \
+                             `annotations_total` from a previous response to get every one. \
+                             0 returns none, which is how you read a task's fields without its \
+                             history."
+                        )
+                    },
+                    "annotations_offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How many annotations to skip, counted back from the \
+                            newest. Pass the `annotations_next_offset` of the previous response \
+                            to walk further into the history; that field is null once there is \
+                            nothing older."
+                    }
+                },
                 "required": ["ref"]
             }),
         },
@@ -380,9 +437,11 @@ fn tool_specs() -> Vec<ToolSpec> {
                 completion. Report the tokens this task cost via the *_tokens params — \
                 the caller is the only party that knows which task a turn's spend \
                 served, so self-report is the primary measurement channel; any present \
-                count records a measurement. Correlation params (session_id, prompt_id, \
-                transcript_path, client) are recorded on the completion event; without \
-                a self-report, log-parse attribution is a fallback that refuses \
+                count records a measurement. If you cannot observe your token spend, still \
+                send `tool` and `model` — they are recorded on the completion event without \
+                any count, and the response says what was recorded. Correlation params \
+                (session_id, prompt_id, transcript_path, client) land on that same event; \
+                without a self-report, log-parse attribution is a fallback that refuses \
                 samples claimed by more than one task's window.",
             // The token-count fields carry no `minimum`: the numeric-minimum
             // drift guard cannot probe a bound on a tool with required args,
@@ -394,14 +453,18 @@ fn tool_specs() -> Vec<ToolSpec> {
                     "ref": ref_schema(),
                     "tool": {
                         "type": "string",
-                        "description": "Self-report: the AI tool that spent the tokens, \
-                            free-form (e.g. \"claude-code\"). Defaults to `client` when \
-                            token counts are present."
+                        "description": "The AI tool doing the work, free-form (e.g. \
+                            \"claude-code\"). Recorded on the completion event on its own; \
+                            when token counts are present it also names the measurement, \
+                            defaulting to `client` if you omit it. You do NOT need a token \
+                            count to send it."
                     },
                     "model": {
                         "type": "string",
-                        "description": "Self-report: the model that spent the tokens, \
-                            e.g. \"claude-fable-5\"."
+                        "description": "The model doing the work, e.g. \"claude-opus-5\". \
+                            Recorded on the completion event on its own, and carried on the \
+                            measurement when token counts are present. You do NOT need a \
+                            token count to send it."
                     },
                     "input_tokens": {
                         "type": "integer",
@@ -520,6 +583,35 @@ fn tool_specs() -> Vec<ToolSpec> {
                     "source": { "type": "string", "description": "Where this came from: a path, URL, or ticket." }
                 },
                 "required": ["title", "body"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_remove_memory",
+            method: "memory.remove",
+            write: true,
+            // The permanence is stated because it is the one property of this
+            // tool a caller cannot learn by trying: every other write reachable
+            // through this server is either revertible or restatable, so an
+            // agent handed a delete with nothing said reads it as reversible.
+            // D54's `undo` covers task edits and deliberately not memory docs —
+            // the event log records that a doc went and does not carry its body,
+            // so there is nothing to put back.
+            description: "Remove one knowledge document from memory by id, the id \
+                tasqx_search_memory returns. Use it to retract something you wrote that turned \
+                out to be wrong — a correction written as a second document leaves both in the \
+                store, and search ranks them together with nothing to say which is true. The \
+                removal is permanent: `tasqx undo` does not cover memory documents, and the \
+                body is not recoverable from the event log.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The document's id, as tasqx_search_memory reports it \
+                            on a `doc` hit."
+                    }
+                },
+                "required": ["id"]
             }),
         },
         ToolSpec {
@@ -701,6 +793,24 @@ impl<'e> McpServer<'e> {
             }
         }
 
+        // The expected_rev pattern a third time, for the one field with no
+        // bound: a task's annotations are unbounded text, and the tasks worth
+        // reading are the ones that have the most of them, so `task.get`
+        // answered whole is how the richest history became the one this
+        // transport could not carry. The core keeps answering whole — clients
+        // have read it that way since v1 was frozen — and the page size is
+        // supplied HERE, where the payload limit actually lives. A caller that
+        // names its own is respected as-is, including one asking for the lot.
+        let mut paged_by_us = false;
+        if spec.method == "task.get" {
+            if let Some(obj) = args.as_object_mut() {
+                if !obj.contains_key("annotations_limit") {
+                    obj.insert("annotations_limit".to_string(), json!(ANNOTATION_PAGE));
+                    paged_by_us = true;
+                }
+            }
+        }
+
         // #12, the expected_rev pattern again: lifecycle calls are stamped
         // with the tool captured at initialize, so the start/done events name
         // who did the work even when the agent passes nothing. A caller that
@@ -731,10 +841,8 @@ impl<'e> McpServer<'e> {
                         // keeps `task_detail` pure and its golden tests stable.
                         now: jiff::Timestamp::now(),
                     };
-                    return tool_ok_with_view(
-                        crate::markdown::task_detail(&result, &opts),
-                        &result,
-                    );
+                    let (result, view) = self.fit_to_budget(result, &args, &opts, paged_by_us);
+                    return tool_ok_with_view(view, &result);
                 }
                 tool_ok(&result)
             }
@@ -746,6 +854,73 @@ impl<'e> McpServer<'e> {
                 tool_error(&code, e.message)
             }
         }
+    }
+
+    /// Halve the annotation page until the whole `task.get` response fits
+    /// [`RESPONSE_BUDGET_BYTES`], returning the result and its rendered view.
+    ///
+    /// Only for a caller who named no page size. An explicit `annotations_limit`
+    /// is returned untouched however large it is: a request second-guessed is a
+    /// caller who can never fetch a big page on purpose, and the whole point of
+    /// exposing the parameter is that the caller decides.
+    ///
+    /// Halving rather than estimating from the first response, because bodies
+    /// vary by orders of magnitude and a size-per-row extrapolated from the
+    /// newest annotations is wrong in exactly the case that matters. Five
+    /// dispatches is the worst case from the default page, each a read of one
+    /// task from a local store, and only ever on a task already large enough to
+    /// have failed outright before.
+    ///
+    /// The floor is one whole annotation: below that the only lever left is
+    /// cutting a body, and prose that stops mid-sentence with nothing marking
+    /// the cut is worse than an oversized answer. A task whose newest single
+    /// annotation exceeds the budget therefore still exceeds it — `0` is the
+    /// caller's own escape, and it is documented on the parameter.
+    fn fit_to_budget(
+        &self,
+        first: Value,
+        args: &Value,
+        opts: &crate::markdown::DetailOpts,
+        paged_by_us: bool,
+    ) -> (Value, String) {
+        let render = |result: &Value| crate::markdown::task_detail(result, opts);
+        let over = |result: &Value, view: &str| {
+            view.len()
+                + serde_json::to_string_pretty(result)
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+                > RESPONSE_BUDGET_BYTES
+        };
+
+        let mut view = render(&first);
+        if !paged_by_us || !over(&first, &view) {
+            return (first, view);
+        }
+
+        let mut result = first;
+        let mut limit = ANNOTATION_PAGE;
+        while limit > 1 {
+            limit /= 2;
+            let mut retry = args.clone();
+            match retry.as_object_mut() {
+                Some(obj) => obj.insert("annotations_limit".to_string(), json!(limit)),
+                // Unreachable for a real call — `args` is the tool's arguments
+                // object — and a fall-through beats a panic in a presentation
+                // path that must never make a working call look broken.
+                None => return (result, view),
+            };
+            let Ok(smaller) = dispatch(self.engine, "task.get", &retry) else {
+                return (result, view);
+            };
+            let smaller_view = render(&smaller);
+            let fits = !over(&smaller, &smaller_view);
+            result = smaller;
+            view = smaller_view;
+            if fits {
+                break;
+            }
+        }
+        (result, view)
     }
 
     /// The captured clientInfo as one display string, `"<name> <version>"`
@@ -1111,11 +1286,17 @@ mod tests {
     #[test]
     fn every_numeric_minimum_in_a_schema_is_the_engine_s_own_floor() {
         let e = engine();
+        // One real task, so a bound sitting behind a required `ref` is probed
+        // against a live row rather than against a `not_found` that would pass
+        // the "below the floor is refused" half for the wrong reason.
+        e.task_add(&json!({ "title": "probe" }))
+            .expect("seed a task");
         let mut probed = 0;
         for spec in tool_specs() {
-            let requires = spec.schema["required"]
+            let required: Vec<&str> = spec.schema["required"]
                 .as_array()
-                .is_some_and(|a| !a.is_empty());
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
             for (name, node) in spec.schema["properties"]
                 .as_object()
                 .expect("an object schema")
@@ -1123,21 +1304,38 @@ mod tests {
                 let Some(min) = node.get("minimum").and_then(Value::as_i64) else {
                     continue;
                 };
-                assert!(
-                    !requires,
-                    "tool `{}` bounds `{name}` at {min} but also has required arguments, so this \
-                     guard cannot probe the boundary with a one-key call",
-                    spec.name
-                );
+                // A bound behind a required argument is probed WITH that
+                // argument rather than skipped: a skip is how a guard goes
+                // vacuous with nothing to show for it. A required key this
+                // fixture has no value for still fails, loudly — that is a
+                // request to extend the fixture, not to drop the bound.
+                let mut call = serde_json::Map::new();
+                for key in &required {
+                    match *key {
+                        "ref" => {
+                            call.insert("ref".to_string(), json!(1));
+                        }
+                        other => panic!(
+                            "tool `{}` bounds `{name}` at {min} behind a required `{other}` this \
+                             guard has no fixture value for — give it one, do not skip the bound",
+                            spec.name
+                        ),
+                    }
+                }
+                let with = |v: Value| {
+                    let mut p = call.clone();
+                    p.insert(name.clone(), v);
+                    Value::Object(p)
+                };
                 probed += 1;
                 assert!(
-                    dispatch(&e, spec.method, &json!({ name.as_str(): min })).is_ok(),
+                    dispatch(&e, spec.method, &with(json!(min))).is_ok(),
                     "schema says `{}`.{name} accepts {min}; the engine refuses it",
                     spec.name
                 );
                 let below = min - 1;
                 assert!(
-                    dispatch(&e, spec.method, &json!({ name.as_str(): below })).is_err(),
+                    dispatch(&e, spec.method, &with(json!(below))).is_err(),
                     "schema forbids `{}`.{name} below {min}, but the engine accepts {below} — an \
                      agent is denied a call that works",
                     spec.name

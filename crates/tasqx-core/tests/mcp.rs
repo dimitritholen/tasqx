@@ -81,12 +81,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 15 tools present, each with an inputSchema.
+    // 3. tools/list — all 16 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 15, "expected 15 tools");
+    assert_eq!(tools.len(), 16, "expected 16 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -103,6 +103,7 @@ fn full_protocol_sequence() {
         "tasqx_annotate_task",
         "tasqx_add_dependency",
         "tasqx_add_memory",
+        "tasqx_remove_memory",
         "tasqx_create_project",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
@@ -720,4 +721,366 @@ fn scope_is_a_capability_choice_not_a_credential() {
     assert_eq!(Scope::Write.as_str(), "write");
     assert!(!Scope::Read.allows_write());
     assert!(Scope::Write.allows_write());
+}
+
+// ---- the annotation history is bounded on the way out ------------------------
+
+/// A task whose history is long enough to have been the problem.
+fn task_with_annotations(engine: &Engine, n: usize) {
+    engine
+        .task_add(&json!({ "title": "a task worth reading" }))
+        .expect("add");
+    for i in 0..n {
+        engine
+            .annotation_add(&json!({
+                "ref": 1,
+                "body": format!("### Step {i}\n\nWhat was decided, why, and what it cost — a body \
+                    of roughly the size the annotations in this project actually reach when a \
+                    task is worked over several days.\n"),
+            }))
+            .expect("annotate");
+    }
+}
+
+/// `tasqx_get_task` must not hand back a payload no client can accept.
+///
+/// The reported failure: a real feature task with five days of annotations
+/// returned ~58 KB and blew through an MCP client's tool-output limit, so the
+/// task with the richest history was the one the tool could not return. The
+/// core answers `task.get` whole on purpose — the JSON API has read that way
+/// since v1 was frozen — so the bound belongs HERE, at the transport that has
+/// the limit, alongside the two defaults `tools_call` already supplies
+/// (`expected_rev` and `client`).
+///
+/// The budget is a row count, not a byte cap: bodies are unbounded text and no
+/// page size can promise bytes. What this asserts is that a realistically sized
+/// history of the length that caused the report now fits.
+#[test]
+fn get_task_bounds_a_long_history_when_the_caller_names_no_page_size() {
+    let engine = engine();
+    task_with_annotations(&engine, 200);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    assert!(!is_error(&out));
+    let json = tool_json(&out);
+    assert_eq!(json["annotations_total"], json!(200));
+    let returned = json["annotations"].as_array().expect("annotations").len();
+    assert!(
+        returned < 200,
+        "an unbounded default is the defect: {returned} annotations came back"
+    );
+    assert!(
+        json["annotations_next_offset"].as_u64().is_some(),
+        "an elided history must name the offset that continues it, or the rest is unreachable"
+    );
+
+    let bytes: usize = out["result"]["content"]
+        .as_array()
+        .expect("content blocks")
+        .iter()
+        .map(|b| b["text"].as_str().unwrap_or("").len())
+        .sum();
+    assert!(
+        bytes < 32_768,
+        "the whole response is {bytes} bytes; the report's 58 KB is what this bound exists to \
+         prevent"
+    );
+}
+
+/// A caller that names its own page size keeps it, and can still ask for
+/// everything — the same "explicit wins" rule `expected_rev` and `client` follow.
+#[test]
+fn an_explicit_annotations_limit_overrides_the_transport_default() {
+    let engine = engine();
+    task_with_annotations(&engine, 40);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let three = tool_json(&call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "annotations_limit": 3 }),
+    ));
+    assert_eq!(three["annotations"].as_array().unwrap().len(), 3);
+
+    let all = tool_json(&call(
+        &server,
+        2,
+        "tasqx_get_task",
+        json!({ "ref": 1, "annotations_limit": 40 }),
+    ));
+    assert_eq!(all["annotations"].as_array().unwrap().len(), 40);
+    assert!(all["annotations_next_offset"].is_null());
+}
+
+/// A short history is returned whole and says nothing about paging — the bound
+/// must not turn every task into a paginated one.
+#[test]
+fn a_short_history_is_returned_whole_and_advertises_no_next_page() {
+    let engine = engine();
+    task_with_annotations(&engine, 2);
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let json = tool_json(&call(&server, 1, "tasqx_get_task", json!({ "ref": 1 })));
+    assert_eq!(json["annotations"].as_array().unwrap().len(), 2);
+    assert_eq!(json["annotations_total"], json!(2));
+    assert!(json["annotations_next_offset"].is_null());
+}
+
+/// The shape the field report actually hit: FEW annotations, each enormous.
+///
+/// A row count cannot bound this and the first version of the fix did not. The
+/// task that blew the client's limit carried eleven bodies, not two hundred, so
+/// a page size of twenty returned every one of them and changed nothing —
+/// measured on the live store at 29 KB of JSON, doubled by the D49 two-block
+/// response. The bound has to be measured in the unit the limit is expressed
+/// in.
+#[test]
+fn get_task_shrinks_its_page_until_the_response_fits_the_budget() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "eleven very long notes" }))
+        .expect("add");
+    // ~6 KB each: eleven of them is the reported payload, and no row count
+    // short of one gets under a budget on its own.
+    let body = "detail ".repeat(900);
+    for i in 0..11 {
+        engine
+            .annotation_add(&json!({ "ref": 1, "body": format!("## Note {i}\n\n{body}\n") }))
+            .expect("annotate");
+    }
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    assert!(!is_error(&out));
+    let bytes: usize = out["result"]["content"]
+        .as_array()
+        .expect("content blocks")
+        .iter()
+        .map(|b| b["text"].as_str().unwrap_or("").len())
+        .sum();
+    assert!(
+        bytes < 24_576,
+        "the response is {bytes} bytes: a page of twenty returns all eleven of these, so a row \
+         count alone never bounded the case that was reported"
+    );
+
+    let json = tool_json(&out);
+    assert_eq!(json["annotations_total"], json!(11));
+    assert!(
+        json["annotations_next_offset"].as_u64().is_some(),
+        "a response shrunk to fit must still say how to reach what it left out"
+    );
+    let returned = json["annotations"].as_array().expect("annotations").len();
+    assert!(
+        (1..11).contains(&returned),
+        "expected a shrunk page, got {returned} of 11"
+    );
+}
+
+/// Shrinking is for the caller who named no page size. One who did gets exactly
+/// what they asked for, over budget or not — an explicit request second-guessed
+/// is a caller who can never fetch a big page on purpose.
+#[test]
+fn an_explicit_limit_is_never_shrunk_to_fit() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "big" })).expect("add");
+    let body = "detail ".repeat(900);
+    for i in 0..11 {
+        engine
+            .annotation_add(&json!({ "ref": 1, "body": format!("## Note {i}\n\n{body}\n") }))
+            .expect("annotate");
+    }
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let json = tool_json(&call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "annotations_limit": 11 }),
+    ));
+    assert_eq!(json["annotations"].as_array().unwrap().len(), 11);
+    assert!(json["annotations_next_offset"].is_null());
+}
+
+// ---- memory removal reaches the agent that wrote the memory ------------------
+
+/// An agent that writes a wrong memory must be able to take it back.
+///
+/// The field report: a memory asserting three skills had been archived turned
+/// out to be wrong for one of them twenty minutes later, and with no remove tool
+/// the only available repair was to write a SECOND memory contradicting the
+/// first. Both then sit in the store, `memory.search` returns both bm25-ranked
+/// with no recency weighting and no supersession relation, and the next reader
+/// gets a true document and a false one with no signal which is which. Writing
+/// is not a correctness feature on its own; writing plus retracting is.
+#[test]
+fn remove_memory_retracts_a_doc_the_agent_wrote() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let added = tool_text(&call(
+        &server,
+        1,
+        "tasqx_add_memory",
+        json!({ "title": "wrong claim", "body": "three skills were archived" }),
+    ));
+    let id = added["id"].as_str().expect("the new doc's id").to_string();
+
+    let found = tool_text(&call(
+        &server,
+        2,
+        "tasqx_search_memory",
+        json!({ "query": "three skills were archived" }),
+    ));
+    assert_eq!(found["count"], json!(1), "the doc must be findable first");
+
+    let removed = call(&server, 3, "tasqx_remove_memory", json!({ "id": id }));
+    assert!(!is_error(&removed));
+    assert_eq!(tool_text(&removed)["removed"], json!(true));
+
+    let gone = tool_text(&call(
+        &server,
+        4,
+        "tasqx_search_memory",
+        json!({ "query": "three skills were archived" }),
+    ));
+    assert_eq!(
+        gone["count"],
+        json!(0),
+        "a retracted memory that search still returns is the failure this closes"
+    );
+}
+
+/// Removing an id that is not there is `not_found`, not a silent success: an
+/// agent told "removed" about a doc still in the store would stop trying.
+#[test]
+fn removing_an_unknown_memory_id_is_not_found() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let out = call(
+        &server,
+        1,
+        "tasqx_remove_memory",
+        json!({ "id": "019f6a1f-0000-0000-0000-000000000000" }),
+    );
+    assert!(is_error(&out));
+}
+
+/// The removal is a write, and a read-only server refuses it before the engine
+/// is touched — the same fence `tasqx_add_memory` sits behind.
+#[test]
+fn remove_memory_is_write_scoped() {
+    let engine = engine();
+    let added = engine
+        .memory_add(&json!({ "title": "kept", "body": "not going anywhere" }))
+        .expect("doc");
+    let server = McpServer::new(&engine, Scope::Read);
+
+    let out = call(
+        &server,
+        1,
+        "tasqx_remove_memory",
+        json!({ "id": added["id"] }),
+    );
+    assert!(is_error(&out));
+    let still_there = engine
+        .memory_search(&json!({ "query": "not going anywhere" }))
+        .expect("search");
+    assert_eq!(still_there["count"], json!(1));
+}
+
+/// The one claim on this tool that a caller cannot discover by trying: the
+/// removal is permanent.
+///
+/// `tasqx undo` (D54) covers task edits and deliberately not memory docs — the
+/// event log records that a doc was removed and does not carry its body, so
+/// there is nothing to put back. A human at the CLI re-states a note they wrote;
+/// an agent handed a delete with no mention of that reads it as reversible,
+/// because every other write it can reach through this server is.
+#[test]
+fn the_removal_tool_says_the_removal_cannot_be_undone() {
+    let roster = tasqx_core::mcp::tool_roster();
+    assert!(
+        roster
+            .iter()
+            .any(|(n, write)| *n == "tasqx_remove_memory" && *write),
+        "the removal tool must ship as a write tool"
+    );
+    let listed = McpServer::new(&engine(), Scope::Write)
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .find(|t| t["name"] == "tasqx_remove_memory")
+        .expect("the removal tool is listed");
+    let description = tool["description"].as_str().expect("a description");
+    assert!(
+        description.contains("permanent"),
+        "the description must say the removal is permanent, got: {description}"
+    );
+    assert!(
+        description.contains("undo"),
+        "the description must name `undo` as the thing that does NOT cover it, got: {description}"
+    );
+    assert_eq!(
+        tool["annotations"]["destructiveHint"],
+        json!(true),
+        "the host's confirmation gate is the safeguard here (DESIGN §7), so the hint that \
+         triggers it may not be false"
+    );
+}
+
+/// The reported failure, through the tool an agent actually calls.
+///
+/// Completing #207 with `model`, `tool` and `session_id` — all documented
+/// optional — was refused, and the retry that succeeded dropped `model` and
+/// `tool`, so the store recorded that completion with neither. An agent
+/// generally cannot observe its own token spend: no harness hands the model a
+/// running count. The old coupling therefore demanded a number the caller
+/// cannot see in exchange for recording the two facts it can.
+#[test]
+fn complete_task_records_tool_and_model_without_token_counts() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    engine
+        .task_add(&json!({ "title": "attributed work" }))
+        .expect("add");
+
+    let out = call(
+        &server,
+        1,
+        "tasqx_complete_task",
+        json!({ "ref": 1, "tool": "claude-code", "model": "claude-opus-5",
+                "session_id": "sess-1" }),
+    );
+    assert!(
+        !is_error(&out),
+        "a completion naming its tool and model must not be refused: {:?}",
+        tool_text(&out)
+    );
+    let hint = tool_text(&out)["tokens_hint"]
+        .as_str()
+        .expect("a hint")
+        .to_string();
+    assert!(
+        hint.contains("recorded") && hint.contains("tool") && hint.contains("model"),
+        "the response must name what it recorded: {hint}"
+    );
+
+    let events = engine
+        .event_list(&json!({ "limit": 50 }))
+        .expect("event.list");
+    let done = events["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .find(|e| e["op"] == "done")
+        .expect("a done event");
+    assert_eq!(done["payload"]["tool"], json!("claude-code"));
+    assert_eq!(done["payload"]["model"], json!("claude-opus-5"));
+    assert_eq!(done["payload"]["session_id"], json!("sess-1"));
 }

@@ -472,17 +472,65 @@ fn task_done_token_counts_without_any_attribution_are_refused() {
     assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 0);
 }
 
-/// `tool`/`model` without a single count would change nothing — refused
-/// rather than silently ignored (the D33 rule).
+/// `tool` and `model` are recorded without a token count, not refused.
+///
+/// They used to be refused, on the D33 rule that a value changing nothing must
+/// not answer `ok` — and while they were dropped on the floor, that was right.
+/// The rule was applied to the wrong half: the fix is to make the value change
+/// something. **An agent does not know its own token spend** — no harness hands
+/// the model a running count — so the refusal read "supply a number you cannot
+/// observe, or forfeit recording the tool and model you can". Callers took the
+/// second option, and the store filled with completions attributed to nobody.
+///
+/// No measurement is written: a zero-count `token_usage` row would be a phantom
+/// measurement that every later sum counts as real, which is worse than none.
+/// The facts land on the completion event beside the correlation keys, where
+/// the attribution pipeline already looks.
 #[test]
-fn task_done_tool_without_counts_is_refused() {
+fn task_done_records_tool_and_model_without_any_count() {
     let e = engine();
     let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
-    let err = e
-        .task_done(&json!({ "ref": sid, "tool": "cursor" }))
-        .unwrap_err();
-    assert_eq!(err.code, ErrorCode::BadRequest);
-    assert!(err.message.contains("tool"), "{}", err.message);
+    let out = e
+        .task_done(&json!({ "ref": sid, "tool": "cursor", "model": "claude-opus-5" }))
+        .expect("a completion that names its tool must not be refused");
+
+    assert_eq!(
+        count(&e, "SELECT COUNT(*) FROM token_usage"),
+        0,
+        "no counts were given, so a measurement here would be invented"
+    );
+    let payload = event_payload(&e, "done");
+    assert_eq!(payload["tool"], json!("cursor"));
+    assert_eq!(payload["model"], json!("claude-opus-5"));
+    assert!(
+        payload.get("tokens").is_none(),
+        "the `tokens` key means a measurement was made; nothing was measured"
+    );
+    let hint = out["tokens_hint"].as_str().expect("a hint");
+    assert!(
+        hint.contains("recorded"),
+        "the response must say what WAS recorded, not only what was missing: {hint}"
+    );
+}
+
+/// One rule, not two: what the caller named is on the event whether or not a
+/// measurement was also written. The measurement is the fact; the event is the
+/// audit of the call, and a caller who names a tool has said something about
+/// the call either way.
+#[test]
+fn the_event_names_the_tool_and_model_alongside_a_measurement_too() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({
+        "ref": sid, "tool": "cursor", "model": "claude-opus-5", "input_tokens": 12
+    }))
+    .expect("done");
+
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 1);
+    let payload = event_payload(&e, "done");
+    assert_eq!(payload["tool"], json!("cursor"));
+    assert_eq!(payload["model"], json!("claude-opus-5"));
+    assert!(payload.get("tokens").is_some());
 }
 
 #[test]

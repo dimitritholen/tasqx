@@ -158,7 +158,33 @@ fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
     if rows.is_empty() {
         return;
     }
-    out.push_str(&format!("\n### Annotations ({})\n\n", rows.len()));
+    // A page of a longer history says so here, in the block D49 puts FIRST,
+    // because that is the one a model reads. A notice carried only by the JSON
+    // behind it would be invisible to exactly the reader it protects: someone
+    // reading twenty annotations of two hundred with nothing to tell them the
+    // story continues.
+    let shown = rows.len();
+    let total = result
+        .get("annotations_total")
+        .and_then(Value::as_u64)
+        .map_or(shown, |t| t as usize);
+    let next = result
+        .get("annotations_next_offset")
+        .and_then(Value::as_u64);
+    if total > shown {
+        out.push_str(&format!(
+            "\n### Annotations ({shown} of {total}, newest first)\n\n"
+        ));
+        if let Some(offset) = next {
+            out.push_str(&format!(
+                "_{} older annotations elided — re-read this task with `annotations_offset: \
+                 {offset}` for the next page._\n\n",
+                total - shown
+            ));
+        }
+    } else {
+        out.push_str(&format!("\n### Annotations ({shown})\n\n"));
+    }
     for a in rows {
         let when = fmt_instant(a.get("created").and_then(Value::as_str).unwrap_or(""), opts);
         let body = a.get("body").and_then(Value::as_str).unwrap_or("");
