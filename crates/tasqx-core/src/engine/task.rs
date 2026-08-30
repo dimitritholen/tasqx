@@ -52,6 +52,15 @@ impl SnapshotParts {
         tokens: false,
     };
 
+    /// `task.list` when the caller PROJECTS `depends_on` — the filter inputs
+    /// plus the edge list, and nothing else. One statement more than
+    /// [`Self::FILTERS_ONLY`], paid only by the call that asked for it.
+    pub(super) const FILTERS_AND_DEPENDENCIES: Self = Self {
+        depends_on: true,
+        annotations: false,
+        tokens: false,
+    };
+
     /// The whole task relation — `store.export` and `report.summary`, which
     /// between them emit every gated part.
     pub(super) const EVERYTHING: Self = Self {
@@ -1065,7 +1074,30 @@ impl Engine {
         // tags and `blocked`, and `TASK_FIELDS` has no key sourced from the
         // dependency or annotation tables. Loading those here meant every
         // `tasqx list` scanned both end to end and discarded the result.
-        let mut all = self.load_task_snapshots_for(SnapshotParts::FILTERS_ONLY)?;
+        // Read before the load: projecting `depends_on` is the one thing that
+        // makes this reader need a side table, so the gate is decided here
+        // rather than by loading everything and hoping.
+        let fields = parse_fields(p)?;
+        let want_deps = crate::engine::fields_want_depends_on(fields.as_ref());
+        let parts = if want_deps {
+            SnapshotParts::FILTERS_AND_DEPENDENCIES
+        } else {
+            SnapshotParts::FILTERS_ONLY
+        };
+        let mut all = self.load_task_snapshots_for(parts)?;
+
+        // `TaskSnapshot::depends_on` carries store ids; every surface an agent
+        // reads names dependencies by `short_id` (`task.get` does), so one map
+        // over the rows already in hand translates them. Built before the
+        // filter drains `all`, because an edge may point at a task the filter
+        // is about to drop and the reader still has to be able to name it.
+        let short_ids: std::collections::HashMap<String, i64> = if want_deps {
+            all.iter()
+                .map(|s| (s.task.id.clone(), s.task.short_id))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
 
         // Urgency has time-dependent terms (due proximity, age), so the value
         // persisted at write time goes stale. Recompute it for the fetched page
@@ -1098,18 +1130,53 @@ impl Engine {
         let sort_keys = parse_sort(p)?;
         tasks.sort_by(|a, b| compare_by(&a.task, &b.task, &sort_keys));
 
-        // Limit.
+        // How many rows MATCHED, counted before the window is applied (D70).
+        // `count` has always been the number of rows returned, which is the
+        // same number under no limit and a different one under any limit — so
+        // a caller that did the right thing and bounded its request got a list
+        // that looked complete, could not tell how much had been dropped, and
+        // had no way to ask for the rest.
+        let total = tasks.len();
+
+        // Window: offset first, then limit. Both are optional and the pair is
+        // meaningless without the stable tiebreak `compare_by` ends on — a
+        // page walked over an order that varies between calls shows a row
+        // twice or skips it, and nothing about the response would say so.
+        let offset = opt_u64(p, "offset")?.unwrap_or(0) as usize;
+        if offset > 0 {
+            tasks.drain(..offset.min(tasks.len()));
+        }
         if let Some(limit) = opt_u64(p, "limit")? {
             tasks.truncate(limit as usize);
         }
+        // Nullable, never absent: a key that comes and goes makes every client
+        // branch on presence, and this one would flip on the last page of
+        // every walk (D63's rule for `annotations_next_offset`).
+        let next_offset = match offset + tasks.len() {
+            reached if reached < total => json!(reached),
+            _ => Value::Null,
+        };
 
-        // Field projection (whole row when `fields` absent). Validated, so an
-        // unknown key fails here rather than quietly yielding a narrower row.
-        let fields = parse_fields(p)?;
-
+        // Field projection (whole row when `fields` absent). Validated above,
+        // so an unknown key fails before any of this rather than quietly
+        // yielding a narrower row.
         let mut out = Vec::with_capacity(tasks.len());
         for snapshot in &tasks {
-            let full = list_row_json(&snapshot.task, &snapshot.tags, snapshot.blocked);
+            let deps: Option<Vec<i64>> = want_deps.then(|| {
+                let mut v: Vec<i64> = snapshot
+                    .depends_on
+                    .iter()
+                    .filter_map(|id| short_ids.get(id).copied())
+                    .collect();
+                v.sort_unstable();
+                v
+            });
+            let full = list_row_json(
+                &snapshot.task,
+                &snapshot.tags,
+                snapshot.blocked,
+                deps.as_deref(),
+            );
             match &fields {
                 Some(keys) => {
                     let mut obj = Map::new();
@@ -1124,7 +1191,12 @@ impl Engine {
             }
         }
 
-        Ok(json!({ "count": out.len(), "tasks": out }))
+        Ok(json!({
+            "count": out.len(),
+            "total": total,
+            "next_offset": next_offset,
+            "tasks": out,
+        }))
     }
 
     // ---- blocked / dependency helpers ---------------------------------------
@@ -1404,12 +1476,49 @@ impl Engine {
             "reopen",
             &json!({ "from": task.status.as_str() }),
         )?;
+        // Read AFTER the UPDATE, so the reopened task is already back among
+        // its dependents' unresolved blockers and the count below is the one
+        // the store now holds.
+        let blocked = Self::compute_reblocked(&tx, &task.id)?;
         tx.commit()?;
 
         Ok(commands::TaskReopened {
             short_id: task.short_id,
+            blocked,
         }
         .into())
+    }
+
+    /// short_ids of the open dependents this reopen just put back into
+    /// `blocked` — the inverse of [`Engine::compute_unblocked`].
+    ///
+    /// Run inside the reopening transaction and AFTER the status write, so a
+    /// dependent flipped by this call is exactly one whose count of
+    /// still-unresolved blockers is now **one**: the reopened task is back
+    /// among them, and if it were not the only one the dependent was already
+    /// blocked and nothing changed for it.
+    ///
+    /// It exists because `task.done` has always answered `unblocked` and its
+    /// inverse answered nothing (D69). Reopening is what an agent does the
+    /// moment it finds it closed a task too early, and it was removing work
+    /// from its own actionable set with no signal: the next `@working` list
+    /// came back shorter and no response said why.
+    fn compute_reblocked(
+        tx: &rusqlite::Transaction,
+        reopened_id: &str,
+    ) -> Result<Vec<i64>, ApiError> {
+        // Enum-derived, never caller text — see `Status::sql_in_list`.
+        let open = Status::sql_in_list(Status::is_open);
+        let terminal = Status::sql_in_list(Status::is_terminal);
+        let mut stmt = tx.prepare(&format!(
+            "SELECT t.short_id FROM dependencies d              JOIN tasks t ON t.id = d.task_id              WHERE d.depends_on_id = ?1 AND t.status IN ({open})              AND ( SELECT COUNT(*) FROM dependencies d2                    JOIN tasks b ON b.id = d2.depends_on_id                    WHERE d2.task_id = t.id AND b.status NOT IN ({terminal}) ) = 1              ORDER BY t.short_id",
+        ))?;
+        let rows = stmt.query_map(params![reopened_id], |r| r.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 }
 

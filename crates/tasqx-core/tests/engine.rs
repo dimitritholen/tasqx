@@ -1831,3 +1831,258 @@ fn event_revert_is_reachable_through_dispatch_and_takes_no_params() {
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(err.message.contains("ref"), "{}", err.message);
 }
+
+// ---- D69: three results that name their own scope ---------------------------
+
+/// `task.reopen` reports what it put back into `blocked`, the way `task.done`
+/// reports what it released.
+///
+/// The reported failure: completing #1 answered `unblocked: [2]`, reopening it
+/// answered `{short_id, status}`, and #2 went back to blocked with nothing
+/// saying so. An agent that reopens a task it closed too early was removing
+/// work from its own actionable set unannounced.
+#[test]
+fn reopen_names_the_dependents_it_put_back_into_blocked() {
+    let e = Engine::open_in_memory().expect("open");
+    e.task_add(&json!({ "title": "blocker" })).expect("add");
+    e.task_add(&json!({ "title": "dependent" })).expect("add");
+    e.task_add(&json!({ "title": "unrelated" })).expect("add");
+    e.dependency_add(&json!({ "ref": 2, "depends_on": 1 }))
+        .expect("dep");
+
+    let done = e.task_done(&json!({ "ref": 1 })).expect("done");
+    assert_eq!(done["unblocked"], json!([2]), "completing releases #2");
+
+    let back = e.task_reopen(&json!({ "ref": 1 })).expect("reopen");
+    assert_eq!(
+        back["blocked"],
+        json!([2]),
+        "reopening the blocker puts #2 back, and has to say so"
+    );
+}
+
+/// Only the dependents that actually flipped, and only the open ones.
+///
+/// A dependent held by a SECOND unresolved blocker was blocked before this
+/// reopen and is blocked after it: nothing changed for it, so naming it would
+/// be a claim the caller could not act on. A dependent that is itself done is
+/// not waiting on anything.
+#[test]
+fn reopen_names_only_the_dependents_whose_state_actually_changed() {
+    let e = Engine::open_in_memory().expect("open");
+    for title in [
+        "blocker",
+        "other blocker",
+        "flips",
+        "already stuck",
+        "closed",
+    ] {
+        e.task_add(&json!({ "title": title })).expect("add");
+    }
+    // #3 waits on #1 alone; #4 waits on #1 AND #2 (open); #5 waits on #1 but is done.
+    e.dependency_add(&json!({ "ref": 3, "depends_on": 1 }))
+        .expect("dep");
+    e.dependency_add(&json!({ "ref": 4, "depends_on": 1 }))
+        .expect("dep");
+    e.dependency_add(&json!({ "ref": 4, "depends_on": 2 }))
+        .expect("dep");
+    e.dependency_add(&json!({ "ref": 5, "depends_on": 1 }))
+        .expect("dep");
+    e.task_done(&json!({ "ref": 1 })).expect("done blocker");
+    e.task_done(&json!({ "ref": 5 })).expect("done dependent");
+
+    let back = e.task_reopen(&json!({ "ref": 1 })).expect("reopen");
+    assert_eq!(
+        back["blocked"],
+        json!([3]),
+        "#4 was already blocked by #2 and #5 is closed; only #3 flipped"
+    );
+}
+
+/// A reopen that releases nothing still answers the key, empty.
+///
+/// Absent-when-empty would make every client branch on presence for a list
+/// that is empty most of the time — the shape D63 rejected for
+/// `annotations_next_offset`.
+#[test]
+fn reopen_answers_an_empty_blocked_list_rather_than_omitting_it() {
+    let e = Engine::open_in_memory().expect("open");
+    e.task_add(&json!({ "title": "alone" })).expect("add");
+    e.task_done(&json!({ "ref": 1 })).expect("done");
+    let back = e.task_reopen(&json!({ "ref": 1 })).expect("reopen");
+    assert_eq!(back["blocked"], json!([]));
+}
+
+/// `report.summary` names the scope its totals were taken over.
+///
+/// The filter DSL carries `completed.after:`, so "what did this week cost" is
+/// one call — and the answer came back carrying `generated` (the time of the
+/// call) and nothing about the window, so a total quoted into a note could be
+/// read against the wrong period by anyone who did not write the call.
+#[test]
+fn report_summary_echoes_the_scope_it_applied() {
+    let e = Engine::open_in_memory().expect("open");
+    e.project_create(&json!({ "name": "work" }))
+        .expect("project");
+    e.task_add(&json!({ "title": "one", "project": "work" }))
+        .expect("add");
+    let r = e
+        .report_summary(&json!({
+            "group_by": "project",
+            "filter": "completed.after:2026-08-23",
+            "metrics": ["count"],
+        }))
+        .expect("summary");
+    assert_eq!(r["filter"], json!("completed.after:2026-08-23"));
+    assert_eq!(
+        r["all"],
+        json!(false),
+        "the default, stated rather than implied"
+    );
+
+    let unscoped = e
+        .report_summary(&json!({ "group_by": "project", "all": true }))
+        .expect("summary");
+    assert_eq!(unscoped["filter"], json!(""), "no filter is a scope too");
+    assert_eq!(unscoped["all"], json!(true));
+}
+
+// ---- D70: what task.list withheld, and what a blocked row waits on ----------
+
+/// `count` is what came back, `total` is what matched, and the two differ
+/// under a window.
+///
+/// The reported failure: `tasqx_list_tasks {"limit": 5}` on a 233-task store
+/// answered `count: 5` and nothing else, so a caller that did the right thing
+/// and bounded its request got a list that looked complete, could not tell 228
+/// rows had been dropped, and had no way to ask for the next page.
+#[test]
+fn task_list_says_how_many_matched_not_only_how_many_it_returned() {
+    let e = Engine::open_in_memory().expect("open");
+    for i in 0..7 {
+        e.task_add(&json!({ "title": format!("t{i}") }))
+            .expect("add");
+    }
+
+    let whole = e.task_list(&json!({})).expect("list");
+    assert_eq!(whole["count"], json!(7));
+    assert_eq!(whole["total"], json!(7));
+    assert_eq!(
+        whole["next_offset"],
+        Value::Null,
+        "nothing was left out, and the key still answers"
+    );
+
+    let windowed = e.task_list(&json!({ "limit": 3 })).expect("list");
+    assert_eq!(windowed["count"], json!(3), "rows returned");
+    assert_eq!(windowed["total"], json!(7), "rows matched");
+    assert_eq!(windowed["next_offset"], json!(3));
+}
+
+/// `offset` walks the rest, and the last page closes the walk.
+#[test]
+fn task_list_offset_walks_to_the_end_and_then_says_so() {
+    let e = Engine::open_in_memory().expect("open");
+    for i in 0..5 {
+        e.task_add(&json!({ "title": format!("t{i}") }))
+            .expect("add");
+    }
+    let page = e
+        .task_list(&json!({ "limit": 2, "offset": 4 }))
+        .expect("list");
+    assert_eq!(page["count"], json!(1), "one row is all that is left");
+    assert_eq!(page["total"], json!(5));
+    assert_eq!(page["next_offset"], Value::Null);
+
+    let past_the_end = e.task_list(&json!({ "offset": 99 })).expect("list");
+    assert_eq!(past_the_end["count"], json!(0));
+    assert_eq!(
+        past_the_end["total"],
+        json!(5),
+        "the match count still stands"
+    );
+    assert_eq!(past_the_end["next_offset"], Value::Null);
+}
+
+/// Walking `next_offset` to the end returns every row exactly once, over a
+/// sort whose key ties across every task.
+///
+/// The end-to-end half of the ordering contract. The half that can actually
+/// go red — that `compare_by` never calls two distinct tasks equal — is pinned
+/// on the comparator itself in `engine.rs`, because Rust's sort is stable and
+/// the load order is fixed within a session, so a missing tiebreak is not
+/// observable from out here. Both halves are the point: this one would keep
+/// passing against a comparator that cannot support paging at all.
+#[test]
+fn paging_over_a_sort_that_is_all_ties_shows_every_row_exactly_once() {
+    let e = Engine::open_in_memory().expect("open");
+    for i in 0..8 {
+        e.task_add(&json!({ "title": format!("same-{i}"), "priority": "M" }))
+            .expect("add");
+    }
+    let mut seen: Vec<i64> = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        let page = e
+            .task_list(&json!({ "sort": ["priority"], "limit": 3, "offset": offset }))
+            .expect("list");
+        for t in page["tasks"].as_array().expect("rows") {
+            seen.push(t["short_id"].as_i64().expect("short_id"));
+        }
+        match page["next_offset"].as_u64() {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    let mut sorted = seen.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(seen.len(), 8, "no row was skipped or repeated: {seen:?}");
+    assert_eq!(sorted.len(), 8, "no duplicates: {seen:?}");
+}
+
+/// `depends_on` is reachable from `task.list`, and only when asked for.
+///
+/// `blocked` has been on every row since it was carried out of the filter, and
+/// what a row is blocked BY was on none of them: `task.get` was the only
+/// source, at up to 23 KB a call, so "what is blocked, and by what" cost one
+/// call plus one per blocked row. It stays out of the default projection on
+/// purpose — the edge list costs a statement and an array per row on the
+/// response that was already the largest thing this server sends.
+#[test]
+fn depends_on_is_projectable_from_task_list_and_absent_by_default() {
+    let e = Engine::open_in_memory().expect("open");
+    e.task_add(&json!({ "title": "first" })).expect("add");
+    e.task_add(&json!({ "title": "second" })).expect("add");
+    e.task_add(&json!({ "title": "third" })).expect("add");
+    e.dependency_add(&json!({ "ref": 3, "depends_on": 1 }))
+        .expect("dep");
+    e.dependency_add(&json!({ "ref": 3, "depends_on": 2 }))
+        .expect("dep");
+
+    let projected = e
+        .task_list(
+            &json!({ "fields": ["short_id", "blocked", "depends_on"], "sort": ["short_id"] }),
+        )
+        .expect("list");
+    let rows = projected["tasks"].as_array().expect("rows");
+    let third = rows.iter().find(|t| t["short_id"] == json!(3)).expect("#3");
+    assert_eq!(third["blocked"], json!(true));
+    assert_eq!(
+        third["depends_on"],
+        json!([1, 2]),
+        "short_ids, the way task.get names them"
+    );
+    let first = rows.iter().find(|t| t["short_id"] == json!(1)).expect("#1");
+    assert_eq!(first["depends_on"], json!([]), "no edges is an answer");
+
+    let default_row = &e.task_list(&json!({})).expect("list")["tasks"][0];
+    assert!(
+        default_row.get("depends_on").is_none(),
+        "the default projection stays as cheap as it was: {default_row}"
+    );
+    assert!(
+        default_row.get("blocked").is_some(),
+        "`blocked` is still on every row"
+    );
+}

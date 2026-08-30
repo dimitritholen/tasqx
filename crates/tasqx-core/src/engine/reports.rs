@@ -55,8 +55,14 @@ impl Engine {
             }
         };
 
-        let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default(), Timestamp::now())
-            .map_err(ApiError::bad_request)?;
+        // Kept as a string as well as a parsed filter: the result echoes it,
+        // because a report that names no scope is a total that can be read
+        // against the wrong period (D69). The filter DSL carries
+        // `completed.after:`/`completed.before:`, so "what did this week cost"
+        // is one call — and the answer used to come back with `generated` (the
+        // time of the call, easy to misread as the boundary) and nothing else.
+        let filter_str = opt_str(p, "filter")?.unwrap_or_default();
+        let filter = Filter::parse(&filter_str, Timestamp::now()).map_err(ApiError::bad_request)?;
         let now_ts = parse_ts(&now());
 
         // D24: a report is an *aggregation*, so abandoned work must not inflate
@@ -214,7 +220,12 @@ impl Engine {
             out.push(Value::Object(obj));
         }
 
-        Ok(json!({ "groups": out, "generated": now() }))
+        Ok(json!({
+            "groups": out,
+            "generated": now(),
+            "filter": filter_str,
+            "all": all,
+        }))
     }
 }
 

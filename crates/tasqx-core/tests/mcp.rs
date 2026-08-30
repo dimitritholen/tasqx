@@ -81,12 +81,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 19 tools present, each with an inputSchema.
+    // 3. tools/list — all 20 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 19, "expected 19 tools");
+    assert_eq!(tools.len(), 20, "expected 20 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -108,6 +108,7 @@ fn full_protocol_sequence() {
         "tasqx_add_memory",
         "tasqx_remove_memory",
         "tasqx_create_project",
+        "tasqx_get_memory",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
@@ -118,10 +119,16 @@ fn full_protocol_sequence() {
             t["name"]
         );
     }
-    // Write tools are annotated destructive; reads are read-only.
+    // Reads are read-only; `destructiveHint` is a per-tool fact and NOT the
+    // write flag restated (D68). Creating a task is additive.
     let get_add = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
     assert_eq!(
         get_add("tasqx_add_task")["annotations"]["destructiveHint"],
+        false,
+        "creating a task is additive: labelling it destructive is what made the hint          indistinguishable from `readOnlyHint` and cost the host its gate"
+    );
+    assert_eq!(
+        get_add("tasqx_remove_memory")["annotations"]["destructiveHint"],
         true
     );
     assert_eq!(
@@ -247,9 +254,10 @@ fn read_scope_tools_list_hides_write_tools() {
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    // A read-only session advertises only the five read tools — including
-    // memory search: a read-only agent may consult knowledge (D41).
-    assert_eq!(tools.len(), 5, "read scope should list only the read tools");
+    // A read-only session advertises only the six read tools — including both
+    // memory readers: a read-only agent may consult knowledge (D41), and D71
+    // made "consult" mean the document rather than an excerpt of it.
+    assert_eq!(tools.len(), 6, "read scope should list only the read tools");
     for t in tools {
         assert_eq!(
             t["annotations"]["readOnlyHint"], true,
@@ -1308,4 +1316,385 @@ fn the_corrective_tools_are_write_scoped() {
             "`{tool}` must not be reachable from a read-only server"
         );
     }
+}
+
+// ---- D68: the behaviour hints ------------------------------------------------
+
+/// Every tool the running server advertises, name -> annotations.
+fn listed_annotations() -> Vec<(String, Value)> {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    listed["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|t| {
+            (
+                t["name"].as_str().expect("a name").to_string(),
+                t["annotations"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// D68: `destructiveHint` and `idempotentHint` stop being `write` under two
+/// other names.
+///
+/// The emission was `"destructiveHint": s.write` with `idempotentHint` hard
+/// false, so all fourteen writes carried one pair and a host gating on
+/// `destructiveHint` gated every write or none — which is not a gate, and it
+/// is the gate D64 chose as `tasqx_remove_memory`'s only safeguard.
+///
+/// Asserted as *distinctions* rather than as a table of nineteen literals: a
+/// second copy of the table would have to be edited in lockstep with the thing
+/// it checks, which is the drift this repository keeps paying for.
+#[test]
+fn the_behaviour_hints_are_not_the_write_flag_under_another_name() {
+    let tools = listed_annotations();
+    let hint = |name: &str, key: &str| -> bool {
+        tools
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("tool {name} is listed"))
+            .1[key]
+            .as_bool()
+            .unwrap_or_else(|| panic!("{name}.{key} is a boolean"))
+    };
+
+    // A write that is additive, and a write that destroys. If these ever agree
+    // the hint has collapsed back into the write flag.
+    assert!(
+        !hint("tasqx_add_task", "destructiveHint"),
+        "creating a task is additive"
+    );
+    assert!(
+        hint("tasqx_remove_memory", "destructiveHint"),
+        "a permanent, un-undoable removal is the destructive case D64 named"
+    );
+
+    // Append-only writes are additive; the correctives are not.
+    for additive in [
+        "tasqx_add_task",
+        "tasqx_annotate_task",
+        "tasqx_add_memory",
+        "tasqx_add_dependency",
+        "tasqx_tag_task",
+        "tasqx_start_timer",
+        "tasqx_stop_timer",
+        "tasqx_create_project",
+    ] {
+        assert!(
+            !hint(additive, "destructiveHint"),
+            "`{additive}` only adds to the store"
+        );
+        assert!(
+            !hint(additive, "readOnlyHint"),
+            "`{additive}` is still a write"
+        );
+    }
+    for corrective in [
+        "tasqx_remove_memory",
+        "tasqx_untag_task",
+        "tasqx_remove_dependency",
+        "tasqx_reopen_task",
+        "tasqx_modify_task",
+        "tasqx_complete_task",
+    ] {
+        assert!(
+            hint(corrective, "destructiveHint"),
+            "`{corrective}` overwrites or removes what the store already held"
+        );
+    }
+
+    // A read is never destructive, and repeating one changes nothing.
+    for (name, ann) in &tools {
+        if ann["readOnlyHint"].as_bool() == Some(true) {
+            assert_eq!(
+                ann["destructiveHint"],
+                json!(false),
+                "read tool `{name}` cannot be destructive"
+            );
+            assert_eq!(
+                ann["idempotentHint"],
+                json!(true),
+                "read tool `{name}` has no effect to repeat"
+            );
+        }
+    }
+
+    // `idempotentHint` distinguishes too: set-shaped writes converge, appends
+    // do not.
+    assert!(
+        hint("tasqx_tag_task", "idempotentHint"),
+        "attaching a tag the task already carries changes nothing"
+    );
+    assert!(
+        !hint("tasqx_annotate_task", "idempotentHint"),
+        "every annotation is a new row"
+    );
+}
+
+/// D70: an unbounded `tasqx_list_tasks` is bounded by the transport, and the
+/// answer says what it withheld.
+///
+/// Measured on a real store of 223 tasks, `tasqx_list_tasks {}` — the first
+/// call an agent makes, and the one this tool's own schema invites with "no
+/// filter means no filtering" — returned 180,412 bytes in one block, past most
+/// clients' tool-output limit, with no elision and nothing saying anything had
+/// been large.
+#[test]
+fn an_unbounded_task_list_is_bounded_by_the_transport() {
+    let engine = engine();
+    // Bodies large enough that the whole store cannot fit the budget, in a
+    // field every row carries.
+    let long = "x".repeat(400);
+    for i in 0..400 {
+        engine
+            .task_add(&json!({ "title": format!("{long} #{i}") }))
+            .expect("add");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let result = call(&server, 1, "tasqx_list_tasks", json!({}));
+    let bytes = serde_json::to_string(&result).expect("serialize").len();
+    assert!(
+        bytes <= 32_768,
+        "an unbounded list must not blow a client's limit: {bytes} bytes"
+    );
+
+    let body = tool_json(&result);
+    assert_eq!(body["total"], json!(400), "the answer names what matched");
+    let count = body["count"].as_u64().expect("count");
+    assert!(count < 400, "the page is smaller than the store: {count}");
+    assert_eq!(
+        body["next_offset"],
+        json!(count),
+        "and it names the offset that reaches the rest"
+    );
+}
+
+/// A caller that names its own `limit` is answered exactly, however large —
+/// the rule `fit_to_budget` already keeps for `annotations_limit`.
+#[test]
+fn a_named_limit_on_task_list_is_answered_as_asked() {
+    let engine = engine();
+    let long = "y".repeat(400);
+    for i in 0..300 {
+        engine
+            .task_add(&json!({ "title": format!("{long} #{i}") }))
+            .expect("add");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let body = tool_json(&call(
+        &server,
+        1,
+        "tasqx_list_tasks",
+        json!({ "limit": 300 }),
+    ));
+    assert_eq!(
+        body["count"],
+        json!(300),
+        "a request second-guessed is a caller who can never page big on purpose"
+    );
+    assert_eq!(body["next_offset"], Value::Null);
+}
+
+/// A small store never notices the transport page exists.
+#[test]
+fn a_small_store_is_answered_whole_with_the_walk_already_closed() {
+    let engine = engine();
+    for i in 0..3 {
+        engine
+            .task_add(&json!({ "title": format!("t{i}") }))
+            .expect("add");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let body = tool_json(&call(&server, 1, "tasqx_list_tasks", json!({})));
+    assert_eq!(body["count"], json!(3));
+    assert_eq!(body["total"], json!(3));
+    assert_eq!(body["next_offset"], Value::Null);
+}
+
+/// The re-cut page is the page the engine would have returned.
+///
+/// `fit_list_to_budget` shortens the array it already holds instead of asking
+/// the engine again, on the claim that `limit` is a prefix of a fully
+/// determined order. That claim is the whole basis for not re-dispatching —
+/// and it is only true because `compare_by` ends on an unconditional
+/// `short_id`, so this test is what stops the tiebreak being removed as
+/// "cosmetic" later.
+#[test]
+fn the_transport_recut_page_equals_a_real_limited_call() {
+    let engine = engine();
+    let long = "z".repeat(400);
+    for i in 0..400 {
+        engine
+            .task_add(&json!({ "title": format!("{long} #{i}") }))
+            .expect("add");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let recut = tool_json(&call(&server, 1, "tasqx_list_tasks", json!({})));
+    let k = recut["count"].as_u64().expect("count");
+
+    let asked = tool_json(&call(&server, 2, "tasqx_list_tasks", json!({ "limit": k })));
+    assert_eq!(
+        recut, asked,
+        "the shortened answer must be the answer, not an approximation of it"
+    );
+}
+
+// ---- D72: the bytes the caller already holds --------------------------------
+
+/// `include_json: false` returns the rendered view alone, at any size.
+///
+/// D49 ships the result twice — once formatted, once as escaped JSON — and D66
+/// spends the duplicate only once the budget is already blown. Below it every
+/// ordinary read paid in full with no way to decline: measured on a live task
+/// with ONE annotation, the JSON block was 54% of a 6,375-byte response, and
+/// 66% of a 1,351-byte one read with `annotations_limit: 0`.
+#[test]
+fn include_json_false_returns_the_view_alone() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "parse the statements" }))
+        .expect("add");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "a".repeat(600) }))
+        .expect("annotate");
+    let server = McpServer::new(&engine, Scope::Write);
+
+    let both = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    let blocks = both["result"]["content"].as_array().expect("blocks");
+    assert_eq!(blocks.len(), 2, "the default is unchanged");
+
+    let view_only = call(
+        &server,
+        2,
+        "tasqx_get_task",
+        json!({ "ref": 1, "include_json": false }),
+    );
+    let one = view_only["result"]["content"].as_array().expect("blocks");
+    assert_eq!(one.len(), 1, "the view, and nothing restating it");
+    assert!(
+        !is_error(&view_only),
+        "`include_json` must never reach the params gate: {view_only}"
+    );
+
+    let big = serde_json::to_string(&both).expect("json").len();
+    let small = serde_json::to_string(&view_only).expect("json").len();
+    assert!(
+        small * 2 <= big,
+        "dropping the duplicate has to actually drop it: {small} vs {big}"
+    );
+
+    // And it is the bare view: the over-budget notice explains an omission the
+    // caller did not choose, so appending it here would be a false sentence
+    // charged at ~300 bytes — most of what declining the block was to save.
+    let text = one[0]["text"].as_str().expect("text");
+    assert!(
+        !text.contains("response budget"),
+        "a chosen omission is not an over-budget omission: {}",
+        &text[text.len().saturating_sub(300)..]
+    );
+}
+
+/// The argument is consumed by the transport, never forwarded.
+///
+/// `check_params` refuses any key the method does not accept, so a forwarded
+/// `include_json` would be an instant `bad_request` — which is the failure
+/// mode this test pins, alongside the one where a caller who names it also
+/// names a page size.
+#[test]
+fn include_json_is_stripped_before_the_params_gate_on_every_path() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    for i in 0..3 {
+        engine
+            .annotation_add(&json!({ "ref": 1, "body": format!("note {i}") }))
+            .expect("annotate");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    for (id, args) in [
+        (1, json!({ "ref": 1, "include_json": false })),
+        (2, json!({ "ref": 1, "include_json": true })),
+        (
+            3,
+            json!({ "ref": 1, "include_json": false, "annotations_limit": 2 }),
+        ),
+        (
+            4,
+            json!({ "ref": 1, "include_json": false, "annotations_offset": 1 }),
+        ),
+    ] {
+        let result = call(&server, id, "tasqx_get_task", args.clone());
+        assert!(
+            !is_error(&result),
+            "`{args}` was refused: {}",
+            result["result"]["content"][0]["text"]
+        );
+        let want = if args["include_json"] == json!(true) {
+            2
+        } else {
+            1
+        };
+        assert_eq!(
+            result["result"]["content"]
+                .as_array()
+                .expect("blocks")
+                .len(),
+            want,
+            "block count for {args}"
+        );
+    }
+}
+
+/// The omission notice says what naming a limit COSTS.
+///
+/// It read as a bounded retry — "Pass `annotations_limit` to get the JSON
+/// block back" — and the obvious value to retry with is the page size printed
+/// two lines above it. Measured on a live task: the budgeted answer was 22,932
+/// bytes, the same call with the page size it had just been shown was 46,512,
+/// and with `annotations_total` (which the tool's own description recommends
+/// for a whole history) 173,032 — seven times the budget the server had just
+/// refused to exceed.
+#[test]
+fn the_json_omission_notice_says_that_naming_a_limit_removes_the_budget() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "long" })).expect("add");
+    for i in 0..12 {
+        engine
+            .annotation_add(&json!({ "ref": 1, "body": format!("{} #{i}", "z".repeat(3000)) }))
+            .expect("annotate");
+    }
+    let server = McpServer::new(&engine, Scope::Write);
+    let result = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    let blocks = result["result"]["content"].as_array().expect("blocks");
+    assert_eq!(blocks.len(), 1, "the premise: this response is over budget");
+    let text = blocks[0]["text"].as_str().expect("text");
+    assert!(
+        text.contains("unbounded"),
+        "the notice must say the escape hatch is an opt-out, not a page: {}",
+        &text[text.len().saturating_sub(400)..]
+    );
+    assert!(
+        text.contains("include_json"),
+        "and name the way to keep the budget: {}",
+        &text[text.len().saturating_sub(400)..]
+    );
+
+    // And the claim the notice now makes is true.
+    let unbounded = call(
+        &server,
+        2,
+        "tasqx_get_task",
+        json!({ "ref": 1, "annotations_limit": 12 }),
+    );
+    let big = serde_json::to_string(&unbounded).expect("json").len();
+    let budgeted = serde_json::to_string(&result).expect("json").len();
+    assert!(
+        big > budgeted * 2,
+        "naming a limit really is several times the budgeted answer: {big} vs {budgeted}"
+    );
 }

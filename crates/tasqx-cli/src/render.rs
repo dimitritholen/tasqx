@@ -208,6 +208,35 @@ fn unblocked_line(ctx: &Ctx, result: &Value) -> String {
     )
 }
 
+/// The dependents a reopen just put back into `blocked`, or nothing.
+///
+/// The mirror of [`unblocked_line`], and it exists for the mirror reason: a
+/// reopen changes which work is actionable and used to say nothing about it
+/// (D69). Keyed on the `blocked` list, which only `task.reopen` returns, so the
+/// shared `status_line` stays correct for `task.cancel` without a list of which
+/// verbs re-block.
+fn reblocked_line(ctx: &Ctx, result: &Value) -> String {
+    let refs: Vec<String> = result
+        .get("blocked")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_i64)
+                .map(|n| format!("#{n}"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if refs.is_empty() {
+        return String::new();
+    }
+    format!(
+        "  {} {}
+",
+        ctx.paint("accent", "back to blocked:"),
+        refs.join(" ")
+    )
+}
+
 pub fn done(ctx: &Ctx, result: &Value) -> String {
     let completed = s(result, "completed");
     let mut out = format!(
@@ -1325,6 +1354,7 @@ pub fn status_line(ctx: &Ctx, result: &Value) -> String {
         s(result, "status")
     );
     out.push_str(&unblocked_line(ctx, result));
+    out.push_str(&reblocked_line(ctx, result));
     out
 }
 

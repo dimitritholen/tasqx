@@ -626,9 +626,9 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
         verb: "memory",
         aliases: &[],
-        method: "memory.search + add/remove",
+        method: "memory.search + get/add/remove",
         summary: "Store and search knowledge: docs, patterns, and your task annotations (D41).",
-        usage: "tasqx memory <add <title> <body> [--source s]|search <words…> [--limit n] [--scope s] [--raw]|rm <id>|import <path>>",
+        usage: "tasqx memory <add <title> <body> [--source s]|search <words…> [--limit n] [--scope s] [--raw]|show <id>|rm <id>|import <path>>",
         examples: &[
             ex("tasqx memory add \"Deploy runbook\" \"deploys go through the blue-green pipeline\""),
             ex("tasqx memory search blue-green"),
