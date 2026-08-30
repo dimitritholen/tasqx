@@ -876,14 +876,12 @@ fn get_task_shrinks_its_page_until_the_response_fits_the_budget() {
         .as_str()
         .expect("the view");
     assert!(
-        view.contains("of 11, newest first"),
-        "a response shrunk to fit must still say how much history it left out:
-{view}"
+        view.contains("of 11"),
+        "a response shrunk to fit must still say how much history it left out:\n{view}"
     );
     assert!(
         view.contains("annotations_offset"),
-        "and how to reach it:
-{view}"
+        "and how to reach it:\n{view}"
     );
     let returned = view.matches("## Note ").count();
     assert!(

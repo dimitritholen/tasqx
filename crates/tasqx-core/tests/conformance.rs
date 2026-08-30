@@ -370,6 +370,7 @@ const TASK_RELATIONS: &[Field] = &[
 /// client branch on presence, and this one flips on every read of the last page.
 const TASK_ANNOTATION_PAGE: &[Field] = &[
     req("annotations_total", Ty::Int),
+    req("annotations_offset", Ty::Int),
     nul("annotations_next_offset", Ty::Int),
 ];
 
