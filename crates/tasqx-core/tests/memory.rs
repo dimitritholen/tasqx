@@ -457,3 +457,119 @@ fn search_echoes_the_expression_that_produced_the_result() {
         .expect("search");
     assert_eq!(raw["matched"], json!("named OR nothingmatchesthis"));
 }
+
+// ---- D71: the document a search finds can be read ---------------------------
+
+/// The body a hit only excerpts comes back whole.
+///
+/// The failure: `memory.search` returns a `snippet()` excerpt — 60 to 88
+/// characters on real documents — plus an id no verb accepted. A doc written
+/// in the morning was, by the afternoon, findable and unreadable, and the
+/// nearest thing to a recovery was `store.export`, which dumps every task,
+/// project and doc in the store to get one of them back.
+#[test]
+fn a_doc_a_search_finds_can_be_read_whole() {
+    let e = engine();
+    let body = "ING exports CAMT.053 under camt.053.001.02 and Rabobank under \
+                camt.053.001.08. Matching on the qualified name works against whichever \
+                bank you tested with and fails silently against the other: zero entries \
+                parsed, no error, a statement that foots to zero.";
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "namespace versions differ per bank", "body": body, "source": "acme #1" }),
+    )
+    .expect("add");
+    let id = added["id"].as_str().expect("an id");
+
+    let hit = &call(&e, "memory.search", json!({ "query": "camt" })).expect("search")["hits"][0];
+    let snippet = hit["snippet"].as_str().expect("a snippet");
+    assert!(
+        snippet.len() < body.len() / 2,
+        "the premise: a hit is an excerpt, not the document ({} of {} chars)",
+        snippet.len(),
+        body.len()
+    );
+
+    let doc = call(&e, "memory.get", json!({ "id": hit["id"] })).expect("get");
+    assert_eq!(doc["id"], json!(id));
+    assert_eq!(doc["body"], json!(body), "the whole body, verbatim");
+    assert_eq!(doc["title"], json!("namespace versions differ per bank"));
+    assert_eq!(doc["source"], json!("acme #1"));
+    assert!(doc["created"].is_string() && doc["modified"].is_string());
+}
+
+/// An annotation id is refused with the route that works, not a bare miss.
+///
+/// `memory.search` returns docs AND annotations, so half the ids it hands back
+/// are not docs. Annotations already have a read path — the hit names the task
+/// as `task:#<short_id>` and `task.get` returns the bodies — and serving them
+/// here too would be a second spelling of a reachable behaviour (D30).
+#[test]
+fn an_annotation_id_is_refused_by_naming_the_task_it_belongs_to() {
+    let e = engine();
+    e.task_add(&json!({ "title": "parse the statements" }))
+        .expect("add");
+    let annotated = e
+        .annotation_add(&json!({ "ref": 1, "body": "matching on the qualified name fails" }))
+        .expect("annotate");
+    let ann_id = annotated["annotation"]["id"].clone();
+
+    let err = call(&e, "memory.get", json!({ "id": ann_id })).expect_err("not a doc");
+    assert_eq!(err.code, ErrorCode::NotFound);
+    assert!(
+        err.message.contains("annotation") && err.message.contains("task.get"),
+        "the refusal has to name the route that does work: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("#1"),
+        "and which task to use it on: {}",
+        err.message
+    );
+}
+
+/// An id that is nothing at all is a plain miss.
+#[test]
+fn an_unknown_memory_id_is_a_plain_not_found() {
+    let e = engine();
+    let err = call(
+        &e,
+        "memory.get",
+        json!({ "id": "01a05499-db0a-7d52-81b1-b8633edaf598" }),
+    )
+    .expect_err("nothing there");
+    assert_eq!(err.code, ErrorCode::NotFound);
+    assert!(err.message.contains("no memory doc"), "{}", err.message);
+}
+
+/// The reader is read scope: a read-only agent may consult knowledge (D41),
+/// and after D71 "consult" means the document rather than an excerpt of it.
+#[test]
+fn get_memory_is_reachable_from_a_read_only_server() {
+    use tasqx_core::{McpServer, Scope};
+    let e = engine();
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "the runbook", "body": "deploys go through blue-green" }),
+    )
+    .expect("add");
+    let server = McpServer::new(&e, Scope::Read);
+    let result = server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "tasqx_get_memory", "arguments": { "id": added["id"] } }
+        }))
+        .expect("a response");
+    assert_eq!(
+        result["result"]["isError"].as_bool(),
+        Some(false),
+        "a read tool must not be fenced out of a read scope: {result}"
+    );
+    let text = result["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text");
+    let doc: Value = serde_json::from_str(text).expect("json");
+    assert_eq!(doc["body"], json!("deploys go through blue-green"));
+}

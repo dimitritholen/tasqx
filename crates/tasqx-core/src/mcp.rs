@@ -465,7 +465,11 @@ fn tool_specs() -> Vec<ToolSpec> {
             description: "Search the memory store: imported docs/patterns and \
                 task annotations, bm25-ranked with snippets. Plain text queries \
                 are matched as phrases; set raw=true for FTS5 operator syntax \
-                (prefix*, AND/OR, column filters).",
+                (prefix*, AND/OR, column filters). A hit carries a short excerpt: \
+                read a doc whole with `tasqx_get_memory` on its `id`, and an \
+                annotation whole with `tasqx_get_task` on the task its `source` \
+                names. Every word of a plain query is REQUIRED, so `matched` on the \
+                result is what explains a zero-hit answer.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -490,6 +494,26 @@ fn tool_specs() -> Vec<ToolSpec> {
             }),
         },
         // ---- writes ---------------------------------------------------------
+        ToolSpec {
+            name: "tasqx_get_memory",
+            method: "memory.get",
+            write: false,
+            destructive: false,
+            idempotent: true,
+            description: "Read one knowledge doc whole, by the `id` a search hit carries. \
+                `tasqx_search_memory` returns a short excerpt and this is how you get the rest; \
+                an annotation id is refused, naming the task to read it from instead.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The doc UUID, as printed by a search hit or by `tasqx_add_memory`."
+                    }
+                },
+                "required": ["id"]
+            }),
+        },
         ToolSpec {
             name: "tasqx_add_task",
             method: "task.add",

@@ -1650,6 +1650,17 @@ fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome {
             }
             Ok((result, text))
         }
+        MemoryAction::Show { id } => {
+            let result = be.call("memory.get", &json!({ "id": id }))?;
+            let source = result["source"].as_str().unwrap_or("—");
+            let text = format!(
+                "{}  ({})\n{}\n",
+                render::san(result["title"].as_str().unwrap_or("?")),
+                render::san(source),
+                render::san(result["body"].as_str().unwrap_or("")),
+            );
+            Ok((result, text))
+        }
         MemoryAction::Rm { id } => {
             let result = be.call("memory.remove", &json!({ "id": id }))?;
             let text = format!("Removed {}\n", render::san(id));

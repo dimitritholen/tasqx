@@ -105,7 +105,7 @@ const VERBS: [(&str, &str, &str); 39] = [
     ("chart", "—", "event.list"),
     ("theme", "—", "— (no store)"),
     ("config", "—", "— (registry + core.capabilities)"),
-    ("memory", "—", "memory.search + add/remove"),
+    ("memory", "—", "memory.search + get/add/remove"),
     ("tokens", "—", "tokens.recompute"),
     ("export", "—", "store.export"),
     ("import", "—", "store.import"),
@@ -120,7 +120,7 @@ const VERBS: [(&str, &str, &str); 39] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 31] = [
+const METHODS: [(&str, &str, &str); 32] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -248,6 +248,12 @@ const METHODS: [(&str, &str, &str); 31] = [
         "<code>{id, title, created}</code>. Body stored verbatim (D41).",
     ),
     (
+        "memory.get",
+        "<code>id</code>",
+        "<code>{id, title, body, source, created, modified}</code> — one doc whole, by the id a \
+         search hit carries. An annotation id is refused, naming the task to read it from.",
+    ),
+    (
         "memory.search",
         "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>",
         "<code>{count, hits, matched}</code> — bm25-ranked over docs + annotations. \
@@ -366,7 +372,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 8] = [
 /// free-prose rows nothing compared, which is the same shape the verb table was
 /// in before the drift guards: a tool could be added, renamed, or moved across
 /// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 19] = [
+const MCP_TOOLS: [(&str, bool, &str); 20] = [
     (
         "tasqx_list_tasks",
         false,
@@ -383,6 +389,11 @@ const MCP_TOOLS: [(&str, bool, &str); 19] = [
         "tasqx_search_memory",
         false,
         "Search docs + annotations (D41).",
+    ),
+    (
+        "tasqx_get_memory",
+        false,
+        "Read one doc whole, by the id a hit carries (D71).",
     ),
     ("tasqx_add_task", true, "Capture a task."),
     ("tasqx_modify_task", true, "Change fields."),
