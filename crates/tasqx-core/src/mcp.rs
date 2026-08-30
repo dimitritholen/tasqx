@@ -841,8 +841,7 @@ impl<'e> McpServer<'e> {
                         // keeps `task_detail` pure and its golden tests stable.
                         now: jiff::Timestamp::now(),
                     };
-                    let (result, view) = self.fit_to_budget(result, &args, &opts, paged_by_us);
-                    return tool_ok_with_view(view, &result);
+                    return self.fit_to_budget(result, &args, &opts, paged_by_us);
                 }
                 tool_ok(&result)
             }
@@ -856,20 +855,38 @@ impl<'e> McpServer<'e> {
         }
     }
 
-    /// Halve the annotation page until the whole `task.get` response fits
-    /// [`RESPONSE_BUDGET_BYTES`], returning the result and its rendered view.
+    /// Fit a `task.get` response to [`RESPONSE_BUDGET_BYTES`], spending the
+    /// duplicate JSON block before it spends any of the history.
     ///
     /// Only for a caller who named no page size. An explicit `annotations_limit`
-    /// is returned untouched however large it is: a request second-guessed is a
-    /// caller who can never fetch a big page on purpose, and the whole point of
-    /// exposing the parameter is that the caller decides.
+    /// is answered exactly as asked, both blocks included, however large: a
+    /// request second-guessed is a caller who can never fetch a big page on
+    /// purpose, and it is what keeps the frozen machine-readable shape reachable
+    /// for every task rather than only the small ones.
     ///
-    /// Halving rather than estimating from the first response, because bodies
-    /// vary by orders of magnitude and a size-per-row extrapolated from the
-    /// newest annotations is wrong in exactly the case that matters. Five
-    /// dispatches is the worst case from the default page, each a read of one
-    /// task from a local store, and only ever on a task already large enough to
-    /// have failed outright before.
+    /// # The order the budget spends in
+    ///
+    /// 1. both blocks at the default page — an ordinary task never notices this
+    ///    function exists;
+    /// 2. the view alone at that same page, because on a task whose bulk is
+    ///    annotation prose the second block is that prose *again* (D49 renders
+    ///    the same result twice, once formatted and once as escaped JSON), and
+    ///    paying for a duplicate in history the reader never sees is the worse
+    ///    trade;
+    /// 3. the view alone, halving to a floor of one whole annotation.
+    ///
+    /// Dropping the JSON is a one-way door inside a single response: once gone
+    /// it stays gone while the page shrinks, so the answer cannot flip shape
+    /// halfway through its own search. D49's ordering is what makes this safe —
+    /// the view leads *because* it is the block a model reads, so the block that
+    /// survives is the one that was already doing the work.
+    ///
+    /// Bisection rather than extrapolation: bodies vary by orders of magnitude,
+    /// so a size-per-row taken from the newest annotations is wrong in exactly
+    /// the case that matters, while a measured yes/no per candidate is never
+    /// wrong. Five dispatches is the worst case, each a read of one task from a
+    /// local store, and only ever on a task already large enough to have failed
+    /// outright.
     ///
     /// The floor is one whole annotation: below that the only lever left is
     /// cutting a body, and prose that stops mid-sentence with nothing marking
@@ -882,45 +899,62 @@ impl<'e> McpServer<'e> {
         args: &Value,
         opts: &crate::markdown::DetailOpts,
         paged_by_us: bool,
-    ) -> (Value, String) {
+    ) -> Value {
         let render = |result: &Value| crate::markdown::task_detail(result, opts);
-        let over = |result: &Value, view: &str| {
-            view.len()
-                + serde_json::to_string_pretty(result)
-                    .map(|s| s.len())
-                    .unwrap_or(0)
-                > RESPONSE_BUDGET_BYTES
+        let json_len = |result: &Value| {
+            serde_json::to_string_pretty(result)
+                .map(|s| s.len())
+                .unwrap_or(0)
         };
 
-        let mut view = render(&first);
-        if !paged_by_us || !over(&first, &view) {
-            return (first, view);
+        let view = render(&first);
+        if !paged_by_us || view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
+            return tool_ok_with_view(view, &first);
+        }
+        // Step 2: the same page, without the duplicate.
+        if view.len() <= RESPONSE_BUDGET_BYTES {
+            return tool_ok_view_only(view);
         }
 
-        let mut result = first;
-        let mut limit = ANNOTATION_PAGE;
-        while limit > 1 {
-            limit /= 2;
+        // Step 3: the largest page that fits, found by BISECTION rather than by
+        // halving until something works. Halving lands on a power-of-two
+        // fraction of the starting page and stops there, which on the shape
+        // that provoked all this — a handful of very long bodies — overshoots
+        // by a factor of two: it would show two annotations where four fit.
+        // Same number of dispatches, an answer that is actually the largest.
+        let mut view = view;
+        let mut lo = 1u64;
+        let mut hi = ANNOTATION_PAGE;
+        let mut best: Option<String> = None;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
             let mut retry = args.clone();
             match retry.as_object_mut() {
-                Some(obj) => obj.insert("annotations_limit".to_string(), json!(limit)),
+                Some(obj) => obj.insert("annotations_limit".to_string(), json!(mid)),
                 // Unreachable for a real call — `args` is the tool's arguments
                 // object — and a fall-through beats a panic in a presentation
                 // path that must never make a working call look broken.
-                None => return (result, view),
+                None => break,
             };
-            let Ok(smaller) = dispatch(self.engine, "task.get", &retry) else {
-                return (result, view);
-            };
-            let smaller_view = render(&smaller);
-            let fits = !over(&smaller, &smaller_view);
-            result = smaller;
-            view = smaller_view;
-            if fits {
+            let Ok(candidate) = dispatch(self.engine, "task.get", &retry) else {
                 break;
+            };
+            let rendered = render(&candidate);
+            if rendered.len() <= RESPONSE_BUDGET_BYTES {
+                best = Some(rendered);
+                lo = mid + 1;
+            } else {
+                // `mid` is the floor and it still does not fit: one whole
+                // annotation is larger than the budget, and cutting into a body
+                // is the one thing this will not do.
+                if mid == 1 {
+                    view = rendered;
+                    break;
+                }
+                hi = mid - 1;
             }
         }
-        (result, view)
+        tool_ok_view_only(best.unwrap_or(view))
     }
 
     /// The captured clientInfo as one display string, `"<name> <version>"`
@@ -1001,6 +1035,32 @@ fn tool_ok_with_view(view: String, result: &Value) -> Value {
         "content": [
             { "type": "text", "text": view },
             { "type": "text", "text": serde_json::to_string_pretty(result).unwrap_or_default() }
+        ],
+        "isError": false
+    })
+}
+
+/// A `tools/call` result carrying the rendered view ALONE, with a line saying
+/// the machine-readable block is missing and how to ask for it.
+///
+/// Emitted only when both blocks together exceed the response budget on a call
+/// that named no page size (see [`McpServer::fit_to_budget`]). The note is not
+/// optional politeness: a response silently one block short is indistinguishable
+/// from a server that never sends JSON, and a reader who cannot tell those apart
+/// stops looking for the field they need. It is appended HERE rather than in
+/// `markdown::task_detail`, which is pure and golden-tested and knows nothing
+/// about transports or budgets.
+fn tool_ok_view_only(view: String) -> Value {
+    if view.is_empty() {
+        return tool_ok(&Value::Null);
+    }
+    json!({
+        "content": [
+            { "type": "text", "text": format!(
+                "{view}
+_Machine-readable JSON omitted: both blocks together exceeded this                  tool's response budget, and the rendered view above carries the same                  annotations. Pass `annotations_limit` to get the JSON block back._
+"
+            ) }
         ],
         "isError": false
     })

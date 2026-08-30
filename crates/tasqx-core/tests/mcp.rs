@@ -866,13 +866,23 @@ fn get_task_shrinks_its_page_until_the_response_fits_the_budget() {
          count alone never bounded the case that was reported"
     );
 
-    let json = tool_json(&out);
-    assert_eq!(json["annotations_total"], json!(11));
+    // Shrinking to fit spends the duplicate JSON block first, so the machine
+    // block is gone by the time the page is cut — the counts are read from the
+    // view, which is where the reader would find them too.
+    let view = out["result"]["content"][0]["text"]
+        .as_str()
+        .expect("the view");
     assert!(
-        json["annotations_next_offset"].as_u64().is_some(),
-        "a response shrunk to fit must still say how to reach what it left out"
+        view.contains("of 11, newest first"),
+        "a response shrunk to fit must still say how much history it left out:
+{view}"
     );
-    let returned = json["annotations"].as_array().expect("annotations").len();
+    assert!(
+        view.contains("annotations_offset"),
+        "and how to reach it:
+{view}"
+    );
+    let returned = view.matches("## Note ").count();
     assert!(
         (1..11).contains(&returned),
         "expected a shrunk page, got {returned} of 11"
@@ -1083,4 +1093,100 @@ fn complete_task_records_tool_and_model_without_token_counts() {
     assert_eq!(done["payload"]["tool"], json!("claude-code"));
     assert_eq!(done["payload"]["model"], json!("claude-opus-5"));
     assert_eq!(done["payload"]["session_id"], json!("sess-1"));
+}
+
+/// The budget spends the JSON block before it spends annotations.
+///
+/// D49 ships two blocks: the rendered view and the same result as pretty JSON.
+/// On a task whose bulk is annotation prose that is the *same text twice*, so
+/// half of every oversized response is a duplicate — and under the byte budget
+/// the duplicate is paid for in annotations the reader never sees. The view is
+/// what leads and what a model reads (D49's own reason for the order), so when
+/// something has to go, the redundant block goes first and the history gets the
+/// room.
+#[test]
+fn an_oversized_response_drops_the_duplicate_json_before_it_drops_history() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "eleven long notes" }))
+        .expect("add");
+    let body = "detail ".repeat(900);
+    for i in 0..11 {
+        engine
+            .annotation_add(&json!({ "ref": 1, "body": format!("## Note {i}\n\n{body}\n") }))
+            .expect("annotate");
+    }
+    let server = McpServer::new(&engine, Scope::Read);
+    let out = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    assert!(!is_error(&out));
+
+    let blocks = out["result"]["content"].as_array().expect("content");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "the duplicate JSON block must be the first thing sacrificed, not the last"
+    );
+    let view = blocks[0]["text"].as_str().expect("the view");
+    assert!(
+        view.len() < 24_576,
+        "the surviving block still has to fit: {} bytes",
+        view.len()
+    );
+    // Silent omission of a whole block is the failure shape this repo keeps
+    // paying for: the reader has to be told what is not there and how to get it.
+    assert!(
+        view.contains("annotations_limit"),
+        "an omitted JSON block must name the call that brings it back:\n{view}"
+    );
+    let shown = view.matches("## Note ").count();
+    assert!(
+        shown >= 3,
+        "dropping the duplicate should buy annotations, got {shown} of 11"
+    );
+}
+
+/// A caller that named its own page size gets both blocks, however large. The
+/// frozen machine-readable shape stays reachable for every task — it is only
+/// off by default on the ones too big to carry it twice.
+#[test]
+fn an_explicit_limit_keeps_the_json_block_even_over_budget() {
+    let engine = engine();
+    engine
+        .task_add(&json!({ "title": "eleven long notes" }))
+        .expect("add");
+    let body = "detail ".repeat(900);
+    for i in 0..11 {
+        engine
+            .annotation_add(&json!({ "ref": 1, "body": format!("## Note {i}\n\n{body}\n") }))
+            .expect("annotate");
+    }
+    let server = McpServer::new(&engine, Scope::Read);
+    let out = call(
+        &server,
+        1,
+        "tasqx_get_task",
+        json!({ "ref": 1, "annotations_limit": 11 }),
+    );
+    let blocks = out["result"]["content"].as_array().expect("content");
+    assert_eq!(
+        blocks.len(),
+        2,
+        "an explicit page size is not second-guessed"
+    );
+    assert_eq!(tool_json(&out)["annotations"].as_array().unwrap().len(), 11);
+}
+
+/// An ordinary task is untouched: two blocks, no note, nothing to notice.
+#[test]
+fn a_response_within_budget_still_carries_both_blocks() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "small" })).expect("add");
+    engine
+        .annotation_add(&json!({ "ref": 1, "body": "a short note" }))
+        .expect("annotate");
+    let server = McpServer::new(&engine, Scope::Read);
+    let out = call(&server, 1, "tasqx_get_task", json!({ "ref": 1 }));
+    let blocks = out["result"]["content"].as_array().expect("content");
+    assert_eq!(blocks.len(), 2);
+    assert!(!blocks[0]["text"].as_str().unwrap().contains("omitted"));
 }
