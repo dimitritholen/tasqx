@@ -118,10 +118,16 @@ fn full_protocol_sequence() {
             t["name"]
         );
     }
-    // Write tools are annotated destructive; reads are read-only.
+    // Reads are read-only; `destructiveHint` is a per-tool fact and NOT the
+    // write flag restated (D68). Creating a task is additive.
     let get_add = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
     assert_eq!(
         get_add("tasqx_add_task")["annotations"]["destructiveHint"],
+        false,
+        "creating a task is additive: labelling it destructive is what made the hint          indistinguishable from `readOnlyHint` and cost the host its gate"
+    );
+    assert_eq!(
+        get_add("tasqx_remove_memory")["annotations"]["destructiveHint"],
         true
     );
     assert_eq!(
@@ -1308,4 +1314,123 @@ fn the_corrective_tools_are_write_scoped() {
             "`{tool}` must not be reachable from a read-only server"
         );
     }
+}
+
+// ---- D68: the behaviour hints ------------------------------------------------
+
+/// Every tool the running server advertises, name -> annotations.
+fn listed_annotations() -> Vec<(String, Value)> {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    listed["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|t| {
+            (
+                t["name"].as_str().expect("a name").to_string(),
+                t["annotations"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// D68: `destructiveHint` and `idempotentHint` stop being `write` under two
+/// other names.
+///
+/// The emission was `"destructiveHint": s.write` with `idempotentHint` hard
+/// false, so all fourteen writes carried one pair and a host gating on
+/// `destructiveHint` gated every write or none — which is not a gate, and it
+/// is the gate D64 chose as `tasqx_remove_memory`'s only safeguard.
+///
+/// Asserted as *distinctions* rather than as a table of nineteen literals: a
+/// second copy of the table would have to be edited in lockstep with the thing
+/// it checks, which is the drift this repository keeps paying for.
+#[test]
+fn the_behaviour_hints_are_not_the_write_flag_under_another_name() {
+    let tools = listed_annotations();
+    let hint = |name: &str, key: &str| -> bool {
+        tools
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("tool {name} is listed"))
+            .1[key]
+            .as_bool()
+            .unwrap_or_else(|| panic!("{name}.{key} is a boolean"))
+    };
+
+    // A write that is additive, and a write that destroys. If these ever agree
+    // the hint has collapsed back into the write flag.
+    assert!(
+        !hint("tasqx_add_task", "destructiveHint"),
+        "creating a task is additive"
+    );
+    assert!(
+        hint("tasqx_remove_memory", "destructiveHint"),
+        "a permanent, un-undoable removal is the destructive case D64 named"
+    );
+
+    // Append-only writes are additive; the correctives are not.
+    for additive in [
+        "tasqx_add_task",
+        "tasqx_annotate_task",
+        "tasqx_add_memory",
+        "tasqx_add_dependency",
+        "tasqx_tag_task",
+        "tasqx_start_timer",
+        "tasqx_stop_timer",
+        "tasqx_create_project",
+    ] {
+        assert!(
+            !hint(additive, "destructiveHint"),
+            "`{additive}` only adds to the store"
+        );
+        assert!(
+            !hint(additive, "readOnlyHint"),
+            "`{additive}` is still a write"
+        );
+    }
+    for corrective in [
+        "tasqx_remove_memory",
+        "tasqx_untag_task",
+        "tasqx_remove_dependency",
+        "tasqx_reopen_task",
+        "tasqx_modify_task",
+        "tasqx_complete_task",
+    ] {
+        assert!(
+            hint(corrective, "destructiveHint"),
+            "`{corrective}` overwrites or removes what the store already held"
+        );
+    }
+
+    // A read is never destructive, and repeating one changes nothing.
+    for (name, ann) in &tools {
+        if ann["readOnlyHint"].as_bool() == Some(true) {
+            assert_eq!(
+                ann["destructiveHint"],
+                json!(false),
+                "read tool `{name}` cannot be destructive"
+            );
+            assert_eq!(
+                ann["idempotentHint"],
+                json!(true),
+                "read tool `{name}` has no effect to repeat"
+            );
+        }
+    }
+
+    // `idempotentHint` distinguishes too: set-shaped writes converge, appends
+    // do not.
+    assert!(
+        hint("tasqx_tag_task", "idempotentHint"),
+        "attaching a tag the task already carries changes nothing"
+    );
+    assert!(
+        !hint("tasqx_annotate_task", "idempotentHint"),
+        "every annotation is a new row"
+    );
 }
