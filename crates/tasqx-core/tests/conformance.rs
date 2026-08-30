@@ -358,6 +358,21 @@ const TASK_RELATIONS: &[Field] = &[
     req_of("annotations", Ty::Array, ANNOTATION),
 ];
 
+/// What `task.get` says about the history it did NOT return.
+///
+/// `annotations_total` is required, not optional, and present whether the page
+/// was elided or not: a count only a truncated caller sees is a count nobody can
+/// compare `annotations.len()` against, so "did I get all of it?" would stay
+/// unanswerable for exactly the client that needs to ask.
+///
+/// `annotations_next_offset` is nullable rather than absent for the same reason
+/// every other nullable key here is: a key that appears and disappears makes a
+/// client branch on presence, and this one flips on every read of the last page.
+const TASK_ANNOTATION_PAGE: &[Field] = &[
+    req("annotations_total", Ty::Int),
+    nul("annotations_next_offset", Ty::Int),
+];
+
 const TASK_BLOCKED: &[Field] = &[req("blocked", Ty::Bool)];
 
 const TASK_TOKENS: &[Field] = &[req_of("tokens", Ty::Array, MEASUREMENT)];
@@ -488,6 +503,7 @@ const R_TASK_GET: Shape = &[
     TASK_CORE,
     TASK_LIVE_TIME,
     TASK_RELATIONS,
+    TASK_ANNOTATION_PAGE,
     TASK_TOKENS,
     TASK_BLOCKED,
     TASK_STATUS_FLAG,

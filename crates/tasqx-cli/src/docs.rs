@@ -156,8 +156,10 @@ const METHODS: [(&str, &str, &str); 31] = [
     ),
     (
         "task.get",
-        "<code>ref</code>",
-        "Full detail incl. annotations, deps, <code>blocked</code>.",
+        "<code>ref</code>, <code>annotations_limit?</code>, <code>annotations_offset?</code>",
+        "Full detail incl. annotations, deps, <code>blocked</code>. A limit takes the newest \
+         annotations; <code>annotations_total</code> and <code>annotations_next_offset</code> \
+         say what was left out.",
     ),
     (
         "task.start",
@@ -177,7 +179,9 @@ const METHODS: [(&str, &str, &str); 31] = [
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
          <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>",
         "The task; plus the spawned next instance if recurring. Correlation params \
-         land in the done event. Any present token count records a self-report \
+         land in the done event, and so do <code>tool</code> and <code>model</code> on \
+         their own (D65) — a caller that cannot count its tokens still records who did \
+         the work. Any present token count additionally records a self-report \
          measurement — the primary channel: only the caller knows which task a \
          turn's spend served, and the log-parse fallback refuses samples claimed \
          by more than one task's window.",
@@ -353,7 +357,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 8] = [
 /// free-prose rows nothing compared, which is the same shape the verb table was
 /// in before the drift guards: a tool could be added, renamed, or moved across
 /// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 15] = [
+const MCP_TOOLS: [(&str, bool, &str); 16] = [
     (
         "tasqx_list_tasks",
         false,
@@ -388,6 +392,11 @@ const MCP_TOOLS: [(&str, bool, &str); 15] = [
     ),
     ("tasqx_add_dependency", true, "Block one task on another."),
     ("tasqx_add_memory", true, "Store a knowledge doc."),
+    (
+        "tasqx_remove_memory",
+        true,
+        "Retract a knowledge doc by id — permanent, and outside <code>undo</code>.",
+    ),
     ("tasqx_create_project", true, "Create a project."),
 ];
 
@@ -2049,6 +2058,8 @@ fn page_api() -> String {
          \x20     \"id\": \"019f6a1f-62f3-75f0-bf57-e5ff9c7c452a\"\n\
          \x20   }\n\
          \x20 ],\n\
+         \x20 \"annotations_next_offset\": null,\n\
+         \x20 \"annotations_total\": 1,\n\
          \x20 \"blocked\": false,\n\
          \x20 \"completed\": null,\n\
          \x20 \"created\": \"2026-07-16T08:51:09.2509427Z\",\n\
