@@ -1414,7 +1414,8 @@ fn page_scheduling() -> String {
             ],
             &[
                 "<code>scheduled</code>",
-                "When you intend to start. Informational.",
+                "When you intend to start. Not informational: a date still ahead holds the task \
+                 in <code>backlog</code>, out of the <code>@working</code> set, until it passes.",
             ],
             &[
                 "<code>wait</code>",

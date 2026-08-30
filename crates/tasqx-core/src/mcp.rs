@@ -98,6 +98,20 @@ fn enum_of(values: impl IntoIterator<Item = &'static str>) -> Value {
 const WHEN_GRAMMAR: &str = "Date/time in the tool's date grammar: \"tomorrow\", \
     \"friday\", \"2026-07-20\", \"in 3 days\", \"eom\", or \"2026-07-20T17:00\".";
 
+/// A date field's schema: what *this* field does, then the grammar every date
+/// field shares.
+///
+/// The grammar stays in one place for D33's reason, and the effect clause is
+/// per field for the opposite one. [`WHEN_GRAMMAR`] alone fits `due`,
+/// `scheduled` and `wait` equally well, so three identical descriptions left an
+/// agent no way to choose between them: an MCP client set `scheduled` to a
+/// four-week review date meaning "check back then" and parked the work in
+/// `backlog`, invisible to `@working` until that date, and found out only by
+/// reading `status` back out of the response.
+fn when_schema(effect: &str) -> Value {
+    json!({ "type": "string", "description": format!("{effect} {WHEN_GRAMMAR}") })
+}
+
 /// Schema fragment for a `ref` argument (short_id int OR full UUID string).
 fn ref_schema() -> Value {
     json!({
@@ -291,7 +305,9 @@ fn tool_specs() -> Vec<ToolSpec> {
             name: "tasqx_add_task",
             method: "task.add",
             write: true,
-            description: "Create a new task. Returns its short_id and urgency.",
+            description: "Create a new task. Returns its short_id, urgency and status — which \
+                is `backlog`, not `pending`, when `scheduled` or `wait` is in the future, and a \
+                backlog task is outside the `@working` set until that date passes.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -305,10 +321,24 @@ fn tool_specs() -> Vec<ToolSpec> {
                     // Every date field names the SAME grammar, because they all
                     // run through `datetime::parse_when` (D33). Advertising
                     // RFC3339 alone was a schema narrower than the engine: an
-                    // agent would never send `tomorrow`, which works.
-                    "due": { "type": "string", "description": WHEN_GRAMMAR },
-                    "scheduled": { "type": "string", "description": WHEN_GRAMMAR },
-                    "wait": { "type": "string", "description": WHEN_GRAMMAR },
+                    // agent would never send `tomorrow`, which works. What the
+                    // grammar cannot say is which field to reach for, so each
+                    // one now leads with its own effect — see `when_schema`.
+                    "due": when_schema(
+                        "The deadline. Drives the urgency score and anchors relative reminders; \
+                         it does not hide the task, so an overdue one stays in the working set."
+                    ),
+                    "scheduled": when_schema(
+                        "When you intend to start. A future value holds the task in `backlog`, \
+                         out of the `@working` set, until it arrives; `agenda` then places the \
+                         task on the earlier of `due` and `scheduled`."
+                    ),
+                    "wait": when_schema(
+                        "Hide the task until then. A future value holds it in `backlog` exactly \
+                         as `scheduled` does; the difference is intent — `wait` is \"not my \
+                         problem yet\", `scheduled` is \"I plan to start then\" and is the one \
+                         `agenda` places on."
+                    ),
                     "tags": { "type": "array", "items": { "type": "string" } },
                     "estimate": { "type": "string", "description": "Duration: \"4h\", \"90m\", \"1h30m\", \"2d\", \"1w\", or ISO-8601 \"PT4H\"." },
                     "recurrence": {
@@ -1160,5 +1190,70 @@ mod tests {
                 spec.name, spec.method
             );
         }
+    }
+
+    /// Each date field must say what it *does*, not only what it takes.
+    ///
+    /// `due`, `scheduled` and `wait` shared one description — the grammar
+    /// sentence and nothing else — so all three read identically to an agent
+    /// choosing between them. An MCP client picked `scheduled` for "check back
+    /// in four weeks" and put the work in `backlog`, invisible to `@working`
+    /// until late September; it noticed only by reading `status` back out of
+    /// the response. A field whose effect is discoverable only by inspecting
+    /// what it did is this repo's recurring defect, one layer earlier.
+    ///
+    /// The shared grammar stays (D33: three sentences were three chances to
+    /// advertise three grammars for one parser). What is asserted here is that
+    /// the effect clause is *added* to it and differs per field.
+    #[test]
+    fn every_date_field_names_its_own_effect_beside_the_shared_grammar() {
+        let specs = tool_specs();
+        let add = specs
+            .iter()
+            .find(|s| s.name == "tasqx_add_task")
+            .expect("tasqx_add_task");
+        let describe = |field: &str| {
+            add.schema["properties"][field]["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("`{field}` has no description"))
+                .to_string()
+        };
+        let (due, scheduled, wait) = (describe("due"), describe("scheduled"), describe("wait"));
+
+        for (field, text) in [("due", &due), ("scheduled", &scheduled), ("wait", &wait)] {
+            assert!(
+                text.contains(WHEN_GRAMMAR),
+                "`{field}` dropped the shared grammar sentence: D33 exists because three \
+                 hand-written grammars drifted into three different claims about one parser"
+            );
+            assert!(
+                text.len() > WHEN_GRAMMAR.len(),
+                "`{field}` says what it takes and not what it does — the grammar alone fits \
+                 all three fields, which is exactly why a caller cannot choose between them"
+            );
+        }
+        assert_ne!(due, scheduled, "`due` and `scheduled` read identically");
+        assert_ne!(due, wait, "`due` and `wait` read identically");
+        assert_ne!(scheduled, wait, "`scheduled` and `wait` read identically");
+
+        // The two that move a task out of the working set must say so by name,
+        // because `backlog` is the observable the client had to reverse-engineer.
+        for (field, text) in [("scheduled", &scheduled), ("wait", &wait)] {
+            assert!(
+                text.contains("backlog"),
+                "`{field}` holds a task in backlog until it passes \
+                 (`types::effective_status`) and never says so"
+            );
+        }
+        assert!(
+            due.contains("urgency"),
+            "`due` drives the urgency score and anchors relative reminders; the description \
+             names neither"
+        );
+        assert!(
+            add.description.contains("backlog"),
+            "`tasqx_add_task` returns `status: \"backlog\"` for a future `scheduled` or `wait` \
+             and its description never warns that a date can park the task"
+        );
     }
 }
