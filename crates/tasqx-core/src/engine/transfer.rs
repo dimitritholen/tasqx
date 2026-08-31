@@ -16,7 +16,11 @@ impl Engine {
     /// `dropped_dependencies` is always present and is 0 for an unfiltered
     /// export, which stays a byte-identical round trip.
     pub fn store_export(&self, p: &Value) -> Result<Value, ApiError> {
-        let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default(), Timestamp::now())
+        // One instant for the whole export: the filter's relative dates, every
+        // row's wait/schedule release and every recomputed urgency agree about
+        // what time it is.
+        let now_ts = Timestamp::now();
+        let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default(), now_ts)
             .map_err(ApiError::bad_request)?;
         // ONE snapshot for the whole document. This function issues
         // SNAPSHOT_QUERY_COUNT statements (`load_task_snapshots`) plus three
@@ -47,7 +51,7 @@ impl Engine {
         // `Transaction` borrows this very `Connection`, so every `self.conn`
         // read below already runs inside it.
         let _snapshot = self.conn.unchecked_transaction()?;
-        let mut snapshots = self.load_task_snapshots()?;
+        let mut snapshots = self.load_task_snapshots(now_ts)?;
         snapshots.sort_by_key(|snapshot| snapshot.task.short_id);
 
         // Pass 1: which tasks survive the filter. Edges can only be resolved
@@ -77,7 +81,7 @@ impl Engine {
         let mut dropped = 0i64;
         let mut out = Vec::with_capacity(selected.len());
         for snapshot in &selected {
-            out.push(Self::export_task(snapshot, &present, &mut dropped));
+            out.push(Self::export_task(snapshot, &present, &mut dropped, now_ts));
         }
         Ok(json!({
             "tasks": out,
@@ -152,7 +156,12 @@ impl Engine {
     /// `Map` is a `BTreeMap`, so keys serialize sorted (canonical form).
     /// `present` is the id set being exported; edges leaving it are dropped and
     /// counted into `dropped`.
-    fn export_task(snapshot: &TaskSnapshot, present: &HashSet<&str>, dropped: &mut i64) -> Value {
+    fn export_task(
+        snapshot: &TaskSnapshot,
+        present: &HashSet<&str>,
+        dropped: &mut i64,
+        now_ts: Timestamp,
+    ) -> Value {
         let t = &snapshot.task;
         let all = &snapshot.depends_on;
         let kept: Vec<String> = all
@@ -183,7 +192,7 @@ impl Engine {
                 "remind": t.remind,
                 "depends_on": kept,
                 "annotations": snapshot.annotations,
-                "urgency": urgency::score(t.priority, t.due.as_deref(), &t.created),
+                "urgency": urgency::score_at(t.priority, t.due.as_deref(), &t.created, now_ts),
                 "created": t.created,
                 "modified": t.modified,
                 "completed": t.completed,
@@ -562,8 +571,12 @@ impl Engine {
             // malformed anchor is named rather than stored.
             let active_since =
                 import_field(id, "active_since", opt_when(tv, "active_since", now_ts))?;
-            let urgency =
-                urgency::score(priority.and_then(Priority::parse), due.as_deref(), &created);
+            let urgency = urgency::score_at(
+                priority.and_then(Priority::parse),
+                due.as_deref(),
+                &created,
+                now_ts,
+            );
 
             // D4: `short_id` is the handle the whole CLI addresses a task by, and
             // the column is NOT NULL UNIQUE — so a payload carrying a number some
@@ -1109,7 +1122,7 @@ mod tests {
             .find("unchecked_transaction()")
             .expect("store_export must open a transaction so its reads share one snapshot");
         let first_read = body
-            .find("self.load_task_snapshots()")
+            .find("self.load_task_snapshots(")
             .expect("store_export loads the task relation");
         assert!(
             guard < first_read,
