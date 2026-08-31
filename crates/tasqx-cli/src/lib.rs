@@ -256,16 +256,36 @@ impl Exit {
 /// error is the real error it is.
 ///
 /// This lived inside `docs --stdout` alone, which is why it protected exactly
-/// one of the commands that needed it.
+/// one of the commands that needed it. Then it lived on the `Exit::Out`
+/// terminal alone, which is why `tasqx watch | head`, `manual`, and `api` —
+/// the self-framed owners of stdout — still panicked: every stdout write
+/// routes through here or [`emit_open`], not through `print!`.
 fn emit(text: &str) {
-    let mut out = std::io::stdout();
-    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+    let _ = emit_open(text);
+}
+
+/// Like [`emit`], but reports whether the reader is still attached: `false`
+/// means the pipe closed. A one-shot caller can ignore it (that is [`emit`]);
+/// a streaming loop (`watch`) must not, or it keeps writing into a dead pipe
+/// until killed instead of ending with the reader.
+fn emit_open(text: &str) -> bool {
+    match emit_via(&mut std::io::stdout(), text) {
+        Ok(open) => open,
         Err(e) => {
             eprintln!("error: cannot write to stdout: {e}");
             exit(1);
         }
+    }
+}
+
+/// The tolerant write itself, over any writer so the classification is
+/// testable without a real process's stdout: `Ok(true)` written, `Ok(false)`
+/// reader closed the pipe, `Err` a real write error.
+fn emit_via(out: &mut impl Write, text: &str) -> std::io::Result<bool> {
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -3609,7 +3629,7 @@ fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
 /// `tasqx manual` — print a themed guide section (or the TOC). No store, no net.
 fn run_manual(ctx: &Ctx, topic: Option<&str>) {
     match manual::render(ctx, topic) {
-        Ok(page) => println!("{page}"),
+        Ok(page) => emit(&format!("{page}\n")),
         Err(msg) => {
             eprintln!("{msg}");
             exit(ErrorCode::BadRequest.exit_code()); // exit 2
@@ -3760,8 +3780,11 @@ fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[String], ctx:
                     }
                 } else {
                     let data = evt.get("data").cloned().unwrap_or(Value::Null);
-                    println!("{}", watch_stream_line(&data));
-                    let _ = std::io::stdout().flush();
+                    if !emit_open(&format!("{}\n", watch_stream_line(&data))) {
+                        // `watch | head`: the reader left, so the stream is
+                        // over — cleanly, not as a BrokenPipe panic.
+                        exit(0);
+                    }
                 }
             }
             // A stray response (none expected here) is harmless; ignore it.
@@ -3816,12 +3839,16 @@ fn watch_render(conn: &mut daemon::Conn, filter: &str, ctx: &Ctx, tty: bool) -> 
     }
     let result = env.get("result").cloned().unwrap_or(Value::Null);
     let text = render::task_table(ctx, &result);
-    if tty {
+    let painted = if tty {
         // Clear screen + cursor home, then reprint the fresh working set.
-        print!("\x1b[2J\x1b[H");
+        format!("\x1b[2J\x1b[H{text}")
+    } else {
+        text
+    };
+    if !emit_open(&painted) {
+        // The reader closed the pipe; there is nobody left to paint for.
+        exit(0);
     }
-    print!("{text}");
-    let _ = std::io::stdout().flush();
     Ok(())
 }
 
@@ -3834,7 +3861,7 @@ fn run_api() {
                 "tasqx": "1", "ok": false,
                 "error": { "code": "internal", "message": msg }
             });
-            println!("{env}");
+            emit(&format!("{env}\n"));
             exit(1);
         }
     };
@@ -3845,12 +3872,15 @@ fn run_api() {
             "tasqx": "1", "ok": false,
             "error": { "code": "bad_request", "message": "could not read stdin" }
         });
-        println!("{env}");
+        emit(&format!("{env}\n"));
         exit(2);
     }
 
     let response = handle_envelope(&engine, &input);
-    println!("{}", serde_json::to_string(&response).unwrap_or_default());
+    emit(&format!(
+        "{}\n",
+        serde_json::to_string(&response).unwrap_or_default()
+    ));
 }
 
 /// The `tasqx mcp` subcommand family (DESIGN.md §7, D7).
@@ -4091,6 +4121,51 @@ fn db_path_resolved(create_dirs: bool) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A writer whose reader has gone away: every byte is refused `BrokenPipe`.
+    struct ClosedPipe;
+    impl Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A writer with a real fault (disk full, not a departed reader).
+    struct FaultyPipe;
+    impl Write for FaultyPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("write fault"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn emit_via_writes_and_reports_the_reader_present() {
+        let mut out = Vec::new();
+        let open = emit_via(&mut out, "hello\n").expect("a healthy writer");
+        assert!(open, "a successful write means the reader is still there");
+        assert_eq!(out, b"hello\n");
+    }
+
+    #[test]
+    fn emit_via_reports_a_closed_pipe_as_success_without_a_reader() {
+        // The contract every call site leans on: `watch | head` losing its
+        // reader is a clean end of stream, not an error and never a panic.
+        let open = emit_via(&mut ClosedPipe, "frame\n").expect("BrokenPipe is not an error here");
+        assert!(!open, "a closed pipe must report the reader gone");
+    }
+
+    #[test]
+    fn emit_via_passes_a_real_write_fault_through() {
+        // Only BrokenPipe is tolerated; a genuine fault must surface so
+        // `emit_open` can print the diagnostic and exit 1.
+        assert!(emit_via(&mut FaultyPipe, "x").is_err());
+    }
 
     fn tty_caps() -> Caps {
         Caps {
