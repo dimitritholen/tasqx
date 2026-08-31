@@ -867,8 +867,9 @@ impl Engine {
             }
         }
 
-        let ts = now();
-        let new_urg = urgency::score(priority, due.as_deref(), &task.created);
+        // The operation instant, as the stored string — see `task_add`.
+        let ts = now_ts.to_string();
+        let new_urg = urgency::score_at(priority, due.as_deref(), &task.created, now_ts);
         let new_rev = task.rev + 1;
 
         if let Some(name) = &project_target {

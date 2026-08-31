@@ -229,8 +229,13 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
     use ratatui::crossterm::event::{self, Event};
     use tui::dashboard::{Action, App};
 
-    let today = chart::today();
+    // One instant per data fetch, `today` DERIVED from it — never a second
+    // clock read beside it, and never captured once for the process: a session
+    // left open across UTC midnight kept bucketing DUE against yesterday
+    // (OVERDUE/TODAY wrong until restart) while `now` moved on without it.
+    // Each refresh below re-derives the pair the same way.
     let now = jiff::Timestamp::now();
+    let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
     let days = dashboard_window_days();
     let mut app = App::new(
         dashboard_data(be, days, now, today)?,
@@ -278,7 +283,9 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                 // existing panic hook and `Restore` guard stay sufficient.
                 if app.auto_refresh() && !event::poll(std::time::Duration::from_secs(REFRESH_TICK))?
                 {
-                    match dashboard_data(be, app.window_days(), jiff::Timestamp::now(), today) {
+                    let now = jiff::Timestamp::now();
+                    let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
+                    match dashboard_data(be, app.window_days(), now, today) {
                         Ok(data) => app.replace(data),
                         Err(e) => {
                             failed = Some(e);
@@ -299,7 +306,9 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                         // The error is carried out and reported on the normal
                         // terminal, because a message printed here is wiped by the
                         // restore that follows it.
-                        match dashboard_data(be, app.window_days(), jiff::Timestamp::now(), today) {
+                        let now = jiff::Timestamp::now();
+                        let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
+                        match dashboard_data(be, app.window_days(), now, today) {
                             Ok(data) => app.replace(data),
                             Err(e) => {
                                 failed = Some(e);
@@ -361,11 +370,12 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                 }
                 // Whatever happened, the screen shows it: a started task turns
                 // up in NOW, and a cancelled pick redraws unchanged.
+                let now = jiff::Timestamp::now();
                 app.replace(dashboard_data(
                     be,
                     app.window_days(),
-                    jiff::Timestamp::now(),
-                    chart::today(),
+                    now,
+                    now.to_zoned(jiff::tz::TimeZone::UTC).date(),
                 )?);
             }
             // Quit, or nothing left to do.
