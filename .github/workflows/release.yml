@@ -214,3 +214,77 @@ jobs:
             --verify-tag \
             --title "tasqx ${GITHUB_REF_NAME}" \
             --generate-notes
+
+  # The tap and the bucket hold a rendered copy of what this run just
+  # published, and D77 rules how a copy travels: on a branch, through the
+  # target repo's own CI, merged only when green. So this job pushes to no
+  # main anywhere — it renders both files with the same generators a human
+  # would use, opens a PR in each repo, and flips auto-merge on so each PR
+  # completes itself when that repo's required checks pass. A failed check
+  # leaves an open red PR, which is the loudest available form of "the
+  # release and the rendered copy disagree".
+  #
+  # Needs the PACKAGE_REPOS_TOKEN secret: a fine-grained PAT scoped to
+  # homebrew-tasqx and scoop-tasqx with contents and pull-requests
+  # read/write — the workflow's own token cannot cross repositories. The job
+  # fails loudly, naming the secret, when it is absent.
+  #
+  # Rehearsable without a tag, unlike the publish job above (a lesson the
+  # installer-attachment work paid for): a workflow_dispatch run resolves the
+  # newest published release, renders against it, and — the tap and bucket
+  # already carrying it — reports "nothing to bump" and exits green. That
+  # exercises the token, the clones and the render; only a real tag proves
+  # the PR-and-auto-merge half.
+  package-managers:
+    name: bump tap and bucket
+    needs: [build, release]
+    if: always() && (needs.release.result == 'success' || (github.event_name == 'workflow_dispatch' && needs.build.result == 'success'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render both, PR each, auto-merge on green
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_REPOS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::the PACKAGE_REPOS_TOKEN secret is not set — a fine-grained PAT with contents+pull-requests read/write on dimitritholen/homebrew-tasqx and dimitritholen/scoop-tasqx"
+            exit 1
+          fi
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            TAG="$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName --jq .tagName)"
+            echo "dispatch rehearsal against the newest release, ${TAG}"
+          fi
+
+          bash scripts/brew-formula.sh "$TAG" > /tmp/tasqx.rb
+          bash scripts/scoop-manifest.sh "$TAG" > /tmp/tasqx.json
+
+          bump() {
+            local repo="$1" rendered="$2" dest="$3"
+            git clone --depth 1 \
+              "https://x-access-token:${GH_TOKEN}@github.com/dimitritholen/${repo}.git" \
+              "/tmp/${repo}"
+            ( cd "/tmp/${repo}"
+              mkdir -p "$(dirname "$dest")"
+              cp "$rendered" "$dest"
+              git add -A
+              if git diff --cached --quiet; then
+                echo "${repo}: already carries ${TAG}, nothing to bump"
+                return 0
+              fi
+              git checkout -b "tasqx-${TAG#v}"
+              git -c user.name="github-actions" \
+                  -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                  commit -m "tasqx ${TAG#v}"
+              git push origin "tasqx-${TAG#v}"
+              gh pr create --repo "dimitritholen/${repo}" \
+                --head "tasqx-${TAG#v}" --title "tasqx ${TAG#v}" \
+                --body "Rendered by release.yml from the ${TAG} assets. Auto-merges when this repository's checks pass."
+              gh pr merge --repo "dimitritholen/${repo}" \
+                "tasqx-${TAG#v}" --auto --merge
+            )
+          }
+
+          bump homebrew-tasqx /tmp/tasqx.rb  Formula/tasqx.rb
+          bump scoop-tasqx    /tmp/tasqx.json bucket/tasqx.json
