@@ -9,8 +9,11 @@ an answer you can interrogate:
 
 ```console
 $ tasqx add Ship the release notes due:friday +docs !high --project work
-Added #42  ·  pending  ·  urgency 11.4  ·  work
-  Ship the release notes
+╭─ #42 · Ship the release notes ─╮
+│ ● pending   ! high   ▲ 11.4    │
+│ work · #docs                   │
+│ due 2026-09-04T00:00:00Z       │
+╰────────────────────────────────╯
 
 $ tasqx next
 #42  (urgency 11.4)  Ship the release notes
