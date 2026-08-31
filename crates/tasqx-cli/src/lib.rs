@@ -360,6 +360,41 @@ fn hint_occasion(cli: &Cli) -> Option<complete::hint::Occasion> {
 /// Run the parsed command, yielding whatever the terminal in [`run`] should do
 /// with it. Every `return` in here owes an [`Exit`].
 fn execute(cli: Cli) -> Exit {
+    // `--socket` names a daemon to route through, and these verbs open the
+    // store without ever consulting it: `api` and `mcp serve` host their own
+    // transport over an in-process engine (D73), and charts and the HTML
+    // report render from a direct local read. Accepting the flag while
+    // writing — or reading — somewhere else is the wrong-store trap with the
+    // operator's own routing request in hand, so it is refused with the
+    // reason rather than ignored. `$TASQX_SOCK` is deliberately NOT refused
+    // on these verbs: an exported variable is ambient, not a per-command
+    // request, and refusing it would break every `mcp serve` an MCP host
+    // launches into an environment that happens to export it.
+    if cli.socket.is_some() {
+        let inert = match &cli.command {
+            Some(Command::Api) => Some(
+                "`api` answers one envelope from stdin against an in-process \
+                 engine; it is not a socket client",
+            ),
+            Some(Command::Mcp { .. }) => Some(
+                "`mcp serve` hosts MCP over stdio against an in-process \
+                 engine; it is not a socket client",
+            ),
+            Some(Command::Chart { .. }) | Some(Command::Report { html: true, .. }) => Some(
+                "charts and the HTML report render from a direct local read \
+                 of the store, never through a daemon",
+            ),
+            _ => None,
+        };
+        if let Some(why) = inert {
+            return Exit::Out(Err(ApiError::bad_request(format!(
+                "--socket is not honoured here: {why} (DESIGN.md D73). Drop \
+                 the flag to work on the local store; the plain CLI verbs are \
+                 the ones that route through a daemon."
+            ))));
+        }
+    }
+
     // `api`, `mcp`, and `daemon` are special: they frame their own I/O (response
     // envelopes / JSON-RPC / the socket server) and do not go through the normal
     // render path. `daemon` opens its own Engine and blocks.

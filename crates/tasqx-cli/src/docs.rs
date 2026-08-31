@@ -448,7 +448,7 @@ pub(crate) const GLOBAL_FLAGS: [(&str, &str); 5] = [
     ),
     (
         "<code>--socket &lt;addr&gt;</code>",
-        "Socket / named pipe of a daemon. Overrides <code>$TASQX_SOCK</code>.",
+        "Socket / named pipe of a daemon. Overrides <code>$TASQX_SOCK</code>. Refused by <code>api</code>, <code>mcp</code>, <code>chart</code> and <code>report --html</code>, which open the store in-process and cannot honour it (D73).",
     ),
     (
         "<code>--no-daemon</code>",
@@ -641,9 +641,9 @@ fn page_overview() -> String {
     s.push_str(&pre_plain(
         "  tasqx CLI ─┐\n\
          \x20 report   ─┼─→ stdio: one JSON envelope ─┐\n\
-         \x20 plugins  ─┘                             ├─→ dispatch ─→ storage ─→ SQLite (tasks.db + WAL)\n\
-         \x20 TUI/GUI  ─┐                             │                        └─→ events (append-only log)\n\
-         \x20 MCP      ─┴─→ socket / named pipe ─→ daemon ─┘",
+         \x20 plugins  ─┤                             ├─→ dispatch ─→ storage ─→ SQLite (tasks.db + WAL)\n\
+         \x20 MCP      ─┘                             │                        └─→ events (append-only log)\n\
+         \x20 TUI/GUI  ───→ socket / named pipe ─→ daemon ─┘",
     ));
 
     s.push_str(&h3("Every mutation is logged, in the same transaction"));
@@ -1773,6 +1773,13 @@ fn page_daemon() -> String {
          writer, live-update semantics for free. If not, they open the store in-process. \
          <strong>Same command surface either way</strong>, and a missing or stale socket falls back \
          immediately rather than hanging. <code>--no-daemon</code> forces the in-process path.",
+    ));
+    s.push_str(&p(
+        "Four surfaces never route through a daemon: <code>api</code>, <code>mcp serve</code>, \
+         <code>chart</code> and <code>report --html</code> open the store in-process, always. \
+         They refuse an explicit <code>--socket</code> rather than ignore it (D73), because a \
+         flag that names a daemon and is silently discarded aims your write at a different \
+         store than the one you asked for.",
     ));
 
     s.push_str(&h3("Socket addresses"));

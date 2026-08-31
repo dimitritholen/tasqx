@@ -3117,3 +3117,60 @@ fn the_fixture_hands_out_a_clean_store_even_after_a_previous_run_left_one() {
         String::from_utf8_lossy(&second.stderr)
     );
 }
+
+/// `--socket` on a verb that opens the store in-process was accepted and
+/// silently ignored (2026-08-31 daemon field test, finding #3): with a daemon
+/// owning one store and `TASQX_DB` naming another, `tasqx api --socket <addr>`
+/// wrote to `$TASQX_DB` — creating a second store and answering `short_id: 1`
+/// from it — while the plain CLI verb beside it, same flag, routed to the
+/// daemon. Two live tasks numbered 1, in two files, from two commands that
+/// differ only in a flag one of them discards. D73 rules the flag refused on
+/// every verb that cannot honour it: `api`, `mcp`, `chart`, `report --html`.
+///
+/// The refusal must fire before any transport opens, so none of these needs a
+/// daemon, stdin, or a readable store — which is also why a hang here is a
+/// failure and not an environment problem.
+#[test]
+fn an_explicit_socket_on_a_verb_that_cannot_honour_it_is_refused_not_ignored() {
+    let dir = fresh_config_dir("inert-socket");
+    for args in [
+        &["--socket", "tasqx-reg-inert", "api"][..],
+        &["--socket", "tasqx-reg-inert", "mcp", "serve"][..],
+        &["--socket", "tasqx-reg-inert", "chart", "burndown"][..],
+        &["--socket", "tasqx-reg-inert", "report", "--html"][..],
+    ] {
+        let out = bin("inert-socket", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?} must refuse the flag as bad_request, got stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("--socket is not honoured here"),
+            "{args:?} must name the flag and the refusal: {stderr}"
+        );
+        assert!(
+            stderr.contains("D73"),
+            "{args:?} must cite the ruling so the reader can find the why: {stderr}"
+        );
+    }
+
+    // The control: an ordinary verb still takes the flag — it routes through a
+    // reachable daemon or falls back in-process (here `--no-daemon` from the
+    // fixture short-circuits the fallback). The refusal is per-verb, not global.
+    let out = bin("inert-socket", &dir)
+        .args(["--socket", "tasqx-reg-inert", "list"])
+        .output()
+        .expect("run tasqx");
+    assert!(
+        out.status.success(),
+        "`list --socket` must not be refused: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
