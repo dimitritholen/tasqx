@@ -706,6 +706,7 @@ pub fn serve_with_notifier(
             tokens_enabled: false,
             otlp_port: None,
             idle_timeout: None,
+            retired_marker: None,
         },
     )
 }
@@ -737,6 +738,19 @@ pub struct DaemonOptions {
     /// the auto-spawn half of D5, when it lands, passes the 15 minutes
     /// explicitly at the spawn site that knows it is a lazily-started daemon.
     pub idle_timeout: Option<Duration>,
+    /// Where to record an idle-timeout retirement (D74). `None` — the default —
+    /// records nothing.
+    ///
+    /// The idle timeout changes what an unchanged command line means: the
+    /// moment the daemon leaves, the same `tasqx add` stops addressing the
+    /// daemon's store and starts addressing `$TASQX_DB`'s — measured in the
+    /// 2026-08-31 field test as two stores each holding a task `#1` from one
+    /// command run twice, sixty seconds apart. The CLI passes the marker path
+    /// it will look for on its next failed connect, so the first command after
+    /// the transition can report it instead of switching silently. Written by
+    /// the **idle branch alone**: a Ctrl-C is the operator's own act and
+    /// leaves no note.
+    pub retired_marker: Option<std::path::PathBuf>,
 }
 
 impl Default for DaemonOptions {
@@ -746,6 +760,7 @@ impl Default for DaemonOptions {
             tokens_enabled: false,
             otlp_port: None,
             idle_timeout: None,
+            retired_marker: None,
         }
     }
 }
@@ -764,7 +779,12 @@ pub fn serve_with_options(
         tokens_enabled,
         otlp_port,
         idle_timeout,
+        retired_marker,
     } = options;
+    // Captured before the engine moves into `Shared`, for the retirement
+    // marker: the store path is a fact about this daemon, not about whichever
+    // client later reads the note.
+    let store_path = engine.store_path();
     let listener = bind(socket)?;
     // Non-blocking accept so the loop can observe `shutdown`; accepted streams
     // stay blocking, which the thread-per-connection model wants.
@@ -905,6 +925,9 @@ pub fn serve_with_options(
                  (`[daemon] idle_timeout`)",
                 idle_timeout.unwrap_or_default().as_secs()
             );
+            if let Some(marker) = &retired_marker {
+                record_idle_retirement(marker, socket, store_path.as_deref());
+            }
             break Ok(());
         }
         match listener.accept() {
@@ -978,6 +1001,36 @@ fn drain_connections(mut conns: Vec<thread::JoinHandle<()>>) {
         conns.len(),
         SHUTDOWN_DRAIN_DEADLINE
     );
+}
+
+/// Record an idle-timeout retirement where [`DaemonOptions::retired_marker`]
+/// said to (D74).
+///
+/// The body is self-describing prose plus three parseable lines — `socket`,
+/// `store` (`-` for an in-memory engine, which no CLI daemon runs on), and
+/// `retired` — because the file lives beside `config.toml` and somebody will
+/// open it. A failed write is reported on stderr rather than swallowed: the
+/// marker exists so a silent transition gets a voice, and losing it silently
+/// would be the same defect one layer down.
+fn record_idle_retirement(marker: &std::path::Path, socket: &str, store: Option<&str>) {
+    let body = format!(
+        "# tasqx wrote this when the daemon below left on its idle timeout (DESIGN.md D74).\n\
+         # The next command that fails to reach it reports the retirement and deletes this file.\n\
+         socket {socket}\n\
+         store {}\n\
+         retired {}\n",
+        store.unwrap_or("-"),
+        jiff::Timestamp::now(),
+    );
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(marker, body) {
+        eprintln!(
+            "tasqx daemon: could not record the idle retirement at {}: {e}",
+            marker.display()
+        );
+    }
 }
 
 // ---- idle shutdown (DESIGN.md §12-D5) ---------------------------------------

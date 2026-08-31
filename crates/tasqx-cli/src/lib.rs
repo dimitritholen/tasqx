@@ -562,6 +562,26 @@ fn execute(cli: Cli) -> Exit {
         }
     };
 
+    // D74: `$TASQX_DB` is never silently inert. On the remote branch the
+    // daemon owns the store and the variable does nothing, and the write path
+    // says only `Added #N` — on 2026-07-25 that silence sent every write of an
+    // automated session into the user's real store. One stderr line, on the
+    // path that ignores the variable, every time the condition holds: the
+    // common case (no variable, or no daemon) stays silent, and this is
+    // deliberately NOT suppressed under `--json` or off a terminal, because
+    // the incident's consumer was exactly the automated kind suppression
+    // would blind. `config` is exempt — `config store` IS the fuller answer.
+    if let Backend::Remote { socket, .. } = &backend {
+        if std::env::var("TASQX_DB").is_ok_and(|v| !v.is_empty())
+            && !matches!(&cli.command, Some(Command::Config { .. }))
+        {
+            eprintln!(
+                "tasqx: note: routed through the daemon at {socket}; $TASQX_DB is not in \
+                 effect (pass --no-daemon to address your own store)"
+            );
+        }
+    }
+
     // A bare `tasqx` opens the dashboard when — and only when — a human is
     // watching (D58). Everything else about a bare invocation is unchanged, and
     // that is the whole promise: `tasqx | cat`, `tasqx > file`, `--json`,
@@ -1071,8 +1091,70 @@ fn open_backend(socket_flag: Option<&str>, no_daemon: bool) -> Result<Backend, S
                 socket: target,
             });
         }
+        // The connect failed and this command is about to address a different
+        // store than the last one did, if a daemon recently retired here. Say
+        // so once (D74). Deliberately not on the `--no-daemon` path: there the
+        // operator chose the in-process store themselves.
+        report_daemon_retirement(&target);
     }
     Ok(Backend::Local(open_engine()?))
+}
+
+/// Where an idle-retired daemon leaves its note (D74): beside `config.toml`,
+/// keyed by the socket — the D57 marker precedent, because state lives in a
+/// sibling file, never inside the user's config. The socket is sanitized for a
+/// filename (a Unix socket address is a path) and recorded verbatim inside the
+/// file; the content compare in [`report_daemon_retirement`] is what is
+/// trusted, the filename is only a rendezvous.
+fn daemon_retired_marker(socket: &str) -> Option<PathBuf> {
+    let sanitized: String = socket
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    config::config_dir().map(|d| d.join(format!("daemon-retired-{sanitized}")))
+}
+
+/// D74's client half: the first command whose daemon connect fails reads the
+/// retirement note, reports the transition on stderr, and consumes the marker
+/// so the note is said once — D57's marker-then-print discipline, inverted
+/// (print-then-delete, because a note that cannot be delivered should survive
+/// for the next command to try).
+///
+/// The recorded socket must equal the one this command resolved: two addresses
+/// can sanitize to one filename, and a note about a different daemon is not
+/// this command's transition.
+fn report_daemon_retirement(target: &str) {
+    let Some(marker) = daemon_retired_marker(target) else {
+        return;
+    };
+    let Ok(body) = std::fs::read_to_string(&marker) else {
+        return;
+    };
+    let field = |key: &str| {
+        body.lines()
+            .find_map(|l| l.strip_prefix(key).map(str::trim))
+            .filter(|v| !v.is_empty())
+    };
+    if field("socket ") != Some(target) {
+        return;
+    }
+    let owned = field("store ").filter(|s| *s != "-");
+    let when = field("retired ");
+    eprintln!(
+        "tasqx: note: the daemon at {target} left on its idle timeout{}{}; this and later \
+         commands open the local store in-process — `tasqx config store` names it",
+        when.map(|w| format!(" at {w}")).unwrap_or_default(),
+        owned
+            .map(|s| format!(" and its store {s} is no longer being served"))
+            .unwrap_or_default(),
+    );
+    let _ = std::fs::remove_file(&marker);
 }
 
 fn run_init(be: &mut Backend, ctx: &Ctx, name: String, desc: Option<String>) -> CmdOutcome {
@@ -3185,7 +3267,24 @@ fn run_config(
                 .unwrap_or_else(|| "(no config directory on this platform)".to_string());
             Ok((json!({ "path": p }), format!("{p}\n")))
         }
-        ConfigAction::Store => Ok(store_location(be.remote_socket(), db_path())),
+        ConfigAction::Store => {
+            // D74: through a daemon, ask it — `core.capabilities` carries the
+            // store the answering engine writes to, which is the one fact D47
+            // established a client cannot compute for itself. An older daemon
+            // without the field degrades to the pre-D74 output, not an error.
+            let daemon_store = if be.remote_socket().is_some() {
+                be.call("core.capabilities", &json!({}))
+                    .ok()
+                    .and_then(|v| v.get("store").and_then(Value::as_str).map(str::to_string))
+            } else {
+                None
+            };
+            Ok(store_location(
+                be.remote_socket(),
+                daemon_store.as_deref(),
+                db_path(),
+            ))
+        }
         ConfigAction::Get { key } => {
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;
             let (value, _) = setting_value(&mut |k| store_value(be, k), s, flag_for(s))?;
@@ -3556,7 +3655,21 @@ fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
     // who never configured it sees is byte-for-byte the one they saw before.
     let idle_timeout = config_daemon_idle_timeout();
 
+    // D74: a retirement note this daemon may have left on a previous idle exit
+    // is stale the moment a daemon serves this address again — clear it before
+    // any client can read yesterday's transition as today's.
+    let retired_marker = daemon_retired_marker(&socket);
+    if let Some(marker) = &retired_marker {
+        let _ = std::fs::remove_file(marker);
+    }
+
     eprintln!("tasqx daemon: listening on {socket} (Ctrl-C to stop)");
+    // D74: the store, beside the address — the one line of stderr that answers
+    // the question every wrong-store incident starts with. Derived from the
+    // engine's own connection, never re-resolved from flags or environment.
+    if let Some(store) = engine.store_path() {
+        eprintln!("tasqx daemon: store {store}");
+    }
     if let Some(idle) = idle_timeout {
         eprintln!(
             "tasqx daemon: will exit after {} minute(s) with no clients and no work \
@@ -3569,6 +3682,7 @@ fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
         tokens_enabled,
         otlp_port,
         idle_timeout,
+        retired_marker,
     };
     match daemon::serve_with_options(engine, &socket, shutdown, options) {
         Ok(()) => eprintln!("tasqx daemon: stopped"),
@@ -3836,21 +3950,37 @@ fn open_engine_at(db: Option<&str>) -> Result<Engine, String> {
 
 /// Answer "which store does this process actually write to?".
 ///
-/// Both inputs are passed rather than read here, so the daemon branch is
+/// All inputs are passed rather than read here, so both daemon branches are
 /// reachable from a test without a listening socket.
 ///
 /// The two cases are NOT variations on one sentence. In-process, the local file
 /// IS the store. Through a daemon, it is not: `open_backend` prefers a reachable
 /// daemon and the remote path never consults `TASQX_DB`, so the local path is
 /// inert and reporting it would restate the exact falsehood this surface exists
-/// to kill. `path` is therefore absent on the daemon branch — a client cannot
-/// know the daemon's file, and guessing it would be worse than saying so.
-fn store_location(remote_socket: Option<&str>, path: Result<PathBuf, String>) -> (Value, String) {
+/// to kill. The local `path` is therefore still absent on the daemon branch —
+/// but the daemon's own file is not guessed, it is `daemon_store`: the caller
+/// asked the daemon (`core.capabilities.store`, D74), which retires D47's "a
+/// client cannot know the daemon's file" without touching what D47 actually
+/// forbade. `None` here means an older daemon that predates the field, and the
+/// answer degrades to naming the socket alone rather than inventing a path.
+fn store_location(
+    remote_socket: Option<&str>,
+    daemon_store: Option<&str>,
+    path: Result<PathBuf, String>,
+) -> (Value, String) {
     if let Some(socket) = remote_socket {
+        let owns = match daemon_store {
+            Some(store) => format!("the daemon owns the store: {store}"),
+            None => "the daemon owns the store; it predates D74 and cannot name it".to_string(),
+        };
         return (
-            json!({ "backend": "daemon", "socket": socket }),
+            json!({
+                "backend": "daemon",
+                "socket": socket,
+                "store": daemon_store.map(str::to_string),
+            }),
             format!(
-                "daemon at {socket}\n  the daemon owns the store; $TASQX_DB is NOT in effect here.\n  \
+                "daemon at {socket}\n  {owns}\n  $TASQX_DB is NOT in effect here. \
                  Pass --no-daemon to work on your own store instead.\n"
             ),
         );
@@ -4115,7 +4245,11 @@ mod tests {
     /// answered for `config.toml` and nothing answered for the store.
     #[test]
     fn store_location_names_the_file_when_the_command_runs_in_process() {
-        let (json, text) = store_location(None, Ok(PathBuf::from("/home/u/.local/tasqx/tasks.db")));
+        let (json, text) = store_location(
+            None,
+            None,
+            Ok(PathBuf::from("/home/u/.local/tasqx/tasks.db")),
+        );
         assert_eq!(json["backend"], "local");
         assert_eq!(json["path"], "/home/u/.local/tasqx/tasks.db");
         assert!(
@@ -4133,6 +4267,7 @@ mod tests {
     fn store_location_says_the_local_db_is_not_in_effect_when_a_daemon_answers() {
         let (json, text) = store_location(
             Some("/run/user/1000/tasqx/tasqx.sock"),
+            Some("/home/u/.local/tasqx/tasks.db"),
             Ok(PathBuf::from("/tmp/scratch.db")),
         );
         assert_eq!(json["backend"], "daemon");
@@ -4145,12 +4280,37 @@ mod tests {
             text.contains("TASQX_DB"),
             "the whole point is telling the reader their TASQX_DB is inert: {text}"
         );
+        // D74: the daemon's own file IS named — the caller asked the daemon,
+        // which is not the guess D47 forbade.
+        assert_eq!(json["store"], "/home/u/.local/tasqx/tasks.db");
+        assert!(
+            text.contains("the daemon owns the store: /home/u/.local/tasqx/tasks.db"),
+            "the human line must name the daemon's file: {text}"
+        );
         // The local path must not be presented as the store — that is the lie
         // the incident was made of.
         assert_ne!(
             json["path"], "/tmp/scratch.db",
             "the client's db_path is NOT the store a daemon writes to"
         );
+    }
+
+    /// A daemon that predates D74 cannot be asked which store it owns, and the
+    /// answer must degrade to naming the socket rather than inventing a path.
+    #[test]
+    fn store_location_degrades_honestly_against_a_daemon_that_cannot_name_its_store() {
+        let (json, text) = store_location(
+            Some("tasqx-default"),
+            None,
+            Ok(PathBuf::from("/tmp/scratch.db")),
+        );
+        assert_eq!(json["backend"], "daemon");
+        assert_eq!(json["store"], Value::Null);
+        assert!(
+            text.contains("cannot name it"),
+            "an unanswerable question is said, not papered over: {text}"
+        );
+        assert_ne!(json["path"], "/tmp/scratch.db");
     }
 
     #[test]
