@@ -539,6 +539,23 @@ impl Engine {
             }
         };
 
+        // ONE snapshot for the whole read phase (the `store_export` rule):
+        // every statement below — including the reads inside
+        // `WindowScan::build` and `consumed_sample_ids_by_task`, which run on
+        // this same connection — otherwise takes its own, and the apply phase
+        // deletes ALL of a task's log-parse rows, so a row committed between
+        // two reads could be deleted without ever having been scanned.
+        // DEFERRED, never IMMEDIATE: this is a read, and it must not hold the
+        // write lock for the length of a full transcript scan.
+        //
+        // The window this closes is the torn READ. A row that lands after
+        // `read_tx.commit()` and before this run's per-task write is still
+        // deleted unscanned — the price of per-task IMMEDIATE transactions,
+        // which rule out holding one snapshot across the writes. The daemon
+        // serializes its own attribution ticks against dispatched calls, so
+        // the residue is a direct-store writer racing a recompute on purpose.
+        let read_tx = self.conn.unchecked_transaction()?;
+
         // Every task's stored log-parse rows, oldest first per task.
         let mut stored: HashMap<String, Vec<StoredLogParse>> = HashMap::new();
         {
@@ -645,6 +662,11 @@ impl Engine {
             .filter(|(task_id, _)| !stored.contains_key(*task_id))
             .flat_map(|(_, ids)| ids.iter().cloned())
             .collect();
+
+        // The read phase is over; the per-task writes below open their own
+        // IMMEDIATE transactions on this connection, so the snapshot must be
+        // gone first (a commit of zero writes, i.e. a clean release).
+        read_tx.commit()?;
 
         let mut report = Vec::new();
         let (mut total_before, mut total_after) = (0i64, 0i64);
@@ -875,5 +897,72 @@ impl Engine {
             v.push(r?);
         }
         Ok(v)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `token_recompute` must take all of its database reads from ONE
+    /// snapshot. Each statement otherwise reads its own (WAL), and the apply
+    /// phase's `recompute_replace` deletes ALL of a task's log-parse rows —
+    /// so a row committed between two of the scan's reads (a daemon
+    /// attribution tick, a `token.add`) could be deleted without ever having
+    /// been scanned. Structural, for the same reason as `store_export`'s twin
+    /// guard in transfer.rs: the interleaving point is inside SQLite, and
+    /// rusqlite's `hooks` feature — the only way to drive a write from
+    /// between two of our reads — is not compiled in.
+    ///
+    /// The snapshot must also CLOSE before the write loop: the per-task
+    /// writes open their own IMMEDIATE transactions on the same connection,
+    /// and a still-open read transaction there is a nested-transaction error
+    /// at the first task.
+    #[test]
+    fn token_recompute_snapshots_its_read_phase() {
+        let source = include_str!("tokens.rs");
+        // Assembled, never written out literally: `dispatch`'s accepted-key
+        // guard splits this same source at every `fn NAME(`, so a marker
+        // spelled in full would register HERE as a second definition of the
+        // handler and overwrite the real one.
+        let marker = format!("pub fn {}(", "token_recompute");
+        let marker = marker.as_str();
+        let start = source.find(marker).expect("token_recompute exists");
+        let rest = &source[start..];
+        let end = rest[marker.len()..]
+            .find("\n    fn ")
+            .map(|offset| marker.len() + offset)
+            .unwrap_or(rest.len());
+        // Comments out: prose in the body may name the constructs this test
+        // scans for without being them.
+        let body: String = rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = body.as_str();
+
+        let guard = body
+            .find("unchecked_transaction()")
+            .expect("token_recompute must open a snapshot for its read phase");
+        let first_read = body
+            .find("self.conn.prepare")
+            .expect("token_recompute reads the stored rows");
+        assert!(
+            guard < first_read,
+            "the snapshot pins at the first read, so the transaction must be opened before it"
+        );
+        assert!(
+            !body.contains("let _ = self.conn.unchecked_transaction"),
+            "a `_` binding drops the transaction on the spot, making the guard a no-op"
+        );
+        let closed = body
+            .find(".commit()")
+            .expect("the read snapshot must close before the apply phase");
+        let write_loop = body
+            .find("for task_id in &order")
+            .expect("the apply phase iterates the banked order");
+        assert!(
+            closed < write_loop,
+            "the per-task IMMEDIATE writes need the read transaction gone first"
+        );
     }
 }
