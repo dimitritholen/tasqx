@@ -467,11 +467,6 @@ fn is_valid_minutes(n: i64) -> bool {
     (0..=MAX_TIMEOUT_MINUTES).contains(&n)
 }
 
-/// The file names a key, but with a value of a type the setting does not
-/// declare — `name = 42` where a string was expected.
-///
-/// Carried out of the reader instead of printed inside it so `config.rs` stays
-/// free of I/O and a test can assert the detection without capturing stderr.
 /// Split, trim and check an ordered comma list against a closed vocabulary.
 ///
 /// One implementation because three callers need the same answer: the writer,
@@ -548,6 +543,11 @@ pub fn canonical_many(s: &Setting, allowed: &[&str], value: &str) -> Result<Stri
         .map_err(|e| ApiError::bad_request(e.message(s.key, allowed)))
 }
 
+/// The file names a key, but with a value of a type the setting does not
+/// declare — `name = 42` where a string was expected.
+///
+/// Carried out of the reader instead of printed inside it so `config.rs` stays
+/// free of I/O and a test can assert the detection without capturing stderr.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mismatch {
     pub key: &'static str,
