@@ -5,7 +5,19 @@ single SQLite file on your own disk — no account, no cloud, works offline.
 
 ## Install
 
-Linux and macOS:
+With a package manager — updates then come from `brew upgrade tasqx` /
+`scoop update tasqx`, and brew switches Tab completion on by itself:
+
+```console
+brew install dimitritholen/tasqx/tasqx    # macOS and Linux
+```
+
+```console
+scoop bucket add tasqx https://github.com/dimitritholen/scoop-tasqx
+scoop install tasqx                       # Windows
+```
+
+Or without one — Linux and macOS:
 
 ```console
 curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh
