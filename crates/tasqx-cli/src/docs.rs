@@ -323,7 +323,7 @@ const METHODS: [(&str, &str, &str); 32] = [
     (
         "core.capabilities",
         "—",
-        "<code>{api, methods, features, default_project}</code>.",
+        "<code>{api, methods, params, features, default_project, store}</code>.",
     ),
 ];
 
@@ -448,7 +448,7 @@ pub(crate) const GLOBAL_FLAGS: [(&str, &str); 5] = [
     ),
     (
         "<code>--socket &lt;addr&gt;</code>",
-        "Socket / named pipe of a daemon. Overrides <code>$TASQX_SOCK</code>.",
+        "Socket / named pipe of a daemon. Overrides <code>$TASQX_SOCK</code>. Refused by <code>api</code>, <code>mcp</code>, <code>chart</code> and <code>report --html</code>, which open the store in-process and cannot honour it (D73).",
     ),
     (
         "<code>--no-daemon</code>",
@@ -641,9 +641,9 @@ fn page_overview() -> String {
     s.push_str(&pre_plain(
         "  tasqx CLI ─┐\n\
          \x20 report   ─┼─→ stdio: one JSON envelope ─┐\n\
-         \x20 plugins  ─┘                             ├─→ dispatch ─→ storage ─→ SQLite (tasks.db + WAL)\n\
-         \x20 TUI/GUI  ─┐                             │                        └─→ events (append-only log)\n\
-         \x20 MCP      ─┴─→ socket / named pipe ─→ daemon ─┘",
+         \x20 plugins  ─┤                             ├─→ dispatch ─→ storage ─→ SQLite (tasks.db + WAL)\n\
+         \x20 MCP      ─┘                             │                        └─→ events (append-only log)\n\
+         \x20 TUI/GUI  ───→ socket / named pipe ─→ daemon ─┘",
     ));
 
     s.push_str(&h3("Every mutation is logged, in the same transaction"));
@@ -1666,6 +1666,7 @@ fn page_reminders() -> String {
         "Added #1  ·  pending  ·  urgency 12.0\n\
          \x20 Deploy the release\n\
          tasqx daemon: listening on tasqx-remdemo (Ctrl-C to stop)\n\
+         tasqx daemon: store ~/.local/share/tasqx/tasks.db\n\
          tasqx reminder: [#1] Deploy the release (due 2026-07-16T09:00:00Z)",
     ));
     s.push_str(&p(
@@ -1681,7 +1682,8 @@ fn page_reminders() -> String {
     ));
     s.push_str(&snippet(
         "tasqx daemon --socket tasqx-remdemo   # second start, same store",
-        "tasqx daemon: listening on tasqx-remdemo (Ctrl-C to stop)",
+        "tasqx daemon: listening on tasqx-remdemo (Ctrl-C to stop)\n\
+         tasqx daemon: store ~/.local/share/tasqx/tasks.db",
     ));
     s.push_str(&p(
         "Silence — correct. The key is the (task, <em>instant</em>) pair, not just the task: \
@@ -1774,6 +1776,13 @@ fn page_daemon() -> String {
          <strong>Same command surface either way</strong>, and a missing or stale socket falls back \
          immediately rather than hanging. <code>--no-daemon</code> forces the in-process path.",
     ));
+    s.push_str(&p(
+        "Four surfaces never route through a daemon: <code>api</code>, <code>mcp serve</code>, \
+         <code>chart</code> and <code>report --html</code> open the store in-process, always. \
+         They refuse an explicit <code>--socket</code> rather than ignore it (D73), because a \
+         flag that names a daemon and is silently discarded aims your write at a different \
+         store than the one you asked for.",
+    ));
 
     s.push_str(&h3("Socket addresses"));
     s.push_str(&p("Resolution order: <code>--socket</code>, then <code>$TASQX_SOCK</code>, then the platform default."));
@@ -1800,7 +1809,8 @@ fn page_daemon() -> String {
     ));
     s.push_str(&snippet(
         "tasqx daemon --socket tasqx-docsdemo",
-        "tasqx daemon: listening on tasqx-docsdemo (Ctrl-C to stop)",
+        "tasqx daemon: listening on tasqx-docsdemo (Ctrl-C to stop)\n\
+         tasqx daemon: store ~/.local/share/tasqx/tasks.db",
     ));
     s.push_str(&p(
         "It stays until you stop it. Set <code>[daemon] idle_timeout</code> to a number of \
@@ -1808,7 +1818,10 @@ fn page_daemon() -> String {
          connected, no subscriber attached, no reminder about to ripen and no telemetry \
          posted to its OTLP receiver — and it says so on stderr on the way out. \
          <code>0</code>, the default, means it never does. Turning the receiver on does not \
-         hold it open: only exports that actually arrive count as work.",
+         hold it open: only exports that actually arrive count as work. An idle exit also \
+         leaves a note beside <code>config.toml</code>: the first command that then fails to \
+         reach the daemon reports the retirement and which store is no longer being served, \
+         because a daemon leaving changes where the same command line writes (D74).",
     ));
     s.push_str(&p(
         "Now route a command through it — note this is the ordinary <code>add</code>, unchanged:",
@@ -2561,6 +2574,9 @@ fn snippet(cmd: &str, output: &str) -> String {
 fn capabilities_snippet() -> String {
     let mut caps = tasqx_core::capabilities();
     caps["default_project"] = serde_json::Value::String("work.tasqx".into());
+    // D74: like `default_project`, `store` belongs to the reader's machine —
+    // the page shows a plausible one rather than this build's.
+    caps["store"] = serde_json::Value::String("~/.local/share/tasqx/tasks.db".into());
     serde_json::to_string(&serde_json::json!({
         "tasqx": "1",
         "id": "c1",
@@ -3166,9 +3182,11 @@ mod tests {
             &e,
             r#"{"tasqx":"1","id":"c1","method":"core.capabilities"}"#,
         );
-        // The one value the page substitutes: it belongs to the reader's store,
-        // not to this test's empty one.
+        // The two values the page substitutes: they belong to the reader's
+        // machine, not to this test's empty in-memory one (which has no store
+        // path at all — the very field D74 added).
         real["result"]["default_project"] = serde_json::Value::String("work.tasqx".into());
+        real["result"]["store"] = serde_json::Value::String("~/.local/share/tasqx/tasks.db".into());
         let shown = capabilities_snippet();
         assert_eq!(
             serde_json::to_string(&real).expect("a Value serialises"),
