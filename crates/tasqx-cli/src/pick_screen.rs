@@ -211,5 +211,3 @@ pub(crate) fn pick_result(short_id: i64, title: &str, mut started: Value) -> Val
     }
     started
 }
-
-// ---- charts, HTML report, and theme tools (DESIGN.md §8) --------------------

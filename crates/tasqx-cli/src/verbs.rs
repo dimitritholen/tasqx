@@ -912,8 +912,6 @@ pub(crate) fn run_why(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome 
     Ok((result, text))
 }
 
-// ---- `tasqx pick`: the interactive chooser (DESIGN.md §10, D55) -------------
-
 /// `tasqx chart <kind>`: read the event log and render a native terminal chart.
 /// `tasqx chart throughput|heatmap|burndown`.
 ///
@@ -1011,5 +1009,3 @@ pub(crate) fn run_html_report(
         )),
     }
 }
-
-// ---- docs (the user guide) --------------------------------------------------
