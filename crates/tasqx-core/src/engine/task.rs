@@ -638,11 +638,18 @@ impl Engine {
                 |r| r.get(0),
             )?;
             if remaining == 0 {
-                if let Ok(sid) = tx.query_row(
-                    "SELECT short_id FROM tasks WHERE id = ?1",
-                    params![dep_task],
-                    |r| r.get::<_, i64>(0),
-                ) {
+                // `.optional()?`, not `.ok()`: the row provably exists (its id
+                // came from the JOIN above, in this same transaction), so the
+                // only thing a swallowed error could ever hide is a genuine
+                // storage fault — shipped as a wrong list at `ok: true`.
+                let sid = tx
+                    .query_row(
+                        "SELECT short_id FROM tasks WHERE id = ?1",
+                        params![dep_task],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                if let Some(sid) = sid {
                     out.push(sid);
                 }
             }
@@ -1765,6 +1772,38 @@ mod tests {
 
         let out = e.task_list(&json!({ "sort": ["short_id"] })).unwrap();
         assert_eq!(out["count"], 2);
+    }
+
+    /// A storage fault on the `short_id` read must SURFACE, not silently vanish
+    /// a dependent from the `unblocked` list. The row provably exists — its id
+    /// came from a JOIN in the same transaction — so the only thing an
+    /// error-swallowing read can ever swallow is a genuine fault, shipped as a
+    /// wrong list at `ok: true`. Same ruling as `ensure_tag_link`
+    /// (storage.rs): `.optional()?`, not `.ok()` — only an absent row is
+    /// absence.
+    #[test]
+    fn compute_unblocked_surfaces_a_storage_fault_instead_of_dropping_the_dependent() {
+        let e = seeded();
+        // Resolve the blocker through the front door; its response is the
+        // healthy-store baseline the fault case is measured against.
+        let done = e.task_done(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(done["unblocked"], json!([2]));
+        let done_id: String = e
+            .conn()
+            .query_row("SELECT id FROM tasks WHERE short_id = 1", [], |r| r.get(0))
+            .unwrap();
+
+        // The injected fault: the one column the guarded read needs goes
+        // missing while every other read in the function still works — the
+        // dependents JOIN and the blocker COUNT touch t.id and t.status only.
+        e.conn()
+            .execute_batch("ALTER TABLE tasks RENAME COLUMN short_id TO short_id_gone")
+            .unwrap();
+        let tx = e.conn().unchecked_transaction().unwrap();
+        assert!(
+            Engine::compute_unblocked(&tx, &done_id).is_err(),
+            "a fault must be an error, not an empty unblocked list"
+        );
     }
 
     #[test]
