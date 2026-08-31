@@ -61,11 +61,23 @@ impl SnapshotParts {
         tokens: false,
     };
 
-    /// The whole task relation — `store.export` and `report.summary`, which
-    /// between them emit every gated part.
+    /// The whole task relation — `store.export`, the one reader that emits
+    /// every gated part.
     pub(super) const EVERYTHING: Self = Self {
         depends_on: true,
         annotations: true,
+        tokens: true,
+    };
+
+    /// The aggregation inputs and nothing else — `report.summary`, which sums
+    /// the token buckets but never reads an annotation or the edge list. It
+    /// loaded [`Self::EVERYTHING`] anyway, so every `tasqx report` scanned the
+    /// annotations table end to end and materialised an object per note —
+    /// exactly the log-shaped cost this struct was built to keep off
+    /// `task.list`, paid by the other reader that also never asked for it.
+    pub(super) const REPORT_SUMMARY: Self = Self {
+        depends_on: false,
+        annotations: false,
         tokens: true,
     };
 

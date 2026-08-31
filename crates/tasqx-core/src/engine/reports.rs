@@ -98,7 +98,7 @@ impl Engine {
         }
         let mut groups: BTreeMap<String, Agg> = BTreeMap::new();
 
-        for snapshot in self.load_task_snapshots()? {
+        for snapshot in self.load_task_snapshots_for(super::task::SnapshotParts::REPORT_SUMMARY)? {
             let t = snapshot.task;
             if apply_default && !t.status.counts_in_reports() {
                 continue;
@@ -244,6 +244,26 @@ mod tests {
             .execute("UPDATE tasks SET status = 'Done'", [])
             .unwrap();
         e
+    }
+
+    /// `report.summary` aggregates tasks, tags, `blocked` and the token
+    /// measurements — never an annotation and never the edge list. Dropping
+    /// the table is what PROVES the read is gone (the same proof as
+    /// `task_list_never_touches_the_annotations_table` in task.rs, and the
+    /// same stake: annotations grow with every note ever written while the
+    /// report does not, so a summary that scanned them got slower with the
+    /// log, forever).
+    #[test]
+    fn report_summary_never_touches_the_annotations_table() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "work", "tags": ["a"] }))
+            .unwrap();
+        e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
+            .unwrap();
+        e.conn().execute_batch("DROP TABLE annotations").unwrap();
+
+        let out = e.report_summary(&json!({})).unwrap();
+        assert_eq!(out["groups"][0]["count"], json!(1));
     }
 
     /// D28: `report.summary --group_by status` is a read surface like any other,
