@@ -69,6 +69,22 @@ impl Scope {
 /// One exposed MCP tool: its name, the core method it maps onto 1:1, whether it
 /// is a write (destructive) tool, a model-facing description, and its
 /// JSON-Schema `inputSchema`.
+/// The arguments as they will be dispatched, plus the transport decisions
+/// taken while rewriting them — the facts `present` needs to fit the answer.
+struct PreparedCall {
+    args: Value,
+    /// D49/D66: whether the `task.get` answer carries the machine block.
+    include_json: bool,
+    /// Whether THIS transport supplied the `annotations_limit` page.
+    paged_by_us: bool,
+    /// Whether THIS transport supplied the `task.list` page.
+    paged_list_by_us: bool,
+}
+
+/// What `dispatch` hands back, named so the prepare/dispatch/present seam
+/// reads as the pipeline it is.
+type DispatchOutcome = Result<Value, crate::error::ApiError>;
+
 struct ToolSpec {
     name: &'static str,
     method: &'static str,
@@ -1068,6 +1084,17 @@ impl<'e> McpServer<'e> {
             );
         }
 
+        let prepared = self.prepare_args(spec, params);
+
+        let outcome = dispatch(self.engine, spec.method, &prepared.args);
+        self.present(spec, &prepared, outcome)
+    }
+
+    /// Everything this transport does to the arguments BEFORE dispatch, in one
+    /// place. `tools_call` used to interleave these five rewrites with the
+    /// lookup, the fence and the response fitting, and every new tool behavior
+    /// landed as another inline `if spec.method == ...` in the middle of it.
+    fn prepare_args(&self, spec: &ToolSpec, params: &Value) -> PreparedCall {
         let mut args = params
             .get("arguments")
             .cloned()
@@ -1164,7 +1191,18 @@ impl<'e> McpServer<'e> {
             }
         }
 
-        match dispatch(self.engine, spec.method, &args) {
+        PreparedCall {
+            args,
+            include_json,
+            paged_by_us,
+            paged_list_by_us,
+        }
+    }
+
+    /// Fit the dispatch outcome into a tool response — the post-dispatch half
+    /// of the seam `prepare_args` is the pre-dispatch half of.
+    fn present(&self, spec: &ToolSpec, prepared: &PreparedCall, outcome: DispatchOutcome) -> Value {
+        match outcome {
             Ok(result) => {
                 // The one rendered surface. Keyed on the method rather than the
                 // tool name to match the `task.modify`/`task.start` checks
@@ -1184,13 +1222,13 @@ impl<'e> McpServer<'e> {
                     // sentence AND a bill — the notice is ~300 bytes, which on
                     // a small task is most of what declining the duplicate was
                     // meant to save.
-                    if !include_json {
+                    if !prepared.include_json {
                         return tool_ok_text(&crate::markdown::task_detail(&result, &opts));
                     }
-                    return self.fit_to_budget(result, &args, &opts, paged_by_us);
+                    return self.fit_to_budget(result, &prepared.args, &opts, prepared.paged_by_us);
                 }
-                if paged_list_by_us {
-                    return self.fit_list_to_budget(result, &args);
+                if prepared.paged_list_by_us {
+                    return self.fit_list_to_budget(result, &prepared.args);
                 }
                 tool_ok(&result)
             }
