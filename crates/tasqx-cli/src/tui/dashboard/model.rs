@@ -502,11 +502,6 @@ pub fn build(src: Sources<'_>, now: Timestamp, today: Date) -> Dashboard {
             .collect(),
     };
 
-    // ---- RECENT -----------------------------------------------------------
-    let mut recent_rows: Vec<Task> = all.clone();
-    recent_rows.sort_by_key(|t| std::cmp::Reverse(t.modified));
-    let recent = Recent { rows: recent_rows };
-
     // ---- PROJECTS + TOKENS: one summary, joined to the snapshot ----------
     let (projects_panel, tokens_panel) = build_projects_and_tokens(&all, summary, projects, today);
 
@@ -546,6 +541,14 @@ pub fn build(src: Sources<'_>, now: Timestamp, today: Date) -> Dashboard {
             .filter(|t| t.completed.is_some_and(|c| c.as_second() >= week_ago))
             .count(),
     };
+
+    // ---- RECENT -----------------------------------------------------------
+    // Built LAST, so the one panel that wants every row takes the snapshot by
+    // move: as a clone this was the largest per-refresh allocation — every
+    // Task with all its strings, every five seconds under auto-refresh.
+    let mut recent_rows: Vec<Task> = all;
+    recent_rows.sort_by_key(|t| std::cmp::Reverse(t.modified));
+    let recent = Recent { rows: recent_rows };
 
     Dashboard {
         today,
