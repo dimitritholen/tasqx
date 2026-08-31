@@ -59,8 +59,9 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
     // burndown, so 13 weeks of slack covers the wider of the two; before D59 gave
     // `event.list` a bound this read the entire log, which grows with every
     // mutation the store has ever recorded.
-    let now = jiff::Timestamp::now().to_string();
-    let from = jiff::Timestamp::now()
+    let now_ts = jiff::Timestamp::now();
+    let now = now_ts.to_string();
+    let from = now_ts
         .to_zoned(jiff::tz::TimeZone::UTC)
         .date()
         .saturating_sub(jiff::ToSpan::days(91i64));
@@ -210,12 +211,10 @@ impl<'a> Report<'a> {
         // D48a: four sums, not one. This used to fold `tokens_total` into a
         // single headline tile, which is the number core deliberately keeps apart
         // until emit — and the one that cannot mean what its label said.
-        let groups = self
-            .summary
-            .get("groups")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        // `array_at`, not a deep clone: this module's pointer-identity test
+        // exists to forbid copying a payload out just to read scalars from it,
+        // and the header tiles were the one call site that escaped.
+        let groups = array_at(self.summary, "groups");
         let bucket_totals: Vec<(&str, i64)> = crate::tokens::BUCKETS
             .iter()
             .map(|(key, _, long)| {
