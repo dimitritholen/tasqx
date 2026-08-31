@@ -1034,11 +1034,17 @@ impl Backend {
         match self {
             Backend::Local(engine) => dispatch(engine, method, params),
             Backend::Remote { conn, .. } => {
-                let env = conn
+                let mut env = conn
                     .request(method, params)
                     .map_err(|e| ApiError::internal(format!("daemon transport error: {e}")))?;
                 if env.get("ok") == Some(&Value::Bool(true)) {
-                    Ok(env.get("result").cloned().unwrap_or(Value::Null))
+                    // Taken, not cloned: the envelope is owned and about to be
+                    // dropped, and for `store.export` through a daemon the
+                    // clone was a full copy of the entire store document.
+                    Ok(env
+                        .as_object_mut()
+                        .and_then(|o| o.remove("result"))
+                        .unwrap_or(Value::Null))
                 } else {
                     Err(api_error_from_env(&env))
                 }
@@ -3833,7 +3839,7 @@ fn watch_stream_line(data: &Value) -> String {
 /// themes + degradation behave exactly as in the one-shot list view.
 fn watch_render(conn: &mut daemon::Conn, filter: &str, ctx: &Ctx, tty: bool) -> Result<(), String> {
     let params = json!({ "filter": filter, "sort": ["-urgency"] });
-    let env = conn
+    let mut env = conn
         .request("task.list", &params)
         .map_err(|e| format!("task.list: {e}"))?;
     if env.get("ok") != Some(&Value::Bool(true)) {
@@ -3842,7 +3848,11 @@ fn watch_render(conn: &mut daemon::Conn, filter: &str, ctx: &Ctx, tty: bool) -> 
             env.get("error").map(|e| e.to_string()).unwrap_or_default()
         ));
     }
-    let result = env.get("result").cloned().unwrap_or(Value::Null);
+    // Taken, not cloned — this repaints the whole working set on every push.
+    let result = env
+        .as_object_mut()
+        .and_then(|o| o.remove("result"))
+        .unwrap_or(Value::Null);
     let text = render::task_table(ctx, &result, jiff::Timestamp::now());
     let painted = if tty {
         // Clear screen + cursor home, then reprint the fresh working set.
