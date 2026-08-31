@@ -1434,7 +1434,7 @@ impl<'e> McpServer<'e> {
 /// read-only agent is never shown a write tool it would always be refused.
 fn tools_list(scope: Scope) -> Vec<Value> {
     tool_specs()
-        .into_iter()
+        .iter()
         .filter(|s| !s.write || scope.allows_write())
         .map(|s| {
             json!({
@@ -1892,7 +1892,7 @@ mod tests {
     /// pointed at the tool table.
     #[test]
     fn every_dispatch_method_is_exposed_or_listed_as_deliberately_unexposed() {
-        let exposed: Vec<&str> = tool_specs().into_iter().map(|s| s.method).collect();
+        let exposed: Vec<&str> = tool_specs().iter().map(|s| s.method).collect();
         let methods: Vec<&str> = crate::dispatch::PARAMS.iter().map(|(m, _, _)| *m).collect();
         assert_eq!(
             exposure_faults(&methods, &exposed, UNEXPOSED_METHODS),
