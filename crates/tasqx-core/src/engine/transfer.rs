@@ -109,6 +109,151 @@ impl Engine {
         }))
     }
 
+    /// Replace one task's annotations from its import object — the
+    /// annotations half of `store_import`'s per-task child-table work,
+    /// self-contained: it reads `tv` (the task document), never the request
+    /// params, which is what keeps it invisible to dispatch's key-scan on
+    /// purpose.
+    fn import_annotations(
+        tx: &rusqlite::Transaction,
+        id: &str,
+        tv: &Value,
+    ) -> Result<(), ApiError> {
+        tx.execute("DELETE FROM annotations WHERE task_id = ?1", params![id])?;
+        if let Some(anns) = import_field(id, "annotations", opt_array(tv, "annotations"))? {
+            for a in anns {
+                // `Value::get` answers None on a non-object, so every field
+                // fell back to its default: `annotations:[42]` MINTED a
+                // blank annotation with a fresh uuid, and `{"text":"hi"}`
+                // stored an empty body. Fabricating a row is worse than
+                // dropping one — the caller's note is gone and something
+                // stands in its place.
+                import_keys(
+                    &format!("task {id}, "),
+                    "annotations[]",
+                    a,
+                    IMPORT_ANNOTATION_KEYS,
+                )?;
+                let aid = import_field(id, "annotations[].id", opt_str_nonempty(a, "id"))?
+                    .unwrap_or_else(|| Uuid::now_v7().to_string());
+                let body = import_field(id, "annotations[].body", req_str(a, "body"))?;
+                let acreated =
+                    import_field(id, "annotations[].created", opt_str_nonempty(a, "created"))?
+                        .unwrap_or_else(now);
+                // ON CONFLICT DO UPDATE, never INSERT OR REPLACE: REPLACE
+                // deletes the old row WITHOUT firing the delete trigger
+                // (recursive_triggers is off), so a payload that moves an
+                // annotation id from a task outside the payload left a
+                // dangling entry in annotations_fts — and once the freed
+                // rowid was reused, memory.search answered the OLD text
+                // with an UNRELATED annotation. The UPDATE path keeps the
+                // rowid and fires annotations_fts_au, which does the
+                // delete+insert pair the index needs (D41 review finding).
+                tx.execute(
+                    "INSERT INTO annotations (id, task_id, body, created) \
+                     VALUES (?1,?2,?3,?4) \
+                     ON CONFLICT(id) DO UPDATE SET \
+                     task_id=excluded.task_id, body=excluded.body, created=excluded.created",
+                    params![aid, id, body, acreated],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace one task's token measurements, wholesale like tags and
+    /// annotations: the payload's task object is authoritative about its own
+    /// child rows. Each row passes the same closed-vocabulary gates
+    /// `token.add` enforces, with `import_field` naming the task — carrying
+    /// an unknown source/confidence verbatim would let one bad payload
+    /// re-export the corruption to every downstream store (D16).
+    fn import_token_measurements(
+        tx: &rusqlite::Transaction,
+        id: &str,
+        tv: &Value,
+    ) -> Result<(), ApiError> {
+        tx.execute("DELETE FROM token_usage WHERE task_id = ?1", params![id])?;
+        if let Some(measurements) = import_field(id, "tokens", opt_array(tv, "tokens"))? {
+            for m in measurements {
+                import_keys(&format!("task {id}, "), "tokens[]", m, IMPORT_TOKEN_KEYS)?;
+                let mid = import_field(id, "tokens[].id", opt_str_nonempty(m, "id"))?
+                    .unwrap_or_else(|| Uuid::now_v7().to_string());
+                let tool = import_field(id, "tokens[].tool", req_str(m, "tool"))?;
+                let source = import_field(id, "tokens[].source", req_str(m, "source"))?;
+                import_field(
+                    id,
+                    "tokens[].source",
+                    crate::tokens::require_source(&source),
+                )?;
+                let confidence = import_field(id, "tokens[].confidence", req_str(m, "confidence"))?;
+                import_field(
+                    id,
+                    "tokens[].confidence",
+                    crate::tokens::require_confidence(&confidence),
+                )?;
+                let model = import_field(id, "tokens[].model", opt_str_nonempty(m, "model"))?;
+                let count = |key: &str| -> Result<i64, ApiError> {
+                    Ok(import_field(
+                        id,
+                        &format!("tokens[].{key}"),
+                        super::tokens::opt_token_count(m, key),
+                    )?
+                    .unwrap_or(0))
+                };
+                let mcreated =
+                    import_field(id, "tokens[].created", opt_str_nonempty(m, "created"))?
+                        .unwrap_or_else(now);
+                // Plain INSERT, unlike the annotations upsert above: this
+                // task's rows were just deleted, so a surviving row with
+                // the same id means the payload reuses one measurement id
+                // across tasks (or steals it from a task outside the
+                // payload). An upsert would silently move the row to the
+                // last claimant and the earlier task's spend would vanish
+                // — refuse and name the id instead. No FTS index hangs off
+                // token_usage, so the annotations' trigger reasoning does
+                // not apply here.
+                let taken: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM token_usage WHERE id = ?1)",
+                    params![mid],
+                    |r| r.get(0),
+                )?;
+                import_field(
+                    id,
+                    "tokens[].id",
+                    if taken {
+                        Err(ApiError::bad_request(format!(
+                            "measurement id {mid:?} appears more than once in the \
+                             import (or belongs to a task outside it) — every \
+                             tokens[].id must be unique"
+                        )))
+                    } else {
+                        Ok(())
+                    },
+                )?;
+                tx.execute(
+                    "INSERT INTO token_usage (id, task_id, tool, source, model, \
+                     input_tokens, output_tokens, cache_read_tokens, \
+                     cache_creation_tokens, confidence, created) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                    params![
+                        mid,
+                        id,
+                        tool,
+                        source,
+                        model,
+                        count("input_tokens")?,
+                        count("output_tokens")?,
+                        count("cache_read_tokens")?,
+                        count("cache_creation_tokens")?,
+                        confidence,
+                        mcreated
+                    ],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Every memory doc row, id-ordered (creation order, since UUIDv7). D41.
     fn export_docs(&self) -> Result<Vec<Value>, ApiError> {
         let mut stmt = self
@@ -693,133 +838,8 @@ impl Engine {
                 ensure_tag_link(&tx, id, &tg)?;
             }
 
-            // Replace annotations.
-            tx.execute("DELETE FROM annotations WHERE task_id = ?1", params![id])?;
-            if let Some(anns) = import_field(id, "annotations", opt_array(tv, "annotations"))? {
-                for a in anns {
-                    // `Value::get` answers None on a non-object, so every field
-                    // fell back to its default: `annotations:[42]` MINTED a
-                    // blank annotation with a fresh uuid, and `{"text":"hi"}`
-                    // stored an empty body. Fabricating a row is worse than
-                    // dropping one — the caller's note is gone and something
-                    // stands in its place.
-                    import_keys(
-                        &format!("task {id}, "),
-                        "annotations[]",
-                        a,
-                        IMPORT_ANNOTATION_KEYS,
-                    )?;
-                    let aid = import_field(id, "annotations[].id", opt_str_nonempty(a, "id"))?
-                        .unwrap_or_else(|| Uuid::now_v7().to_string());
-                    let body = import_field(id, "annotations[].body", req_str(a, "body"))?;
-                    let acreated =
-                        import_field(id, "annotations[].created", opt_str_nonempty(a, "created"))?
-                            .unwrap_or_else(now);
-                    // ON CONFLICT DO UPDATE, never INSERT OR REPLACE: REPLACE
-                    // deletes the old row WITHOUT firing the delete trigger
-                    // (recursive_triggers is off), so a payload that moves an
-                    // annotation id from a task outside the payload left a
-                    // dangling entry in annotations_fts — and once the freed
-                    // rowid was reused, memory.search answered the OLD text
-                    // with an UNRELATED annotation. The UPDATE path keeps the
-                    // rowid and fires annotations_fts_au, which does the
-                    // delete+insert pair the index needs (D41 review finding).
-                    tx.execute(
-                        "INSERT INTO annotations (id, task_id, body, created) \
-                         VALUES (?1,?2,?3,?4) \
-                         ON CONFLICT(id) DO UPDATE SET \
-                         task_id=excluded.task_id, body=excluded.body, created=excluded.created",
-                        params![aid, id, body, acreated],
-                    )?;
-                }
-            }
-
-            // Replace token measurements, wholesale like tags and annotations:
-            // the payload's task object is authoritative about its own child
-            // rows. Each row passes the same closed-vocabulary gates
-            // `token.add` enforces, with `import_field` naming the task —
-            // carrying an unknown source/confidence verbatim would let one bad
-            // payload re-export the corruption to every downstream store (D16).
-            tx.execute("DELETE FROM token_usage WHERE task_id = ?1", params![id])?;
-            if let Some(measurements) = import_field(id, "tokens", opt_array(tv, "tokens"))? {
-                for m in measurements {
-                    import_keys(&format!("task {id}, "), "tokens[]", m, IMPORT_TOKEN_KEYS)?;
-                    let mid = import_field(id, "tokens[].id", opt_str_nonempty(m, "id"))?
-                        .unwrap_or_else(|| Uuid::now_v7().to_string());
-                    let tool = import_field(id, "tokens[].tool", req_str(m, "tool"))?;
-                    let source = import_field(id, "tokens[].source", req_str(m, "source"))?;
-                    import_field(
-                        id,
-                        "tokens[].source",
-                        crate::tokens::require_source(&source),
-                    )?;
-                    let confidence =
-                        import_field(id, "tokens[].confidence", req_str(m, "confidence"))?;
-                    import_field(
-                        id,
-                        "tokens[].confidence",
-                        crate::tokens::require_confidence(&confidence),
-                    )?;
-                    let model = import_field(id, "tokens[].model", opt_str_nonempty(m, "model"))?;
-                    let count = |key: &str| -> Result<i64, ApiError> {
-                        Ok(import_field(
-                            id,
-                            &format!("tokens[].{key}"),
-                            super::tokens::opt_token_count(m, key),
-                        )?
-                        .unwrap_or(0))
-                    };
-                    let mcreated =
-                        import_field(id, "tokens[].created", opt_str_nonempty(m, "created"))?
-                            .unwrap_or_else(now);
-                    // Plain INSERT, unlike the annotations upsert above: this
-                    // task's rows were just deleted, so a surviving row with
-                    // the same id means the payload reuses one measurement id
-                    // across tasks (or steals it from a task outside the
-                    // payload). An upsert would silently move the row to the
-                    // last claimant and the earlier task's spend would vanish
-                    // — refuse and name the id instead. No FTS index hangs off
-                    // token_usage, so the annotations' trigger reasoning does
-                    // not apply here.
-                    let taken: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM token_usage WHERE id = ?1)",
-                        params![mid],
-                        |r| r.get(0),
-                    )?;
-                    import_field(
-                        id,
-                        "tokens[].id",
-                        if taken {
-                            Err(ApiError::bad_request(format!(
-                                "measurement id {mid:?} appears more than once in the \
-                                 import (or belongs to a task outside it) — every \
-                                 tokens[].id must be unique"
-                            )))
-                        } else {
-                            Ok(())
-                        },
-                    )?;
-                    tx.execute(
-                        "INSERT INTO token_usage (id, task_id, tool, source, model, \
-                         input_tokens, output_tokens, cache_read_tokens, \
-                         cache_creation_tokens, confidence, created) \
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-                        params![
-                            mid,
-                            id,
-                            tool,
-                            source,
-                            model,
-                            count("input_tokens")?,
-                            count("output_tokens")?,
-                            count("cache_read_tokens")?,
-                            count("cache_creation_tokens")?,
-                            confidence,
-                            mcreated
-                        ],
-                    )?;
-                }
-            }
+            Self::import_annotations(&tx, id, tv)?;
+            Self::import_token_measurements(&tx, id, tv)?;
 
             // Edges are deferred to pass 2: a payload may list a target *after*
             // its dependent, and the FOREIGN KEY would reject it here.
