@@ -3199,12 +3199,7 @@ fn settings_rows(
 ) -> Result<Vec<tui::settings::Row>, ApiError> {
     let mut rows = Vec::new();
     for s in config::SETTINGS {
-        let flag = if s.key == "theme.name" {
-            theme_flag
-        } else {
-            None
-        };
-        let (value, source) = setting_value(store, s, flag)?;
+        let (value, source) = setting_value(store, s, setting_flag_value(s, theme_flag))?;
         rows.push(build_row(s, value, source, themes));
     }
     Ok(rows)
@@ -3267,8 +3262,28 @@ fn theme_pointer(key: &str) -> Option<&'static str> {
 /// primitive was looser than its own alias, which is backwards: `theme::load`
 /// falls back to the default for an unknown name, so the write persists a value
 /// that silently does nothing on every run from then on.
+/// The CLI-flag layer for one setting. The registry says WHICH settings carry
+/// a flag (`Setting::flag`); the invocation supplies that flag's value — today
+/// only `--theme` exists, and this is the ONE place it is wired to its
+/// setting. Three call sites used to spell the rule as
+/// `s.key == "theme.name"` independently — the parallel-list shape D30 exists
+/// to kill: a second flag-carrying setting had to be wired into each, and a
+/// missed one silently mis-reported the winning layer.
+fn setting_flag_value<'a>(s: &config::Setting, theme_flag: Option<&'a str>) -> Option<&'a str> {
+    match s.flag {
+        Some("--theme") => theme_flag,
+        _ => None,
+    }
+}
+
 fn validate_setting(key: &str, value: &str) -> Result<(), ApiError> {
-    if key == "theme.name" {
+    // Dispatch on the registry's declared vocabulary, never the key string —
+    // config.rs declares `choices: Choices::Themes` precisely so callers do
+    // not test keys. Matched on the key, a second Themes-valued setting
+    // silently skipped validation: the `theme set bogus` bug this function
+    // was created to fix, re-armed.
+    let themed = config::find(key).is_some_and(|s| s.choices == config::Choices::Themes);
+    if themed {
         let known = theme::BUILTINS.contains(&value)
             || themes_dir().is_some_and(|d| d.join(format!("{value}.toml")).is_file());
         if !known {
@@ -3290,14 +3305,8 @@ fn run_config(
     action: &ConfigAction,
     theme_flag: Option<&str>,
 ) -> CmdOutcome {
-    // The flag layer applies per setting; only `theme.name` has one today.
-    let flag_for = |s: &config::Setting| -> Option<&str> {
-        if s.key == "theme.name" {
-            theme_flag
-        } else {
-            None
-        }
-    };
+    // The flag layer applies per setting — see `setting_flag_value`.
+    let flag_for = |s: &config::Setting| -> Option<&str> { setting_flag_value(s, theme_flag) };
     match action {
         ConfigAction::Edit => run_config_edit(be, ctx, theme_flag),
         ConfigAction::Path => {
@@ -3510,11 +3519,7 @@ fn apply_save(
             // flag still outranks the file we just wrote, and the screen has to
             // say so instead of reporting a change the user's next command will
             // not show.
-            let flag = if s.key == "theme.name" {
-                theme_flag
-            } else {
-                None
-            };
+            let flag = setting_flag_value(s, theme_flag);
             let (v, src) = config::resolve(s, flag, config::toml_value(s).as_deref());
             app.refresh(key, v, src.label(s));
             saved.retain(|(k, _)| k != key);
@@ -5971,6 +5976,30 @@ mod tests {
             row["source"], "--theme",
             "the SOURCE column must name the flag"
         );
+    }
+
+    /// Derived from the registry, never a key list: every `Choices::Themes`
+    /// setting is validated, so a second Themes-valued setting cannot join
+    /// the registry and silently skip the check — the exact hole the old
+    /// `key == "theme.name"` match left open.
+    #[test]
+    fn every_themes_choiced_setting_validates_its_value() {
+        let themed: Vec<_> = config::SETTINGS
+            .iter()
+            .filter(|s| s.choices == config::Choices::Themes)
+            .collect();
+        assert!(
+            !themed.is_empty(),
+            "the registry carries at least one Themes setting, or this guard is vacuous"
+        );
+        for s in themed {
+            assert!(
+                validate_setting(s.key, "geen-thema-xyz").is_err(),
+                "{}",
+                s.key
+            );
+            assert!(validate_setting(s.key, "nord").is_ok(), "{}", s.key);
+        }
     }
 
     /// `theme set bogus` was rejected while `config set theme.name bogus` wrote
