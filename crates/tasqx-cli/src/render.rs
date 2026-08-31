@@ -1132,15 +1132,14 @@ pub fn agenda_json(a: &Agenda) -> Value {
 }
 
 /// Full task detail (task.get): fields plus tags, deps, annotations, blocked.
-pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let mut out = String::new();
-    out.push_str(&ctx.paint("header", &format!("#{sid}  {}", s(result, "title"))));
-    out.push('\n');
-    // `Done` on its own line reads like a status this build has not heard of
-    // yet, so say what it actually is and what the real ones are. The list of
-    // real ones is derived, never retyped: `Status::ALL` is the canonical list.
-    let status_cell = if status_is_unrecognized(result) {
+/// The status cell both detail layouts print: the plain string, unless the
+/// wire sent a status this build cannot parse — then say so, and say what the
+/// real ones are. The list of real ones is derived, never retyped:
+/// `Status::ALL` is the canonical list. One helper, because the card layout
+/// (D76) renders the same fact and two copies of the unrecognized branch is
+/// how they would drift apart.
+fn status_cell(ctx: &Ctx, result: &Value) -> String {
+    if status_is_unrecognized(result) {
         ctx.paint(
             "warn",
             &format!(
@@ -1153,8 +1152,20 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
         )
     } else {
         s(result, "status")
-    };
-    out.push_str(&format!("  status     {status_cell}\n"));
+    }
+}
+
+pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
+    // The card is the interactive rendering (D76); everything below it is the
+    // byte-stable plain layout every pipe, script and docs example reads.
+    if ctx.caps.unicode {
+        return task_detail_card(ctx, result);
+    }
+    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let mut out = String::new();
+    out.push_str(&ctx.paint("header", &format!("#{sid}  {}", s(result, "title"))));
+    out.push('\n');
+    out.push_str(&format!("  status     {}\n", status_cell(ctx, result)));
     let prio = result
         .get("priority")
         .and_then(Value::as_str)
@@ -1275,6 +1286,331 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
             out.push_str(&format!(
                 "  {} {}\n",
                 ctx.paint("muted", "·"),
+                san(a.get("body").and_then(Value::as_str).unwrap_or(""))
+            ));
+        }
+    }
+    out
+}
+
+// ============================================================================
+// The task card (D76)
+// ============================================================================
+//
+// The interactive echo of `add` and the interactive body of `show`. Gated on
+// `caps.unicode` — true exactly when stdout is a VT-capable terminal — so
+// every piped, dumb-terminal and legacy-console caller keeps the byte-stable
+// plain rendering above, and a script diffing two runs sees what it always
+// saw. Output-only formatting, so stdout alone decides; the dashboard demands
+// stdin too because it reads keys, and that stricter gate must not be copied
+// here. Tones come from the `card.*` roles — see `theme::builtin` for why
+// they are deliberately achromatic in every built-in.
+
+/// One run of card text: the role that paints it, or `None` for the
+/// terminal's own foreground — the card's "values" tone. Default-fg rather
+/// than a literal light gray, so the card reads on light and dark grounds
+/// alike.
+type Seg = (Option<&'static str>, String);
+
+fn segs_width(segs: &[Seg]) -> usize {
+    segs.iter().map(|(_, t)| width(t)).sum()
+}
+
+fn paint_segs(ctx: &Ctx, segs: &[Seg]) -> String {
+    segs.iter()
+        .map(|(role, t)| match role {
+            Some(r) => ctx.paint(r, t),
+            None => t.clone(),
+        })
+        .collect()
+}
+
+/// Truncate a seg run to at most `max` cells, keeping each run's role and
+/// letting [`truncate`] put the ellipsis on the piece that was cut.
+fn fit_segs(segs: Vec<Seg>, max: usize) -> Vec<Seg> {
+    if segs_width(&segs) <= max {
+        return segs;
+    }
+    let mut out: Vec<Seg> = Vec::new();
+    let mut used = 0usize;
+    for (role, t) in segs {
+        let w = width(&t);
+        if used + w <= max {
+            used += w;
+            out.push((role, t));
+            continue;
+        }
+        if max > used {
+            out.push((role, truncate(&t, max - used, true)));
+        }
+        break;
+    }
+    out
+}
+
+/// The rounded gray frame around body rows, with the header worked into the
+/// top border — the quiet-frame shape the user chose in #259.
+///
+/// The interior is as wide as the widest row asks, capped at 80 total cells
+/// (a card is a glance, not a table) and at the live terminal width. Glyph
+/// honesty note, recorded in D76: `─`/`│`/`●`/`▲` are East-Asian-ambiguous
+/// width, which [`width`] counts as one cell; a terminal configured to draw
+/// ambiguous glyphs wide will bend the right edge. The dashboard's borders
+/// accepted the same edge first.
+fn card_box(ctx: &Ctx, header: Vec<Seg>, rows: Vec<Vec<Seg>>) -> String {
+    let cap = ctx.cols.clamp(Ctx::MIN_COLS, 80).saturating_sub(4);
+    let body_w = rows.iter().map(|r| segs_width(r)).max().unwrap_or(0);
+    let head_w = segs_width(&header);
+    let inner = body_w.max(head_w + 2).clamp(10, cap);
+    let header = fit_segs(header, inner.saturating_sub(2));
+    let head_w = segs_width(&header);
+    let mut out = String::new();
+    out.push_str(&ctx.paint("card.frame", "╭─ "));
+    out.push_str(&paint_segs(ctx, &header));
+    out.push(' ');
+    out.push_str(&ctx.paint(
+        "card.frame",
+        &format!("{}╮", "─".repeat(inner - 1 - head_w)),
+    ));
+    out.push('\n');
+    for row in rows {
+        let row = fit_segs(row, inner);
+        let fill = " ".repeat(inner - segs_width(&row));
+        out.push_str(&format!(
+            "{}{}{fill}{}\n",
+            ctx.paint("card.frame", "│ "),
+            paint_segs(ctx, &row),
+            ctx.paint("card.frame", " │"),
+        ));
+    }
+    out.push_str(&ctx.paint("card.frame", &format!("╰{}╯", "─".repeat(inner + 2))));
+    out.push('\n');
+    out
+}
+
+/// The `add` confirmation card (D76). Takes the FULL task — a `task.get`
+/// result — because `task.add`'s own result is a frozen five-field summary
+/// that carries no tags, due, priority or estimate (see `run_add`, which
+/// reads the task back on the interactive path and falls back to the plain
+/// line when that read fails).
+pub fn task_added_card(ctx: &Ctx, task: &Value) -> String {
+    let sid = task.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let urg = task.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+    let gap = |row: &mut Vec<Seg>| {
+        if !row.is_empty() {
+            row.push((None, "   ".into()));
+        }
+    };
+
+    let header: Vec<Seg> = vec![
+        (Some("card.label"), format!("#{sid}")),
+        (Some("card.frame"), " · ".into()),
+        (Some("card.strong"), s(task, "title")),
+    ];
+
+    // Row 1: the state of the thing — status, priority when set, urgency.
+    // Raw status, not `status_cell`: segs are measured for padding before they
+    // are painted, so a pre-painted string would have its SGR bytes counted as
+    // cells and bend the frame. The plain `add` line shows the raw status too.
+    let mut state: Vec<Seg> = vec![(None, format!("● {}", s(task, "status")))];
+    match task.get("priority").and_then(Value::as_str) {
+        Some("H") => {
+            gap(&mut state);
+            state.push((Some("card.strong"), "! high".into()));
+        }
+        Some("M") => {
+            gap(&mut state);
+            state.push((None, "med".into()));
+        }
+        Some("L") => {
+            gap(&mut state);
+            state.push((Some("card.label"), "low".into()));
+        }
+        _ => {}
+    }
+    gap(&mut state);
+    state.push((Some("card.strong"), format!("▲ {urg:.1}")));
+
+    // Row 2: where it lives — project and tags, absent rows drawn as nothing.
+    let mut place: Vec<Seg> = Vec::new();
+    let proj = s(task, "project");
+    if !proj.is_empty() {
+        place.push((Some("card.label"), proj));
+    }
+    if let Some(tags) = task.get("tags").and_then(Value::as_array) {
+        let names: Vec<String> = tags
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|t| format!("#{}", san(t)))
+            .collect();
+        if !names.is_empty() {
+            if !place.is_empty() {
+                place.push((Some("card.frame"), " · ".into()));
+            }
+            place.push((None, names.join(" ")));
+        }
+    }
+
+    // Row 3: when and how much — due (the fact you act on), estimate, repeat.
+    let mut when: Vec<Seg> = Vec::new();
+    if !s(task, "due").is_empty() {
+        when.push((Some("card.label"), "due ".into()));
+        when.push((Some("card.strong"), s(task, "due")));
+    }
+    if !s(task, "estimate").is_empty() {
+        gap(&mut when);
+        when.push((Some("card.label"), "est ".into()));
+        when.push((None, s(task, "estimate")));
+    }
+    if !s(task, "recurrence").is_empty() {
+        gap(&mut when);
+        when.push((Some("card.label"), "↻ ".into()));
+        when.push((None, s(task, "recurrence")));
+    }
+
+    let rows: Vec<Vec<Seg>> = [state, place, when]
+        .into_iter()
+        .filter(|r| !r.is_empty())
+        .collect();
+    card_box(ctx, header, rows)
+}
+
+/// The `show` card (D76): the ledger the user chose — a right-aligned gray
+/// label column, terminal-default values, emphasis only where the reader
+/// acts (priority H, due, a running timer, blocked=true). The row set and
+/// the label SPELLINGS are the plain view's, verbatim; the parity test is
+/// what keeps the two layouts naming the same facts.
+fn task_detail_card(ctx: &Ctx, result: &Value) -> String {
+    // "depends_on" is the widest label either layout prints.
+    const LW: usize = 10;
+    let lab = |name: &str| -> String {
+        format!(
+            "{}{}",
+            " ".repeat(LW.saturating_sub(width(name))),
+            ctx.paint("card.label", name)
+        )
+    };
+    let mut out = String::new();
+
+    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let title = s(result, "title");
+    out.push_str(&format!(
+        "{}  {}\n",
+        ctx.paint("card.label", &format!("#{sid}")),
+        ctx.paint("card.strong", &title)
+    ));
+    let head_w = width(&format!("#{sid}  {title}"));
+    out.push_str(&ctx.paint("card.frame", &"─".repeat(head_w.clamp(4, ctx.cols.min(80)))));
+    out.push('\n');
+
+    let mut row = |label: &str, value: String| {
+        out.push_str(&format!("{}  {value}\n", lab(label)));
+    };
+
+    row("status", status_cell(ctx, result));
+    let prio = result
+        .get("priority")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    let prio_cell = match prio {
+        "H" => ctx.paint("card.strong", prio),
+        "L" => ctx.paint("card.label", prio),
+        "M" => prio.to_string(),
+        _ => ctx.paint("card.frame", prio),
+    };
+    row("priority", prio_cell);
+    if !s(result, "project").is_empty() {
+        row("project", s(result, "project"));
+    }
+    let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+    row("urgency", format!("{urg:.1}"));
+    if !s(result, "due").is_empty() {
+        row("due", ctx.paint("card.strong", &s(result, "due")));
+    }
+    if !s(result, "remind").is_empty() {
+        row("remind", s(result, "remind"));
+    }
+    if !s(result, "scheduled").is_empty() {
+        row("scheduled", s(result, "scheduled"));
+    }
+    if !s(result, "wait").is_empty() {
+        row("wait", s(result, "wait"));
+    }
+    if !s(result, "recurrence").is_empty() {
+        row("repeats", s(result, "recurrence"));
+    }
+    if !s(result, "estimate").is_empty() {
+        row("estimate", s(result, "estimate"));
+    }
+    if !s(result, "completed").is_empty() {
+        row("completed", s(result, "completed"));
+    }
+    let tracked = s(result, "tracked");
+    if !tracked.is_empty() && tracked != "PT0S" {
+        row("tracked", tracked);
+    }
+    if !s(result, "active_since").is_empty() {
+        row(
+            "running",
+            ctx.paint(
+                "card.strong",
+                &format!("since {}", s(result, "active_since")),
+            ),
+        );
+    }
+    let blocked = result
+        .get("blocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    row(
+        "blocked",
+        if blocked {
+            ctx.paint("card.strong", "true")
+        } else {
+            "false".to_string()
+        },
+    );
+    if let Some(tags) = result.get("tags").and_then(Value::as_array) {
+        if !tags.is_empty() {
+            let names: Vec<&str> = tags.iter().filter_map(Value::as_str).collect();
+            row("tags", san(&names.join(" ")));
+        }
+    }
+    if let Some(deps) = result.get("depends_on").and_then(Value::as_array) {
+        if !deps.is_empty() {
+            let refs: Vec<String> = deps
+                .iter()
+                .filter_map(Value::as_i64)
+                .map(|n| format!("#{n}"))
+                .collect();
+            row("depends_on", refs.join(" "));
+        }
+    }
+    if let Some(tokens) = result.get("tokens").and_then(Value::as_array) {
+        if !tokens.is_empty() {
+            let sum = |key: &str| -> u64 {
+                tokens
+                    .iter()
+                    .filter_map(|m| m.get(key).and_then(Value::as_u64))
+                    .fold(0u64, u64::saturating_add)
+            };
+            row(
+                "tokens",
+                format!(
+                    "in {} · out {} · cacheR {} · cacheW {}",
+                    sum("input_tokens"),
+                    sum("output_tokens"),
+                    sum("cache_read_tokens"),
+                    sum("cache_creation_tokens")
+                ),
+            );
+        }
+    }
+    if let Some(anns) = result.get("annotations").and_then(Value::as_array) {
+        for a in anns {
+            out.push_str(&format!(
+                "{}  {}\n",
+                lab("·"),
                 san(a.get("body").and_then(Value::as_str).unwrap_or(""))
             ));
         }
@@ -1978,6 +2314,129 @@ mod tests {
         let mut bare = base.clone();
         bare["remind"] = json!("");
         assert!(!task_detail(&ctx, &bare).contains("remind"));
+    }
+
+    /// The capability level the card renders at, measurable: `unicode` turns
+    /// the card on, `ansi: false` keeps SGR bytes out of the output so lines
+    /// can be measured with [`width`] directly. `detect_from` never produces
+    /// this exact combination — it is a measuring instrument, not a terminal.
+    fn card_caps() -> Caps {
+        Caps {
+            depth: theme::ColorDepth::None,
+            ansi: false,
+            unicode: true,
+        }
+    }
+
+    /// A task exercising every conditional row both detail layouts can draw.
+    fn full_task() -> serde_json::Value {
+        json!({
+            "short_id": 42, "title": "Ship the release notes",
+            "status": "pending", "priority": "H", "project": "work",
+            "urgency": 11.4, "due": "2026-09-04T17:00:00Z", "remind": "-1h",
+            "scheduled": "2026-09-01T09:00:00Z", "wait": "2026-08-30T00:00:00Z",
+            "recurrence": "weekly on mon", "estimate": "PT4H",
+            "completed": "2026-09-05T10:00:00Z", "tracked": "PT2H",
+            "active_since": "2026-08-31T12:00:00Z", "blocked": true,
+            "tags": ["docs", "release"], "depends_on": [7, 9],
+            "tokens": [{"input_tokens": 10, "output_tokens": 20,
+                        "cache_read_tokens": 0, "cache_creation_tokens": 5}],
+            "annotations": [{"body": "called the plumber"}]
+        })
+    }
+
+    /// D76's gate: the card belongs to VT terminals only. The plain path is
+    /// what every pipe, script and executed docs example reads, so it must
+    /// keep its exact old layout and never leak a frame glyph.
+    #[test]
+    fn the_cards_render_only_on_a_unicode_terminal() {
+        let t = full_task();
+        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &t);
+        assert!(
+            plain.contains("  status     "),
+            "the plain detail layout changed: {plain:?}"
+        );
+        assert!(
+            !plain.contains('╭') && !plain.contains('─'),
+            "card glyphs leaked into the plain path: {plain:?}"
+        );
+        let card = task_detail(&Ctx::new(theme::default_theme(), card_caps()), &t);
+        assert!(
+            card.contains('─') && !card.contains("  status     "),
+            "unicode caps should render the ledger card: {card:?}"
+        );
+        let added = task_added_card(&Ctx::new(theme::default_theme(), card_caps()), &t);
+        assert!(
+            added.contains('╭'),
+            "the add card lost its frame: {added:?}"
+        );
+    }
+
+    /// The frame is only worth drawing if it closes: every line the same cell
+    /// width, empty rows not drawn at all, and a 300-cell title truncated into
+    /// the border instead of bursting it.
+    #[test]
+    fn the_add_card_frame_stays_closed() {
+        let ctx = Ctx::new(theme::default_theme(), card_caps());
+        let out = task_added_card(&ctx, &full_task());
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 5, "header + 3 rows + bottom:\n{out}");
+        let w = width(lines[0]);
+        for line in &lines {
+            assert_eq!(width(line), w, "ragged frame:\n{out}");
+        }
+
+        // No project, tags, due, estimate or recurrence: one state row only.
+        let bare = json!({"short_id": 7, "title": "bare", "status": "pending",
+                          "urgency": 0.0});
+        let out = task_added_card(&ctx, &bare);
+        assert_eq!(
+            out.lines().count(),
+            3,
+            "empty rows must not be drawn:\n{out}"
+        );
+
+        // A title longer than any terminal still yields a closed, capped box.
+        let mut long = full_task();
+        long["title"] = json!("x".repeat(300));
+        let out = task_added_card(&ctx, &long);
+        let lines: Vec<&str> = out.lines().collect();
+        let w = width(lines[0]);
+        assert!(w <= 80, "the card must cap its width, got {w}");
+        for line in &lines {
+            assert_eq!(width(line), w, "long title burst the frame:\n{out}");
+        }
+    }
+
+    /// The two detail layouts must name the same facts, in the same
+    /// spellings. The plain view is the contract (its labels are what docs
+    /// and muscle memory know); this walks its label column and demands each
+    /// one appear in the card. Rename a row in one layout and not the other
+    /// and this is what goes red.
+    #[test]
+    fn the_detail_card_names_every_field_the_plain_view_names() {
+        let t = full_task();
+        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &t);
+        let card = task_detail(&Ctx::new(theme::default_theme(), card_caps()), &t);
+        let mut labels = 0;
+        for line in plain.lines().skip(1) {
+            let Some(first) = line.split_whitespace().next() else {
+                continue;
+            };
+            if first == "·" {
+                continue; // an annotation marker, not a field label
+            }
+            assert!(
+                card.contains(first),
+                "the card lost the {first:?} row:\n{card}"
+            );
+            labels += 1;
+        }
+        assert!(
+            labels >= 15,
+            "the parity scan saw only {labels} labels — full_task stopped \
+             exercising the conditional rows and this guard is checking little"
+        );
     }
 
     /// D50: `tokens_hint` targets machine callers who see raw JSON. The CLI
