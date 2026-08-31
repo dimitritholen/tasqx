@@ -505,14 +505,37 @@ impl Engine {
 
     // ---- core.capabilities ---------------------------------------------------
 
-    /// Capabilities, including the current default project (gap fix A1).
+    /// Capabilities, including the current default project (gap fix A1) and
+    /// the store this engine is answering from (D74).
+    ///
+    /// `store` is read off the live connection rather than re-resolved from
+    /// flags or environment, which is what makes it truthful on every branch:
+    /// in-process it names the caller's own file, and through a daemon it
+    /// names the daemon's file — the one answer D47 established no client
+    /// could compute for itself. Null only for an in-memory store, which has
+    /// no path to name.
     pub fn capabilities(&self) -> Result<Value, ApiError> {
         let mut v = crate::dispatch::capabilities();
         v["default_project"] = match self.default_project()? {
             Some(name) => Value::String(name),
             None => Value::Null,
         };
+        v["store"] = match self.conn.path() {
+            Some(p) if !p.is_empty() => Value::String(p.to_string()),
+            _ => Value::Null,
+        };
         Ok(v)
+    }
+
+    /// The path of the store this engine writes to, or `None` for an
+    /// in-memory one. The same answer `capabilities` publishes as `store`,
+    /// exposed for callers that need it before any dispatch — the daemon's
+    /// startup line, and its idle-retirement marker (D74).
+    pub fn store_path(&self) -> Option<String> {
+        self.conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
     }
 }
 

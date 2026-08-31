@@ -99,6 +99,7 @@ fn start_daemon_with_options(
             tokens_enabled,
             otlp_port: None,
             idle_timeout: None,
+            retired_marker: None,
         };
         daemon::serve_with_options(engine, &sk, sd, options).expect("serve");
     });
@@ -146,6 +147,7 @@ fn start_daemon_observing_failure(
             tokens_enabled,
             otlp_port: None,
             idle_timeout: None,
+            retired_marker: None,
         },
     )
 }
@@ -721,6 +723,7 @@ fn a_configured_daemon_with_no_clients_and_no_work_exits_on_its_own() {
         &sock,
         daemon::DaemonOptions {
             idle_timeout: Some(Duration::from_millis(400)),
+            retired_marker: None,
             ..Default::default()
         },
     );
@@ -786,6 +789,7 @@ fn a_connected_client_holds_the_daemon_open_and_leaving_starts_the_countdown() {
         &sock,
         daemon::DaemonOptions {
             idle_timeout: Some(Duration::from_millis(400)),
+            retired_marker: None,
             ..Default::default()
         },
     );
@@ -830,6 +834,7 @@ fn a_reminder_about_to_ripen_holds_the_daemon_past_its_own_deadline() {
         daemon::DaemonOptions {
             notifier: collector.clone(),
             idle_timeout: Some(Duration::from_secs(2)),
+            retired_marker: None,
             ..Default::default()
         },
     );
@@ -927,6 +932,7 @@ fn an_open_but_silent_otlp_receiver_does_not_cancel_the_idle_timeout() {
         daemon::DaemonOptions {
             otlp_port: Some(free_local_port()),
             idle_timeout: Some(Duration::from_millis(400)),
+            retired_marker: None,
             ..Default::default()
         },
     );
@@ -962,6 +968,7 @@ fn telemetry_arriving_holds_the_daemon_open_and_silence_then_releases_it() {
         daemon::DaemonOptions {
             otlp_port: Some(port),
             idle_timeout: Some(Duration::from_millis(500)),
+            retired_marker: None,
             ..Default::default()
         },
     );
@@ -1287,5 +1294,127 @@ fn tokens_recompute_is_refused_over_the_socket_naming_the_in_process_invocation(
     assert!(ok(&added)["short_id"].as_i64().unwrap() >= 1);
 
     shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+// ---- D74: the store is a read surface of the daemon itself -------------------
+
+/// D74's socket half: any ordinary client can ask a running daemon which store
+/// it owns, because `core.capabilities` carries `store`, read off the daemon
+/// engine's own connection. Before this no route existed at all — the startup
+/// banner did not say it, `config store` deliberately declined to guess (D47),
+/// and capabilities did not carry it — so nobody could learn which file a
+/// running daemon was writing to (2026-08-31 field test, finding #10).
+#[test]
+fn a_client_can_ask_a_running_daemon_which_store_it_owns() {
+    let (db, sock) = unique_target();
+    let shutdown = start_daemon(&db, &sock);
+
+    let mut conn = daemon::try_connect(&sock).expect("connect");
+    let response = conn
+        .request("core.capabilities", &json!({}))
+        .expect("capabilities over the socket");
+    let store = response["result"]["store"]
+        .as_str()
+        .expect("a file-backed daemon must name its store");
+    assert_eq!(
+        std::fs::canonicalize(store).expect("the named store must exist"),
+        std::fs::canonicalize(&db).expect("the fixture db exists"),
+        "the daemon must name the file it actually opened, not a guess"
+    );
+
+    drop(conn);
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_file(&db);
+}
+
+/// D74's tombstone half: an idle retirement — and only an idle retirement —
+/// records itself where [`daemon::DaemonOptions::retired_marker`] said to,
+/// naming the socket, the store and the instant, so the first command after
+/// the transition can report that its target changed instead of switching
+/// silently (#246's sixty-second fuse, #255's missing announcement).
+#[test]
+fn an_idle_retirement_records_itself_where_the_options_said_to() {
+    let (db, sock) = unique_target();
+    let marker = std::env::temp_dir().join(format!(
+        "tasqx-test-retired-{}-{}",
+        std::process::id(),
+        sock.replace(['\\', '/', ':'], "_")
+    ));
+    let _ = std::fs::remove_file(&marker);
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            idle_timeout: Some(Duration::from_millis(400)),
+            retired_marker: Some(marker.clone()),
+            ..Default::default()
+        },
+    );
+
+    let outcome = serve_result(&result_rx, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    server.join().expect("server thread");
+    outcome
+        .expect("an idle daemon must return from serve")
+        .expect("idle shutdown is an ordinary stop");
+
+    let body = std::fs::read_to_string(&marker).expect("the retirement must be recorded");
+    assert!(
+        body.lines().any(|l| l == format!("socket {sock}")),
+        "the marker must record the address it retired from, verbatim: {body}"
+    );
+    let recorded = body
+        .lines()
+        .find_map(|l| l.strip_prefix("store "))
+        .expect("the marker must record the store the daemon owned");
+    assert_eq!(
+        std::fs::canonicalize(recorded).expect("the recorded store must exist"),
+        std::fs::canonicalize(&db).expect("the fixture db exists"),
+        "the recorded store must be the daemon's own file: {body}"
+    );
+    assert!(
+        body.lines().any(|l| l.starts_with("retired ")),
+        "the marker must record when, so a late reader is not told an old \
+         transition as news: {body}"
+    );
+
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(&db);
+}
+
+/// The restraint that makes the tombstone meaningful: a Ctrl-C is the
+/// operator's own act, and a daemon stopped that way leaves no note — a marker
+/// written on every stop would make the retirement report a lie about
+/// transitions nobody needs announced.
+#[test]
+fn a_ctrl_c_stop_leaves_no_retirement_marker() {
+    let (db, sock) = unique_target();
+    let marker = std::env::temp_dir().join(format!(
+        "tasqx-test-ctrlc-{}-{}",
+        std::process::id(),
+        sock.replace(['\\', '/', ':'], "_")
+    ));
+    let _ = std::fs::remove_file(&marker);
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            retired_marker: Some(marker.clone()),
+            ..Default::default()
+        },
+    );
+
+    // The Ctrl-C path: the flag, not the idle clock.
+    shutdown.store(true, Ordering::Relaxed);
+    serve_result(&result_rx, Duration::from_secs(20))
+        .expect("a flagged daemon must return from serve")
+        .expect("a clean stop");
+    server.join().expect("server thread");
+
+    assert!(
+        !marker.exists(),
+        "a deliberate stop must not be recorded as a retirement"
+    );
     let _ = std::fs::remove_file(&db);
 }
