@@ -1439,7 +1439,7 @@ fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
     };
     let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
     let result = be.call("task.list", &params)?;
-    let text = render::task_table(ctx, &result);
+    let text = render::task_table(ctx, &result, jiff::Timestamp::now());
     Ok((result, text))
 }
 
@@ -3838,7 +3838,7 @@ fn watch_render(conn: &mut daemon::Conn, filter: &str, ctx: &Ctx, tty: bool) -> 
         ));
     }
     let result = env.get("result").cloned().unwrap_or(Value::Null);
-    let text = render::task_table(ctx, &result);
+    let text = render::task_table(ctx, &result, jiff::Timestamp::now());
     let painted = if tty {
         // Clear screen + cursor home, then reprint the fresh working set.
         format!("\x1b[2J\x1b[H{text}")
