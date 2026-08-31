@@ -127,6 +127,28 @@ const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(windows)]
 const CLIENT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How long a stopping daemon waits for its connection threads to finish
+/// draining before it gives up on the stragglers and lets the process exit.
+///
+/// The wait exists because `serve_with_options` used to return the moment the
+/// shutdown flag was set, and `run_daemon` then let the process exit — killing
+/// every connection thread wherever it stood. A response whose transaction had
+/// already committed but was still sitting in `writer_loop`'s queue died with
+/// the process, and the client read a bare EOF for a write that landed: exactly
+/// the "applied" versus "not applied" confusion D5's refusal envelope exists to
+/// prevent, reproduced against the real binary at 2 rounds in 130 (#245).
+///
+/// Derived from [`CLIENT_SEND_TIMEOUT`] rather than a number of its own because
+/// that timeout is what bounds every drain this wait is for: a healthy client's
+/// last write completes in microseconds, and a client that has stopped reading
+/// has its write cut at the send timeout. The extra second is watchdog and
+/// scheduling slack. What can legitimately outlive the deadline is a reader
+/// parked in a receive with an *empty* queue (on Unix it wakes only on the
+/// 30-second `CLIENT_IO_POLL_TIMEOUT`); it holds no committed work, so
+/// abandoning it loses nothing — and the giving-up is announced on stderr
+/// because this function cannot prove that from where it stands.
+const SHUTDOWN_DRAIN_DEADLINE: Duration = Duration::from_secs(CLIENT_SEND_TIMEOUT.as_secs() + 1);
+
 /// Lock a mutex, recovering the guard even if a previous holder panicked while
 /// holding it. A single panicked dispatch must never permanently wedge the
 /// daemon for every other client (DESIGN §2: "a client must never crash the
@@ -528,6 +550,44 @@ impl Hub {
             }
         });
     }
+
+    /// Deliver pending gap markers to subscribers whose queues have room
+    /// again, without waiting for a further broadcast (#248).
+    ///
+    /// [`Hub::broadcast`] can only send the marker while sending something
+    /// else, so when the burst that congested a subscriber is also the last
+    /// write for a while, the subscriber sits on a view N events stale with no
+    /// signal at all — and the scenario `OUT_QUEUE_CAP`'s own comment names, a
+    /// bulk import plus a slow consumer, is precisely the write that tends to
+    /// be the last one. The accept loop calls this every iteration, so
+    /// delivery is bounded by the accept cadence (~20 ms while idle) instead
+    /// of by the next mutation. The marker still precedes the first frame the
+    /// subscriber can take again: either this delivers it first, or a racing
+    /// broadcast does through its own gap-first arm.
+    ///
+    /// A still-full queue leaves the debt **unchanged** — unlike the refusal
+    /// inside `broadcast`, no event rode on this attempt, so nothing new was
+    /// lost by it.
+    fn flush_gaps(&self) {
+        let mut subs = lock_recover(&self.subs);
+        subs.retain_mut(|sub| {
+            if sub.dropped == 0 {
+                return true;
+            }
+            match sub.tx.try_send(gap_notification(sub.dropped)) {
+                Ok(()) => {
+                    eprintln!(
+                        "tasqx daemon: subscriber {} resumed after dropping {} event(s)",
+                        sub.id, sub.dropped
+                    );
+                    sub.dropped = 0;
+                    true
+                }
+                Err(mpsc::TrySendError::Full(_)) => true,
+                Err(mpsc::TrySendError::Disconnected(_)) => false,
+            }
+        });
+    }
 }
 
 /// Shared server state cloned into every worker and the poller.
@@ -684,6 +744,7 @@ pub fn serve_with_notifier(
             tokens_enabled: false,
             otlp_port: None,
             idle_timeout: None,
+            retired_marker: None,
         },
     )
 }
@@ -715,6 +776,19 @@ pub struct DaemonOptions {
     /// the auto-spawn half of D5, when it lands, passes the 15 minutes
     /// explicitly at the spawn site that knows it is a lazily-started daemon.
     pub idle_timeout: Option<Duration>,
+    /// Where to record an idle-timeout retirement (D74). `None` — the default —
+    /// records nothing.
+    ///
+    /// The idle timeout changes what an unchanged command line means: the
+    /// moment the daemon leaves, the same `tasqx add` stops addressing the
+    /// daemon's store and starts addressing `$TASQX_DB`'s — measured in the
+    /// 2026-08-31 field test as two stores each holding a task `#1` from one
+    /// command run twice, sixty seconds apart. The CLI passes the marker path
+    /// it will look for on its next failed connect, so the first command after
+    /// the transition can report it instead of switching silently. Written by
+    /// the **idle branch alone**: a Ctrl-C is the operator's own act and
+    /// leaves no note.
+    pub retired_marker: Option<std::path::PathBuf>,
 }
 
 impl Default for DaemonOptions {
@@ -724,6 +798,7 @@ impl Default for DaemonOptions {
             tokens_enabled: false,
             otlp_port: None,
             idle_timeout: None,
+            retired_marker: None,
         }
     }
 }
@@ -742,11 +817,40 @@ pub fn serve_with_options(
         tokens_enabled,
         otlp_port,
         idle_timeout,
+        retired_marker,
     } = options;
+    // Captured before the engine moves into `Shared`, for the retirement
+    // marker: the store path is a fact about this daemon, not about whichever
+    // client later reads the note.
+    let store_path = engine.store_path();
     let listener = bind(socket)?;
     // Non-blocking accept so the loop can observe `shutdown`; accepted streams
     // stay blocking, which the thread-per-connection model wants.
     listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
+
+    // The banner, HERE and not in the CLI, because the position is the
+    // property (#250): it prints only once the bind has succeeded, so a second
+    // daemon refused off a held address exits with the failure alone — the
+    // pre-fix CLI printed `listening on <addr>` before calling this function,
+    // and a process that never listened announced that it did, which cost the
+    // field test real time chasing a daemon death that had not happened. In a
+    // log or a service unit the listening line is the one an operator reads.
+    eprintln!("tasqx daemon: listening on {socket} (Ctrl-C to stop)");
+    // D74: the store, beside the address — the one line of stderr that answers
+    // the question every wrong-store incident starts with, from the engine's
+    // own connection.
+    if let Some(store) = &store_path {
+        eprintln!("tasqx daemon: store {store}");
+    }
+    // Announced only when armed, so the banner an operator who never
+    // configured it sees is byte-for-byte the one they saw before (D5).
+    if let Some(idle) = idle_timeout {
+        eprintln!(
+            "tasqx daemon: will exit after {} minute(s) with no clients and no work \
+             (`[daemon] idle_timeout`)",
+            idle.as_secs() / 60
+        );
+    }
 
     let start = max_event_rowid(&engine).map_err(|e| {
         io::Error::other(format!(
@@ -830,7 +934,16 @@ pub fn serve_with_options(
     // The server-level idle clock (D5). `None` means "not idle" — either
     // something is going on, or the feature is off and the value is never read.
     let mut idle_since: Option<Instant> = None;
+    // Every admitted connection's thread, so shutdown can wait for their
+    // writers to drain (see [`drain_connections`]) instead of returning into a
+    // process exit that kills them mid-flush. Reaped as connections end, so a
+    // long-lived daemon holds handles for its live clients, not its history.
+    let mut conns: Vec<thread::JoinHandle<()>> = Vec::new();
     let result = loop {
+        reap_finished(&mut conns);
+        // #248: a congested subscriber's gap marker must not wait for the next
+        // mutation — this attempts delivery on every accept tick.
+        shared.hub.flush_gaps();
         if shutdown.load(Ordering::Relaxed) {
             break Ok(());
         }
@@ -877,13 +990,16 @@ pub fn serve_with_options(
                  (`[daemon] idle_timeout`)",
                 idle_timeout.unwrap_or_default().as_secs()
             );
+            if let Some(marker) = &retired_marker {
+                record_idle_retirement(marker, socket, store_path.as_deref());
+            }
             break Ok(());
         }
         match listener.accept() {
             Ok(stream) => {
                 if let Some(permit) = admission.try_acquire() {
                     let sh = shared.clone();
-                    thread::spawn(move || handle_conn(stream, sh, permit));
+                    conns.push(thread::spawn(move || handle_conn(stream, sh, permit)));
                 } else {
                     admission.note_rejection();
                     reject_overloaded(stream);
@@ -899,8 +1015,87 @@ pub fn serve_with_options(
     // An error return is also a shutdown signal for the supervised threads;
     // otherwise the serve call would fail while its poller/scheduler leaked.
     shutdown.store(true, Ordering::Relaxed);
+    drain_connections(conns);
     cleanup(socket);
     result
+}
+
+/// Join every finished connection thread and keep the live ones.
+///
+/// Called once per accept attempt (~20 ms while idle), so `serve` holds handles
+/// proportional to the *current* client count, never to connection history —
+/// without this, a daemon serving one client a minute for a month would carry
+/// forty-three thousand dead handles into its shutdown drain.
+fn reap_finished(conns: &mut Vec<thread::JoinHandle<()>>) {
+    let mut live = Vec::with_capacity(conns.len());
+    for conn in conns.drain(..) {
+        if conn.is_finished() {
+            let _ = conn.join();
+        } else {
+            live.push(conn);
+        }
+    }
+    *conns = live;
+}
+
+/// Wait for the connection threads to end before `serve` returns, bounded by
+/// [`SHUTDOWN_DRAIN_DEADLINE`].
+///
+/// This is [`writer_loop`]'s drain discipline made effective: that loop already
+/// refuses to drop a queued response on shutdown, but nothing waited for it, so
+/// the CLI's process exit killed it mid-flush and the client read a bare EOF
+/// for a committed write (#245). The wait is for the flush, not for the client:
+/// a connection that outlives the deadline is a reader parked on an empty queue
+/// (see [`SHUTDOWN_DRAIN_DEADLINE`]), and abandoning it is announced rather
+/// than silent because "nothing was lost" is an inference, not an observation.
+fn drain_connections(mut conns: Vec<thread::JoinHandle<()>>) {
+    let deadline = Instant::now() + SHUTDOWN_DRAIN_DEADLINE;
+    loop {
+        reap_finished(&mut conns);
+        if conns.is_empty() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    eprintln!(
+        "tasqx daemon: exiting with {} client connection(s) still open after {:?}; \
+         a response may not have reached its client",
+        conns.len(),
+        SHUTDOWN_DRAIN_DEADLINE
+    );
+}
+
+/// Record an idle-timeout retirement where [`DaemonOptions::retired_marker`]
+/// said to (D74).
+///
+/// The body is self-describing prose plus three parseable lines — `socket`,
+/// `store` (`-` for an in-memory engine, which no CLI daemon runs on), and
+/// `retired` — because the file lives beside `config.toml` and somebody will
+/// open it. A failed write is reported on stderr rather than swallowed: the
+/// marker exists so a silent transition gets a voice, and losing it silently
+/// would be the same defect one layer down.
+fn record_idle_retirement(marker: &std::path::Path, socket: &str, store: Option<&str>) {
+    let body = format!(
+        "# tasqx wrote this when the daemon below left on its idle timeout (DESIGN.md D74).\n\
+         # The next command that fails to reach it reports the retirement and deletes this file.\n\
+         socket {socket}\n\
+         store {}\n\
+         retired {}\n",
+        store.unwrap_or("-"),
+        jiff::Timestamp::now(),
+    );
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(marker, body) {
+        eprintln!(
+            "tasqx daemon: could not record the idle retirement at {}: {e}",
+            marker.display()
+        );
+    }
 }
 
 // ---- idle shutdown (DESIGN.md §12-D5) ---------------------------------------
@@ -1744,11 +1939,29 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
                 // `out_tx.send` hit the closed channel — but only if the client
                 // sends another request, and it is stuck on the frame the failed
                 // write truncated.
+                let stopping = sh.shutdown.load(Ordering::Relaxed);
                 if recv_teardown_due(
-                    sh.shutdown.load(Ordering::Relaxed),
+                    stopping,
                     io_state.idle(Instant::now()),
                     io_state.write_failed(),
                 ) {
+                    // A teardown that shutdown caused must not end in a bare
+                    // EOF. On Windows the watchdog's cancel can beat the
+                    // client's frame to this arm, so a request already on the
+                    // wire was never read — without a parting refusal the
+                    // client cannot tell "not applied, retry" from "applied
+                    // and the answer was lost", which is the distinction D5's
+                    // envelope exists to keep (the #58 flake, and 3 of #245's
+                    // 130 hand-driven rounds). Suppressed for subscribers:
+                    // `watch` already treats the close itself as the message
+                    // ("daemon closed the connection", exit 1), and a stray
+                    // refusal frame would reach its renderer instead.
+                    if stopping && sub_id.is_none() {
+                        let refusal = unavailable_envelope(
+                            "daemon is shutting down; the request was not applied",
+                        );
+                        let _ = out_tx.send(format!("{refusal}\n"));
+                    }
                     break;
                 }
             }
@@ -2212,6 +2425,99 @@ mod tests {
 
         server.join().expect("connection thread");
         cleanup(&socket);
+    }
+
+    /// A connection that shutdown tears down before a request frame is READ
+    /// must still hear the refusal envelope before EOF.
+    ///
+    /// Windows-gated because the mechanism is: the watchdog cancels the parked
+    /// read within a tick of the flag flipping, and the reader used to break
+    /// straight out of its timeout arm with nothing said — so a request already
+    /// on the wire was never read and the client got a bare EOF (#58's flake,
+    /// and the bare-EOF rounds of #245's hand reproduction). On Unix a parked
+    /// reader wakes only on the 30-second recv timeout, which no test should
+    /// sit through; an arriving frame wakes it and the top-of-loop refusal
+    /// answers, so the cancel-beats-frame race does not exist there.
+    #[cfg(windows)]
+    #[test]
+    fn a_shutdown_teardown_sends_the_refusal_before_eof() {
+        let socket = client_test_socket("shutdown-teardown");
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let server = serve_one_conn(&socket, sh.clone());
+
+        let mut conn = try_connect(&socket).expect("connect before shutdown");
+        // Let the server's reader park in its read before the flag flips, so
+        // the teardown arm — not the top-of-loop check — is what must answer.
+        thread::sleep(Duration::from_millis(50));
+        sh.shutdown.store(true, Ordering::Relaxed);
+
+        let frame = with_deadline("refusal on shutdown teardown", move || conn.next_frame())
+            .expect("no read error")
+            .expect("the teardown must say why before closing, never a bare EOF");
+        match frame {
+            Frame::Response(v) => {
+                assert_eq!(
+                    v.pointer("/error/code").and_then(Value::as_str),
+                    Some("unavailable"),
+                    "the parting frame must be the shutdown refusal: {v}"
+                );
+                assert!(
+                    v.get("id").is_none(),
+                    "the refusal is transport-level and must stay id-less: {v}"
+                );
+            }
+            Frame::Event(v) => panic!("the refusal must be a response frame, got event {v}"),
+        }
+
+        server.join().expect("connection thread");
+        cleanup(&socket);
+    }
+
+    /// #248, the quiet case: flood a subscriber past its queue, let it drain,
+    /// and the gap marker must arrive **with no further write**. `broadcast`
+    /// alone can only send the marker while sending something else, so before
+    /// `flush_gaps` the subscriber held a view N events stale for as long as
+    /// the store stayed quiet — and the burst that congests a consumer (the
+    /// bulk import `OUT_QUEUE_CAP`'s comment names) is exactly the write that
+    /// tends to be the last one for a while.
+    #[test]
+    fn a_gap_marker_reaches_a_drained_subscriber_without_a_further_event() {
+        let hub = Hub::new();
+        // A deliberately tiny queue: the mechanism is capacity-relative, and
+        // OUT_QUEUE_CAP frames of flood would test patience, not delivery.
+        let (tx, rx) = mpsc::sync_channel::<String>(2);
+        hub.register(tx);
+
+        for line in ["a\n", "b\n", "c\n", "d\n"] {
+            hub.broadcast(line);
+        }
+        assert_eq!(rx.try_recv().as_deref(), Ok("a\n"), "the queue held two");
+        assert_eq!(rx.try_recv().as_deref(), Ok("b\n"), "the queue held two");
+        assert!(
+            rx.try_recv().is_err(),
+            "the premise: the flood is over, the queue is drained, and nothing \
+             has told the subscriber it is two events short"
+        );
+
+        hub.flush_gaps();
+        let marker = rx
+            .try_recv()
+            .expect("the marker must arrive with no further write");
+        assert!(
+            marker.contains("\"event\":\"task.changed.gap\"") && marker.contains("\"dropped\":2"),
+            "the marker must carry the exact count: {marker}"
+        );
+
+        // The debt is settled: flushing again delivers nothing, and a fresh
+        // broadcast arrives as an ordinary frame with no second marker.
+        hub.flush_gaps();
+        assert!(
+            rx.try_recv().is_err(),
+            "a settled debt must not re-announce"
+        );
+        hub.broadcast("e\n");
+        assert_eq!(rx.try_recv().as_deref(), Ok("e\n"));
+        assert!(rx.try_recv().is_err());
     }
 
     /// Frames already queued when shutdown lands must still reach the socket.

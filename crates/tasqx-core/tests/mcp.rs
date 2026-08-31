@@ -313,6 +313,45 @@ fn modify_pins_expected_rev_by_default() {
         msg.contains("conflict"),
         "message should carry the conflict code: {msg}"
     );
+
+    // D75: the surface an agent reads must say what this test just drove, and
+    // it is guarded HERE, beside the behaviour, so wording and injection
+    // cannot drift apart (D30's rule, applied to a description instead of a
+    // table). The old description read "Pass expected_rev for optimistic
+    // concurrency" — literally: omit it and the guard is off — the exact
+    // inverse of the pinning asserted above, measured costing an agent 199
+    // conflicts in 200 contended rounds it never opted into (field test
+    // 2026-08-31, finding #7).
+    let tools = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/list" }))
+        .expect("tools/list answers");
+    let modify = tools["result"]["tools"]
+        .as_array()
+        .expect("tools is an array")
+        .iter()
+        .find(|t| t["name"] == "tasqx_modify_task")
+        .expect("tasqx_modify_task is listed");
+    let description = modify["description"].as_str().expect("description");
+    for load_bearing in [
+        "omitted",
+        "conflict",
+        "re-read",
+        "retry",
+        "no way to opt out",
+    ] {
+        assert!(
+            description.contains(load_bearing),
+            "the tool description must state the injection and the retry it \
+             expects — missing `{load_bearing}`: {description}"
+        );
+    }
+    let guard = modify["inputSchema"]["properties"]["expected_rev"]["description"]
+        .as_str()
+        .expect("expected_rev has a description");
+    assert!(
+        guard.contains("Supplied by the server") && guard.contains("no last-writer-wins"),
+        "`expected_rev` must not read as opt-in — the truth is the reverse: {guard}"
+    );
 }
 
 // ---- protocol version negotiation --------------------------------------------

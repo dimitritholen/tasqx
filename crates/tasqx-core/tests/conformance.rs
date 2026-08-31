@@ -727,6 +727,10 @@ const R_CORE_CAPABILITIES: Shape = &[&[
     req("params", Ty::Object),
     req("features", Ty::Array),
     nul("default_project", Ty::Str),
+    // D74: the store this engine answers from — the caller's own file
+    // in-process, the daemon's file over the socket. Null only in-memory,
+    // which is why the conformance engine (in-memory) exercises the null arm.
+    nul("store", Ty::Str),
 ]];
 
 // ---- envelope shapes --------------------------------------------------------
