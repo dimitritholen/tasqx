@@ -564,7 +564,11 @@ fn field_ts(t: &Value, key: &str) -> Option<Timestamp> {
 }
 
 /// Render a `task.list` result as an aligned, themed table.
-pub fn task_table(ctx: &Ctx, result: &Value) -> String {
+///
+/// `now` is a parameter and never the system clock — the rule this module
+/// already states at [`agenda_select`], adopted here late: an internal read
+/// made the overdue highlight untestable at the day boundary.
+pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     let empty = Vec::new();
     let tasks = result
         .get("tasks")
@@ -576,7 +580,6 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
 
     let refs: Vec<&Value> = tasks.iter().collect();
     let max_urg = max_urgency(&refs);
-    let now = Timestamp::now();
     let rows: Vec<TaskRow> = tasks.iter().map(|t| task_row(t, max_urg, now)).collect();
     let c = TaskCols::fit(&rows, ctx.cols, "DUE");
 
@@ -2472,6 +2475,20 @@ mod tests {
     /// read would flow through the default view looking like ordinary open work.
     /// The core flags it; the table has to say so, and name the way out — the
     /// value cannot be corrected in place, only exported, edited and imported.
+    /// The overdue flag is measured against the CALLER's instant — pinned on
+    /// both sides of the boundary for one stored row, which the internal
+    /// clock read this replaces made unschedulable.
+    #[test]
+    fn the_overdue_flag_flips_at_the_callers_instant_not_the_wall_clock() {
+        let t = json!({
+            "short_id": 1, "urgency": 1.0, "title": "x",
+            "status": "pending", "due": "2026-08-31T12:00:00Z"
+        });
+        let at = |s: &str| s.parse::<Timestamp>().unwrap();
+        assert!(!task_row(&t, 1.0, at("2026-08-31T11:59:59Z")).overdue);
+        assert!(task_row(&t, 1.0, at("2026-08-31T12:00:01Z")).overdue);
+    }
+
     #[test]
     fn task_table_reports_a_status_the_store_could_not_read() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
@@ -2483,7 +2500,7 @@ mod tests {
             }],
             "count": 1
         });
-        let out = task_table(&ctx, &result);
+        let out = task_table(&ctx, &result, Timestamp::now());
         assert!(
             out.contains("Done"),
             "the offending value must be named: {out:?}"
@@ -2501,7 +2518,7 @@ mod tests {
             "project": "work", "due": "", "tags": [], "status": "pending"
         });
         assert!(
-            !task_table(&ctx, &ok).contains("export"),
+            !task_table(&ctx, &ok, Timestamp::now()).contains("export"),
             "clean table grew a warning"
         );
     }
@@ -2556,7 +2573,7 @@ mod tests {
                 }],
                 "count": 1
             });
-            let out = task_table(&ctx, &result);
+            let out = task_table(&ctx, &result, Timestamp::now());
             assert!(
                 out.contains("#4"),
                 "the affected task must be identified for {blank:?}: {out:?}"
@@ -2580,7 +2597,7 @@ mod tests {
             "count": 1
         });
         assert!(
-            !task_table(&ctx, &ok).contains("blank title"),
+            !task_table(&ctx, &ok, Timestamp::now()).contains("blank title"),
             "clean table grew a warning"
         );
     }
@@ -2596,7 +2613,7 @@ mod tests {
             }],
             "count": 1
         });
-        let out = task_table(&ctx, &result);
+        let out = task_table(&ctx, &result, Timestamp::now());
         assert!(
             !out.contains('\x1b'),
             "raw escape reached the terminal: {out:?}"
@@ -2814,7 +2831,11 @@ mod tests {
                         "status": "pending" })
             })
             .collect();
-        let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
+        let out = task_table(
+            &ctx,
+            &json!({ "tasks": tasks, "count": tasks.len() }),
+            Timestamp::now(),
+        );
         let rows: Vec<&str> = out.lines().skip(2).take(AWKWARD.len()).collect();
         assert_eq!(
             rows.len(),
@@ -2850,7 +2871,11 @@ mod tests {
                     t
                 })
                 .collect();
-            let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
+            let out = task_table(
+                &ctx,
+                &json!({ "tasks": tasks, "count": tasks.len() }),
+                Timestamp::now(),
+            );
             let rows: Vec<&str> = out.lines().skip(2).take(AWKWARD.len()).collect();
             let want = cells(rows[0]);
             for (row, v) in rows.iter().zip(AWKWARD) {
@@ -2885,7 +2910,13 @@ mod tests {
             task_json(1, long, "raid.game", "", &["design"]),
         ], "count": 1 });
 
-        let head = |t: &Value| task_table(&ctx, t).lines().next().unwrap().to_string();
+        let head = |t: &Value| {
+            task_table(&ctx, t, Timestamp::now())
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
+        };
         assert!(head(&with_due).contains("DUE"), "{}", head(&with_due));
         assert!(
             !head(&without_due).contains("DUE"),
@@ -2893,7 +2924,7 @@ mod tests {
             head(&without_due)
         );
         // And the title survives whole once the dead column is gone.
-        let row = task_table(&ctx, &without_due)
+        let row = task_table(&ctx, &without_due, Timestamp::now())
             .lines()
             .nth(2)
             .unwrap()
@@ -2922,7 +2953,11 @@ mod tests {
                     )
                 })
                 .collect();
-            let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
+            let out = task_table(
+                &ctx,
+                &json!({ "tasks": tasks, "count": tasks.len() }),
+                Timestamp::now(),
+            );
             for line in out.lines() {
                 assert!(
                     cells(line) <= cols,
@@ -2943,6 +2978,7 @@ mod tests {
         let out = task_table(
             &ctx,
             &json!({ "tasks": [task_json(1, &title, "p", "", &["t"])], "count": 1 }),
+            Timestamp::now(),
         );
         for line in out.lines() {
             assert!(cells(line) <= Ctx::MAX_COLS, "{line:?}");
@@ -3717,7 +3753,11 @@ mod tests {
         let tasks = vec![unreadable, untitled];
 
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let list = task_table(&ctx, &json!({ "tasks": tasks, "count": 2 }));
+        let list = task_table(
+            &ctx,
+            &json!({ "tasks": tasks, "count": 2 }),
+            Timestamp::now(),
+        );
         let agenda = agenda_out(tasks.clone(), AGENDA_DEFAULT_DAYS);
 
         let notes = store_health_notes(&tasks);
