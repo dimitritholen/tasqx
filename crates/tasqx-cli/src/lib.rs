@@ -531,14 +531,20 @@ fn execute(cli: Cli) -> Exit {
     // where `--json` decides whether the tty gate applies — `tasqx --json pick`
     // still refuses — which is why it is ruled on in §12 rather than left to be
     // discovered.
-    if matches!(&cli.command, Some(Command::Dashboard)) && !cli.json {
+    // The terminal facts, read ONCE for both gates that consult them: this
+    // explicit refusal (which must stay ABOVE the store-open — see the pick
+    // gate's comment) and the bare-invocation screen decision further down.
+    // They used to be computed twice, one recomputation per gate.
+    let (stdout_tty, stdin_tty) = {
         use std::io::IsTerminal;
-        let (out_tty, in_tty) = (
+        (
             std::io::stdout().is_terminal(),
             std::io::stdin().is_terminal(),
-        );
-        let size = terminal_size(&ctx.caps, out_tty, in_tty);
-        if let Some(msg) = dashboard_refusal(&ctx.caps, out_tty, in_tty, size) {
+        )
+    };
+    let term_size = terminal_size(&ctx.caps, stdout_tty, stdin_tty);
+    if matches!(&cli.command, Some(Command::Dashboard)) && !cli.json {
+        if let Some(msg) = dashboard_refusal(&ctx.caps, stdout_tty, stdin_tty, term_size) {
             return Exit::Out(Err(ApiError::bad_request(msg)));
         }
     }
@@ -625,14 +631,7 @@ fn execute(cli: Cli) -> Exit {
     // cannot happen here: `--json` is in the condition above, so the flag never
     // reaches this path. There is also no command name to declare — this is the
     // absence of a command.
-    let (stdout_tty, stdin_tty) = {
-        use std::io::IsTerminal;
-        (
-            std::io::stdout().is_terminal(),
-            std::io::stdin().is_terminal(),
-        )
-    };
-    let fits = terminal_size(&ctx.caps, stdout_tty, stdin_tty).is_some_and(|(w, h)| {
+    let fits = term_size.is_some_and(|(w, h)| {
         dashboard_refusal(&ctx.caps, stdout_tty, stdin_tty, Some((w, h))).is_none()
     });
     let verb_screen = matches!(&cli.command, Some(Command::Dashboard)) && !cli.json;
