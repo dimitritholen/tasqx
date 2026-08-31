@@ -161,6 +161,25 @@ fn empty(text: &str, s: &Styles, cells: u16, unicode: bool) -> Vec<Line<'static>
     ))]
 }
 
+/// Everything a panel body needs to know about the frame it draws into, as
+/// one value. `next_body` used to carry eight loose parameters under a
+/// too_many_arguments allow, three of them derivable from the others (`s`
+/// from theme+caps, `unicode` from caps) and rebuilt its ramp styles from a
+/// second theme+caps pair — this struct is that named pain, closed.
+struct PanelCtx<'a> {
+    s: Styles,
+    w: usize,
+    height: u16,
+    theme: &'a Theme,
+    caps: &'a Caps,
+}
+
+impl PanelCtx<'_> {
+    fn unicode(&self) -> bool {
+        self.caps.unicode
+    }
+}
+
 /// Build one panel's body.
 #[allow(clippy::too_many_arguments)]
 pub fn body(
@@ -173,30 +192,30 @@ pub fn body(
     theme: &Theme,
     caps: &Caps,
 ) -> Vec<Line<'static>> {
-    let s = styles(theme, caps);
-    let w = width as usize;
+    let ctx = PanelCtx {
+        s: styles(theme, caps),
+        w: width as usize,
+        height,
+        theme,
+        caps,
+    };
     let mut lines = match id {
-        PanelId::Now => now_body(dash, detail, &s, w, caps.unicode),
-        PanelId::Next => next_body(dash, &s, w, height, cursor, caps.unicode, theme, caps),
-        PanelId::Due => due_body(dash, &s, w, height, cursor, caps.unicode),
-        PanelId::Blocked => blocked_body(dash, &s, w, height, cursor, caps.unicode),
-        PanelId::Recent => recent_body(dash, &s, w, height, cursor, caps.unicode),
-        PanelId::Projects => projects_body(dash, &s, w, height, cursor, caps.unicode),
-        PanelId::Burndown => burndown_body(dash, &s, w, height, caps.unicode),
-        PanelId::Tokens => tokens_body(dash, &s, w, height, caps.unicode),
+        PanelId::Now => now_body(dash, detail, &ctx),
+        PanelId::Next => next_body(dash, &ctx, cursor),
+        PanelId::Due => due_body(dash, &ctx, cursor),
+        PanelId::Blocked => blocked_body(dash, &ctx, cursor),
+        PanelId::Recent => recent_body(dash, &ctx, cursor),
+        PanelId::Projects => projects_body(dash, &ctx, cursor),
+        PanelId::Burndown => burndown_body(dash, &ctx),
+        PanelId::Tokens => tokens_body(dash, &ctx),
         PanelId::Slot => Vec::new(),
     };
     lines.truncate(height as usize);
     lines
 }
 
-fn now_body(
-    dash: &Dashboard,
-    detail: Detail,
-    s: &Styles,
-    w: usize,
-    unicode: bool,
-) -> Vec<Line<'static>> {
+fn now_body(dash: &Dashboard, detail: Detail, ctx: &PanelCtx) -> Vec<Line<'static>> {
+    let (s, w, unicode) = (&ctx.s, ctx.w, ctx.unicode());
     let Some(card) = &dash.now else {
         return empty("no timer running · p to pick one", s, w as u16, unicode);
     };
@@ -300,17 +319,9 @@ fn more_line(hidden: usize, s: &Styles, w: usize, unicode: bool) -> Option<Line<
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn next_body(
-    dash: &Dashboard,
-    s: &Styles,
-    w: usize,
-    height: u16,
-    cursor: Cursor,
-    unicode: bool,
-    theme: &Theme,
-    caps: &Caps,
-) -> Vec<Line<'static>> {
+fn next_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
+    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
+    let (theme, caps) = (ctx.theme, ctx.caps);
     let rows = &dash.next.rows;
     if rows.is_empty() {
         return empty(
@@ -359,14 +370,8 @@ fn next_body(
     out
 }
 
-fn due_body(
-    dash: &Dashboard,
-    s: &Styles,
-    w: usize,
-    height: u16,
-    cursor: Cursor,
-    unicode: bool,
-) -> Vec<Line<'static>> {
+fn due_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
+    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
     let d = &dash.due;
     if d.is_empty() {
         return empty("no deadlines this week", s, w as u16, unicode);
@@ -429,14 +434,8 @@ fn due_body(
     out
 }
 
-fn blocked_body(
-    dash: &Dashboard,
-    s: &Styles,
-    w: usize,
-    height: u16,
-    cursor: Cursor,
-    unicode: bool,
-) -> Vec<Line<'static>> {
+fn blocked_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
+    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
     let rows = &dash.blocked.rows;
     if rows.is_empty() {
         return empty("nothing is blocked", s, w as u16, unicode);
@@ -465,14 +464,8 @@ fn blocked_body(
     out
 }
 
-fn recent_body(
-    dash: &Dashboard,
-    s: &Styles,
-    w: usize,
-    height: u16,
-    cursor: Cursor,
-    unicode: bool,
-) -> Vec<Line<'static>> {
+fn recent_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
+    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
     let rows = &dash.recent.rows;
     if rows.is_empty() {
         return empty("nothing has changed yet", s, w as u16, unicode);
@@ -505,14 +498,8 @@ fn recent_body(
     out
 }
 
-fn projects_body(
-    dash: &Dashboard,
-    s: &Styles,
-    w: usize,
-    height: u16,
-    cursor: Cursor,
-    unicode: bool,
-) -> Vec<Line<'static>> {
+fn projects_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
+    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
     let rows = &dash.projects.rows;
     if rows.is_empty() {
         return empty("no projects yet — tasqx init <name>", s, w as u16, unicode);
@@ -560,13 +547,8 @@ fn projects_body(
         .collect()
 }
 
-fn burndown_body(
-    dash: &Dashboard,
-    s: &Styles,
-    w: usize,
-    height: u16,
-    unicode: bool,
-) -> Vec<Line<'static>> {
+fn burndown_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
+    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
     let series = &dash.burndown.series;
     if series.is_empty() {
         return empty("no history in this window", s, w as u16, unicode);
@@ -618,13 +600,8 @@ fn burndown_body(
     out
 }
 
-fn tokens_body(
-    dash: &Dashboard,
-    s: &Styles,
-    w: usize,
-    height: u16,
-    unicode: bool,
-) -> Vec<Line<'static>> {
+fn tokens_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
+    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
     let rows = &dash.tokens.rows;
     if rows.is_empty() {
         return empty("no token spend attributed yet", s, w as u16, unicode);
