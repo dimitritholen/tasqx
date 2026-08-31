@@ -2147,11 +2147,12 @@ pub fn why(ctx: &Ctx, result: &Value) -> String {
 /// Render a breakdown the caller has already computed.
 ///
 /// `parts` is a PARAMETER for the same reason `chart::render_throughput`'s
-/// series is: `urgency::breakdown` reads the wall clock internally, so a test
-/// that could only reach this code through [`why`] would not get to choose the
-/// value under test — and the value that broke this display (`-0.0`, from
-/// `(-age).max(0.0)` when `created` lands in the very second the clock is read)
-/// is one a test cannot schedule.
+/// series is: [`why`] reaches `urgency::breakdown` through the wall clock, so
+/// a test that could only reach this code through it would not get to choose
+/// the value under test — and the value that broke this display (`-0.0`, from
+/// `(-age).max(0.0)` when `created` lands in the very second the clock is
+/// read) is one a test cannot schedule there, while `urgency::breakdown_at`
+/// plus this seam can stage it exactly.
 fn why_rows(ctx: &Ctx, sid: i64, parts: &[(&'static str, f64)]) -> String {
     let total: f64 = parts.iter().map(|(_, v)| v).sum();
     let total = (total * 10.0).round() / 10.0;
