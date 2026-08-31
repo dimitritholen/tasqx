@@ -42,7 +42,10 @@
       "Read(~/.ssh/**)",
       "Bash(git push --force*)",
       "Bash(git push -f*)",
-      "Bash(gh release*)",
+      "Bash(gh release create*)",
+      "Bash(gh release delete*)",
+      "Bash(gh release edit*)",
+      "Bash(gh release upload*)",
       "Bash(cargo publish*)"
     ],
     "ask": [
