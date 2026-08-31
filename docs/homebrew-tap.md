@@ -55,6 +55,14 @@ cd "$TAP" && git commit -am "tasqx 0.2.0" && git push
 By NAME, not by path: `brew audit --formula ./Formula/tasqx.rb` is rejected
 outright on current Homebrew, which is why the tap has to exist first.
 
+**The same checks, without a local brew.** On a machine that cannot run brew
+(the first formula shipped from Windows), the check-before-publish order is
+kept by geometry instead: the generated formula is pushed to a *branch* of the
+tap, the tap's own CI (`.github/workflows/ci.yml` there) runs these exact four
+commands on ubuntu and macos runners, and only a green run merges to `main` —
+the branch `brew tap` actually serves. Either form is fine; what is not fine
+is a formula reaching `main` that nothing has installed (D77).
+
 The sums come from the `.sha256` files the release workflow publishes beside each
 archive, so they cannot disagree with what a user downloads. A tag with no
 release fails the script instead of producing a formula with dead URLs.
