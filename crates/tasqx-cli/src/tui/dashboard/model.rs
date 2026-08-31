@@ -1095,41 +1095,9 @@ pub fn layout(
     let columns = columns_for(rung);
     let column_rows = height - CHROME_ROWS;
 
-    // Which panel goes in which column, top to bottom. The slot exists only
-    // where there is not room for its three members separately.
     let wanted = |id: PanelId| order.contains(&id);
     let slot_members_wanted = PanelId::SLOT_MEMBERS.iter().copied().any(wanted);
-    let cols: Vec<Vec<PanelId>> = match rung {
-        Rung::Xl | Rung::L => vec![
-            vec![
-                PanelId::Now,
-                PanelId::Blocked,
-                PanelId::Projects,
-                PanelId::Tokens,
-            ],
-            vec![PanelId::Next, PanelId::Recent],
-            vec![PanelId::Due, PanelId::Burndown],
-        ],
-        Rung::M => vec![
-            vec![PanelId::Now, PanelId::Next, PanelId::Blocked],
-            vec![PanelId::Due, PanelId::Recent, PanelId::Slot],
-        ],
-        Rung::S => vec![vec![
-            PanelId::Now,
-            PanelId::Next,
-            PanelId::Due,
-            PanelId::Blocked,
-            PanelId::Slot,
-            PanelId::Recent,
-        ]],
-        Rung::Xs => vec![vec![
-            PanelId::Now,
-            PanelId::Next,
-            PanelId::Due,
-            PanelId::Blocked,
-            PanelId::Recent,
-        ]],
-    };
+    let cols = column_table(rung);
 
     let mut panels = Vec::new();
     let extents = column_extents(width, columns);
@@ -1167,12 +1135,48 @@ pub fn layout(
     })
 }
 
-pub(crate) fn columns_for(r: Rung) -> u16 {
-    match r {
-        Rung::Xl | Rung::L => 3,
-        Rung::M => 2,
-        Rung::S | Rung::Xs => 1,
+/// Which panel goes in which column, top to bottom, per rung. The slot exists
+/// only where there is not room for its three members separately.
+fn column_table(rung: Rung) -> Vec<Vec<PanelId>> {
+    match rung {
+        Rung::Xl | Rung::L => vec![
+            vec![
+                PanelId::Now,
+                PanelId::Blocked,
+                PanelId::Projects,
+                PanelId::Tokens,
+            ],
+            vec![PanelId::Next, PanelId::Recent],
+            vec![PanelId::Due, PanelId::Burndown],
+        ],
+        Rung::M => vec![
+            vec![PanelId::Now, PanelId::Next, PanelId::Blocked],
+            vec![PanelId::Due, PanelId::Recent, PanelId::Slot],
+        ],
+        Rung::S => vec![vec![
+            PanelId::Now,
+            PanelId::Next,
+            PanelId::Due,
+            PanelId::Blocked,
+            PanelId::Slot,
+            PanelId::Recent,
+        ]],
+        Rung::Xs => vec![vec![
+            PanelId::Now,
+            PanelId::Next,
+            PanelId::Due,
+            PanelId::Blocked,
+            PanelId::Recent,
+        ]],
     }
+}
+
+pub(crate) fn columns_for(r: Rung) -> u16 {
+    // The count IS [`column_table`]'s length. It used to be a second per-rung
+    // literal kept in sync by hand, and the drift mode of that pair was
+    // `extents[i]` indexing out of bounds mid-frame, inside the raw-mode alt
+    // screen. Derived, the two cannot disagree.
+    u16::try_from(column_table(r).len()).expect("column_table holds at most a handful of columns")
 }
 
 /// The narrowest terminal that can reach each rung — the other half of the
