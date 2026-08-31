@@ -91,6 +91,19 @@ fn scoped(mut params: Value, filter: Option<&str>) -> Value {
     params
 }
 
+/// The stats `Report::render` prints, computed by [`Report::derive`]: a pure
+/// value the assembly half consumes, and the seam that makes each number
+/// directly testable.
+struct Derived<'a> {
+    open: usize,
+    overdue: usize,
+    overdue_tasks: Vec<&'a Value>,
+    completed_recent: Vec<&'a Value>,
+    velocity: usize,
+    top_tags: Vec<(String, u32)>,
+    bucket_totals: Vec<(&'static str, i64)>,
+}
+
 struct Report<'a> {
     theme: &'a Theme,
     /// Which column `summary`'s groups are keyed by — `report.summary` names the
@@ -105,11 +118,15 @@ struct Report<'a> {
 }
 
 impl<'a> Report<'a> {
-    fn render(&self) -> String {
+    /// Every number the header tiles and lists print, derived once — a pure
+    /// function of the injected payloads and `now`, split out of `render` so
+    /// each stat is reachable by a direct assertion instead of only through a
+    /// full-document string test. `render` assembles; this decides.
+    fn derive(&self) -> Derived<'a> {
         let tasks = array_at(self.export, "tasks");
 
         // Derived counts. All windows are measured against the injected `now`,
-        // not the wall clock — rendering must stay a pure function of the
+        // not the wall clock — the derivation must stay a pure function of the
         // struct's inputs, or a fixture pinned to one date starts answering
         // differently as real time passes.
         let now_ts = parse_ts(self.now).unwrap_or_else(jiff::Timestamp::now);
@@ -122,7 +139,6 @@ impl<'a> Report<'a> {
         let cutoff = now_ts
             .checked_sub(jiff::ToSpan::hours(168i64))
             .unwrap_or(now_ts);
-
         for t in tasks {
             let status = t.get("status").and_then(Value::as_str).unwrap_or("");
             if crate::render::status_is_open(status) {
@@ -192,17 +208,6 @@ impl<'a> Report<'a> {
         top_tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         top_tags.truncate(10);
 
-        // ---- charts ----
-        let throughput = chart::throughput(self.events, 12, today());
-        // Through the shared projection, so the report and the dashboard cannot
-        // disagree about whether a task was open on a given day.
-        let members = chart::members_of(&json!({ "tasks": tasks }));
-        let burndown = chart::burndown(self.events, &members, 30, today());
-
-        // ---- assemble ----
-        let css = self.css();
-        let mut body = String::new();
-
         // Report-wide token totals, one per bucket, summed across the summary's
         // groups (which already carry core's D24 scope — cancelled work is
         // excluded unless the caller asked for `all`). Saturating, like the
@@ -225,13 +230,38 @@ impl<'a> Report<'a> {
                 (*long, sum)
             })
             .collect();
+        Derived {
+            open,
+            overdue,
+            overdue_tasks,
+            completed_recent,
+            velocity,
+            top_tags,
+            bucket_totals,
+        }
+    }
+
+    fn render(&self) -> String {
+        let tasks = array_at(self.export, "tasks");
+        let d = self.derive();
+
+        // ---- charts ----
+        let throughput = chart::throughput(self.events, 12, today());
+        // Through the shared projection, so the report and the dashboard cannot
+        // disagree about whether a task was open on a given day.
+        let members = chart::members_of(&json!({ "tasks": tasks }));
+        let burndown = chart::burndown(self.events, &members, 30, today());
+
+        // ---- assemble ----
+        let css = self.css();
+        let mut body = String::new();
 
         body.push_str(&self.header(
-            open,
-            completed_recent.len(),
-            velocity,
-            overdue,
-            &bucket_totals,
+            d.open,
+            d.completed_recent.len(),
+            d.velocity,
+            d.overdue,
+            &d.bucket_totals,
         ));
         body.push_str("<main>");
 
@@ -246,11 +276,11 @@ impl<'a> Report<'a> {
             &svg_burndown(&burndown, self.theme),
         ));
 
-        body.push_str(&self.completed_section(&completed_recent));
-        body.push_str(&self.overdue_section(&overdue_tasks));
+        body.push_str(&self.completed_section(&d.completed_recent));
+        body.push_str(&self.overdue_section(&d.overdue_tasks));
         body.push_str(&self.per_group_section());
         body.push_str(&self.actionable_section());
-        body.push_str(&self.tags_section(&top_tags));
+        body.push_str(&self.tags_section(&d.top_tags));
 
         body.push_str("</main>");
         body.push_str(&format!(
