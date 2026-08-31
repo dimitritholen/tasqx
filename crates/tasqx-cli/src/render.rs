@@ -564,7 +564,11 @@ fn field_ts(t: &Value, key: &str) -> Option<Timestamp> {
 }
 
 /// Render a `task.list` result as an aligned, themed table.
-pub fn task_table(ctx: &Ctx, result: &Value) -> String {
+///
+/// `now` is a parameter and never the system clock — the rule this module
+/// already states at [`agenda_select`], adopted here late: an internal read
+/// made the overdue highlight untestable at the day boundary.
+pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     let empty = Vec::new();
     let tasks = result
         .get("tasks")
@@ -576,7 +580,6 @@ pub fn task_table(ctx: &Ctx, result: &Value) -> String {
 
     let refs: Vec<&Value> = tasks.iter().collect();
     let max_urg = max_urgency(&refs);
-    let now = Timestamp::now();
     let rows: Vec<TaskRow> = tasks.iter().map(|t| task_row(t, max_urg, now)).collect();
     let c = TaskCols::fit(&rows, ctx.cols, "DUE");
 
@@ -724,8 +727,12 @@ impl When {
 }
 
 /// One task placed on the calendar.
-struct Entry {
-    task: Value,
+///
+/// Borrowed out of the `task.list` payload, not cloned into it: the clone
+/// existed only to avoid a lifetime parameter, and the one caller holds the
+/// payload for the agenda's whole life.
+struct Entry<'a> {
+    task: &'a Value,
     at: Timestamp,
     day: Date,
     kind: When,
@@ -740,8 +747,8 @@ struct Entry {
 /// the screen is indistinguishable from a deadline that does not exist. So each
 /// reason carries its own count, and [`agenda_text`] prints the ones that are
 /// non-zero together with the command or flag that reveals what they hold.
-pub struct Agenda {
-    entries: Vec<Entry>,
+pub struct Agenda<'a> {
+    entries: Vec<Entry<'a>>,
     /// Tasks with neither `due` nor `scheduled`. Nothing can put them on a day.
     undated: usize,
     /// Tasks dated past the horizon.
@@ -796,12 +803,13 @@ pub struct Agenda {
 /// and `lib::run_agenda` composes an open-status default into it under D24's
 /// resolution order. Filtering again here would be a second opinion about a
 /// question the filter grammar already answers, and the two would drift.
-pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda {
-    let empty = Vec::new();
-    let tasks = result
+pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda<'_> {
+    // Borrowed with the payload's own lifetime — a local empty-vec fallback
+    // would tie the borrow to this frame and forbid returning it.
+    let tasks: &[Value] = result
         .get("tasks")
         .and_then(Value::as_array)
-        .unwrap_or(&empty);
+        .map_or(&[], Vec::as_slice);
 
     // Everything the store holds is UTC (`datetime.rs`: a naive date resolves to
     // 00:00 UTC), so the day boundaries are UTC too. Grouping by the LOCAL day
@@ -854,7 +862,7 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda {
             continue;
         }
         a.entries.push(Entry {
-            task: t.clone(),
+            task: t,
             at,
             day,
             kind,
@@ -960,21 +968,21 @@ fn when_cell(kind: When, at: Timestamp, dated: bool) -> String {
 pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
     let mut out = String::new();
 
-    let refs: Vec<&Value> = a.entries.iter().map(|e| &e.task).collect();
+    let refs: Vec<&Value> = a.entries.iter().map(|e| e.task).collect();
     if !refs.is_empty() {
         let max_urg = max_urgency(&refs);
         let rows: Vec<TaskRow> = a
             .entries
             .iter()
             .map(|e| {
-                let mut r = task_row(&e.task, max_urg, a.at_start_of_today());
+                let mut r = task_row(e.task, max_urg, a.at_start_of_today());
                 let overdue = e.day < a.today;
                 r.due = when_cell(e.kind, e.at, overdue);
                 // Repainted from the AGENDA instant, not from `due` alone: a
                 // task scheduled last week and due next month is late on the
                 // thing this row is about, and `task_row`'s answer is about the
                 // deadline only.
-                r.overdue = overdue && status_is_open(&s(&e.task, "status"));
+                r.overdue = overdue && status_is_open(&s(e.task, "status"));
                 r
             })
             .collect();
@@ -1035,7 +1043,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
     out
 }
 
-impl Agenda {
+impl Agenda<'_> {
     /// Midnight of the agenda's `today`, used as the "now" [`task_row`] compares
     /// `due` against. The agenda has its own overdue answer (per row, from the
     /// agenda instant), so this only has to be a stable instant on the right day
@@ -1165,49 +1173,114 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     let mut out = String::new();
     out.push_str(&ctx.paint("header", &format!("#{sid}  {}", s(result, "title"))));
     out.push('\n');
-    out.push_str(&format!("  status     {}\n", status_cell(ctx, result)));
-    let prio = result
-        .get("priority")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let prio_role = match prio {
-        "H" => "priority.H",
-        "M" => "priority.M",
-        "L" => "priority.L",
-        _ => "muted",
+    for row in detail_rows(ctx, result) {
+        if matches!(row.field, DetailField::Annotation) {
+            out.push_str(&format!("  {} {}\n", ctx.paint("muted", "·"), row.value));
+            continue;
+        }
+        // The plain layout's emphasis map over the SAME row set the card
+        // renders — the facts and their conditions live in `detail_rows`.
+        let cell = match row.field {
+            DetailField::Priority => {
+                let role = match row.value.as_str() {
+                    "H" => "priority.H",
+                    "M" => "priority.M",
+                    "L" => "priority.L",
+                    _ => "muted",
+                };
+                ctx.paint(role, &row.value)
+            }
+            DetailField::Project => ctx.paint("project", &row.value),
+            DetailField::Remind | DetailField::Repeats | DetailField::Running => {
+                ctx.paint("accent", &row.value)
+            }
+            DetailField::Tags => ctx.paint("tag", &row.value),
+            _ => row.value,
+        };
+        out.push_str(&format!("  {:<11}{cell}\n", row.label));
+    }
+    out
+}
+
+/// Which fact a detail row names, so each layout can map the same row set to
+/// its own emphasis without restating the row conditions.
+enum DetailField {
+    Status,
+    Priority,
+    Project,
+    Urgency,
+    Due,
+    Remind,
+    Scheduled,
+    Wait,
+    Repeats,
+    Estimate,
+    Completed,
+    Tracked,
+    Running,
+    Blocked,
+    Tags,
+    DependsOn,
+    Tokens,
+    Annotation,
+}
+
+/// One row of a task detail: the label spelling both layouts print, the
+/// rendered value, and which fact it is.
+struct DetailRow {
+    label: &'static str,
+    field: DetailField,
+    value: String,
+}
+
+/// The rows a task detail names, in order, CONDITIONS INCLUDED — one walk for
+/// both layouts. The plain and card views used to keep ~18 conditions in sync
+/// by hand (`tracked != "PT0S"`, non-empty `completed`, …) with a parity test
+/// that checked label presence only against an all-fields fixture, so a
+/// condition drifting in one layout passed it. A row that renders in one
+/// layout and not the other is unrepresentable now.
+fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
+    let mut rows = Vec::new();
+    let mut row = |label: &'static str, field: DetailField, value: String| {
+        rows.push(DetailRow {
+            label,
+            field,
+            value,
+        });
     };
-    out.push_str(&format!("  priority   {}\n", ctx.paint(prio_role, prio)));
+
+    row("status", DetailField::Status, status_cell(ctx, result));
+    row(
+        "priority",
+        DetailField::Priority,
+        result
+            .get("priority")
+            .and_then(Value::as_str)
+            .unwrap_or("-")
+            .to_string(),
+    );
     if !s(result, "project").is_empty() {
-        out.push_str(&format!(
-            "  project    {}\n",
-            ctx.paint("project", &s(result, "project"))
-        ));
+        row("project", DetailField::Project, s(result, "project"));
     }
     let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-    out.push_str(&format!("  urgency    {urg:.1}\n"));
+    row("urgency", DetailField::Urgency, format!("{urg:.1}"));
     if !s(result, "due").is_empty() {
-        out.push_str(&format!("  due        {}\n", s(result, "due")));
+        row("due", DetailField::Due, s(result, "due"));
     }
     if !s(result, "remind").is_empty() {
-        out.push_str(&format!(
-            "  remind     {}\n",
-            ctx.paint("accent", &s(result, "remind"))
-        ));
+        row("remind", DetailField::Remind, s(result, "remind"));
     }
     if !s(result, "scheduled").is_empty() {
-        out.push_str(&format!("  scheduled  {}\n", s(result, "scheduled")));
+        row("scheduled", DetailField::Scheduled, s(result, "scheduled"));
     }
     if !s(result, "wait").is_empty() {
-        out.push_str(&format!("  wait       {}\n", s(result, "wait")));
+        row("wait", DetailField::Wait, s(result, "wait"));
     }
     if !s(result, "recurrence").is_empty() {
-        out.push_str(&format!(
-            "  repeats    {}\n",
-            ctx.paint("accent", &s(result, "recurrence"))
-        ));
+        row("repeats", DetailField::Repeats, s(result, "recurrence"));
     }
     if !s(result, "estimate").is_empty() {
-        out.push_str(&format!("  estimate   {}\n", s(result, "estimate")));
+        row("estimate", DetailField::Estimate, s(result, "estimate"));
     }
     // Conditional for the reason `tracked` is: only a closed task HAS a
     // completion moment, and an empty `completed` row on every pending task is
@@ -1216,7 +1289,7 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     // showing a task's fields, was the only place the moment could be looked up
     // later and the only place it did not appear.
     if !s(result, "completed").is_empty() {
-        out.push_str(&format!("  completed  {}\n", s(result, "completed")));
+        row("completed", DetailField::Completed, s(result, "completed"));
     }
     // Conditional, unlike `blocked`: every task has a blocked answer worth
     // reading, but "tracked PT0S" on the many tasks that were never timed is
@@ -1224,29 +1297,27 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     // second onward, which is when the number starts meaning something.
     let tracked = s(result, "tracked");
     if !tracked.is_empty() && tracked != "PT0S" {
-        out.push_str(&format!("  tracked    {tracked}\n"));
+        row("tracked", DetailField::Tracked, tracked);
     }
     // The open interval is NOT folded into `tracked` (see `task_to_json`), so
     // an active task must say the clock is still running or its tracked total
     // reads as the final answer when it is only the total so far.
     if !s(result, "active_since").is_empty() {
-        out.push_str(&format!(
-            "  running    {}\n",
-            ctx.paint("accent", &format!("since {}", s(result, "active_since")))
-        ));
+        row(
+            "running",
+            DetailField::Running,
+            format!("since {}", s(result, "active_since")),
+        );
     }
     let blocked = result
         .get("blocked")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    out.push_str(&format!("  blocked    {blocked}\n"));
+    row("blocked", DetailField::Blocked, blocked.to_string());
     if let Some(tags) = result.get("tags").and_then(Value::as_array) {
         if !tags.is_empty() {
             let names: Vec<&str> = tags.iter().filter_map(Value::as_str).collect();
-            out.push_str(&format!(
-                "  tags       {}\n",
-                ctx.paint("tag", &san(&names.join(" ")))
-            ));
+            row("tags", DetailField::Tags, san(&names.join(" ")));
         }
     }
     if let Some(deps) = result.get("depends_on").and_then(Value::as_array) {
@@ -1256,7 +1327,7 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
                 .filter_map(Value::as_i64)
                 .map(|n| format!("#{n}"))
                 .collect();
-            out.push_str(&format!("  depends_on {}\n", refs.join(" ")));
+            row("depends_on", DetailField::DependsOn, refs.join(" "));
         }
     }
     // D39: AI token spend renders here or it is data nobody reported.
@@ -1272,25 +1343,29 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
                     .filter_map(|m| m.get(key).and_then(Value::as_u64))
                     .fold(0u64, u64::saturating_add)
             };
-            out.push_str(&format!(
-                "  tokens     in {} · out {} · cacheR {} · cacheW {}\n",
-                sum("input_tokens"),
-                sum("output_tokens"),
-                sum("cache_read_tokens"),
-                sum("cache_creation_tokens")
-            ));
+            row(
+                "tokens",
+                DetailField::Tokens,
+                format!(
+                    "in {} · out {} · cacheR {} · cacheW {}",
+                    sum("input_tokens"),
+                    sum("output_tokens"),
+                    sum("cache_read_tokens"),
+                    sum("cache_creation_tokens")
+                ),
+            );
         }
     }
     if let Some(anns) = result.get("annotations").and_then(Value::as_array) {
         for a in anns {
-            out.push_str(&format!(
-                "  {} {}\n",
-                ctx.paint("muted", "·"),
-                san(a.get("body").and_then(Value::as_str).unwrap_or(""))
-            ));
+            row(
+                "·",
+                DetailField::Annotation,
+                san(a.get("body").and_then(Value::as_str).unwrap_or("")),
+            );
         }
     }
-    out
+    rows
 }
 
 // ============================================================================
@@ -1503,117 +1578,25 @@ fn task_detail_card(ctx: &Ctx, result: &Value) -> String {
     out.push_str(&ctx.paint("card.frame", &"─".repeat(head_w.clamp(4, ctx.cols.min(80)))));
     out.push('\n');
 
-    let mut row = |label: &str, value: String| {
-        out.push_str(&format!("{}  {value}\n", lab(label)));
-    };
-
-    row("status", status_cell(ctx, result));
-    let prio = result
-        .get("priority")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let prio_cell = match prio {
-        "H" => ctx.paint("card.strong", prio),
-        "L" => ctx.paint("card.label", prio),
-        "M" => prio.to_string(),
-        _ => ctx.paint("card.frame", prio),
-    };
-    row("priority", prio_cell);
-    if !s(result, "project").is_empty() {
-        row("project", s(result, "project"));
-    }
-    let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-    row("urgency", format!("{urg:.1}"));
-    if !s(result, "due").is_empty() {
-        row("due", ctx.paint("card.strong", &s(result, "due")));
-    }
-    if !s(result, "remind").is_empty() {
-        row("remind", s(result, "remind"));
-    }
-    if !s(result, "scheduled").is_empty() {
-        row("scheduled", s(result, "scheduled"));
-    }
-    if !s(result, "wait").is_empty() {
-        row("wait", s(result, "wait"));
-    }
-    if !s(result, "recurrence").is_empty() {
-        row("repeats", s(result, "recurrence"));
-    }
-    if !s(result, "estimate").is_empty() {
-        row("estimate", s(result, "estimate"));
-    }
-    if !s(result, "completed").is_empty() {
-        row("completed", s(result, "completed"));
-    }
-    let tracked = s(result, "tracked");
-    if !tracked.is_empty() && tracked != "PT0S" {
-        row("tracked", tracked);
-    }
-    if !s(result, "active_since").is_empty() {
-        row(
-            "running",
-            ctx.paint(
-                "card.strong",
-                &format!("since {}", s(result, "active_since")),
-            ),
-        );
-    }
-    let blocked = result
-        .get("blocked")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    row(
-        "blocked",
-        if blocked {
-            ctx.paint("card.strong", "true")
-        } else {
-            "false".to_string()
-        },
-    );
-    if let Some(tags) = result.get("tags").and_then(Value::as_array) {
-        if !tags.is_empty() {
-            let names: Vec<&str> = tags.iter().filter_map(Value::as_str).collect();
-            row("tags", san(&names.join(" ")));
-        }
-    }
-    if let Some(deps) = result.get("depends_on").and_then(Value::as_array) {
-        if !deps.is_empty() {
-            let refs: Vec<String> = deps
-                .iter()
-                .filter_map(Value::as_i64)
-                .map(|n| format!("#{n}"))
-                .collect();
-            row("depends_on", refs.join(" "));
-        }
-    }
-    if let Some(tokens) = result.get("tokens").and_then(Value::as_array) {
-        if !tokens.is_empty() {
-            let sum = |key: &str| -> u64 {
-                tokens
-                    .iter()
-                    .filter_map(|m| m.get(key).and_then(Value::as_u64))
-                    .fold(0u64, u64::saturating_add)
-            };
-            row(
-                "tokens",
-                format!(
-                    "in {} · out {} · cacheR {} · cacheW {}",
-                    sum("input_tokens"),
-                    sum("output_tokens"),
-                    sum("cache_read_tokens"),
-                    sum("cache_creation_tokens")
-                ),
-            );
-        }
-    }
-    if let Some(anns) = result.get("annotations").and_then(Value::as_array) {
-        for a in anns {
-            out.push_str(&format!(
-                "{}  {}\n",
-                lab("·"),
-                san(a.get("body").and_then(Value::as_str).unwrap_or(""))
-            ));
-        }
+    // The card's emphasis map over the SAME row set the plain layout renders
+    // — the facts and their conditions live in `detail_rows`, once.
+    for r in detail_rows(ctx, result) {
+        let cell = match r.field {
+            DetailField::Annotation => {
+                out.push_str(&format!("{}  {}\n", lab("·"), r.value));
+                continue;
+            }
+            DetailField::Priority => match r.value.as_str() {
+                "H" => ctx.paint("card.strong", &r.value),
+                "L" => ctx.paint("card.label", &r.value),
+                "M" => r.value,
+                _ => ctx.paint("card.frame", &r.value),
+            },
+            DetailField::Due | DetailField::Running => ctx.paint("card.strong", &r.value),
+            DetailField::Blocked if r.value == "true" => ctx.paint("card.strong", "true"),
+            _ => r.value,
+        };
+        out.push_str(&format!("{}  {cell}\n", lab(r.label)));
     }
     out
 }
@@ -2147,11 +2130,12 @@ pub fn why(ctx: &Ctx, result: &Value) -> String {
 /// Render a breakdown the caller has already computed.
 ///
 /// `parts` is a PARAMETER for the same reason `chart::render_throughput`'s
-/// series is: `urgency::breakdown` reads the wall clock internally, so a test
-/// that could only reach this code through [`why`] would not get to choose the
-/// value under test — and the value that broke this display (`-0.0`, from
-/// `(-age).max(0.0)` when `created` lands in the very second the clock is read)
-/// is one a test cannot schedule.
+/// series is: [`why`] reaches `urgency::breakdown` through the wall clock, so
+/// a test that could only reach this code through it would not get to choose
+/// the value under test — and the value that broke this display (`-0.0`, from
+/// `(-age).max(0.0)` when `created` lands in the very second the clock is
+/// read) is one a test cannot schedule there, while `urgency::breakdown_at`
+/// plus this seam can stage it exactly.
 fn why_rows(ctx: &Ctx, sid: i64, parts: &[(&'static str, f64)]) -> String {
     let total: f64 = parts.iter().map(|(_, v)| v).sum();
     let total = (total * 10.0).round() / 10.0;
@@ -2408,6 +2392,57 @@ mod tests {
         }
     }
 
+    /// Every conditional row toggled off one at a time, plus the value edges
+    /// (PT0S, empty collections, each priority, an unrecognized status) — the
+    /// fixture matrix the parity guard walks, so a condition drifting between
+    /// the layouts cannot hide behind the all-fields-set case.
+    fn detail_matrix() -> Vec<(String, serde_json::Value)> {
+        let mut m = vec![("full".to_string(), full_task())];
+        for key in [
+            "project",
+            "due",
+            "remind",
+            "scheduled",
+            "wait",
+            "recurrence",
+            "estimate",
+            "completed",
+            "tracked",
+            "active_since",
+            "tags",
+            "depends_on",
+            "tokens",
+            "annotations",
+            "priority",
+        ] {
+            let mut t = full_task();
+            t.as_object_mut().unwrap().remove(key);
+            m.push((format!("without-{key}"), t));
+        }
+        let mut t = full_task();
+        t["tracked"] = json!("PT0S");
+        m.push(("tracked-zero".to_string(), t));
+        let mut t = full_task();
+        t["blocked"] = json!(false);
+        m.push(("unblocked".to_string(), t));
+        for p in ["M", "L"] {
+            let mut t = full_task();
+            t["priority"] = json!(p);
+            m.push((format!("prio-{p}"), t));
+        }
+        let mut t = full_task();
+        t["status"] = json!("Done");
+        t["status_unrecognized"] = json!(true);
+        m.push(("status-unrecognized".to_string(), t));
+        let mut t = full_task();
+        t["tags"] = json!([]);
+        t["depends_on"] = json!([]);
+        t["tokens"] = json!([]);
+        t["annotations"] = json!([]);
+        m.push(("empty-collections".to_string(), t));
+        m
+    }
+
     /// The two detail layouts must name the same facts, in the same
     /// spellings. The plain view is the contract (its labels are what docs
     /// and muscle memory know); this walks its label column and demands each
@@ -2415,23 +2450,33 @@ mod tests {
     /// and this is what goes red.
     #[test]
     fn the_detail_card_names_every_field_the_plain_view_names() {
-        let t = full_task();
-        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &t);
-        let card = task_detail(&Ctx::new(theme::default_theme(), card_caps()), &t);
-        let mut labels = 0;
-        for line in plain.lines().skip(1) {
-            let Some(first) = line.split_whitespace().next() else {
-                continue;
-            };
-            if first == "·" {
-                continue; // an annotation marker, not a field label
+        // Over the whole fixture matrix, not one all-fields task: with every
+        // conditional toggled off in turn, a row CONDITION drifting between
+        // the layouts fails here too, not only a renamed label.
+        for (name, t) in detail_matrix() {
+            let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &t);
+            let card = task_detail(&Ctx::new(theme::default_theme(), card_caps()), &t);
+            for line in plain.lines().skip(1) {
+                let Some(first) = line.split_whitespace().next() else {
+                    continue;
+                };
+                if first == "·" {
+                    continue; // an annotation marker, not a field label
+                }
+                assert!(
+                    card.contains(first),
+                    "[{name}] the card lost the {first:?} row:\n{card}"
+                );
             }
-            assert!(
-                card.contains(first),
-                "the card lost the {first:?} row:\n{card}"
-            );
-            labels += 1;
         }
+        // And the full fixture still exercises the conditional rows at all.
+        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &full_task());
+        let labels = plain
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|w| *w != "·")
+            .count();
         assert!(
             labels >= 15,
             "the parity scan saw only {labels} labels — full_task stopped \
@@ -2471,6 +2516,20 @@ mod tests {
     /// read would flow through the default view looking like ordinary open work.
     /// The core flags it; the table has to say so, and name the way out — the
     /// value cannot be corrected in place, only exported, edited and imported.
+    /// The overdue flag is measured against the CALLER's instant — pinned on
+    /// both sides of the boundary for one stored row, which the internal
+    /// clock read this replaces made unschedulable.
+    #[test]
+    fn the_overdue_flag_flips_at_the_callers_instant_not_the_wall_clock() {
+        let t = json!({
+            "short_id": 1, "urgency": 1.0, "title": "x",
+            "status": "pending", "due": "2026-08-31T12:00:00Z"
+        });
+        let at = |s: &str| s.parse::<Timestamp>().unwrap();
+        assert!(!task_row(&t, 1.0, at("2026-08-31T11:59:59Z")).overdue);
+        assert!(task_row(&t, 1.0, at("2026-08-31T12:00:01Z")).overdue);
+    }
+
     #[test]
     fn task_table_reports_a_status_the_store_could_not_read() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
@@ -2482,7 +2541,7 @@ mod tests {
             }],
             "count": 1
         });
-        let out = task_table(&ctx, &result);
+        let out = task_table(&ctx, &result, Timestamp::now());
         assert!(
             out.contains("Done"),
             "the offending value must be named: {out:?}"
@@ -2500,7 +2559,7 @@ mod tests {
             "project": "work", "due": "", "tags": [], "status": "pending"
         });
         assert!(
-            !task_table(&ctx, &ok).contains("export"),
+            !task_table(&ctx, &ok, Timestamp::now()).contains("export"),
             "clean table grew a warning"
         );
     }
@@ -2555,7 +2614,7 @@ mod tests {
                 }],
                 "count": 1
             });
-            let out = task_table(&ctx, &result);
+            let out = task_table(&ctx, &result, Timestamp::now());
             assert!(
                 out.contains("#4"),
                 "the affected task must be identified for {blank:?}: {out:?}"
@@ -2579,7 +2638,7 @@ mod tests {
             "count": 1
         });
         assert!(
-            !task_table(&ctx, &ok).contains("blank title"),
+            !task_table(&ctx, &ok, Timestamp::now()).contains("blank title"),
             "clean table grew a warning"
         );
     }
@@ -2595,7 +2654,7 @@ mod tests {
             }],
             "count": 1
         });
-        let out = task_table(&ctx, &result);
+        let out = task_table(&ctx, &result, Timestamp::now());
         assert!(
             !out.contains('\x1b'),
             "raw escape reached the terminal: {out:?}"
@@ -2813,7 +2872,11 @@ mod tests {
                         "status": "pending" })
             })
             .collect();
-        let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
+        let out = task_table(
+            &ctx,
+            &json!({ "tasks": tasks, "count": tasks.len() }),
+            Timestamp::now(),
+        );
         let rows: Vec<&str> = out.lines().skip(2).take(AWKWARD.len()).collect();
         assert_eq!(
             rows.len(),
@@ -2849,7 +2912,11 @@ mod tests {
                     t
                 })
                 .collect();
-            let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
+            let out = task_table(
+                &ctx,
+                &json!({ "tasks": tasks, "count": tasks.len() }),
+                Timestamp::now(),
+            );
             let rows: Vec<&str> = out.lines().skip(2).take(AWKWARD.len()).collect();
             let want = cells(rows[0]);
             for (row, v) in rows.iter().zip(AWKWARD) {
@@ -2884,7 +2951,13 @@ mod tests {
             task_json(1, long, "raid.game", "", &["design"]),
         ], "count": 1 });
 
-        let head = |t: &Value| task_table(&ctx, t).lines().next().unwrap().to_string();
+        let head = |t: &Value| {
+            task_table(&ctx, t, Timestamp::now())
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
+        };
         assert!(head(&with_due).contains("DUE"), "{}", head(&with_due));
         assert!(
             !head(&without_due).contains("DUE"),
@@ -2892,7 +2965,7 @@ mod tests {
             head(&without_due)
         );
         // And the title survives whole once the dead column is gone.
-        let row = task_table(&ctx, &without_due)
+        let row = task_table(&ctx, &without_due, Timestamp::now())
             .lines()
             .nth(2)
             .unwrap()
@@ -2921,7 +2994,11 @@ mod tests {
                     )
                 })
                 .collect();
-            let out = task_table(&ctx, &json!({ "tasks": tasks, "count": tasks.len() }));
+            let out = task_table(
+                &ctx,
+                &json!({ "tasks": tasks, "count": tasks.len() }),
+                Timestamp::now(),
+            );
             for line in out.lines() {
                 assert!(
                     cells(line) <= cols,
@@ -2942,6 +3019,7 @@ mod tests {
         let out = task_table(
             &ctx,
             &json!({ "tasks": [task_json(1, &title, "p", "", &["t"])], "count": 1 }),
+            Timestamp::now(),
         );
         for line in out.lines() {
             assert!(cells(line) <= Ctx::MAX_COLS, "{line:?}");
@@ -3430,13 +3508,21 @@ mod tests {
         })
     }
 
-    fn agenda_of(tasks: Vec<Value>, days: usize) -> Agenda {
-        agenda_select(&json!({ "tasks": tasks }), days, anchor())
+    /// The payload half of the old `agenda_of`: the agenda borrows its rows
+    /// now, so the `task.list` answer must outlive it — callers bind this
+    /// first, exactly as `run_agenda` does.
+    fn agenda_payload(tasks: Vec<Value>) -> Value {
+        json!({ "tasks": tasks })
+    }
+
+    fn agenda_of(payload: &Value, days: usize) -> Agenda<'_> {
+        agenda_select(payload, days, anchor())
     }
 
     fn agenda_out(tasks: Vec<Value>, days: usize) -> String {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        agenda_text(&ctx, &agenda_of(tasks, days))
+        let payload = agenda_payload(tasks);
+        agenda_text(&ctx, &agenda_of(&payload, days))
     }
 
     /// The ordering rule, and the reason the view reads both fields.
@@ -3449,19 +3535,17 @@ mod tests {
     /// "Tuesday" means something different under each field.
     #[test]
     fn agenda_places_a_task_on_the_earlier_of_due_and_scheduled() {
-        let a = agenda_of(
-            vec![
-                dated(1, "deadline only", "2026-08-05T00:00:00Z", ""),
-                dated(
-                    2,
-                    "starts tuesday, due much later",
-                    "2026-08-24T00:00:00Z",
-                    "2026-08-04T00:00:00Z",
-                ),
-                dated(3, "scheduled only", "", "2026-08-10T00:00:00Z"),
-            ],
-            30,
-        );
+        let payload = agenda_payload(vec![
+            dated(1, "deadline only", "2026-08-05T00:00:00Z", ""),
+            dated(
+                2,
+                "starts tuesday, due much later",
+                "2026-08-24T00:00:00Z",
+                "2026-08-04T00:00:00Z",
+            ),
+            dated(3, "scheduled only", "", "2026-08-10T00:00:00Z"),
+        ]);
+        let a = agenda_of(&payload, 30);
         let order: Vec<i64> = a
             .entries
             .iter()
@@ -3484,15 +3568,13 @@ mod tests {
     /// send the reader looking for a deadline that is right there.
     #[test]
     fn a_task_due_and_scheduled_at_the_same_instant_is_labelled_due() {
-        let a = agenda_of(
-            vec![dated(
-                1,
-                "same instant",
-                "2026-08-05T09:00:00Z",
-                "2026-08-05T09:00:00Z",
-            )],
-            30,
-        );
+        let payload = agenda_payload(vec![dated(
+            1,
+            "same instant",
+            "2026-08-05T09:00:00Z",
+            "2026-08-05T09:00:00Z",
+        )]);
+        let a = agenda_of(&payload, 30);
         assert_eq!(a.entries[0].kind, When::Due);
     }
 
@@ -3671,14 +3753,12 @@ mod tests {
     /// beside it showed one.
     #[test]
     fn agenda_json_holds_exactly_the_rows_the_table_drew() {
-        let a = agenda_of(
-            vec![
-                dated(1, "shown", "2026-08-05T00:00:00Z", ""),
-                dated(2, "beyond", "2026-11-01T00:00:00Z", ""),
-                dated(3, "undated", "", ""),
-            ],
-            14,
-        );
+        let payload = agenda_payload(vec![
+            dated(1, "shown", "2026-08-05T00:00:00Z", ""),
+            dated(2, "beyond", "2026-11-01T00:00:00Z", ""),
+            dated(3, "undated", "", ""),
+        ]);
+        let a = agenda_of(&payload, 14);
         let v = agenda_json(&a);
         assert_eq!(v["count"], json!(1));
         assert_eq!(v["tasks"].as_array().unwrap().len(), 1);
@@ -3716,7 +3796,11 @@ mod tests {
         let tasks = vec![unreadable, untitled];
 
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let list = task_table(&ctx, &json!({ "tasks": tasks, "count": 2 }));
+        let list = task_table(
+            &ctx,
+            &json!({ "tasks": tasks, "count": 2 }),
+            Timestamp::now(),
+        );
         let agenda = agenda_out(tasks.clone(), AGENDA_DEFAULT_DAYS);
 
         let notes = store_health_notes(&tasks);
@@ -3804,7 +3888,8 @@ mod tests {
         let mut cold = dated(2, "cold", "2026-08-05T09:00:00Z", "");
         cold["urgency"] = json!(1.0);
         // As `task.list {sort:["-urgency"]}` would return them.
-        let a = agenda_of(vec![hot, cold], 14);
+        let payload = agenda_payload(vec![hot, cold]);
+        let a = agenda_of(&payload, 14);
         assert_eq!(
             a.entries
                 .iter()

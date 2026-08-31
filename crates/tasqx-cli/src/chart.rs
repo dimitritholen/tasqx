@@ -567,11 +567,11 @@ fn open_on(m: &Member, d: Date, moves: Option<&[(Timestamp, Lifecycle)]>) -> boo
     }
 }
 
-/// Render the burndown series as a labeled sparkline column chart. The data is
-/// the historically-correct remaining-open count per day; the drawing is a
-/// compact column chart (not the §8 dual ideal-vs-actual line — see report).
-/// Render a remaining-open series the caller has already computed.
-/// See `render_throughput`.
+/// Render the burndown series as a labeled column chart: the data is the
+/// historically-correct remaining-open count per day the CALLER computed
+/// (see `render_throughput` for why the series is a parameter), and the
+/// drawing is compact columns, not §8's dual ideal-vs-actual line — that one
+/// belongs to the HTML report.
 pub fn render_burndown(ctx: &Ctx, series: &[RemainingPoint], scope_label: &str) -> String {
     let max = series.iter().map(|p| p.remaining).max().unwrap_or(0).max(1);
 

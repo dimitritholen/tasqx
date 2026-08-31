@@ -62,8 +62,11 @@ impl Engine {
         // is one call — and the answer used to come back with `generated` (the
         // time of the call, easy to misread as the boundary) and nothing else.
         let filter_str = opt_str(p, "filter")?.unwrap_or_default();
-        let filter = Filter::parse(&filter_str, Timestamp::now()).map_err(ApiError::bad_request)?;
-        let now_ts = parse_ts(&now());
+        // THE operation's clock: filter binding, every row's wait/schedule
+        // release, the overdue comparison and `generated` all resolve against
+        // this one instant — it used to be read three separate times here.
+        let now_ts = Timestamp::now();
+        let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
 
         // D24: a report is an *aggregation*, so abandoned work must not inflate
         // any total. tasqx has no hard delete (DESIGN.md §7, "No hidden bulk
@@ -98,7 +101,9 @@ impl Engine {
         }
         let mut groups: BTreeMap<String, Agg> = BTreeMap::new();
 
-        for snapshot in self.load_task_snapshots()? {
+        for snapshot in
+            self.load_task_snapshots_for(super::task::SnapshotParts::REPORT_SUMMARY, now_ts)?
+        {
             let t = snapshot.task;
             if apply_default && !t.status.counts_in_reports() {
                 continue;
@@ -171,8 +176,8 @@ impl Engine {
                     .saturating_add(bucket("cache_creation_tokens"));
             }
             if t.status.is_open() {
-                if let (Some(due), Some(n)) = (t.due.as_deref().and_then(parse_ts), now_ts) {
-                    if due < n {
+                if let Some(due) = t.due.as_deref().and_then(parse_ts) {
+                    if due < now_ts {
                         agg.overdue += 1;
                     }
                 }
@@ -222,7 +227,10 @@ impl Engine {
 
         Ok(json!({
             "groups": out,
-            "generated": now(),
+            // The same instant everything above resolved against — not a
+            // fourth clock read (`util::now` is `Timestamp::now().to_string()`,
+            // so the wire format is unchanged).
+            "generated": now_ts.to_string(),
             "filter": filter_str,
             "all": all,
         }))
@@ -244,6 +252,26 @@ mod tests {
             .execute("UPDATE tasks SET status = 'Done'", [])
             .unwrap();
         e
+    }
+
+    /// `report.summary` aggregates tasks, tags, `blocked` and the token
+    /// measurements — never an annotation and never the edge list. Dropping
+    /// the table is what PROVES the read is gone (the same proof as
+    /// `task_list_never_touches_the_annotations_table` in task.rs, and the
+    /// same stake: annotations grow with every note ever written while the
+    /// report does not, so a summary that scanned them got slower with the
+    /// log, forever).
+    #[test]
+    fn report_summary_never_touches_the_annotations_table() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "work", "tags": ["a"] }))
+            .unwrap();
+        e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
+            .unwrap();
+        e.conn().execute_batch("DROP TABLE annotations").unwrap();
+
+        let out = e.report_summary(&json!({})).unwrap();
+        assert_eq!(out["groups"][0]["count"], json!(1));
     }
 
     /// D28: `report.summary --group_by status` is a read surface like any other,

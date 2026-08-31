@@ -37,7 +37,7 @@ use crate::recur;
 use crate::remind;
 use crate::storage::{
     self, alloc_short_id, bump_short_id_floor, clear_config, ensure_tag_link, get_config,
-    insert_event, map_task_row, set_config, task_tags, TASK_COLS,
+    insert_event, map_task_row, map_task_row_at, set_config, task_tags, TASK_COLS,
 };
 use crate::types::{effective_status, Entity, Priority, Status, Task};
 use crate::urgency;

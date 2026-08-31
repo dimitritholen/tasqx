@@ -339,7 +339,7 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("> ", sty("muted")),
-            Span::styled(app.query.clone(), sty("accent")),
+            Span::styled(app.query.as_str(), sty("accent")),
             Span::styled(caret, sty("accent")),
         ])),
         query_area,
@@ -430,7 +430,7 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
                 },
             ),
             Span::styled(render::pad(&row.project, 14), sty("project")),
-            Span::styled(row.tags.clone(), sty("tag")),
+            Span::styled(row.tags.as_str(), sty("tag")),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), body);

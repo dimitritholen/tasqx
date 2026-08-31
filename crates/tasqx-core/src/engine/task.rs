@@ -61,11 +61,23 @@ impl SnapshotParts {
         tokens: false,
     };
 
-    /// The whole task relation — `store.export` and `report.summary`, which
-    /// between them emit every gated part.
+    /// The whole task relation — `store.export`, the one reader that emits
+    /// every gated part.
     pub(super) const EVERYTHING: Self = Self {
         depends_on: true,
         annotations: true,
+        tokens: true,
+    };
+
+    /// The aggregation inputs and nothing else — `report.summary`, which sums
+    /// the token buckets but never reads an annotation or the edge list. It
+    /// loaded [`Self::EVERYTHING`] anyway, so every `tasqx report` scanned the
+    /// annotations table end to end and materialised an object per note —
+    /// exactly the log-shaped cost this struct was built to keep off
+    /// `task.list`, paid by the other reader that also never asked for it.
+    pub(super) const REPORT_SUMMARY: Self = Self {
+        depends_on: false,
+        annotations: false,
         tokens: true,
     };
 
@@ -134,10 +146,7 @@ impl Engine {
         // canonical. Accepts a `due`-anchored offset (`-1h`) or any NL date; the
         // absolute branch resolves against this add's `now` (see `crate::remind`).
         let remind = match opt_str_nonempty(p, "remind")? {
-            Some(s) => Some(remind::spec_to_string(&remind::parse_remind(
-                &s,
-                Timestamp::now(),
-            )?)),
+            Some(s) => Some(remind::spec_to_string(&remind::parse_remind(&s, now_ts)?)),
             None => None,
         };
 
@@ -152,8 +161,11 @@ impl Engine {
         );
 
         let id = Uuid::now_v7().to_string();
-        let ts = now();
-        let urg = urgency::score(priority, due.as_deref(), &ts);
+        // The instant the dates above resolved against, as the stored string —
+        // `util::now` is `Timestamp::now().to_string()`, so this is the same
+        // bytes minus the second clock read the pair used to be.
+        let ts = now_ts.to_string();
+        let urg = urgency::score_at(priority, due.as_deref(), &ts, now_ts);
 
         let tx = self.begin_mutation()?;
         // Resolve both explicit and inherited routing inside the IMMEDIATE
@@ -638,11 +650,18 @@ impl Engine {
                 |r| r.get(0),
             )?;
             if remaining == 0 {
-                if let Ok(sid) = tx.query_row(
-                    "SELECT short_id FROM tasks WHERE id = ?1",
-                    params![dep_task],
-                    |r| r.get::<_, i64>(0),
-                ) {
+                // `.optional()?`, not `.ok()`: the row provably exists (its id
+                // came from the JOIN above, in this same transaction), so the
+                // only thing a swallowed error could ever hide is a genuine
+                // storage fault — shipped as a wrong list at `ok: true`.
+                let sid = tx
+                    .query_row(
+                        "SELECT short_id FROM tasks WHERE id = ?1",
+                        params![dep_task],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                if let Some(sid) = sid {
                     out.push(sid);
                 }
             }
@@ -693,6 +712,13 @@ impl Engine {
                 )));
             }
         }
+
+        // ONE instant for the whole modify (as `task_add` does): every date
+        // field in `set` resolves `today`/`tomorrow` against the same clock —
+        // per-field reads could resolve `due:"today"` and `wait:"today"` in
+        // one call across midnight — and the stored `modified`/urgency pair
+        // below derives from it too.
+        let now_ts = Timestamp::now();
 
         // Whitelist of modifiable columns; recompute urgency if inputs change.
         let mut priority = task.priority;
@@ -763,15 +789,14 @@ impl Engine {
                     assignments.push(("project", nullable_string(v, "project")?));
                 }
                 "due" => {
-                    let norm = nullable_when(v, "due", Timestamp::now())?;
+                    let norm = nullable_when(v, "due", now_ts)?;
                     due = norm.as_str().map(str::to_string);
                     assignments.push(("due", norm));
                 }
-                "scheduled" => assignments.push((
-                    "scheduled",
-                    nullable_when(v, "scheduled", Timestamp::now())?,
-                )),
-                "wait" => assignments.push(("wait", nullable_when(v, "wait", Timestamp::now())?)),
+                "scheduled" => {
+                    assignments.push(("scheduled", nullable_when(v, "scheduled", now_ts)?))
+                }
+                "wait" => assignments.push(("wait", nullable_when(v, "wait", now_ts)?)),
                 "estimate" => assignments.push(("estimate", nullable_duration(v, "estimate")?)),
                 "recurrence" => {
                     // Set a rule (validated + normalized) or clear it with null
@@ -797,8 +822,7 @@ impl Engine {
                         let s = v.as_str().ok_or_else(|| {
                             ApiError::bad_request("remind must be a string or null")
                         })?;
-                        let norm =
-                            remind::spec_to_string(&remind::parse_remind(s, Timestamp::now())?);
+                        let norm = remind::spec_to_string(&remind::parse_remind(s, now_ts)?);
                         assignments.push(("remind", Value::String(norm)));
                     }
                 }
@@ -843,8 +867,9 @@ impl Engine {
             }
         }
 
-        let ts = now();
-        let new_urg = urgency::score(priority, due.as_deref(), &task.created);
+        // The operation instant, as the stored string — see `task_add`.
+        let ts = now_ts.to_string();
+        let new_urg = urgency::score_at(priority, due.as_deref(), &task.created, now_ts);
         let new_rev = task.rev + 1;
 
         if let Some(name) = &project_target {
@@ -883,8 +908,11 @@ impl Engine {
     /// Load the complete task relation in a fixed number of statements. Bulk
     /// readers need the same relationship data to evaluate filters; grouping
     /// it here prevents each reader from drifting back to point queries.
-    pub(super) fn load_task_snapshots(&self) -> Result<Vec<TaskSnapshot>, ApiError> {
-        self.load_task_snapshots_for(SnapshotParts::EVERYTHING)
+    pub(super) fn load_task_snapshots(
+        &self,
+        now: Timestamp,
+    ) -> Result<Vec<TaskSnapshot>, ApiError> {
+        self.load_task_snapshots_for(SnapshotParts::EVERYTHING, now)
     }
 
     /// As [`Engine::load_task_snapshots`], but reading only the side tables
@@ -893,8 +921,9 @@ impl Engine {
     pub(super) fn load_task_snapshots_for(
         &self,
         parts: SnapshotParts,
+        now: Timestamp,
     ) -> Result<Vec<TaskSnapshot>, ApiError> {
-        let (snapshots, statements) = self.load_task_snapshots_counted_for(parts)?;
+        let (snapshots, statements) = self.load_task_snapshots_counted_for(parts, now)?;
         // Per-variant, not the one global `SNAPSHOT_QUERY_COUNT`: a narrow
         // load legitimately runs fewer statements, so keeping the old constant
         // here would abort every debug-build `tasqx list` on this assert.
@@ -910,13 +939,17 @@ impl Engine {
     pub(super) fn load_task_snapshots_counted(
         &self,
     ) -> Result<(Vec<TaskSnapshot>, usize), ApiError> {
-        self.load_task_snapshots_counted_for(SnapshotParts::EVERYTHING)
+        self.load_task_snapshots_counted_for(SnapshotParts::EVERYTHING, Timestamp::now())
     }
 
     /// Counting variant of [`Engine::load_task_snapshots_for`].
+    /// `now` is one instant for the WHOLE load: every row's wait/schedule
+    /// release is classified against the same clock, so two rows straddling a
+    /// boundary within one list cannot disagree about what time it is.
     pub(super) fn load_task_snapshots_counted_for(
         &self,
         parts: SnapshotParts,
+        now: Timestamp,
     ) -> Result<(Vec<TaskSnapshot>, usize), ApiError> {
         let mut statements = 0usize;
 
@@ -925,7 +958,7 @@ impl Engine {
             let mut stmt = self
                 .conn
                 .prepare(&format!("SELECT {TASK_COLS} FROM tasks"))?;
-            let rows = stmt.query_map([], map_task_row)?;
+            let rows = stmt.query_map([], |r| map_task_row_at(r, now))?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -1065,7 +1098,11 @@ impl Engine {
         // blanket refusal would break the tool. Same at `report.*` and
         // `store.export`, which is why all four spell it identically.
         let filter_str = opt_str(p, "filter")?.unwrap_or_default();
-        let filter = Filter::parse(&filter_str, Timestamp::now()).map_err(ApiError::bad_request)?;
+        // THE operation's clock: the filter's relative dates, every row's
+        // wait/schedule release, and the recomputed urgencies below all
+        // resolve against this one instant.
+        let now_ts = Timestamp::now();
+        let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
 
         // Fetch all rows, then evaluate the filter in Rust: the §12-D8 grammar
         // (or/parens) and instant `due` comparison are evaluated on the loaded
@@ -1084,7 +1121,7 @@ impl Engine {
         } else {
             SnapshotParts::FILTERS_ONLY
         };
-        let mut all = self.load_task_snapshots_for(parts)?;
+        let mut all = self.load_task_snapshots_for(parts, now_ts)?;
 
         // `TaskSnapshot::depends_on` carries store ids; every surface an agent
         // reads names dependencies by `short_id` (`task.get` does), so one map
@@ -1111,7 +1148,7 @@ impl Engine {
         let mut tasks = Vec::new();
         for mut snapshot in all.drain(..) {
             let t = &mut snapshot.task;
-            t.urgency = urgency::score(t.priority, t.due.as_deref(), &t.created);
+            t.urgency = urgency::score_at(t.priority, t.due.as_deref(), &t.created, now_ts);
             let ctx = MatchCtx {
                 status: t.status,
                 project: t.project.as_deref(),
@@ -1767,6 +1804,59 @@ mod tests {
         assert_eq!(out["count"], 2);
     }
 
+    /// A storage fault on the `short_id` read must SURFACE, not silently vanish
+    /// a dependent from the `unblocked` list. The row provably exists — its id
+    /// came from a JOIN in the same transaction — so the only thing an
+    /// error-swallowing read can ever swallow is a genuine fault, shipped as a
+    /// wrong list at `ok: true`. Same ruling as `ensure_tag_link`
+    /// (storage.rs): `.optional()?`, not `.ok()` — only an absent row is
+    /// absence.
+    #[test]
+    fn compute_unblocked_surfaces_a_storage_fault_instead_of_dropping_the_dependent() {
+        let e = seeded();
+        // Resolve the blocker through the front door; its response is the
+        // healthy-store baseline the fault case is measured against.
+        let done = e.task_done(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(done["unblocked"], json!([2]));
+        let done_id: String = e
+            .conn()
+            .query_row("SELECT id FROM tasks WHERE short_id = 1", [], |r| r.get(0))
+            .unwrap();
+
+        // The injected fault: the one column the guarded read needs goes
+        // missing while every other read in the function still works — the
+        // dependents JOIN and the blocker COUNT touch t.id and t.status only.
+        e.conn()
+            .execute_batch("ALTER TABLE tasks RENAME COLUMN short_id TO short_id_gone")
+            .unwrap();
+        let tx = e.conn().unchecked_transaction().unwrap();
+        assert!(
+            Engine::compute_unblocked(&tx, &done_id).is_err(),
+            "a fault must be an error, not an empty unblocked list"
+        );
+    }
+
+    /// The loader classifies EVERY row at the caller's one instant. Unwritable
+    /// while `map_task_row` read the wall clock per row: no test could stand
+    /// on either side of a wait boundary, let alone both sides of one row.
+    #[test]
+    fn the_snapshot_loader_classifies_rows_at_the_callers_instant() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "later", "wait": "2999-01-01" }))
+            .unwrap();
+        let at = |s: &str| s.parse::<Timestamp>().unwrap();
+
+        let held = e
+            .load_task_snapshots_for(SnapshotParts::FILTERS_ONLY, at("2998-12-01T00:00:00Z"))
+            .unwrap();
+        assert_eq!(held[0].task.status, Status::Backlog);
+
+        let released = e
+            .load_task_snapshots_for(SnapshotParts::FILTERS_ONLY, at("2999-06-01T00:00:00Z"))
+            .unwrap();
+        assert_eq!(released[0].task.status, Status::Pending);
+    }
+
     #[test]
     fn snapshot_parts_gate_the_optional_side_tables() {
         let e = seeded();
@@ -1776,7 +1866,7 @@ mod tests {
         // exist (`depends_on`, `annotations`, `tokens`); the two seeded here
         // are the two asserted below.
         let (narrow, statements) = e
-            .load_task_snapshots_counted_for(SnapshotParts::FILTERS_ONLY)
+            .load_task_snapshots_counted_for(SnapshotParts::FILTERS_ONLY, Timestamp::now())
             .unwrap();
         assert_eq!(statements, SnapshotParts::FILTERS_ONLY.statement_count());
         assert_eq!(statements, 3);
