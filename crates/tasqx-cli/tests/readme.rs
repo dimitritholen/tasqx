@@ -633,6 +633,69 @@ fn the_brew_formula_names_targets_the_release_workflow_builds() {
     );
 }
 
+/// The one target the Scoop manifest serves is one the release workflow
+/// actually builds.
+///
+/// `scripts/scoop-manifest.sh` is a fourth declaration site for the platform
+/// list, with the same failure shape as the brew formula above: the manifest is
+/// generated per tag precisely so it is never checked in and never reviewed,
+/// so a target renamed or dropped in the matrix leaves it rendering a URL —
+/// and an `autoupdate` template — to files the release never published, and
+/// the first reader of the mistake is somebody running `scoop install`,
+/// getting a 404, and having no reason to suspect the bucket.
+///
+/// The script funnels every use of the triple (URL, `extract_dir`, the
+/// autoupdate template) through a single `TARGET=` assignment, which is the
+/// line read here — so one declaration site is guarded and covers all four
+/// uses. One-directional on purpose, like both guards above: the matrix
+/// building targets Scoop ignores is deliberate — Scoop has nowhere to put a
+/// darwin or linux archive.
+#[test]
+fn the_scoop_manifest_names_a_target_the_release_workflow_builds() {
+    let script = fs::read_to_string(root().join("scripts/scoop-manifest.sh"))
+        .expect("scripts/scoop-manifest.sh is readable");
+    let workflow = fs::read_to_string(root().join(".github/workflows/release.yml"))
+        .expect("the release workflow is readable");
+
+    let built: Vec<&str> = workflow
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("target: "))
+        .map(str::trim)
+        .collect();
+    assert!(
+        built.len() >= 3,
+        "parsed {built:?} out of release.yml — the matrix format changed and this \
+         guard is checking almost nothing"
+    );
+
+    let named: Vec<&str> = script
+        .lines()
+        .filter_map(|l| l.strip_prefix("TARGET=\""))
+        .filter_map(|l| l.strip_suffix('"'))
+        .collect();
+    assert_eq!(
+        named.len(),
+        1,
+        "found {named:?} TARGET assignments in scoop-manifest.sh; expected exactly \
+         the one Windows target Scoop can serve"
+    );
+
+    for target in &named {
+        assert!(
+            built.contains(target),
+            "the manifest points at a {target} archive, which release.yml does not \
+             build — it builds {built:?}. `scoop install` would 404."
+        );
+    }
+
+    // And the stem the script assumes is the stem the workflow writes.
+    assert!(
+        workflow.contains("STAGE=\"tasqx-${VERSION}-${{ matrix.target }}\""),
+        "release.yml no longer names archives `tasqx-<version>-<target>`, which is \
+         the shape scoop-manifest.sh builds its URLs from"
+    );
+}
+
 /// Every target triple an installer script can emit, read out of the script
 /// rather than re-listed here.
 ///
