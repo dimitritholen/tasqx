@@ -62,8 +62,11 @@ impl Engine {
         // is one call — and the answer used to come back with `generated` (the
         // time of the call, easy to misread as the boundary) and nothing else.
         let filter_str = opt_str(p, "filter")?.unwrap_or_default();
-        let filter = Filter::parse(&filter_str, Timestamp::now()).map_err(ApiError::bad_request)?;
-        let now_ts = parse_ts(&now());
+        // THE operation's clock: filter binding, every row's wait/schedule
+        // release, the overdue comparison and `generated` all resolve against
+        // this one instant — it used to be read three separate times here.
+        let now_ts = Timestamp::now();
+        let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
 
         // D24: a report is an *aggregation*, so abandoned work must not inflate
         // any total. tasqx has no hard delete (DESIGN.md §7, "No hidden bulk
@@ -98,7 +101,9 @@ impl Engine {
         }
         let mut groups: BTreeMap<String, Agg> = BTreeMap::new();
 
-        for snapshot in self.load_task_snapshots_for(super::task::SnapshotParts::REPORT_SUMMARY)? {
+        for snapshot in
+            self.load_task_snapshots_for(super::task::SnapshotParts::REPORT_SUMMARY, now_ts)?
+        {
             let t = snapshot.task;
             if apply_default && !t.status.counts_in_reports() {
                 continue;
@@ -171,8 +176,8 @@ impl Engine {
                     .saturating_add(bucket("cache_creation_tokens"));
             }
             if t.status.is_open() {
-                if let (Some(due), Some(n)) = (t.due.as_deref().and_then(parse_ts), now_ts) {
-                    if due < n {
+                if let Some(due) = t.due.as_deref().and_then(parse_ts) {
+                    if due < now_ts {
                         agg.overdue += 1;
                     }
                 }
@@ -222,7 +227,10 @@ impl Engine {
 
         Ok(json!({
             "groups": out,
-            "generated": now(),
+            // The same instant everything above resolved against — not a
+            // fourth clock read (`util::now` is `Timestamp::now().to_string()`,
+            // so the wire format is unchanged).
+            "generated": now_ts.to_string(),
             "filter": filter_str,
             "all": all,
         }))
