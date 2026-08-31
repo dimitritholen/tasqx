@@ -1173,49 +1173,114 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     let mut out = String::new();
     out.push_str(&ctx.paint("header", &format!("#{sid}  {}", s(result, "title"))));
     out.push('\n');
-    out.push_str(&format!("  status     {}\n", status_cell(ctx, result)));
-    let prio = result
-        .get("priority")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let prio_role = match prio {
-        "H" => "priority.H",
-        "M" => "priority.M",
-        "L" => "priority.L",
-        _ => "muted",
+    for row in detail_rows(ctx, result) {
+        if matches!(row.field, DetailField::Annotation) {
+            out.push_str(&format!("  {} {}\n", ctx.paint("muted", "·"), row.value));
+            continue;
+        }
+        // The plain layout's emphasis map over the SAME row set the card
+        // renders — the facts and their conditions live in `detail_rows`.
+        let cell = match row.field {
+            DetailField::Priority => {
+                let role = match row.value.as_str() {
+                    "H" => "priority.H",
+                    "M" => "priority.M",
+                    "L" => "priority.L",
+                    _ => "muted",
+                };
+                ctx.paint(role, &row.value)
+            }
+            DetailField::Project => ctx.paint("project", &row.value),
+            DetailField::Remind | DetailField::Repeats | DetailField::Running => {
+                ctx.paint("accent", &row.value)
+            }
+            DetailField::Tags => ctx.paint("tag", &row.value),
+            _ => row.value,
+        };
+        out.push_str(&format!("  {:<11}{cell}\n", row.label));
+    }
+    out
+}
+
+/// Which fact a detail row names, so each layout can map the same row set to
+/// its own emphasis without restating the row conditions.
+enum DetailField {
+    Status,
+    Priority,
+    Project,
+    Urgency,
+    Due,
+    Remind,
+    Scheduled,
+    Wait,
+    Repeats,
+    Estimate,
+    Completed,
+    Tracked,
+    Running,
+    Blocked,
+    Tags,
+    DependsOn,
+    Tokens,
+    Annotation,
+}
+
+/// One row of a task detail: the label spelling both layouts print, the
+/// rendered value, and which fact it is.
+struct DetailRow {
+    label: &'static str,
+    field: DetailField,
+    value: String,
+}
+
+/// The rows a task detail names, in order, CONDITIONS INCLUDED — one walk for
+/// both layouts. The plain and card views used to keep ~18 conditions in sync
+/// by hand (`tracked != "PT0S"`, non-empty `completed`, …) with a parity test
+/// that checked label presence only against an all-fields fixture, so a
+/// condition drifting in one layout passed it. A row that renders in one
+/// layout and not the other is unrepresentable now.
+fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
+    let mut rows = Vec::new();
+    let mut row = |label: &'static str, field: DetailField, value: String| {
+        rows.push(DetailRow {
+            label,
+            field,
+            value,
+        });
     };
-    out.push_str(&format!("  priority   {}\n", ctx.paint(prio_role, prio)));
+
+    row("status", DetailField::Status, status_cell(ctx, result));
+    row(
+        "priority",
+        DetailField::Priority,
+        result
+            .get("priority")
+            .and_then(Value::as_str)
+            .unwrap_or("-")
+            .to_string(),
+    );
     if !s(result, "project").is_empty() {
-        out.push_str(&format!(
-            "  project    {}\n",
-            ctx.paint("project", &s(result, "project"))
-        ));
+        row("project", DetailField::Project, s(result, "project"));
     }
     let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-    out.push_str(&format!("  urgency    {urg:.1}\n"));
+    row("urgency", DetailField::Urgency, format!("{urg:.1}"));
     if !s(result, "due").is_empty() {
-        out.push_str(&format!("  due        {}\n", s(result, "due")));
+        row("due", DetailField::Due, s(result, "due"));
     }
     if !s(result, "remind").is_empty() {
-        out.push_str(&format!(
-            "  remind     {}\n",
-            ctx.paint("accent", &s(result, "remind"))
-        ));
+        row("remind", DetailField::Remind, s(result, "remind"));
     }
     if !s(result, "scheduled").is_empty() {
-        out.push_str(&format!("  scheduled  {}\n", s(result, "scheduled")));
+        row("scheduled", DetailField::Scheduled, s(result, "scheduled"));
     }
     if !s(result, "wait").is_empty() {
-        out.push_str(&format!("  wait       {}\n", s(result, "wait")));
+        row("wait", DetailField::Wait, s(result, "wait"));
     }
     if !s(result, "recurrence").is_empty() {
-        out.push_str(&format!(
-            "  repeats    {}\n",
-            ctx.paint("accent", &s(result, "recurrence"))
-        ));
+        row("repeats", DetailField::Repeats, s(result, "recurrence"));
     }
     if !s(result, "estimate").is_empty() {
-        out.push_str(&format!("  estimate   {}\n", s(result, "estimate")));
+        row("estimate", DetailField::Estimate, s(result, "estimate"));
     }
     // Conditional for the reason `tracked` is: only a closed task HAS a
     // completion moment, and an empty `completed` row on every pending task is
@@ -1224,7 +1289,7 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     // showing a task's fields, was the only place the moment could be looked up
     // later and the only place it did not appear.
     if !s(result, "completed").is_empty() {
-        out.push_str(&format!("  completed  {}\n", s(result, "completed")));
+        row("completed", DetailField::Completed, s(result, "completed"));
     }
     // Conditional, unlike `blocked`: every task has a blocked answer worth
     // reading, but "tracked PT0S" on the many tasks that were never timed is
@@ -1232,29 +1297,27 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
     // second onward, which is when the number starts meaning something.
     let tracked = s(result, "tracked");
     if !tracked.is_empty() && tracked != "PT0S" {
-        out.push_str(&format!("  tracked    {tracked}\n"));
+        row("tracked", DetailField::Tracked, tracked);
     }
     // The open interval is NOT folded into `tracked` (see `task_to_json`), so
     // an active task must say the clock is still running or its tracked total
     // reads as the final answer when it is only the total so far.
     if !s(result, "active_since").is_empty() {
-        out.push_str(&format!(
-            "  running    {}\n",
-            ctx.paint("accent", &format!("since {}", s(result, "active_since")))
-        ));
+        row(
+            "running",
+            DetailField::Running,
+            format!("since {}", s(result, "active_since")),
+        );
     }
     let blocked = result
         .get("blocked")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    out.push_str(&format!("  blocked    {blocked}\n"));
+    row("blocked", DetailField::Blocked, blocked.to_string());
     if let Some(tags) = result.get("tags").and_then(Value::as_array) {
         if !tags.is_empty() {
             let names: Vec<&str> = tags.iter().filter_map(Value::as_str).collect();
-            out.push_str(&format!(
-                "  tags       {}\n",
-                ctx.paint("tag", &san(&names.join(" ")))
-            ));
+            row("tags", DetailField::Tags, san(&names.join(" ")));
         }
     }
     if let Some(deps) = result.get("depends_on").and_then(Value::as_array) {
@@ -1264,7 +1327,7 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
                 .filter_map(Value::as_i64)
                 .map(|n| format!("#{n}"))
                 .collect();
-            out.push_str(&format!("  depends_on {}\n", refs.join(" ")));
+            row("depends_on", DetailField::DependsOn, refs.join(" "));
         }
     }
     // D39: AI token spend renders here or it is data nobody reported.
@@ -1280,25 +1343,29 @@ pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
                     .filter_map(|m| m.get(key).and_then(Value::as_u64))
                     .fold(0u64, u64::saturating_add)
             };
-            out.push_str(&format!(
-                "  tokens     in {} · out {} · cacheR {} · cacheW {}\n",
-                sum("input_tokens"),
-                sum("output_tokens"),
-                sum("cache_read_tokens"),
-                sum("cache_creation_tokens")
-            ));
+            row(
+                "tokens",
+                DetailField::Tokens,
+                format!(
+                    "in {} · out {} · cacheR {} · cacheW {}",
+                    sum("input_tokens"),
+                    sum("output_tokens"),
+                    sum("cache_read_tokens"),
+                    sum("cache_creation_tokens")
+                ),
+            );
         }
     }
     if let Some(anns) = result.get("annotations").and_then(Value::as_array) {
         for a in anns {
-            out.push_str(&format!(
-                "  {} {}\n",
-                ctx.paint("muted", "·"),
-                san(a.get("body").and_then(Value::as_str).unwrap_or(""))
-            ));
+            row(
+                "·",
+                DetailField::Annotation,
+                san(a.get("body").and_then(Value::as_str).unwrap_or("")),
+            );
         }
     }
-    out
+    rows
 }
 
 // ============================================================================
@@ -1511,117 +1578,25 @@ fn task_detail_card(ctx: &Ctx, result: &Value) -> String {
     out.push_str(&ctx.paint("card.frame", &"─".repeat(head_w.clamp(4, ctx.cols.min(80)))));
     out.push('\n');
 
-    let mut row = |label: &str, value: String| {
-        out.push_str(&format!("{}  {value}\n", lab(label)));
-    };
-
-    row("status", status_cell(ctx, result));
-    let prio = result
-        .get("priority")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let prio_cell = match prio {
-        "H" => ctx.paint("card.strong", prio),
-        "L" => ctx.paint("card.label", prio),
-        "M" => prio.to_string(),
-        _ => ctx.paint("card.frame", prio),
-    };
-    row("priority", prio_cell);
-    if !s(result, "project").is_empty() {
-        row("project", s(result, "project"));
-    }
-    let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-    row("urgency", format!("{urg:.1}"));
-    if !s(result, "due").is_empty() {
-        row("due", ctx.paint("card.strong", &s(result, "due")));
-    }
-    if !s(result, "remind").is_empty() {
-        row("remind", s(result, "remind"));
-    }
-    if !s(result, "scheduled").is_empty() {
-        row("scheduled", s(result, "scheduled"));
-    }
-    if !s(result, "wait").is_empty() {
-        row("wait", s(result, "wait"));
-    }
-    if !s(result, "recurrence").is_empty() {
-        row("repeats", s(result, "recurrence"));
-    }
-    if !s(result, "estimate").is_empty() {
-        row("estimate", s(result, "estimate"));
-    }
-    if !s(result, "completed").is_empty() {
-        row("completed", s(result, "completed"));
-    }
-    let tracked = s(result, "tracked");
-    if !tracked.is_empty() && tracked != "PT0S" {
-        row("tracked", tracked);
-    }
-    if !s(result, "active_since").is_empty() {
-        row(
-            "running",
-            ctx.paint(
-                "card.strong",
-                &format!("since {}", s(result, "active_since")),
-            ),
-        );
-    }
-    let blocked = result
-        .get("blocked")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    row(
-        "blocked",
-        if blocked {
-            ctx.paint("card.strong", "true")
-        } else {
-            "false".to_string()
-        },
-    );
-    if let Some(tags) = result.get("tags").and_then(Value::as_array) {
-        if !tags.is_empty() {
-            let names: Vec<&str> = tags.iter().filter_map(Value::as_str).collect();
-            row("tags", san(&names.join(" ")));
-        }
-    }
-    if let Some(deps) = result.get("depends_on").and_then(Value::as_array) {
-        if !deps.is_empty() {
-            let refs: Vec<String> = deps
-                .iter()
-                .filter_map(Value::as_i64)
-                .map(|n| format!("#{n}"))
-                .collect();
-            row("depends_on", refs.join(" "));
-        }
-    }
-    if let Some(tokens) = result.get("tokens").and_then(Value::as_array) {
-        if !tokens.is_empty() {
-            let sum = |key: &str| -> u64 {
-                tokens
-                    .iter()
-                    .filter_map(|m| m.get(key).and_then(Value::as_u64))
-                    .fold(0u64, u64::saturating_add)
-            };
-            row(
-                "tokens",
-                format!(
-                    "in {} · out {} · cacheR {} · cacheW {}",
-                    sum("input_tokens"),
-                    sum("output_tokens"),
-                    sum("cache_read_tokens"),
-                    sum("cache_creation_tokens")
-                ),
-            );
-        }
-    }
-    if let Some(anns) = result.get("annotations").and_then(Value::as_array) {
-        for a in anns {
-            out.push_str(&format!(
-                "{}  {}\n",
-                lab("·"),
-                san(a.get("body").and_then(Value::as_str).unwrap_or(""))
-            ));
-        }
+    // The card's emphasis map over the SAME row set the plain layout renders
+    // — the facts and their conditions live in `detail_rows`, once.
+    for r in detail_rows(ctx, result) {
+        let cell = match r.field {
+            DetailField::Annotation => {
+                out.push_str(&format!("{}  {}\n", lab("·"), r.value));
+                continue;
+            }
+            DetailField::Priority => match r.value.as_str() {
+                "H" => ctx.paint("card.strong", &r.value),
+                "L" => ctx.paint("card.label", &r.value),
+                "M" => r.value,
+                _ => ctx.paint("card.frame", &r.value),
+            },
+            DetailField::Due | DetailField::Running => ctx.paint("card.strong", &r.value),
+            DetailField::Blocked if r.value == "true" => ctx.paint("card.strong", "true"),
+            _ => r.value,
+        };
+        out.push_str(&format!("{}  {cell}\n", lab(r.label)));
     }
     out
 }
@@ -2417,6 +2392,57 @@ mod tests {
         }
     }
 
+    /// Every conditional row toggled off one at a time, plus the value edges
+    /// (PT0S, empty collections, each priority, an unrecognized status) — the
+    /// fixture matrix the parity guard walks, so a condition drifting between
+    /// the layouts cannot hide behind the all-fields-set case.
+    fn detail_matrix() -> Vec<(String, serde_json::Value)> {
+        let mut m = vec![("full".to_string(), full_task())];
+        for key in [
+            "project",
+            "due",
+            "remind",
+            "scheduled",
+            "wait",
+            "recurrence",
+            "estimate",
+            "completed",
+            "tracked",
+            "active_since",
+            "tags",
+            "depends_on",
+            "tokens",
+            "annotations",
+            "priority",
+        ] {
+            let mut t = full_task();
+            t.as_object_mut().unwrap().remove(key);
+            m.push((format!("without-{key}"), t));
+        }
+        let mut t = full_task();
+        t["tracked"] = json!("PT0S");
+        m.push(("tracked-zero".to_string(), t));
+        let mut t = full_task();
+        t["blocked"] = json!(false);
+        m.push(("unblocked".to_string(), t));
+        for p in ["M", "L"] {
+            let mut t = full_task();
+            t["priority"] = json!(p);
+            m.push((format!("prio-{p}"), t));
+        }
+        let mut t = full_task();
+        t["status"] = json!("Done");
+        t["status_unrecognized"] = json!(true);
+        m.push(("status-unrecognized".to_string(), t));
+        let mut t = full_task();
+        t["tags"] = json!([]);
+        t["depends_on"] = json!([]);
+        t["tokens"] = json!([]);
+        t["annotations"] = json!([]);
+        m.push(("empty-collections".to_string(), t));
+        m
+    }
+
     /// The two detail layouts must name the same facts, in the same
     /// spellings. The plain view is the contract (its labels are what docs
     /// and muscle memory know); this walks its label column and demands each
@@ -2424,23 +2450,33 @@ mod tests {
     /// and this is what goes red.
     #[test]
     fn the_detail_card_names_every_field_the_plain_view_names() {
-        let t = full_task();
-        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &t);
-        let card = task_detail(&Ctx::new(theme::default_theme(), card_caps()), &t);
-        let mut labels = 0;
-        for line in plain.lines().skip(1) {
-            let Some(first) = line.split_whitespace().next() else {
-                continue;
-            };
-            if first == "·" {
-                continue; // an annotation marker, not a field label
+        // Over the whole fixture matrix, not one all-fields task: with every
+        // conditional toggled off in turn, a row CONDITION drifting between
+        // the layouts fails here too, not only a renamed label.
+        for (name, t) in detail_matrix() {
+            let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &t);
+            let card = task_detail(&Ctx::new(theme::default_theme(), card_caps()), &t);
+            for line in plain.lines().skip(1) {
+                let Some(first) = line.split_whitespace().next() else {
+                    continue;
+                };
+                if first == "·" {
+                    continue; // an annotation marker, not a field label
+                }
+                assert!(
+                    card.contains(first),
+                    "[{name}] the card lost the {first:?} row:\n{card}"
+                );
             }
-            assert!(
-                card.contains(first),
-                "the card lost the {first:?} row:\n{card}"
-            );
-            labels += 1;
         }
+        // And the full fixture still exercises the conditional rows at all.
+        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &full_task());
+        let labels = plain
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|w| *w != "·")
+            .count();
         assert!(
             labels >= 15,
             "the parity scan saw only {labels} labels — full_task stopped \
