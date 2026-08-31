@@ -51,7 +51,21 @@ the same JSON API every other surface goes through.
 
 ## Sixty seconds to a working setup
 
-Install — Linux and macOS:
+Install — with a package manager, which owns the update path from then on
+(`brew upgrade tasqx` / `scoop update tasqx`) and, through brew, switches Tab
+completion on without another step:
+
+```console
+brew install dimitritholen/tasqx/tasqx    # macOS and Linux
+```
+
+```console
+scoop bucket add tasqx https://github.com/dimitritholen/scoop-tasqx
+scoop install tasqx                       # Windows
+```
+
+No package manager? The scripts do the same job on a bare machine — Linux and
+macOS:
 
 ```console
 curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh
@@ -123,6 +137,11 @@ Honesty about what that buys you:
   provides; re-derive it from a release binary with
   `objdump -T tasqx | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1`. There is
   no musl build — an older distro builds from source.
+
+All of it applies to the package-manager routes too: the Homebrew formula and
+the Scoop manifest are generated per release (`scripts/brew-formula.sh`,
+`scripts/scoop-manifest.sh`) from the same published checksums, and point at
+the same unsigned archives.
 
 </details>
 
