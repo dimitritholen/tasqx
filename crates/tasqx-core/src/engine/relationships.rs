@@ -252,12 +252,19 @@ impl Engine {
             "dependency.add",
             &json!({ "depends_on": target.id }),
         )?;
+        // Re-read the resulting state INSIDE the transaction (the `tag_add`
+        // rule): the helpers run on this same connection, so before the
+        // commit is what puts their statements in the transaction — after it,
+        // a writer landing in the gap makes the response describe a store
+        // this call did not produce.
+        let depends_on = self.depends_on_short_ids(&task.id)?;
+        let blocked = self.is_blocked(&task.id)?;
         tx.commit()?;
 
         Ok(json!({
             "short_id": task.short_id,
-            "depends_on": self.depends_on_short_ids(&task.id)?,
-            "blocked": self.is_blocked(&task.id)?,
+            "depends_on": depends_on,
+            "blocked": blocked,
         }))
     }
 
@@ -295,12 +302,61 @@ impl Engine {
                 &json!({ "depends_on": target.id }),
             )?;
         }
+        // Inside the transaction, as in `dependency_add` — see the comment
+        // there.
+        let depends_on = self.depends_on_short_ids(&task.id)?;
+        let blocked = self.is_blocked(&task.id)?;
         tx.commit()?;
 
         Ok(json!({
             "short_id": task.short_id,
-            "depends_on": self.depends_on_short_ids(&task.id)?,
-            "blocked": self.is_blocked(&task.id)?,
+            "depends_on": depends_on,
+            "blocked": blocked,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Both dependency handlers answer with "the resulting state", so their
+    /// response reads must run INSIDE the mutation's transaction — the rule
+    /// `tag_add` states and keeps for the tag pair. Read after `commit()`, a
+    /// writer landing in the gap makes the response describe a store this
+    /// call did not produce. The helpers take `&self` on the engine's one
+    /// connection, so ordering them before the commit is exactly what puts
+    /// their statements inside the transaction. Structural, as with
+    /// `store_export`'s twin guard: the interleaving point is inside SQLite.
+    #[test]
+    fn dependency_responses_are_read_inside_the_transaction() {
+        let source = include_str!("relationships.rs");
+        for name in ["dependency_add", "dependency_remove"] {
+            // Assembled, never written out literally: `dispatch`'s
+            // accepted-key guard splits this same source at every `fn NAME(`.
+            let marker = format!("pub fn {name}(");
+            let start = source
+                .find(&marker)
+                .unwrap_or_else(|| panic!("{name} exists"));
+            let rest = &source[start + marker.len()..];
+            let end = rest.find("\n    pub fn ").unwrap_or(rest.len());
+            let body: String = rest[..end]
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let commit = body
+                .find(".commit()")
+                .unwrap_or_else(|| panic!("{name} commits its transaction"));
+            for read in ["depends_on_short_ids", "is_blocked"] {
+                let at = body
+                    .find(read)
+                    .unwrap_or_else(|| panic!("{name} answers with {read}"));
+                assert!(
+                    at < commit,
+                    "{name}: `{read}` runs after commit, outside the transaction \
+                     whose result the response claims to report"
+                );
+            }
+        }
     }
 }
