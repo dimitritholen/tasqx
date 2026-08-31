@@ -550,6 +550,44 @@ impl Hub {
             }
         });
     }
+
+    /// Deliver pending gap markers to subscribers whose queues have room
+    /// again, without waiting for a further broadcast (#248).
+    ///
+    /// [`Hub::broadcast`] can only send the marker while sending something
+    /// else, so when the burst that congested a subscriber is also the last
+    /// write for a while, the subscriber sits on a view N events stale with no
+    /// signal at all — and the scenario `OUT_QUEUE_CAP`'s own comment names, a
+    /// bulk import plus a slow consumer, is precisely the write that tends to
+    /// be the last one. The accept loop calls this every iteration, so
+    /// delivery is bounded by the accept cadence (~20 ms while idle) instead
+    /// of by the next mutation. The marker still precedes the first frame the
+    /// subscriber can take again: either this delivers it first, or a racing
+    /// broadcast does through its own gap-first arm.
+    ///
+    /// A still-full queue leaves the debt **unchanged** — unlike the refusal
+    /// inside `broadcast`, no event rode on this attempt, so nothing new was
+    /// lost by it.
+    fn flush_gaps(&self) {
+        let mut subs = lock_recover(&self.subs);
+        subs.retain_mut(|sub| {
+            if sub.dropped == 0 {
+                return true;
+            }
+            match sub.tx.try_send(gap_notification(sub.dropped)) {
+                Ok(()) => {
+                    eprintln!(
+                        "tasqx daemon: subscriber {} resumed after dropping {} event(s)",
+                        sub.id, sub.dropped
+                    );
+                    sub.dropped = 0;
+                    true
+                }
+                Err(mpsc::TrySendError::Full(_)) => true,
+                Err(mpsc::TrySendError::Disconnected(_)) => false,
+            }
+        });
+    }
 }
 
 /// Shared server state cloned into every worker and the poller.
@@ -790,6 +828,30 @@ pub fn serve_with_options(
     // stay blocking, which the thread-per-connection model wants.
     listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
 
+    // The banner, HERE and not in the CLI, because the position is the
+    // property (#250): it prints only once the bind has succeeded, so a second
+    // daemon refused off a held address exits with the failure alone — the
+    // pre-fix CLI printed `listening on <addr>` before calling this function,
+    // and a process that never listened announced that it did, which cost the
+    // field test real time chasing a daemon death that had not happened. In a
+    // log or a service unit the listening line is the one an operator reads.
+    eprintln!("tasqx daemon: listening on {socket} (Ctrl-C to stop)");
+    // D74: the store, beside the address — the one line of stderr that answers
+    // the question every wrong-store incident starts with, from the engine's
+    // own connection.
+    if let Some(store) = &store_path {
+        eprintln!("tasqx daemon: store {store}");
+    }
+    // Announced only when armed, so the banner an operator who never
+    // configured it sees is byte-for-byte the one they saw before (D5).
+    if let Some(idle) = idle_timeout {
+        eprintln!(
+            "tasqx daemon: will exit after {} minute(s) with no clients and no work \
+             (`[daemon] idle_timeout`)",
+            idle.as_secs() / 60
+        );
+    }
+
     let start = max_event_rowid(&engine).map_err(|e| {
         io::Error::other(format!(
             "event watermark initialization failed: {}",
@@ -879,6 +941,9 @@ pub fn serve_with_options(
     let mut conns: Vec<thread::JoinHandle<()>> = Vec::new();
     let result = loop {
         reap_finished(&mut conns);
+        // #248: a congested subscriber's gap marker must not wait for the next
+        // mutation — this attempts delivery on every accept tick.
+        shared.hub.flush_gaps();
         if shutdown.load(Ordering::Relaxed) {
             break Ok(());
         }
@@ -2406,6 +2471,53 @@ mod tests {
 
         server.join().expect("connection thread");
         cleanup(&socket);
+    }
+
+    /// #248, the quiet case: flood a subscriber past its queue, let it drain,
+    /// and the gap marker must arrive **with no further write**. `broadcast`
+    /// alone can only send the marker while sending something else, so before
+    /// `flush_gaps` the subscriber held a view N events stale for as long as
+    /// the store stayed quiet — and the burst that congests a consumer (the
+    /// bulk import `OUT_QUEUE_CAP`'s comment names) is exactly the write that
+    /// tends to be the last one for a while.
+    #[test]
+    fn a_gap_marker_reaches_a_drained_subscriber_without_a_further_event() {
+        let hub = Hub::new();
+        // A deliberately tiny queue: the mechanism is capacity-relative, and
+        // OUT_QUEUE_CAP frames of flood would test patience, not delivery.
+        let (tx, rx) = mpsc::sync_channel::<String>(2);
+        hub.register(tx);
+
+        for line in ["a\n", "b\n", "c\n", "d\n"] {
+            hub.broadcast(line);
+        }
+        assert_eq!(rx.try_recv().as_deref(), Ok("a\n"), "the queue held two");
+        assert_eq!(rx.try_recv().as_deref(), Ok("b\n"), "the queue held two");
+        assert!(
+            rx.try_recv().is_err(),
+            "the premise: the flood is over, the queue is drained, and nothing \
+             has told the subscriber it is two events short"
+        );
+
+        hub.flush_gaps();
+        let marker = rx
+            .try_recv()
+            .expect("the marker must arrive with no further write");
+        assert!(
+            marker.contains("\"event\":\"task.changed.gap\"") && marker.contains("\"dropped\":2"),
+            "the marker must carry the exact count: {marker}"
+        );
+
+        // The debt is settled: flushing again delivers nothing, and a fresh
+        // broadcast arrives as an ordinary frame with no second marker.
+        hub.flush_gaps();
+        assert!(
+            rx.try_recv().is_err(),
+            "a settled debt must not re-announce"
+        );
+        hub.broadcast("e\n");
+        assert_eq!(rx.try_recv().as_deref(), Ok("e\n"));
+        assert!(rx.try_recv().is_err());
     }
 
     /// Frames already queued when shutdown lands must still reach the socket.

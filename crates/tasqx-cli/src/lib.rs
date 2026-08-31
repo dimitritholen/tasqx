@@ -3663,20 +3663,10 @@ fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
         let _ = std::fs::remove_file(marker);
     }
 
-    eprintln!("tasqx daemon: listening on {socket} (Ctrl-C to stop)");
-    // D74: the store, beside the address — the one line of stderr that answers
-    // the question every wrong-store incident starts with. Derived from the
-    // engine's own connection, never re-resolved from flags or environment.
-    if let Some(store) = engine.store_path() {
-        eprintln!("tasqx daemon: store {store}");
-    }
-    if let Some(idle) = idle_timeout {
-        eprintln!(
-            "tasqx daemon: will exit after {} minute(s) with no clients and no work \
-             (`[daemon] idle_timeout`)",
-            idle.as_secs() / 60
-        );
-    }
+    // The banner — listening, D74's store line, and the idle arming — is
+    // printed by `serve_with_options` itself, after the bind succeeds. It used
+    // to print here, ahead of the bind, so a second daemon on a held address
+    // announced `listening` and then contradicted itself (#250).
     let options = daemon::DaemonOptions {
         notifier,
         tokens_enabled,
@@ -3735,17 +3725,23 @@ fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[String], ctx:
         match conn.next_frame() {
             Ok(Some(daemon::Frame::Event(evt))) => {
                 if tty {
+                    // The repaint makes the count not load-bearing here — the
+                    // whole working set is redrawn — but 372 silently absorbed
+                    // events are still worth one line an operator can see
+                    // (#249). stderr, so it survives the screen clear.
+                    if let Some(d) = evt.pointer("/data/dropped").and_then(Value::as_i64) {
+                        eprintln!(
+                            "tasqx watch: {d} event(s) dropped while this view was not \
+                             keeping up; the repaint is current"
+                        );
+                    }
                     if let Err(e) = watch_render(&mut conn, &filter_str, ctx, true) {
                         eprintln!("tasqx watch: {e}");
                         exit(1);
                     }
                 } else {
                     let data = evt.get("data").cloned().unwrap_or(Value::Null);
-                    let op = data.get("op").and_then(Value::as_str).unwrap_or("change");
-                    match data.get("short_id").and_then(Value::as_i64) {
-                        Some(s) => println!("task.changed op={op} short_id={s}"),
-                        None => println!("task.changed op={op}"),
-                    }
+                    println!("{}", watch_stream_line(&data));
                     let _ = std::io::stdout().flush();
                 }
             }
@@ -3761,6 +3757,29 @@ fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[String], ctx:
             }
         }
     }
+}
+
+/// One non-TTY `watch` line per push: `op=` plus whichever attribution fields
+/// the frame carries.
+///
+/// `dropped` is the load-bearing one (#249): the daemon computes exactly how
+/// many events a congested subscriber lost and puts the count *in* the gap
+/// frame, because — `daemon.rs`'s own words — a silent drop leaves "nothing in
+/// the stream to attribute the difference to". This renderer used to read
+/// `op` and `short_id` and nothing else, so the attribution died at the last
+/// hop: a script tallying the stream learned it lost events and could not
+/// learn how many, while the number existed, was computed, was sent, and was
+/// logged on the far side of the socket.
+fn watch_stream_line(data: &Value) -> String {
+    let op = data.get("op").and_then(Value::as_str).unwrap_or("change");
+    let mut line = format!("task.changed op={op}");
+    if let Some(s) = data.get("short_id").and_then(Value::as_i64) {
+        line.push_str(&format!(" short_id={s}"));
+    }
+    if let Some(d) = data.get("dropped").and_then(Value::as_i64) {
+        line.push_str(&format!(" dropped={d}"));
+    }
+    line
 }
 
 /// Fetch the working set over the socket and (re)paint it, reusing render.rs so
@@ -4311,6 +4330,32 @@ mod tests {
             "an unanswerable question is said, not papered over: {text}"
         );
         assert_ne!(json["path"], "/tmp/scratch.db");
+    }
+
+    /// #249: the daemon announces a congested subscriber's loss with a gap
+    /// frame carrying the exact count, and the non-TTY renderer read `op` and
+    /// `short_id` and nothing else — so the line a script saw was
+    /// `task.changed op=gap`, the one field that made the frame actionable
+    /// dropped at the last hop. The count must render, and must keep rendering
+    /// without something going red.
+    #[test]
+    fn the_watch_stream_renders_the_dropped_count_it_used_to_print_away() {
+        assert_eq!(
+            watch_stream_line(&json!({ "op": "gap", "dropped": 372 })),
+            "task.changed op=gap dropped=372",
+            "the daemon computed, sent and logged this number; the renderer \
+             is not where it dies"
+        );
+        assert_eq!(
+            watch_stream_line(&json!({ "op": "add", "short_id": 7 })),
+            "task.changed op=add short_id=7",
+            "ordinary events are unchanged"
+        );
+        assert_eq!(
+            watch_stream_line(&json!({})),
+            "task.changed op=change",
+            "a frame with no fields still renders a line"
+        );
     }
 
     #[test]
