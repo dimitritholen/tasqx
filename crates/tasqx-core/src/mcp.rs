@@ -15,6 +15,8 @@
 //! Transport (per the MCP stdio spec): newline-delimited JSON, one JSON object
 //! per line, on stdin/stdout. Logs go to stderr only.
 
+use std::sync::LazyLock;
+
 use serde_json::{json, Map, Value};
 
 use crate::dispatch::dispatch;
@@ -324,12 +326,22 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[(
     "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
 )];
 
+/// Built once per process. The table is a pure function of compile-time
+/// constants — every runtime `format!` in it renders a `const` list — and it
+/// was being rebuilt, nineteen `json!` schemas and their strings, on every
+/// tools/call and tools/list, then linear-searched and dropped.
+static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(build_tool_specs);
+
 /// The full §7 tool surface. Each entry maps 1:1 onto a core dispatch method;
 /// the tool `arguments` object is passed straight through as the method params
 /// (argument names are identical to the core param names by design), except for
 /// the arguments listed in [`TRANSPORT_ONLY_ARGS`], which this server reads and
 /// consumes.
-fn tool_specs() -> Vec<ToolSpec> {
+fn tool_specs() -> &'static [ToolSpec] {
+    &TOOL_SPECS
+}
+
+fn build_tool_specs() -> Vec<ToolSpec> {
     vec![
         // ---- reads ----------------------------------------------------------
         ToolSpec {
