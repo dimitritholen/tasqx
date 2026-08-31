@@ -127,6 +127,28 @@ const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(windows)]
 const CLIENT_WATCHDOG_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How long a stopping daemon waits for its connection threads to finish
+/// draining before it gives up on the stragglers and lets the process exit.
+///
+/// The wait exists because `serve_with_options` used to return the moment the
+/// shutdown flag was set, and `run_daemon` then let the process exit — killing
+/// every connection thread wherever it stood. A response whose transaction had
+/// already committed but was still sitting in `writer_loop`'s queue died with
+/// the process, and the client read a bare EOF for a write that landed: exactly
+/// the "applied" versus "not applied" confusion D5's refusal envelope exists to
+/// prevent, reproduced against the real binary at 2 rounds in 130 (#245).
+///
+/// Derived from [`CLIENT_SEND_TIMEOUT`] rather than a number of its own because
+/// that timeout is what bounds every drain this wait is for: a healthy client's
+/// last write completes in microseconds, and a client that has stopped reading
+/// has its write cut at the send timeout. The extra second is watchdog and
+/// scheduling slack. What can legitimately outlive the deadline is a reader
+/// parked in a receive with an *empty* queue (on Unix it wakes only on the
+/// 30-second `CLIENT_IO_POLL_TIMEOUT`); it holds no committed work, so
+/// abandoning it loses nothing — and the giving-up is announced on stderr
+/// because this function cannot prove that from where it stands.
+const SHUTDOWN_DRAIN_DEADLINE: Duration = Duration::from_secs(CLIENT_SEND_TIMEOUT.as_secs() + 1);
+
 /// Lock a mutex, recovering the guard even if a previous holder panicked while
 /// holding it. A single panicked dispatch must never permanently wedge the
 /// daemon for every other client (DESIGN §2: "a client must never crash the
@@ -830,7 +852,13 @@ pub fn serve_with_options(
     // The server-level idle clock (D5). `None` means "not idle" — either
     // something is going on, or the feature is off and the value is never read.
     let mut idle_since: Option<Instant> = None;
+    // Every admitted connection's thread, so shutdown can wait for their
+    // writers to drain (see [`drain_connections`]) instead of returning into a
+    // process exit that kills them mid-flush. Reaped as connections end, so a
+    // long-lived daemon holds handles for its live clients, not its history.
+    let mut conns: Vec<thread::JoinHandle<()>> = Vec::new();
     let result = loop {
+        reap_finished(&mut conns);
         if shutdown.load(Ordering::Relaxed) {
             break Ok(());
         }
@@ -883,7 +911,7 @@ pub fn serve_with_options(
             Ok(stream) => {
                 if let Some(permit) = admission.try_acquire() {
                     let sh = shared.clone();
-                    thread::spawn(move || handle_conn(stream, sh, permit));
+                    conns.push(thread::spawn(move || handle_conn(stream, sh, permit)));
                 } else {
                     admission.note_rejection();
                     reject_overloaded(stream);
@@ -899,8 +927,57 @@ pub fn serve_with_options(
     // An error return is also a shutdown signal for the supervised threads;
     // otherwise the serve call would fail while its poller/scheduler leaked.
     shutdown.store(true, Ordering::Relaxed);
+    drain_connections(conns);
     cleanup(socket);
     result
+}
+
+/// Join every finished connection thread and keep the live ones.
+///
+/// Called once per accept attempt (~20 ms while idle), so `serve` holds handles
+/// proportional to the *current* client count, never to connection history —
+/// without this, a daemon serving one client a minute for a month would carry
+/// forty-three thousand dead handles into its shutdown drain.
+fn reap_finished(conns: &mut Vec<thread::JoinHandle<()>>) {
+    let mut live = Vec::with_capacity(conns.len());
+    for conn in conns.drain(..) {
+        if conn.is_finished() {
+            let _ = conn.join();
+        } else {
+            live.push(conn);
+        }
+    }
+    *conns = live;
+}
+
+/// Wait for the connection threads to end before `serve` returns, bounded by
+/// [`SHUTDOWN_DRAIN_DEADLINE`].
+///
+/// This is [`writer_loop`]'s drain discipline made effective: that loop already
+/// refuses to drop a queued response on shutdown, but nothing waited for it, so
+/// the CLI's process exit killed it mid-flush and the client read a bare EOF
+/// for a committed write (#245). The wait is for the flush, not for the client:
+/// a connection that outlives the deadline is a reader parked on an empty queue
+/// (see [`SHUTDOWN_DRAIN_DEADLINE`]), and abandoning it is announced rather
+/// than silent because "nothing was lost" is an inference, not an observation.
+fn drain_connections(mut conns: Vec<thread::JoinHandle<()>>) {
+    let deadline = Instant::now() + SHUTDOWN_DRAIN_DEADLINE;
+    loop {
+        reap_finished(&mut conns);
+        if conns.is_empty() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    eprintln!(
+        "tasqx daemon: exiting with {} client connection(s) still open after {:?}; \
+         a response may not have reached its client",
+        conns.len(),
+        SHUTDOWN_DRAIN_DEADLINE
+    );
 }
 
 // ---- idle shutdown (DESIGN.md §12-D5) ---------------------------------------
@@ -1744,11 +1821,29 @@ fn handle_conn(stream: Stream, sh: Shared, _permit: ClientPermit) {
                 // `out_tx.send` hit the closed channel — but only if the client
                 // sends another request, and it is stuck on the frame the failed
                 // write truncated.
+                let stopping = sh.shutdown.load(Ordering::Relaxed);
                 if recv_teardown_due(
-                    sh.shutdown.load(Ordering::Relaxed),
+                    stopping,
                     io_state.idle(Instant::now()),
                     io_state.write_failed(),
                 ) {
+                    // A teardown that shutdown caused must not end in a bare
+                    // EOF. On Windows the watchdog's cancel can beat the
+                    // client's frame to this arm, so a request already on the
+                    // wire was never read — without a parting refusal the
+                    // client cannot tell "not applied, retry" from "applied
+                    // and the answer was lost", which is the distinction D5's
+                    // envelope exists to keep (the #58 flake, and 3 of #245's
+                    // 130 hand-driven rounds). Suppressed for subscribers:
+                    // `watch` already treats the close itself as the message
+                    // ("daemon closed the connection", exit 1), and a stray
+                    // refusal frame would reach its renderer instead.
+                    if stopping && sub_id.is_none() {
+                        let refusal = unavailable_envelope(
+                            "daemon is shutting down; the request was not applied",
+                        );
+                        let _ = out_tx.send(format!("{refusal}\n"));
+                    }
                     break;
                 }
             }
@@ -2209,6 +2304,52 @@ mod tests {
             0,
             "a refused request must never have been dispatched"
         );
+
+        server.join().expect("connection thread");
+        cleanup(&socket);
+    }
+
+    /// A connection that shutdown tears down before a request frame is READ
+    /// must still hear the refusal envelope before EOF.
+    ///
+    /// Windows-gated because the mechanism is: the watchdog cancels the parked
+    /// read within a tick of the flag flipping, and the reader used to break
+    /// straight out of its timeout arm with nothing said — so a request already
+    /// on the wire was never read and the client got a bare EOF (#58's flake,
+    /// and the bare-EOF rounds of #245's hand reproduction). On Unix a parked
+    /// reader wakes only on the 30-second recv timeout, which no test should
+    /// sit through; an arriving frame wakes it and the top-of-loop refusal
+    /// answers, so the cancel-beats-frame race does not exist there.
+    #[cfg(windows)]
+    #[test]
+    fn a_shutdown_teardown_sends_the_refusal_before_eof() {
+        let socket = client_test_socket("shutdown-teardown");
+        let sh = shared(Engine::open_in_memory().unwrap());
+        let server = serve_one_conn(&socket, sh.clone());
+
+        let mut conn = try_connect(&socket).expect("connect before shutdown");
+        // Let the server's reader park in its read before the flag flips, so
+        // the teardown arm — not the top-of-loop check — is what must answer.
+        thread::sleep(Duration::from_millis(50));
+        sh.shutdown.store(true, Ordering::Relaxed);
+
+        let frame = with_deadline("refusal on shutdown teardown", move || conn.next_frame())
+            .expect("no read error")
+            .expect("the teardown must say why before closing, never a bare EOF");
+        match frame {
+            Frame::Response(v) => {
+                assert_eq!(
+                    v.pointer("/error/code").and_then(Value::as_str),
+                    Some("unavailable"),
+                    "the parting frame must be the shutdown refusal: {v}"
+                );
+                assert!(
+                    v.get("id").is_none(),
+                    "the refusal is transport-level and must stay id-less: {v}"
+                );
+            }
+            Frame::Event(v) => panic!("the refusal must be a response frame, got event {v}"),
+        }
 
         server.join().expect("connection thread");
         cleanup(&socket);
