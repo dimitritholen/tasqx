@@ -727,8 +727,12 @@ impl When {
 }
 
 /// One task placed on the calendar.
-struct Entry {
-    task: Value,
+///
+/// Borrowed out of the `task.list` payload, not cloned into it: the clone
+/// existed only to avoid a lifetime parameter, and the one caller holds the
+/// payload for the agenda's whole life.
+struct Entry<'a> {
+    task: &'a Value,
     at: Timestamp,
     day: Date,
     kind: When,
@@ -743,8 +747,8 @@ struct Entry {
 /// the screen is indistinguishable from a deadline that does not exist. So each
 /// reason carries its own count, and [`agenda_text`] prints the ones that are
 /// non-zero together with the command or flag that reveals what they hold.
-pub struct Agenda {
-    entries: Vec<Entry>,
+pub struct Agenda<'a> {
+    entries: Vec<Entry<'a>>,
     /// Tasks with neither `due` nor `scheduled`. Nothing can put them on a day.
     undated: usize,
     /// Tasks dated past the horizon.
@@ -799,12 +803,13 @@ pub struct Agenda {
 /// and `lib::run_agenda` composes an open-status default into it under D24's
 /// resolution order. Filtering again here would be a second opinion about a
 /// question the filter grammar already answers, and the two would drift.
-pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda {
-    let empty = Vec::new();
-    let tasks = result
+pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda<'_> {
+    // Borrowed with the payload's own lifetime — a local empty-vec fallback
+    // would tie the borrow to this frame and forbid returning it.
+    let tasks: &[Value] = result
         .get("tasks")
         .and_then(Value::as_array)
-        .unwrap_or(&empty);
+        .map_or(&[], Vec::as_slice);
 
     // Everything the store holds is UTC (`datetime.rs`: a naive date resolves to
     // 00:00 UTC), so the day boundaries are UTC too. Grouping by the LOCAL day
@@ -857,7 +862,7 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda {
             continue;
         }
         a.entries.push(Entry {
-            task: t.clone(),
+            task: t,
             at,
             day,
             kind,
@@ -963,21 +968,21 @@ fn when_cell(kind: When, at: Timestamp, dated: bool) -> String {
 pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
     let mut out = String::new();
 
-    let refs: Vec<&Value> = a.entries.iter().map(|e| &e.task).collect();
+    let refs: Vec<&Value> = a.entries.iter().map(|e| e.task).collect();
     if !refs.is_empty() {
         let max_urg = max_urgency(&refs);
         let rows: Vec<TaskRow> = a
             .entries
             .iter()
             .map(|e| {
-                let mut r = task_row(&e.task, max_urg, a.at_start_of_today());
+                let mut r = task_row(e.task, max_urg, a.at_start_of_today());
                 let overdue = e.day < a.today;
                 r.due = when_cell(e.kind, e.at, overdue);
                 // Repainted from the AGENDA instant, not from `due` alone: a
                 // task scheduled last week and due next month is late on the
                 // thing this row is about, and `task_row`'s answer is about the
                 // deadline only.
-                r.overdue = overdue && status_is_open(&s(&e.task, "status"));
+                r.overdue = overdue && status_is_open(&s(e.task, "status"));
                 r
             })
             .collect();
@@ -1038,7 +1043,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
     out
 }
 
-impl Agenda {
+impl Agenda<'_> {
     /// Midnight of the agenda's `today`, used as the "now" [`task_row`] compares
     /// `due` against. The agenda has its own overdue answer (per row, from the
     /// agenda instant), so this only has to be a stable instant on the right day
@@ -3467,13 +3472,21 @@ mod tests {
         })
     }
 
-    fn agenda_of(tasks: Vec<Value>, days: usize) -> Agenda {
-        agenda_select(&json!({ "tasks": tasks }), days, anchor())
+    /// The payload half of the old `agenda_of`: the agenda borrows its rows
+    /// now, so the `task.list` answer must outlive it — callers bind this
+    /// first, exactly as `run_agenda` does.
+    fn agenda_payload(tasks: Vec<Value>) -> Value {
+        json!({ "tasks": tasks })
+    }
+
+    fn agenda_of(payload: &Value, days: usize) -> Agenda<'_> {
+        agenda_select(payload, days, anchor())
     }
 
     fn agenda_out(tasks: Vec<Value>, days: usize) -> String {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        agenda_text(&ctx, &agenda_of(tasks, days))
+        let payload = agenda_payload(tasks);
+        agenda_text(&ctx, &agenda_of(&payload, days))
     }
 
     /// The ordering rule, and the reason the view reads both fields.
@@ -3486,19 +3499,17 @@ mod tests {
     /// "Tuesday" means something different under each field.
     #[test]
     fn agenda_places_a_task_on_the_earlier_of_due_and_scheduled() {
-        let a = agenda_of(
-            vec![
-                dated(1, "deadline only", "2026-08-05T00:00:00Z", ""),
-                dated(
-                    2,
-                    "starts tuesday, due much later",
-                    "2026-08-24T00:00:00Z",
-                    "2026-08-04T00:00:00Z",
-                ),
-                dated(3, "scheduled only", "", "2026-08-10T00:00:00Z"),
-            ],
-            30,
-        );
+        let payload = agenda_payload(vec![
+            dated(1, "deadline only", "2026-08-05T00:00:00Z", ""),
+            dated(
+                2,
+                "starts tuesday, due much later",
+                "2026-08-24T00:00:00Z",
+                "2026-08-04T00:00:00Z",
+            ),
+            dated(3, "scheduled only", "", "2026-08-10T00:00:00Z"),
+        ]);
+        let a = agenda_of(&payload, 30);
         let order: Vec<i64> = a
             .entries
             .iter()
@@ -3521,15 +3532,13 @@ mod tests {
     /// send the reader looking for a deadline that is right there.
     #[test]
     fn a_task_due_and_scheduled_at_the_same_instant_is_labelled_due() {
-        let a = agenda_of(
-            vec![dated(
-                1,
-                "same instant",
-                "2026-08-05T09:00:00Z",
-                "2026-08-05T09:00:00Z",
-            )],
-            30,
-        );
+        let payload = agenda_payload(vec![dated(
+            1,
+            "same instant",
+            "2026-08-05T09:00:00Z",
+            "2026-08-05T09:00:00Z",
+        )]);
+        let a = agenda_of(&payload, 30);
         assert_eq!(a.entries[0].kind, When::Due);
     }
 
@@ -3708,14 +3717,12 @@ mod tests {
     /// beside it showed one.
     #[test]
     fn agenda_json_holds_exactly_the_rows_the_table_drew() {
-        let a = agenda_of(
-            vec![
-                dated(1, "shown", "2026-08-05T00:00:00Z", ""),
-                dated(2, "beyond", "2026-11-01T00:00:00Z", ""),
-                dated(3, "undated", "", ""),
-            ],
-            14,
-        );
+        let payload = agenda_payload(vec![
+            dated(1, "shown", "2026-08-05T00:00:00Z", ""),
+            dated(2, "beyond", "2026-11-01T00:00:00Z", ""),
+            dated(3, "undated", "", ""),
+        ]);
+        let a = agenda_of(&payload, 14);
         let v = agenda_json(&a);
         assert_eq!(v["count"], json!(1));
         assert_eq!(v["tasks"].as_array().unwrap().len(), 1);
@@ -3845,7 +3852,8 @@ mod tests {
         let mut cold = dated(2, "cold", "2026-08-05T09:00:00Z", "");
         cold["urgency"] = json!(1.0);
         // As `task.list {sort:["-urgency"]}` would return them.
-        let a = agenda_of(vec![hot, cold], 14);
+        let payload = agenda_payload(vec![hot, cold]);
+        let a = agenda_of(&payload, 14);
         assert_eq!(
             a.entries
                 .iter()
