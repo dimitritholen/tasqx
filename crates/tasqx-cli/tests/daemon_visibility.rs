@@ -282,3 +282,47 @@ fn the_daemon_names_its_store_on_startup() {
         "the announced store must be the file the daemon opened"
     );
 }
+
+/// #250: a second daemon on a held address used to print
+/// `listening on <addr>` BEFORE attempting the bind, then contradict itself —
+/// and in a log or a service unit the listening line is the one an operator
+/// reads. During the field test that false line, plus a daemon leaked by a
+/// crashed harness, sent the investigation chasing a daemon death that had
+/// not happened. The banner now prints only after the bind succeeds: a
+/// process that never listened must not say it did.
+#[test]
+fn a_daemon_that_cannot_bind_never_claims_to_be_listening() {
+    let w = world("secondbind");
+    let shutdown = start_daemon(&w);
+
+    let second_db =
+        std::env::temp_dir().join(format!("tasqx-dvis-secondbind-b-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&second_db);
+    let out = bin(&w)
+        .args([
+            "daemon",
+            "--socket",
+            &w.sock,
+            "--db",
+            &second_db.to_string_lossy(),
+        ])
+        .output()
+        .expect("run second daemon");
+    shutdown.store(true, Ordering::Relaxed);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the second daemon must refuse: {stderr}"
+    );
+    assert!(
+        stderr.contains("bind/serve failed"),
+        "the refusal must name what failed — the half that already worked: {stderr}"
+    );
+    assert!(
+        !stderr.contains("listening on"),
+        "a process that never listened must not announce that it did: {stderr}"
+    );
+    let _ = std::fs::remove_file(&second_db);
+}
