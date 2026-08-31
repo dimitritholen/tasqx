@@ -829,8 +829,6 @@ fn code_str(e: &tasqx_core::ApiError) -> String {
         .unwrap_or_default()
 }
 
-// ---- daemon + watch (DESIGN.md §2, §6a) -------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
