@@ -59,8 +59,9 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
     // burndown, so 13 weeks of slack covers the wider of the two; before D59 gave
     // `event.list` a bound this read the entire log, which grows with every
     // mutation the store has ever recorded.
-    let now = jiff::Timestamp::now().to_string();
-    let from = jiff::Timestamp::now()
+    let now_ts = jiff::Timestamp::now();
+    let now = now_ts.to_string();
+    let from = now_ts
         .to_zoned(jiff::tz::TimeZone::UTC)
         .date()
         .saturating_sub(jiff::ToSpan::days(91i64));
@@ -90,6 +91,19 @@ fn scoped(mut params: Value, filter: Option<&str>) -> Value {
     params
 }
 
+/// The stats `Report::render` prints, computed by [`Report::derive`]: a pure
+/// value the assembly half consumes, and the seam that makes each number
+/// directly testable.
+struct Derived<'a> {
+    open: usize,
+    overdue: usize,
+    overdue_tasks: Vec<&'a Value>,
+    completed_recent: Vec<&'a Value>,
+    velocity: usize,
+    top_tags: Vec<(String, u32)>,
+    bucket_totals: Vec<(&'static str, i64)>,
+}
+
 struct Report<'a> {
     theme: &'a Theme,
     /// Which column `summary`'s groups are keyed by — `report.summary` names the
@@ -104,11 +118,15 @@ struct Report<'a> {
 }
 
 impl<'a> Report<'a> {
-    fn render(&self) -> String {
+    /// Every number the header tiles and lists print, derived once — a pure
+    /// function of the injected payloads and `now`, split out of `render` so
+    /// each stat is reachable by a direct assertion instead of only through a
+    /// full-document string test. `render` assembles; this decides.
+    fn derive(&self) -> Derived<'a> {
         let tasks = array_at(self.export, "tasks");
 
         // Derived counts. All windows are measured against the injected `now`,
-        // not the wall clock — rendering must stay a pure function of the
+        // not the wall clock — the derivation must stay a pure function of the
         // struct's inputs, or a fixture pinned to one date starts answering
         // differently as real time passes.
         let now_ts = parse_ts(self.now).unwrap_or_else(jiff::Timestamp::now);
@@ -121,7 +139,6 @@ impl<'a> Report<'a> {
         let cutoff = now_ts
             .checked_sub(jiff::ToSpan::hours(168i64))
             .unwrap_or(now_ts);
-
         for t in tasks {
             let status = t.get("status").and_then(Value::as_str).unwrap_or("");
             if crate::render::status_is_open(status) {
@@ -191,6 +208,43 @@ impl<'a> Report<'a> {
         top_tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         top_tags.truncate(10);
 
+        // Report-wide token totals, one per bucket, summed across the summary's
+        // groups (which already carry core's D24 scope — cancelled work is
+        // excluded unless the caller asked for `all`). Saturating, like the
+        // per-group roll-up.
+        //
+        // D48a: four sums, not one. This used to fold `tokens_total` into a
+        // single headline tile, which is the number core deliberately keeps apart
+        // until emit — and the one that cannot mean what its label said.
+        // `array_at`, not a deep clone: this module's pointer-identity test
+        // exists to forbid copying a payload out just to read scalars from it,
+        // and the header tiles were the one call site that escaped.
+        let groups = array_at(self.summary, "groups");
+        let bucket_totals: Vec<(&str, i64)> = crate::tokens::BUCKETS
+            .iter()
+            .map(|(key, _, long)| {
+                let sum = groups
+                    .iter()
+                    .map(|g| g.get(key).and_then(Value::as_i64).unwrap_or(0))
+                    .fold(0i64, i64::saturating_add);
+                (*long, sum)
+            })
+            .collect();
+        Derived {
+            open,
+            overdue,
+            overdue_tasks,
+            completed_recent,
+            velocity,
+            top_tags,
+            bucket_totals,
+        }
+    }
+
+    fn render(&self) -> String {
+        let tasks = array_at(self.export, "tasks");
+        let d = self.derive();
+
         // ---- charts ----
         let throughput = chart::throughput(self.events, 12, today());
         // Through the shared projection, so the report and the dashboard cannot
@@ -202,37 +256,12 @@ impl<'a> Report<'a> {
         let css = self.css();
         let mut body = String::new();
 
-        // Report-wide token totals, one per bucket, summed across the summary's
-        // groups (which already carry core's D24 scope — cancelled work is
-        // excluded unless the caller asked for `all`). Saturating, like the
-        // per-group roll-up.
-        //
-        // D48a: four sums, not one. This used to fold `tokens_total` into a
-        // single headline tile, which is the number core deliberately keeps apart
-        // until emit — and the one that cannot mean what its label said.
-        let groups = self
-            .summary
-            .get("groups")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let bucket_totals: Vec<(&str, i64)> = crate::tokens::BUCKETS
-            .iter()
-            .map(|(key, _, long)| {
-                let sum = groups
-                    .iter()
-                    .map(|g| g.get(key).and_then(Value::as_i64).unwrap_or(0))
-                    .fold(0i64, i64::saturating_add);
-                (*long, sum)
-            })
-            .collect();
-
         body.push_str(&self.header(
-            open,
-            completed_recent.len(),
-            velocity,
-            overdue,
-            &bucket_totals,
+            d.open,
+            d.completed_recent.len(),
+            d.velocity,
+            d.overdue,
+            &d.bucket_totals,
         ));
         body.push_str("<main>");
 
@@ -247,11 +276,11 @@ impl<'a> Report<'a> {
             &svg_burndown(&burndown, self.theme),
         ));
 
-        body.push_str(&self.completed_section(&completed_recent));
-        body.push_str(&self.overdue_section(&overdue_tasks));
+        body.push_str(&self.completed_section(&d.completed_recent));
+        body.push_str(&self.overdue_section(&d.overdue_tasks));
         body.push_str(&self.per_group_section());
         body.push_str(&self.actionable_section());
-        body.push_str(&self.tags_section(&top_tags));
+        body.push_str(&self.tags_section(&d.top_tags));
 
         body.push_str("</main>");
         body.push_str(&format!(

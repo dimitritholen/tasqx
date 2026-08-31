@@ -74,6 +74,16 @@ pub struct App {
 
 impl App {
     pub fn new(rows: Vec<Row>) -> Self {
+        // The module's own invariant, owned HERE instead of asserted in
+        // comments at three call sites: `row()` and the renderer index
+        // `rows[selected]` unconditionally, so an empty screen must fail loud
+        // at construction — before raw mode — not as an index panic mid-frame
+        // inside the alt screen. Unreachable in practice: the rows come from
+        // the SETTINGS registry, which is non-empty and gate-tested.
+        assert!(
+            !rows.is_empty(),
+            "the settings screen needs at least one row to select"
+        );
         let theme_row = rows
             .iter()
             .position(|r| r.setting.choices == Choices::Themes);

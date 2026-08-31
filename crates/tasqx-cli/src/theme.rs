@@ -1519,6 +1519,26 @@ mod tests {
         }
     }
 
+    /// The four colored built-ins repeat a structurally identical role table
+    /// where only the hexes differ, and `all_builtins_load` checks a hand-fixed
+    /// eight-role list — so role #16 present in three themes and missing from
+    /// the fourth passed the suite. Derived from the themes themselves: every
+    /// colored built-in must define exactly the role-name set nord does, so a
+    /// role added to one joins all four or this goes red naming the gap.
+    /// `mono` is exempt by design — it is the deliberately-reduced theme.
+    #[test]
+    fn the_colored_builtins_define_one_role_set() {
+        let reference: Vec<String> = builtin("nord").unwrap().role_names();
+        for name in BUILTINS.iter().filter(|n| **n != "mono") {
+            let roles = builtin(name).unwrap().role_names();
+            assert_eq!(
+                roles, reference,
+                "{name} defines a different role set than nord — a role added \
+                 to one colored theme must be added to all of them"
+            );
+        }
+    }
+
     // ---- 'extends' partial override -----------------------------------------
 
     #[test]

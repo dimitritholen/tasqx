@@ -661,8 +661,14 @@ pub fn event_id_floor(ts: Timestamp) -> String {
         .to_string()
 }
 
-/// Map a `SELECT {TASK_COLS}` row into a `Task`.
-pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
+/// Map a `SELECT {TASK_COLS}` row into a `Task`, at the caller's clock.
+///
+/// A SINGLE-row read may use the [`map_task_row`] wrapper; a bulk reader must
+/// pass one `now` for the whole statement, or two rows straddling a
+/// wait/schedule boundary within one `task.list` are classified against
+/// different clocks — the exact skew filter.rs forbids for `tomorrow`
+/// ("resolve now ONCE, when the filter is built").
+pub fn map_task_row_at(row: &Row, now: Timestamp) -> rusqlite::Result<Task> {
     let status: String = row.get(3)?;
     let priority: Option<String> = row.get(4)?;
     // Tolerant, and loud about it. Every *writer* now validates (`store.import`
@@ -721,12 +727,7 @@ pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
     // break the bargain is a new one naming `backlog` or `pending` on its own.
     let scheduled: Option<String> = row.get(7)?;
     let wait: Option<String> = row.get(8)?;
-    let status = effective_status(
-        status,
-        wait.as_deref(),
-        scheduled.as_deref(),
-        Timestamp::now(),
-    );
+    let status = effective_status(status, wait.as_deref(), scheduled.as_deref(), now);
 
     Ok(Task {
         id: row.get(0)?,
@@ -750,6 +751,12 @@ pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
         completed: row.get(17)?,
         remind: row.get(18)?,
     })
+}
+
+/// [`map_task_row_at`] at the current clock — for SINGLE-row reads only,
+/// where "one now per statement" is one call by construction.
+pub fn map_task_row(row: &Row) -> rusqlite::Result<Task> {
+    map_task_row_at(row, Timestamp::now())
 }
 
 /// True when a `reminded` event already exists for this exact (task, instant).

@@ -539,6 +539,23 @@ impl Engine {
             }
         };
 
+        // ONE snapshot for the whole read phase (the `store_export` rule):
+        // every statement below — including the reads inside
+        // `WindowScan::build` and `consumed_sample_ids_by_task`, which run on
+        // this same connection — otherwise takes its own, and the apply phase
+        // deletes ALL of a task's log-parse rows, so a row committed between
+        // two reads could be deleted without ever having been scanned.
+        // DEFERRED, never IMMEDIATE: this is a read, and it must not hold the
+        // write lock for the length of a full transcript scan.
+        //
+        // The window this closes is the torn READ. A row that lands after
+        // `read_tx.commit()` and before this run's per-task write is still
+        // deleted unscanned — the price of per-task IMMEDIATE transactions,
+        // which rule out holding one snapshot across the writes. The daemon
+        // serializes its own attribution ticks against dispatched calls, so
+        // the residue is a direct-store writer racing a recompute on purpose.
+        let read_tx = self.conn.unchecked_transaction()?;
+
         // Every task's stored log-parse rows, oldest first per task.
         let mut stored: HashMap<String, Vec<StoredLogParse>> = HashMap::new();
         {
@@ -646,6 +663,11 @@ impl Engine {
             .flat_map(|(_, ids)| ids.iter().cloned())
             .collect();
 
+        // The read phase is over; the per-task writes below open their own
+        // IMMEDIATE transactions on this connection, so the snapshot must be
+        // gone first (a commit of zero writes, i.e. a clean release).
+        read_tx.commit()?;
+
         let mut report = Vec::new();
         let (mut total_before, mut total_after) = (0i64, 0i64);
         for task_id in &order {
@@ -655,140 +677,37 @@ impl Engine {
             let Some(short_id) = short_ids.get(task_id).copied() else {
                 continue;
             };
-            let sums = rows.iter().fold((0i64, 0i64, 0i64, 0i64), |acc, row| {
-                (
-                    acc.0.saturating_add(row.input),
-                    acc.1.saturating_add(row.output),
-                    acc.2.saturating_add(row.cache_read),
-                    acc.3.saturating_add(row.cache_creation),
-                )
-            });
-            let before = buckets(sums.0, sums.1, sums.2, sums.3);
-            let before_total = sums
-                .0
-                .saturating_add(sums.1)
-                .saturating_add(sums.2)
-                .saturating_add(sums.3);
-
-            let clamp = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
-            // The sample ids this task's OWN markers banked (empty for a
-            // pre-upgrade bank): they scope the out-of-window contest check
-            // inside `recompute_measurement` to the task's actual evidence.
-            let own_claims: HashSet<String> = banked
-                .get(task_id)
-                .map(|ids| ids.iter().cloned().collect())
-                .unwrap_or_default();
-
-            let (action, after, after_total);
-            if self_reported.contains(task_id) {
-                // The rows move aside for the self-report, but the samples
-                // the bank CONSUMED stay consumed — the banked ids enter the
-                // in-pass claim set exactly like the downgrade arm's, so a
-                // later task cannot re-earn the same spend and reopen the
-                // double-count across channels. Conservative on purpose:
-                // cross-channel claims still contest.
-                if let Some(ids) = banked.get(task_id) {
-                    claims.extend(ids.iter().cloned());
-                }
-                if !dry_run {
-                    self.recompute_replace(task_id, "channel_conflict", None, 0, &[])?;
-                }
-                (action, after, after_total) = ("channel_conflict", Value::Null, 0);
-            } else if let Some(rc) = recompute_measurement(&scan, task_id, &claims, &own_claims)
-                .filter(|rc| {
-                    // ONLY CONTEST REMOVES TOKENS (D50 Decision 3 as amended):
-                    // with nothing contested, a re-read that no longer matches
-                    // the banked evidence is drift — a moved stamp, a truncated
-                    // file, a re-emission past the window edge — and falls
-                    // through to the keep-and-downgrade arm below, exactly like
-                    // an unreadable transcript. Matching is per stored row, so
-                    // a reopen duplicate (every row equal to the re-derived
-                    // measurement) still collapses, and the equal-totals
-                    // sample-id backfill still rewrites.
-                    rc.contested > 0
-                        || rows.iter().all(|row| {
-                            row.input == clamp(rc.totals.input)
-                                && row.output == clamp(rc.totals.output)
-                                && row.cache_read == clamp(rc.totals.cache_read)
-                                && row.cache_creation == clamp(rc.totals.cache_creation)
-                        })
-                })
-            {
-                let found = rc.totals.total() > 0;
-                let tool = rc.tool.clone().unwrap_or_else(|| rows[0].tool.clone());
-                let unchanged = found
-                    && rows.len() == 1
-                    && rows[0].input == clamp(rc.totals.input)
-                    && rows[0].output == clamp(rc.totals.output)
-                    && rows[0].cache_read == clamp(rc.totals.cache_read)
-                    && rows[0].cache_creation == clamp(rc.totals.cache_creation)
-                    && rows[0].confidence == rc.confidence
-                    && rows[0].tool == tool
-                    && rc
-                        .sample_ids
-                        .iter()
-                        .all(|id| banked.get(task_id).is_some_and(|ids| ids.contains(id)));
-                if unchanged {
-                    action = "unchanged";
-                } else {
-                    if !dry_run {
-                        let usage = found.then(|| NewTokenUsage {
-                            tool,
-                            source: SOURCE_LOG_PARSE.to_string(),
-                            model: None,
-                            input_tokens: clamp(rc.totals.input),
-                            output_tokens: clamp(rc.totals.output),
-                            cache_read_tokens: clamp(rc.totals.cache_read),
-                            cache_creation_tokens: clamp(rc.totals.cache_creation),
-                            confidence: rc.confidence.to_string(),
-                        });
-                        self.recompute_replace(
-                            task_id,
-                            "recomputed",
-                            usage,
-                            rc.samples,
-                            &rc.sample_ids,
-                        )?;
+            let c = classify_task(&scan, task_id, &claims, &banked, &self_reported, rows);
+            let action = c.action.as_str();
+            // The ids this task holds onto contest every later task in this
+            // pass, exactly as its live-tick bank would have; WHICH ids those
+            // are is the classification's answer (re-earned sample ids, or the
+            // banked claims a conflict/downgrade keeps consumed).
+            claims.extend(c.claim_ids);
+            if !dry_run {
+                match c.action {
+                    RecomputeAction::ChannelConflict => {
+                        self.recompute_replace(task_id, "channel_conflict", None, 0, &[])?;
                     }
-                    action = "recomputed";
-                }
-                after = buckets(
-                    clamp(rc.totals.input),
-                    clamp(rc.totals.output),
-                    clamp(rc.totals.cache_read),
-                    clamp(rc.totals.cache_creation),
-                );
-                after_total = clamp(rc.totals.total());
-                // This task's re-earned claims contest every later task in
-                // this pass, exactly as its live-tick bank would have.
-                claims.extend(rc.sample_ids.iter().cloned());
-            } else {
-                // Missing/unreadable transcript (or no explicit one), or
-                // uncontested evidence drift: the banked counts cannot be
-                // honestly re-derived, so they are kept — and so are the
-                // task's banked claims, which is what keeps a dissolved
-                // source from silently releasing the samples it consumed.
-                if let Some(ids) = banked.get(task_id) {
-                    claims.extend(ids.iter().cloned());
-                }
-                if rows.iter().all(|row| row.confidence == CONFIDENCE_LOW) {
-                    action = "unchanged";
-                } else {
-                    if !dry_run {
-                        self.recompute_downgrade(task_id)?;
+                    RecomputeAction::Recomputed {
+                        usage,
+                        samples,
+                        sample_ids,
+                    } => {
+                        self.recompute_replace(task_id, "recomputed", usage, samples, &sample_ids)?;
                     }
-                    action = "downgraded";
+                    RecomputeAction::Unchanged => {}
+                    RecomputeAction::Downgraded => self.recompute_downgrade(task_id)?,
                 }
-                (after, after_total) = (before.clone(), before_total);
             }
 
-            total_before = total_before.saturating_add(before_total);
-            total_after = total_after.saturating_add(after_total);
+            total_before = total_before.saturating_add(c.before_total);
+            total_after = total_after.saturating_add(c.after_total);
             report.push(json!({
                 "task": short_id,
                 "action": action,
-                "before": before,
-                "after": after,
+                "before": c.before,
+                "after": c.after,
             }));
         }
 
@@ -875,5 +794,260 @@ impl Engine {
             v.push(r?);
         }
         Ok(v)
+    }
+}
+
+/// The recompute's verdict for one task: the decision, separated from its
+/// side effects. `token_recompute` used to express this as ~140 lines of
+/// nested if/else with tuple-assignments, interleaving the classification
+/// with the claim extension and the writes — the hardest code in the module
+/// to verify by reading. The caller applies the write `action` names and
+/// extends the in-pass claim set with `claim_ids`; nothing here touches the
+/// store.
+struct Classified {
+    action: RecomputeAction,
+    /// The sample ids this task keeps consumed for the rest of the pass:
+    /// re-earned ids on the recompute arm, the banked claims on the
+    /// conflict/downgrade arms (a dissolved source must not silently release
+    /// the samples it consumed) — exactly what the old inline arms extended
+    /// the claim set with.
+    claim_ids: Vec<String>,
+    before: Value,
+    before_total: i64,
+    after: Value,
+    after_total: i64,
+}
+
+/// Which write `token_recompute` owes one task — the four actions its report
+/// names, as data instead of control flow.
+enum RecomputeAction {
+    /// Decision 1: the task also self-reported; its log-parse rows move aside.
+    ChannelConflict,
+    /// Honestly re-derived — a contest, or a clean per-row match: replace the
+    /// rows with `usage` (None when the recomputed total is 0).
+    Recomputed {
+        usage: Option<NewTokenUsage>,
+        samples: usize,
+        sample_ids: Vec<String>,
+    },
+    /// Readable, identical, already claimed (or already all-low): no writes.
+    Unchanged,
+    /// Evidence missing or drifted uncontested: keep the counts, strip the
+    /// confidence to low, never delete blind.
+    Downgraded,
+}
+
+impl RecomputeAction {
+    fn as_str(&self) -> &'static str {
+        match self {
+            RecomputeAction::ChannelConflict => "channel_conflict",
+            RecomputeAction::Recomputed { .. } => "recomputed",
+            RecomputeAction::Unchanged => "unchanged",
+            RecomputeAction::Downgraded => "downgraded",
+        }
+    }
+}
+
+/// The four-way decision for one task, pure over its inputs. `usage` is built
+/// on the recompute arm whether or not this is a dry run, which is what makes
+/// the dry-run report and the applying run's report identical by construction
+/// rather than by parallel arms agreeing.
+fn classify_task(
+    scan: &WindowScan,
+    task_id: &str,
+    claims: &HashSet<String>,
+    banked: &HashMap<String, Vec<String>>,
+    self_reported: &HashSet<String>,
+    rows: &[StoredLogParse],
+) -> Classified {
+    let sums = rows.iter().fold((0i64, 0i64, 0i64, 0i64), |acc, row| {
+        (
+            acc.0.saturating_add(row.input),
+            acc.1.saturating_add(row.output),
+            acc.2.saturating_add(row.cache_read),
+            acc.3.saturating_add(row.cache_creation),
+        )
+    });
+    let before = buckets(sums.0, sums.1, sums.2, sums.3);
+    let before_total = sums
+        .0
+        .saturating_add(sums.1)
+        .saturating_add(sums.2)
+        .saturating_add(sums.3);
+
+    let clamp = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+    let banked_ids = || banked.get(task_id).cloned().unwrap_or_default();
+
+    if self_reported.contains(task_id) {
+        // The rows move aside for the self-report, but the samples the bank
+        // CONSUMED stay consumed — the banked ids enter the in-pass claim set
+        // exactly like the downgrade arm's, so a later task cannot re-earn
+        // the same spend and reopen the double-count across channels.
+        // Conservative on purpose: cross-channel claims still contest.
+        return Classified {
+            action: RecomputeAction::ChannelConflict,
+            claim_ids: banked_ids(),
+            before,
+            before_total,
+            after: Value::Null,
+            after_total: 0,
+        };
+    }
+
+    // The sample ids this task's OWN markers banked (empty for a pre-upgrade
+    // bank): they scope the out-of-window contest check inside
+    // `recompute_measurement` to the task's actual evidence.
+    let own_claims: HashSet<String> = banked_ids().into_iter().collect();
+    if let Some(rc) = recompute_measurement(scan, task_id, claims, &own_claims).filter(|rc| {
+        // ONLY CONTEST REMOVES TOKENS (D50 Decision 3 as amended): with
+        // nothing contested, a re-read that no longer matches the banked
+        // evidence is drift — a moved stamp, a truncated file, a re-emission
+        // past the window edge — and falls through to the keep-and-downgrade
+        // arm below, exactly like an unreadable transcript. Matching is per
+        // stored row, so a reopen duplicate (every row equal to the
+        // re-derived measurement) still collapses, and the equal-totals
+        // sample-id backfill still rewrites.
+        rc.contested > 0
+            || rows.iter().all(|row| {
+                row.input == clamp(rc.totals.input)
+                    && row.output == clamp(rc.totals.output)
+                    && row.cache_read == clamp(rc.totals.cache_read)
+                    && row.cache_creation == clamp(rc.totals.cache_creation)
+            })
+    }) {
+        let found = rc.totals.total() > 0;
+        let tool = rc.tool.clone().unwrap_or_else(|| rows[0].tool.clone());
+        let unchanged = found
+            && rows.len() == 1
+            && rows[0].input == clamp(rc.totals.input)
+            && rows[0].output == clamp(rc.totals.output)
+            && rows[0].cache_read == clamp(rc.totals.cache_read)
+            && rows[0].cache_creation == clamp(rc.totals.cache_creation)
+            && rows[0].confidence == rc.confidence
+            && rows[0].tool == tool
+            && rc
+                .sample_ids
+                .iter()
+                .all(|id| banked.get(task_id).is_some_and(|ids| ids.contains(id)));
+        let after = buckets(
+            clamp(rc.totals.input),
+            clamp(rc.totals.output),
+            clamp(rc.totals.cache_read),
+            clamp(rc.totals.cache_creation),
+        );
+        let after_total = clamp(rc.totals.total());
+        let action = if unchanged {
+            RecomputeAction::Unchanged
+        } else {
+            let usage = found.then(|| NewTokenUsage {
+                tool,
+                source: SOURCE_LOG_PARSE.to_string(),
+                model: None,
+                input_tokens: clamp(rc.totals.input),
+                output_tokens: clamp(rc.totals.output),
+                cache_read_tokens: clamp(rc.totals.cache_read),
+                cache_creation_tokens: clamp(rc.totals.cache_creation),
+                confidence: rc.confidence.to_string(),
+            });
+            RecomputeAction::Recomputed {
+                usage,
+                samples: rc.samples,
+                sample_ids: rc.sample_ids.clone(),
+            }
+        };
+        return Classified {
+            action,
+            claim_ids: rc.sample_ids,
+            before,
+            before_total,
+            after,
+            after_total,
+        };
+    }
+
+    // Missing/unreadable transcript (or no explicit one), or uncontested
+    // evidence drift: the banked counts cannot be honestly re-derived, so
+    // they are kept — and so are the task's banked claims, which is what
+    // keeps a dissolved source from silently releasing the samples it
+    // consumed.
+    let action = if rows.iter().all(|row| row.confidence == CONFIDENCE_LOW) {
+        RecomputeAction::Unchanged
+    } else {
+        RecomputeAction::Downgraded
+    };
+    Classified {
+        action,
+        claim_ids: banked_ids(),
+        after: before.clone(),
+        after_total: before_total,
+        before,
+        before_total,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `token_recompute` must take all of its database reads from ONE
+    /// snapshot. Each statement otherwise reads its own (WAL), and the apply
+    /// phase's `recompute_replace` deletes ALL of a task's log-parse rows —
+    /// so a row committed between two of the scan's reads (a daemon
+    /// attribution tick, a `token.add`) could be deleted without ever having
+    /// been scanned. Structural, for the same reason as `store_export`'s twin
+    /// guard in transfer.rs: the interleaving point is inside SQLite, and
+    /// rusqlite's `hooks` feature — the only way to drive a write from
+    /// between two of our reads — is not compiled in.
+    ///
+    /// The snapshot must also CLOSE before the write loop: the per-task
+    /// writes open their own IMMEDIATE transactions on the same connection,
+    /// and a still-open read transaction there is a nested-transaction error
+    /// at the first task.
+    #[test]
+    fn token_recompute_snapshots_its_read_phase() {
+        let source = include_str!("tokens.rs");
+        // Assembled, never written out literally: `dispatch`'s accepted-key
+        // guard splits this same source at every `fn NAME(`, so a marker
+        // spelled in full would register HERE as a second definition of the
+        // handler and overwrite the real one.
+        let marker = format!("pub fn {}(", "token_recompute");
+        let marker = marker.as_str();
+        let start = source.find(marker).expect("token_recompute exists");
+        let rest = &source[start..];
+        let end = rest[marker.len()..]
+            .find("\n    fn ")
+            .map(|offset| marker.len() + offset)
+            .unwrap_or(rest.len());
+        // Comments out: prose in the body may name the constructs this test
+        // scans for without being them.
+        let body: String = rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = body.as_str();
+
+        let guard = body
+            .find("unchecked_transaction()")
+            .expect("token_recompute must open a snapshot for its read phase");
+        let first_read = body
+            .find("self.conn.prepare")
+            .expect("token_recompute reads the stored rows");
+        assert!(
+            guard < first_read,
+            "the snapshot pins at the first read, so the transaction must be opened before it"
+        );
+        assert!(
+            !body.contains("let _ = self.conn.unchecked_transaction"),
+            "a `_` binding drops the transaction on the spot, making the guard a no-op"
+        );
+        let closed = body
+            .find(".commit()")
+            .expect("the read snapshot must close before the apply phase");
+        let write_loop = body
+            .find("for task_id in &order")
+            .expect("the apply phase iterates the banked order");
+        assert!(
+            closed < write_loop,
+            "the per-task IMMEDIATE writes need the read transaction gone first"
+        );
     }
 }

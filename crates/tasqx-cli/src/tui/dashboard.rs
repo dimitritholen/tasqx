@@ -718,11 +718,11 @@ fn draw_footer(screen: &Screen, app: &App, theme: &Theme, caps: &Caps, frame: &m
     let text = if app.status.is_empty() {
         None
     } else {
-        Some(app.status.clone())
+        Some(app.status.as_str())
     };
     let line = match text {
         Some(t) => Line::from(Span::styled(
-            render::truncate(&t, width as usize, caps.unicode),
+            render::truncate(t, width as usize, caps.unicode),
             accent,
         )),
         None => Line::from(footer_spans(KEYS, width, accent, muted)),
@@ -993,7 +993,7 @@ fn draw_detail(
                 .unwrap_or_else(|| dash.to_string());
             lines.push(Line::from(vec![
                 Span::styled(format!("  {stamp}  "), muted),
-                Span::styled(n.body.clone(), plain),
+                Span::styled(n.body.as_str(), plain),
             ]));
         }
     }

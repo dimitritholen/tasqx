@@ -15,6 +15,8 @@
 //! Transport (per the MCP stdio spec): newline-delimited JSON, one JSON object
 //! per line, on stdin/stdout. Logs go to stderr only.
 
+use std::sync::LazyLock;
+
 use serde_json::{json, Map, Value};
 
 use crate::dispatch::dispatch;
@@ -67,6 +69,22 @@ impl Scope {
 /// One exposed MCP tool: its name, the core method it maps onto 1:1, whether it
 /// is a write (destructive) tool, a model-facing description, and its
 /// JSON-Schema `inputSchema`.
+/// The arguments as they will be dispatched, plus the transport decisions
+/// taken while rewriting them — the facts `present` needs to fit the answer.
+struct PreparedCall {
+    args: Value,
+    /// D49/D66: whether the `task.get` answer carries the machine block.
+    include_json: bool,
+    /// Whether THIS transport supplied the `annotations_limit` page.
+    paged_by_us: bool,
+    /// Whether THIS transport supplied the `task.list` page.
+    paged_list_by_us: bool,
+}
+
+/// What `dispatch` hands back, named so the prepare/dispatch/present seam
+/// reads as the pipeline it is.
+type DispatchOutcome = Result<Value, crate::error::ApiError>;
+
 struct ToolSpec {
     name: &'static str,
     method: &'static str,
@@ -324,12 +342,22 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[(
     "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
 )];
 
+/// Built once per process. The table is a pure function of compile-time
+/// constants — every runtime `format!` in it renders a `const` list — and it
+/// was being rebuilt, nineteen `json!` schemas and their strings, on every
+/// tools/call and tools/list, then linear-searched and dropped.
+static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(build_tool_specs);
+
 /// The full §7 tool surface. Each entry maps 1:1 onto a core dispatch method;
 /// the tool `arguments` object is passed straight through as the method params
 /// (argument names are identical to the core param names by design), except for
 /// the arguments listed in [`TRANSPORT_ONLY_ARGS`], which this server reads and
 /// consumes.
-fn tool_specs() -> Vec<ToolSpec> {
+fn tool_specs() -> &'static [ToolSpec] {
+    &TOOL_SPECS
+}
+
+fn build_tool_specs() -> Vec<ToolSpec> {
     vec![
         // ---- reads ----------------------------------------------------------
         ToolSpec {
@@ -1056,6 +1084,17 @@ impl<'e> McpServer<'e> {
             );
         }
 
+        let prepared = self.prepare_args(spec, params);
+
+        let outcome = dispatch(self.engine, spec.method, &prepared.args);
+        self.present(spec, &prepared, outcome)
+    }
+
+    /// Everything this transport does to the arguments BEFORE dispatch, in one
+    /// place. `tools_call` used to interleave these five rewrites with the
+    /// lookup, the fence and the response fitting, and every new tool behavior
+    /// landed as another inline `if spec.method == ...` in the middle of it.
+    fn prepare_args(&self, spec: &ToolSpec, params: &Value) -> PreparedCall {
         let mut args = params
             .get("arguments")
             .cloned()
@@ -1152,7 +1191,18 @@ impl<'e> McpServer<'e> {
             }
         }
 
-        match dispatch(self.engine, spec.method, &args) {
+        PreparedCall {
+            args,
+            include_json,
+            paged_by_us,
+            paged_list_by_us,
+        }
+    }
+
+    /// Fit the dispatch outcome into a tool response — the post-dispatch half
+    /// of the seam `prepare_args` is the pre-dispatch half of.
+    fn present(&self, spec: &ToolSpec, prepared: &PreparedCall, outcome: DispatchOutcome) -> Value {
+        match outcome {
             Ok(result) => {
                 // The one rendered surface. Keyed on the method rather than the
                 // tool name to match the `task.modify`/`task.start` checks
@@ -1172,13 +1222,13 @@ impl<'e> McpServer<'e> {
                     // sentence AND a bill — the notice is ~300 bytes, which on
                     // a small task is most of what declining the duplicate was
                     // meant to save.
-                    if !include_json {
+                    if !prepared.include_json {
                         return tool_ok_text(&crate::markdown::task_detail(&result, &opts));
                     }
-                    return self.fit_to_budget(result, &args, &opts, paged_by_us);
+                    return self.fit_to_budget(result, &prepared.args, &opts, prepared.paged_by_us);
                 }
-                if paged_list_by_us {
-                    return self.fit_list_to_budget(result, &args);
+                if prepared.paged_list_by_us {
+                    return self.fit_list_to_budget(result, &prepared.args);
                 }
                 tool_ok(&result)
             }
@@ -1422,7 +1472,7 @@ impl<'e> McpServer<'e> {
 /// read-only agent is never shown a write tool it would always be refused.
 fn tools_list(scope: Scope) -> Vec<Value> {
     tool_specs()
-        .into_iter()
+        .iter()
         .filter(|s| !s.write || scope.allows_write())
         .map(|s| {
             json!({
@@ -1880,7 +1930,7 @@ mod tests {
     /// pointed at the tool table.
     #[test]
     fn every_dispatch_method_is_exposed_or_listed_as_deliberately_unexposed() {
-        let exposed: Vec<&str> = tool_specs().into_iter().map(|s| s.method).collect();
+        let exposed: Vec<&str> = tool_specs().iter().map(|s| s.method).collect();
         let methods: Vec<&str> = crate::dispatch::PARAMS.iter().map(|(m, _, _)| *m).collect();
         assert_eq!(
             exposure_faults(&methods, &exposed, UNEXPOSED_METHODS),

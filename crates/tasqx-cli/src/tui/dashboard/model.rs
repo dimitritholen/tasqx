@@ -502,11 +502,6 @@ pub fn build(src: Sources<'_>, now: Timestamp, today: Date) -> Dashboard {
             .collect(),
     };
 
-    // ---- RECENT -----------------------------------------------------------
-    let mut recent_rows: Vec<Task> = all.clone();
-    recent_rows.sort_by_key(|t| std::cmp::Reverse(t.modified));
-    let recent = Recent { rows: recent_rows };
-
     // ---- PROJECTS + TOKENS: one summary, joined to the snapshot ----------
     let (projects_panel, tokens_panel) = build_projects_and_tokens(&all, summary, projects, today);
 
@@ -546,6 +541,14 @@ pub fn build(src: Sources<'_>, now: Timestamp, today: Date) -> Dashboard {
             .filter(|t| t.completed.is_some_and(|c| c.as_second() >= week_ago))
             .count(),
     };
+
+    // ---- RECENT -----------------------------------------------------------
+    // Built LAST, so the one panel that wants every row takes the snapshot by
+    // move: as a clone this was the largest per-refresh allocation — every
+    // Task with all its strings, every five seconds under auto-refresh.
+    let mut recent_rows: Vec<Task> = all;
+    recent_rows.sort_by_key(|t| std::cmp::Reverse(t.modified));
+    let recent = Recent { rows: recent_rows };
 
     Dashboard {
         today,
@@ -1095,41 +1098,9 @@ pub fn layout(
     let columns = columns_for(rung);
     let column_rows = height - CHROME_ROWS;
 
-    // Which panel goes in which column, top to bottom. The slot exists only
-    // where there is not room for its three members separately.
     let wanted = |id: PanelId| order.contains(&id);
     let slot_members_wanted = PanelId::SLOT_MEMBERS.iter().copied().any(wanted);
-    let cols: Vec<Vec<PanelId>> = match rung {
-        Rung::Xl | Rung::L => vec![
-            vec![
-                PanelId::Now,
-                PanelId::Blocked,
-                PanelId::Projects,
-                PanelId::Tokens,
-            ],
-            vec![PanelId::Next, PanelId::Recent],
-            vec![PanelId::Due, PanelId::Burndown],
-        ],
-        Rung::M => vec![
-            vec![PanelId::Now, PanelId::Next, PanelId::Blocked],
-            vec![PanelId::Due, PanelId::Recent, PanelId::Slot],
-        ],
-        Rung::S => vec![vec![
-            PanelId::Now,
-            PanelId::Next,
-            PanelId::Due,
-            PanelId::Blocked,
-            PanelId::Slot,
-            PanelId::Recent,
-        ]],
-        Rung::Xs => vec![vec![
-            PanelId::Now,
-            PanelId::Next,
-            PanelId::Due,
-            PanelId::Blocked,
-            PanelId::Recent,
-        ]],
-    };
+    let cols = column_table(rung);
 
     let mut panels = Vec::new();
     let extents = column_extents(width, columns);
@@ -1167,12 +1138,48 @@ pub fn layout(
     })
 }
 
-pub(crate) fn columns_for(r: Rung) -> u16 {
-    match r {
-        Rung::Xl | Rung::L => 3,
-        Rung::M => 2,
-        Rung::S | Rung::Xs => 1,
+/// Which panel goes in which column, top to bottom, per rung. The slot exists
+/// only where there is not room for its three members separately.
+fn column_table(rung: Rung) -> Vec<Vec<PanelId>> {
+    match rung {
+        Rung::Xl | Rung::L => vec![
+            vec![
+                PanelId::Now,
+                PanelId::Blocked,
+                PanelId::Projects,
+                PanelId::Tokens,
+            ],
+            vec![PanelId::Next, PanelId::Recent],
+            vec![PanelId::Due, PanelId::Burndown],
+        ],
+        Rung::M => vec![
+            vec![PanelId::Now, PanelId::Next, PanelId::Blocked],
+            vec![PanelId::Due, PanelId::Recent, PanelId::Slot],
+        ],
+        Rung::S => vec![vec![
+            PanelId::Now,
+            PanelId::Next,
+            PanelId::Due,
+            PanelId::Blocked,
+            PanelId::Slot,
+            PanelId::Recent,
+        ]],
+        Rung::Xs => vec![vec![
+            PanelId::Now,
+            PanelId::Next,
+            PanelId::Due,
+            PanelId::Blocked,
+            PanelId::Recent,
+        ]],
     }
+}
+
+pub(crate) fn columns_for(r: Rung) -> u16 {
+    // The count IS [`column_table`]'s length. It used to be a second per-rung
+    // literal kept in sync by hand, and the drift mode of that pair was
+    // `extents[i]` indexing out of bounds mid-frame, inside the raw-mode alt
+    // screen. Derived, the two cannot disagree.
+    u16::try_from(column_table(r).len()).expect("column_table holds at most a handful of columns")
 }
 
 /// The narrowest terminal that can reach each rung — the other half of the
