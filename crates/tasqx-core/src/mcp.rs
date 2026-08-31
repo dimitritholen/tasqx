@@ -606,8 +606,13 @@ fn tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: true,
             idempotent: false,
-            description: "Change fields on a task via a `set` map. Pass expected_rev \
-                for optimistic concurrency (a stale rev yields a conflict instead of clobbering).",
+            description: "Change fields on a task via a `set` map. Optimistic concurrency \
+                is ON by default: when `expected_rev` is omitted, this server reads the \
+                task's current `_rev` and pins it, so a concurrent edit yields a `conflict` \
+                naming both revs instead of a silent overwrite — there is no way to opt \
+                out. On `conflict`: re-read the task (`tasqx_get_task`), re-apply the \
+                change to the fresh state, and retry. Under contention that loop is the \
+                protocol working, not a failure.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -616,7 +621,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                         "type": "object",
                         "description": "Field → new value, e.g. {\"priority\":\"M\",\"due\":\"2026-07-22T17:00:00+02:00\"}."
                     },
-                    "expected_rev": { "type": "integer", "description": "Optional optimistic-concurrency guard." }
+                    "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the task's current `_rev` when omitted; pass it only to pin a rev you read earlier. There is no last-writer-wins mode." }
                 },
                 "required": ["ref", "set"]
             }),
