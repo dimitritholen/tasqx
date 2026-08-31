@@ -1255,7 +1255,26 @@ fn run_add(be: &mut Backend, ctx: &Ctx, title: Vec<String>, flags: sugar::AddFla
     let result = be
         .call("task.add", &params)
         .map_err(|e| name_the_cut(e, cut.as_deref()))?;
-    let text = render::task_added(ctx, &result, &parsed.title);
+    // The interactive echo is a card (D76), and the card wants fields
+    // `task.add`'s frozen five-field result does not carry — tags, due,
+    // priority, estimate — so this path reads the task back, the same
+    // composite shape `modify` uses for its follow-up `tag.add`. Only on the
+    // card path: the plain line renders from the add result alone, byte for
+    // byte as it always has. A failed read-back falls back to that plain
+    // line rather than erroring — the add succeeded, and the echo failing
+    // must not turn that into a red exit.
+    let full = if ctx.caps.unicode {
+        result
+            .get("short_id")
+            .and_then(Value::as_i64)
+            .and_then(|sid| be.call("task.get", &json!({ "ref": sid })).ok())
+    } else {
+        None
+    };
+    let text = match full {
+        Some(task) => render::task_added_card(ctx, &task),
+        None => render::task_added(ctx, &result, &parsed.title),
+    };
     Ok((result, text))
 }
 

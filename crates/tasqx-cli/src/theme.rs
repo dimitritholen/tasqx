@@ -534,6 +534,14 @@ impl Theme {
 
 /// The canonical role set every built-in defines. Palette anchors: `bg`, `fg`,
 /// `accent`, `warn`, `danger`, `muted` plus the role-specific hexes.
+///
+/// The `card.*` roles are deliberately the same achromatic grays in every
+/// colored built-in (D76): the task card's design is "structure recedes into
+/// gray, only what you act on is emphasized", and a card that turned blue under
+/// nord would put the frame back in competition with the content. The grays are
+/// mid-tone on purpose — readable on light and dark grounds alike — and
+/// `card.strong` carries no color at all, so emphasis is always the terminal's
+/// own strongest foreground. A user theme file can still override all three.
 fn build(
     name: &str,
     palette: &[(&str, &str)],
@@ -629,6 +637,15 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("danger", spec_b("danger")),
                 ("warn", spec("warn")),
                 ("accent", spec("accent")),
+                ("card.frame", spec("#585858")),
+                ("card.label", spec("#8a8a8a")),
+                (
+                    "card.strong",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
             ],
             &["#a3be8c", "#ebcb8b", "#bf616a"],
         ),
@@ -662,6 +679,15 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("danger", spec_b("danger")),
                 ("warn", spec("warn")),
                 ("accent", spec("accent")),
+                ("card.frame", spec("#585858")),
+                ("card.label", spec("#8a8a8a")),
+                (
+                    "card.strong",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
             ],
             &["#b8bb26", "#fabd2f", "#fb4934"],
         ),
@@ -695,6 +721,15 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("danger", spec_b("danger")),
                 ("warn", spec("warn")),
                 ("accent", spec("accent")),
+                ("card.frame", spec("#585858")),
+                ("card.label", spec("#8a8a8a")),
+                (
+                    "card.strong",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
             ],
             &["#50fa7b", "#f1fa8c", "#ff5555"],
         ),
@@ -728,6 +763,15 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("danger", spec_b("danger")),
                 ("warn", spec("warn")),
                 ("accent", spec("accent")),
+                ("card.frame", spec("#585858")),
+                ("card.label", spec("#8a8a8a")),
+                (
+                    "card.strong",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
             ],
             &["#859900", "#b58900", "#dc322f"],
         ),
@@ -806,6 +850,27 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("warn", StyleSpec::default()),
                 (
                     "accent",
+                    StyleSpec {
+                        bold: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "card.frame",
+                    StyleSpec {
+                        dim: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "card.label",
+                    StyleSpec {
+                        dim: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "card.strong",
                     StyleSpec {
                         bold: Some(true),
                         ..Default::default()
@@ -1436,7 +1501,16 @@ mod tests {
             let t = builtin(name).unwrap_or_else(|| panic!("missing {name}"));
             assert_eq!(t.name, name);
             // Every built-in defines the core roles.
-            for role in ["header", "overdue", "priority.H", "project", "tag"] {
+            for role in [
+                "header",
+                "overdue",
+                "priority.H",
+                "project",
+                "tag",
+                "card.frame",
+                "card.label",
+                "card.strong",
+            ] {
                 assert!(
                     t.role_names().iter().any(|r| r == role),
                     "{name} missing {role}"
