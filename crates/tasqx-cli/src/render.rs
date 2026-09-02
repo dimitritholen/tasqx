@@ -1550,53 +1550,228 @@ pub fn task_added_card(ctx: &Ctx, task: &Value) -> String {
     card_box(ctx, header, rows)
 }
 
-/// The `show` card (D76): the ledger the user chose — a right-aligned gray
-/// label column, terminal-default values, emphasis only where the reader
-/// acts (priority H, due, a running timer, blocked=true). The row set and
-/// the label SPELLINGS are the plain view's, verbatim; the parity test is
-/// what keeps the two layouts naming the same facts.
+// The `show` card: the status-colored left rail (the C variant that
+// superseded the D76 ledger — D78). One loud signal per card — the rail
+// down the left edge, keyed by [`rail_role`] — with everything inside it
+// quiet.
+
+/// The rail's one decision: which role colors the edge. Blocked outranks
+/// every status (it is the fact that stops the reader working), an
+/// unrecognized status is the warning it is everywhere else, `active` gets
+/// the timer's green, `pending` the theme accent, and the parked or closed
+/// states recede into muted.
+fn rail_role(result: &Value) -> &'static str {
+    if result
+        .get("blocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return "danger";
+    }
+    if status_is_unrecognized(result) {
+        return "warn";
+    }
+    match s(result, "status").as_str() {
+        "active" => "timer.active",
+        "pending" => "accent",
+        _ => "muted",
+    }
+}
+
+/// Greedy word-wrap into lines of at most `max` cells, measured with
+/// [`width`]. Wraps, never truncates: this feeds the card's title and
+/// annotation blocks, which are the user's own words. A single word wider
+/// than `max` gets its own overlong line rather than being cut — the
+/// enclosing layout budgets generously enough that only pathological input
+/// reaches that arm.
+fn wrap_words(text: &str, max: usize) -> Vec<String> {
+    let max = max.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if line.is_empty() {
+            line = word.to_string();
+            continue;
+        }
+        if width(&line) + 1 + width(word) <= max {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line = word.to_string();
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 fn task_detail_card(ctx: &Ctx, result: &Value) -> String {
-    // "depends_on" is the widest label either layout prints.
-    const LW: usize = 10;
-    let lab = |name: &str| -> String {
+    // The label column: "depends_on" (the widest label) plus a two-cell gap.
+    const LW: usize = 12;
+    // Where the second column of a paired line starts.
+    const COL2: usize = 30;
+    let rail = ctx.paint(rail_role(result), "▌");
+    // Everything renders inside the rail's two-cell gutter.
+    let avail = ctx.cols.saturating_sub(2).max(20);
+    let push = |out: &mut String, content: String| {
+        out.push_str(&rail);
+        if !content.is_empty() {
+            out.push(' ');
+            out.push_str(&content);
+        }
+        out.push('\n');
+    };
+    let lab = |name: &str| {
         format!(
             "{}{}",
-            " ".repeat(LW.saturating_sub(width(name))),
-            ctx.paint("card.label", name)
+            ctx.paint("card.label", name),
+            " ".repeat(LW.saturating_sub(width(name)))
         )
     };
     let mut out = String::new();
 
+    // Title block: `#N` in gray, the title strong and WRAPPED — the ledger
+    // let a long title run past the terminal edge.
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let title = s(result, "title");
-    out.push_str(&format!(
-        "{}  {}\n",
-        ctx.paint("card.label", &format!("#{sid}")),
-        ctx.paint("card.strong", &title)
-    ));
-    let head_w = width(&format!("#{sid}  {title}"));
-    out.push_str(&ctx.paint("card.frame", &"─".repeat(head_w.clamp(4, ctx.cols.min(80)))));
-    out.push('\n');
+    let id = format!("#{sid}");
+    let ind = width(&id) + 2;
+    let title_w = avail.saturating_sub(ind).max(10);
+    for (i, line) in wrap_words(&s(result, "title"), title_w).iter().enumerate() {
+        let painted = ctx.paint("card.strong", line);
+        if i == 0 {
+            push(
+                &mut out,
+                format!("{}  {painted}", ctx.paint("card.label", &id)),
+            );
+        } else {
+            push(&mut out, format!("{}{painted}", " ".repeat(ind)));
+        }
+    }
+    push(&mut out, String::new());
 
-    // The card's emphasis map over the SAME row set the plain layout renders
-    // — the facts and their conditions live in `detail_rows`, once.
+    // The same row set the plain layout renders — the facts and their
+    // conditions live in `detail_rows`, once. The card only re-maps emphasis
+    // and geometry: short facts pair two to a line, long values wrap with a
+    // hanging indent, annotations become their own block below.
+    struct MetaCell {
+        label: &'static str,
+        value: String,
+        role: Option<&'static str>,
+        // The one pre-painted value (an unrecognized status arrives from
+        // `status_cell` with its warn SGR already applied), whose width
+        // cannot be measured — it is emitted alone and never wrapped.
+        prepainted: bool,
+    }
+    let unrecognized = status_is_unrecognized(result);
+    let mut cells: Vec<MetaCell> = Vec::new();
+    let mut annotations: Vec<String> = Vec::new();
     for r in detail_rows(ctx, result) {
-        let cell = match r.field {
+        let (role, prepainted): (Option<&'static str>, bool) = match r.field {
             DetailField::Annotation => {
-                out.push_str(&format!("{}  {}\n", lab("·"), r.value));
+                annotations.push(r.value);
                 continue;
             }
-            DetailField::Priority => match r.value.as_str() {
-                "H" => ctx.paint("card.strong", &r.value),
-                "L" => ctx.paint("card.label", &r.value),
-                "M" => r.value,
-                _ => ctx.paint("card.frame", &r.value),
-            },
-            DetailField::Due | DetailField::Running => ctx.paint("card.strong", &r.value),
-            DetailField::Blocked if r.value == "true" => ctx.paint("card.strong", "true"),
-            _ => r.value,
+            DetailField::Status => (None, unrecognized),
+            DetailField::Priority => (
+                match r.value.as_str() {
+                    "H" => Some("card.strong"),
+                    "L" => Some("card.label"),
+                    "M" => None,
+                    _ => Some("card.frame"),
+                },
+                false,
+            ),
+            DetailField::Due | DetailField::Running => (Some("card.strong"), false),
+            DetailField::Blocked => (
+                Some(if r.value == "true" {
+                    "card.strong"
+                } else {
+                    "card.label"
+                }),
+                false,
+            ),
+            _ => (None, false),
         };
-        out.push_str(&format!("{}  {cell}\n", lab(r.label)));
+        cells.push(MetaCell {
+            label: r.label,
+            value: r.value,
+            role,
+            prepainted,
+        });
+    }
+
+    let paint_val = |cell: &MetaCell, text: &str| -> String {
+        match cell.role {
+            Some(role) => ctx.paint(role, text),
+            None => text.to_string(),
+        }
+    };
+    let mut i = 0;
+    while i < cells.len() {
+        let a = &cells[i];
+        let aw = LW + width(&a.value);
+        // Pair two short facts on one line when both fit their columns.
+        if !a.prepainted && aw + 3 <= COL2 && i + 1 < cells.len() {
+            let b = &cells[i + 1];
+            if !b.prepainted && COL2 + LW + width(&b.value) <= avail {
+                push(
+                    &mut out,
+                    format!(
+                        "{}{}{}{}{}",
+                        lab(a.label),
+                        paint_val(a, &a.value),
+                        " ".repeat(COL2 - aw),
+                        lab(b.label),
+                        paint_val(b, &b.value)
+                    ),
+                );
+                i += 2;
+                continue;
+            }
+        }
+        if a.prepainted || aw <= avail {
+            push(
+                &mut out,
+                format!("{}{}", lab(a.label), paint_val(a, &a.value)),
+            );
+        } else {
+            // A value wider than the line wraps under itself — wrapped, not
+            // truncated, because the value is the user's own text.
+            let vw = avail.saturating_sub(LW).max(10);
+            for (j, line) in wrap_words(&a.value, vw).iter().enumerate() {
+                if j == 0 {
+                    push(&mut out, format!("{}{}", lab(a.label), paint_val(a, line)));
+                } else {
+                    push(
+                        &mut out,
+                        format!("{}{}", " ".repeat(LW), paint_val(a, line)),
+                    );
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Annotations: the content-rich block the ledger rendered as one
+    // unwrapped line each. A blank rail line above, `·` markers, a two-cell
+    // hanging indent, wrapped at the terminal width.
+    if !annotations.is_empty() {
+        push(&mut out, String::new());
+        let aw = avail.saturating_sub(2).max(10);
+        for body in &annotations {
+            for (j, line) in wrap_words(body, aw).iter().enumerate() {
+                if j == 0 {
+                    push(&mut out, format!("{} {line}", ctx.paint("card.label", "·")));
+                } else {
+                    push(&mut out, format!("  {line}"));
+                }
+            }
+        }
     }
     out
 }
@@ -2341,13 +2516,13 @@ mod tests {
             "the plain detail layout changed: {plain:?}"
         );
         assert!(
-            !plain.contains('╭') && !plain.contains('─'),
+            !plain.contains('╭') && !plain.contains('─') && !plain.contains('▌'),
             "card glyphs leaked into the plain path: {plain:?}"
         );
         let card = task_detail(&Ctx::new(theme::default_theme(), card_caps()), &t);
         assert!(
-            card.contains('─') && !card.contains("  status     "),
-            "unicode caps should render the ledger card: {card:?}"
+            card.contains('▌') && !card.contains("  status     "),
+            "unicode caps should render the rail card: {card:?}"
         );
         let added = task_added_card(&Ctx::new(theme::default_theme(), card_caps()), &t);
         assert!(
@@ -2390,6 +2565,90 @@ mod tests {
         for line in &lines {
             assert_eq!(width(line), w, "long title burst the frame:\n{out}");
         }
+    }
+
+    /// The rail card (the C variant that superseded the D76 ledger): every
+    /// line of the detail begins with the status rail, so the card reads as
+    /// one object even where a value is blank.
+    #[test]
+    fn the_show_card_draws_the_rail_on_every_line() {
+        let ctx = Ctx::new(theme::default_theme(), card_caps());
+        let out = task_detail(&ctx, &full_task());
+        for line in out.lines() {
+            assert!(
+                line.starts_with('▌'),
+                "a line escaped the rail: {line:?}\n{out}"
+            );
+        }
+    }
+
+    /// The ledger never wrapped: a long title ran past the terminal edge and
+    /// the rule under it stopped at 80 while the title did not. The rail card
+    /// wraps title, values and annotations at the terminal width — and wraps
+    /// rather than truncates, so no word of the user's own text is lost.
+    #[test]
+    fn the_show_card_wraps_instead_of_overflowing_or_truncating() {
+        let ctx = Ctx::new(theme::default_theme(), card_caps()).with_cols(60);
+        let mut t = full_task();
+        t["title"] = json!("word ".repeat(40).trim().to_string());
+        t["annotations"] = json!([{"body": "note ".repeat(50).trim().to_string()}]);
+        let out = task_detail(&ctx, &t);
+        for line in out.lines() {
+            assert!(
+                width(line) <= 60,
+                "a line overflowed the terminal: {line:?}\n{out}"
+            );
+        }
+        assert_eq!(
+            out.matches("word").count(),
+            40,
+            "the wrap dropped or cut part of the title:\n{out}"
+        );
+        assert_eq!(
+            out.matches("note").count(),
+            50,
+            "the wrap dropped or cut part of the annotation:\n{out}"
+        );
+    }
+
+    /// Short facts pair up two to a line (status beside priority), so the
+    /// card spends its height on content, not on a one-fact-per-line ledger.
+    #[test]
+    fn the_show_card_pairs_short_facts_on_one_line() {
+        let ctx = Ctx::new(theme::default_theme(), card_caps());
+        let out = task_detail(
+            &ctx,
+            &json!({
+                "short_id": 7, "title": "pairing", "status": "pending",
+                "priority": "M", "project": "work", "urgency": 4.3
+            }),
+        );
+        let paired = out
+            .lines()
+            .any(|l| l.contains("status") && l.contains("priority"));
+        assert!(paired, "status and priority did not share a line:\n{out}");
+    }
+
+    /// The rail is the card's one loud signal, keyed to what the reader most
+    /// needs to know: blocked beats everything, an unreadable status is a
+    /// warning, and the open/active/closed states each carry their own tone.
+    #[test]
+    fn the_rail_role_is_keyed_to_status_and_blocked() {
+        let t = |v: serde_json::Value| rail_role(&v);
+        assert_eq!(
+            t(json!({"status": "pending", "blocked": true})),
+            "danger",
+            "blocked outranks every status"
+        );
+        assert_eq!(
+            t(json!({"status": "Done", "status_unrecognized": true})),
+            "warn"
+        );
+        assert_eq!(t(json!({"status": "active"})), "timer.active");
+        assert_eq!(t(json!({"status": "pending"})), "accent");
+        assert_eq!(t(json!({"status": "backlog"})), "muted");
+        assert_eq!(t(json!({"status": "done"})), "muted");
+        assert_eq!(t(json!({"status": "cancelled"})), "muted");
     }
 
     /// Every conditional row toggled off one at a time, plus the value edges
