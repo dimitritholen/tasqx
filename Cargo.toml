@@ -15,7 +15,7 @@ resolver = "3"
 members = ["crates/tasqx-core", "crates/tasqx-cli"]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 # MEASURED, not read off `cargo metadata`. `cargo check --workspace
 # --all-targets --locked` was run on 1.80, 1.87, 1.88, 1.91, 1.93, 1.94 and
