@@ -158,6 +158,49 @@ fn token_add_refuses_values_outside_the_closed_vocabularies() {
     );
 }
 
+/// #216: `token.add` let a self-report declare `confidence: high` — the top
+/// trust tier the SAME claim through `task.done`'s self-report path can never
+/// reach (that path forces `medium`, unconditionally, and exposes no
+/// `confidence` param at all). D50: "confidence describes verifiability, not
+/// preference — an unverified claim does not become more checkable by being
+/// preferred, and the trust hierarchy lives in `source`." `medium` and `low`
+/// remain legitimate (a caller marking its own estimate as less trustworthy
+/// than the default is not the inversion this guards against).
+#[test]
+fn a_self_report_cannot_claim_high_confidence() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+
+    let err = e
+        .token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "high",
+            "input_tokens": 1000,
+        }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(err.message.contains("high"), "{}", err.message);
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 0);
+
+    // Unaffected: `medium` and `low` are still accepted for a self-report,
+    // and `high` is still accepted for a source that can actually earn it.
+    e.token_add(&json!({
+        "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+        "input_tokens": 1000,
+    }))
+    .unwrap();
+    e.token_add(&json!({
+        "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "low",
+        "input_tokens": 1000,
+    }))
+    .unwrap();
+    e.token_add(&json!({
+        "ref": sid, "tool": "claude-code", "source": "otel", "confidence": "high",
+        "input_tokens": 1000,
+    }))
+    .unwrap();
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 3);
+}
+
 #[test]
 fn token_add_requires_tool_and_refuses_a_negative_count() {
     let e = engine();
@@ -204,6 +247,88 @@ fn token_add_is_dispatchable_and_gated() {
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(err.message.contains("extra"), "{}", err.message);
     assert!(err.message.contains("confidence"), "{}", err.message);
+}
+
+/// #221: the self-report side of the same replay defect — any MCP or HTTP
+/// timeout a client retries doubles the ticket's recorded cost, silently and
+/// with no way to remove either row. An `idempotency_key` lets a retried
+/// `token.add` recognise its own earlier write and return it unchanged.
+#[test]
+fn a_replayed_self_report_with_the_same_idempotency_key_is_a_no_op() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+
+    let report = json!({
+        "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+        "input_tokens": 1240, "output_tokens": 3105, "cache_read_tokens": 412_330,
+        "cache_creation_tokens": 18_220, "idempotency_key": "turn-1",
+    });
+    let r1 = e.token_add(&report).unwrap();
+    // The exact envelope, sent again (a client retry after a dropped ack).
+    let r2 = e.token_add(&report).unwrap();
+
+    assert_eq!(
+        r1["measurement"]["id"], r2["measurement"]["id"],
+        "a replay must return the SAME measurement, not mint a second one"
+    );
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 1);
+
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    assert_eq!(
+        got["tokens"].as_array().unwrap().len(),
+        1,
+        "the ledger must not be doubled by the replay"
+    );
+
+    // A DIFFERENT key on the same task is a genuinely new report.
+    let mut second = report.clone();
+    second["idempotency_key"] = json!("turn-2");
+    e.token_add(&second).unwrap();
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 2);
+}
+
+/// #208: `attribution.rs`'s `self_reported` check runs BEFORE a later
+/// `token.add`, so it protects the wrong direction — a self-report accepted
+/// on a task the automated pipeline already banked (log-parse or otel)
+/// silently doubles the ledger, with no warning and no way to remove either
+/// row. D50: "one task never mixes channels." The daemon's real write path
+/// (`token_attribute`) is what actually banks a measurement, so that is what
+/// this seeds — a bare `token_add` of a non-self-report source (used
+/// elsewhere in this file to build fixtures) is deliberately NOT what the
+/// guard keys on, or `export_import_round_trips_token_measurements` above
+/// could no longer construct a two-row fixture.
+#[test]
+fn a_self_report_after_attribution_already_banked_is_refused() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": sid, "client": "claude-code", "session_id": "sess-1" }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": sid, "source": "otel", "tool": "claude-code", "confidence": "high",
+        "samples": 1, "input_tokens": 7000, "output_tokens": 3000,
+        "cache_read_tokens": 111_111,
+    }))
+    .unwrap();
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 1);
+
+    let err = e
+        .token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+            "input_tokens": 7000, "output_tokens": 3000, "cache_read_tokens": 111_111,
+        }))
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(err.message.contains("otel"), "{}", err.message);
+
+    // The refusal wrote nothing: the ledger is not doubled.
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM token_usage"), 1);
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source='self-report'"
+        ),
+        0
+    );
 }
 
 // ---- export / import (D12) ------------------------------------------------------
@@ -1003,6 +1128,40 @@ fn otlp_ingest_prunes_samples_past_the_retention_window() {
     assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 2);
 }
 
+/// #221: an OTLP exporter retries by design — the module's own header notes
+/// `/v1/metrics` answers 200 "so an exporter configured for both does not
+/// retry-storm" — but a retried `/v1/logs` export landed as a fresh row every
+/// time, because the row's id was minted at ingest rather than derived from
+/// the record's own identity. Two POSTs of the byte-identical export must
+/// leave exactly one row.
+#[test]
+fn a_replayed_otlp_export_does_not_duplicate_the_sample() {
+    use tasqx_core::otlp::OtlpSample;
+    use tasqx_core::tokens::UsageSample;
+
+    let e = engine();
+    let sample = OtlpSample {
+        tool: "claude-code".into(),
+        session_id: Some("sess-replay".into()),
+        sample: UsageSample {
+            id: None,
+            ts: "2026-09-09T11:41:13.472910080Z".into(),
+            model: None,
+            input_tokens: 1500,
+            output_tokens: 2500,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        },
+    };
+
+    let n1 = e.otlp_ingest(std::slice::from_ref(&sample)).unwrap();
+    assert_eq!(n1, 1, "the first export inserts one row");
+    let n2 = e.otlp_ingest(&[sample]).unwrap();
+    assert_eq!(n2, 0, "an identical replay must insert nothing new");
+
+    assert_eq!(count(&e, "SELECT COUNT(*) FROM otlp_samples"), 1);
+}
+
 // ---- tokens.recompute (D50 Decision 3: one-shot history repair) -----------------
 
 use std::path::PathBuf;
@@ -1474,6 +1633,30 @@ fn recompute_never_touches_self_report_or_otel_rows() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Seed a self-report row directly, bypassing `token_add`'s #208 guard: the
+/// two tests below deliberately construct the state that guard now refuses to
+/// create through the API (a self-report on top of a task the automated
+/// pipeline already banked) because it is exactly the PRE-fix history
+/// `tokens.recompute`'s `channel_conflict` action exists to repair. Real
+/// history from before the guard shipped is indistinguishable from this.
+fn seed_self_report_row(e: &Engine, task_id: &str, tool: &str, input: i64, output: i64) {
+    e.conn()
+        .execute(
+            "INSERT INTO token_usage (id, task_id, tool, source, model, input_tokens, \
+             output_tokens, cache_read_tokens, cache_creation_tokens, confidence, created) \
+             VALUES (?1, ?2, ?3, 'self-report', NULL, ?4, ?5, 0, 0, 'medium', ?6)",
+            rusqlite::params![
+                uuid::Uuid::now_v7().to_string(),
+                task_id,
+                tool,
+                input,
+                output,
+                jiff::Timestamp::now().to_string(),
+            ],
+        )
+        .unwrap();
+}
+
 /// Decision 1: one task never mixes channels. Pre-TOCTOU-fix history can hold
 /// BOTH a log-parse and a self-report row for one task; the recompute resolves
 /// the conflict toward the caller's own report. The result shape choice: this
@@ -1492,12 +1675,10 @@ fn recompute_resolves_a_channel_conflict_toward_the_self_report() {
         "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
     }))
     .unwrap();
-    // The same task later self-reports through the other door (token.add).
-    e.token_add(&json!({
-        "ref": t, "tool": "claude-code", "source": "self-report", "confidence": "medium",
-        "input_tokens": 111, "output_tokens": 222,
-    }))
-    .unwrap();
+    // The same task later self-reported through the other door (token.add) —
+    // seeded directly (#208 now refuses this through the API; see
+    // `seed_self_report_row`).
+    seed_self_report_row(&e, &task_uuid(&e, &t), "claude-code", 111, 222);
 
     let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
     let entry = &r["tasks"][0];
@@ -1990,11 +2171,9 @@ fn channel_conflict_keeps_the_tasks_banked_claims_contesting_later_tasks() {
         "samples": 1, "input_tokens": 1000, "output_tokens": 2000, "sample_ids": ["m"],
     }))
     .unwrap();
-    e.token_add(&json!({
-        "ref": c, "tool": "claude-code", "source": "self-report", "confidence": "medium",
-        "input_tokens": 111, "output_tokens": 222,
-    }))
-    .unwrap();
+    // Seeded directly (#208 now refuses this through `token_add`; see
+    // `seed_self_report_row`).
+    seed_self_report_row(&e, &task_uuid(&e, &c), "claude-code", 111, 222);
     // D banked the same id later from its own byte-copy, in a disjoint window.
     e.task_done(&json!({ "ref": d, "client": "claude-code", "transcript_path": copy_path }))
         .unwrap();
