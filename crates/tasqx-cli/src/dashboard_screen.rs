@@ -357,7 +357,9 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
         }
         match want {
             // `l` is the one key that means "leave", so it does.
-            Some(Action::List) => return run_list(be, ctx, &[]).map(|(_, r)| Some(r)),
+            Some(Action::List) => {
+                return run_list(be, ctx, &[], &[], None, None, &[]).map(|(_, r)| Some(r))
+            }
             Some(Action::Pick) => {
                 match run_pick(be, ctx, &[]) {
                     Ok((_, render)) => picked = Some(render),

@@ -266,7 +266,22 @@ pub(crate) fn guard_set_and_clear(
     Ok(())
 }
 
-pub(crate) fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
+/// `sort`/`limit`/`offset`/`fields` map straight onto `task.list`'s own
+/// params (`core.capabilities` has always listed all five; only the CLI
+/// lacked a door to four of them). Absent (`sort` empty, `limit`/`offset`
+/// `None`, `fields` empty) means exactly what it always meant, byte-for-byte
+/// — a bare `tasqx list` still sends `{"sort":["-urgency"]}` and nothing
+/// else, so this is additive rather than a reshaping of the old request.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_list(
+    be: &mut Backend,
+    ctx: &Ctx,
+    filter: &[String],
+    sort: &[String],
+    limit: Option<u64>,
+    offset: Option<u64>,
+    fields: &[String],
+) -> CmdOutcome {
     // Bare `tasqx` (and `tasqx list` with no filter) => the working set.
     // Otherwise `from_argv`, never `join(" ")`: the shell's argument boundaries
     // are information the filter parser needs, exactly as on the write path
@@ -291,7 +306,21 @@ pub(crate) fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
     } else {
         joined
     };
-    let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
+    let sort_keys: Vec<&str> = if sort.is_empty() {
+        vec!["-urgency"]
+    } else {
+        sort.iter().map(String::as_str).collect()
+    };
+    let mut params = json!({ "filter": filter_str, "sort": sort_keys });
+    if let Some(limit) = limit {
+        params["limit"] = json!(limit);
+    }
+    if let Some(offset) = offset {
+        params["offset"] = json!(offset);
+    }
+    if !fields.is_empty() {
+        params["fields"] = json!(fields);
+    }
     let result = be.call("task.list", &params)?;
     let text = render::task_table(ctx, &result, jiff::Timestamp::now());
     Ok((result, text))

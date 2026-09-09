@@ -671,7 +671,7 @@ fn execute(cli: Cli) -> Exit {
     }
 
     Exit::Out(match cli.command {
-        None => run_list(&mut backend, &ctx, &[]),
+        None => run_list(&mut backend, &ctx, &[], &[], None, None, &[]),
         // Only the `--json` spelling reaches here: the screen leaves as
         // `SelfFramed` above, for the same D57-hint reason the bare invocation
         // does.
@@ -737,7 +737,13 @@ fn execute(cli: Cli) -> Exit {
             &clear,
             expected_rev,
         ),
-        Some(Command::List { filter }) => run_list(&mut backend, &ctx, &filter),
+        Some(Command::List {
+            filter,
+            sort,
+            limit,
+            offset,
+            fields,
+        }) => run_list(&mut backend, &ctx, &filter, &sort, limit, offset, &fields),
         Some(Command::Agenda { filter, days }) => run_agenda(&mut backend, &ctx, &filter, days),
         Some(Command::Start {
             r#ref,

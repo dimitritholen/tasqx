@@ -291,6 +291,9 @@ struct TaskRow {
     due: String,
     overdue: bool,
     tags: String,
+    /// The role/text pair for the STATUS marker column (`None` when the row is
+    /// open, unblocked and not the one running task — see [`status_marker`]).
+    marker: Option<(&'static str, String)>,
 }
 
 /// The width of every column of one table, in cells. A `0` means the column is
@@ -299,6 +302,7 @@ struct TaskCols {
     id: usize,
     urg: usize,
     title: usize,
+    marker: usize,
     project: usize,
     due: usize,
     tags: usize,
@@ -315,6 +319,10 @@ impl TaskCols {
     const MIN_TAGS: usize = 8;
     /// A cut date must still show the date: `2026-07-20…` is 11 cells.
     const MIN_DUE: usize = 11;
+    /// `cancelled` is the longest word this column ever holds; a cut STATUS
+    /// still has to stay a word (or the header `STATUS` itself), not a single
+    /// ambiguous letter.
+    const MIN_MARKER: usize = 6;
     /// Ceilings. A column wider than this stops earning its cells: the eye
     /// loses the row across a 90-cell title, and the tail of a tag list or a
     /// project name identifies far less than its head. Overflow goes to the
@@ -323,6 +331,9 @@ impl TaskCols {
     const MAX_TITLE: usize = 72;
     const MAX_PROJECT: usize = 24;
     const MAX_TAGS: usize = 28;
+    /// `cancelled` (9) plus a little room; a marker never needs more than a
+    /// status word or one glyph.
+    const MAX_MARKER: usize = 11;
 
     /// Everything left of `TASK`, plus the gap that follows it.
     fn head_width(&self) -> usize {
@@ -332,7 +343,12 @@ impl TaskCols {
     /// The whole row, gaps included, absent columns costing nothing.
     fn total(&self) -> usize {
         let opt = |w: usize| if w == 0 { 0 } else { GAP + w };
-        self.head_width() + self.title + opt(self.project) + opt(self.due) + opt(self.tags)
+        self.head_width()
+            + self.title
+            + opt(self.marker)
+            + opt(self.project)
+            + opt(self.due)
+            + opt(self.tags)
     }
 
     /// Size the columns to the rows, then to the terminal.
@@ -363,6 +379,16 @@ impl TaskCols {
             }
         };
 
+        // The marker column's content isn't measured through `f: fn(&TaskRow)
+        // -> &str` like the others (it lives behind an `Option`), so it gets
+        // its own max rather than going through `max_of`.
+        let marker_content = rows
+            .iter()
+            .filter_map(|r| r.marker.as_ref())
+            .map(|(_, text)| width(text))
+            .max()
+            .unwrap_or(0);
+
         let mut c = TaskCols {
             // The id column keeps a floor of 4 rather than sizing to its digits:
             // ids grow monotonically, and a table that shifted left by a cell
@@ -371,11 +397,13 @@ impl TaskCols {
             id: max_of(|r| &r.sid).max(4),
             urg: max_of(|r| &r.urg).max(width("URG")),
             title: sized(max_of(|r| &r.title), "TASK").max(width("TASK")),
+            marker: sized(marker_content, "STATUS"),
             project: sized(max_of(|r| &r.project), "PROJECT"),
             due: sized(max_of(|r| &r.due), when_label),
             tags: sized(max_of(|r| &r.tags), "TAGS"),
         };
         c.title = c.title.min(Self::MAX_TITLE);
+        c.marker = c.marker.min(Self::MAX_MARKER);
         c.project = c.project.min(Self::MAX_PROJECT);
         c.tags = c.tags.min(Self::MAX_TAGS);
 
@@ -399,6 +427,7 @@ impl TaskCols {
                 (&mut c.due, Self::MIN_DUE),
                 (&mut c.project, Self::MIN_PROJECT),
                 (&mut c.tags, Self::MIN_TAGS),
+                (&mut c.marker, Self::MIN_MARKER),
             ];
             cols.retain(|(w, floor)| **w > *floor);
             let Some((widest, _)) = cols.into_iter().max_by_key(|(w, _)| **w) else {
@@ -422,6 +451,12 @@ impl TaskCols {
         }
         if c.total() > budget {
             c.project = 0;
+        }
+        // STATUS goes last: on a store where at least one row is blocked,
+        // active, or otherwise not open, that fact is the reason to open the
+        // table at all, and TAGS/DUE/PROJECT are ordinary data by comparison.
+        if c.total() > budget {
+            c.marker = 0;
         }
         c
     }
@@ -465,6 +500,7 @@ fn header_line(c: &TaskCols, when_label: &str) -> String {
         pad("TASK", c.title),
     ];
     for (w, label) in [
+        (c.marker, "STATUS"),
         (c.project, "PROJECT"),
         (c.due, when_label),
         (c.tags, "TAGS"),
@@ -491,6 +527,13 @@ fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
         cell(ctx, Some(prio_role), &r.prio, 1),
         cell(ctx, None, &r.title, c.title),
     ];
+    if c.marker > 0 {
+        let (role, text) = r
+            .marker
+            .as_ref()
+            .map_or((None, ""), |(role, text)| (Some(*role), text.as_str()));
+        line.push(cell(ctx, role, text, c.marker));
+    }
     if c.project > 0 {
         line.push(cell(ctx, Some("project"), &r.project, c.project));
     }
@@ -506,6 +549,43 @@ fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
     join_cells(line)
 }
 
+/// The STATUS marker for one row of the shared list/agenda table: the
+/// per-task facts D51's fixed column set never gave a cell to — `blocked`,
+/// `active`, and any status that isn't plain open work (`done`, `cancelled`,
+/// `backlog`, or text this build could not parse).
+///
+/// `tasqx list project:x` and `tasqx agenda` both send whatever the caller's
+/// filter matched — literally, D27/D28's contract for a read — so a closed or
+/// unrecognized-status row reaches this renderer indistinguishable from open
+/// work unless it carries its own cell. Blocked outranks every status, the
+/// same priority [`rail_role`] gives the `show` card's rail (D78): it is the
+/// fact that stops the reader working, and a task can be blocked while still
+/// `pending`. `None` is the ordinary row — open, unblocked, not the one timer
+/// running — and is what makes the column droppable exactly like an empty
+/// `DUE` (D51): [`TaskCols::fit`] sizes it to zero when every row answers
+/// `None`.
+fn status_marker(t: &Value, unicode: bool) -> Option<(&'static str, String)> {
+    if t.get("blocked").and_then(Value::as_bool).unwrap_or(false) {
+        return Some(("danger", (if unicode { "⊘" } else { "B" }).to_string()));
+    }
+    if status_is_unrecognized(t) {
+        // `status` already carries the raw text here (`Task::status_text`),
+        // so there is nothing to look up — just show what the store holds.
+        return Some(("warn", s(t, "status")));
+    }
+    let status = s(t, "status");
+    if status == "active" {
+        return Some((
+            "timer.active",
+            (if unicode { "▶" } else { ">" }).to_string(),
+        ));
+    }
+    if !status_is_open(&status) {
+        return Some(("muted", status));
+    }
+    None
+}
+
 /// Measure one `task.list` row into the cells the layout will be computed from.
 ///
 /// Shared with [`agenda_text`], which then overwrites `due`/`overdue` with what
@@ -513,7 +593,7 @@ fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
 /// sanitizing, the `-` for an unset priority — is identical by construction
 /// rather than by two functions agreeing, which is how the two views cannot come
 /// to disagree about the same task.
-fn task_row(t: &Value, max_urg: f64, now: Timestamp) -> TaskRow {
+fn task_row(t: &Value, max_urg: f64, now: Timestamp, unicode: bool) -> TaskRow {
     let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
     TaskRow {
         sid: format!("{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
@@ -540,6 +620,7 @@ fn task_row(t: &Value, max_urg: f64, now: Timestamp) -> TaskRow {
                     .join(" "))
             })
             .unwrap_or_default(),
+        marker: status_marker(t, unicode),
     }
 }
 
@@ -580,7 +661,10 @@ pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
 
     let refs: Vec<&Value> = tasks.iter().collect();
     let max_urg = max_urgency(&refs);
-    let rows: Vec<TaskRow> = tasks.iter().map(|t| task_row(t, max_urg, now)).collect();
+    let rows: Vec<TaskRow> = tasks
+        .iter()
+        .map(|t| task_row(t, max_urg, now, ctx.caps.unicode))
+        .collect();
     let c = TaskCols::fit(&rows, ctx.cols, "DUE");
 
     // The rule spans the TABLE, not the header text. Those differ by the last
@@ -616,27 +700,30 @@ pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     out
 }
 
-/// The notes a status-less task table owes its reader about rows the store
-/// could not read back cleanly — one per defect, naming the offending ids and
-/// the way out. Empty for a healthy store, so their presence always means
-/// something.
+/// The notes a task table owes its reader about rows the store could not read
+/// back cleanly — one per defect, naming the offending ids and the way out.
+/// Empty for a healthy store, so their presence always means something.
 ///
-/// Shared rather than written per view, and that is the whole point of it being
-/// a function. Both [`task_table`] and [`agenda_text`] draw the same rows
-/// WITHOUT a status column and WITH a title cell that can come out empty, so
-/// each of them can hide exactly these two defects. `agenda` shipped as a second
-/// table over the same rows and did not carry the notes: an unreadable status
-/// sat under `Wed 2026-08-05` looking like ordinary open work, and a blank-title
-/// row drew as an empty TASK cell with nothing under the table to say why —
-/// the invisible-field failure rebuilt one view over, which is what a copied
-/// layout does. A third view gets them by calling this; it cannot get them by
-/// remembering to.
+/// Shared rather than written per view, and that is the whole point of it
+/// being a function. Both [`task_table`] and [`agenda_text`] now draw a
+/// STATUS marker for an unrecognized status ([`status_marker`], D86) — but
+/// that column is droppable exactly like `DUE` under a narrow terminal or the
+/// piped fixed width ([`TaskCols::fit`]), so the one row that most needs the
+/// warning can be exactly the one the width squeeze takes it from. A title cell can
+/// still come out empty with no column of its own at any width. `agenda`
+/// shipped as a second table over the same rows and did not carry these notes
+/// at all: an unreadable status sat under `Wed 2026-08-05` looking like
+/// ordinary open work, and a blank-title row drew as an empty TASK cell with
+/// nothing under the table to say why — the invisible-field failure rebuilt
+/// one view over, which is what a copied layout does. A third view gets them
+/// by calling this; it cannot get them by remembering to.
 fn store_health_notes(tasks: &[Value]) -> Vec<String> {
     let mut notes = Vec::new();
 
-    // Neither table has a status column, so a row the store could not read
-    // would otherwise sit in the default view indistinguishable from ordinary
-    // open work — the invisible-field failure this project keeps rebuilding.
+    // The STATUS marker (D86) can be dropped by TaskCols::fit under a narrow
+    // terminal or the piped fixed width, so a row the store could not read
+    // back cleanly can still sit in the default view indistinguishable from
+    // ordinary open work — the invisible-field failure this project keeps rebuilding.
     let broken: Vec<String> = tasks
         .iter()
         .filter(|t| status_is_unrecognized(t))
@@ -770,7 +857,24 @@ pub struct Agenda<'a> {
     today: Date,
     through: Date,
     days: usize,
+    /// Overdue rows the [`AGENDA_OVERDUE_CAP`] cut, over and above the
+    /// [`AGENDA_OVERDUE_CAP`] kept in `entries`. The past side of rule 3 has
+    /// no horizon to bound it (`--days` never applies to it), so on a store
+    /// with years of history this is the count that keeps the view itself
+    /// from being the thing burying the day headings it exists to show.
+    overdue_cut: usize,
+    /// The oldest day among the rows `overdue_cut` counts. `None` when
+    /// nothing was cut.
+    overdue_oldest: Option<Date>,
 }
+
+/// A screenful: past this many overdue rows, the Overdue group stops being a
+/// list a person can act on and starts being the reason `Today` is 1900 lines
+/// below the fold. Not user-configurable (unlike `--days`) because the choice
+/// here is a rendering limit, not a question about what the caller wants
+/// included — `tasqx list due.before:today` already shows every one of them,
+/// uncapped, to whoever asks for that.
+const AGENDA_OVERDUE_CAP: usize = 20;
 
 /// Arrange a `task.list` result into an [`Agenda`].
 ///
@@ -833,8 +937,13 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda<'_> 
         today,
         through,
         days,
+        overdue_cut: 0,
+        overdue_oldest: None,
     };
 
+    // Kept separate from the future side while the cap decision is made: the
+    // two are re-merged below, once `overdue` has been trimmed to its cap.
+    let mut overdue: Vec<Entry> = Vec::new();
     for t in tasks {
         let (at, kind) = match (field_ts(t, "due"), field_ts(t, "scheduled")) {
             (Some(d), Some(sc)) if sc < d => (sc, When::Scheduled),
@@ -861,13 +970,32 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda<'_> 
             a.reach_days = Some(a.reach_days.map_or(need, |cur: usize| cur.max(need)));
             continue;
         }
-        a.entries.push(Entry {
+        let entry = Entry {
             task: t,
             at,
             day,
             kind,
-        });
+        };
+        if day < today {
+            overdue.push(entry);
+        } else {
+            a.entries.push(entry);
+        }
     }
+
+    // Rule 3 gives the past side no horizon at all, so on a store with years
+    // of open work this is the one place left that can grow without bound.
+    // Kept: the [`AGENDA_OVERDUE_CAP`] rows the caller's own sort already
+    // ranked hottest — `overdue` was filled in the engine's `-urgency` order
+    // (the same request `list` sends, `run_agenda` asks for it byte for
+    // byte), so truncating it keeps exactly "the most urgent N" without a
+    // second sort here that could disagree with the engine's.
+    if overdue.len() > AGENDA_OVERDUE_CAP {
+        a.overdue_oldest = overdue[AGENDA_OVERDUE_CAP..].iter().map(|e| e.day).min();
+        a.overdue_cut = overdue.len() - AGENDA_OVERDUE_CAP;
+        overdue.truncate(AGENDA_OVERDUE_CAP);
+    }
+    a.entries.extend(overdue);
 
     // STABLE, and by the instant alone. The rows arrive in the engine's
     // `-urgency` order, so two tasks landing on the same instant keep the
@@ -975,7 +1103,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
             .entries
             .iter()
             .map(|e| {
-                let mut r = task_row(e.task, max_urg, a.at_start_of_today());
+                let mut r = task_row(e.task, max_urg, a.at_start_of_today(), ctx.caps.unicode);
                 let overdue = e.day < a.today;
                 r.due = when_cell(e.kind, e.at, overdue);
                 // Repainted from the AGENDA instant, not from `due` alone: a
@@ -1018,15 +1146,31 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
     // window it is all there is WITHIN is on the same line. No weekday here,
     // unlike the day headings -- the count can be four digits and this line has
     // to survive a 40-cell terminal, and the headings already carry the days.
-    out.push_str(&ctx.paint(
-        "muted",
-        &format!(
-            "{} task(s) · through {} (+{}d)",
-            a.entries.len(),
-            a.through,
-            a.days
-        ),
-    ));
+    //
+    // That claim stops being true when every visible row is overdue: `--days
+    // 14` did not put any of them on screen, so "through <date> (+14d)"
+    // attached to a set that is 100% before today would be advertising a
+    // horizon none of the rows are anywhere near. `has_future` asks the rows
+    // that actually made it past the cap, not the raw counts, so a store cut
+    // down to nothing-but-overdue prints the same honest line as one that
+    // never had a future row to begin with.
+    let has_future = a.entries.iter().any(|e| e.day >= a.today);
+    if a.entries.is_empty() || has_future {
+        out.push_str(&ctx.paint(
+            "muted",
+            &format!(
+                "{} task(s) · through {} (+{}d)",
+                a.entries.len(),
+                a.through,
+                a.days
+            ),
+        ));
+    } else {
+        out.push_str(&ctx.paint(
+            "muted",
+            &format!("{} task(s), all overdue", a.entries.len()),
+        ));
+    }
     out.push('\n');
     for note in a.omissions() {
         out.push_str(&ctx.paint("muted", &note));
@@ -1105,6 +1249,19 @@ impl Agenda<'_> {
                 )
             });
         }
+        if self.overdue_cut > 0 {
+            // Same style as `undated`/`beyond`: a count, and the command that
+            // shows the rest — `list`'s own horizon-free filter, since
+            // `--days` (rule 3) never reaches the past side anyway.
+            let oldest = self
+                .overdue_oldest
+                .map(|d| d.to_string())
+                .unwrap_or_default();
+            v.push(format!(
+                "{} more overdue, oldest {oldest} — `tasqx list due.before:today` shows them",
+                self.overdue_cut
+            ));
+        }
         v
     }
 }
@@ -1130,6 +1287,11 @@ pub fn agenda_json(a: &Agenda) -> Value {
             "undated": a.undated,
             "beyond_horizon": a.beyond,
             "reach_days": a.reach_days,
+            // The past-side counterpart of `beyond_horizon`/`reach_days`: how
+            // many overdue rows the screenful cap held back, and the oldest
+            // of them. Zero/null on any agenda the cap did not touch.
+            "overdue_cut": a.overdue_cut,
+            "overdue_oldest": a.overdue_oldest.map(|d| d.to_string()),
             // The ceiling, so a script can make the decision the footer makes.
             // `reach_days` is a distance and may exceed it, and without this
             // field the obvious `tasqx agenda --days $(jq .agenda.reach_days)`
@@ -2268,6 +2430,12 @@ fn bucket_delta(before: &Value, after: &Value) -> String {
     cells.join(" · ")
 }
 
+/// `tasqx next` picks the highest-urgency `@working` row, and `@working`
+/// includes `active` — a task already running can BE that row, with nothing
+/// on screen saying so. Paired with D6's single-active default (`start`
+/// auto-stops whatever was running), a caller who does not already know #9 is
+/// the one they started an hour ago reads this as a fresh recommendation and
+/// starts timing the wrong thing.
 pub fn next_task(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
     let tasks = result
@@ -2279,17 +2447,41 @@ pub fn next_task(ctx: &Ctx, result: &Value) -> String {
         Some(t) => {
             let sid = t.get("short_id").and_then(Value::as_i64).unwrap_or(0);
             let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-            format!(
+            let mut out = format!(
                 "{}  (urgency {urg:.1})  {}\n",
                 ctx.paint("accent", &format!("#{sid}")),
                 s(t, "title")
-            )
+            );
+            if s(t, "status") == "active" {
+                let since = t
+                    .get("active_since")
+                    .and_then(Value::as_str)
+                    .and_then(|v| v.parse::<Timestamp>().ok())
+                    .map(|ts| {
+                        let time = ts.to_zoned(TimeZone::UTC).time();
+                        format!("{:02}:{:02}", time.hour(), time.minute())
+                    });
+                out.push_str(&ctx.paint(
+                    "timer.active",
+                    &match since {
+                        Some(hhmm) => format!("  already running, since {hhmm} UTC\n"),
+                        None => "  already running\n".to_string(),
+                    },
+                ));
+            }
+            out
         }
     }
 }
 
 /// Urgency breakdown (`tasqx why`), computed from the task.get fields via the
 /// same D1 formula the engine uses — so ranking is never a black box.
+///
+/// The breakdown alone answers "why is the number 18.0" and says nothing
+/// about whether `next` will ever hand this task out — `@working` excludes
+/// every blocked row (D53's rule), so a task can score highest here and still
+/// never be offered. `task.get` already carries `blocked`/`depends_on`
+/// (`show` renders both), so the one line this appends costs no extra call.
 pub fn why(ctx: &Ctx, result: &Value) -> String {
     use tasqx_core::{urgency, Priority};
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
@@ -2299,7 +2491,33 @@ pub fn why(ctx: &Ctx, result: &Value) -> String {
         .and_then(Priority::parse);
     let due = result.get("due").and_then(Value::as_str);
     let created = result.get("created").and_then(Value::as_str).unwrap_or("");
-    why_rows(ctx, sid, &urgency::breakdown(prio, due, created))
+    let mut out = why_rows(ctx, sid, &urgency::breakdown(prio, due, created));
+    if result
+        .get("blocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let deps: Vec<String> = result
+            .get("depends_on")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_i64)
+                    .map(|n| format!("#{n}"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let who = if deps.is_empty() {
+            "a dependency that is not done yet".to_string()
+        } else {
+            deps.join(", ")
+        };
+        out.push_str(&ctx.paint(
+            "danger",
+            &format!("  blocked by {who} — not offered by `next`\n"),
+        ));
+    }
+    out
 }
 
 /// Render a breakdown the caller has already computed.
@@ -2785,8 +3003,8 @@ mod tests {
             "status": "pending", "due": "2026-08-31T12:00:00Z"
         });
         let at = |s: &str| s.parse::<Timestamp>().unwrap();
-        assert!(!task_row(&t, 1.0, at("2026-08-31T11:59:59Z")).overdue);
-        assert!(task_row(&t, 1.0, at("2026-08-31T12:00:01Z")).overdue);
+        assert!(!task_row(&t, 1.0, at("2026-08-31T11:59:59Z"), true).overdue);
+        assert!(task_row(&t, 1.0, at("2026-08-31T12:00:01Z"), true).overdue);
     }
 
     #[test]
@@ -4155,6 +4373,156 @@ mod tests {
                 .map(|e| e.task["short_id"].as_i64().unwrap())
                 .collect::<Vec<_>>(),
             vec![1, 2]
+        );
+    }
+
+    /// #145: `tasqx list project:x` (a literal filter, no `@working`) returns
+    /// whatever the project holds — done and cancelled included, D24's rule
+    /// being about `report`, not `list`. Leaving that literal is defensible;
+    /// what is not is a cancelled row printing identically to open work at
+    /// the top of the table, ranked by urgency, with nothing to tell them
+    /// apart short of a `show`.
+    #[test]
+    fn task_table_marks_a_row_whose_status_is_not_open() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let row = |status: &str| {
+            json!({ "short_id": 1, "urgency": 5.0, "priority": "M", "title": "same work",
+                    "project": "p", "due": "", "tags": [], "status": status })
+        };
+        let open = task_table(
+            &ctx,
+            &json!({ "tasks": [row("pending")], "count": 1 }),
+            Timestamp::now(),
+        );
+        let closed = task_table(
+            &ctx,
+            &json!({ "tasks": [row("cancelled")], "count": 1 }),
+            Timestamp::now(),
+        );
+        assert_ne!(
+            open, closed,
+            "a cancelled row must not render identically to a pending one: {closed:?}"
+        );
+        assert!(
+            closed.contains("cancelled"),
+            "the task's own status must be visible in the table, not only via \
+             `tasqx show`: {closed:?}"
+        );
+    }
+
+    /// #146: `blocked` sits on the JSON of every row `list`/`agenda` print and
+    /// is rendered on neither. A blocked task can rank #1 by urgency and look
+    /// exactly like ordinary open work, and `why` explains the score without
+    /// ever mentioning the task cannot be started.
+    #[test]
+    fn task_table_and_why_surface_a_blocked_task() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let row = |blocked: bool| {
+            json!({ "short_id": 1, "urgency": 18.0, "priority": "H",
+                    "title": "BLOCKER-HIGH must not be next", "project": "p",
+                    "due": "", "tags": [], "status": "pending", "blocked": blocked })
+        };
+        let open = task_table(
+            &ctx,
+            &json!({ "tasks": [row(false)], "count": 1 }),
+            Timestamp::now(),
+        );
+        let blocked = task_table(
+            &ctx,
+            &json!({ "tasks": [row(true)], "count": 1 }),
+            Timestamp::now(),
+        );
+        assert_ne!(
+            open, blocked,
+            "a blocked row must not render identically to an unblocked one: {blocked:?}"
+        );
+
+        let get_result = json!({
+            "short_id": 1, "title": "BLOCKER-HIGH must not be next", "status": "pending",
+            "urgency": 18.0, "blocked": true, "depends_on": [2]
+        });
+        let why_out = why(&ctx, &get_result);
+        assert!(
+            why_out.contains("blocked") && why_out.contains("#2"),
+            "`why` must say the task is blocked and name what it is blocked by, \
+             since the breakdown alone explains a score `next` will never offer: \
+             {why_out:?}"
+        );
+    }
+
+    /// #147: the one piece of state a work block depends on — which task is
+    /// already running — has no mark on `list`'s row for it, and `next`
+    /// returning that same task says nothing to distinguish it from a fresh
+    /// recommendation.
+    #[test]
+    fn task_table_and_next_surface_the_running_task() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let row = |status: &str| {
+            json!({ "short_id": 2, "urgency": 5.0, "priority": "M", "title": "in progress",
+                    "project": "p", "due": "", "tags": [], "status": status })
+        };
+        let pending = task_table(
+            &ctx,
+            &json!({ "tasks": [row("pending")], "count": 1 }),
+            Timestamp::now(),
+        );
+        let active = task_table(
+            &ctx,
+            &json!({ "tasks": [row("active")], "count": 1 }),
+            Timestamp::now(),
+        );
+        assert_ne!(
+            pending, active,
+            "an active row must not render identically to a pending one: {active:?}"
+        );
+
+        let mut running = row("active");
+        running["active_since"] = json!("2026-08-31T12:00:00Z");
+        let next_out = next_task(&ctx, &json!({ "tasks": [running] }));
+        assert!(
+            next_out.to_lowercase().contains("already running"),
+            "`next` handing back the task that is already running must say so: \
+             {next_out:?}"
+        );
+    }
+
+    /// #182: `agenda`'s Overdue group has no horizon (rule 3), which on a
+    /// store with years of history means no cap either — the field report's
+    /// 10,000-task store printed 1903 rows before the first `Today` heading.
+    /// Reproduced at a size a unit test can afford: enough all-overdue rows
+    /// to exceed [`AGENDA_OVERDUE_CAP`], each ranked so the cut is checkable.
+    #[test]
+    fn agenda_caps_the_overdue_group_and_stops_naming_a_horizon_over_it() {
+        let n = AGENDA_OVERDUE_CAP + 5;
+        let tasks: Vec<Value> = (0..n)
+            .map(|i| {
+                let mut t = dated(
+                    i as i64 + 1,
+                    &format!("ancient #{i}"),
+                    "2023-01-01T00:00:00Z",
+                    "",
+                );
+                // Distinct urgency: the cap must keep the hottest N, and the
+                // count below only proves a cap exists, not which end it cut.
+                t["urgency"] = json!(100.0 - i as f64);
+                t
+            })
+            .collect();
+        let out = agenda_out(tasks, 14);
+        let shown = out.matches("ancient #").count();
+        assert_eq!(
+            shown, AGENDA_OVERDUE_CAP,
+            "the overdue group must stop at the cap: {out:?}"
+        );
+        assert!(
+            out.contains("more overdue"),
+            "the rows the cap held back must be counted and named, the same way \
+             undated and beyond-horizon rows already are: {out:?}"
+        );
+        assert!(
+            !out.contains("+14d"),
+            "a set that is 100% overdue must not have a footer advertising a \
+             horizon none of the visible rows are within: {out:?}"
         );
     }
 }

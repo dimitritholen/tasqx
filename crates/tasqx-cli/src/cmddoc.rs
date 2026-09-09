@@ -189,7 +189,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["ls", "l"],
         method: "task.list",
         summary: "List tasks matching a filter.",
-        usage: "tasqx list [filter…]",
+        usage: "tasqx list [filter…] [--sort key]… [--limit N] [--offset N] [--fields f,…]",
         examples: &[
             ex("tasqx list"),
             ex("tasqx list project:work status:pending +api"),
@@ -198,6 +198,8 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "Bare `tasqx` is `tasqx list` over the working set.",
             "A value containing a space is double-quoted, and the quotes must reach tasqx: `tasqx list 'project:\"Home Renovation\"'`. Nothing is guessed back together, so the shell-stripped form is refused rather than answered wrongly.",
+            "`--sort`, `--limit`, `--offset` and `--fields` map straight onto `task.list`'s own params (`core.capabilities` names all five) — `tasqx list --sort due --limit 20 --fields short_id,title,due`. An unknown sort key or field name is refused, naming the valid set.",
+            "The piped table (no TTY) is a fixed 100 cells wide; on a terminal it sizes to `$COLUMNS` (clamped 40–160) or the terminal's own width, whichever it can read. Widen a truncated title with `COLUMNS=200 tasqx list` or narrow the row with `--fields`.",
         ],
         see_also: &["next", "report", "show"],
         topic: Topic::Filters,
