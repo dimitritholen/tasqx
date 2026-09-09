@@ -152,14 +152,21 @@ pub fn project_archived(ctx: &Ctx, result: &Value) -> String {
     };
 
     let trailer = if open > 0 {
-        let noun = if open == 1 { "task" } else { "tasks" };
+        // Noun and verb both carry the plural — pluralizing "task" and leaving
+        // "remain" hardcoded reads as "1 open task remain", which is not
+        // English (caught in review of D89's first draft).
+        let (noun, verb) = if open == 1 {
+            ("task", "remains")
+        } else {
+            ("tasks", "remain")
+        };
         let overdue_part = if overdue > 0 {
             format!(" ({overdue} overdue)")
         } else {
             String::new()
         };
         format!(
-            "  ·  {open} open {noun}{overdue_part} remain — `tasqx list project:{name}`  ·  {default_clause}"
+            "  ·  {open} open {noun}{overdue_part} {verb} — `tasqx list project:{name}`  ·  {default_clause}"
         )
     } else {
         format!("  ·  {default_clause}")
@@ -3109,6 +3116,18 @@ mod tests {
         assert!(
             !no_overdue.contains("overdue"),
             "zero overdue must not be printed as a fact: {no_overdue:?}"
+        );
+        // Noun and verb must agree: "1 open task remain" is not English. The
+        // fix must not stop at pluralizing the noun and leave the verb
+        // hardcoded — assert the exact singular clause, not just a substring
+        // that a mismatched verb would still satisfy.
+        assert!(
+            no_overdue.contains("1 open task remains"),
+            "singular subject needs a singular verb: {no_overdue:?}"
+        );
+        assert!(
+            with_overdue.contains("2 open tasks (1 overdue) remain "),
+            "plural subject needs a plural verb: {with_overdue:?}"
         );
 
         // Nothing left behind: the line is exactly what it was before D89,
