@@ -75,7 +75,23 @@ impl WeekBucket {
 
 /// Bucket `add` vs `done` events into the last `weeks` ISO weeks (oldest→newest),
 /// including empty weeks so the series is contiguous.
-pub fn throughput(result: &Value, weeks: usize, anchor: Date) -> Vec<WeekBucket> {
+///
+/// `members` (#164) is what makes this agree with `report`: a raw event tally
+/// double-counts `done` for a task closed, reopened and closed again (one task,
+/// two events), and counts `add` for a task that was later cancelled, which
+/// `report` excludes by default (D24). Neither bucket can be answered from the
+/// event log alone — it has no idea what a task's status is NOW.
+///
+///  * `added` skips a task whose CURRENT status is cancelled, matching D24.
+///  * `done` counts each CURRENTLY-done task once, at its LATEST `done` event
+///    — the event log's other `done` rows for that id (superseded by a
+///    `reopen`) are not a second completion.
+pub fn throughput(
+    result: &Value,
+    members: &[Member],
+    weeks: usize,
+    anchor: Date,
+) -> Vec<WeekBucket> {
     let weeks = weeks.max(1);
     // Build the ordered list of (iso_year, iso_week) keys for the window.
     let mut keys: Vec<(i16, i8)> = Vec::with_capacity(weeks);
@@ -96,37 +112,90 @@ pub fn throughput(result: &Value, weeks: usize, anchor: Date) -> Vec<WeekBucket>
         })
         .collect();
 
-    for ev in events_of(result) {
-        let (Some(ts), op) = (ts_of(ev), op_of(ev)) else {
-            continue;
-        };
-        if op != "add" && op != "done" {
-            continue;
-        }
-        let Some(date) = ev_date(ts) else { continue };
+    use std::collections::HashMap;
+    let status_of: HashMap<&str, &str> = members
+        .iter()
+        .map(|m| (m.id.as_str(), m.status.as_str()))
+        .collect();
+
+    let mut bump_added = |date: Date| {
         let iso = date.iso_week_date();
         if let Some(b) = buckets
             .iter_mut()
             .find(|b| b.iso_year == iso.year() && b.iso_week == iso.week())
         {
-            if op == "add" {
-                b.added += 1;
-            } else {
-                b.done += 1;
+            b.added += 1;
+        }
+    };
+
+    // Each currently-done member's LATEST `done` event date — a task closed,
+    // reopened and closed again must count once, on the completion that
+    // actually stands today, not once per historical event.
+    let mut latest_done: HashMap<&str, Date> = HashMap::new();
+
+    for ev in events_of(result) {
+        let (Some(ts), op) = (ts_of(ev), op_of(ev)) else {
+            continue;
+        };
+        let Some(date) = ev_date(ts) else { continue };
+        match op {
+            "add" => {
+                let id = entity_id_of(ev);
+                let cancelled_now = id
+                    .and_then(|id| status_of.get(id))
+                    .is_some_and(|s| *s == "cancelled");
+                if !cancelled_now {
+                    bump_added(date);
+                }
             }
+            "done" => {
+                let Some(id) = entity_id_of(ev) else { continue };
+                if status_of.get(id).is_some_and(|s| *s == "done") {
+                    latest_done
+                        .entry(id)
+                        .and_modify(|d| {
+                            if date > *d {
+                                *d = date;
+                            }
+                        })
+                        .or_insert(date);
+                }
+            }
+            _ => {}
+        }
+    }
+    for date in latest_done.into_values() {
+        let iso = date.iso_week_date();
+        if let Some(b) = buckets
+            .iter_mut()
+            .find(|b| b.iso_year == iso.year() && b.iso_week == iso.week())
+        {
+            b.done += 1;
         }
     }
     buckets
 }
 
-/// 4-week average done/week (velocity).
-fn velocity(buckets: &[WeekBucket]) -> f64 {
-    let tail: Vec<&WeekBucket> = buckets.iter().rev().take(4).collect();
-    if tail.is_empty() {
+/// 4-week average done/week (velocity) over the last four ISO weeks that have
+/// FULLY elapsed as of `anchor` — independent of whatever window `--weeks`
+/// asked to display (#234 item 4).
+///
+/// Averaging over whatever `buckets` happen to be on screen made `--weeks 1`
+/// report a single partial week's rate under the label "4-wk velocity", which
+/// doubled the true figure the moment the window narrowed to include today's
+/// (necessarily incomplete) ISO week. Anchoring on the Sunday before the
+/// current week's Monday always lands on four COMPLETE weeks, however wide the
+/// caller's own display window is.
+pub fn velocity_4wk(result: &Value, members: &[Member], anchor: Date) -> f64 {
+    let days_from_mon = anchor.weekday().to_monday_zero_offset() as i64;
+    let this_monday = anchor.saturating_sub(days_from_mon.days());
+    let last_complete_sunday = this_monday.saturating_sub(1i64.days());
+    let buckets = throughput(result, members, 4, last_complete_sunday);
+    if buckets.is_empty() {
         return 0.0;
     }
-    let sum: u32 = tail.iter().map(|b| b.done).sum();
-    sum as f64 / tail.len() as f64
+    let sum: u32 = buckets.iter().map(|b| b.done).sum();
+    sum as f64 / buckets.len() as f64
 }
 
 /// Render a series the caller has already computed.
@@ -135,7 +204,16 @@ fn velocity(buckets: &[WeekBucket]) -> f64 {
 /// so `--json` and the sparkline are two views of one computation rather than
 /// two computations that happen to agree today. (Same rule as `report`'s two
 /// modes sharing one request object.)
-pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
+///
+/// `velocity` is likewise a parameter rather than derived from `buckets` here
+/// (#234 item 4): the "4-wk" figure must come from the last four COMPLETE ISO
+/// weeks regardless of how many weeks `--weeks` put on screen, and deriving it
+/// from whatever `buckets` happened to hold made a 1-week window report a
+/// single partial week's rate under a "4-wk" label. `buckets.last()` is always
+/// the ISO week containing the anchor (`today` — see `throughput`'s window
+/// construction), so it is marked "(partial)" unconditionally: "today" has, by
+/// definition, not finished its week.
+pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket], velocity: f64) -> String {
     let max = buckets
         .iter()
         .map(|b| b.added.max(b.done))
@@ -153,7 +231,8 @@ pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
     out.push_str(&ctx.paint("header", "Weekly throughput"));
     out.push_str(&format!("   {}\n", ctx.paint("muted", legend)));
 
-    for b in buckets {
+    let last_idx = buckets.len().saturating_sub(1);
+    for (i, b) in buckets.iter().enumerate() {
         // The counts sit LEFT of their bars and the bars are padded out to a
         // fixed cell budget, so every number in the column starts at the same
         // place. Drawn the other way round — a ragged-length bar and then its
@@ -168,18 +247,20 @@ pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
         } else {
             net.to_string()
         };
-        let note = if net < 0 { "  burning down" } else { "" };
+        let mut note = if net < 0 { "  burning down" } else { "" }.to_string();
+        if i == last_idx {
+            note.push_str("  (partial)");
+        }
         out.push_str(&format!(
             "  {}  added {:>3} {added_s}   done {:>3} {done_s}   net {:>4}{}\n",
             ctx.paint("muted", &b.label()),
             b.added,
             b.done,
             net_s,
-            ctx.paint("muted", note),
+            ctx.paint("muted", &note),
         ));
     }
 
-    let vel = velocity(buckets);
     let recent_net: i64 = buckets.iter().rev().take(4).map(|b| b.net()).sum();
     let trend = if recent_net < 0 {
         "WIP trending down"
@@ -193,7 +274,7 @@ pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
         ctx.paint(
             "muted",
             &format!(
-                "{a} 4-wk velocity {vel:.1} done/wk {m} {trend}",
+                "{a} 4-wk velocity {velocity:.1} done/wk {m} {trend}",
                 a = ctx.arrow(),
                 m = ctx.mid()
             )
@@ -246,18 +327,43 @@ pub struct DayCount {
 /// Completions per day across the last `weeks` weeks, ending on `anchor`.
 /// Returns a contiguous day series (oldest→newest), aligned so the last column
 /// is the week containing `anchor`.
-pub fn heatmap(result: &Value, weeks: usize, anchor: Date) -> Vec<DayCount> {
+///
+/// `members` (#164) makes this agree with `report`/`throughput`: a raw `done`
+/// EVENT tally double-counts a task closed, reopened and closed again (one
+/// task, two events, one of them superseded) — so only members whose CURRENT
+/// status is "done" are tallied, at their LATEST `done` event's date.
+pub fn heatmap(result: &Value, members: &[Member], weeks: usize, anchor: Date) -> Vec<DayCount> {
     let weeks = weeks.max(1);
-    // Tally done events by day.
     use std::collections::HashMap;
-    let mut tally: HashMap<Date, u32> = HashMap::new();
+    let done_now: std::collections::HashSet<&str> = members
+        .iter()
+        .filter(|m| m.status == "done")
+        .map(|m| m.id.as_str())
+        .collect();
+    // Each currently-done member's LATEST `done` event date.
+    let mut latest_done: HashMap<&str, Date> = HashMap::new();
     for ev in events_of(result) {
         if op_of(ev) != "done" {
             continue;
         }
-        if let Some(d) = ts_of(ev).and_then(ev_date) {
-            *tally.entry(d).or_insert(0) += 1;
+        let Some(id) = entity_id_of(ev) else { continue };
+        if !done_now.contains(id) {
+            continue;
         }
+        if let Some(d) = ts_of(ev).and_then(ev_date) {
+            latest_done
+                .entry(id)
+                .and_modify(|cur| {
+                    if d > *cur {
+                        *cur = d;
+                    }
+                })
+                .or_insert(d);
+        }
+    }
+    let mut tally: HashMap<Date, u32> = HashMap::new();
+    for d in latest_done.into_values() {
+        *tally.entry(d).or_insert(0) += 1;
     }
 
     // Window: from the Monday `weeks-1` weeks before the anchor's Monday,
@@ -341,7 +447,17 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date) -> String {
         for w in 0..weeks_n {
             let idx = w * 7 + wd;
             if let Some(dc) = days.get(idx) {
-                line.push_str(&cell(dc.count, ctx));
+                // #234 item 8: the grid is padded to whole weeks, so the
+                // current (incomplete) week always carries a few days that
+                // have not happened yet. Those must not draw as "zero
+                // completions" — a day that has not occurred is not an idle
+                // one — so they get their own blank glyph instead of `cell`'s
+                // 0-count glyph.
+                if dc.date > anchor {
+                    line.push_str(&ctx.paint("muted", " "));
+                } else {
+                    line.push_str(&cell(dc.count, ctx));
+                }
                 line.push(' ');
             }
         }
@@ -356,9 +472,10 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date) -> String {
         ctx.paint(
             "muted",
             &format!(
-                "{a} {total} done {m} current streak {cur} days {m} best {best}",
+                "{a} {total} done {m} current streak {cur} {day} {m} best {best}",
                 a = ctx.arrow(),
-                m = ctx.mid()
+                m = ctx.mid(),
+                day = day_word(cur),
             )
         )
     ));
@@ -378,6 +495,17 @@ fn cell(count: u32, ctx: &Ctx) -> String {
         ctx.paint("muted", &g)
     } else {
         ctx.theme.ramp_style(t).paint(&g, &ctx.caps)
+    }
+}
+
+/// "day" for 1, "days" otherwise (#234 item 9) — shared by the heatmap streak
+/// line and the burndown trend line, the two summary sentences people paste
+/// into a standup note and the one place an ungrammatical "1 days" is public.
+fn day_word(n: impl Into<i64>) -> &'static str {
+    if n.into() == 1 {
+        "day"
+    } else {
+        "days"
     }
 }
 
@@ -413,6 +541,16 @@ pub struct Member {
     /// Whether it is open NOW — `Status::is_open()`, the same predicate the
     /// status bar counts.
     pub open_now: bool,
+    /// The current status text (`"done"`, `"cancelled"`, `"pending"`, …).
+    ///
+    /// `open_now` alone cannot tell `heatmap`/`throughput` what they need
+    /// (#164): both "done" and "cancelled" are `!open_now`, but only "done"
+    /// belongs on a completions chart, and only "cancelled" is the D24
+    /// exclusion `report` already applies to `added`. Compared by literal
+    /// string, the same choice `burndown`'s `modify` arm already makes for
+    /// the same reason — tasqx has no closed enum for a status a *different*
+    /// build of core might have written.
+    pub status: String,
 }
 
 /// Project `task.list` rows into burndown members.
@@ -428,6 +566,7 @@ pub fn members_of(tasks: &Value) -> Vec<Member> {
         .map(|rows| {
             rows.iter()
                 .filter_map(|t| {
+                    let status = t.get("status").and_then(Value::as_str).unwrap_or("");
                     Some(Member {
                         id: t.get("id").and_then(Value::as_str)?.to_string(),
                         created: t
@@ -437,9 +576,8 @@ pub fn members_of(tasks: &Value) -> Vec<Member> {
                             .ok()?
                             .to_zoned(TimeZone::UTC)
                             .date(),
-                        open_now: crate::render::status_is_open(
-                            t.get("status").and_then(Value::as_str).unwrap_or(""),
-                        ),
+                        open_now: crate::render::status_is_open(status),
+                        status: status.to_string(),
                     })
                 })
                 .collect()
@@ -572,9 +710,19 @@ fn open_on(m: &Member, d: Date, moves: Option<&[(Timestamp, Lifecycle)]>) -> boo
 /// (see `render_throughput` for why the series is a parameter), and the
 /// drawing is compact columns, not §8's dual ideal-vs-actual line — that one
 /// belongs to the HTML report.
-pub fn render_burndown(ctx: &Ctx, series: &[RemainingPoint], scope_label: &str) -> String {
-    let max = series.iter().map(|p| p.remaining).max().unwrap_or(0).max(1);
-
+///
+/// `had_any_task` (#234 item 6) is whether the scope this burndown covers has
+/// EVER held a task — a fact the series alone cannot carry, because "the
+/// whole series is zero" means two different things: a real backlog that got
+/// cleared (worth an axis and a "cleared" verdict) and a store that never had
+/// a task to begin with (worth neither — there is no axis to draw and nothing
+/// was cleared).
+pub fn render_burndown(
+    ctx: &Ctx,
+    series: &[RemainingPoint],
+    scope_label: &str,
+    had_any_task: bool,
+) -> String {
     let mut out = String::new();
     out.push_str(&ctx.paint(
         "header",
@@ -582,8 +730,26 @@ pub fn render_burndown(ctx: &Ctx, series: &[RemainingPoint], scope_label: &str) 
     ));
     out.push('\n');
 
-    // Sparkline row of vertical blocks, colored hot→cold by fill.
-    let spark: String = series
+    if !had_any_task {
+        out.push_str(&format!("  {}\n", ctx.paint("muted", "no open tasks yet")));
+        return out;
+    }
+
+    let max = series.iter().map(|p| p.remaining).max().unwrap_or(0).max(1);
+
+    // #234 item 3: a raw one-glyph-per-day sparkline is unreadable (and, at
+    // the far end, unusable — `--days 3650` emits a 3650-cell line whatever
+    // COLUMNS says) past the terminal's own width. Downsampled for DISPLAY
+    // only — the trend/projection below still reads the full-resolution
+    // `series`, so a coarse chart never coarsens the numbers under it.
+    let avail = ctx.cols.saturating_sub(6).clamp(10, series.len().max(10));
+    let plotted = downsample(series, avail);
+
+    // Sparkline row of vertical blocks, colored hot→cold by fill. The ASCII
+    // fallback (#167) uses the same 8-level ramp as the Unicode one — the
+    // 3-symbol ramp it used to fall back to flattened an 84% rise into two
+    // visually distinct bars.
+    let spark: String = plotted
         .iter()
         .map(|p| {
             let t = p.remaining as f64 / max as f64;
@@ -601,18 +767,35 @@ pub fn render_burndown(ctx: &Ctx, series: &[RemainingPoint], scope_label: &str) 
     out.push_str(&format!(
         "  {}  {}\n",
         ctx.paint("muted", "  0"),
-        ctx.paint("muted", &axis_labels(series, ctx.caps.unicode)),
+        ctx.paint(
+            "muted",
+            &axis_labels(
+                series.first().unwrap().date,
+                series.last().unwrap().date,
+                plotted.len(),
+                ctx.caps.unicode
+            ),
+        ),
     ));
+    // The ramp's own legend, in the heatmap's style (#167): without it, `_`,
+    // `.` and `#` in a piped/dumb-terminal capture are undefined.
+    let ramp_legend = if ctx.caps.unicode {
+        "▁▂▃▄▅▆▇█ low → high, scaled to this chart's own peak"
+    } else {
+        "_.-=+*#@ low -> high, scaled to this chart's own peak"
+    };
+    out.push_str(&format!("  {}\n", ctx.paint("muted", ramp_legend)));
 
     let first = series.first().map(|p| p.remaining).unwrap_or(0);
     let last = series.last().map(|p| p.remaining).unwrap_or(0);
     let delta = last as i64 - first as i64;
+    let day = day_word(series.len() as i64);
     let trend = if delta < 0 {
-        format!("down {} over {} days", -delta, series.len())
+        format!("down {} over {} {day}", -delta, series.len())
     } else if delta > 0 {
-        format!("up {} over {} days", delta, series.len())
+        format!("up {} over {} {day}", delta, series.len())
     } else {
-        format!("flat over {} days", series.len())
+        format!("flat over {} {day}", series.len())
     };
     // Simple projection: at the recent net burn rate, days to zero.
     let proj = project_finish(series, ctx.mid());
@@ -630,27 +813,41 @@ pub fn render_burndown(ctx: &Ctx, series: &[RemainingPoint], scope_label: &str) 
     out
 }
 
+/// Bucket `series` down to at most `max_points` columns for display, each
+/// bucket represented by its LAST (most recent) point — a burndown reads "as
+/// of this column", so the newest state in a bucket is the one that should
+/// draw, not an average that blurs a sharp drop with the plateau before it.
+fn downsample(series: &[RemainingPoint], max_points: usize) -> Vec<RemainingPoint> {
+    let n = series.len();
+    if n <= max_points || max_points == 0 {
+        return series.to_vec();
+    }
+    let mut out = Vec::with_capacity(max_points);
+    for i in 0..max_points {
+        let end = ((i + 1) * n) / max_points;
+        let end = end.clamp(i + 1, n) - 1;
+        out.push(series[end]);
+    }
+    out
+}
+
 fn spark_glyph(t: f64, unicode: bool) -> char {
+    let t = t.clamp(0.0, 1.0);
     if unicode {
         const G: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-        let i = ((t.clamp(0.0, 1.0)) * (G.len() - 1) as f64).round() as usize;
-        G[i]
-    } else if t <= 0.01 {
-        '_'
-    } else if t < 0.5 {
-        '.'
+        G[(t * (G.len() - 1) as f64).round() as usize]
     } else {
-        '#'
+        // The ASCII fallback used to have three symbols (`_`, `.`, `#`), which
+        // collapsed an 84%-rising series into two visually distinct bars once
+        // piped or under `TERM=dumb` (#167). Eight levels, matching the
+        // Unicode ramp's resolution exactly, keep the shape of the series
+        // instead of its sign.
+        const G: [char; 8] = ['_', '.', '-', '=', '+', '*', '#', '@'];
+        G[(t * (G.len() - 1) as f64).round() as usize]
     }
 }
 
-fn axis_labels(series: &[RemainingPoint], unicode: bool) -> String {
-    // First and last date, spaced to the series width.
-    if series.is_empty() {
-        return String::new();
-    }
-    let first = series.first().unwrap().date;
-    let last = series.last().unwrap().date;
+fn axis_labels(first: Date, last: Date, width: usize, unicode: bool) -> String {
     let fs = format!(
         "{:04}-{:02}-{:02}",
         first.year(),
@@ -659,7 +856,6 @@ fn axis_labels(series: &[RemainingPoint], unicode: bool) -> String {
     );
     let ls = format!("{:04}-{:02}-{:02}", last.year(), last.month(), last.day());
     let arrow = if unicode { "→" } else { "->" };
-    let width = series.len();
     if width <= fs.len() + ls.len() + 1 {
         format!("{fs} {arrow} {ls}")
     } else {
@@ -742,7 +938,13 @@ mod tests {
             // an ignored op
             ev("modify", "2026-07-13T10:00:00Z", "a"),
         ];
-        let buckets = throughput(&result(evs), 3, anchor());
+        let members = [
+            member_status("a", (2026, 7, 13), "done"),
+            member_status("b", (2026, 7, 14), "pending"),
+            member_status("c", (2026, 7, 7), "done"),
+            member_status("d", (2026, 6, 1), "done"),
+        ];
+        let buckets = throughput(&result(evs), &members, 3, anchor());
         assert_eq!(buckets.len(), 3);
         // newest last
         let w29 = buckets.last().unwrap();
@@ -768,7 +970,13 @@ mod tests {
             ev("done", "2026-07-10T09:00:00Z", "c"),
             ev("add", "2026-07-13T09:00:00Z", "z"), // not a completion
         ];
-        let days = heatmap(&result(evs), 2, anchor());
+        let members = [
+            member_status("a", (2026, 7, 1), "done"),
+            member_status("b", (2026, 7, 1), "done"),
+            member_status("c", (2026, 7, 1), "done"),
+            member_status("z", (2026, 7, 13), "pending"),
+        ];
+        let days = heatmap(&result(evs), &members, 2, anchor());
         assert_eq!(days.len(), 14);
         let by: std::collections::HashMap<Date, u32> =
             days.iter().map(|d| (d.date, d.count)).collect();
@@ -786,7 +994,13 @@ mod tests {
             ev("done", "2026-07-13T09:00:00Z", "c"),
             ev("done", "2026-07-08T09:00:00Z", "d"), // isolated
         ];
-        let days = heatmap(&result(evs), 2, anchor());
+        let members = [
+            member_status("a", (2026, 7, 1), "done"),
+            member_status("b", (2026, 7, 1), "done"),
+            member_status("c", (2026, 7, 1), "done"),
+            member_status("d", (2026, 7, 1), "done"),
+        ];
+        let days = heatmap(&result(evs), &members, 2, anchor());
         assert_eq!(current_streak(&days, anchor()), 3);
         assert_eq!(best_streak(&days), 3);
     }
@@ -821,10 +1035,22 @@ mod tests {
     /// not express "this task is done now", and that is exactly the fact the
     /// forwards version had to guess at and got wrong.
     fn member(id: &str, created: (i16, i8, i8), open_now: bool) -> Member {
+        // Every existing burndown fixture only ever cared about open/closed,
+        // never about "done" vs "cancelled" specifically, so a closed member
+        // defaults to "done" here — the common case — and the heatmap/
+        // throughput tests that DO care use `member_status` instead.
+        member_status(id, created, if open_now { "pending" } else { "done" })
+    }
+
+    /// A member with an explicit status string, for the tests that need to
+    /// tell "done" apart from "cancelled" (#164) rather than merely open vs
+    /// closed.
+    fn member_status(id: &str, created: (i16, i8, i8), status: &str) -> Member {
         Member {
             id: id.to_string(),
             created: Date::constant(created.0, created.1, created.2),
-            open_now,
+            open_now: crate::render::status_is_open(status),
+            status: status.to_string(),
         }
     }
 
@@ -1047,7 +1273,7 @@ mod tests {
         assert_eq!(cell(6, &plain), "#");
         assert!(!bar(3, 6, 6, &plain).contains('\x1b'));
         assert_eq!(spark_glyph(1.0, true), '█');
-        assert_eq!(spark_glyph(1.0, false), '#');
+        assert_eq!(spark_glyph(1.0, false), '@');
         assert_eq!(spark_glyph(0.0, false), '_');
     }
 
@@ -1073,7 +1299,7 @@ mod tests {
                 done: *done,
             })
             .collect();
-        let out = render_throughput(&ctx, &buckets);
+        let out = render_throughput(&ctx, &buckets, 0.0);
         let rows: Vec<&str> = out.lines().skip(1).take(buckets.len()).collect();
         assert_eq!(rows.len(), buckets.len(), "one row per week: {out}");
         for label in ["added", "done", "net"] {
@@ -1187,5 +1413,226 @@ mod tests {
         let members = [member("a", (2026, 7, 11), true)];
         let series = burndown(&result(evs), &members, 3, anchor());
         assert_eq!(series.last().unwrap().remaining, 1);
+    }
+
+    // ========================================================================
+    // Regression tests — tasqx audit 2026-09 (#164, #167, #234)
+    // ========================================================================
+
+    /// #164: `chart heatmap` must count a task once per its CURRENT completion,
+    /// not once per `done` EVENT. A task done, reopened and done again wrote
+    /// two `done` events for one task that is done exactly once right now —
+    /// the exact repro from the field (`report status` said 1 completed task,
+    /// `chart heatmap`/`chart throughput` said 2).
+    ///
+    /// Written against the CURRENT (pre-fix) `heatmap` signature — it takes
+    /// only the event log, with no way to learn that "a" was reopened, so it
+    /// necessarily over-counts. Left in place (updated to the new signature)
+    /// once the fix lands, so a regression here is caught the same way.
+    #[test]
+    fn heatmap_counts_a_reopened_and_redone_task_once_not_twice() {
+        let evs = vec![
+            ev("done", "2026-07-11T09:00:00Z", "a"),
+            ev("reopen", "2026-07-12T09:00:00Z", "a"),
+            ev("done", "2026-07-13T09:00:00Z", "a"),
+        ];
+        let members = [member_status("a", (2026, 7, 1), "done")];
+        let days = heatmap(&result(evs), &members, 2, anchor());
+        let total: u32 = days.iter().map(|d| d.count).sum();
+        assert_eq!(
+            total, 1,
+            "one task, done exactly once right now, must count once on the \
+             heatmap — not once per historical `done` event"
+        );
+        let by: std::collections::HashMap<Date, u32> =
+            days.iter().map(|d| (d.date, d.count)).collect();
+        assert_eq!(
+            by.get(&Date::constant(2026, 7, 13)).copied(),
+            Some(1),
+            "counted on the LATEST completion, not the superseded first one"
+        );
+    }
+
+    /// #164 mirror: `chart throughput`'s `added` column must exclude a task
+    /// whose CURRENT status is cancelled, matching D24's exclusion (`report`
+    /// already does this) — otherwise `throughput --weeks 520`'s added sum
+    /// counts every task ever created, cancelled included, while `report`
+    /// excludes them and the two numbers can never agree.
+    #[test]
+    fn throughput_added_excludes_a_task_that_is_currently_cancelled() {
+        let evs = vec![
+            ev("add", "2026-07-13T09:00:00Z", "a"),
+            ev("add", "2026-07-13T09:00:00Z", "b"),
+        ];
+        let members = [
+            member_status("a", (2026, 7, 13), "pending"),
+            member_status("b", (2026, 7, 13), "cancelled"),
+        ];
+        let buckets = throughput(&result(evs), &members, 1, anchor());
+        let added: u32 = buckets.iter().map(|b| b.added).sum();
+        assert_eq!(
+            added, 1,
+            "a cancelled task must not inflate `added`, matching report's D24 default"
+        );
+    }
+
+    /// #167: the ASCII burndown ramp collapses an 8-level rise to 2-3 symbols.
+    /// A monotonically increasing series should produce a monotonically
+    /// non-decreasing set of ASCII glyphs across (at least) 4 distinct levels
+    /// — not the 3-symbol (`_`, `.`, `#`) ramp `spark_glyph` currently has.
+    #[test]
+    fn ascii_burndown_ramp_has_more_than_three_levels() {
+        let levels: std::collections::BTreeSet<char> = (0..=10)
+            .map(|i| spark_glyph(i as f64 / 10.0, false))
+            .collect();
+        assert!(
+            levels.len() >= 6,
+            "the ASCII ramp must have several distinct levels, not the 3-symbol \
+             ramp that flattens a rising burndown into a near-flat line: {levels:?}"
+        );
+    }
+
+    /// #234 item 9: "current streak 1 days" does not singularise.
+    #[test]
+    fn heatmap_streak_line_singularises_one_day() {
+        let evs = vec![ev("done", "2026-07-13T09:00:00Z", "a")];
+        let members = [member_status("a", (2026, 7, 1), "done")];
+        let days = heatmap(&result(evs), &members, 1, anchor());
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let out = render_heatmap(&ctx, &days, anchor());
+        assert!(
+            out.contains("streak 1 day ")
+                || out.contains("streak 1 day\n")
+                || out.contains("streak 1 day·"),
+            "expected a singular \"1 day\", got: {out:?}"
+        );
+        assert!(
+            !out.contains("streak 1 days"),
+            "\"1 days\" is ungrammatical: {out:?}"
+        );
+    }
+
+    /// #234 item 9 mirror: burndown's "flat over 1 days" / "up N over 1 days".
+    #[test]
+    fn burndown_trend_line_singularises_one_day() {
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let series = [RemainingPoint {
+            date: anchor(),
+            remaining: 3,
+        }];
+        let out = render_burndown(&ctx, &series, "test", true);
+        assert!(
+            !out.contains("over 1 days"),
+            "\"over 1 days\" is ungrammatical: {out:?}"
+        );
+        assert!(out.contains("over 1 day"), "expected singular: {out:?}");
+    }
+
+    /// #234 item 6: on a store that has never held a task at all, the
+    /// burndown must not invent a y-axis maximum of "1" (nothing was ever
+    /// plotted at that height) and must not congratulate the user with
+    /// "cleared" (there was never a backlog to clear).
+    #[test]
+    fn burndown_on_a_store_with_no_tasks_says_so_instead_of_inventing_an_axis() {
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let series: Vec<RemainingPoint> = (0..30)
+            .map(|i| RemainingPoint {
+                date: anchor().saturating_sub((i as i64).days()),
+                remaining: 0,
+            })
+            .collect();
+        let out = render_burndown(&ctx, &series, "all tasks", false);
+        assert!(
+            !out.contains("cleared"),
+            "a store that never had a task was not \"cleared\": {out:?}"
+        );
+        assert!(
+            out.contains("no open tasks yet") || out.contains("no tasks"),
+            "expected a plain no-data message, got: {out:?}"
+        );
+    }
+
+    /// #234 item 4: `chart throughput --weeks 1` must not label a single
+    /// partial week's rate "4-wk velocity" — the 4-week figure must come from
+    /// the last four COMPLETE ISO weeks, independent of the display window.
+    /// Reproduced here at the `render_throughput` level against the CURRENT
+    /// signature, which derives velocity from whatever `buckets` it was
+    /// handed — so a 1-bucket window makes "4-wk" a lie.
+    #[test]
+    fn throughput_four_week_velocity_is_independent_of_the_display_window() {
+        // Four complete weeks of history (2 done/week), then a 5th (current,
+        // partial) week with a burst of 10 done — done/wk over the real last
+        // four complete weeks is 2.0, not whatever a 1-week window would say.
+        // `anchor()` is a Monday, so `anchor - 7*k` lands on the Monday of the
+        // ISO week `k` weeks earlier — arithmetic, not a formatted day-of-month
+        // that could run negative.
+        let mut evs = Vec::new();
+        let mut members = Vec::new();
+        for w in 0..4u32 {
+            let week_monday = anchor().saturating_sub(((7 * (4 - w)) as i64).days());
+            for i in 0..2u32 {
+                let id = format!("w{w}-{i}");
+                let d = week_monday.saturating_add((i as i64).days());
+                evs.push(ev("done", &format!("{d}T09:00:00Z"), &id));
+                members.push(member_status(&id, (2026, 6, 1), "done"));
+            }
+        }
+        for i in 0..10 {
+            let id = format!("current-{i}");
+            evs.push(ev("done", "2026-07-13T09:00:00Z", &id));
+            members.push(member_status(&id, (2026, 7, 13), "done"));
+        }
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let one_week = throughput(&result(evs.clone()), &members, 1, anchor());
+        let velocity = velocity_4wk(&result(evs), &members, anchor());
+        let out = render_throughput(&ctx, &one_week, velocity);
+        assert!(
+            out.contains("4-wk velocity 2.0 done/wk"),
+            "the 4-wk figure must reflect the last 4 COMPLETE weeks (2.0/wk), \
+             not the single partial week on screen: {out:?}"
+        );
+    }
+
+    /// #234 item 8: a heatmap window padded out to whole weeks always carries
+    /// a few always-zero days after today (the rest of the current ISO week).
+    /// Those must not render with the SAME glyph as a day that already
+    /// happened and simply had no completions — that reads as an idle day,
+    /// when it has not occurred yet at all.
+    ///
+    /// `anchor()` is a Monday, so within its own (single) week only Monday
+    /// itself is "today or earlier" and Tue–Sun are all still ahead of it —
+    /// exactly the padded tail the real bug hits at any anchor.
+    #[test]
+    fn heatmap_does_not_draw_future_days_as_idle_ones() {
+        let days: Vec<DayCount> = (0..7)
+            .map(|i| DayCount {
+                date: anchor().saturating_add((i as i64).days()),
+                count: 0,
+            })
+            .collect();
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let out = render_heatmap(&ctx, &days, anchor());
+        let mon = out.lines().find(|l| l.contains("Mon")).unwrap();
+        assert!(
+            mon.contains('.'),
+            "Monday (the anchor itself) already happened and had zero \
+             completions — it must draw the ordinary idle glyph: {mon:?}"
+        );
+        // Only every other weekday label is printed, so the remaining rows
+        // are matched by position instead: every row after Monday's in this
+        // single-week fixture is a FUTURE day and must not carry the idle
+        // glyph.
+        let future_rows: Vec<&str> = out.lines().skip(2).take(6).collect();
+        assert_eq!(
+            future_rows.len(),
+            6,
+            "expected the 6 remaining weekday rows: {out:?}"
+        );
+        for row in future_rows {
+            assert!(
+                !row.contains('.'),
+                "a day that has not happened yet must not draw as idle: {row:?}\n{out}"
+            );
+        }
     }
 }
