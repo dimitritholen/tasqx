@@ -948,7 +948,9 @@ pub(super) enum ChartKind {
         #[arg(long, value_parser = window_parser(MAX_CHART_WEEKS))]
         weeks: Option<usize>,
     },
-    /// Remaining open tasks over the last N days (from the events table).
+    /// Remaining open tasks over the last N days (reconstructed backwards
+    /// from each task's current status, not read forwards off the events
+    /// table — D59/D60).
     Burndown {
         /// Restrict to a project (else all tasks).
         // The archived-inclusive provider, unlike every other `--project`. This
