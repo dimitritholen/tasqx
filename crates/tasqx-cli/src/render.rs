@@ -19,9 +19,29 @@ use crate::AGENDA_MAX_DAYS;
 /// clear the screen, move the cursor, set the window title, or spoof CLI output.
 /// This is the terminal-path analogue of `html::esc`. C0 controls (except tab),
 /// DEL, and C1 controls are dropped; ordinary printable text is untouched.
+///
+/// For a field that is expected to hold ONE line (a title, a source, a search
+/// snippet), a stray newline is itself part of what this guards against — it
+/// is how a hostile field would forge a second line of fake CLI output — so it
+/// is dropped along with every other control byte. A field that is legitimately
+/// multiple lines wants [`san_multiline`] instead.
 pub fn san(s: &str) -> String {
     s.chars()
         .filter(|&c| c == '\t' || !c.is_control())
+        .collect()
+}
+
+/// Same guard as [`san`], for text that is legitimately more than one line — a
+/// stored memory doc's body, not a title or a snippet. `\n` survives alongside
+/// `\t`; every other control byte (escape, bell, backspace, carriage return,
+/// C1) is still dropped, so paragraph breaks and list items reach the screen
+/// without opening the escape-injection door `san` closes (#195: `memory show`
+/// ran a whole markdown doc through `san` and every newline in it vanished,
+/// even though `memory show --json` and D71's "stored verbatim" promise both
+/// carried them).
+pub fn san_multiline(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c == '\t' || c == '\n' || !c.is_control())
         .collect()
 }
 
@@ -2450,6 +2470,25 @@ mod tests {
         assert!(!clean.contains('\x1b'), "escape byte leaked: {clean:?}");
         assert!(!clean.contains('\x07') && !clean.contains('\x08'));
         assert_eq!(clean, "[2Jpwned]0;evil ok\ttab", "printable kept, tab kept");
+    }
+
+    /// `san_multiline` is `san` minus the newline drop: a stored doc's
+    /// paragraph breaks and list items survive, while a bare escape byte
+    /// smuggled inside the same body still does not (#195).
+    #[test]
+    fn san_multiline_keeps_newlines_and_still_strips_escape_bytes() {
+        let doc = "# Runbook\n\nDeploys go\x1bthrough\n\n- step one\n- step two\ttabbed";
+        let clean = san_multiline(doc);
+        assert_eq!(
+            clean, "# Runbook\n\nDeploys gothrough\n\n- step one\n- step two\ttabbed",
+            "newlines and tabs kept, the lone escape byte dropped"
+        );
+        assert!(!clean.contains('\x1b'), "escape byte leaked: {clean:?}");
+        assert_eq!(
+            clean.matches('\n').count(),
+            doc.matches('\n').count(),
+            "every newline in the source must survive: {clean:?}"
+        );
     }
 
     #[test]
