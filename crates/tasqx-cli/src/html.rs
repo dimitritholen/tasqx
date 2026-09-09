@@ -172,24 +172,19 @@ impl<'a> Report<'a> {
         });
         completed_recent.reverse();
 
-        // Velocity: done events in the last 7 days.
-        let velocity = self
-            .events
-            .get("events")
-            .and_then(Value::as_array)
-            .map(|evs| {
-                evs.iter()
-                    .filter(|e| e.get("op").and_then(Value::as_str) == Some("done"))
-                    .filter(|e| {
-                        e.get("ts")
-                            .and_then(Value::as_str)
-                            .and_then(parse_ts)
-                            .map(|t| t >= cutoff)
-                            .unwrap_or(false)
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
+        // Velocity: the SAME count as "done this week" (#165), not a second
+        // computation over the audit log. This used to count
+        // `done` events off the unscoped `event.list` result in the same
+        // 7-day window — two tables, two windows that happened to agree only
+        // by coincidence, and disagreed by exactly one on the audited store
+        // (12 done-this-week vs. 13 velocity/wk in the same minute). Worse,
+        // `event.list` carries no filter (D59 bounds it by time only), so a
+        // report scoped to a project or tag still counted every task's
+        // events — the throughput chart had the identical bug (#162), fixed
+        // the same way one call up in `render` via `chart::throughput`'s
+        // `members`. Reading it off `completed_recent` fixes both at once:
+        // one source, one window, and a number the filter actually scopes.
+        let velocity = completed_recent.len();
 
         // Top tags across open tasks.
         let mut tag_counts: HashMap<String, u32> = HashMap::new();
@@ -246,10 +241,16 @@ impl<'a> Report<'a> {
         let d = self.derive();
 
         // ---- charts ----
-        let throughput = chart::throughput(self.events, 12, today());
         // Through the shared projection, so the report and the dashboard cannot
         // disagree about whether a task was open on a given day.
         let members = chart::members_of(&json!({ "tasks": tasks }));
+        // Scoped to `members` (#162): `self.events` is `event.list`'s
+        // store-wide result (D59 bounds it by time, not by the report's
+        // filter), so without this a filtered report drew throughput bars for
+        // every task in the store — a zero-match filter still showed the
+        // whole store's W30. `burndown` already took this scoping; the chart
+        // had no equivalent parameter until now.
+        let throughput = chart::throughput(self.events, 12, today(), Some(&members));
         let burndown = chart::burndown(self.events, &members, 30, today());
 
         // ---- assemble ----
@@ -265,8 +266,13 @@ impl<'a> Report<'a> {
         ));
         body.push_str("<main>");
 
+        // "Weekly throughput" — matching the terminal chart's own heading
+        // (`chart::render_throughput`) — not "This week's throughput" (#165):
+        // the series is 12 WEEKS, and titling it as a single week put a third,
+        // disagreeing sense of "this week" on the same page as "done this
+        // week" (rolling 7 days) and this very chart's own ISO-week buckets.
         body.push_str(&section(
-            "This week's throughput",
+            "Weekly throughput",
             "Tasks opened versus closed, by ISO week.",
             &svg_throughput(&throughput, self.theme),
         ));
@@ -308,6 +314,13 @@ impl<'a> Report<'a> {
     /// even when every bucket is zero: a report whose token tiles vanish on an
     /// unmeasured store would leave a reader guessing whether the work was free
     /// or simply never measured, and those are different answers.
+    ///
+    /// `velocity` carries its window in the label (`velocity /wk (7d)`, #165):
+    /// it used to be silent about it, which read as directly comparable to
+    /// the terminal's differently-windowed "4-wk velocity" — two numbers
+    /// nobody could tell apart without opening both. `velocity` also now
+    /// equals `done` (both come from `Report::derive`'s `completed_recent`),
+    /// so the two tiles can no longer disagree either.
     fn header(
         &self,
         open: usize,
@@ -327,7 +340,7 @@ impl<'a> Report<'a> {
              </header>",
             stat(&open.to_string(), "open"),
             stat(&done.to_string(), "done this week"),
-            stat(&velocity.to_string(), "velocity /wk"),
+            stat(&velocity.to_string(), "velocity /wk (7d)"),
             stat_flag(&overdue.to_string(), "overdue", overdue > 0),
         )
     }
@@ -1179,6 +1192,74 @@ mod tests {
         // The task title's angle brackets/ampersand must be escaped, never raw.
         assert!(doc.contains("Ship &lt;the&gt; v1 &amp; freeze"));
         assert!(!doc.contains("Ship <the> v1"));
+    }
+
+    /// #162 (scope) + #165 (two windows, two answers): the header's "velocity
+    /// /wk" tile counted `done` events straight off the unscoped `event.list`
+    /// result, while the neighbouring "done this week" tile counted completed
+    /// tasks off the (correctly scoped) export — two tables, two windows that
+    /// happened to agree only by coincidence, and the audit's own repro
+    /// (46 open / 12 done this week / 13 velocity /wk on one store, in the
+    /// same minute) is this exact drift. A `done` event for a task the
+    /// filter excluded inflated velocity alone. After the fix both tiles read
+    /// off `completed_recent`, so they cannot disagree and an out-of-scope
+    /// event can no longer move only one of them.
+    #[test]
+    fn velocity_matches_completed_this_week_and_ignores_events_outside_the_scoped_export() {
+        let (summary, export, actionable, mut events) = synthetic();
+        // A 'done' event for a task NOT in the scoped export — as if it
+        // belonged to a project this report's filter excluded.
+        events["events"].as_array_mut().unwrap().push(json!({
+            "op": "done", "ts": "2026-07-14T09:00:00Z", "entity": "task",
+            "entity_id": "OUT-OF-SCOPE"
+        }));
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let report = Report {
+            theme: &th,
+            group_by: "project",
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        };
+        let d = report.derive();
+        assert_eq!(
+            d.velocity,
+            d.completed_recent.len(),
+            "velocity ({}) must equal done-this-week ({}) — same source, same window",
+            d.velocity,
+            d.completed_recent.len()
+        );
+        assert_eq!(
+            d.velocity, 1,
+            "the out-of-scope task's done event must not inflate velocity: {}",
+            d.velocity
+        );
+    }
+
+    /// #165: "velocity /wk" carried no window, reading as directly comparable
+    /// to the terminal's differently-windowed "4-wk velocity" with nothing on
+    /// either surface saying they measure different spans. And "This week's
+    /// throughput" mislabeled a 12-WEEK series as a single week — a third,
+    /// disagreeing sense of "this week" beside "done this week" (rolling 7
+    /// days) and the chart's own ISO-week buckets.
+    #[test]
+    fn velocity_states_its_window_and_the_throughput_heading_does_not_claim_a_single_week() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("velocity /wk (7d)"),
+            "the velocity tile must name its window: {doc}"
+        );
+        assert!(
+            !doc.contains("This week's throughput"),
+            "a 12-week series must not be titled as a single week: {doc}"
+        );
+        assert!(
+            doc.contains("Weekly throughput"),
+            "retitled to match the terminal chart's own heading: {doc}"
+        );
     }
 
     /// `report --html` defaults to **stdout** — the same terminal `render.rs`
