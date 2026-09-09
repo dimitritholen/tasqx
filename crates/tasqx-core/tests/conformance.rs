@@ -677,6 +677,10 @@ const R_STORE_EXPORT: Shape = &[&[
     req("dropped_dependencies", Ty::Int),
     req_of("projects", Ty::Array, &[PROJECT_EXPORT_ROW]),
     req_of("docs", Ty::Array, &[DOC_EXPORT_ROW]),
+    // The whole audit log (minus the bookkeeping `store.import` itself
+    // writes, #176) — the SAME row shape `event.list` freezes, because it is
+    // the same table.
+    req_of("events", Ty::Array, &[EVENT_ROW]),
     nul("default_project", Ty::Str),
 ]];
 
@@ -689,6 +693,11 @@ const R_STORE_IMPORT: Shape = &[&[
     // descend into: they are plain strings.
     req("projects_created", Ty::Array),
     req("docs_imported", Ty::Int),
+    // Whether the document DECLARED a `docs` section at all (#179) — distinct
+    // from `docs_imported`, which is 0 for both an empty section and a
+    // missing one, and could not tell them apart on its own.
+    req("docs_declared", Ty::Bool),
+    req("events_imported", Ty::Int),
     nul("default_project", Ty::Str),
 ]];
 

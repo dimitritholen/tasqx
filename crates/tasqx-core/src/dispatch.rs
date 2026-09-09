@@ -147,7 +147,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("store.export", &["filter"], false),
     (
         "store.import",
-        &["tasks", "projects", "default_project", "docs"],
+        &["tasks", "projects", "default_project", "docs", "events"],
         true,
     ),
     ("event.list", &["limit", "ref", "entity", "from"], false),

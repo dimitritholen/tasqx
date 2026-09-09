@@ -289,12 +289,18 @@ const METHODS: [(&str, &str, &str); 32] = [
     (
         "store.export",
         "<code>filter?</code>",
-        "<code>{tasks, projects, docs, default_project, dropped_dependencies}</code>.",
+        "<code>{tasks, projects, docs, events, default_project, dropped_dependencies}</code>. \
+         <code>events</code> is the whole audit log except the bookkeeping rows a `store.import` \
+         itself writes.",
     ),
     (
         "store.import",
-        "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>, <code>docs?</code>",
-        "<code>{imported, projects_imported, projects_created, docs_imported, default_project}</code>.",
+        "<code>tasks</code>, <code>projects?</code>, <code>default_project?</code>, \
+         <code>docs?</code>, <code>events?</code>",
+        "<code>{imported, projects_imported, projects_created, docs_imported, docs_declared, \
+         events_imported, default_project}</code>. A task already in the store at a higher \
+         <code>_rev</code> than the payload's refuses the whole import (conflict) rather than \
+         silently discarding the annotations, tags and edges added since.",
     ),
     (
         "event.list",
@@ -2248,7 +2254,13 @@ fn page_data() -> String {
     ));
     s.push_str(&snippet(
         "tasqx export +api | TASQX_DB=/tmp/other.db tasqx import -",
-        "Imported 1 task(s), 1 project(s)",
+        "Imported 1 task(s), 1 project(s), 0 memory doc(s)",
+    ));
+    s.push_str(&note(
+        "The doc count is printed even when it is zero, and a document with no <code>docs</code> \
+         section at all (written by a tasqx older than D41) says so explicitly: <code>note: the \
+         document carried no `docs` section, so no memory docs were restored</code>. \
+         Present-and-empty and absent used to print the identical line.",
     ));
 
     s.push_str(&h3("A field the schema does not name is rejected"));
