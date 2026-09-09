@@ -813,7 +813,9 @@ fn build_ctx(flag: Option<&str>) -> Ctx {
     }
     let dir = themes_dir();
     let theme = theme::load(&name, dir.as_deref());
-    Ctx::new(theme, Caps::detect()).with_cols(theme::detect_cols())
+    Ctx::new(theme, Caps::detect())
+        .with_cols(theme::detect_cols())
+        .with_time_format(config_detail_time_format())
 }
 
 /// Result of a rendered command: the raw API result (for `--json`) plus the
