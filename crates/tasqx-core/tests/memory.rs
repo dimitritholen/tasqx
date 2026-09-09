@@ -404,6 +404,71 @@ fn memory_import_replaces_by_source_and_is_all_or_nothing() {
     assert_eq!(after["count"], 0, "a refused batch must write nothing");
 }
 
+/// #178/#198: a re-import that replaces a doc sharing its `source` used to
+/// DELETE the old row and mint a fresh UUIDv7 for the new one, every single
+/// time — so `memory show <id>` (and any annotation or MCP `tasqx_get_memory`
+/// call citing that id) 404'd after ANY re-run, and the result line
+/// ("Imported 1 doc(s) into memory") never said a replacement had even
+/// happened. This pins both halves of the fix: the id and creation date
+/// survive a source-replace, and the engine reports how many rows it
+/// replaced.
+#[test]
+fn memory_import_keeps_the_doc_id_stable_across_a_source_replace_and_reports_it() {
+    let e = engine();
+    let first = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "Runbook", "body": "ORIGINAL: hard won", "source": "runbook.md" }] }),
+    )
+    .unwrap();
+    assert_eq!(first["imported"], 1);
+    assert_eq!(
+        first["replaced"], 0,
+        "a brand-new doc replaces nothing: {first}"
+    );
+    let id = first["docs"][0]["id"].as_str().unwrap().to_string();
+    let created = call(&e, "memory.get", json!({ "id": id.clone() })).expect("memory.get")
+        ["created"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The file is regenerated (e.g. truncated) and the import re-run.
+    let second = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "Runbook", "body": "TODO", "source": "runbook.md" }] }),
+    )
+    .unwrap();
+    assert_eq!(second["imported"], 1);
+    assert_eq!(
+        second["replaced"], 1,
+        "the re-run must say it replaced a doc: {second}"
+    );
+    assert_eq!(
+        second["docs"][0]["replaced"], true,
+        "and name which entry: {second}"
+    );
+    let id_after = second["docs"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        id_after, id,
+        "the id must survive a source-replace, so a citation to it does not 404"
+    );
+
+    // The OLD id still resolves — to the NEW content, not a 404.
+    let doc =
+        call(&e, "memory.get", json!({ "id": id.clone() })).expect("memory.get by the same id");
+    assert_eq!(doc["body"], "TODO");
+    assert_eq!(
+        doc["created"], created,
+        "a source-replace updates the doc, it does not recreate it"
+    );
+
+    // And it still does not duplicate: one row for that source, not two.
+    let found = call(&e, "memory.search", json!({ "query": "TODO" })).unwrap();
+    assert_eq!(found["count"], 1, "{found}");
+}
+
 /// Review finding: `limit as i64` wrapped a u64 above i64::MAX negative, and
 /// SQLite treats a negative LIMIT as unlimited — the opposite of what the
 /// caller bounded.

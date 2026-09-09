@@ -705,6 +705,12 @@ pub const IMPORT_TOKEN_KEYS: &[&str] = &[
 /// Every key an exported memory doc object can carry. D41, held to D34's gate.
 pub const IMPORT_DOC_KEYS: &[&str] = &["id", "source", "title", "body", "created", "modified"];
 
+/// Every key an exported event object can carry (#176). `id`, `payload`,
+/// `ts` and `actor` are optional so a hand-written or trimmed event still
+/// imports — only `entity`, `entity_id` and `op` are the row's identity.
+pub const IMPORT_EVENT_KEYS: &[&str] =
+    &["id", "entity", "entity_id", "op", "payload", "ts", "actor"];
+
 /// Every key an exported project object can carry. D34's gate, D37's record.
 ///
 /// Deliberately NOT `default`: `project.list` marks the default row with one,
