@@ -235,9 +235,16 @@ fn the_dry_run_rendering_names_apply_and_the_applied_one_does_not() {
     assert!(text.contains("#1"), "one line per changed task: {text}");
     assert!(text.contains("#2"), "one line per changed task: {text}");
     assert!(text.contains("recomputed"), "{text}");
+    // #219: the totals line sums the four buckets across both tasks
+    // (1500+1000 in, 2600+2000 out; 500+0 / 600+0 after) — never the engine's
+    // blended 7100 -> 1100 figure `--json` still carries in `after["totals"]`.
     assert!(
-        text.contains("7100") && text.contains("1100"),
-        "the totals line must carry the delta: {text}"
+        !text.contains("blended"),
+        "the totals line must not blend the four buckets: {text}"
+    );
+    assert!(
+        text.contains("in 2500->500") && text.contains("out 4600->600"),
+        "the totals line must sum the four buckets, not blend them: {text}"
     );
 
     let applied = run(&dir, &["tokens", "recompute", "--apply"]);
