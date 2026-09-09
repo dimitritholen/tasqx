@@ -366,6 +366,32 @@ pub(super) enum Command {
         // added tomorrow is a red build until it is completed too.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
+        /// Sort key(s), e.g. `due` or `-due` for descending (repeatable, or
+        /// comma-separated). Maps straight onto `task.list`'s own `sort` param
+        /// — see `tasqx docs` for the valid names. Default: `-urgency`,
+        /// unchanged from before this flag existed.
+        ///
+        /// `allow_hyphen_values`, unlike the filter positional above: a sort
+        /// key's OWN grammar puts the descending marker on the value
+        /// (`--sort -due`), so clap must not mistake it for another flag.
+        /// Left unvalidated here on purpose — the engine already refuses an
+        /// unknown key naming every valid one (`bad_request`), and repeating
+        /// that list in a second parser is exactly the copy this codebase
+        /// keeps paying for (D30).
+        #[arg(long, allow_hyphen_values = true, value_delimiter = ',')]
+        sort: Vec<String>,
+        /// Cap the number of rows returned. Maps to `task.list`'s `limit`.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Skip this many matching rows before `--limit` is applied. Maps to
+        /// `task.list`'s `offset`.
+        #[arg(long)]
+        offset: Option<u64>,
+        /// Return only these task fields (repeatable, or comma-separated) —
+        /// see `tasqx docs` for the valid names. Maps to `task.list`'s
+        /// `fields`; an unknown name is refused by the engine, same as above.
+        #[arg(long, value_delimiter = ',')]
+        fields: Vec<String>,
     },
     /// What is coming up, when (maps to task.list). `list` ordered by time and
     /// grouped by day, instead of by urgency.
@@ -878,7 +904,7 @@ impl Command {
     /// build instead of shipping a filter nobody can type.
     pub(super) fn filter_tail_mut(&mut self) -> Option<&mut Vec<String>> {
         match self {
-            Command::List { filter }
+            Command::List { filter, .. }
             | Command::Export { filter }
             | Command::Watch { filter }
             | Command::Pick { filter }
@@ -1405,6 +1431,34 @@ mod tests {
         assert!(
             seen >= 6,
             "expected the path-taking args to still carry hints, found {seen}"
+        );
+    }
+
+    /// #154: `core.capabilities` has always listed `task.list`'s params as
+    /// `["filter","sort","limit","offset","fields"]`, and the CLI verb for
+    /// that method had a door for exactly one of them. `--sort -due` in
+    /// particular exercises `allow_hyphen_values`: without it clap reads the
+    /// descending marker as another flag and rejects the whole command.
+    #[test]
+    fn list_takes_sort_limit_offset_and_fields() {
+        assert!(
+            Cli::try_parse_from(["tasqx", "list", "--sort", "-due", "--limit", "5"]).is_ok(),
+            "--sort (with a descending key) and --limit must parse"
+        );
+        assert!(
+            Cli::try_parse_from(["tasqx", "list", "--offset", "10"]).is_ok(),
+            "--offset must parse"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "tasqx",
+                "list",
+                "--fields",
+                "short_id,title,due",
+                "project:work",
+            ])
+            .is_ok(),
+            "--fields must parse alongside the filter positional"
         );
     }
 }
