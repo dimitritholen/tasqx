@@ -313,7 +313,16 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
     ),
     (
         "token.add",
-        "a measurement after the fact, and D50 makes the completion's self-report the primary          channel precisely so one task never mixes channels. An agent with a count to report          has `tasqx_complete_task`.",
+        "a measurement after the fact, and D50 makes the completion's self-report the primary \
+         channel precisely so one task never mixes channels. An agent with a count to report \
+         has `tasqx_complete_task`.",
+    ),
+    (
+        "token.remove",
+        "the corrective half of `token.add` (#210), and the same reasoning keeps it off: an \
+         agent that reports a wrong count fixes it by reporting the right one, and a removal an \
+         agent could reach unsupervised on the ledger a lead reads for budget decisions is a \
+         bigger foot-gun than the gap it closes. A human runs `tasqx api token.remove` instead.",
     ),
     (
         "tokens.recompute",
