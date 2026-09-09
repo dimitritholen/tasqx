@@ -3174,3 +3174,50 @@ fn an_explicit_socket_on_a_verb_that_cannot_honour_it_is_refused_not_ignored() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// #149 — `tasqx list "$FILTER"` is the shape of every wrapper script and
+/// every agent-generated command, and an unset or empty `$FILTER` hands `list`
+/// a single empty-string argument rather than none at all. Bare `tasqx list`
+/// (an EMPTY argv slice) takes the `@working` default; `tasqx list ""` (one
+/// element, empty) reached `from_argv` instead, joined to the literal empty
+/// string, and D27/D35's "empty filter means no filtering" fired — silently
+/// widening "my open work" to the whole store, done and cancelled rows
+/// included, with the same header and no status column to tell the two
+/// answers apart.
+#[test]
+fn an_empty_filter_argument_takes_the_same_default_as_no_argument_at_all() {
+    let dir = fresh_config_dir("empty-filter");
+    let run = |args: &[&str]| {
+        bin("empty-filter", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    ok(&["init", "work"]);
+    ok(&["add", "open task", "--project", "work"]);
+    ok(&["add", "closed task", "--project", "work"]);
+    // A fresh store mints predictably (D4): the two adds above are #1 and #2.
+    ok(&["done", "2"]);
+
+    let bare = ok(&["list"]);
+    let quoted_empty = ok(&["list", ""]);
+    assert_eq!(
+        quoted_empty, bare,
+        "`list \"\"` must render exactly what bare `list` does — the working \
+         set, not the whole store: bare={bare:?} quoted_empty={quoted_empty:?}"
+    );
+    assert!(
+        !quoted_empty.contains("closed task"),
+        "`list \"\"` must not surface a done task the bare default hides: {quoted_empty}"
+    );
+}

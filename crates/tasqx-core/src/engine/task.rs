@@ -1233,6 +1233,7 @@ impl Engine {
             t.urgency = urgency::score_at(t.priority, t.due.as_deref(), &t.created, now_ts);
             let ctx = MatchCtx {
                 status: t.status,
+                priority: t.priority,
                 project: t.project.as_deref(),
                 tags: &snapshot.tags,
                 due: t.due.as_deref(),
