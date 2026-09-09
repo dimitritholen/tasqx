@@ -269,6 +269,15 @@ pub fn done(ctx: &Ctx, result: &Value) -> String {
             )
         ));
     }
+    // #214/D50: a completion with no self-report carries a `tokens_hint`
+    // teaching the ONE thing that makes tasqx's headline feature work — and
+    // the CLI used to generate it and then throw it away. `muted`, and
+    // rendered exactly once (the response carries at most one), so it reads
+    // as a footnote rather than competing with the completion line above it.
+    if let Some(hint) = result.get("tokens_hint").and_then(Value::as_str) {
+        out.push_str(&ctx.paint("muted", hint));
+        out.push('\n');
+    }
     out
 }
 
@@ -2743,13 +2752,42 @@ mod tests {
         );
     }
 
-    /// D50: `tokens_hint` targets machine callers who see raw JSON. The CLI
-    /// `done` verb has no token flags, so printing the hint would recommend
-    /// the impossible. The fixture carries the key deliberately — present and
-    /// deliberately unrendered, the same shape as the D48a tokens_total guard:
-    /// a payload without it could not tell rendering from absence.
+    /// #214: `tokens_hint` used to target machine callers only, on the theory
+    /// that the CLI `done` verb had no token flags of its own — so printing
+    /// the hint would recommend the impossible. `done` now HAS those flags
+    /// (`--input-tokens` etc., D50/D65), so the theory no longer holds: a
+    /// terminal user who never passes them is exactly the reader the hint is
+    /// for, and hiding it is how the feature stayed invisible from its
+    /// primary surface. The hint renders once, muted, under the Done line.
     #[test]
-    fn done_never_renders_the_tokens_hint() {
+    fn done_renders_the_tokens_hint_once_muted() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let hint = "no token counts were self-reported; log-parse \
+            attribution is a best-effort fallback";
+        let out = done(
+            &ctx,
+            &json!({
+                "status": "done",
+                "completed": "2026-07-31T10:00:00Z",
+                "unblocked": [],
+                "tokens_hint": hint,
+            }),
+        );
+        assert!(
+            out.contains("Done"),
+            "the completion line itself went missing: {out:?}"
+        );
+        assert_eq!(
+            out.matches(hint).count(),
+            1,
+            "the hint should render exactly once: {out:?}"
+        );
+    }
+
+    /// A completion that DID self-report (or a plain response with no hint
+    /// key at all) must not grow a hint line from nothing.
+    #[test]
+    fn done_omits_the_tokens_hint_line_when_the_response_has_none() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let out = done(
             &ctx,
@@ -2757,17 +2795,11 @@ mod tests {
                 "status": "done",
                 "completed": "2026-07-31T10:00:00Z",
                 "unblocked": [],
-                "tokens_hint": "no token counts were self-reported; log-parse \
-                    attribution is a best-effort fallback"
             }),
         );
         assert!(
-            out.contains("Done"),
-            "the completion line itself went missing: {out:?}"
-        );
-        assert!(
             !out.contains("tokens_hint") && !out.contains("self-reported"),
-            "the machine-only hint reached the terminal: {out:?}"
+            "a hint appeared where the response carried none: {out:?}"
         );
     }
 
