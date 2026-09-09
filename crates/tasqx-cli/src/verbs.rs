@@ -73,7 +73,7 @@ pub(crate) fn run_add(
 ) -> CmdOutcome {
     // argv goes in unjoined: the shell's argument boundaries are information the
     // parser needs (see `sugar::parse_add`), and joining destroys them.
-    let parsed = sugar::parse_add(&title, flags)?;
+    let parsed = sugar::parse_add(&title, flags, sugar::ParseContext::Add)?;
     // Taken before the fields are moved into `params`; see `name_the_cut`.
     let cut = cut_project_name(&parsed);
 
@@ -156,7 +156,7 @@ pub(crate) fn run_modify(
     clear: &[String],
     expected_rev: Option<i64>,
 ) -> CmdOutcome {
-    let parsed = sugar::parse_add(&rest, flags)?;
+    let parsed = sugar::parse_add(&rest, flags, sugar::ParseContext::Modify)?;
     // Taken before the fields are moved into `set`; see `name_the_cut`.
     let cut = cut_project_name(&parsed);
     let now = now_ts();

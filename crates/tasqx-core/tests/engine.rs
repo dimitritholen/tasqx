@@ -76,6 +76,38 @@ fn storage_round_trip() {
     assert_eq!(t["project"], "work");
 }
 
+/// #191: `task.add`'s result carried `id`/`short_id`/`status`/`project`/
+/// `urgency`/`recurrence` and nothing else, so a caller had no way to verify
+/// what the CLI's inline sugar scanner had actually done to the title it sent
+/// — `add "Explain what due:friday means in the filter DSL"` silently ate the
+/// word `due:friday` and invented a `due` date, and the `--json` result
+/// looked identical to one where nothing had been touched. `title`, `due` and
+/// `tags` are additive (D56 allows a result to grow, closed against a
+/// declared shape) and are exactly the three fields inline sugar can mutate
+/// or fabricate out of the title text.
+#[test]
+fn task_add_echoes_the_fields_its_own_title_can_silently_mutate() {
+    let e = engine();
+    let added = e
+        .task_add(&json!({
+            "title": "Explain what means in the filter DSL",
+            "due": "2026-09-11T00:00:00Z",
+            "tags": ["release"],
+        }))
+        .unwrap();
+    assert_eq!(added["title"], "Explain what means in the filter DSL");
+    assert_eq!(added["due"], "2026-09-11T00:00:00Z");
+    assert_eq!(added["tags"], json!(["release"]));
+
+    // The two optional fields are present-and-null/empty, not absent, when
+    // nothing set them — the same "present" contract `task.get` already
+    // gives, so a caller does not have to branch on key-existence.
+    let bare = e.task_add(&json!({ "title": "bare" })).unwrap();
+    assert_eq!(bare["title"], "bare");
+    assert_eq!(bare["due"], Value::Null);
+    assert_eq!(bare["tags"], json!([]));
+}
+
 // ---- lifecycle --------------------------------------------------------------
 
 #[test]
@@ -473,6 +505,48 @@ fn a_future_scheduled_still_holds_the_task_in_backlog() {
     );
 
     e.task_modify(&json!({ "ref": sid, "set": { "scheduled": "2020-01-01T00:00:00Z" } }))
+        .unwrap();
+    assert_eq!(
+        e.task_get(&json!({ "ref": sid })).unwrap()["status"],
+        "pending"
+    );
+}
+
+/// #157, amending D29: `task.modify <ref> {set:{wait:<future>}}` on an
+/// already-`pending` task used to print the new value and change nothing
+/// else — the task stayed fully visible in `list` for the whole deferred
+/// span, unlike `task.add` with the identical `wait`, which parks the task in
+/// `backlog` immediately. `task.modify` itself never touches the `status`
+/// column (see its handler); this closes purely by extending the read-side
+/// derivation every load already goes through, so no new write path exists.
+#[test]
+fn a_future_wait_set_by_modify_parks_an_already_pending_task_in_backlog() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "modwait" })).unwrap()["short_id"].clone();
+    assert_eq!(
+        e.task_get(&json!({ "ref": sid })).unwrap()["status"],
+        "pending",
+        "no wait yet: an ordinary pending task"
+    );
+
+    e.task_modify(&json!({ "ref": sid, "set": { "wait": "2999-01-01T00:00:00Z" } }))
+        .unwrap();
+
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    assert_eq!(
+        got["status"], "backlog",
+        "task.get must report the same status `add` would have given this wait"
+    );
+
+    let listed = e.task_list(&json!({ "filter": "status:pending" })).unwrap();
+    assert_eq!(
+        listed["count"], 0,
+        "task.list must agree with task.get: not in the pending set any more"
+    );
+
+    // Clearing the wait releases it again — the derivation is total, not a
+    // one-way trapdoor.
+    e.task_modify(&json!({ "ref": sid, "set": { "wait": Value::Null } }))
         .unwrap();
     assert_eq!(
         e.task_get(&json!({ "ref": sid })).unwrap()["status"],

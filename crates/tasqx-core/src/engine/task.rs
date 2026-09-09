@@ -295,6 +295,14 @@ impl Engine {
             "project": project,
             "urgency": urg,
             "recurrence": recurrence,
+            // #191: the CLI's inline sugar scanner can silently rewrite `title`
+            // (eating a `key:value`-shaped interior word) and fabricate `due`
+            // out of nothing the caller stated as a date — and `--json` echoed
+            // none of it, so the one caller most likely to hit this (an agent
+            // writing an English title) could not detect it. Additive per D56.
+            "title": title,
+            "due": due,
+            "tags": tags,
         }))
     }
 

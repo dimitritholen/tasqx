@@ -97,12 +97,23 @@ pub enum Status {
 /// automatically when their date arrives").
 ///
 /// A task is parked in `backlog` exactly while its `wait` or `scheduled` instant
-/// is still ahead of `now`; once either has passed it is `pending`. Only that
-/// one edge: any other `stored` status is returned untouched, because `pending`,
-/// `active`, `done` and `cancelled` were all reached because the *user* said so,
-/// and no clock may undo that. (DESIGN has no `pending --> backlog` edge, so
-/// pushing a wait back into the future on an already-released task is a
-/// different question, deliberately left alone here.)
+/// is still ahead of `now`, and is `pending` otherwise — for BOTH `backlog` and
+/// `pending` as the stored status (#157, amending D29). Every other `stored`
+/// status is returned untouched, because `active`, `done` and `cancelled` were
+/// all reached because the *user* said so, and no clock may undo that.
+///
+/// The two open statuses are therefore total functions of the same clock
+/// question, in both directions: `backlog -> pending` when the date has
+/// passed, and — the edge D29 originally left out, "a different question,
+/// deliberately left alone" — `pending -> backlog` when a later `modify` sets
+/// one back into the future. D29's own reasoning for the first direction
+/// applies unchanged to the second: `task.modify <ref> wait:<future>` on a
+/// pending task printed the new value and changed nothing else, leaving the
+/// task fully visible in `list` for the whole deferred span while `add` with
+/// the identical token parked it in `backlog` at once — a field the user
+/// explicitly set that does nothing and says nothing, which is the same
+/// invisible-field shape D29 called "the worst instance yet" for the mirror
+/// case (hiding work the user had explicitly scheduled).
 ///
 /// Three callers, one rule. `task.add` and the recurrence spawn used to inline
 /// `if is_future(wait) || is_future(scheduled)` separately — the same expression
@@ -122,10 +133,10 @@ pub fn effective_status(
     scheduled: Option<&str>,
     now: Timestamp,
 ) -> Status {
+    let held = is_future_at(wait, now) || is_future_at(scheduled, now);
     match stored {
-        Status::Backlog if !is_future_at(wait, now) && !is_future_at(scheduled, now) => {
-            Status::Pending
-        }
+        Status::Backlog if !held => Status::Pending,
+        Status::Pending if held => Status::Backlog,
         other => other,
     }
 }
@@ -727,20 +738,16 @@ mod release_tests {
         );
     }
 
-    /// No clock may move a status the user chose. A task started, finished or
-    /// abandoned stays where it is even with a wait far in the future — and a
-    /// released task is not pushed back into the backlog either, since DESIGN
-    /// has no such edge.
+    /// No clock may move a status the user committed to by starting, finishing
+    /// or abandoning the task — a wait far in the future changes nothing for
+    /// any of the three. (`pending`, the fourth open-ish status, is NOT immune
+    /// any more: see `a_future_wait_parks_an_already_pending_task_in_backlog_
+    /// too`, #157.)
     #[test]
-    fn only_backlog_is_subject_to_the_clock() {
+    fn only_active_done_and_cancelled_are_immune_to_the_clock() {
         let now = at("2026-07-19T12:00:00Z");
         let future = Some("2999-01-01T00:00:00Z");
-        for s in [
-            Status::Pending,
-            Status::Active,
-            Status::Done,
-            Status::Cancelled,
-        ] {
+        for s in [Status::Active, Status::Done, Status::Cancelled] {
             assert_eq!(
                 effective_status(s, future, future, now),
                 s,
@@ -752,5 +759,53 @@ mod release_tests {
                 "{s:?} with no dates"
             );
         }
+    }
+
+    /// #157: `task.modify <ref> wait:<future>` on an already-`pending` task
+    /// printed the new value and left the task fully visible in `list` for
+    /// the whole intervening span — `add` with the identical token parks the
+    /// task in `backlog` immediately. D29 scoped the derived edge to
+    /// `backlog -> pending` only and left the reverse "a different question,
+    /// deliberately left alone"; this closes it, by the same reasoning D29's
+    /// own "why" already gives for the forward edge — a field the user
+    /// explicitly set that changes nothing and says nothing is the same
+    /// failure with the sign flipped. `active`, `done` and `cancelled` stay
+    /// exactly as immune as before (see `only_active_done_and_cancelled_are_
+    /// immune_to_the_clock`, this test's neighbour).
+    #[test]
+    fn a_future_wait_parks_an_already_pending_task_in_backlog_too() {
+        let now = at("2026-07-19T12:00:00Z");
+        let future = "2999-01-01T00:00:00Z";
+        let past = "2020-01-01T00:00:00Z";
+
+        // Either field, alone, holds a pending task exactly as it holds a
+        // backlog one.
+        assert_eq!(
+            effective_status(Status::Pending, Some(future), None, now),
+            Status::Backlog
+        );
+        assert_eq!(
+            effective_status(Status::Pending, None, Some(future), now),
+            Status::Backlog
+        );
+
+        // A past date, or none at all, leaves a pending task alone — the
+        // read-derived edge only ever depends on the clock, not on being
+        // asked.
+        assert_eq!(
+            effective_status(Status::Pending, Some(past), None, now),
+            Status::Pending
+        );
+        assert_eq!(
+            effective_status(Status::Pending, None, None, now),
+            Status::Pending
+        );
+
+        // The boundary instant itself: `wait` reached is released, matching
+        // `the_boundary_is_the_instant_itself` on the other side of the edge.
+        assert_eq!(
+            effective_status(Status::Pending, Some("2026-07-19T12:00:00Z"), None, now),
+            Status::Pending
+        );
     }
 }
