@@ -484,6 +484,11 @@ const R_PROJECT_ARCHIVE: Shape = &[&[
     req("name", Ty::Str),
     req("archived", Ty::Bool),
     req("default_cleared", Ty::Bool),
+    // D89: the open work this archive leaves behind, counted in the same
+    // transaction as the archive itself — never omitted, so a caller cannot
+    // mistake "this build does not report it" for "nothing was left".
+    req("open_tasks", Ty::Int),
+    req("open_overdue", Ty::Int),
 ]];
 
 const R_TASK_ADD: Shape = &[&[
