@@ -73,6 +73,7 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
     let doc = Report {
         theme,
         group_by,
+        filter,
         summary: &summary,
         export: &export,
         actionable: &actionable,
@@ -101,6 +102,9 @@ struct Derived<'a> {
     completed_recent: Vec<&'a Value>,
     velocity: usize,
     top_tags: Vec<(String, u32)>,
+    /// How many DISTINCT tags matched, before `top_tags` was cut to 10
+    /// (#235/2) — the section needs this to say how many it left out.
+    tags_total: usize,
     bucket_totals: Vec<(&'static str, i64)>,
 }
 
@@ -110,6 +114,13 @@ struct Report<'a> {
     /// key after the axis, so reading `project` out of a `status` roll-up would
     /// quietly render a table of `(none)`.
     group_by: &'a str,
+    /// The report's own filter DSL string, verbatim — `None` for an
+    /// unfiltered ("all projects") report. Threaded through so the title and
+    /// the header can say what this page is scoped to (#235/1): every report
+    /// used to carry the identical title and header regardless of filter, so
+    /// four teams' reports were four identically-named tabs with nothing on
+    /// the page itself saying which team each covered.
+    filter: Option<&'a str>,
     summary: &'a Value,
     export: &'a Value,
     actionable: &'a Value,
@@ -118,6 +129,17 @@ struct Report<'a> {
 }
 
 impl<'a> Report<'a> {
+    /// What this report covers, as shown to a reader — the filter DSL
+    /// verbatim, or "all projects" when there is none. Not a translation of
+    /// the DSL into prose (`project:a or project:b and @working` has no
+    /// tidy English name); the raw string still answers the question the
+    /// audit raised (#235/1) — which report, of several, is this one.
+    fn scope_label(&self) -> String {
+        self.filter
+            .map(str::to_string)
+            .unwrap_or_else(|| "all projects".to_string())
+    }
+
     /// Every number the header tiles and lists print, derived once — a pure
     /// function of the injected payloads and `now`, split out of `render` so
     /// each stat is reachable by a direct assertion instead of only through a
@@ -201,6 +223,9 @@ impl<'a> Report<'a> {
         }
         let mut top_tags: Vec<(String, u32)> = tag_counts.into_iter().collect();
         top_tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        // Captured before truncating (#235/2): "Top tags" used to cut to 10
+        // with nothing saying how many distinct tags were left out.
+        let tags_total = top_tags.len();
         top_tags.truncate(10);
 
         // Report-wide token totals, one per bucket, summed across the summary's
@@ -232,6 +257,7 @@ impl<'a> Report<'a> {
             completed_recent,
             velocity,
             top_tags,
+            tags_total,
             bucket_totals,
         }
     }
@@ -286,20 +312,31 @@ impl<'a> Report<'a> {
         body.push_str(&self.overdue_section(&d.overdue_tasks));
         body.push_str(&self.per_group_section());
         body.push_str(&self.actionable_section());
-        body.push_str(&self.tags_section(&d.top_tags));
+        body.push_str(&self.tags_section(&d.top_tags, d.tags_total));
 
         body.push_str("</main>");
+        // The raw UTC instant stays reachable in `title` (#235/4) — the
+        // visible text switches to local time, which a viewer opening the
+        // file minutes after generation reads as fresh rather than "2 hours
+        // old" on a UTC+2 machine; `title` is the machine-readable escape
+        // hatch `pretty_local_ts` itself does not carry.
         body.push_str(&format!(
-            "<footer>Generated {} · every panel is a pure read of the tasqx core API.</footer>",
-            esc(&pretty_ts(self.now))
+            "<footer>Generated <span title=\"{utc}\">{local}</span> · every panel is a pure read of the tasqx core API.</footer>",
+            utc = esc(self.now),
+            local = esc(&pretty_local_ts(self.now)),
         ));
 
+        // The title names the SCOPE and the date (#235/1), not the theme —
+        // every report used to carry the identical `tasqx report · {theme}`
+        // regardless of filter, so four teams' reports were four
+        // identically-titled browser tabs.
         format!(
             "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-             <title>tasqx report · {theme}</title>\n<style>\n{css}\n</style>\n</head>\n\
+             <title>tasqx · {scope} · {date}</title>\n<style>\n{css}\n</style>\n</head>\n\
              <body>\n{body}\n</body>\n</html>\n",
-            theme = esc(&self.theme.name),
+            scope = esc(&self.scope_label()),
+            date = date_part(self.now),
             css = css,
             body = body,
         )
@@ -321,6 +358,10 @@ impl<'a> Report<'a> {
     /// nobody could tell apart without opening both. `velocity` also now
     /// equals `done` (both come from `Report::derive`'s `completed_recent`),
     /// so the two tiles can no longer disagree either.
+    ///
+    /// The brand block carries a `.scope` line under "weekly review" (#235/1)
+    /// — the same string the `<title>` uses — so a printed or screenshotted
+    /// page (which loses the tab title) still says what it covers.
     fn header(
         &self,
         open: usize,
@@ -335,13 +376,17 @@ impl<'a> Report<'a> {
             .collect();
         format!(
             "<header class=\"summary\">\
-               <div class=\"brand\">tasqx <span class=\"muted\">weekly review</span></div>\
+               <div class=\"brand-block\">\
+                 <div class=\"brand\">tasqx <span class=\"muted\">weekly review</span></div>\
+                 <div class=\"scope\">{scope}</div>\
+               </div>\
                <div class=\"stats\">{}{}{}{}{token_tiles}</div>\
              </header>",
             stat(&open.to_string(), "open"),
             stat(&done.to_string(), "done this week"),
             stat(&velocity.to_string(), "velocity /wk (7d)"),
             stat_flag(&overdue.to_string(), "overdue", overdue > 0),
+            scope = esc(&self.scope_label()),
         )
     }
 
@@ -471,6 +516,12 @@ impl<'a> Report<'a> {
         )
     }
 
+    /// #235/2: this list truncates at `task.list`'s own `limit: 12` with
+    /// nothing saying so — a stakeholder reading "12 actionable" beside a
+    /// header saying "46 open" cannot tell whether the list is complete or
+    /// merely cut. `total` is `task.list`'s own answer to that (D70: rows
+    /// matched, vs. `count`'s rows returned); a trailing muted row states the
+    /// gap when the two differ.
     fn actionable_section(&self) -> String {
         let tasks = array_at(self.actionable, "tasks");
         if tasks.is_empty() {
@@ -480,6 +531,11 @@ impl<'a> Report<'a> {
                 "",
             );
         }
+        let total = self
+            .actionable
+            .get("total")
+            .and_then(Value::as_u64)
+            .map_or(tasks.len(), |n| n as usize);
         let mut rows = String::new();
         for t in tasks {
             let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
@@ -491,6 +547,12 @@ impl<'a> Report<'a> {
                 proj = proj_chip(t),
             ));
         }
+        if total > tasks.len() {
+            rows.push_str(&format!(
+                "<li class=\"more muted\">…and {} more</li>",
+                total - tasks.len()
+            ));
+        }
         section(
             "Now actionable",
             "The highest-urgency unblocked tasks — start at the top.",
@@ -498,7 +560,12 @@ impl<'a> Report<'a> {
         )
     }
 
-    fn tags_section(&self, tags: &[(String, u32)]) -> String {
+    /// `total` is the DISTINCT tag count before `derive` truncated to 10
+    /// (#235/2) — the same "how much did this cut" question as
+    /// `actionable_section`, over a list core never gets to paginate for us,
+    /// so this half of the fix is computed locally rather than read off a
+    /// server-side `total`.
+    fn tags_section(&self, tags: &[(String, u32)], total: usize) -> String {
         if tags.is_empty() {
             return String::new();
         }
@@ -507,6 +574,12 @@ impl<'a> Report<'a> {
             chips.push_str(&format!(
                 "<span class=\"tag\">{name} <span class=\"tagn\">{n}</span></span>",
                 name = esc(name),
+            ));
+        }
+        if total > tags.len() {
+            chips.push_str(&format!(
+                "<span class=\"tag muted\">+{} more</span>",
+                total - tags.len()
             ));
         }
         section(
@@ -567,6 +640,7 @@ impl<'a> Report<'a> {
              padding: 0.9rem 1.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }}\n\
              .brand {{ font-weight: 700; font-size: 1.15rem; letter-spacing: -0.01em; }}\n\
              .brand .muted {{ font-weight: 400; }}\n\
+             .scope {{ color: var(--muted); font-size: 0.78rem; margin-top: 0.15rem; }}\n\
              .stats {{ display: flex; gap: 1.4rem; flex-wrap: wrap; row-gap: 0.6rem; }}\n\
              .stat {{ text-align: right; flex: 0 0 auto; }}\n\
              .stat .n {{ font-size: 1.5rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums;\n\
@@ -788,6 +862,44 @@ fn pretty_ts(s: &str) -> String {
                 ti.hour(),
                 ti.minute()
             )
+        }
+        Err(_) => s.to_string(),
+    }
+}
+
+/// The footer's "Generated" timestamp, in the generating machine's OWN local
+/// zone with its abbreviation (`2026-09-09 12:42 CEST`) — #235/4. Due dates
+/// stay in `pretty_ts`'s UTC (D53 fixes UTC as the store's and the parser's
+/// zone so a typed date round-trips; converting a `due` midnight-UTC instant
+/// to local time can roll the CALENDAR DAY a reader sees backward west of
+/// Greenwich, the exact failure D53 exists to prevent). The footer carries no
+/// such risk — it names a moment, not a day — and "generated 2 hours ago"
+/// reading as fresh rather than stale is worth doing here even though the
+/// full cross-surface humanizing D76's recorded edges left as follow-up work
+/// is not. A report is generated on one machine and opened on another, so
+/// "local" means the generator's zone, not the reader's; the raw UTC instant
+/// stays reachable in the `title` attribute the caller wraps this in for
+/// exactly that gap. Falls back to the plain instant on any parse/format
+/// failure — never a panic in a read path.
+fn pretty_local_ts(s: &str) -> String {
+    match s.parse::<jiff::Timestamp>() {
+        Ok(t) => t
+            .to_zoned(jiff::tz::TimeZone::system())
+            .strftime("%Y-%m-%d %H:%M %Z")
+            .to_string(),
+        Err(_) => s.to_string(),
+    }
+}
+
+/// The `YYYY-MM-DD` (UTC) prefix of an RFC3339 instant, for the report
+/// `<title>` (#235/1) — a calendar date reads better in a browser tab/PDF
+/// export than a full timestamp, and UTC keeps it a pure function of `now`
+/// rather than of the rendering machine's zone.
+fn date_part(s: &str) -> String {
+    match s.parse::<jiff::Timestamp>() {
+        Ok(t) => {
+            let d = t.to_zoned(jiff::tz::TimeZone::UTC).date();
+            format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day())
         }
         Err(_) => s.to_string(),
     }
@@ -1050,6 +1162,7 @@ mod tests {
         Report {
             theme: &th,
             group_by: "project",
+            filter: None,
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -1163,6 +1276,7 @@ mod tests {
         let doc = Report {
             theme: &th,
             group_by: "project",
+            filter: None,
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -1265,6 +1379,7 @@ mod tests {
         let doc = Report {
             theme: &th,
             group_by: "project",
+            filter: None,
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -1310,6 +1425,7 @@ mod tests {
         let report = Report {
             theme: &th,
             group_by: "project",
+            filter: None,
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -1328,29 +1444,6 @@ mod tests {
             d.velocity, 1,
             "the out-of-scope task's done event must not inflate velocity: {}",
             d.velocity
-        );
-    }
-
-    /// #165: "velocity /wk" carried no window, reading as directly comparable
-    /// to the terminal's differently-windowed "4-wk velocity" with nothing on
-    /// either surface saying they measure different spans. And "This week's
-    /// throughput" mislabeled a 12-WEEK series as a single week — a third,
-    /// disagreeing sense of "this week" beside "done this week" (rolling 7
-    /// days) and the chart's own ISO-week buckets.
-    #[test]
-    fn velocity_states_its_window_and_the_throughput_heading_does_not_claim_a_single_week() {
-        let doc = render_with("nord");
-        assert!(
-            doc.contains("velocity /wk (7d)"),
-            "the velocity tile must name its window: {doc}"
-        );
-        assert!(
-            !doc.contains("This week's throughput"),
-            "a 12-week series must not be titled as a single week: {doc}"
-        );
-        assert!(
-            doc.contains("Weekly throughput"),
-            "retitled to match the terminal chart's own heading: {doc}"
         );
     }
 
@@ -1390,6 +1483,7 @@ mod tests {
         let doc = Report {
             theme: &th,
             group_by: "project",
+            filter: None,
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -1439,6 +1533,29 @@ mod tests {
         }
     }
 
+    /// #165: "velocity /wk" carried no window, reading as directly comparable
+    /// to the terminal's differently-windowed "4-wk velocity" with nothing on
+    /// either surface saying they measure different spans. And "This week's
+    /// throughput" mislabeled a 12-WEEK series as a single week — a third,
+    /// disagreeing sense of "this week" beside "done this week" (rolling 7
+    /// days) and the chart's own ISO-week buckets.
+    #[test]
+    fn velocity_states_its_window_and_the_throughput_heading_does_not_claim_a_single_week() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("velocity /wk (7d)"),
+            "the velocity tile must name its window: {doc}"
+        );
+        assert!(
+            !doc.contains("This week's throughput"),
+            "a 12-week series must not be titled as a single week: {doc}"
+        );
+        assert!(
+            doc.contains("Weekly throughput"),
+            "retitled to match the terminal chart's own heading: {doc}"
+        );
+    }
+
     /// #166: at 390px the eight-tile `.stats` strip (628px, unwrappable) drags
     /// the WHOLE PAGE into horizontal scroll, which is also why the sticky
     /// header (which only sticks vertically) slides sideways with it. And the
@@ -1459,6 +1576,107 @@ mod tests {
         assert!(
             doc.contains("<div class=\"table-wrap\"><table class=\"grid\">"),
             "the by-project table must scroll inside its own container, not the page: {doc}"
+        );
+    }
+
+    /// #235/1: every report carried the identical `<title>tasqx report ·
+    /// {theme}</title>` regardless of its filter, and the rendered header
+    /// read "tasqx weekly review" on all of them — so four teams' reports
+    /// were four identically-titled tabs with nothing on the page itself
+    /// saying which team each covered. The title must name the scope (or
+    /// "all projects") and drop the theme name; the same scope string must
+    /// also appear on the page.
+    #[test]
+    fn title_and_header_name_the_reports_scope_not_its_theme() {
+        let doc_all = render_with("nord");
+        assert!(
+            !doc_all.contains("<title>tasqx report · nord</title>"),
+            "the theme name must not be the thing distinguishing two reports: {doc_all}"
+        );
+        assert!(
+            doc_all.contains("all projects"),
+            "an unfiltered report must say so, on the page: {doc_all}"
+        );
+
+        let (summary, export, actionable, events) = synthetic();
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let doc_scoped = Report {
+            theme: &th,
+            group_by: "project",
+            filter: Some("project:finly-mail-agent"),
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        }
+        .render();
+        assert!(
+            doc_scoped.contains("project:finly-mail-agent"),
+            "the filter must reach the title or header: {doc_scoped}"
+        );
+        assert!(
+            !doc_scoped.contains("all projects"),
+            "a scoped report must not also claim to cover everything: {doc_scoped}"
+        );
+    }
+
+    /// #235/4: the footer stamped UTC unconditionally, so a report generated
+    /// at 12:42 CEST read "Generated ... 10:42 UTC" — two hours stale-looking
+    /// the moment it was opened. The human-facing text may now show local
+    /// time, but the raw instant must stay reachable somewhere a machine (or
+    /// a curious reader) can still read it exactly.
+    #[test]
+    fn footer_carries_the_raw_utc_instant_for_machine_readers_while_showing_local_time() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("<footer>Generated <span title=\"2026-07-15T12:00:00Z\">"),
+            "the footer must keep the raw UTC instant reachable, e.g. in a title attribute: {doc}"
+        );
+    }
+
+    /// #235/2: "Now actionable" truncates at `task.list`'s own `limit: 12`
+    /// and "Top tags" at `.truncate(10)`, both with no indication that
+    /// anything was left out — a stakeholder reading "12 actionable" beside a
+    /// header saying "46 open" cannot tell whether the list is complete or
+    /// merely cut. `task.list` already answers `total` (D70); this test uses
+    /// that plus more than 10 distinct tags to pin the trailing note both
+    /// sections must now render.
+    #[test]
+    fn actionable_and_tags_sections_note_how_much_they_truncated() {
+        let actionable = json!({
+            "tasks": [{ "short_id": 1, "title": "one", "project": "P", "urgency": 5.0 }],
+            "total": 46
+        });
+        let export = json!({
+            "tasks": (1..=12).map(|i| json!({
+                "id": format!("t{i}"), "short_id": i, "title": format!("task {i}"),
+                "status": "pending", "tags": [format!("tag{i:02}")],
+            })).collect::<Vec<_>>()
+        });
+        let summary = json!({ "groups": [] });
+        let events = json!({ "events": [] });
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let doc = Report {
+            theme: &th,
+            group_by: "project",
+            filter: None,
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        }
+        .render();
+        assert!(
+            doc.contains("…and 45 more"),
+            "the actionable list (1 of 46 shown) must say how many more matched: {doc}"
+        );
+        assert!(
+            doc.contains("+2 more"),
+            "top tags (10 of 12 distinct shown) must say how many more: {doc}"
         );
     }
 
