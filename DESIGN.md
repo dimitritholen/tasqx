@@ -947,7 +947,7 @@ All charts are pure clients of `report.summary` and `task.list` — the core ret
 | Aspect | Choice |
 |---|---|
 | **Typography** | System UI stack for prose (`ui-sans-serif, -apple-system, Segoe UI…`); a mono stack (`ui-monospace, "Cascadia Code"…`) for ids/durations. Generous line-height, one accent weight. |
-| **Layout** | Single centered column, ~72ch measure; sticky summary header (counts, velocity, overdue); card sections per project. |
+| **Layout** | Single centered column, ~72ch measure for prose; sticky summary header (counts, velocity, overdue); card sections per project. The by-project table and the two charts break out to ~1100px above a 900px viewport (D89) — the measure stays ~72ch for prose and for everything below that breakpoint. |
 | **Charts** | The §8 burndown/heatmap/throughput re-rendered as crisp inline **SVG** (same numbers, same `urgency.ramp` as a `<linearGradient>`). |
 | **Dark/light** | `prefers-color-scheme` media query with CSS custom properties; the report palette is generated from the *active tasqx theme*, so terminal and HTML match. |
 | **Data shown** | Completed this period, carried-over/overdue, per-project est vs. tracked, throughput + burndown, "now actionable" list, top tags. |
@@ -2012,4 +2012,16 @@ The verb also ignores `dashboard.enabled`. That setting is the escape hatch a br
 **Why:** a raw tab reaching a real terminal expands to the next 8-column stop, shifting every column to the right of it on that one row — the exact class of misalignment D51 exists to end, and D19 itself already strips ESC/CR/BEL from the terminal path for materially the same reason (a control byte doing something to the display the text did not ask for). An HTML `<table>` cell has no fixed-width grid for a tab to break, so keeping it there remains correct and is not touched. Treating "one sanitizer standard" as "one identical exception list" produced a real bug (D51's misalignment, reachable from any imported or agent-authored title) that survived one full audit cycle undetected — filed independently and identically as both this item and bundle #228 — because nobody had to reconcile the ban against the surface it was supposedly protecting.
 
 **What deliberately did not change:** ESC, CR, BEL, DEL and every other C0/C1 control stay stripped on both surfaces, unchanged from D19. `html::esc`'s escaping order and its markup-injection guarantees are untouched.
+
+### D94 — The HTML report's data sections may break out past the ~72ch prose measure on wide viewports (amends §8's Layout row; tasqx audit #235/3)
+
+**Decision:** §8's `~72ch` measure stays the width for the report's prose sections (header, "now actionable", tags). `.table-wrap` (the by-project table) and `figure` (the SVG charts) are exempted above a 900px viewport — `width: 100vw; max-width: min(1100px, calc(100vw - 2.5rem))`, centered the usual way — so both can use up to ~1100px on a screen with room to spare, falling back to the ~72ch column below that breakpoint and in print. Pure CSS: no new external resource, no script, so §8's mailable/self-contained/dark-light properties are untouched.
+
+**Why:** §8 fixed ~72ch for a page whose primary content is prose. A nine-column data table and two SVG charts are not prose, and the ruling was never argued from data density: on a 1280px viewport the table measured 581px against ~660px of idle space and wrapped project names to three lines the width did not require (tasqx audit #235/3). Widening only the two data-shaped sections — every prose section, and the whole page under 900px, is untouched — fixes the readability defect without reopening what §8's measure actually protects.
+
+### D95 — The HTML report footer names its generation instant in local time; D76's "humanizing is deferred" edge gets one narrow, explicit exception (tasqx audit #235/4)
+
+**Decision:** the footer's "Generated …" timestamp renders in the generating machine's own local zone with its abbreviation (`pretty_local_ts`), the raw UTC instant kept reachable in a `title` attribute. Every other stamped date/time in the report — due dates, event timestamps — stays UTC via the existing `pretty_ts` and D53's "days are UTC days"; this ruling touches only the one footer instant.
+
+**Why:** D76's recorded edge (2) deferred humanizing *dates* project-wide, because doing it piecemeal is how surfaces come to disagree — reasoning that binds a *calendar day*, the exact quantity D53 protects, since converting a midnight-UTC date to local time can roll the day a reader sees backward west of Greenwich. A generation *instant* carries none of that risk: it names one point on the timeline, and converting it can never produce a wrong calendar day for any reader. Leaving it in UTC bought only a false-stale reading (`Generated 10:42 UTC` opened at 12:44 local reads two hours old the moment it is opened — tasqx audit #235/4) and nothing D53 or D76 actually protects. Due dates and every other calendar-shaped field are explicitly **not** covered by this ruling and stay UTC; full cross-surface date humanizing remains the deferred follow-up D76 describes.
 
