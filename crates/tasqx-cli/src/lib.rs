@@ -369,7 +369,26 @@ pub fn run() {
             }
         }
         Exit::Out(Err(e)) => {
-            eprintln!("error [{}]: {}", code_str(&e), e.message);
+            // `--json` was honoured on the success arm only (#194): every
+            // other command's error path printed English to stderr and left
+            // stdout empty, so `tasqx --json show 999 | jq` failed with a jq
+            // parse error instead of a diagnosable object, and the structured
+            // `data` block naming the offending argument — present on the
+            // identical failure through `tasqx api` — was unreachable from
+            // the CLI at all. This mirrors that same envelope shape on
+            // stdout, keeps the human line on stderr only when `--json` is
+            // absent (a JSON body under a JSON body would be the API's
+            // problem restated), and leaves the exit code exactly as before.
+            if json {
+                let body = tasqx_core::error::ErrorBody::from(&e);
+                emit(&format!(
+                    "{}\n",
+                    serde_json::to_string(&json!({ "ok": false, "error": body }))
+                        .unwrap_or_default()
+                ));
+            } else {
+                eprintln!("error [{}]: {}", code_str(&e), e.message);
+            }
             exit(e.exit_code());
         }
     }

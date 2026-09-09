@@ -245,10 +245,25 @@ pub(crate) fn run_api() {
     }
 
     let response = handle_envelope(&engine, &input);
+    // The manual (`tasqx manual json-api`) promises "exit codes mirror the
+    // error model: 0 ok, 2 bad_request, 4 not_found, 5 conflict" — the same
+    // mapping every CLI verb already applies to its `ApiError`. Before this,
+    // `run_api` printed the envelope and fell off the end, so the process's
+    // own exit code stayed 0 regardless of `ok`, and a `set -e` wrapper or a
+    // `tasqx api ... || rollback` around a refused write saw success (#169).
+    // `api_error_from_env` is the same reconstruction the daemon-routed path
+    // already uses to turn an error envelope back into an `ApiError`, so this
+    // reuses it rather than re-deriving the code->exit table a second time.
+    let code = if response.get("ok") == Some(&Value::Bool(true)) {
+        0
+    } else {
+        api_error_from_env(&response).exit_code()
+    };
     emit(&format!(
         "{}\n",
         serde_json::to_string(&response).unwrap_or_default()
     ));
+    exit(code);
 }
 
 /// The `tasqx mcp` subcommand family (DESIGN.md §7, D7).
