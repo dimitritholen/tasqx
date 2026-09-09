@@ -266,7 +266,8 @@ impl Engine {
                 return self.task_by_id_on(conn, s);
             }
             return Err(ApiError::bad_request(format!(
-                "ref is neither short_id nor UUID: {s}"
+                "ref is neither short_id nor UUID: {s} — expected a short_id \
+                 like 42, or a UUID"
             )));
         }
         Err(ApiError::bad_request("ref must be an integer or string"))
@@ -1174,6 +1175,37 @@ mod tests {
             assert_eq!(compare_by(&a, &b, &keys), Ordering::Less);
         }
     }
+
+    /// tasqx audit 2026-09 #155: the `bad_request` a bad ref gets back named
+    /// what the ref WAS, never what a ref is ALLOWED to be — "ref is neither
+    /// short_id nor UUID: @active" gives no reader still holding DESIGN.md §5
+    /// (which advertises ranges, comma lists and `@active`/`@last`) anywhere to
+    /// go, because the message that should say "and here is what actually
+    /// works" instead just restates the input back at them.
+    #[test]
+    fn ref_error_names_what_a_ref_may_actually_be() {
+        let e = Engine::open_in_memory().unwrap();
+        let err = e
+            .resolve_ref_value(&json!("@active"))
+            .expect_err("@active is not a resolvable ref");
+        assert!(
+            err.message.contains("short_id"),
+            "must still name short_id: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("UUID"),
+            "must still name UUID: {}",
+            err.message
+        );
+        assert!(
+            err.message.to_lowercase().contains("expected"),
+            "must say what a ref may actually be, not only what this one \
+             was not: {}",
+            err.message
+        );
+    }
+
     use crate::error::ErrorCode;
 
     #[test]
