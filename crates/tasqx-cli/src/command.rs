@@ -227,10 +227,9 @@ pub(super) enum Command {
         #[arg(long, short, value_parser = priority_parser(), ignore_case = true)]
         priority: Option<String>,
         /// Due date — natural language ok (e.g. friday, "in 3 days", eom, -1d).
-        ///
-        /// `allow_hyphen_values` for the same reason as `--remind` below: a
-        /// signed offset (`--due -1d`, capturing something already overdue) is a
-        /// leading-hyphen value, and clap reads those as unknown flags.
+        // `allow_hyphen_values` for the same reason as `--remind` below: a
+        // signed offset (`--due -1d`, capturing something already overdue) is a
+        // leading-hyphen value, and clap reads those as unknown flags.
         #[arg(long, allow_hyphen_values = true)]
         due: Option<String>,
         /// Scheduled date — natural language ok.
@@ -244,10 +243,9 @@ pub(super) enum Command {
         repeat: Option<String>,
         /// Reminder: a due-anchored offset (-1h, -30m, -2d) or an absolute date
         /// ("friday 9am"). Without this, the task never notifies (§9).
-        ///
-        /// `allow_hyphen_values` is required, not cosmetic: the common form
-        /// starts with `-`, and clap would otherwise read `--remind -1h` as an
-        /// unknown `-1` flag and reject the command.
+        // `allow_hyphen_values` is required, not cosmetic: the common form
+        // starts with `-`, and clap would otherwise read `--remind -1h` as an
+        // unknown `-1` flag and reject the command.
         #[arg(long, allow_hyphen_values = true)]
         remind: Option<String>,
         /// Effort estimate — human duration (4h, 90m, 1h30m, 2d) or ISO PT4H.
@@ -314,9 +312,8 @@ pub(super) enum Command {
         #[arg(long)]
         repeat: Option<String>,
         /// Reminder: a due-anchored offset (-1h, -30m) or an absolute date.
-        ///
-        /// `allow_hyphen_values` here for the same reason as on `add`: the common
-        /// value starts with `-` and clap would read it as an unknown flag.
+        // `allow_hyphen_values` here for the same reason as on `add`: the common
+        // value starts with `-` and clap would read it as an unknown flag.
         #[arg(long, allow_hyphen_values = true)]
         remind: Option<String>,
         /// Effort estimate — human duration (4h, 90m, 1h30m, 2d) or ISO PT4H.
@@ -349,13 +346,12 @@ pub(super) enum Command {
     #[command(alias = "ls", alias = "l", after_help = crate::cmddoc::after_help("list"))]
     List {
         /// Filter DSL, e.g. "project:work status:pending +api".
-        ///
-        /// Deliberately NOT `allow_hyphen_values`, unlike `--due`/`--remind`.
-        /// `-tag` is core filter grammar and must be typable, but the setting
-        /// buys that by making this positional swallow every later hyphen
-        /// token INCLUDING clap's own flags, which broke `list @working
-        /// --json`. The dash is hidden by the `argv` pre-pass instead, leaving
-        /// clap full authority over every `--flag` in any position.
+        // Deliberately NOT `allow_hyphen_values`, unlike `--due`/`--remind`.
+        // `-tag` is core filter grammar and must be typable, but the setting
+        // buys that by making this positional swallow every later hyphen
+        // token INCLUDING clap's own flags, which broke `list @working
+        // --json`. The dash is hidden by the `argv` pre-pass instead, leaving
+        // clap full authority over every `--flag` in any position.
         //
         // `filter_words()` and not a bare `ArgValueCompleter`: the pre-pass
         // above escapes into this very positional, so a completer that does not
@@ -385,12 +381,11 @@ pub(super) enum Command {
     #[command(alias = "ag", alias = "cal", after_help = crate::cmddoc::after_help("agenda"))]
     Agenda {
         /// Filter DSL, e.g. "project:work +api" (default: the working set).
-        ///
-        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
-        /// `List::filter` for why the pre-pass and not `allow_hyphen_values`.
-        /// Being named `filter` is what puts this positional under
-        /// `argv::tests::every_filter_positional_is_registered`, which fails the
-        /// build unless `agenda` is in `FILTER_COMMANDS` too.
+        // Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        // `List::filter` for why the pre-pass and not `allow_hyphen_values`.
+        // Being named `filter` is what puts this positional under
+        // `argv::tests::every_filter_positional_is_registered`, which fails the
+        // build unless `agenda` is in `FILTER_COMMANDS` too.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
         /// How many days ahead to look (1-3650; default 14). Overdue tasks are
@@ -602,10 +597,9 @@ pub(super) enum Command {
     #[command(after_help = crate::cmddoc::after_help("report"))]
     Report {
         /// Optional group_by (project|status|priority) then optional filter DSL.
-        ///
-        /// Hyphen-tolerant because the tail is filter DSL and `-tag` is part of
-        /// it — via the `argv` pre-pass, not `allow_hyphen_values`, which would
-        /// swallow `--html`; see `List::filter`.
+        // Hyphen-tolerant because the tail is filter DSL and `-tag` is part of
+        // it — via the `argv` pre-pass, not `allow_hyphen_values`, which would
+        // swallow `--html`; see `List::filter`.
         //
         // `report_words()` and not `filter_words()`: this is the one filter
         // positional whose FIRST word may be something else, and `report_params`
@@ -675,16 +669,17 @@ pub(super) enum Command {
     #[command(after_help = crate::cmddoc::after_help("export"))]
     Export {
         /// Optional filter DSL.
-        ///
-        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
-        /// `List::filter`.
+        // Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        // `List::filter`.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
     },
     /// Import tasks from a file, or `-` for stdin (maps to store.import).
     #[command(after_help = crate::cmddoc::after_help("import"))]
     Import {
-        /// Path to a canonical JSON file (array of tasks), or `-` for stdin.
+        /// Path to a canonical JSON document (`{tasks, projects,
+        /// default_project, docs}`, as `tasqx export` writes) or a bare array
+        /// of tasks, or `-` for stdin.
         // A line comment, not a doc one: clap renders doc comments into
         // `--help`, and why a hint was chosen is not something a user reading
         // help needs. `FilePath` even though `-` is also accepted — a shell
@@ -766,9 +761,8 @@ pub(super) enum Command {
     #[command(after_help = crate::cmddoc::after_help("watch"))]
     Watch {
         /// Filter DSL (default: the working set).
-        ///
-        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
-        /// `List::filter`.
+        // Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        // `List::filter`.
         #[arg(add = crate::complete::candidates::filter_words())]
         filter: Vec<String>,
     },
@@ -789,11 +783,10 @@ pub(super) enum Command {
     Docs {
         /// Write the guide to this path instead of a temp file. Implies --no-open:
         /// naming an output file is asking for the file, not for a browser.
-        ///
-        /// Excludes --stdout: `run_docs` returns on the stdout branch before it
-        /// ever looks at `out`, so the pair wrote no file and exited 0. Two
-        /// destinations for one document is a usage error — which is what the
-        /// manual's `[--out PATH | --no-open | --stdout]` already promised.
+        // Excludes --stdout: `run_docs` returns on the stdout branch before it
+        // ever looks at `out`, so the pair wrote no file and exited 0. Two
+        // destinations for one document is a usage error — which is what the
+        // manual's `[--out PATH | --no-open | --stdout]` already promised.
         #[arg(
             long,
             value_name = "PATH",
@@ -1406,5 +1399,89 @@ mod tests {
             seen >= 6,
             "expected the path-taking args to still carry hints, found {seen}"
         );
+    }
+
+    /// tasqx audit 2026-09 #226.3: `import --help` described the argument as
+    /// "a canonical JSON file (array of tasks)", but `run_import` (D37) has
+    /// always also accepted the full export shape — an object carrying
+    /// `tasks`, `projects`, `default_project` and `docs` — and that object
+    /// form is the ONLY way to restore an archived project's flag, since
+    /// `store.import` is the one write an archived project can still take.
+    /// A reader who only saw "array of tasks" would never learn the
+    /// unarchive route exists.
+    #[test]
+    fn import_help_names_the_object_form_and_the_bare_array() {
+        let cmd = Cli::command();
+        let help = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "import")
+            .expect("import is a subcommand")
+            .get_arguments()
+            .find(|a| a.get_id() == "file")
+            .expect("import takes a file argument")
+            .get_help()
+            .expect("the file argument is documented")
+            .to_string();
+        assert!(
+            help.contains("tasks") && help.contains("projects"),
+            "`import --help` must name the object form (`tasks`, `projects`, …) \
+             `tasqx export` writes, not only a bare array: {help:?}"
+        );
+        assert!(
+            help.to_lowercase().contains("array"),
+            "`import --help` must still say a bare array of tasks works too: {help:?}"
+        );
+    }
+
+    /// tasqx audit 2026-09 #226.5: `--help`'s long form for `list`'s FILTER
+    /// positional read clap internals to the user — `allow_hyphen_values`,
+    /// `List::filter`, the `argv` pre-pass — none of which a reader can act
+    /// on, ahead of ever being told what a filter is. The rationale belongs
+    /// beside the field as a `//` comment (clap does not render those), the
+    /// way `Modify`'s `ref` field and `Import`'s `file` field already do it.
+    #[test]
+    fn filter_arg_long_help_stays_free_of_implementation_rationale() {
+        let cmd = Cli::command();
+        let leaky = [
+            "allow_hyphen_values",
+            "List::filter",
+            "pre-pass",
+            "run_docs",
+        ];
+        // (subcommand, arg id) pairs whose doc comment carried the same
+        // "why this clap setting" rationale as `list`'s.
+        let sites: [(&str, &str); 9] = [
+            ("list", "filter"),
+            ("agenda", "filter"),
+            ("report", "args"),
+            ("export", "filter"),
+            ("watch", "filter"),
+            ("docs", "out"),
+            ("add", "due"),
+            ("add", "remind"),
+            ("modify", "remind"),
+        ];
+        for (verb, arg_id) in sites {
+            let sub = cmd
+                .get_subcommands()
+                .find(|c| c.get_name() == verb)
+                .unwrap_or_else(|| panic!("{verb} is a subcommand"));
+            let arg = sub
+                .get_arguments()
+                .find(|a| a.get_id() == arg_id)
+                .unwrap_or_else(|| panic!("{verb} takes {arg_id}"));
+            let long = arg
+                .get_long_help()
+                .map(|h| h.to_string())
+                .unwrap_or_default();
+            for tell in leaky {
+                assert!(
+                    !long.contains(tell),
+                    "`{verb} --help`'s `{arg_id}` long help names the Rust \
+                     internal {tell:?} — move the rationale to a `//` comment: \
+                     {long:?}"
+                );
+            }
+        }
     }
 }
