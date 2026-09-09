@@ -32,7 +32,7 @@ use uuid::Uuid;
 
 use crate::datetime;
 use crate::error::ApiError;
-use crate::filter::{Filter, MatchCtx};
+use crate::filter::{is_overdue, Filter, MatchCtx};
 use crate::recur;
 use crate::remind;
 use crate::storage::{

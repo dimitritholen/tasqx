@@ -175,12 +175,10 @@ impl Engine {
                     .tokens_cache_creation
                     .saturating_add(bucket("cache_creation_tokens"));
             }
-            if t.status.is_open() {
-                if let Some(due) = t.due.as_deref().and_then(parse_ts) {
-                    if due < now_ts {
-                        agg.overdue += 1;
-                    }
-                }
+            // Shared with the filter DSL's `due.before:now` (#148) so this
+            // count and that query can no longer independently drift.
+            if is_overdue(t.status.is_open(), t.due.as_deref(), now_ts) {
+                agg.overdue += 1;
             }
         }
 
