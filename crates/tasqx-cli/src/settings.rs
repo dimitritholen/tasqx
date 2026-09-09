@@ -539,8 +539,17 @@ pub(crate) fn run_config(
         ConfigAction::Get { key } => {
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;
             let (value, _) = setting_value(&mut |k| store_value(be, k), s, flag_for(s))?;
+            // stdout stays exactly the value, unconditionally — pinned by
+            // `config_get_is_silent_about_a_well_typed_value` and
+            // `a_wrong_typed_value_stays_silent_outside_config` so
+            // `x=$(tasqx config get key)` keeps working. The summary — the
+            // same string `config list --json` already carries per row — is
+            // additive JSON only, for `--json` callers (#223).
             let text = format!("{value}\n");
-            Ok((json!({ "key": s.key, "value": value }), text))
+            Ok((
+                json!({ "key": s.key, "value": value, "summary": s.summary }),
+                text,
+            ))
         }
         ConfigAction::Set { key, value } => set_setting(key, value),
         ConfigAction::Unset { key } => {

@@ -2640,6 +2640,42 @@ mod tests {
         );
     }
 
+    /// tasqx audit 2026-09 #223: `config.rs::Setting` has always carried a
+    /// `summary` — `config list --json` includes it per row — but
+    /// `tasqx --json config get <key>` answered `{key, value}` with no way
+    /// for a caller to learn what `tokens.enabled` or `otlp.port` actually do
+    /// short of reading the source. Plain-text `config get` stdout stays
+    /// untouched on purpose: `config_get_is_silent_about_a_well_typed_value`
+    /// and `a_wrong_typed_value_stays_silent_outside_config` already pin it
+    /// to exactly the value on stdout and nothing on stderr, for
+    /// `x=$(tasqx config get key)` scripting — so the summary can only be
+    /// additive JSON, not a second stdout line.
+    #[test]
+    fn config_get_json_carries_the_settings_own_summary() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        let mut be = Backend::Local(e);
+        let ctx = Ctx::new(theme::default_theme(), theme::Caps::PLAIN);
+
+        let key = "otlp.enabled";
+        let want = config::find(key)
+            .expect("otlp.enabled is a real setting")
+            .summary;
+        let (result, _) = run_config(
+            &mut be,
+            &ctx,
+            &ConfigAction::Get {
+                key: key.to_string(),
+            },
+            None,
+        )
+        .expect("get ran");
+        assert_eq!(
+            result["summary"], want,
+            "`tasqx --json config get {key}` must carry the setting's own \
+             summary: {result:?}"
+        );
+    }
+
     /// `config get` on a key nobody registered must say so and list the valid
     /// ones. Today an unknown key in config.toml is read by nothing and
     /// reported by nothing, so a typo looks like it worked.

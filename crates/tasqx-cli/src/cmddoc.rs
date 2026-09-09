@@ -159,7 +159,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex_norun("tasqx add Call bank due:\"friday 9am\" --remind -30m", "reminder 30m before due"),
         ],
         notes: &[
-            "Inline sugar: `+tag`, `project:p` (or `proj:`), `!high`, `due:…`, `est:4h`, `repeat:…`, `remind:…`.",
+            "Inline sugar: `+tag`, `project:p` (or `proj:`), `!high`, `due:…`, `scheduled:…` (or `sched:`), `wait:…`, `repeat:…` (or `every:`/`recur:`), `remind:…`, `est:4h` (or `estimate:`).",
             "A bare add lands in the default project (`tasqx use` to change it).",
         ],
         see_also: &["modify", "use", "list", "next"],
@@ -267,6 +267,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "`--json` skips both of those checks, because it opens no screen. It is the only verb where `--json` decides whether the terminal gate applies, and it is what makes the panel data reachable from a script.",
             "`--panels now,next,due` narrows the `--json` document to those panels, on that one call — it does not touch `dashboard.panels` or the interactive screen. RECENT and NEXT are also row-capped with `total`/`truncated` alongside them, because both track the store's size rather than the screen's (#152).",
             "Read-only, with one exception: `p` opens the picker, and Enter there starts the highlighted task. `q`, `esc` and ctrl-c all close.",
+            "Every key (also behind `?` in the screen itself): `1-8` focus a panel; `tab`/`S-tab` cycle panels; `j`/`k` move the cursor; `g`/`G` jump to the first/last row; `r` refreshes now; `R` toggles auto-refresh; `w` cycles the burndown window; `enter` opens the row under the cursor; `l` leaves and prints the task list.",
         ],
         see_also: &["list", "pick", "agenda", "chart"],
         topic: Topic::GettingStarted,
@@ -291,7 +292,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "Type to narrow: the query is a fuzzy SUBSEQUENCE match over id, title, project and tags, so `wac` finds `Write API conformance tests`. Whitespace splits it into terms that must all match.",
-            "Enter STARTS the highlighted task — the one key on this screen with a side effect, and the same single-active rule `tasqx start` follows. Esc clears the query first, and only then leaves.",
+            "Up/down (or ctrl-p/ctrl-n) move the highlighted row. Enter STARTS the highlighted task — the one key on this screen with a side effect, and the same single-active rule `tasqx start` follows. Esc clears the query first, and only then leaves.",
             "Cancelling, and a filter that matches no task, both exit 4 having started nothing. `pick` exists to produce one task; when it produced none, saying ok would be a command reporting success for work it did not do.",
             "It needs a real terminal on stdin AND stdout, so `tasqx pick | …` and `$(tasqx pick)` refuse with exit 2 rather than writing escape codes into your pipe (D26). Non-interactively, `tasqx next` answers the same question and `tasqx start <ref>` acts on it.",
         ],
@@ -527,7 +528,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         ],
         notes: &[
             "Archiving is a shelf, not a delete: the tasks keep their history and their project, and `tasqx projects --all` still lists the project.",
-            "An archived project is out of rotation — `use` refuses it (exit 5), and so does an `add`/`modify` that names it, and so does a second `archive` of it (`project is already archived`, exit 5). No verb may name an archived project, this one included; `store.import` restoring the flag from a document is the one write that still can.",
+            "An archived project is out of rotation for WRITES — `use` refuses it (exit 5), and so does an `add`/`modify` that names it, and so does a second `archive` of it (`project is already archived`, exit 5). No write may name an archived project, this one included; `store.import` restoring the flag from a document is the one write that still can. Reads are unaffected: `list`, `report` and `agenda` still show it and its tasks — archiving is a rotation change, not a hide.",
             "There is no `unarchive` verb and no `project.unarchive` method: among the project methods, archiving is one-way. `store.import` does write a project's `archived` flag from the document, so restoring a saved export un-archives one — a data restore, not an undo.",
             "Archiving the project that IS the default clears the default: a bare `tasqx add` then has no project until `tasqx use <project>`. The line says which of the two happened.",
         ],
@@ -622,6 +623,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "Resolution order is `--flag`, then `$TASQX_*`, then `config.toml`, then the built-in default (D9). The SOURCE column names the layer that won.",
             "`edit` opens an interactive screen: up/down to move, enter to toggle a switch or open a theme picker, esc to leave. Moving through the theme list repaints the screen in that theme before anything is written.",
             "`edit` needs a real terminal. Piped or redirected it refuses and exits 2 rather than writing escape codes into your pipe — scripts should use `set`/`unset` (D26).",
+            "`tokens.enabled` allows the daemon to attribute AI token usage from local tool transcripts; `otlp.enabled` (+ `otlp.port`) runs a local OTLP/HTTP receiver instead — see `tasqx manual reports` and `tasqx manual daemon`. Both require a running daemon; self-reported counts (`token.add`) work with both off.",
         ],
         see_also: &["use", "theme", "manual"],
         topic: Topic::GettingStarted,
@@ -1305,6 +1307,121 @@ mod tests {
             real.sort();
             ours.sort();
             assert_eq!(real, ours, "alias drift on `{}`", d.verb);
+        }
+    }
+
+    /// tasqx audit 2026-09 #226.1: `add -h` (rendered from these notes) taught
+    /// seven of the nine working sugar tokens and silently dropped `wait:`
+    /// and `scheduled:`/`sched:` — the two with the largest behavioural
+    /// consequence, since both park a new task in `backlog`. Bound to the
+    /// parser the same way `docs.rs`'s `documented_sugar_keys_match_the_parser`
+    /// binds the HTML page, so a future alias the parser gains and this note
+    /// does not name fails the build instead of rotting quietly a second time.
+    #[test]
+    fn add_notes_sugar_keys_match_the_parser() {
+        let d = find("add").expect("add is documented");
+        let mut documented: Vec<String> = Vec::new();
+        for note in d.notes {
+            for chunk in note.split('`').skip(1).step_by(2) {
+                // A backtick span names a key by starting with it and then
+                // trailing off (`due:…`) or naming an example value
+                // (`project:p`) — the key is everything up to and including
+                // the first colon, whichever spelling follows it.
+                if let Some(i) = chunk.find(':') {
+                    documented.push(chunk[..=i].to_string());
+                }
+            }
+        }
+        documented.sort();
+        documented.dedup();
+        let mut real: Vec<String> = crate::sugar::value_key_spellings()
+            .iter()
+            .map(|k| k.to_string())
+            .collect();
+        real.sort();
+        assert_eq!(
+            documented, real,
+            "`add`'s cmddoc notes (what `add -h` and `tasqx manual capturing` \
+             both render) have drifted from sugar::VALUE_KEYS"
+        );
+    }
+
+    /// tasqx audit 2026-09 #226.3: the archive NOTE said "No verb may name an
+    /// archived project, this one included" — but `list`, `report` and
+    /// `agenda` all still show it and its tasks (verified against the
+    /// binary); only WRITES are refused. The overbroad absolute is the first
+    /// thing a user reads when deciding whether archiving is safe.
+    #[test]
+    fn archive_notes_scope_the_refusal_to_writes_and_mention_reads() {
+        let d = find("archive").expect("archive is documented");
+        let joined = d.notes.join(" ");
+        assert!(
+            !joined.contains("No verb may name an archived project"),
+            "the archive NOTE must not claim every verb refuses an archived \
+             project — list/report/agenda still show it: {joined}"
+        );
+        assert!(
+            joined.contains("No write may name an archived project")
+                || (joined.to_lowercase().contains("write") && joined.contains("archived")),
+            "the archive NOTE must scope the refusal to writes: {joined}"
+        );
+        assert!(
+            joined.contains("list") || joined.contains("read"),
+            "the archive NOTE must say that reads (list/report/agenda) still \
+             see an archived project and its tasks: {joined}"
+        );
+    }
+
+    /// tasqx audit 2026-09 #226.6: neither `tasqx manual dashboard` nor the
+    /// generated `tasqx docs` guide named a single one of the dashboard's key
+    /// bindings beyond `p`/enter/q/esc/ctrl-c — the rest (`1-8`, `tab`/`S-tab`,
+    /// `j`/`k`, `g`/`G`, `r`/`R`, `w`, `l`) lived only behind the in-screen `?`
+    /// overlay. Checked against the live `KEYS` table, not retyped, so a
+    /// binding added to the overlay and not to this note fails the build —
+    /// the same docs-drift idiom `docs.rs` already applies to verbs.
+    #[test]
+    fn dashboard_notes_mention_every_key_binding() {
+        let d = find("dashboard").expect("dashboard is documented");
+        let joined = d.notes.join(" ");
+        for key in crate::tui::dashboard::KEYS {
+            let spelling = key.keys.split(" / ").next().unwrap_or(key.keys);
+            assert!(
+                joined.contains(spelling),
+                "`tasqx manual dashboard` never mentions the `{}` binding \
+                 (help: {:?}): {joined}",
+                key.keys,
+                key.help
+            );
+        }
+    }
+
+    /// tasqx audit 2026-09 #223: `tasqx manual config` never mentioned
+    /// `tokens.*`/`otlp.*` — a reader who saw `otlp.enabled false default` in
+    /// `config list` had nowhere in the manual to learn what it turns on.
+    #[test]
+    fn config_notes_mention_tokens_and_otlp() {
+        let d = find("config").expect("config is documented");
+        let joined = d.notes.join(" ");
+        for token in ["tokens.enabled", "otlp.enabled"] {
+            assert!(
+                joined.contains(token),
+                "`tasqx manual config` must mention `{token}`: {joined}"
+            );
+        }
+    }
+
+    /// `pick --help`'s own clap doc comment already documents ctrl-n/ctrl-p
+    /// navigation; `tasqx manual pick` (rendered from these notes, not from
+    /// clap's doc comment) did not.
+    #[test]
+    fn pick_notes_mention_ctrl_navigation() {
+        let d = find("pick").expect("pick is documented");
+        let joined = d.notes.join(" ");
+        for token in ["ctrl-n", "ctrl-p"] {
+            assert!(
+                joined.contains(token),
+                "`tasqx manual pick` must mention `{token}`: {joined}"
+            );
         }
     }
 }
