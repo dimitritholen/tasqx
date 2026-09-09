@@ -100,8 +100,10 @@ pub fn default_switched(ctx: &Ctx, result: &Value) -> String {
     )
 }
 
-/// D22: `archive` retired a project, and may have un-pointed the default doing
-/// it. Both facts go on the line.
+/// D22/D89: `archive` retired a project, may have un-pointed the default doing
+/// it, and may have left open work fully live inside a project no read surface
+/// but `tasqx list project:<name>`/`--all` mentions again. All three facts go
+/// on the line.
 ///
 /// The default-clearing branch is the whole reason this function is not a
 /// one-liner. `project.archive` clears the `default_project` key when it
@@ -116,20 +118,53 @@ pub fn default_switched(ctx: &Ctx, result: &Value) -> String {
 /// silence cannot be read as "the default is fine". Both outcomes name
 /// themselves, and `default_cleared` — a field the core always sends, never
 /// omits — decides which.
+///
+/// D89's addition is the same move at a second field: `open_tasks`/
+/// `open_overdue` are counted by `project.archive` itself and never omitted, so
+/// "Project acme archived · your default project is unchanged" used to be the
+/// entire line for a project holding an overdue, high-priority task — the one
+/// moment a user is thinking about this project is the one line that said
+/// nothing about the work still sitting in it. `open_tasks == 0` prints exactly
+/// the old copy, unchanged: a project archived with nothing left behind has
+/// nothing new to say.
 pub fn project_archived(ctx: &Ctx, result: &Value) -> String {
     let name = s(result, "name");
     let cleared = result
         .get("default_cleared")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let open = result
+        .get("open_tasks")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let overdue = result
+        .get("open_overdue")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+
     // Name the verb that points the default somewhere again: a store with no
     // default is a valid state (D22), but it is one the user has to be able to
     // leave, and `use` is the only way out.
-    let trailer = if cleared {
-        "  ·  it was your default project, so a bare `tasqx add` has no home until `tasqx use <project>`"
+    let default_clause = if cleared {
+        "it was your default project, so a bare `tasqx add` has no home until `tasqx use <project>`"
     } else {
-        "  ·  your default project is unchanged"
+        "your default project is unchanged"
     };
+
+    let trailer = if open > 0 {
+        let noun = if open == 1 { "task" } else { "tasks" };
+        let overdue_part = if overdue > 0 {
+            format!(" ({overdue} overdue)")
+        } else {
+            String::new()
+        };
+        format!(
+            "  ·  {open} open {noun}{overdue_part} remain — `tasqx list project:{name}`  ·  {default_clause}"
+        )
+    } else {
+        format!("  ·  {default_clause}")
+    };
+
     format!(
         "{}{trailer}\n",
         ctx.paint("accent", &format!("Project {name} archived"))
@@ -3023,6 +3058,73 @@ mod tests {
             kept.contains("unchanged"),
             "the untouched case must say the default is untouched: {kept:?}"
         );
+    }
+
+    /// D89/#161: archiving a project with open work said NOTHING about it —
+    /// "Project acme archived  ·  your default project is unchanged" was the
+    /// whole line for a project holding an overdue, high-priority task, and
+    /// the two tasks stayed fully visible in `list`, `agenda` and `report`
+    /// while `tasqx projects` (without `--all`) stopped mentioning acme at
+    /// all. The one moment a user is thinking about this project is the one
+    /// line that must say what got left behind.
+    #[test]
+    fn project_archived_says_what_open_work_it_leaves_behind() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+
+        let with_overdue = project_archived(
+            &ctx,
+            &json!({
+                "name": "acme", "archived": true, "default_cleared": false,
+                "open_tasks": 2, "open_overdue": 1,
+            }),
+        );
+        assert!(
+            with_overdue.contains("2 open tasks"),
+            "must count the tasks left behind: {with_overdue:?}"
+        );
+        assert!(
+            with_overdue.contains("1 overdue"),
+            "must call out how many of them are overdue: {with_overdue:?}"
+        );
+        assert!(
+            with_overdue.contains("tasqx list project:acme"),
+            "must name how to find them: {with_overdue:?}"
+        );
+        // The default-project fact from D22 must survive alongside the new one.
+        assert!(
+            with_overdue.contains("unchanged"),
+            "must not drop the pre-existing default-project fact: {with_overdue:?}"
+        );
+
+        // No overdue among the open tasks: no false "(0 overdue)".
+        let no_overdue = project_archived(
+            &ctx,
+            &json!({
+                "name": "acme", "archived": true, "default_cleared": false,
+                "open_tasks": 1, "open_overdue": 0,
+            }),
+        );
+        assert!(no_overdue.contains("1 open task"));
+        assert!(!no_overdue.contains("open task,"));
+        assert!(
+            !no_overdue.contains("overdue"),
+            "zero overdue must not be printed as a fact: {no_overdue:?}"
+        );
+
+        // Nothing left behind: the line is exactly what it was before D89,
+        // unchanged — no empty "0 open tasks" clause invented.
+        let clean = project_archived(
+            &ctx,
+            &json!({
+                "name": "acme", "archived": true, "default_cleared": false,
+                "open_tasks": 0, "open_overdue": 0,
+            }),
+        );
+        assert!(
+            !clean.contains("open task"),
+            "nothing was left behind, so nothing should be claimed: {clean:?}"
+        );
+        assert!(clean.contains("unchanged"));
     }
 
     /// The invisible-field trap: `projects` is the read surface for the default,
