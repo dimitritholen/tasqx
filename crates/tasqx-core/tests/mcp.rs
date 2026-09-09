@@ -1979,3 +1979,92 @@ fn create_project_description_says_it_is_never_the_default() {
         "the description should say the new project does not become the default: {desc}"
     );
 }
+
+// ---- annotation.add's echo is opt-out, not gone (audit #172; challenges D72) -
+
+/// The default is unchanged: a caller that says nothing still gets the body
+/// echoed back, verbatim-storage proof intact (D72/D75).
+#[test]
+fn annotate_still_echoes_the_body_by_default() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_annotate_task",
+        json!({ "ref": 1, "body": "hello world" }),
+    );
+    assert!(!is_error(&resp));
+    let json = tool_text(&resp);
+    assert_eq!(json["annotation"]["body"], "hello world");
+    assert!(json["annotation"].get("body_bytes").is_none());
+}
+
+/// `include_body: false` drops the echoed body and reports its length
+/// instead, so a long note does not cost its own bytes twice with no way to
+/// decline. The stored annotation is untouched — a follow-up read gets the
+/// body back whole.
+#[test]
+fn annotate_include_body_false_reports_a_length_instead_of_the_bytes() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let long_body = "y".repeat(5000);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_annotate_task",
+        json!({ "ref": 1, "body": long_body.clone(), "include_body": false }),
+    );
+    assert!(!is_error(&resp));
+    let json = tool_text(&resp);
+    assert!(
+        json["annotation"].get("body").is_none(),
+        "body must not be echoed when declined: {json}"
+    );
+    assert_eq!(json["annotation"]["body_bytes"], long_body.len());
+
+    // The response is genuinely smaller — this is the point.
+    let with_body = call(
+        &server,
+        2,
+        "tasqx_annotate_task",
+        json!({ "ref": 1, "body": long_body.clone() }),
+    );
+    let small = serde_json::to_string(&resp).expect("json").len();
+    let big = serde_json::to_string(&with_body).expect("json").len();
+    assert!(
+        small < big,
+        "declining the echo must actually shrink the response: {small} vs {big}"
+    );
+
+    // Nothing was lost in the store: the body is still there, whole.
+    let got = engine
+        .task_get(&json!({ "ref": 1, "annotations_limit": 2 }))
+        .expect("get");
+    let bodies: Vec<&str> = got["annotations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["body"].as_str().unwrap())
+        .collect();
+    assert!(bodies.contains(&long_body.as_str()));
+}
+
+/// `include_body` must never reach the params gate: `annotation.add` does not
+/// accept it as a method param, so a forwarded copy would be an instant
+/// `bad_request` on every call that names it.
+#[test]
+fn include_body_is_stripped_before_the_params_gate() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    for args in [
+        json!({ "ref": 1, "body": "a", "include_body": false }),
+        json!({ "ref": 1, "body": "b", "include_body": true }),
+    ] {
+        let resp = call(&server, 1, "tasqx_annotate_task", args.clone());
+        assert!(!is_error(&resp), "`{args}` was refused: {resp}");
+    }
+}

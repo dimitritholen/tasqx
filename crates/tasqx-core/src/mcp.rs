@@ -75,6 +75,9 @@ struct PreparedCall {
     args: Value,
     /// D49/D66: whether the `task.get` answer carries the machine block.
     include_json: bool,
+    /// Whether the `annotation.add` answer echoes the stored body back
+    /// (D72/D75's default) or a `body_bytes` length in its place.
+    include_body: bool,
     /// Whether THIS transport supplied the `annotations_limit` page.
     paged_by_us: bool,
     /// Whether THIS transport supplied the `task.list` page.
@@ -336,11 +339,18 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
 /// it against the schemas in both directions, so an argument added to a schema
 /// and not forwarded either lands here with an argument or reddens the build —
 /// the `UNEXPOSED_METHODS` move, applied to the other end of the same seam.
-const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[(
-    "tasqx_get_task",
-    "include_json",
-    "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
-)];
+const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
+    (
+        "tasqx_get_task",
+        "include_json",
+        "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
+    ),
+    (
+        "tasqx_annotate_task",
+        "include_body",
+        "whether the response echoes the annotation body back beside its id and timestamp.      D72/D75 keep the echo ON by default — it is the caller's only evidence that a body      promised to be stored verbatim really was — so this is opt-OUT, not a reversal: a      caller who already holds every byte it sent (the common case for a long note) can      decline paying to receive them again, and one that wants the verbatim proof still      gets it by doing nothing. `annotation.add` has no opinion on how its own result is      echoed back over one particular transport.",
+    ),
+];
 
 /// Built once per process. The table is a pure function of compile-time
 /// constants — every runtime `format!` in it renders a `const` list — and it
@@ -825,12 +835,24 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             description: "Attach a timestamped note to a task. The body is \
                 stored verbatim (newlines and markdown included), so this is \
                 where long-form context lives: acceptance criteria, links, \
-                implementation notes.",
+                implementation notes. The response echoes the stored body back \
+                by default — proof the store kept it verbatim — but you \
+                already hold every byte you sent, so pass `include_body: \
+                false` to get `{id, created, body_bytes}` instead on a long \
+                note.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
-                    "body": { "type": "string", "description": "Note text, stored verbatim. Multi-line markdown is fine." }
+                    "body": { "type": "string", "description": "Note text, stored verbatim. Multi-line markdown is fine." },
+                    "include_body": {
+                        "type": "boolean",
+                        "description": "Echo the stored body back in the response. Default \
+                             true. A long note costs its own bytes twice — once in the \
+                             request, once in this echo — so pass false to get `body_bytes` \
+                             (a length) in place of `body` when you do not need the \
+                             verbatim-storage proof."
+                    }
                 },
                 "required": ["ref", "body"]
             }),
@@ -1184,6 +1206,14 @@ impl<'e> McpServer<'e> {
             .get("include_json")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        // Default true, for the same reason: `annotation.add` has echoed its
+        // body since before this argument existed (D72/D75), and a caller
+        // that says nothing keeps getting it. `include_body: false` is the
+        // opt-out.
+        let include_body = consumed
+            .get("include_body")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
 
         let mut paged_by_us = false;
         if spec.method == "task.get" {
@@ -1215,6 +1245,7 @@ impl<'e> McpServer<'e> {
         PreparedCall {
             args,
             include_json,
+            include_body,
             paged_by_us,
             paged_list_by_us,
         }
@@ -1224,7 +1255,7 @@ impl<'e> McpServer<'e> {
     /// of the seam `prepare_args` is the pre-dispatch half of.
     fn present(&self, spec: &ToolSpec, prepared: &PreparedCall, outcome: DispatchOutcome) -> Value {
         match outcome {
-            Ok(result) => {
+            Ok(mut result) => {
                 // The one rendered surface. Keyed on the method rather than the
                 // tool name to match the `task.modify`/`task.start` checks
                 // above; exactly one tool maps to `task.get`, so this is the
@@ -1247,6 +1278,22 @@ impl<'e> McpServer<'e> {
                         return tool_ok_text(&crate::markdown::task_detail(&result, &opts));
                     }
                     return self.fit_to_budget(result, &prepared.args, &opts, prepared.paged_by_us);
+                }
+                // The opt-out half of D72/D75's echo: the caller already holds
+                // every byte of `body` (it is right there in the request this
+                // is a response to), so a caller who says so gets a length
+                // rather than the bytes again. The frozen `annotation.add`
+                // result itself is untouched by this — `dispatch` still
+                // returns the full ANNOTATION shape D56 froze, and a caller of
+                // `tasqx api` always gets it whole; only this transport's OWN
+                // presentation of it is rewritten, on request.
+                if spec.method == "annotation.add" && !prepared.include_body {
+                    if let Some(body_len) = result["annotation"]["body"].as_str().map(str::len) {
+                        if let Some(obj) = result["annotation"].as_object_mut() {
+                            obj.remove("body");
+                            obj.insert("body_bytes".to_string(), json!(body_len));
+                        }
+                    }
                 }
                 if prepared.paged_list_by_us {
                     return self.fit_list_to_budget(result, &prepared.args);
