@@ -448,6 +448,72 @@ fn a_misspelled_config_key_warns_from_config_list() {
     );
 }
 
+/// #193 — a malformed user theme file was listed as available, silently
+/// ignored by `--theme`/`$TASQX_THEME` (unlike an outright unknown NAME,
+/// which already warns), and `theme show broken` answered with a DIFFERENT
+/// theme's data printed under the requested name — the worst of the three,
+/// since it reports success while showing the user a theme they did not ask
+/// for. Completes D46 ("A malformed user theme file produces a diagnostic
+/// instead of a silent fall-back, and `theme show` treats it as fatal"),
+/// whose `theme::FileOutcome`/`load_reporting` were built but never wired to
+/// a caller.
+#[test]
+fn a_broken_user_theme_file_is_marked_and_never_silently_substituted() {
+    let dir = fresh_config_dir("broken-theme");
+    std::fs::create_dir_all(dir.join("themes")).unwrap();
+    std::fs::write(
+        dir.join("themes").join("broken.toml"),
+        "name = \"broken\"\n[roles\n",
+    )
+    .unwrap();
+
+    // `theme list` must mark the file as unusable, not offer it plain.
+    let out = bin("broken-theme", &dir)
+        .args(["theme", "list"])
+        .output()
+        .expect("run theme list");
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("broken") && s.contains("parse error"),
+        "an unloadable file must be marked broken in the listing: {s}"
+    );
+
+    // `theme show broken` must refuse outright — never print another theme's
+    // data under the name the user asked for.
+    let out = bin("broken-theme", &dir)
+        .args(["theme", "show", "broken"])
+        .output()
+        .expect("run theme show");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a broken theme file must be a bad_request, like an unknown name"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "must not print a theme the user did not ask for: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("broken"), "{err}");
+
+    // `--theme broken` (the render path) must warn on stderr, the way an
+    // unknown NAME already does — but must still run the command; a broken
+    // theme must never block a task capture.
+    let out = bin("broken-theme", &dir)
+        .args(["--theme", "broken", "list"])
+        .output()
+        .expect("run list");
+    assert!(
+        out.status.success(),
+        "a broken theme must not fail an ordinary command"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).is_empty(),
+        "the render path must warn about a broken theme file, matching --theme <unknown>"
+    );
+}
+
 /// Saving a theme said nothing about where to see it.
 ///
 /// The user picked gruvbox in `config edit`, it wrote correctly, and they came

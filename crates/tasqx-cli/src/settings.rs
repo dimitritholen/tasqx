@@ -328,10 +328,31 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                         "  {}\n",
                         ctx.paint("muted", &dir.to_string_lossy())
                     ));
+                    // Load-and-validate each file rather than merely listing
+                    // its stem (#193, completing D46): a `.toml` that cannot
+                    // be parsed used to be offered exactly like a working
+                    // theme, and the first place a theme author would learn
+                    // otherwise was `theme show` or `--theme`, both of which
+                    // silently substituted a different theme under the broken
+                    // name.
+                    let mut broken = Vec::new();
                     for name in &user {
-                        text.push_str(&format!("  {name}\n"));
+                        if theme::load_reporting(name, Some(&dir))
+                            .file
+                            .rejection()
+                            .is_some()
+                        {
+                            text.push_str(&format!(
+                                "  {name} {}\n",
+                                ctx.paint("danger", "(parse error)")
+                            ));
+                            broken.push(name.clone());
+                        } else {
+                            text.push_str(&format!("  {name}\n"));
+                        }
                     }
-                    user_block = json!({ "dir": dir.to_string_lossy(), "names": user });
+                    user_block =
+                        json!({ "dir": dir.to_string_lossy(), "names": user, "broken": broken });
                 }
             }
             Ok((
@@ -355,8 +376,22 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                     // cannot drift from `theme set` and `config set` the way an
                     // inline copy already did once.
                     validate_setting("theme.name", &resolved)?;
-                    Ctx::new(theme::load(&resolved, themes_dir().as_deref()), ctx.caps)
-                        .with_cols(ctx.cols)
+                    // `validate_setting` only checks that a `themes/<name>.toml`
+                    // EXISTS, not that it loads — so a broken file passed this
+                    // gate and `theme::load` silently substituted the fallback
+                    // theme, still labelled `Theme: nord` (#193, completing
+                    // D46's "`theme show` treats it as fatal"). `load_reporting`
+                    // is what actually knows the difference; refuse the same way
+                    // an unknown NAME is refused three lines up, rather than
+                    // printing another theme's data under the name that was
+                    // asked for.
+                    let loaded = theme::load_reporting(&resolved, themes_dir().as_deref());
+                    if let Some(reason) = loaded.file.rejection() {
+                        return Err(ApiError::bad_request(format!(
+                            "theme {resolved:?} could not be loaded: {reason}"
+                        )));
+                    }
+                    Ctx::new(loaded.theme, ctx.caps).with_cols(ctx.cols)
                 }
                 None => Ctx::new(ctx.theme.clone(), ctx.caps).with_cols(ctx.cols),
             };
