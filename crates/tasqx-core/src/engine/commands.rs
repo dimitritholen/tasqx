@@ -170,12 +170,19 @@ impl From<TaskStarted> for Value {
 }
 
 pub(super) struct TaskStopped {
+    /// The interval this `stop` just closed — what elapsed between the
+    /// matching `start` and now, and nothing else.
+    pub(super) interval: String,
+    /// The task's cumulative total, the same quantity `task.get`, `task.list`
+    /// and `store.export` (`tracked_seconds`) all call `tracked` (#185: this
+    /// used to hold `interval`'s value under this name, which made `stop`'s
+    /// own `tracked` disagree with the following `task.get`'s).
     pub(super) tracked: String,
 }
 
 impl From<TaskStopped> for Value {
     fn from(result: TaskStopped) -> Self {
-        json!({ "status": "pending", "tracked": result.tracked })
+        json!({ "status": "pending", "interval": result.interval, "tracked": result.tracked })
     }
 }
 

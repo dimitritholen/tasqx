@@ -760,7 +760,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: true,
-            description: "Stop the timer on a task. Returns the tracked duration.",
+            description: "Stop the timer on a task. Returns `interval` (the duration just \
+                closed) and `tracked` (the task's running total, matching `tasqx_get_task`).",
             schema: json!({
                 "type": "object",
                 "properties": { "ref": ref_schema() },

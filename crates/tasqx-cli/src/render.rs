@@ -166,10 +166,17 @@ pub fn started(ctx: &Ctx, result: &Value) -> String {
     )
 }
 
+/// #185: this used to print the interval `stop` had just closed under the
+/// label `tracked` — the same word `show`, `--json` and `report` all use for
+/// the task's *cumulative* total, which this line never showed. A reader
+/// billing by tracked time read "tracked 3s" on a task that in fact carried
+/// an hour, with no way to tell short of a second `show`. `interval` now
+/// names the delta and `tracked` keeps its one meaning everywhere.
 pub fn stopped(ctx: &Ctx, result: &Value) -> String {
+    let interval = s(result, "interval");
     let tracked = s(result, "tracked");
     format!(
-        "{}  ·  tracked {tracked}\n",
+        "{}  ·  interval {interval}  ·  tracked {tracked}\n",
         ctx.paint("timer.active", "Stopped")
     )
 }
