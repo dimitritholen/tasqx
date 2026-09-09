@@ -766,7 +766,13 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Use { name }) => run_use(&mut backend, &ctx, name),
         Some(Command::Archive { name }) => run_archive(&mut backend, &ctx, name),
         Some(Command::Projects { all }) => run_projects(&mut backend, &ctx, all),
-        Some(Command::Report { args, all, .. }) => run_report(&mut backend, &ctx, args, all),
+        Some(Command::Report {
+            args,
+            all,
+            since,
+            until,
+            ..
+        }) => run_report(&mut backend, &ctx, args, all, since, until),
         Some(Command::Config { action }) => {
             run_config(&mut backend, &ctx, &action, theme_flag.as_deref())
         }
@@ -1726,7 +1732,7 @@ mod tests {
     #[test]
     fn the_cli_group_by_keywords_come_from_the_engine() {
         for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
-            let p = report_params(&[axis.to_string()], false);
+            let p = report_params(&[axis.to_string()], false, None, None, now_ts()).unwrap();
             assert_eq!(
                 p["group_by"], axis,
                 "{axis} must be read as a grouping, not a filter"
@@ -1740,7 +1746,7 @@ mod tests {
         // one, so this still holds now that unknown tokens are rejected (D27):
         // routing to the filter is this test's business, whether the filter
         // then accepts the token is filter.rs's.
-        let p = report_params(&["+api".to_string()], false);
+        let p = report_params(&["+api".to_string()], false, None, None, now_ts()).unwrap();
         assert_eq!(p["group_by"], tasqx_core::engine::SUMMARY_GROUP_BY[0]);
         assert_eq!(p["filter"], "+api");
     }
@@ -1973,17 +1979,30 @@ mod tests {
     /// quietly omits rows still looks like a perfectly good report.
     #[test]
     fn report_all_flag_reaches_core_as_all_true() {
-        assert_eq!(report_params(&[], true)["all"], json!(true));
+        assert_eq!(
+            report_params(&[], true, None, None, now_ts()).unwrap()["all"],
+            json!(true)
+        );
         // Absent by default: core's `all` defaults to false, and sending an
         // explicit `false` would be the same thing said twice.
-        assert!(report_params(&[], false).get("all").is_none());
+        assert!(report_params(&[], false, None, None, now_ts())
+            .unwrap()
+            .get("all")
+            .is_none());
     }
 
     /// The group_by-then-filter split is positional and easy to break; `--all`
     /// is a flag and must compose with both halves rather than displacing them.
     #[test]
     fn report_all_composes_with_group_by_and_filter() {
-        let p = report_params(&["status".to_string(), "project:x".to_string()], true);
+        let p = report_params(
+            &["status".to_string(), "project:x".to_string()],
+            true,
+            None,
+            None,
+            now_ts(),
+        )
+        .unwrap();
         assert_eq!(p["group_by"], "status");
         assert_eq!(p["filter"], "project:x");
         assert_eq!(p["all"], json!(true));
@@ -2030,7 +2049,8 @@ mod tests {
             }
             e.task_cancel(&json!({ "ref": "2" })).unwrap();
             let mut be = Backend::Local(e);
-            let (result, _) = run_report(&mut be, &ctx, vec![], all).expect("report ran");
+            let (result, _) =
+                run_report(&mut be, &ctx, vec![], all, None, None).expect("report ran");
             result["groups"]
                 .as_array()
                 .unwrap()

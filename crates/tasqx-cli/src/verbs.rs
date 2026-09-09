@@ -550,9 +550,22 @@ pub(crate) fn run_projects(be: &mut Backend, ctx: &Ctx, all: bool) -> CmdOutcome
 }
 
 /// Build the `report.summary` params from the CLI's positional args plus the
-/// `--all` flag. Split out of [`run_report`] so the CLI→core contract can be
-/// asserted without standing up a backend.
-pub(crate) fn report_params(args: &[String], all: bool) -> Value {
+/// `--all`/`--since`/`--until` flags. Split out of [`run_report`] so the
+/// CLI→core contract can be asserted without standing up a backend.
+///
+/// `since`/`until` window WHEN the tracked time or token spend happened
+/// (D79) — a different axis from the `completed.after:`/`completed.before:`
+/// terms `rest` may carry, which window by task completion date instead.
+/// Resolved through the one date parser every other date-shaped flag already
+/// uses, at the real call-time `now` (D33), so `tasqx report --since -7d`
+/// fails with a nameable message rather than a round trip to the engine.
+pub(crate) fn report_params(
+    args: &[String],
+    all: bool,
+    since: Option<String>,
+    until: Option<String>,
+    now: jiff::Timestamp,
+) -> Result<Value, ApiError> {
     // First token, if a known group_by keyword, selects grouping; the rest is
     // the filter. Otherwise everything is the filter (group_by defaults).
     let mut group_by = tasqx_core::engine::SUMMARY_GROUP_BY[0].to_string();
@@ -584,11 +597,24 @@ pub(crate) fn report_params(args: &[String], all: bool) -> Value {
     if all {
         params["all"] = Value::Bool(true);
     }
-    params
+    if let Some(s) = since {
+        params["since"] = Value::String(datetime::parse_when(&s, now)?);
+    }
+    if let Some(u) = until {
+        params["until"] = Value::String(datetime::parse_when(&u, now)?);
+    }
+    Ok(params)
 }
 
-pub(crate) fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>, all: bool) -> CmdOutcome {
-    let params = report_params(&args, all);
+pub(crate) fn run_report(
+    be: &mut Backend,
+    ctx: &Ctx,
+    args: Vec<String>,
+    all: bool,
+    since: Option<String>,
+    until: Option<String>,
+) -> CmdOutcome {
+    let params = report_params(&args, all, since, until, now_ts())?;
     let group_by = params["group_by"]
         .as_str()
         .unwrap_or(tasqx_core::engine::SUMMARY_GROUP_BY[0])
@@ -977,16 +1003,18 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
 ///
 /// The scope comes from [`report_params`] — the SAME builder the terminal path
 /// uses — so the two output modes of one command cannot answer different
-/// questions again. `all` is hard `false` rather than a parameter because clap
-/// already rejects `--all` alongside `--html`; spelling it here keeps the two
-/// facts in one place instead of accepting a flag we would then ignore.
+/// questions again. `all` is hard `false`, and `since`/`until` hard `None`,
+/// rather than parameters, because clap already rejects `--all`/`--since`/
+/// `--until` alongside `--html` (the HTML page has no windowed path yet);
+/// spelling it here keeps the two facts in one place instead of accepting a
+/// flag we would then ignore.
 pub(crate) fn run_html_report(
     engine: &Engine,
     ctx: &Ctx,
     args: Vec<String>,
     out: Option<String>,
 ) -> CmdOutcome {
-    let params = report_params(&args, false);
+    let params = report_params(&args, false, None, None, now_ts())?;
     let doc = html::generate(engine, &ctx.theme, &params)?;
     match out {
         Some(path) => {
