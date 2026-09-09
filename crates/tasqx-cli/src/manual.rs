@@ -201,8 +201,12 @@ Inline sugar:
   project:p       (or proj:p) set the project
   !high           priority (!high / !med / !low)
   due:…           a due date (natural language)
-  est:4h          an effort estimate
-  repeat:…        a recurrence rule
+  scheduled:…     (or sched:…) when you can start — parks the
+                  task in backlog until then
+  wait:…          hide until this instant — also parks it in
+                  backlog
+  est:4h          (or estimate:4h) an effort estimate
+  repeat:…        a recurrence rule (or every:… / recur:…)
   remind:…        a reminder offset or time
 
 `tasqx modify <ref>` sets fields; `--clear <field>` removes them.
@@ -211,8 +215,22 @@ Lifecycle: start · stop · done · cancel · reopen."
 
         Topic::Dates => {
             "\
-Dates take natural language: `friday`, \"in 3 days\", `eom`,
-signed offsets like `-1d`.
+Dates take natural language, and every time below is read and
+stored as UTC — `due:17:00` means 17:00 UTC, not your local
+clock.
+
+Relative days: `today`, `tomorrow`, `yesterday`, `now`, `eom`
+(end of month), `eow` (end of week).
+Weekday names: `monday`..`sunday` or `mon`..`sat` — the next
+occurrence, today included if it IS that day.
+Counted spans: `in 1 day`, \"in 3 days\", `in 2 weeks`,
+`in 3 months` — days, weeks and months only; `in 2 hours` is
+not in this family and is rejected.
+Signed offsets: `-1d`, `+3d`, `3d` (no sign defaults to future).
+Times: `17:00`, `5pm`, attached to a day with a space —
+\"tomorrow 17:00\", \"friday 9am\" — or a full instant —
+\"2026-09-09 17:00\", `2026-09-09T17:00:00+02:00` (an explicit
+offset is honoured and converted to UTC on the way in).
 
 Four date fields carry meaning:
   due        when it's due
@@ -265,12 +283,16 @@ argument: `tasqx list \"+api or +web\"` is the expression.
 
 `add`/`modify` sugar is split by the same scanner, but the
 write side ALSO honours the argument boundary your shell drew,
-so it accepts one spelling the filter does not: `tasqx add
-\"paint\" project:Home Renovation` files the task, while
-`tasqx list project:Home Renovation` is refused. Reading is
-where a guess would return wrong rows silently, so only the
-read side refuses. Use the quoted spelling and both sides
-agree. Write `\\\"` for a literal quote and
+so an unquoted multi-word value that would be refused on the
+read side instead either `not_found`s (no project named by the
+leading word) or — worse, once a project happens to be named
+exactly that leading word — silently files the task there and
+welds the remainder onto the title: `tasqx add \"paint\"
+project:Home Renovation` becomes project `Home`, title \"paint
+Renovation\". Use the quoted spelling on BOTH sides and this
+cannot happen:
+  tasqx add \"paint\" project:\"Home Renovation\"
+Write `\\\"` for a literal quote and
 `\\\\` for a literal backslash — a name holding a quote needs
 that form on both sides:
   tasqx add \"paint\" project:\"My \\\"Big\\\" Project\"
@@ -299,7 +321,18 @@ off-by-default `notify-os` build feature."
   tasqx chart heatmap       activity calendar
   tasqx chart burndown      remaining work over time
   tasqx why <ref>           explain a task's urgency score
-  tasqx theme list / show   browse and preview themes"
+  tasqx theme list / show   browse and preview themes
+
+The TOKENS column names a group's largest bucket with that
+bucket's own count (`cacheR 1.2M`), or `-` when nothing was
+spent. The four buckets — in, out, cacheR (cache read) and
+cacheW (cache creation) — are never blended into one figure;
+`--json` and `report --html` carry the full split.
+Populated by self-reported counts on `task.done` (the primary
+source, via `token.add` — see `tasqx manual json-api`), falling
+back to parsing local AI-tool transcripts when
+`tokens.enabled = true`, or by the daemon's OTLP receiver when
+`otlp.enabled = true` (`tasqx manual daemon`)."
         }
 
         Topic::Daemon => {
@@ -310,7 +343,20 @@ and serves the one JSON API as the single writer.
 One-shot commands auto-route through a running daemon, so your
 edits serialize safely. `tasqx watch` is a live view fed by the
 daemon's push stream. `--no-daemon` is the escape hatch: run a
-command directly against the store instead."
+command directly against the store instead.
+
+`otlp.enabled = true` (config.toml) starts a local OTLP/HTTP
+receiver in the daemon on 127.0.0.1 (`otlp.port`, default
+4318), capturing an AI tool's own token telemetry live instead
+of parsing its transcript after the fact:
+  Claude Code   CLAUDE_CODE_ENABLE_TELEMETRY=1
+                OTEL_LOGS_EXPORTER=otlp
+                OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+                OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+  Gemini CLI    same two OTEL_EXPORTER_OTLP_* variables
+  Codex         the [otel] table in ~/.codex/config.toml
+The receiver is independent of `tokens.enabled`: self-reported
+counts (`task.done`, `token.add`) work with both settings off."
         }
 
         Topic::Automation => {
@@ -334,6 +380,10 @@ Everything speaks one envelope:
 method + params go in; a result or an error comes out. Exit
 codes mirror the error model: 0 ok, 2 bad_request, 4 not_found,
 5 conflict.
+
+`token.add` self-reports a turn's token counts against a task —
+the primary source `tasqx report`'s TOKENS column reads
+(`tasqx manual reports`).
 
 `tasqx export` / `tasqx import` round-trip canonical JSON. See
 `tasqx docs` for the full method table."
@@ -555,6 +605,103 @@ mod tests {
         for arg in [None, Some("init"), Some("filters")] {
             let s = render(&plain(), arg).unwrap();
             assert!(!s.contains('\x1b'), "plain render leaked ANSI for {arg:?}");
+        }
+    }
+
+    /// tasqx audit 2026-09 #196: the manual's own worked example for the one
+    /// asymmetry between reading and writing a `project:` filter claimed the
+    /// unquoted spelling "files the task" on the write side. Run for real
+    /// (`tasqx add "paint" project:Home Renovation`), it either `not_found`s
+    /// or — once a project happens to be named exactly the leading word —
+    /// silently mis-files the task and welds the remainder onto the title:
+    /// the D30 defect, reconstructed through the documentation the D30 fix
+    /// was supposed to teach around. The recommended spelling must be the
+    /// quoted one, which actually works on both sides.
+    #[test]
+    fn filters_topic_does_not_claim_the_unquoted_write_spelling_files_the_task() {
+        let s = topic_body(Topic::Filters);
+        assert!(
+            !s.contains("project:Home Renovation` files the task"),
+            "the manual must not claim the unquoted `project:Home Renovation` \
+             spelling on `add`/`modify` unconditionally succeeds — run for \
+             real, it either not_found's or mis-files the task into a wrong \
+             project with a mangled title: {s}"
+        );
+        assert!(
+            s.contains("project:\"Home Renovation\""),
+            "the manual must show the quoted spelling that actually works on \
+             both `list` and `add`/`modify`: {s}"
+        );
+    }
+
+    /// tasqx audit 2026-09 #226.1: `wait:` and `scheduled:`/`sched:` are the
+    /// two sugar tokens with the largest behavioural consequence — they park
+    /// a new task in `backlog`, invisible to `@working` — and both parse
+    /// (verified against the binary), but the terminal manual's `capturing`
+    /// topic never mentioned either, teaching seven of the nine working sugar
+    /// tokens and silently dropping the two riskiest ones.
+    #[test]
+    fn capturing_topic_documents_wait_and_scheduled_sugar() {
+        let s = topic_body(Topic::Capturing);
+        for token in ["wait:", "scheduled:", "sched:"] {
+            assert!(
+                s.contains(token),
+                "`tasqx manual capturing` must document `{token}` sugar, \
+                 which the parser accepts: {s}"
+            );
+        }
+    }
+
+    /// tasqx audit 2026-09 #223: token accounting is the one feature this
+    /// tool claims no other task manager has, and the terminal manual never
+    /// mentioned it anywhere reachable — not the report topic that shows the
+    /// TOKENS column, not the daemon topic that documents the OTLP receiver,
+    /// and not the JSON API topic that documents `token.add`. The generated
+    /// HTML guide already explains the four buckets (`docs.rs`), so the two
+    /// surfaces disagreed about whether the feature was documented at all.
+    #[test]
+    fn reports_daemon_and_json_api_topics_document_token_accounting() {
+        let reports = topic_body(Topic::Reports);
+        assert!(
+            reports.to_lowercase().contains("token"),
+            "`tasqx manual reports` must explain the TOKENS column: {reports}"
+        );
+
+        let daemon = topic_body(Topic::Daemon);
+        assert!(
+            daemon.to_uppercase().contains("OTLP"),
+            "`tasqx manual daemon` must mention the OTLP receiver it can run: {daemon}"
+        );
+
+        let json_api = topic_body(Topic::JsonApi);
+        assert!(
+            json_api.contains("token.add"),
+            "`tasqx manual json-api` must document `token.add`: {json_api}"
+        );
+    }
+
+    /// tasqx audit 2026-09 #226.4: `tasqx manual dates` covers the four date
+    /// fields and recurrence, but omits most of the vocabulary its own parser
+    /// accepts — every relative day word, every weekday name, and every time
+    /// form — so the one manual page dedicated to dates never mentions that
+    /// you can give a time at all, which is exactly where the biggest
+    /// surprise lives (`17:00` means 17:00 UTC).
+    #[test]
+    fn dates_topic_documents_relative_days_weekdays_and_times() {
+        let s = topic_body(Topic::Dates);
+        for word in [
+            "today",
+            "tomorrow",
+            "yesterday",
+            "monday",
+            "in 3 days",
+            "17:00",
+            "UTC",
+        ] {
+            assert!(
+                s.to_lowercase().contains(&word.to_lowercase()),
+                "`tasqx manual dates` must mention {word:?}: {s}"
+            );
         }
     }
 }
