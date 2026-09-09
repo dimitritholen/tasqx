@@ -211,6 +211,13 @@ impl Engine {
     ///
     /// A project that is ALREADY archived is a `conflict` (D22), not a second
     /// `ok`: see the refusal below for why.
+    ///
+    /// D89: the result also carries `open_tasks` and `open_overdue` — the work
+    /// this archive leaves fully live and unmentioned everywhere else (`list`,
+    /// `agenda`, `report`). Counted inside the same IMMEDIATE transaction as the
+    /// archive itself, against the same clock, so the number printed is exactly
+    /// what a `tasqx list project:<name>` run immediately after would show —
+    /// never a race against a concurrent add.
     pub fn project_archive(&self, p: &Value) -> Result<Value, ApiError> {
         // A lookup, like `project.use`: retiring a legacy whitespace-named
         // project is precisely the escape hatch D36 must not weld shut (D28).
@@ -264,6 +271,44 @@ impl Engine {
             "UPDATE projects SET archived = 1 WHERE id = ?1",
             params![id],
         )?;
+        // D89: the count that makes the archive line honest. Read inside the
+        // same transaction as the `UPDATE` above — the write lock is already
+        // held, so a concurrent `task.add` into this project either lands
+        // before this SELECT (and is counted) or serializes behind our commit
+        // (and is not), never a torn read of "some but not all". A raw scan
+        // rather than the bulk snapshot loader (`SnapshotParts`) on purpose:
+        // this needs two numbers, not a filterable `Task` per row, tags, or
+        // token buckets, and it must run against `tx`, which the loader is not
+        // wired to take.
+        let (open_tasks, open_overdue) = {
+            let now_ts = Timestamp::now();
+            let mut stmt = tx.prepare("SELECT status, due FROM tasks WHERE project = ?1")?;
+            let mut rows = stmt.query(params![name])?;
+            let (mut open, mut overdue) = (0i64, 0i64);
+            while let Some(row) = rows.next()? {
+                let status: String = row.get(0)?;
+                // Same placeholder rule as `map_task_row_at`: an unrecognized
+                // status (only reachable on a store written before D23 closed
+                // the last unvalidated writer) reads as `Pending` — open — so
+                // it stays counted rather than silently vanishing from a total
+                // that exists specifically to keep abandoned-looking work
+                // visible.
+                let status = Status::parse(&status).unwrap_or(Status::Pending);
+                if !status.is_open() {
+                    continue;
+                }
+                open += 1;
+                let due: Option<String> = row.get(1)?;
+                if due
+                    .as_deref()
+                    .and_then(parse_ts)
+                    .is_some_and(|d| d < now_ts)
+                {
+                    overdue += 1;
+                }
+            }
+            (open, overdue)
+        };
         // D22: archiving the *current* default un-points it, in this same
         // transaction. The alternative — leaving the default aimed at a retired
         // project — routes every bare `add` into a project `tasqx projects` no
@@ -278,12 +323,26 @@ impl Engine {
             Entity::Project,
             &id,
             "archive",
-            &json!({ "name": name, "default_cleared": default_cleared }),
+            &json!({
+                "name": name,
+                "default_cleared": default_cleared,
+                "open_tasks": open_tasks,
+                "open_overdue": open_overdue,
+            }),
         )?;
         tx.commit()?;
 
         // Always present, never omitted: a machine consumer must be able to tell
-        // "did not clear" from "this build does not report it".
-        Ok(json!({ "name": name, "archived": true, "default_cleared": default_cleared }))
+        // "did not clear" from "this build does not report it", and the same
+        // rule (D22) now covers `open_tasks`/`open_overdue` — a script asking
+        // "did this leave work behind" gets a number, not an absent field it
+        // has to distinguish from a build that never counted.
+        Ok(json!({
+            "name": name,
+            "archived": true,
+            "default_cleared": default_cleared,
+            "open_tasks": open_tasks,
+            "open_overdue": open_overdue,
+        }))
     }
 }
