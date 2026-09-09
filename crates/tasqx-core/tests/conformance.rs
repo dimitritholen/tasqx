@@ -358,6 +358,12 @@ const TASK_RELATIONS: &[Field] = &[
     req_of("annotations", Ty::Array, ANNOTATION),
 ];
 
+/// The reverse edge (tasqx audit #159): short_ids of the tasks THIS task
+/// blocks. `task.get`-only — `store.export`'s row shape is `TASK_RELATIONS`
+/// and does not carry it, so this is its own group rather than folded into
+/// that one.
+const TASK_BLOCKS: &[Field] = &[req("blocks", Ty::Array)];
+
 /// What `task.get` says about the history it did NOT return.
 ///
 /// `annotations_total` is required, not optional, and present whether the page
@@ -534,6 +540,7 @@ const R_TASK_GET: Shape = &[
     TASK_CORE,
     TASK_LIVE_TIME,
     TASK_RELATIONS,
+    TASK_BLOCKS,
     TASK_ANNOTATION_PAGE,
     TASK_TOKENS,
     TASK_BLOCKED,

@@ -91,6 +91,19 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
             row(&mut out, "depends on", &refs.join(", "));
         }
     }
+    // The reverse edge (tasqx audit #159): what THIS task blocks, mirroring
+    // `depends_on` above. Same "only when non-empty" rule — a leaf naming
+    // nothing here is the common case.
+    if let Some(blocks) = result.get("blocks").and_then(Value::as_array) {
+        let refs: Vec<String> = blocks
+            .iter()
+            .filter_map(Value::as_i64)
+            .map(|n| format!("#{n}"))
+            .collect();
+        if !refs.is_empty() {
+            row(&mut out, "blocks", &refs.join(", "));
+        }
+    }
 
     row(
         &mut out,

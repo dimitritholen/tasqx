@@ -306,6 +306,51 @@ impl Engine {
         }))
     }
 
+    // ---- backlog refusal hint -------------------------------------------------
+
+    /// Names the field(s) still holding a future date on a `backlog` task,
+    /// and the exact `--clear` command that releases it. Appended to
+    /// `task.done`'s and `task.start`'s refusal so "I scheduled it for
+    /// Monday and finished it Friday" has a next step in the response
+    /// instead of stopping at the transition table with no way out — every
+    /// other refusal in this tool names the verb that gets a caller unstuck
+    /// (`undo`'s messages, `no project named X (create it with
+    /// \`tasqx init X\`)`) and this one was the outlier (tasqx audit #160).
+    ///
+    /// Only `task.status == Status::Backlog` ever calls this, and a task
+    /// resolves to `Backlog` (via `effective_status`) only when at least one
+    /// of `wait`/`scheduled` is still ahead of `now` — so at least one field
+    /// is always found; an empty `fields` here would mean `effective_status`
+    /// and this walk disagree about what "future" means; nothing was found
+    /// wrong, so nothing renders rather than a hint that reads as a full
+    /// sentence with no field named.
+    fn backlog_escape_hint(task: &Task, now: Timestamp) -> String {
+        let fields: Vec<(&'static str, &str)> = [
+            ("wait", task.wait.as_deref()),
+            ("scheduled", task.scheduled.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(name, v)| v.filter(|d| is_future_at(Some(d), now)).map(|d| (name, d)))
+        .collect();
+        if fields.is_empty() {
+            return String::new();
+        }
+        let named = fields
+            .iter()
+            .map(|(name, date)| format!("`{name}` ({date})"))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let clears = fields
+            .iter()
+            .map(|(name, _)| format!("--clear {name}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            " — it is deferred by {named}; clear it first with `tasqx modify {} {clears}`",
+            task.short_id
+        )
+    }
+
     // ---- task.start ----------------------------------------------------------
 
     /// `task.start` — open a time interval. Params: `ref`, `keep`.
@@ -330,6 +375,12 @@ impl Engine {
                 .into());
             }
             Status::Pending => {}
+            Status::Backlog => {
+                return Err(ApiError::conflict(format!(
+                    "cannot start a backlog task (only pending -> active){}",
+                    Self::backlog_escape_hint(&task, Timestamp::now())
+                )));
+            }
             other => {
                 return Err(ApiError::conflict(format!(
                     "cannot start a {} task (only pending -> active)",
@@ -461,6 +512,12 @@ impl Engine {
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
             Status::Pending | Status::Active => {}
+            Status::Backlog => {
+                return Err(ApiError::conflict(format!(
+                    "cannot complete a backlog task (only pending|active -> done){}",
+                    Self::backlog_escape_hint(&task, Timestamp::now())
+                )));
+            }
             other => {
                 return Err(ApiError::conflict(format!(
                     "cannot complete a {} task (only pending|active -> done)",
@@ -1075,11 +1132,15 @@ impl Engine {
         statements += 1;
         let mut blocked = HashSet::new();
         {
+            // Same gate `is_blocked` takes, and for the same reason (D-158):
+            // a dependent already `done`/`cancelled` is never blocked, no
+            // matter what its blocker's status is.
             let terminal = Status::sql_in_list(Status::is_terminal);
             let mut stmt = self.conn.prepare(&format!(
                 "SELECT DISTINCT d.task_id FROM dependencies d \
                  JOIN tasks t ON t.id = d.depends_on_id \
-                 WHERE t.status NOT IN ({terminal})"
+                 JOIN tasks self ON self.id = d.task_id \
+                 WHERE t.status NOT IN ({terminal}) AND self.status NOT IN ({terminal})"
             ))?;
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             for row in rows {
@@ -1337,11 +1398,22 @@ impl Engine {
     pub(super) fn is_blocked(&self, task_id: &str) -> Result<bool, ApiError> {
         // Enum-derived, never caller text — see `Status::sql_in_list`.
         let terminal = Status::sql_in_list(Status::is_terminal);
+        // BOTH sides gate on `status NOT IN (terminal)`: a task closed
+        // (`done`/`cancelled`) is never blocked regardless of what it once
+        // depended on — `blocked` is meaningless for work that is already
+        // finished, and answering `true` for it is the D-158 defect (a task
+        // completed while its blocker was still open kept reporting
+        // `blocked: true` forever, and the flag could be set on a closed task
+        // after the fact by a fresh `dependency.add`). `self` here is the
+        // dependent named by `task_id`, joined the same way `t` (the blocker)
+        // already is.
         let n: i64 = self.conn.query_row(
             &format!(
                 "SELECT COUNT(*) FROM dependencies d \
                  JOIN tasks t ON t.id = d.depends_on_id \
-                 WHERE d.task_id = ?1 AND t.status NOT IN ({terminal})"
+                 JOIN tasks self ON self.id = d.task_id \
+                 WHERE d.task_id = ?1 AND t.status NOT IN ({terminal}) \
+                 AND self.status NOT IN ({terminal})"
             ),
             params![task_id],
             |r| r.get(0),
@@ -1355,6 +1427,31 @@ impl Engine {
             "SELECT t.short_id FROM dependencies d \
              JOIN tasks t ON t.id = d.depends_on_id \
              WHERE d.task_id = ?1 ORDER BY t.short_id",
+        )?;
+        let rows = stmt.query_map(params![task_id], |r| r.get::<_, i64>(0))?;
+        let mut v = Vec::new();
+        for r in rows {
+            v.push(r?);
+        }
+        Ok(v)
+    }
+
+    /// short_ids of the tasks THIS task blocks — the reverse of
+    /// `depends_on_short_ids`. Mirrors it exactly (same join, columns
+    /// swapped, no status filter): `depends_on` names every edge regardless
+    /// of the blocker's status, and the caller who can already see "what
+    /// blocks me" is entitled to the same answer for "what do I block",
+    /// without the entry disappearing the moment either side closes.
+    ///
+    /// Exists because nothing on any surface answered "if I finish this,
+    /// what starts moving?" before the task actually finished — the only
+    /// place the fact appeared was `task.done`'s `unblocked`, after the fact
+    /// (tasqx audit #159).
+    pub(super) fn blocks_short_ids(&self, task_id: &str) -> Result<Vec<i64>, ApiError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.short_id FROM dependencies d \
+             JOIN tasks t ON t.id = d.task_id \
+             WHERE d.depends_on_id = ?1 ORDER BY t.short_id",
         )?;
         let rows = stmt.query_map(params![task_id], |r| r.get::<_, i64>(0))?;
         let mut v = Vec::new();
@@ -1443,8 +1540,8 @@ impl Engine {
     // ---- task.get ------------------------------------------------------------
 
     /// `task.get` — one task in full. Params: `ref` (short_id or UUID),
-    /// `annotations_limit?`, `annotations_offset?`. Adds the four fields the row
-    /// itself does not carry — `depends_on`, `annotations`, `tokens`,
+    /// `annotations_limit?`, `annotations_offset?`. Adds the five fields the row
+    /// itself does not carry — `depends_on`, `blocks`, `annotations`, `tokens`,
     /// `blocked` — and recomputes `urgency` for the same reason `task.list`
     /// does.
     ///
@@ -1492,6 +1589,9 @@ impl Engine {
             &task.created
         ));
         obj["depends_on"] = json!(self.depends_on_short_ids(&task.id)?);
+        // The reverse edge (D-159): additive per D56/D85, so a v1 client
+        // reading this shape unchanged never notices it arrived.
+        obj["blocks"] = json!(self.blocks_short_ids(&task.id)?);
 
         let limit = opt_u64(p, "annotations_limit")?;
         let offset = opt_u64(p, "annotations_offset")?.unwrap_or(0);
@@ -1947,6 +2047,101 @@ mod tests {
             .load_task_snapshots_for(SnapshotParts::FILTERS_ONLY, at("2999-06-01T00:00:00Z"))
             .unwrap();
         assert_eq!(released[0].task.status, Status::Pending);
+    }
+
+    /// `blocked` was derived from the BLOCKER's status alone, so a dependent
+    /// that closes while its blocker is still open kept reporting
+    /// `blocked: true` forever — on `task.get` and on every `task.list` row.
+    /// Reproduces tasqx audit #158.
+    #[test]
+    fn completing_a_task_whose_blocker_is_still_open_clears_the_blocked_flag() {
+        let e = seeded(); // #1 blocker (pending), #2 depends on #1
+        let done = e.task_done(&json!({ "ref": 2 })).unwrap();
+        assert_eq!(done["status"], json!("done"));
+
+        let got = e.task_get(&json!({ "ref": 2 })).unwrap();
+        assert_eq!(
+            got["blocked"],
+            json!(false),
+            "a closed task must never report blocked, no matter its blocker's status"
+        );
+
+        // The same fact must hold on the bulk read every `list`/`@blocked`
+        // filter is built on, not only on the single-task read.
+        let listed = e.task_list(&json!({ "sort": ["short_id"] })).unwrap();
+        let row2 = listed["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["short_id"] == json!(2))
+            .unwrap();
+        assert_eq!(row2["blocked"], json!(false));
+    }
+
+    /// `task.get`'s `depends_on` names what blocks a task; nothing named the
+    /// reverse edge — what a task itself blocks — so the question "if I
+    /// finish this, what starts moving?" had no answer before completion.
+    /// Reproduces tasqx audit #159.
+    #[test]
+    fn task_get_carries_the_reverse_dependency_edge() {
+        let e = seeded(); // #2 depends_on #1
+        let blocker = e.task_get(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(blocker["blocks"], json!([2]));
+        let dependent = e.task_get(&json!({ "ref": 2 })).unwrap();
+        assert_eq!(dependent["blocks"], json!([]), "a leaf blocks nothing");
+    }
+
+    /// A backlog task refuses `done`/`start` with a message that stops at the
+    /// transition table and names no way out — every other refusal in this
+    /// tool names the verb that gets a caller unstuck (`undo`'s messages,
+    /// `tasqx init {name}` for an unknown project). Reproduces tasqx audit
+    /// #160: the message must name the field still holding a future date and
+    /// the exact `--clear` command that releases the task.
+    #[test]
+    fn a_backlog_refusal_names_the_field_and_the_escape() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "call the bank", "scheduled": "2999-12-01" }))
+            .unwrap();
+
+        let err = e.task_done(&json!({ "ref": 1 })).unwrap_err();
+        assert!(
+            err.message.contains("scheduled") && err.message.contains("2999-12-01"),
+            "refusal must name the field and its date, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("--clear scheduled"),
+            "refusal must name the exact escape, got: {}",
+            err.message
+        );
+
+        let err = e.task_start(&json!({ "ref": 1 })).unwrap_err();
+        assert!(
+            err.message.contains("--clear scheduled"),
+            "task.start's refusal must name the same escape, got: {}",
+            err.message
+        );
+    }
+
+    /// Both deferring fields, both named — clearing only one leaves the task
+    /// in `backlog` and a message naming only `wait` would send the caller
+    /// back into the same refusal.
+    #[test]
+    fn a_backlog_refusal_names_both_fields_when_both_defer_it() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({
+            "title": "call the bank",
+            "wait": "2999-06-01",
+            "scheduled": "2999-12-01",
+        }))
+        .unwrap();
+
+        let err = e.task_done(&json!({ "ref": 1 })).unwrap_err();
+        assert!(
+            err.message.contains("--clear wait") && err.message.contains("--clear scheduled"),
+            "refusal must name both escapes, got: {}",
+            err.message
+        );
     }
 
     #[test]
