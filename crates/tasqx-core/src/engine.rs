@@ -1596,6 +1596,7 @@ mod tests {
             ("scheduled", "whenever"),
             ("wait", "whenever"),
             ("estimate", "soonish"),
+            ("tracked", "soonish"),
         ] {
             let err = e
                 .task_modify(&json!({ "ref": t["short_id"].clone(), "set": { field: bad } }))
@@ -1607,6 +1608,46 @@ mod tests {
                 err.message
             );
         }
+    }
+
+    /// #186 (audit-2026-09, D96): tracked time could not be corrected on any
+    /// surface. `task.modify {"set":{"tracked":"PT2H30M"}}` answered
+    /// `bad_request: field not modifiable: tracked`, `modify --help` carried
+    /// no `--tracked` flag, and `tracked` was absent from `--clear`'s closed
+    /// set — so a timer left running overnight permanently poisoned the
+    /// total the moment anything else was logged, `undo` reaching back only
+    /// one event. `tracked` now takes the same duration grammar `estimate`
+    /// does, resolved to whole seconds because `tracked_seconds` is the
+    /// column (not an opaque string like `estimate`'s), and `null` clears it
+    /// to `PT0S` — there is no "never tracked" state distinct from zero.
+    #[test]
+    fn task_modify_can_correct_the_tracked_total() {
+        let e = Engine::open_in_memory().unwrap();
+        let t = e.task_add(&json!({ "title": "billable A" })).unwrap();
+        let r#ref = t["short_id"].clone();
+        e.task_start(&json!({ "ref": r#ref.clone() })).unwrap();
+        e.task_stop(&json!({ "ref": r#ref.clone() })).unwrap();
+        let before = e.task_get(&json!({ "ref": r#ref.clone() })).unwrap();
+        assert_ne!(
+            before["tracked"], "PT2H30M",
+            "the fixture must not already read the target value"
+        );
+
+        e.task_modify(&json!({ "ref": r#ref.clone(), "set": { "tracked": "PT2H30M" } }))
+            .expect("an overnight timer must be correctable");
+        assert_eq!(
+            e.task_get(&json!({ "ref": r#ref.clone() })).unwrap()["tracked"],
+            "PT2H30M",
+            "an explicit correction must overwrite the stored total, not add to it"
+        );
+
+        e.task_modify(&json!({ "ref": r#ref.clone(), "set": { "tracked": null } }))
+            .expect("tracked must be clearable, same as estimate");
+        assert_eq!(
+            e.task_get(&json!({ "ref": r#ref })).unwrap()["tracked"],
+            "PT0S",
+            "clearing tracked resets it to the same total a never-timed task reports"
+        );
     }
 
     /// The gate must not eat the two shapes D13 depends on: an absent field is

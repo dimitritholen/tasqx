@@ -170,7 +170,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["mod", "m", "edit"],
         method: "task.modify",
         summary: "Change a task — set fields or --clear them.",
-        usage: "tasqx modify <ref> [words/sugar…] [--project p] [--due d] [--scheduled s] [--wait w] [-p H|M|L] [-t tag]… [--repeat r] [--remind r] [-e est] [--clear <field>]… [--expected-rev N]",
+        usage: "tasqx modify <ref> [words/sugar…] [--project p] [--due d] [--scheduled s] [--wait w] [-p H|M|L] [-t tag]… [--repeat r] [--remind r] [-e est] [--tracked t] [--clear <field>]… [--expected-rev N]",
         examples: &[
             ex_norun("tasqx modify 42 due:friday !high est:4h", "set fields"),
             ex_norun("tasqx modify 42 --clear due --clear remind", "clear fields"),

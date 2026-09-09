@@ -71,6 +71,11 @@ pub struct ParsedAdd {
     pub remind: Option<String>,
     /// Raw estimate (unparsed), e.g. `4h` — the caller resolves it to ISO-8601.
     pub estimate: Option<String>,
+    /// Raw tracked-time correction (unparsed), e.g. `2h30m` — `modify`-only
+    /// (D96): there is no inline sugar for it, so this is always exactly
+    /// [`AddFlags::tracked`] passed through, never filled by the scanner
+    /// below.
+    pub tracked: Option<String>,
     /// The project name came from an UNQUOTED `project:`/`proj:` sugar token,
     /// which ends at the first space. If the core then cannot find that name we
     /// genuinely do not know whether it is a typo or the first word of a longer
@@ -100,6 +105,9 @@ pub struct AddFlags {
     pub repeat: Option<String>,
     pub remind: Option<String>,
     pub estimate: Option<String>,
+    /// `modify`-only (D96); `add` always passes `None`. See
+    /// [`ParsedAdd::tracked`].
+    pub tracked: Option<String>,
 }
 
 /// Which field a value key fills.
@@ -306,6 +314,7 @@ pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError
         recurrence,
         remind,
         estimate,
+        tracked: flags.tracked,
         project_may_be_truncated,
     })
 }

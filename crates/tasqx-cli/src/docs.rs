@@ -353,7 +353,7 @@ fn verb_summary(verb: &str) -> &'static str {
 }
 
 /// The fields `modify --clear` accepts. Asserted equal to `crate::CLEARABLE`.
-pub const DOCUMENTED_CLEAR_FIELDS: [&str; 8] = [
+pub const DOCUMENTED_CLEAR_FIELDS: [&str; 9] = [
     "project",
     "priority",
     "due",
@@ -362,6 +362,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 8] = [
     "remind",
     "recurrence",
     "estimate",
+    "tracked",
 ];
 
 /// The MCP tool table the MCP page renders: `(tool, is_write, what it does)`.
@@ -995,6 +996,14 @@ fn page_commands() -> String {
          with <code>conflict</code> (exit 5) unless the task is still at that rev, so a concurrent \
          edit is reported instead of clobbered. <code>tasqx show &lt;ref&gt; --json</code> reports the \
          current <code>_rev</code>, and every successful modify prints the new one.",
+    ));
+    s.push_str(&p(
+        "<code>--tracked &lt;duration&gt;</code> corrects the tracked-time total — the same \
+         duration grammar as <code>--estimate</code>, but a modify-only field: there is no inline \
+         sugar and no place for it on <code>add</code>, since a correction is only meaningful on a \
+         task that already has a total. It overwrites the stored total outright rather than adding \
+         to it, and <code>--clear tracked</code> resets it to zero, the same value a never-timed \
+         task reports.",
     ));
 
     // ---- list
