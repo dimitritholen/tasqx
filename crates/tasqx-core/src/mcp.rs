@@ -580,9 +580,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: false,
-            description: "Create a new task. Returns its short_id, urgency and status — which \
-                is `backlog`, not `pending`, when `scheduled` or `wait` is in the future, and a \
-                backlog task is outside the `@working` set until that date passes.",
+            description: "Create a new task. Returns its short_id, urgency, status — which is \
+                `backlog`, not `pending`, when `scheduled` or `wait` is in the future, and a \
+                backlog task is outside the `@working` set until that date passes — plus the \
+                stored title, due and tags, so a title containing `due:`, `project:`, `est:` or \
+                similar text can be checked for accidental inline-sugar capture rather than \
+                assumed to have been stored unchanged.",
             schema: json!({
                 "type": "object",
                 "properties": {

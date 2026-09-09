@@ -88,6 +88,23 @@ pub struct ParsedAdd {
     pub project_may_be_truncated: bool,
 }
 
+/// Which verb is driving [`parse_add`].
+///
+/// Every rule in this module is identical between `add` and `modify` (D13) —
+/// this is the one deliberate exception, and it exists because of what a
+/// leftover title word MEANS on each verb. On `add` there is no prior title
+/// to lose, so a `key:value`-shaped word neither verb recognises is harmless
+/// prose (D45). On `modify` that same word REPLACES whatever the task was
+/// already called, `undo` cannot reach a `modify` event's replaced value
+/// (D54 — it records only what was SET), and `status:`/`priority:` are real,
+/// documented FILTER grammar, so the vocabulary itself teaches the mistake.
+/// See [`declined_key_shape`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParseContext {
+    Add,
+    Modify,
+}
+
 /// Flags supplied explicitly on the command line. Each wins over inline sugar.
 #[derive(Default)]
 pub struct AddFlags {
@@ -230,7 +247,11 @@ pub(crate) const SUGAR_POSITIONALS: [(&str, &str); 2] = [("add", "title"), ("mod
 /// check are now one decision — [`tag_of`] and [`split_key`] — so there is no
 /// longer a state between "claimed" and "used". Only `!` still refuses loudly
 /// instead, because a bang-word has no escape into title text.
-pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError> {
+pub fn parse_add(
+    args: &[String],
+    flags: AddFlags,
+    ctx: ParseContext,
+) -> Result<ParsedAdd, ApiError> {
     let mut title_words: Vec<String> = Vec::new();
     let mut tags: Vec<String> = flags.tags;
     let mut project = flags.project;
@@ -291,6 +312,14 @@ pub fn parse_add(args: &[String], flags: AddFlags) -> Result<ParsedAdd, ApiError
                 priority = Some(v);
             }
         } else {
+            // #156: on `modify` a leftover word shaped exactly like a declined
+            // sugar key does not get to become the title — see
+            // `declined_key_shape` for what "exactly like" means.
+            if ctx == ParseContext::Modify {
+                if let Some(ident) = declined_key_shape(&tok) {
+                    return Err(unrecognised_modify_field(&tok, ident));
+                }
+            }
             title_words.push(tok);
         }
     }
@@ -509,6 +538,25 @@ fn tokenize_argv(args: &[String]) -> Result<Vec<SugarTok>, ApiError> {
                 text: arg.clone(),
                 quoted: true,
             });
+        } else if arg.contains('"') && !could_contain_sugar(arg) {
+            // #140: a literal `"` is grammar to the ONE shared scanner (D30)
+            // — it opens a quoted span there and nothing tells it "this one
+            // is just a quote the user typed". That is right for a sugar
+            // VALUE (`project:"Home Renovation"`) and wrong for prose that
+            // never meant to delimit anything: `add 'He said "hello" to me'`
+            // silently dropped both quotes at exit 0, and the escape the
+            // resulting "unterminated quote" error recommends does not even
+            // work outside an already-open span — `\"` mid-prose opens a NEW
+            // quote (the backslash is an ordinary character until then),
+            // which then runs off the end of input and refuses the whole
+            // command. An element with no `+`, `!` or `VALUE_KEYS` spelling
+            // anywhere cannot contain sugar no matter how its quotes scan, so
+            // it is never handed to the scanner: whatever quotes or
+            // backslashes were typed reach the title exactly as typed.
+            out.push(SugarTok {
+                text: arg.clone(),
+                quoted: false,
+            });
         } else {
             let toks = tokenize(arg)?;
             // D36's STORAGE half — "accepted values are stored as given; the
@@ -586,6 +634,22 @@ fn is_sugar_token(t: &str) -> bool {
     tag_of(t).is_some() || t.starts_with('!') || split_key(t).is_some()
 }
 
+/// Could ANY word inside `arg` possibly be sugar? A cheap, purely syntactic
+/// pre-check used only to decide whether `arg`'s own `"` characters need the
+/// quote-aware scanner at all (#140): sugar always opens with `+`, `!`, or one
+/// of [`VALUE_KEYS`]'s spellings, so an element containing none of those
+/// cannot yield a sugar token no matter how its quotes are read, and its
+/// quotes are therefore just prose. Deliberately a substring test, not a
+/// per-word one — cheaper, and a false positive here only means the existing
+/// (unchanged) scanner path runs, never that a quote is mishandled.
+fn could_contain_sugar(arg: &str) -> bool {
+    arg.contains('+')
+        || arg.contains('!')
+        || VALUE_KEYS
+            .iter()
+            .any(|(spelling, _)| arg.contains(spelling))
+}
+
 /// `+tag` is a value key without the colon, so it obeys the same whole-element
 /// rule as one.
 ///
@@ -626,6 +690,48 @@ fn tokenize(raw: &str) -> Result<Vec<SugarTok>, ApiError> {
         .collect())
 }
 
+/// A single WORD (no internal whitespace) shaped exactly like an attempted
+/// `key:value` sugar token that [`split_key`] already declined — one colon,
+/// a lowercase-ASCII-and-underscore key, a non-empty value with no further
+/// colon in it — or `None` when it is not that shape. Returns the key.
+///
+/// By construction anything this returns `Some` for is NOT a real key: a
+/// spelling in [`VALUE_KEYS`] with a real value would already have been
+/// claimed by `split_key` earlier in the same loop and never reached this
+/// arm. The `::`-doubled spelling (D45, `recur::advance_once`) is excluded on
+/// purpose by requiring exactly one colon, so a Rust path keeps reading as
+/// prose on `modify` exactly as it does on `add`.
+///
+/// The no-whitespace requirement excludes the whole-element verbatim capture
+/// form (`tokenize_argv`'s `is_pure_title` path): a multi-word sentence that
+/// happens to contain a colon somewhere (`"note: check this"`) is
+/// unambiguously a sentence, not a mistyped key, and only a single suspicious
+/// WORD earns the scrutiny — see [`ParseContext::Modify`].
+fn declined_key_shape(word: &str) -> Option<&str> {
+    if word.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let (ident, value) = word.split_once(':')?;
+    let is_ident = !ident.is_empty() && ident.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+    (is_ident && !value.is_empty() && !value.contains(':')).then_some(ident)
+}
+
+/// #156: `modify 42 status:done` used to answer `Modified #42 / title <-
+/// status:done` at exit 0, silently replacing whatever the task was called.
+/// `undo` cannot reach it — a `modify` event records only the values that
+/// were SET (D54), never the ones they replaced — so the loss is permanent,
+/// not merely silent. The list of known keys is read out of [`VALUE_KEYS`]
+/// rather than retyped, so it cannot go stale the way a second copy would.
+fn unrecognised_modify_field(word: &str, ident: &str) -> ApiError {
+    let known: Vec<&str> = VALUE_KEYS.iter().map(|(s, _)| *s).collect();
+    ApiError::bad_request(format!(
+        "unknown field {ident:?} in `{word}` — modify's inline sugar is {}, plus +tag and !prio; \
+         `status` moves through start/stop/done/cancel, not modify. If this was meant as the new \
+         title, add another word so it cannot be misread as a key.",
+        known.join(", ")
+    ))
+}
+
 /// Names the value and every spelling that would have worked, because `!` has no
 /// escape: there is no way to mean a literal bang-word in a title, so the
 /// message has to carry the whole way out rather than assume a retype is obvious.
@@ -655,14 +761,14 @@ mod tests {
     /// The classic capture form: ONE shell argument carrying the whole title and
     /// its sugar, which the parser re-tokenizes itself.
     fn parse1(raw: &str, flags: AddFlags) -> ParsedAdd {
-        parse_add(&[raw.to_string()], flags).expect("parses")
+        parse_add(&[raw.to_string()], flags, ParseContext::Add).expect("parses")
     }
 
     /// The shell-tokenized form: several argv words, quotes already consumed by
     /// the shell — what `tasqx modify 4 repeat:"every 3 days"` really delivers.
     fn parse_argv(args: &[&str], flags: AddFlags) -> ParsedAdd {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        parse_add(&owned, flags).expect("parses")
+        parse_add(&owned, flags, ParseContext::Add).expect("parses")
     }
 
     /// The same argv, kept as an error so the rejection itself can be asserted on.
@@ -670,7 +776,16 @@ mod tests {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         // `.err()` rather than `expect_err`, which would demand Debug on the
         // success type purely to serve a test.
-        parse_add(&owned, flags).err().expect("must be refused")
+        parse_add(&owned, flags, ParseContext::Add)
+            .err()
+            .expect("must be refused")
+    }
+
+    /// [`parse_argv`]'s `modify` twin — the context where a declined
+    /// `key:value`-shaped word is a refusal rather than title text (#156).
+    fn parse_modify_argv(args: &[&str], flags: AddFlags) -> Result<ParsedAdd, ApiError> {
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        parse_add(&owned, flags, ParseContext::Modify)
     }
 
     /// C6: the token must not evaporate. The message names the value and every
@@ -1022,6 +1137,74 @@ mod tests {
         assert_eq!(q.estimate, None);
     }
 
+    /// #140: a literal `"` in ordinary prose is grammar to the ONE shared
+    /// scanner (D30) — it opens a quoted span there and nothing distinguishes
+    /// "this delimits a sugar value" from "this is a quote the user typed".
+    /// `tasqx add 'He said "hello" to me'` used to store `He said hello to
+    /// me` at exit 0, and the escape the resulting "unterminated quote" error
+    /// recommended did not even work: `\"` mid-prose opens a NEW quoted span
+    /// (the backslash is an ordinary character outside one), which then runs
+    /// off the end of input and refuses the whole command — so following the
+    /// error's own advice reproduced the error. An element with no `+`, `!`
+    /// or [`VALUE_KEYS`] spelling anywhere cannot contain sugar regardless of
+    /// how its quotes scan, so it now never reaches the scanner at all.
+    #[test]
+    fn quote_characters_in_a_title_round_trip_verbatim() {
+        let p = parse1(r#"He said "hello" to me"#, AddFlags::default());
+        assert_eq!(p.title, r#"He said "hello" to me"#);
+
+        // The same title, already split into argv words by the shell (quotes
+        // intact, no whitespace inside any one word).
+        let q = parse_argv(
+            &["He", "said", "\"hello\"", "to", "me"],
+            AddFlags::default(),
+        );
+        assert_eq!(q.title, r#"He said "hello" to me"#);
+
+        // The documented escape, tried exactly as the error message spells
+        // it, in a title with nothing else sugar-shaped in it.
+        let r = parse1(r#"He said \"hi\" ok"#, AddFlags::default());
+        assert_eq!(r.title, r#"He said \"hi\" ok"#);
+    }
+
+    /// #156: `modify` silently overwrote the title with any unrecognised
+    /// `key:value`-shaped word — `modify 247 status:done` answered `Modified
+    /// #247 / title <- status:done` at exit 0, destroying the real title with
+    /// no way back (`undo` refuses `modify`: D54 records only what was SET).
+    /// `status:`/`priority:` are exactly this sharp because they are real,
+    /// documented FILTER grammar, so the vocabulary itself teaches the
+    /// mistake. `add` keeps D45's fall-through unchanged — there is no prior
+    /// title to lose there.
+    #[test]
+    fn modify_refuses_an_unrecognised_key_value_word_instead_of_destroying_the_title() {
+        for tok in ["status:done", "priority:high", "prio:H", "p:H", "urgency:5"] {
+            let e = parse_modify_argv(&[tok], AddFlags::default())
+                .err()
+                .unwrap_or_else(|| panic!("{tok} must be refused, not stored as the title"));
+            assert!(e.message.contains(tok), "{tok}: {}", e.message);
+        }
+
+        // `add` is unaffected: the same word is harmless prose there.
+        let p = parse_argv(&["status:done"], AddFlags::default());
+        assert_eq!(p.title, "status:done");
+
+        // A real recognised key still wins on `modify`, exactly as before.
+        let m = parse_modify_argv(&["due:friday"], AddFlags::default()).expect("recognised key");
+        assert_eq!(m.due.as_deref(), Some("friday"));
+
+        // The `::` path spelling (D45) stays prose on `modify` too — it has
+        // two colons, not the one-colon shape this guard targets.
+        let n = parse_modify_argv(&["fix", "recur::advance_once"], AddFlags::default())
+            .expect("a Rust path is not sugar");
+        assert_eq!(n.title, "fix recur::advance_once");
+
+        // A multi-word sentence containing a colon is unambiguously prose,
+        // not a mistyped key — only a single suspicious WORD earns scrutiny.
+        let s = parse_modify_argv(&["note:", "check", "this"], AddFlags::default())
+            .expect("a valueless key plus words is still just a sentence");
+        assert_eq!(s.title, "note: check this");
+    }
+
     // ---- tag_arguments (the `tag`/`untag` verbs) ----------------------------
 
     fn words(v: &[&str]) -> Vec<String> {
@@ -1037,7 +1220,12 @@ mod tests {
         assert_eq!(tag_arguments(&words(&["api"])).unwrap(), ["api"]);
         assert_eq!(tag_arguments(&words(&["+api"])).unwrap(), ["api"]);
         // And the sugar path, which is the surface this must agree with.
-        let sugared = parse_add(&words(&["x", "+api"]), AddFlags::default()).unwrap();
+        let sugared = parse_add(
+            &words(&["x", "+api"]),
+            AddFlags::default(),
+            ParseContext::Add,
+        )
+        .unwrap();
         assert_eq!(sugared.tags, tag_arguments(&words(&["+api"])).unwrap());
     }
 
