@@ -165,12 +165,35 @@ fn tokens(out: &mut String, result: &Value) {
 /// competing. A blockquote was the other option and is worse — it breaks tables
 /// and fenced code inside the body.
 fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
-    let Some(rows) = result.get("annotations").and_then(Value::as_array) else {
-        return;
+    let total = result
+        .get("annotations_total")
+        .and_then(Value::as_u64)
+        .map(|t| t as usize);
+
+    let rows = match result.get("annotations").and_then(Value::as_array) {
+        Some(rows) if !rows.is_empty() => rows,
+        _ => {
+            // `annotations_limit: 0` is the documented way to read a task's
+            // fields without its history, and the tool's own contract is that
+            // the response "always carries `annotations_total`" — but that
+            // promise lived only in the JSON block. A caller who also declined
+            // that block (`include_json: false`) got neither, on a task whose
+            // annotations are the whole reason to read it: silence read as
+            // "no history" rather than "history withheld". `total` is checked
+            // here rather than trusted from the caller's request, so a task
+            // that genuinely has none still renders nothing.
+            if let Some(total) = total {
+                if total > 0 {
+                    out.push_str(&format!(
+                        "\n_Annotations: {total}, none shown (`annotations_limit: 0`, or \
+                         none requested) — re-read with a higher `annotations_limit` to see \
+                         them._\n"
+                    ));
+                }
+            }
+            return;
+        }
     };
-    if rows.is_empty() {
-        return;
-    }
     // A page of a longer history says so here, in the block D49 puts FIRST,
     // because that is the one a model reads. A notice carried only by the JSON
     // behind it would be invisible to exactly the reader it protects: someone
@@ -184,10 +207,7 @@ fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
     // six it called older were newer than anything on it. `annotations_offset`
     // is echoed by `task.get` so this can say where the page actually sits.
     let shown = rows.len();
-    let total = result
-        .get("annotations_total")
-        .and_then(Value::as_u64)
-        .map_or(shown, |t| t as usize);
+    let total = total.unwrap_or(shown);
     let offset = result
         .get("annotations_offset")
         .and_then(Value::as_u64)

@@ -795,6 +795,64 @@ the newest note
     assert_eq!(task_detail(&task, &iso_opts()), expected);
 }
 
+/// `annotations_limit: 0` — the documented way to read a task's fields
+/// without its history — must not read as "this task has no annotations" on
+/// a task that has some (audit #173). Before this, an empty `annotations`
+/// array made the whole section vanish regardless of what `annotations_total`
+/// said, which is exactly the combination `tasqx_get_task`'s own description
+/// recommends for a cheap read (`annotations_limit: 0` plus `include_json:
+/// false`, which routes the FULL result — including `annotations_total` —
+/// through this same renderer with no JSON block behind it to carry the
+/// count instead).
+#[test]
+fn a_task_get_with_annotations_limit_zero_still_names_its_history_size() {
+    let task = json!({
+        "short_id": 79,
+        "title": "A task with elided history",
+        "status": "pending",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 5,
+        "annotations": [],
+        "annotations_total": 4
+    });
+
+    let expected = "## #79 · A task with elided history
+
+| | |
+|---|---|
+| status | pending |
+| priority | - |
+| project |  |
+| created | 2026-07-29T09:00:58Z |
+| modified | 2026-07-29T09:01:45Z |
+| rev | 5 |
+
+_Annotations: 4, none shown (`annotations_limit: 0`, or none requested) — re-read with a higher `annotations_limit` to see them._
+";
+
+    assert_eq!(task_detail(&task, &iso_opts()), expected);
+}
+
+/// The same shape on a task that genuinely has none must still render
+/// nothing: `annotations_total: 0` is not "history withheld", it is "there is
+/// no history".
+#[test]
+fn a_task_with_genuinely_no_annotations_still_emits_no_section() {
+    let task = json!({
+        "short_id": 80,
+        "title": "Bare",
+        "status": "pending",
+        "created": "2026-07-29T09:00:58Z",
+        "modified": "2026-07-29T09:01:45Z",
+        "_rev": 1,
+        "annotations": [],
+        "annotations_total": 0
+    });
+    let out = task_detail(&task, &iso_opts());
+    assert!(!out.contains("Annotations"), "got:\n{out}");
+}
+
 /// A page past the first must not claim to be the newest, and must not call
 /// the annotations it skipped "older".
 ///
