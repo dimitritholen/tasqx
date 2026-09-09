@@ -246,10 +246,12 @@ impl<'a> Report<'a> {
         let d = self.derive();
 
         // ---- charts ----
-        let throughput = chart::throughput(self.events, 12, today());
         // Through the shared projection, so the report and the dashboard cannot
-        // disagree about whether a task was open on a given day.
+        // disagree about whether a task was open on a given day — and (#164)
+        // so `throughput` can tell a currently-cancelled task from a
+        // currently-done one, which the event log alone cannot.
         let members = chart::members_of(&json!({ "tasks": tasks }));
+        let throughput = chart::throughput(self.events, &members, 12, today());
         let burndown = chart::burndown(self.events, &members, 30, today());
 
         // ---- assemble ----
@@ -273,7 +275,14 @@ impl<'a> Report<'a> {
         body.push_str(&section(
             "Open work, burning down",
             "Remaining open tasks over the last 30 days.",
-            &svg_burndown(&burndown, self.theme),
+            // #234 item 6: a store that never held a task is not "cleared",
+            // and a chart whose only y-axis label is an invented "1" teaches a
+            // wrong mental model to a brand-new user's very first report.
+            &if tasks.is_empty() {
+                "<p class=\"muted\">No open tasks yet.</p>".to_string()
+            } else {
+                svg_burndown(&burndown, self.theme)
+            },
         ));
 
         body.push_str(&self.completed_section(&d.completed_recent));
