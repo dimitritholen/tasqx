@@ -287,7 +287,13 @@ fn priority_cell(result: &Value) -> String {
 /// An unparseable value falls back to itself. The store holds RFC-3339 strings,
 /// so this should not happen — but "should not" is not "cannot", and a detail
 /// view is the wrong place to discover that by panicking.
-fn fmt_instant(iso: &str, opts: &DetailOpts) -> String {
+///
+/// `pub`: the CLI's own `render::task_detail` (D78's rail card) reuses this
+/// rather than keeping a second copy of the humanizing vocabulary, so `show`
+/// and `tasqx_get_task` agree on what "in 2 days" means without two readers to
+/// keep in sync. The layout stays separate — this converges the *values*, not
+/// the theme-dependent rendering D49 kept out of this module on purpose.
+pub fn fmt_instant(iso: &str, opts: &DetailOpts) -> String {
     if iso.is_empty() {
         return String::new();
     }
@@ -312,7 +318,9 @@ fn fmt_instant(iso: &str, opts: &DetailOpts) -> String {
 /// `TimeFormat::Relative`, and its unchecked arithmetic reintroduced the very
 /// overflow panic `duration_secs`' checked form exists to prevent. One
 /// vocabulary, one overflow policy, one place to change either.
-fn fmt_duration(iso: &str, opts: &DetailOpts) -> String {
+///
+/// `pub` for the same reason as [`fmt_instant`]: the CLI detail view shares it.
+pub fn fmt_duration(iso: &str, opts: &DetailOpts) -> String {
     if iso.is_empty() {
         return String::new();
     }

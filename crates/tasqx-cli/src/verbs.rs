@@ -440,7 +440,7 @@ pub(crate) fn run_done(
 
 pub(crate) fn run_show(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
     let result = be.call("task.get", &json!({ "ref": r#ref }))?;
-    let text = render::task_detail(ctx, &result);
+    let text = render::task_detail(ctx, &result, jiff::Timestamp::now());
     Ok((result, text))
 }
 

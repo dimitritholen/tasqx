@@ -14,6 +14,8 @@
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
 
+use tasqx_core::markdown::TimeFormat;
+
 // ============================================================================
 // Color primitives
 // ============================================================================
@@ -1272,6 +1274,13 @@ pub struct Ctx {
     /// (it changes when the user drags a window edge, and `Caps` is `Copy` state
     /// several tests build by literal), so it rides on the context instead.
     pub cols: usize,
+    /// How the task-detail view writes timestamps and durations
+    /// (`detail.time_format`, resolved once per process the same way the MCP
+    /// server already does — see `settings::config_detail_time_format`).
+    /// Defaults to [`TimeFormat::Both`], `detail.time_format`'s own default, so
+    /// a `Ctx` built by a test or another render path that never calls
+    /// [`Ctx::with_time_format`] renders exactly as before this field existed.
+    pub time_format: TimeFormat,
 }
 
 impl Ctx {
@@ -1293,12 +1302,20 @@ impl Ctx {
             theme,
             caps,
             cols: Self::DEFAULT_COLS,
+            time_format: TimeFormat::Both,
         }
     }
 
     /// Lay out for `cols` cells, clamped to the range a table can actually use.
     pub fn with_cols(mut self, cols: usize) -> Self {
         self.cols = cols.clamp(Self::MIN_COLS, Self::MAX_COLS);
+        self
+    }
+
+    /// Render timestamps and durations per `detail.time_format` (D49's "on
+    /// the one retreat" reaching `show`, not only `tasqx_get_task`).
+    pub fn with_time_format(mut self, time_format: TimeFormat) -> Self {
+        self.time_format = time_format;
         self
     }
 
