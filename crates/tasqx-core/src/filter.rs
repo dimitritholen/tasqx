@@ -102,7 +102,7 @@
 use jiff::Timestamp;
 
 use crate::datetime;
-use crate::types::Status;
+use crate::types::{Priority, Status};
 use crate::util::parse_ts;
 
 /// The filter grammar, in one place, rendered verbatim by `tasqx docs`.
@@ -148,6 +148,7 @@ predicate  := \"+\" VALUE                    # require tag; VALUE not empty
             | \"@blocked\" | \"+blocked\" | \"status:blocked\"   # the blocked flag
             | \"project:\" VALUE
             | \"status:\" VALUE
+            | \"priority:\" VALUE
             | \"due.before:\" DATE
             | \"due.after:\"  DATE
             | \"completed.before:\" DATE       # when the task was finished
@@ -171,6 +172,15 @@ pub enum Pred {
     /// `matches` cannot be in — the refusal is structural, not a validation call
     /// somebody has to remember.
     Status(Status),
+    /// `priority:VALUE`, with VALUE already resolved to the enum through
+    /// [`Priority::parse`] — the same forgiving parser `task.add`/`task.modify`
+    /// use, so `priority:H`, `priority:high` and `priority:HIGH` all work and a
+    /// caller cannot type a spelling the write side accepts and the filter
+    /// refuses. A [`Priority`] and not a `String` for the reason [`Pred::Status`]
+    /// gives: it is a closed, compile-time set (D34), so holding the variant
+    /// makes an unreadable value unrepresentable rather than a validation call
+    /// `eval_pred` would have to remember to make per row.
+    Priority(Priority),
     /// `project:VALUE`, and deliberately still a `String`. A project name is an
     /// **open, runtime** vocabulary, so an unknown one legitimately matches no
     /// row rather than being refused — see the module comment's split.
@@ -231,6 +241,10 @@ pub struct MatchCtx<'a> {
     /// literals, so `Status` could not participate in its own matching rules and
     /// a renamed or added variant went unnoticed here.
     pub status: Status,
+    /// The row's priority, `None` when it carries none — the same value
+    /// `urgency::score_at` already reads, so `priority:` filters on exactly what
+    /// every other reader of this field sees.
+    pub priority: Option<Priority>,
     /// The row's project name, `None` when it belongs to none.
     pub project: Option<&'a str>,
     /// Every tag on the row. Order is irrelevant; membership is the only
@@ -349,6 +363,7 @@ impl Filter {
         match pred {
             Pred::Project(v) | Pred::TagInclude(v) | Pred::TagExclude(v) => Some(v.as_str()),
             Pred::Status(s) => Some(s.as_str()),
+            Pred::Priority(p) => Some(p.as_str()),
             // Matched variant by variant with no wildcard: a predicate added
             // tomorrow must be classified as carrying a value or not, rather
             // than inheriting `None` and quietly dropping its own candidates.
@@ -387,6 +402,10 @@ fn eval_pred(p: &Pred, ctx: &MatchCtx) -> bool {
         // A plain enum comparison: an unreadable value never reaches here,
         // because `predicate()` refused it at parse time.
         Pred::Status(s) => *s == ctx.status,
+        // No priority never satisfies a `priority:` bound, the same rule an
+        // undated task has for `due.before:`/`due.after:` — there is no value to
+        // compare, so it is not "H" and it is not "not H" either.
+        Pred::Priority(p) => ctx.priority == Some(*p),
         Pred::Project(pr) => ctx.project == Some(pr.as_str()),
         Pred::TagInclude(t) => ctx.tags.iter().any(|x| x == t),
         Pred::TagExclude(t) => !ctx.tags.iter().any(|x| x == t),
@@ -481,6 +500,9 @@ pub enum Vocabulary {
     /// refused by name (see the module comment's split) and why it is the one
     /// vocabulary a caller can enumerate without touching a store.
     Status,
+    /// A [`Priority`]: closed and compile-time on the same terms as `Status`,
+    /// so a typo here is refused rather than answered with a silent "no tasks".
+    Priority,
     /// A date bound, taking whatever [`crate::datetime::parse_when`] takes.
     /// Open in the strongest sense — the grammar is natural language
     /// (`tomorrow`, `in 3 days`, `eom`) and no module exports a list of accepted
@@ -508,9 +530,10 @@ pub enum Vocabulary {
 /// list is exported instead, and its consumers read it rather than restating it.
 ///
 /// The order is the grammar's, and is what a completion menu shows.
-pub const VALUE_PREFIXES: [(&str, Vocabulary); 8] = [
+pub const VALUE_PREFIXES: [(&str, Vocabulary); 9] = [
     ("project:", Vocabulary::Project),
     ("status:", Vocabulary::Status),
+    ("priority:", Vocabulary::Priority),
     ("due.before:", Vocabulary::Date),
     ("due.after:", Vocabulary::Date),
     ("completed.before:", Vocabulary::Date),
@@ -553,7 +576,7 @@ pub const OPERATORS: [&str; 2] = ["and", "or"];
 /// the token does not exist. `token_shapes_name_every_value_prefix` pins it to
 /// `VALUE_PREFIXES` so a seventh `key:` predicate cannot be advertised by the
 /// grammar and omitted from the refusal.
-const TOKEN_SHAPES: &str = "+tag, -tag, @working, @blocked, project:, status:, \
+const TOKEN_SHAPES: &str = "+tag, -tag, @working, @blocked, project:, status:, priority:, \
                             due.before:, due.after:, completed.before: or completed.after:";
 
 /// Compose one filter string from argv by joining the elements with a space.
@@ -1023,6 +1046,24 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
             )
         });
     }
+    if let Some(v) = tok.strip_prefix("priority:") {
+        // Delegates to `Priority::parse` rather than restating its table, for
+        // the reason its own docs give: the write side (`task.add`, `!high`) and
+        // this predicate must accept exactly the same spellings, or a caller
+        // could set a priority through one door that the other cannot find.
+        // The empty value falls through to `None` and is refused with the rest,
+        // the same rule `status:` and `project:` already apply.
+        return Priority::parse(v).map(Pred::Priority).ok_or_else(|| {
+            format!(
+                "unknown priority {v:?} (expected one of: {})",
+                Priority::SPELLINGS
+                    .iter()
+                    .map(|(s, _)| *s)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        });
+    }
     if let Some(v) = tok.strip_prefix("due.before:") {
         return Ok(Pred::DueBefore(bound(v, "due.before", now)?));
     }
@@ -1129,6 +1170,7 @@ mod tests {
     fn ctx_for(status: Status) -> MatchCtx<'static> {
         MatchCtx {
             status,
+            priority: None,
             project: None,
             tags: &[],
             due: None,
@@ -1140,8 +1182,21 @@ mod tests {
     fn ctx_tagged(tags: &[String]) -> MatchCtx<'_> {
         MatchCtx {
             status: Status::Pending,
+            priority: None,
             project: None,
             tags,
+            due: None,
+            completed: None,
+            blocked: false,
+        }
+    }
+
+    fn ctx_with_priority(priority: Option<Priority>) -> MatchCtx<'static> {
+        MatchCtx {
+            status: Status::Pending,
+            priority,
+            project: None,
+            tags: &[],
             due: None,
             completed: None,
             blocked: false,
@@ -1166,6 +1221,7 @@ mod tests {
         // Reassociated: a or (b and c) == T or (F and F) == TRUE.
         let ctx = MatchCtx {
             status: Status::Pending,
+            priority: None,
             project: Some("home"),
             tags: &[],
             due: None,
@@ -1192,6 +1248,7 @@ mod tests {
         let bound = "2026-07-17T00:00:00Z";
         let ctx = MatchCtx {
             status: Status::Pending,
+            priority: None,
             project: None,
             tags: &[],
             due: Some(bound),
@@ -1240,6 +1297,7 @@ mod tests {
         // fixture on that instant would test the boundary rule, not this one.
         let ctx = MatchCtx {
             status: Status::Pending,
+            priority: None,
             project: None,
             tags: &[],
             due: Some("2026-07-20T09:00:00Z"),
@@ -1314,6 +1372,7 @@ mod tests {
         let f = Filter::parse("due.before:tomorrow", monday).expect("parses");
         let just_inside = MatchCtx {
             status: Status::Pending,
+            priority: None,
             project: None,
             tags: &[],
             due: Some("2026-07-21T00:00:00Z"),
@@ -1446,6 +1505,52 @@ mod tests {
         }
     }
 
+    /// #187 — priority was first-class on write (`!high`, the `P` column, a
+    /// `report priority` grouping axis) and unwritable in the filter DSL:
+    /// `tasqx list priority:H` was `unknown filter token`. `priority:` now
+    /// exists on the same terms `status:` does — a closed, compile-time
+    /// vocabulary (D34) — and reuses [`Priority::parse`] so a caller cannot
+    /// find a spelling the write side accepts and this predicate refuses.
+    #[test]
+    fn each_priority_value_selects_exactly_that_priority() {
+        for want in Priority::ALL {
+            let f = parsed(&format!("priority:{}", want.as_str()));
+            for have in Priority::ALL {
+                assert_eq!(
+                    f.matches(&ctx_with_priority(Some(have))),
+                    want == have,
+                    "priority:{} vs a {have:?} row",
+                    want.as_str()
+                );
+            }
+            // A task carrying no priority satisfies no `priority:` bound — the
+            // same rule an undated task already has for `due.before:`/
+            // `due.after:` (see `instant_cmp`'s doc).
+            assert!(
+                !f.matches(&ctx_with_priority(None)),
+                "priority:{} must not select a bare row",
+                want.as_str()
+            );
+        }
+        // The forgiving spellings `Priority::parse` accepts on write must work
+        // here too, since a caller must not find one door narrower than the
+        // other.
+        assert!(parsed("priority:high").matches(&ctx_with_priority(Some(Priority::H))));
+    }
+
+    /// An unrecognised priority is refused naming the accepted set, on D34's
+    /// terms: priority is closed and compile-time, so a typo must not be
+    /// answered with the same silent empty table an open vocabulary earns.
+    #[test]
+    fn an_unrecognised_priority_value_is_refused_naming_the_accepted_set() {
+        let err = refused("priority:X");
+        assert!(err.contains("unknown priority"), "{err}");
+        assert!(
+            err.contains('H') && err.contains('M') && err.contains('L'),
+            "{err}"
+        );
+    }
+
     /// `@working` is documented as "pending|active AND not blocked". It used to
     /// be two string equality checks; now it is a `matches!` on the enum, and the
     /// set it covers is exactly the thing a new `Status` variant would perturb.
@@ -1523,7 +1628,10 @@ mod tests {
         }
         // Without this the guard passes by matching nothing if GRAMMAR is
         // reformatted — the failure mode every text-scanning guard has.
-        assert_eq!(seen, 6, "expected six `key:`-shaped predicates in GRAMMAR");
+        assert_eq!(
+            seen, 7,
+            "expected seven `key:`-shaped predicates in GRAMMAR"
+        );
     }
 
     /// The refusal message must offer every token the grammar accepts.
@@ -1689,6 +1797,7 @@ mod tests {
             Vocabulary::Tag,
             Vocabulary::Project,
             Vocabulary::Status,
+            Vocabulary::Priority,
             Vocabulary::Date,
         ] {
             assert!(
@@ -1703,6 +1812,7 @@ mod tests {
             let sample = match vocabulary {
                 Vocabulary::Tag | Vocabulary::Project => "sample",
                 Vocabulary::Status => Status::ALL[0].as_str(),
+                Vocabulary::Priority => Priority::ALL[0].as_str(),
                 Vocabulary::Date => "tomorrow",
             };
             Filter::parse(&format!("{prefix}{sample}"), anchor()).unwrap_or_else(|e| {
@@ -1745,6 +1855,7 @@ mod tests {
         let tags = ["needs paint".to_string()];
         let ctx = MatchCtx {
             status: Status::Pending,
+            priority: None,
             project: Some("Home Renovation"),
             tags: &tags,
             due: None,
@@ -1894,6 +2005,7 @@ mod tests {
             let f = parsed(&format!("project:{}", quote(name)));
             let ctx = MatchCtx {
                 status: Status::Pending,
+                priority: None,
                 project: Some(name),
                 tags: &[],
                 due: None,
@@ -1940,6 +2052,7 @@ mod tests {
     fn quoting_suppresses_grouping_and_keyword_meaning() {
         let ctx = MatchCtx {
             status: Status::Done,
+            priority: None,
             project: Some("a (b) or c"),
             tags: &[],
             due: None,
@@ -1995,6 +2108,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("quote({v:?}) must parse back: {e}"));
             let ctx = MatchCtx {
                 status: Status::Pending,
+                priority: None,
                 project: Some(v),
                 tags: &[],
                 due: None,
@@ -2130,6 +2244,7 @@ mod tests {
         fn ctx(tags: &[String]) -> MatchCtx<'_> {
             MatchCtx {
                 status: Status::Pending,
+                priority: None,
                 project: None,
                 tags,
                 due: None,
@@ -2296,6 +2411,7 @@ mod tests {
         );
         let ctx = MatchCtx {
             status: Status::Pending,
+            priority: None,
             project: Some("home"),
             tags: &[],
             due: None,
@@ -2329,6 +2445,7 @@ mod tests {
         let flat = vec!["(project:home)"; 5_000].join(" or ");
         let ctx = MatchCtx {
             status: Status::Pending,
+            priority: None,
             project: Some("home"),
             tags: &[],
             due: None,

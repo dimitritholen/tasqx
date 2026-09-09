@@ -728,6 +728,17 @@ fn filter_candidates(typed: &str) -> Vec<CompletionCandidate> {
             value,
             Status::ALL.iter().map(|s| s.as_str().to_string()).collect(),
         ),
+        // The other closed vocabulary, on the same terms as `Status` above:
+        // `Priority::ALL` is the same three variants `Priority::parse` accepts,
+        // so the menu and the filter's refusal cannot disagree.
+        Vocabulary::Priority => composed(
+            prefix,
+            value,
+            Priority::ALL
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect(),
+        ),
         // An OPEN natural-language vocabulary, for the reason the sugar
         // dispatcher's date keys record: `due.before:` takes whatever
         // `datetime::parse_when` takes — `tomorrow`, `friday`, `in 3 days`,
@@ -1785,7 +1796,12 @@ mod tests {
         // ...and the filter grammar alongside it, because `report +api` is a
         // valid first word too.
         assert!(first.iter().any(|c| c == "@working"), "got {first:?}");
-        assert_eq!(at(0, "pri"), ["priority"]);
+        // `priority` the axis and `priority:` the predicate are both legal at
+        // the first word and both must be offered — the same double answer
+        // `project`/`project:` already gets below, on the same grounds: #187
+        // added `priority:` to the filter grammar, and `report priority` was
+        // already a valid axis, so both readings of `pri<TAB>` are real.
+        assert_eq!(at(0, "pri"), ["priority", "priority:"]);
         // `project` the axis and `project:` the predicate are both legal at the
         // first word and both must be offered; they are different tokens.
         assert_eq!(at(0, "pro"), ["project", "project:"]);
