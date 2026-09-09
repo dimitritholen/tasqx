@@ -934,7 +934,8 @@ fn spacing_hint(prev: Option<&Tok>, tok: &Tok) -> Option<String> {
         .find(|(p, _)| prev.text.strip_prefix(*p).is_some_and(|v| !v.is_empty()))?;
     let value = prev.text.strip_prefix(*p).expect("just matched");
     Some(format!(
-        "did you mean {p}{}? quote a value that contains a space, so the shell hands it over whole",
+        "did you mean {p}{}? quote a value that contains a space, so it is read as one token \
+         instead of two",
         quote(&format!("{value} {}", tok.text))
     ))
 }
@@ -1768,6 +1769,23 @@ mod tests {
             );
             assert!(err.contains("quote"), "{stripped:?} must say why: {err}");
         }
+    }
+
+    /// The hint's own words must not assume a shell stripped the quotes
+    /// (audit #225.3): the same filter string reaches this tokenizer whether
+    /// it arrived as a CLI argv (where a shell really did eat the quotes) or
+    /// as one JSON string over `tasqx api`/MCP (where there is no shell at
+    /// all, and the caller simply forgot to quote the value themselves). A
+    /// remedy that says "the shell hands it over whole" is wrong advice on
+    /// the second surface.
+    #[test]
+    fn the_spacing_hint_names_no_shell() {
+        let err = Filter::parse("project:Home Renovation", anchor()).expect_err("must be refused");
+        assert!(
+            !err.to_lowercase().contains("shell"),
+            "the hint should describe tokenizing, not a shell that may not exist: {err}"
+        );
+        assert!(err.contains("quote"), "the hint must still say why: {err}");
     }
 
     /// The hint must not fire where it would be wrong advice. A value already
