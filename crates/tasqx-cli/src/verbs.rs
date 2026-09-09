@@ -271,10 +271,25 @@ pub(crate) fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
     // Otherwise `from_argv`, never `join(" ")`: the shell's argument boundaries
     // are information the filter parser needs, exactly as on the write path
     // (see `sugar::parse_add`). Joining loses which spaces the user quoted.
-    let filter_str = if filter.is_empty() {
+    //
+    // #149: a filter argv that joins to nothing (no argument at all, or one
+    // that is empty or whitespace-only) takes the SAME `@working` default —
+    // checked on the joined text, not on `filter.is_empty()` alone. `tasqx
+    // list "$FILTER"` is the shape of every wrapper script and every
+    // agent-generated command, and an unset or empty `$FILTER` hands this
+    // function one empty-string argument rather than none. That argument used
+    // to reach the engine as the literal empty filter, which D27/D35 correctly
+    // read as "no filter" — matching everything, done and cancelled included —
+    // silently widening "my open work" into the whole store with no error and
+    // no way to tell the two answers apart in the output. The engine's own
+    // reading of `filter:""` is untouched (D35's recorded exception still
+    // holds for `tasqx api`/MCP callers); this is CLI sugar deciding what
+    // string to send, same layer `filter.is_empty()` already lived at.
+    let joined = tasqx_core::filter::from_argv(filter);
+    let filter_str = if joined.trim().is_empty() {
         "@working".to_string()
     } else {
-        tasqx_core::filter::from_argv(filter)
+        joined
     };
     let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
     let result = be.call("task.list", &params)?;
