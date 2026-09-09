@@ -1154,14 +1154,19 @@ fn row_at_resolves_a_row_to_the_task_the_reader_can_see() {
 /// The digit refusals already answer an impossible request by naming it; a key
 /// advertised in the footer that silently does nothing is the silent-drop shape
 /// this repository keeps paying for.
+///
+/// NOW, not PROJECTS: PROJECTS answers its own `⏎` now (#204, see
+/// `enter_on_projects_asks_the_loop_to_list_that_project`), and NOW is a fixed
+/// card with no selectable row at all (`model::row_count`), which is what this
+/// test means to cover.
 #[test]
 fn enter_on_a_panel_without_rows_names_the_refusal() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('6')));
+    a.on_key(key(KeyCode::Char('1')));
     assert_eq!(a.on_key(key(KeyCode::Enter)), None);
     assert!(
-        a.status_line().contains("PROJECTS"),
+        a.status_line().contains("NOW"),
         "the refusal must name the panel, got {:?}",
         a.status_line()
     );
@@ -1990,5 +1995,69 @@ fn every_footer_hint_has_a_rank_of_its_own() {
         ranks.len(),
         total,
         "two footer hints share a rank: {ranks:?}"
+    );
+}
+
+/// #200/D62: the header must not set a project name beside counts that are
+/// store-wide. `tasqx work · 5 open` on a store with more than one project
+/// reads as a claim about `work` when `open` sums every project's tasks — and
+/// the PROJECTS panel, built from the same snapshot, gives `work` a different
+/// number of open tasks than the header's whole-store total.
+#[test]
+fn the_header_does_not_pair_a_project_name_with_store_wide_counts() {
+    let a = app();
+    let text = all_text(&draw_at(&a, 120, 40, &caps()));
+    let header = text
+        .lines()
+        .next()
+        .expect("the header is the buffer's first row");
+    assert!(
+        !header.contains("work"),
+        "the header must not name the default project beside store-wide counts:\n{header}"
+    );
+    assert!(
+        header.contains("open"),
+        "the header must still show the open count:\n{header}"
+    );
+}
+
+/// #204: `⏎` on PROJECTS used to answer `None` on every row (`row_at` is a
+/// `Task` reader and a project is not one) even though the panel draws a row
+/// cursor and `?` promises `enter` for every panel. D62's scope strip is the
+/// eventual fix; until it lands, `⏎` here leaves the dashboard and prints the
+/// working set filtered to the row under the cursor — the same
+/// leave-and-print shape `Action::List` already uses for `l`.
+#[test]
+fn enter_on_projects_asks_the_loop_to_list_that_project() {
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.on_key(key(KeyCode::Char('6')));
+    assert_eq!(
+        a.on_key(key(KeyCode::Enter)),
+        Some(Action::ListProject("work".to_string())),
+        "enter on a real PROJECTS row must ask the loop to filter to it, not silently do nothing"
+    );
+}
+
+/// A resize below the layout floor must not blank the frame (#201). The
+/// initial `dashboard_refusal` only guards the FIRST frame; a SIGWINCH after
+/// the alternate screen is already entered lands here instead, and an empty
+/// frame with the keyboard still live reads as a hang rather than a small
+/// window.
+#[test]
+fn a_frame_under_the_floor_draws_a_message_instead_of_blanking() {
+    let a = app();
+    let text = all_text(&draw_at(&a, 40, 10, &caps()));
+    assert!(
+        text.contains("40x10"),
+        "the message must name the terminal's actual size:\n{text}"
+    );
+    assert!(
+        text.contains("56x14"),
+        "the message must name the floor the terminal fell under:\n{text}"
+    );
+    assert!(
+        !text.trim().is_empty(),
+        "the frame must not be entirely blank"
     );
 }

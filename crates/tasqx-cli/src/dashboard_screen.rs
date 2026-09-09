@@ -265,11 +265,20 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
             loop {
                 let mut placed = Vec::new();
                 let mut has_slot = false;
+                // Whether the LAST draw could lay panels out at all. `render`
+                // draws the "too small" sentence instead of a blank frame when
+                // it cannot (#201), but the state machine is never told the
+                // terminal's size — this is what lets the check below answer
+                // the same question without teaching `App` about pixels.
+                let mut fits = true;
                 term.draw(|f| {
                     tui::dashboard::render(&app, &ctx.theme, &ctx.caps, f);
-                    if let Some(s) = app.screen(f.area().width, f.area().height) {
-                        placed = s.panels.iter().map(|p| p.id).collect();
-                        has_slot = s.has_slot();
+                    match app.screen(f.area().width, f.area().height) {
+                        Some(s) => {
+                            placed = s.panels.iter().map(|p| p.id).collect();
+                            has_slot = s.has_slot();
+                        }
+                        None => fits = false,
                     }
                 })?;
                 // The state machine is told what was drawn, as data — that is what
@@ -298,6 +307,25 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                 let Event::Key(key) = event::read()? else {
                     continue;
                 };
+                // #201: below the floor the frame carries only the "too
+                // small" sentence, so `?` or `⏎` would open an overlay
+                // nobody can see — and a `q` meant to leave would then close
+                // that invisible overlay instead of the program, which is
+                // indistinguishable from a hang. `q`/`esc`/`ctrl-c` are the
+                // only keys this state answers to, matched here rather than
+                // through `app.on_key` so a modal `App` was already holding
+                // open cannot swallow the one key that gets out.
+                if !fits {
+                    let press = key.kind == event::KeyEventKind::Press;
+                    let quits = press
+                        && (matches!(key.code, event::KeyCode::Char('q') | event::KeyCode::Esc)
+                            || (key.code == event::KeyCode::Char('c')
+                                && key.modifiers.contains(event::KeyModifiers::CONTROL)));
+                    if quits {
+                        return Ok(());
+                    }
+                    continue;
+                }
                 match app.on_key(key) {
                     Some(Action::Quit) => return Ok(()),
                     Some(Action::Refresh) => {
@@ -358,6 +386,14 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
         match want {
             // `l` is the one key that means "leave", so it does.
             Some(Action::List) => return run_list(be, ctx, &[]).map(|(_, r)| Some(r)),
+            // `⏎` on PROJECTS (#204): the same leave-and-print shape as `l`,
+            // scoped to the row the cursor was on. `filter::quote` and not a
+            // raw `{name}`, exactly as `burndown_members` already does for a
+            // project name that can hold a space or a quote.
+            Some(Action::ListProject(name)) => {
+                let filter = format!("project:{}", tasqx_core::filter::quote(&name));
+                return run_list(be, ctx, &[filter]).map(|(_, r)| Some(r));
+            }
             Some(Action::Pick) => {
                 match run_pick(be, ctx, &[]) {
                     Ok((_, render)) => picked = Some(render),
