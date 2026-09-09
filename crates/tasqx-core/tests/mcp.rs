@@ -1274,6 +1274,37 @@ fn untag_removes_what_tag_added() {
     assert_eq!(tags, vec![json!("api")]);
 }
 
+/// The published `tasqx_untag_task` description must say what D52 actually
+/// does — `not_found`, all-or-nothing — not its opposite (audit #170).
+///
+/// Before this fix the description read "Removing a tag the task does not
+/// carry is not an error", which is the exact behaviour D52 refused: an
+/// agent designing a tag-sync routine against that sentence would fire
+/// `tag.remove` over a union of tags and read a miss as a harmless no-op,
+/// when the real contract removes nothing and errors.
+#[test]
+fn untag_task_description_matches_d52_rather_than_contradicting_it() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let untag = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_untag_task")
+        .expect("tasqx_untag_task is listed");
+    let desc = untag["description"].as_str().expect("a description");
+    assert!(
+        !desc.contains("is not an error"),
+        "the description still claims the opposite of D52: {desc}"
+    );
+    assert!(
+        desc.contains("not_found") && desc.to_lowercase().contains("all"),
+        "the description should name the real contract (not_found, all-or-nothing): {desc}"
+    );
+}
+
 /// A dependency added by mistake blocks the task forever unless it can be cut.
 #[test]
 fn remove_dependency_unblocks_what_add_dependency_blocked() {
@@ -1736,4 +1767,304 @@ fn the_json_omission_notice_says_that_naming_a_limit_removes_the_budget() {
         big > budgeted * 2,
         "naming a limit really is several times the budgeted answer: {big} vs {budgeted}"
     );
+}
+
+// ---- structured errors carry code, message and data (audit #175) ------------
+
+/// An MCP error result must carry the same `code`/`message`/`data` a
+/// `tasqx api` caller gets, as `structuredContent`, not only as a substring of
+/// the text block's `error [code]: message` prose.
+///
+/// Before this fix `data` (here, the project name a caller would need to
+/// retry usefully) was dropped entirely on the way to an MCP client, and
+/// `code` survived only as an undocumented regex target.
+#[test]
+fn an_mcp_error_carries_structured_code_message_and_data() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "x", "project": "no-such-project" }),
+    );
+    assert!(is_error(&resp), "an unknown project must refuse");
+    let structured = &resp["result"]["structuredContent"];
+    assert_eq!(
+        structured["error"]["code"], "not_found",
+        "structuredContent.error.code must carry the machine-readable code: {resp}"
+    );
+    assert_eq!(
+        structured["error"]["data"]["name"], "no-such-project",
+        "structuredContent.error.data must survive the trip over MCP: {resp}"
+    );
+    assert!(
+        structured["error"]["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty()),
+        "structuredContent.error.message must not be empty: {resp}"
+    );
+    // The text block is unchanged — this is additive, not a replacement.
+    let text = resp["result"]["content"][0]["text"].as_str().expect("text");
+    assert!(text.starts_with("error [not_found]:"), "got: {text}");
+}
+
+// ---- MCP-surface error remedies name a tool an agent can call (audit #225.3) -
+
+/// A `task.modify` refusal that tells the caller to use `task.start/stop/done`
+/// is correct advice over `tasqx api` and wrong advice over MCP, where those
+/// are not callable names. The MCP presentation must rewrite it to the tools
+/// that actually exist on this surface.
+#[test]
+fn an_mcp_transition_refusal_names_mcp_tools_not_api_methods() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_modify_task",
+        json!({ "ref": 1, "set": { "status": "pending" } }),
+    );
+    assert!(is_error(&resp));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        !text.contains("task.start/stop/done"),
+        "the refusal still names JSON-API method names an MCP agent cannot call: {text}"
+    );
+    assert!(
+        text.contains("tasqx_start_timer")
+            && text.contains("tasqx_stop_timer")
+            && text.contains("tasqx_complete_task"),
+        "the refusal should name the real MCP tools: {text}"
+    );
+}
+
+/// `require_live_project`'s refusal names `tasqx init NAME` — a CLI verb with
+/// no MCP equivalent and no shell to run it in. Over MCP it must name the
+/// tool that actually creates a project.
+#[test]
+fn an_mcp_missing_project_refusal_names_the_create_project_tool() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "x", "project": "no-such-project" }),
+    );
+    assert!(is_error(&resp));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        !text.contains("tasqx init"),
+        "the refusal still names a CLI verb with no MCP equivalent: {text}"
+    );
+    assert!(
+        text.contains("tasqx_create_project"),
+        "the refusal should name the MCP tool that creates a project: {text}"
+    );
+}
+
+// ---- the read-only refusal names the fix (audit #225.11) ---------------------
+
+#[test]
+fn the_read_only_refusal_names_the_flag_that_fixes_it() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Read);
+    let resp = call(&server, 1, "tasqx_add_task", json!({ "title": "nope" }));
+    assert!(is_error(&resp));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("tasqx mcp serve --scope write"),
+        "the refusal should name the exact fix, since a retry or a workaround \
+         cannot succeed on this surface: {text}"
+    );
+}
+
+// ---- schema descriptions carry facts the audit found missing ----------------
+
+/// `tasqx_summary`'s `metrics` param was the only property on the whole
+/// surface with no `description` at all, and it is the one param that
+/// controls whether a summary is a bare headcount or the full report (audit
+/// #189).
+#[test]
+fn summary_metrics_schema_names_its_own_default() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let summary = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_summary")
+        .expect("tasqx_summary is listed");
+    let desc = summary["inputSchema"]["properties"]["metrics"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        !desc.is_empty(),
+        "`metrics` must document that it is opt-in, since omitting it silently drops every \
+         metric but `count`"
+    );
+}
+
+/// `memory.search`'s `rank` is FTS5's raw bm25 score, where LOWER is BETTER —
+/// the opposite of most scoring conventions — and nothing said so (audit
+/// #225.12).
+#[test]
+fn search_memory_description_names_the_rank_direction() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let search = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_search_memory")
+        .expect("tasqx_search_memory is listed");
+    let desc = search["description"].as_str().unwrap_or_default();
+    assert!(
+        desc.to_lowercase().contains("lower") || desc.to_lowercase().contains("negative"),
+        "the description must say which direction of `rank` is better: {desc}"
+    );
+}
+
+/// The two parameters that together produce a 327 KB response (naming
+/// `annotations_limit` AND keeping `include_json` at its default) must cross-
+/// reference each other, since the one that leads a caller into the trap
+/// never used to mention the one that gets them out (audit #225.13).
+#[test]
+fn annotations_limit_description_names_include_json_as_the_escape() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let get_task = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_get_task")
+        .expect("tasqx_get_task is listed");
+    let desc = get_task["inputSchema"]["properties"]["annotations_limit"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        desc.contains("include_json"),
+        "`annotations_limit`'s description should point at `include_json` as the way to keep \
+         the budget once a limit is named: {desc}"
+    );
+}
+
+/// `tasqx_create_project` gives the agent nothing to act on: the new project
+/// is not the default and there is no MCP tool to change that. The
+/// description must say so rather than leave the agent to discover it by a
+/// failed `tasqx_add_task` (audit #225's item 2).
+#[test]
+fn create_project_description_says_it_is_never_the_default() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let create = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_create_project")
+        .expect("tasqx_create_project is listed");
+    let desc = create["description"].as_str().unwrap_or_default();
+    assert!(
+        desc.to_lowercase().contains("default") && desc.contains("project"),
+        "the description should say the new project does not become the default: {desc}"
+    );
+}
+
+// ---- annotation.add's echo is opt-out, not gone (audit #172; challenges D72) -
+
+/// The default is unchanged: a caller that says nothing still gets the body
+/// echoed back, verbatim-storage proof intact (D72/D75).
+#[test]
+fn annotate_still_echoes_the_body_by_default() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_annotate_task",
+        json!({ "ref": 1, "body": "hello world" }),
+    );
+    assert!(!is_error(&resp));
+    let json = tool_text(&resp);
+    assert_eq!(json["annotation"]["body"], "hello world");
+    assert!(json["annotation"].get("body_bytes").is_none());
+}
+
+/// `include_body: false` drops the echoed body and reports its length
+/// instead, so a long note does not cost its own bytes twice with no way to
+/// decline. The stored annotation is untouched — a follow-up read gets the
+/// body back whole.
+#[test]
+fn annotate_include_body_false_reports_a_length_instead_of_the_bytes() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let long_body = "y".repeat(5000);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_annotate_task",
+        json!({ "ref": 1, "body": long_body.clone(), "include_body": false }),
+    );
+    assert!(!is_error(&resp));
+    let json = tool_text(&resp);
+    assert!(
+        json["annotation"].get("body").is_none(),
+        "body must not be echoed when declined: {json}"
+    );
+    assert_eq!(json["annotation"]["body_bytes"], long_body.len());
+
+    // The response is genuinely smaller — this is the point.
+    let with_body = call(
+        &server,
+        2,
+        "tasqx_annotate_task",
+        json!({ "ref": 1, "body": long_body.clone() }),
+    );
+    let small = serde_json::to_string(&resp).expect("json").len();
+    let big = serde_json::to_string(&with_body).expect("json").len();
+    assert!(
+        small < big,
+        "declining the echo must actually shrink the response: {small} vs {big}"
+    );
+
+    // Nothing was lost in the store: the body is still there, whole.
+    let got = engine
+        .task_get(&json!({ "ref": 1, "annotations_limit": 2 }))
+        .expect("get");
+    let bodies: Vec<&str> = got["annotations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["body"].as_str().unwrap())
+        .collect();
+    assert!(bodies.contains(&long_body.as_str()));
+}
+
+/// `include_body` must never reach the params gate: `annotation.add` does not
+/// accept it as a method param, so a forwarded copy would be an instant
+/// `bad_request` on every call that names it.
+#[test]
+fn include_body_is_stripped_before_the_params_gate() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    for args in [
+        json!({ "ref": 1, "body": "a", "include_body": false }),
+        json!({ "ref": 1, "body": "b", "include_body": true }),
+    ] {
+        let resp = call(&server, 1, "tasqx_annotate_task", args.clone());
+        assert!(!is_error(&resp), "`{args}` was refused: {resp}");
+    }
 }

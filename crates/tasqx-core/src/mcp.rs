@@ -75,6 +75,9 @@ struct PreparedCall {
     args: Value,
     /// D49/D66: whether the `task.get` answer carries the machine block.
     include_json: bool,
+    /// Whether the `annotation.add` answer echoes the stored body back
+    /// (D72/D75's default) or a `body_bytes` length in its place.
+    include_body: bool,
     /// Whether THIS transport supplied the `annotations_limit` page.
     paged_by_us: bool,
     /// Whether THIS transport supplied the `task.list` page.
@@ -336,11 +339,18 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
 /// it against the schemas in both directions, so an argument added to a schema
 /// and not forwarded either lands here with an argument or reddens the build —
 /// the `UNEXPOSED_METHODS` move, applied to the other end of the same seam.
-const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[(
-    "tasqx_get_task",
-    "include_json",
-    "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
-)];
+const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
+    (
+        "tasqx_get_task",
+        "include_json",
+        "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
+    ),
+    (
+        "tasqx_annotate_task",
+        "include_body",
+        "whether the response echoes the annotation body back beside its id and timestamp.      D72/D75 keep the echo ON by default — it is the caller's only evidence that a body      promised to be stored verbatim really was — so this is opt-OUT, not a reversal: a      caller who already holds every byte it sent (the common case for a long note) can      decline paying to receive them again, and one that wants the verbatim proof still      gets it by doing nothing. `annotation.add` has no opinion on how its own result is      echoed back over one particular transport.",
+    ),
+];
 
 /// Built once per process. The table is a pure function of compile-time
 /// constants — every runtime `format!` in it renders a `const` list — and it
@@ -371,7 +381,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 \"project:work.tasqx status:pending +api due.before:tomorrow\". \
                 Rows come back in pages: the response carries `count` (returned), `total` \
                 (matched) and `next_offset`, null once nothing is left. Project \
-                `depends_on` with `fields` to see what a blocked row is waiting on.",
+                `depends_on` with `fields` to see what a blocked row is waiting on. Two \
+                CLI-only recipes worth composing here: the single highest-urgency \
+                unblocked task (\"what now\") is `filter: \"@working\", sort: \
+                [\"-urgency\"], limit: 1`; \"what was I doing\" is `filter: \
+                \"status:active\"`.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -444,9 +458,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "How many of the MOST RECENT annotations to return. Omit and this \
                              tool applies its own page size ({ANNOTATION_PAGE}), because an \
                              unbounded history can exceed a client's tool-output limit; pass \
-                             `annotations_total` from a previous response to get every one. \
-                             0 returns none, which is how you read a task's fields without its \
-                             history."
+                             `annotations_total` from a previous response to get every one — \
+                             naming ANY limit here removes the response's byte budget \
+                             entirely (both blocks answered in full, however large), so pair a \
+                             big one with `include_json: false` or the whole history costs \
+                             both blocks' bytes. 0 returns none, which is how you read a \
+                             task's fields without its history."
                         )
                     },
                     "include_json": {
@@ -495,7 +512,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "items": {
                             "type": "string",
                             "enum": enum_of(SUMMARY_METRICS)
-                        }
+                        },
+                        "description": "Extra columns per group. Omit and each group carries \
+                             only `count` — `tracked_total`, `overdue` and the token buckets are \
+                             NOT included unless named here, unlike `tasqx report`, which shows \
+                             every metric by default."
                     }
                 }
             }),
@@ -529,7 +550,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 read a doc whole with `tasqx_get_memory` on its `id`, and an \
                 annotation whole with `tasqx_get_task` on the task its `source` \
                 names. Every word of a plain query is REQUIRED, so `matched` on the \
-                result is what explains a zero-hit answer.",
+                result is what explains a zero-hit answer. A hit's `rank` is the raw \
+                FTS5 bm25 score: LOWER (more negative) is a BETTER match, the opposite \
+                of most scoring conventions. `hits` is already sorted best-first, so \
+                `rank` is for comparing hits against each other, not for a fixed \
+                threshold.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -798,7 +823,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: true,
             idempotent: true,
             description: "Remove one or more tags from a task. Returns the resulting tag set. \
-                Removing a tag the task does not carry is not an error.",
+                A tag the task does not carry is `not_found` and removes NONE of the tags \
+                named — all or nothing, so a typo can never answer ok.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -817,12 +843,24 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             description: "Attach a timestamped note to a task. The body is \
                 stored verbatim (newlines and markdown included), so this is \
                 where long-form context lives: acceptance criteria, links, \
-                implementation notes.",
+                implementation notes. The response echoes the stored body back \
+                by default — proof the store kept it verbatim — but you \
+                already hold every byte you sent, so pass `include_body: \
+                false` to get `{id, created, body_bytes}` instead on a long \
+                note.",
             schema: json!({
                 "type": "object",
                 "properties": {
                     "ref": ref_schema(),
-                    "body": { "type": "string", "description": "Note text, stored verbatim. Multi-line markdown is fine." }
+                    "body": { "type": "string", "description": "Note text, stored verbatim. Multi-line markdown is fine." },
+                    "include_body": {
+                        "type": "boolean",
+                        "description": "Echo the stored body back in the response. Default \
+                             true. A long note costs its own bytes twice — once in the \
+                             request, once in this echo — so pass false to get `body_bytes` \
+                             (a length) in place of `body` when you do not need the \
+                             verbatim-storage proof."
+                    }
                 },
                 "required": ["ref", "body"]
             }),
@@ -927,7 +965,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: true,
-            description: "Create a project. Returns its id and name.",
+            description: "Create a project. Returns its id and name. This does NOT become \
+                the default project — MCP has no tool for `project.use`, so pass `project` \
+                explicitly on every `tasqx_add_task` that should land here, including the \
+                first one.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1087,7 +1128,9 @@ impl<'e> McpServer<'e> {
             return tool_error(
                 "bad_request",
                 format!(
-                    "tool `{name}` requires write scope, but this MCP server is running read-only"
+                    "tool `{name}` requires write scope, but this MCP server is running \
+                     read-only. This cannot be changed from a tool call: the operator must \
+                     relaunch the server as `tasqx mcp serve --scope write`."
                 ),
             );
         }
@@ -1171,6 +1214,14 @@ impl<'e> McpServer<'e> {
             .get("include_json")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        // Default true, for the same reason: `annotation.add` has echoed its
+        // body since before this argument existed (D72/D75), and a caller
+        // that says nothing keeps getting it. `include_body: false` is the
+        // opt-out.
+        let include_body = consumed
+            .get("include_body")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
 
         let mut paged_by_us = false;
         if spec.method == "task.get" {
@@ -1202,6 +1253,7 @@ impl<'e> McpServer<'e> {
         PreparedCall {
             args,
             include_json,
+            include_body,
             paged_by_us,
             paged_list_by_us,
         }
@@ -1211,7 +1263,7 @@ impl<'e> McpServer<'e> {
     /// of the seam `prepare_args` is the pre-dispatch half of.
     fn present(&self, spec: &ToolSpec, prepared: &PreparedCall, outcome: DispatchOutcome) -> Value {
         match outcome {
-            Ok(result) => {
+            Ok(mut result) => {
                 // The one rendered surface. Keyed on the method rather than the
                 // tool name to match the `task.modify`/`task.start` checks
                 // above; exactly one tool maps to `task.get`, so this is the
@@ -1235,6 +1287,22 @@ impl<'e> McpServer<'e> {
                     }
                     return self.fit_to_budget(result, &prepared.args, &opts, prepared.paged_by_us);
                 }
+                // The opt-out half of D72/D75's echo: the caller already holds
+                // every byte of `body` (it is right there in the request this
+                // is a response to), so a caller who says so gets a length
+                // rather than the bytes again. The frozen `annotation.add`
+                // result itself is untouched by this — `dispatch` still
+                // returns the full ANNOTATION shape D56 froze, and a caller of
+                // `tasqx api` always gets it whole; only this transport's OWN
+                // presentation of it is rewritten, on request.
+                if spec.method == "annotation.add" && !prepared.include_body {
+                    if let Some(body_len) = result["annotation"]["body"].as_str().map(str::len) {
+                        if let Some(obj) = result["annotation"].as_object_mut() {
+                            obj.remove("body");
+                            obj.insert("body_bytes".to_string(), json!(body_len));
+                        }
+                    }
+                }
                 if prepared.paged_list_by_us {
                     return self.fit_list_to_budget(result, &prepared.args);
                 }
@@ -1245,7 +1313,8 @@ impl<'e> McpServer<'e> {
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_string))
                     .unwrap_or_else(|| "internal".to_string());
-                tool_error(&code, e.message)
+                let message = mcp_surface_message(e.message, e.data.as_ref());
+                tool_error_with_data(&code, message, e.data)
             }
         }
     }
@@ -1296,11 +1365,7 @@ impl<'e> McpServer<'e> {
         paged_by_us: bool,
     ) -> Value {
         let render = |result: &Value| crate::markdown::task_detail(result, opts);
-        let json_len = |result: &Value| {
-            serde_json::to_string_pretty(result)
-                .map(|s| s.len())
-                .unwrap_or(0)
-        };
+        let json_len = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
 
         // Measured on the FINISHED block, never on the bare view: dropping the
         // JSON adds a sentence saying so, and a view that fits by less than that
@@ -1401,11 +1466,7 @@ impl<'e> McpServer<'e> {
     /// answer. `fields` is the caller's lever for a store whose single row
     /// exceeds the budget, and the schema says so.
     fn fit_list_to_budget(&self, first: Value, args: &Value) -> Value {
-        let size = |result: &Value| {
-            serde_json::to_string_pretty(result)
-                .map(|s| s.len())
-                .unwrap_or(0)
-        };
+        let size = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
         if size(&first) <= RESPONSE_BUDGET_BYTES {
             return tool_ok(&first);
         }
@@ -1504,7 +1565,7 @@ fn tools_list(scope: Scope) -> Vec<Value> {
 fn tool_ok(result: &Value) -> Value {
     json!({
         "content": [
-            { "type": "text", "text": serde_json::to_string_pretty(result).unwrap_or_default() }
+            { "type": "text", "text": serde_json::to_string(result).unwrap_or_default() }
         ],
         "isError": false
     })
@@ -1524,7 +1585,7 @@ fn tool_ok_with_view(view: String, result: &Value) -> Value {
     json!({
         "content": [
             { "type": "text", "text": view },
-            { "type": "text", "text": serde_json::to_string_pretty(result).unwrap_or_default() }
+            { "type": "text", "text": serde_json::to_string(result).unwrap_or_default() }
         ],
         "isError": false
     })
@@ -1578,14 +1639,85 @@ fn view_only_text(view: &str) -> String {
 }
 
 /// An error `tools/call` result (scope denial, unknown tool, or a core
-/// `ApiError`): the code + message as text content, flagged `isError`.
+/// `ApiError`): the code + message as text content, flagged `isError`, with
+/// no structured detail. Most refusals raised inside this module (an unknown
+/// tool name, a scope denial) have none to carry; a dispatch `ApiError` goes
+/// through [`tool_error_with_data`] instead.
 fn tool_error(code: &str, message: impl Into<String>) -> Value {
+    tool_error_with_data(code, message, None)
+}
+
+/// The same `tools/call` error shape as [`tool_error`], plus the `data` a core
+/// `ApiError` carries — both as a `structuredContent.error` object beside the
+/// text block.
+///
+/// Before this, `code` and `data` reached an MCP caller only as a substring of
+/// prose (`error [not_found]: ...`), an undocumented wire format `code` had to
+/// be regex-matched out of and `data` could not be recovered from at all —
+/// while the same failure over `tasqx api` answers a machine-readable
+/// `{code, message, data}` envelope. `structuredContent` is additive: the text
+/// block is unchanged, so nothing that already parses `content[0].text` is
+/// affected.
+fn tool_error_with_data(code: &str, message: impl Into<String>, data: Option<Value>) -> Value {
+    let message = message.into();
+    let mut error = json!({ "code": code, "message": message });
+    if let Some(d) = data {
+        error["data"] = d;
+    }
     json!({
         "content": [
-            { "type": "text", "text": format!("error [{code}]: {}", message.into()) }
+            { "type": "text", "text": format!("error [{code}]: {message}") }
         ],
-        "isError": true
+        "isError": true,
+        "structuredContent": { "error": error }
     })
+}
+
+/// Engine error phrases naming a CLI verb or JSON-API method that has no MCP
+/// tool of the same name, rewritten to the tool an MCP caller can actually
+/// call.
+///
+/// Each entry is author-written prose emitted by exactly one call site (never
+/// user input echoed back), so a substring replace cannot misfire on a task
+/// title or filter value that happens to contain the same words. The engine
+/// message stays exactly as written for `tasqx api` and the CLI, where
+/// `task.start/stop/done` and `task.get` ARE the right names to print; only
+/// what an MCP session sees is rewritten, here, at the transport boundary the
+/// rest of this file already narrows through (`TRANSPORT_ONLY_ARGS`,
+/// `UNEXPOSED_METHODS`).
+const MCP_REMEDY_REWRITES: &[(&str, &str)] = &[
+    (
+        "use task.start/stop/done for other transitions",
+        "use tasqx_start_timer / tasqx_stop_timer / tasqx_complete_task for other transitions",
+    ),
+    (
+        "read it with task.get on #",
+        "read it with tasqx_get_task on #",
+    ),
+];
+
+/// Apply [`MCP_REMEDY_REWRITES`], then the one rewrite that needs the error's
+/// own `data` rather than a fixed phrase: `require_live_project`'s refusal
+/// names `tasqx init NAME`, a CLI verb with no MCP equivalent and no shell to
+/// run it in. `data.name` carries the same name the message embeds, so the
+/// CLI-specific clause is replaced exactly rather than guessed at from prose.
+fn mcp_surface_message(message: String, data: Option<&Value>) -> String {
+    let mut out = message;
+    for (from, to) in MCP_REMEDY_REWRITES {
+        if out.contains(from) {
+            out = out.replace(from, to);
+        }
+    }
+    if let Some(name) = data.and_then(|d| d.get("name")).and_then(Value::as_str) {
+        let cli_clause = format!("(create it with `tasqx init {name}`)");
+        if out.contains(&cli_clause) {
+            out = out.replace(
+                &cli_clause,
+                "(create it first with the `tasqx_create_project` tool)",
+            );
+        }
+    }
+    out
 }
 
 fn rpc_result(id: Value, result: Value) -> Value {

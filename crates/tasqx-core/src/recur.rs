@@ -66,6 +66,19 @@ pub fn parse_rule(input: &str) -> Result<Recur, ApiError> {
     };
 
     match tokens.as_slice() {
+        // `daily`/`weekly`/`monthly` — bare adjectival spellings of `every
+        // day`/`every week`/`every month`. Added because the MCP schema's own
+        // FIRST example was `"daily"`, which this parser refused: an agent
+        // reading its own tool description before writing a call burned one
+        // on the leading example, and the refusal named a different
+        // vocabulary (`"every N days|weeks|months"`) than the schema had just
+        // shown it, so the two had to be reconciled by hand. Every unit these
+        // resolve to was already representable (`EveryDays(1)` etc. — `every
+        // day` has worked since D2), so this is new INPUT the parser accepts,
+        // not new recurrence behaviour.
+        ["daily"] => Ok(Recur::EveryDays(1)),
+        ["weekly"] => Ok(Recur::EveryWeeks(1)),
+        ["monthly"] => Ok(Recur::EveryMonths(1)),
         // every N <unit>  /  every <unit>
         ["every", rest @ ..] => {
             let (n, unit) = match rest {
@@ -394,6 +407,19 @@ mod tests {
         assert_eq!(parse_rule("every week").unwrap(), Recur::EveryWeeks(1));
         assert_eq!(parse_rule("EVERY 3 DAYS").unwrap(), Recur::EveryDays(3));
         assert_eq!(parse_rule("every 3d").unwrap(), Recur::EveryDays(3));
+    }
+
+    /// The MCP schema's own first example (`tasqx_add_task.recurrence`'s
+    /// description leads with `"daily"`) must be a value this parser actually
+    /// accepts (audit #225.1): before this, `parse_rule("daily")` refused with
+    /// a message naming a *different* vocabulary than the one the schema had
+    /// just advertised.
+    #[test]
+    fn bare_adjectival_spellings_are_every_one_of_the_unit() {
+        assert_eq!(parse_rule("daily").unwrap(), Recur::EveryDays(1));
+        assert_eq!(parse_rule("weekly").unwrap(), Recur::EveryWeeks(1));
+        assert_eq!(parse_rule("monthly").unwrap(), Recur::EveryMonths(1));
+        assert_eq!(parse_rule("DAILY").unwrap(), Recur::EveryDays(1));
     }
 
     #[test]
