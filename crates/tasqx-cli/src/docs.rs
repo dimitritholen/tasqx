@@ -268,7 +268,8 @@ const METHODS: [(&str, &str, &str); 32] = [
     (
         "memory.import",
         "<code>docs</code>",
-        "<code>{imported, docs}</code>. One transaction; same <code>source</code> replaces.",
+        "<code>{imported, replaced, docs}</code>. One transaction; same <code>source</code> \
+         replaces IN PLACE (id and creation date kept) and is counted in <code>replaced</code>.",
     ),
     (
         "tokens.recompute",

@@ -707,10 +707,21 @@ pub(crate) fn run_memory_import(be: &mut Backend, path: &str) -> CmdOutcome {
     // nothing, and a re-run replaces instead of duplicating.
     let docs = memory_docs_from_path(path)?;
     let result = be.call("memory.import", &json!({ "docs": docs }))?;
-    let text = format!(
-        "Imported {} doc(s) into memory\n",
-        result["imported"].as_u64().unwrap_or(0)
-    );
+    let imported = result["imported"].as_u64().unwrap_or(0);
+    // #178: a re-run that replaces a doc sharing its `source` used to print
+    // this identical line whether it created 3 docs or silently overwrote 3
+    // — the only announcement was `undo`'s refusal, reached only by someone
+    // who thought to try. `replaced` is counted by the engine either way, so
+    // rendering it here is the one thing on the write side that was missing.
+    let replaced = result["replaced"].as_u64().unwrap_or(0);
+    let text = if replaced > 0 {
+        format!(
+            "Imported {imported} doc(s) into memory ({replaced} replaced; the previous text is \
+             not recoverable)\n"
+        )
+    } else {
+        format!("Imported {imported} doc(s) into memory\n")
+    };
     Ok((result, text))
 }
 
