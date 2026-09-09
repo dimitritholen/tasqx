@@ -695,7 +695,17 @@ pub(super) enum Command {
     },
     /// Print the single highest-urgency unblocked task (the "what now" button).
     #[command(after_help = crate::cmddoc::after_help("next"))]
-    Next,
+    Next {
+        /// Filter DSL, ANDed with `@working` (default: `@working` alone).
+        ///
+        /// Hyphen-tolerant via the `argv` pre-pass so `-tag` is typable; see
+        /// `List::filter`. Unlike `list`/`pick`, a caller's filter never
+        /// REPLACES `@working` — it narrows it — so `tasqx next project:x`
+        /// still skips blocked and backlog tasks in that project rather than
+        /// widening to every status the way `tasqx list project:x` does.
+        #[arg(add = crate::complete::candidates::filter_words())]
+        filter: Vec<String>,
+    },
     /// Open the dashboard: an overview screen over the working set, deadlines,
     /// blocked work, projects, burndown and token spend (DESIGN.md §12-D58).
     ///
@@ -882,6 +892,7 @@ impl Command {
             | Command::Export { filter }
             | Command::Watch { filter }
             | Command::Pick { filter }
+            | Command::Next { filter }
             // `..` because `agenda` carries `--days` beside its tail; the dash
             // restoration is about the tail and nothing else.
             | Command::Agenda { filter, .. } => Some(filter),

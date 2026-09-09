@@ -3174,3 +3174,84 @@ fn an_explicit_socket_on_a_verb_that_cannot_honour_it_is_refused_not_ignored() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// #151 (audit-2026-09): `next` took no filter or project scope, unlike
+/// `list`/`agenda`/`pick`/`report`.
+///
+/// `tasqx next --help` showed `Usage: tasqx next [OPTIONS]` with no `[FILTER]`
+/// positional at all, and `tasqx next project:fin-9695` was a clap parse
+/// error — `unexpected argument 'project:fin-9695' found` — while every
+/// sibling read verb took the same token. A developer sitting in one project
+/// asking "what now" had no way to scope the answer to it: across a store
+/// with several projects `next` picks the single globally highest-urgency
+/// unblocked task, which is almost always about something else, and the only
+/// workaround (`tasqx list project:X | head -3`) loses the blocked-skipping
+/// that is `next`'s entire value — `list` does not mark or exclude blocked
+/// rows the way `@working` does.
+///
+/// Two things are pinned together because a filter that merely REPLACED
+/// `@working` (the way `list`/`pick` treat their own default) would make this
+/// worse, not better: `tasqx next project:fin` must still skip a blocked task
+/// in that project, not resurrect it now that a project filter is in play.
+#[test]
+fn next_takes_a_filter_and_still_skips_blocked_work_in_scope() {
+    let dir = fresh_config_dir("next-filter-scope");
+    let run = |args: &[&str]| {
+        bin("next-filter-scope", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    ok(&["init", "fin"]);
+    ok(&["init", "qore"]);
+    // #1 is fin's only unblocked candidate once #2 is blocked on it.
+    ok(&["add", "fin blocker", "project:fin"]);
+    ok(&["add", "fin blocked", "project:fin"]);
+    ok(&["dep", "2", "1"]);
+    // #3 outranks everything in fin on urgency, so a plain `next` answers from
+    // the wrong project — the exact complaint #151 raised.
+    ok(&["add", "qore high task", "project:qore"]);
+    ok(&["modify", "3", "--priority", "high"]);
+
+    let cross_project = ok(&["next"]);
+    assert!(
+        cross_project.contains("qore high task"),
+        "sanity: an unscoped `next` answers globally, from qore: {cross_project}"
+    );
+
+    // The exact repro: a project-scoped filter must reach `next` as clap
+    // grammar, not error out of it.
+    let scoped = ok(&["next", "project:fin"]);
+    assert!(
+        scoped.contains("fin blocker"),
+        "`next project:fin` must answer from fin's own working set: {scoped}"
+    );
+    assert!(
+        !scoped.contains("qore"),
+        "the project filter must actually narrow the candidates, not just parse: {scoped}"
+    );
+    assert!(
+        !scoped.contains("fin blocked"),
+        "the filter must be ANDed with @working, not substituted for it — a \
+         blocked task in the scoped project must still be skipped: {scoped}"
+    );
+
+    // `-tag` stays typable on `next` too, the same pre-pass every other filter
+    // command gets (`argv::FILTER_COMMANDS`).
+    ok(&["tag", "1", "urgent"]);
+    let excluded = ok(&["next", "-urgent"]);
+    assert!(
+        !excluded.contains("fin blocker"),
+        "`-urgent` must exclude the tagged task, not fail to parse: {excluded}"
+    );
+}

@@ -774,7 +774,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Tokens { action }) => run_tokens(&mut backend, &ctx, &action),
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, file),
-        Some(Command::Next) => run_next(&mut backend, &ctx),
+        Some(Command::Next { filter }) => run_next(&mut backend, &ctx, &filter),
         Some(Command::Pick { filter }) => run_pick(&mut backend, &ctx, &filter),
         Some(Command::Why { r#ref }) => run_why(&mut backend, &ctx, r#ref),
         Some(Command::Chart { .. }) => unreachable!("handled above"),
