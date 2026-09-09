@@ -17,12 +17,20 @@ use crate::AGENDA_MAX_DAYS;
 /// Strip terminal-control bytes from untrusted text before it is painted, so an
 /// imported or agent-authored task field can't smuggle ANSI/OSC escapes that
 /// clear the screen, move the cursor, set the window title, or spoof CLI output.
-/// This is the terminal-path analogue of `html::esc`. C0 controls (except tab),
-/// DEL, and C1 controls are dropped; ordinary printable text is untouched.
+/// This is the terminal-path analogue of `html::esc`. Every C0 control
+/// (tab included), DEL, and every C1 control are dropped; ordinary printable
+/// text is untouched.
+///
+/// Tab is dropped here (#234 item 10 / bundle #228's duplicate — same root
+/// cause), where `html::esc` deliberately keeps it (D19): a raw `\t` expands
+/// to the next 8-column stop in any real terminal, shifting every column to
+/// the right of it on that row — the exact misalignment D51 exists to end —
+/// while an HTML `<table>` cell has no fixed-width grid for a tab to break.
+/// D19's "one sanitizer standard" is about the RULE (strip control bytes,
+/// keep printable text) both surfaces share, not that every exception must be
+/// identical when the two surfaces' hazards differ.
 pub fn san(s: &str) -> String {
-    s.chars()
-        .filter(|&c| c == '\t' || !c.is_control())
-        .collect()
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Is this task still open, given the `status` string as it arrived in a JSON
@@ -2449,7 +2457,28 @@ mod tests {
         let clean = san(malicious);
         assert!(!clean.contains('\x1b'), "escape byte leaked: {clean:?}");
         assert!(!clean.contains('\x07') && !clean.contains('\x08'));
-        assert_eq!(clean, "[2Jpwned]0;evil ok\ttab", "printable kept, tab kept");
+        assert!(!clean.contains('\t'), "a raw tab expands in any terminal and shifts every column to its right on that row — the misalignment D51 exists to end (D19/#234 item 10)");
+        assert_eq!(
+            clean, "[2Jpwned]0;evil oktab",
+            "printable kept, tab dropped"
+        );
+    }
+
+    /// #234 item 10 (= bundle #228's tab-alignment item, same root cause,
+    /// D19): a raw TAB in a title survives `san` and expands to the next
+    /// 8-column stop in any real terminal, shifting every column to the
+    /// RIGHT of it on that one row — the exact misalignment D51 exists to
+    /// end, reintroduced by the one control byte `san` still let through.
+    /// `html::esc` keeps tab deliberately (D19: "legitimate document
+    /// whitespace" — a `<table>` cell has no fixed-width grid to break), so
+    /// this is a `render::san`-only fix, not a second D19 sanitizer standard.
+    #[test]
+    fn san_strips_tab_which_would_misalign_a_terminal_table() {
+        assert_eq!(san("tab\there"), "tabhere");
+        assert_eq!(
+            san("bell\x07 and \x1b]0;PWNED\x07title"),
+            "bell and ]0;PWNEDtitle"
+        );
     }
 
     #[test]
