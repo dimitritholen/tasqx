@@ -3174,3 +3174,46 @@ fn an_explicit_socket_on_a_verb_that_cannot_honour_it_is_refused_not_ignored() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// `memory show`'s doc path ran the body through `render::san`, whose control
+/// filter treats `\n` as a control byte and drops it right along with an
+/// escape sequence — so a stored runbook came back as one unbroken line while
+/// `memory show --json` still carried the same body with every newline in
+/// place (#195, D71: `memory.get` promises the doc back whole, and `memory add
+/// --help` promises the body stored verbatim).
+#[test]
+fn memory_show_prints_the_body_with_its_newlines_intact() {
+    let dir = fresh_config_dir("memory-show-nl");
+    let body = "# Runbook\n\nDeploys go through the blue-green pipeline.\n\n- step one\n- step two";
+
+    let add = bin("memory-show-nl", &dir)
+        .args(["memory", "add", "Runbook", body])
+        .output()
+        .expect("run memory add");
+    assert!(
+        add.status.success(),
+        "memory add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&add.stdout);
+    let id = stdout
+        .strip_prefix("Stored ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("expected `Stored <id>  ·  <title>`, got: {stdout}"))
+        .to_string();
+
+    let show = bin("memory-show-nl", &dir)
+        .args(["memory", "show", &id])
+        .output()
+        .expect("run memory show");
+    assert!(
+        show.status.success(),
+        "memory show failed: {}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+    let shown = String::from_utf8_lossy(&show.stdout);
+    assert!(
+        shown.contains(body),
+        "memory show must print the body verbatim, newlines included; got:\n{shown}"
+    );
+}

@@ -667,7 +667,7 @@ pub(crate) fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome 
                 "{}  ({})\n{}\n",
                 render::san(result["title"].as_str().unwrap_or("?")),
                 render::san(source),
-                render::san(result["body"].as_str().unwrap_or("")),
+                render::san_multiline(result["body"].as_str().unwrap_or("")),
             );
             Ok((result, text))
         }
