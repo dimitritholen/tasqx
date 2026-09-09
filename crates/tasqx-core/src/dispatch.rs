@@ -141,7 +141,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("tokens.recompute", &["dry_run"], false),
     (
         "report.summary",
-        &["group_by", "filter", "metrics", "all"],
+        &["group_by", "filter", "metrics", "all", "since", "until"],
         false,
     ),
     ("store.export", &["filter"], false),

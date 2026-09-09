@@ -550,11 +550,13 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "report.summary",
         summary: "Summary counts, optionally grouped, as text or HTML.",
-        usage: "tasqx report [group_by] [filter…] [--all] [--html] [--out FILE]",
+        usage: "tasqx report [group_by] [filter…] [--all] [--since WHEN] [--until WHEN] \
+                [--html] [--out FILE]",
         examples: &[
             ex("tasqx report"),
             ex("tasqx report project"),
             ex("tasqx report --all"),
+            ex("tasqx report --since -7d"),
             ex_norun("tasqx report --html --out review.html", "self-contained HTML"),
             // The usage line always promised `[filter…]` alongside `--html`; for a
             // long time only the terminal path kept that promise. Documented as an
@@ -566,6 +568,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "A filter scopes BOTH output modes — the HTML page and the terminal table \
              answer the same question.",
             "Cancelled tasks are not counted, unless you pass `--all` or your filter names a status.",
+            "`--since`/`--until` window `tracked_total` and the token buckets by WHEN the \
+             time or spend happened (D79) — a different axis from `completed.after:`/\
+             `completed.before:` in the filter, which selects tasks by completion date. \
+             Rejected alongside `--html`, which has no windowed path yet.",
         ],
         see_also: &["chart", "list", "why"],
         topic: Topic::Reports,

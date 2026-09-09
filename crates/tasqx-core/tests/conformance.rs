@@ -660,6 +660,11 @@ const R_REPORT_SUMMARY: Shape = &[&[
     // the call and was being read as the window boundary.
     req("filter", Ty::Str),
     req("all", Ty::Bool),
+    // D79: null unless the caller passed `since`/`until` — the axis that
+    // windows `tracked_total`/the token buckets by WHEN the work or the
+    // measurement happened, independent of `filter`'s completion-date terms.
+    nul("since", Ty::Str),
+    nul("until", Ty::Str),
 ]];
 
 const R_STORE_EXPORT: Shape = &[&[
