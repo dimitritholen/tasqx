@@ -399,6 +399,107 @@ fn mcp_serve_notes_a_live_daemon_it_never_routed_through() {
     );
 }
 
+/// #184 (reviewer follow-up): a first attempt at the note above fired even
+/// when the daemon's store and the local default store named the exact same
+/// file — reproduced directly against a daemon serving the very path
+/// `api` resolves with no `$TASQX_DB` — which contradicted the fix's own
+/// "fires only on a live divergent store" claim and the task's own
+/// Verification annotation, which names "daemon serving a non-default store"
+/// as a required precondition. Here there is no divergence: the daemon
+/// happens to answer from the file `api` would open anyway, so opening it
+/// in-process reads the right data and there is nothing to warn about.
+#[cfg(unix)]
+#[test]
+fn api_says_nothing_when_the_daemons_store_is_the_local_default() {
+    use std::io::Write;
+    let home = scratch_home("samestore");
+    let config_dir = std::env::temp_dir().join(format!(
+        "tasqx-dvis-samestore-config-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&config_dir);
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+
+    // Ask the binary itself where the local default store lives under this
+    // scratch $HOME, rather than re-deriving `directories::ProjectDirs`'s
+    // algorithm here — the two must never drift apart for this test to mean
+    // anything.
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &config_dir)
+        .env("HOME", &home)
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("TASQX_DB")
+        .env_remove("TASQX_SOCK")
+        .args(["config", "store"])
+        .output()
+        .expect("run config store");
+    assert!(
+        out.status.success(),
+        "config store: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let default_store = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or_else(|| panic!("config store printed nothing"))
+        .trim()
+        .to_string();
+
+    let sock = if cfg!(windows) {
+        format!("tasqx-dvis-samestore-{}", std::process::id())
+    } else {
+        std::env::temp_dir()
+            .join(format!("tasqx-dvis-samestore-{}.sock", std::process::id()))
+            .to_string_lossy()
+            .into_owned()
+    };
+    let w = World {
+        daemon_db: PathBuf::from(&default_store),
+        env_db: std::env::temp_dir().join(format!(
+            "tasqx-dvis-samestore-unused-{}.db",
+            std::process::id()
+        )),
+        sock,
+        config_dir: config_dir.clone(),
+    };
+    let shutdown = start_daemon(&w);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &w.config_dir)
+        .env("TASQX_SOCK", &w.sock)
+        .env("HOME", &home)
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("TASQX_DB")
+        .arg("api")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tasqx api");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(br#"{"tasqx":"1","id":"n","method":"task.list","params":{}}"#)
+        .expect("write envelope");
+    let out = child.wait_with_output().expect("wait");
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&config_dir);
+
+    assert!(
+        out.status.success(),
+        "api must still answer: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("tasqx: note:"),
+        "the daemon answers from the exact file this verb would open anyway \
+         — there is no divergent store to warn about: {stderr}"
+    );
+}
+
 /// #250: a second daemon on a held address used to print
 /// `listening on <addr>` BEFORE attempting the bind, then contradict itself —
 /// and in a log or a service unit the listening line is the one an operator
