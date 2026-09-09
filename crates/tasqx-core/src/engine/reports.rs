@@ -100,12 +100,31 @@ impl Engine {
             tokens_cache_creation: i64,
         }
         let mut groups: BTreeMap<String, Agg> = BTreeMap::new();
+        // #234 item 12: D24 excludes cancelled tasks from the default report
+        // for the reason its own decision gives — counting abandoned work
+        // would inflate every total forever — but that ruling is about task
+        // COUNTS, not about spend already incurred, and the default view
+        // dropped a cancelled task's token measurements with nothing saying
+        // so. This does not change what the default totals ARE (that is a
+        // design question for whoever owns D24); it only stops the omission
+        // from being silent.
+        let mut tokens_excluded_cancelled_tasks: i64 = 0;
 
         for snapshot in
             self.load_task_snapshots_for(super::task::SnapshotParts::REPORT_SUMMARY, now_ts)?
         {
             let t = snapshot.task;
             if apply_default && !t.status.counts_in_reports() {
+                let spent = snapshot.tokens.iter().any(|m| {
+                    let n = |key: &str| m.get(key).and_then(Value::as_i64).unwrap_or(0);
+                    n("input_tokens") != 0
+                        || n("output_tokens") != 0
+                        || n("cache_read_tokens") != 0
+                        || n("cache_creation_tokens") != 0
+                });
+                if spent {
+                    tokens_excluded_cancelled_tasks += 1;
+                }
                 continue;
             }
             let ctx = MatchCtx {
@@ -233,6 +252,11 @@ impl Engine {
             "generated": now_ts.to_string(),
             "filter": filter_str,
             "all": all,
+            // #234 item 12: how many cancelled tasks the D24 default just
+            // excluded that had non-zero token spend — always 0 under `all`
+            // or a filter that already names a status. Additive to the v1
+            // shape (see `tests/conformance.rs`'s `R_REPORT_SUMMARY`).
+            "tokens_excluded_cancelled_tasks": tokens_excluded_cancelled_tasks,
         }))
     }
 }
@@ -245,6 +269,34 @@ mod tests {
     /// `status` column holds text `Status::parse` rejects. `store.import`
     /// accepted such a value until that cluster closed the hole, so this is a
     /// real store shape an upgrade has to keep readable, not a hypothetical.
+    /// #234 item 12: a cancelled task's token spend is dropped from the
+    /// default report with nothing saying it was excluded (D24 says nothing
+    /// about spend — it excludes cancelled tasks from COUNTS). This test
+    /// wants a way for a caller to learn the default view omitted spend, not
+    /// (yet) a change to what the default totals contain.
+    #[test]
+    fn report_names_cancelled_spend_it_left_out_of_the_default_totals() {
+        let e = Engine::open_in_memory().unwrap();
+        let sid = e.task_add(&json!({ "title": "abandoned" })).unwrap()["short_id"].clone();
+        e.token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "self-report",
+            "input_tokens": 500, "confidence": "medium",
+        }))
+        .unwrap();
+        e.task_cancel(&json!({ "ref": sid })).unwrap();
+
+        let default = e.report_summary(&json!({})).unwrap();
+        assert_eq!(
+            default["tokens_excluded_cancelled_tasks"],
+            json!(1),
+            "one cancelled task with spend was excluded, and the response must say so: {default}"
+        );
+
+        // `--all` includes it, and correspondingly nothing was excluded.
+        let all = e.report_summary(&json!({ "all": true })).unwrap();
+        assert_eq!(all["tokens_excluded_cancelled_tasks"], json!(0));
+    }
+
     fn store_with_an_unrecognized_status() -> Engine {
         let e = Engine::open_in_memory().unwrap();
         e.task_add(&json!({ "title": "important work" })).unwrap();

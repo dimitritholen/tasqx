@@ -640,6 +640,19 @@ pub(super) enum Command {
         /// exactly the silent omission D24 exists to stop.
         #[arg(long, conflicts_with = "html")]
         all: bool,
+        /// Show the four token buckets (cache read/write, in, out) as their
+        /// own columns instead of the single largest-bucket cell (#212,
+        /// D48a) — comma-separated, from the same vocabulary
+        /// `report.summary`'s `metrics` param accepts. Naming a non-token
+        /// metric here is accepted but has no effect: COUNT/EST/OVERDUE/
+        /// TRACKED already always show, and this flag only changes the
+        /// TOKENS display.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            value_parser = tasqx_core::engine::SUMMARY_METRICS
+        )]
+        metrics: Option<Vec<String>>,
     },
     /// Native terminal charts from the event log (DESIGN.md §8).
     #[command(after_help = crate::cmddoc::after_help("chart"))]

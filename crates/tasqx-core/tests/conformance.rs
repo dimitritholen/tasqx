@@ -660,6 +660,10 @@ const R_REPORT_SUMMARY: Shape = &[&[
     // the call and was being read as the window boundary.
     req("filter", Ty::Str),
     req("all", Ty::Bool),
+    // #234 item 12: how many cancelled tasks the D24 default just excluded
+    // that carried non-zero token spend — additive, JOINing the frozen shape
+    // per this file's own rule for a genuine addition.
+    req("tokens_excluded_cancelled_tasks", Ty::Int),
 ]];
 
 const R_STORE_EXPORT: Shape = &[&[

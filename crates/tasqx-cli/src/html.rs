@@ -698,7 +698,13 @@ fn pretty_ts(s: &str) -> String {
 }
 
 /// ISO-8601 duration → `19h 30m` (or `—` for zero).
-fn humanize_iso(iso: &str) -> String {
+///
+/// `pub(crate)` so `render::report` (#234 item 11) can print the same human
+/// duration the HTML report and the dashboard already use, instead of the
+/// machine `PT5H53S` form the terminal used to be alone in showing — `PT5H53S`
+/// is five hours and fifty-three SECONDS and reads at a glance as five hours
+/// fifty-three minutes, an 87x error in a column a freelancer invoices from.
+pub(crate) fn humanize_iso(iso: &str) -> String {
     let secs = duration_secs(iso).unwrap_or(0);
     if secs <= 0 {
         return "—".to_string();
