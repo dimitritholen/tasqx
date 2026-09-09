@@ -1062,3 +1062,37 @@ fn an_idle_now_card_asks_for_one_row_not_three() {
         "a running NOW is a three-line card"
     );
 }
+
+/// #209: one bucket at `i64::MAX` blows `TokenRow::total`'s `sum()` past
+/// `i64::MAX`, which wraps to a large NEGATIVE number in release and panics
+/// under debug's overflow checks — either way sorting the biggest spender to
+/// the BOTTOM of the one panel that exists to surface it, or worse.
+#[test]
+fn a_token_rows_total_saturates_instead_of_wrapping_negative() {
+    let dash = build_with(
+        task_list(vec![task_row(1, "a task")]),
+        summary(vec![
+            group("honest", "PT0S", "PT0S", [100, 100, 100, 100]),
+            group("tokentest", "PT0S", "PT0S", [0, 0, i64::MAX, 1]),
+        ]),
+        project_list(vec![
+            project("honest", false, false),
+            project("tokentest", false, false),
+        ]),
+    );
+    let rows = &dash.tokens.rows;
+    let biggest = rows
+        .iter()
+        .find(|r| r.name() == Some("tokentest"))
+        .expect("the overflowing project must still get a row");
+    assert!(
+        biggest.total() > 0,
+        "an overflowed total must saturate positive, not wrap negative: {}",
+        biggest.total()
+    );
+    assert_eq!(
+        rows[0].name(),
+        Some("tokentest"),
+        "the biggest spender must sort FIRST, not last behind a negative wraparound"
+    );
+}

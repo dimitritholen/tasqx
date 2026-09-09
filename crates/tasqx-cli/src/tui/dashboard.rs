@@ -45,7 +45,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 pub const WINDOW_CHOICES: [(&str, usize); 3] = [("week", 7), ("14d", 14), ("30d", 30)];
 
 /// What the event loop must do next. Everything else the screen handles itself.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Action {
     Quit,
     /// Hand over to `pick` inside the SAME terminal session (D58).
@@ -63,6 +63,15 @@ pub enum Action {
     /// to, so tearing the terminal down for it would flicker the whole
     /// dashboard to show one card.
     Detail(i64),
+    /// `⏎` on a PROJECTS row (#204): leave the screen and print the working
+    /// set filtered to this project, the same way [`Action::List`] prints it
+    /// unfiltered for `l`.
+    ///
+    /// D62's scope strip is the eventual answer — Enter would set the header's
+    /// scope instead of leaving — but that strip does not exist yet, and a row
+    /// cursor `?` advertises `enter` for and that does nothing is worse than no
+    /// cursor at all.
+    ListProject(String),
 }
 
 /// The screen's state. A pure state machine: keys in, intents out, no terminal.
@@ -397,6 +406,29 @@ impl App {
                 };
                 None
             }
+            // PROJECTS first (#204): `row_at` is a `Task` reader and answers
+            // `None` on every PROJECTS row on purpose, which used to fall
+            // straight into "has no row to open" — silence from a panel that
+            // draws a row cursor and a project plainly under it. D62's scope
+            // strip is the fuller answer; until it lands, `⏎` here leaves and
+            // prints the working set filtered to the row, the shape `l`
+            // already uses unfiltered.
+            KeyCode::Enter if self.focus == PanelId::Projects => {
+                match model::project_at(&self.dash, self.focus, self.cursor_of(self.focus)) {
+                    Some(Some(name)) => Some(Action::ListProject(name.to_string())),
+                    // The "(none)" bucket: a real row, but `project:VALUE`
+                    // cannot select "no project", so there is nothing to
+                    // filter to either.
+                    Some(None) => {
+                        self.status = "(none) has no project name to filter by".into();
+                        None
+                    }
+                    None => {
+                        self.status = format!("{} has no row to open", self.focus.title());
+                        None
+                    }
+                }
+            }
             KeyCode::Enter => {
                 match model::row_at(&self.dash, self.focus, self.cursor_of(self.focus)) {
                     Some(t) => Some(Action::Detail(t.short_id)),
@@ -641,13 +673,46 @@ fn draw_chrome(screen: &Screen, app: &App, theme: &Theme, caps: &Caps, frame: &m
 // Render
 // ============================================================================
 
+/// The message drawn instead of a blank frame when a resize lands below
+/// [`model::MIN_WIDTH`]/[`model::MIN_HEIGHT`] (#201).
+///
+/// Says the same three things `dashboard_screen::dashboard_refusal`'s startup
+/// sentence does — this terminal, the floor it needs, what fixes it — kept to
+/// one short line rather than that sentence's full prose: unlike the startup
+/// refusal, which owns a whole (wide enough) terminal before anything is
+/// drawn, this can be reached at any width down to the smallest a resize can
+/// produce, and "press q to close" replaces "run `tasqx list`" — there is no
+/// shell to run a command from inside the alternate screen, but there is a
+/// key that leaves it.
+fn draw_too_small(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
+    use model::{MIN_HEIGHT, MIN_WIDTH};
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let warn = rt_style(theme.role("warn"), caps);
+    let text = format!(
+        "{}x{}, need {MIN_WIDTH}x{MIN_HEIGHT} · q to close",
+        area.width, area.height
+    );
+    let cut = render::truncate(&text, area.width as usize, caps.unicode);
+    let y = (area.height / 2).min(area.height.saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(cut, warn))),
+        Rect::new(0, y, area.width, 1),
+    );
+}
+
 /// Draw the whole screen.
 pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     let area = frame.area();
     let Some(screen) = app.screen(area.width, area.height) else {
-        // Unreachable in practice — the caller refuses a terminal this small
-        // before entering the alternate screen — but a return is the only
-        // honest answer if it ever is reached.
+        // NOT unreachable (#201): the caller only refuses a terminal this
+        // small on the FIRST frame. A SIGWINCH below the floor after the
+        // alternate screen is already entered lands here on every later one,
+        // and an empty frame with the keyboard still live reads as a hang —
+        // `q`/`esc`/`ctrl-c` are the only keys `run_dashboard`'s event loop
+        // answers to at this size, which is what the message says.
+        draw_too_small(area, theme, caps, frame);
         return;
     };
     draw_chrome(&screen, app, theme, caps, frame);
