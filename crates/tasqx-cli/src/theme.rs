@@ -417,6 +417,13 @@ impl Style {
     /// Wrap `text` in the SGR escapes this style + capability level imply.
     /// - `ansi=false` → returns `text` untouched (zero escapes).
     /// - `depth=None` → color dropped, bold/underline kept (NO_COLOR).
+    ///
+    /// Dim is dropped alongside color under `depth=None` (#234 item 7): §8's
+    /// degradation table names exactly bold and underline as what survives
+    /// `NO_COLOR`, and `ESC[2m` is the kind of colour-substitute attribute
+    /// that variable exists to suppress — a `muted` role emitting it left
+    /// "plain output" carrying an SGR sequence that piping the same command
+    /// already stripped, so the two "give me plain text" paths disagreed.
     pub fn paint(&self, text: &str, caps: &Caps) -> String {
         if !caps.ansi {
             return text.to_string();
@@ -425,7 +432,7 @@ impl Style {
         if self.bold {
             codes.push("1".into());
         }
-        if self.dim {
+        if self.dim && caps.depth != ColorDepth::None {
             codes.push("2".into());
         }
         if self.underline {
@@ -1451,6 +1458,19 @@ mod tests {
             "no color: {out:?}"
         );
         assert!(out.contains("\x1b[1m"), "bold kept: {out:?}");
+    }
+
+    /// #234 item 7: `NO_COLOR` (§8's degradation table) names bold/underline
+    /// as what survives — dim is not on that list, and `paint`'s own doc
+    /// comment says "color dropped, bold/underline kept (NO_COLOR)". A dim
+    /// role emitting `ESC[2m` under `NO_COLOR` is a colour-substitute SGR
+    /// slipping through a filter that was supposed to zero every SGR but the
+    /// two named ones.
+    #[test]
+    fn no_color_drops_dim_along_with_color() {
+        let s = Style::default().dim();
+        let out = s.paint("x", &caps(ColorDepth::None, true));
+        assert_eq!(out, "x", "dim must not survive NO_COLOR: {out:?}");
     }
 
     #[test]
