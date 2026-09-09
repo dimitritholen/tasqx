@@ -588,6 +588,13 @@ const R_TOKEN_ADD: Shape = &[&[
     req_of("measurement", Ty::Object, MEASUREMENT),
 ]];
 
+/// `token.remove`'s answer echoes the measurement that is now gone — the same
+/// object `token.add` hands back, under the name that says so (#210).
+const R_TOKEN_REMOVE: Shape = &[&[
+    req("short_id", Ty::Int),
+    req_of("removed", Ty::Object, MEASUREMENT),
+]];
+
 const RECOMPUTE_ROW: &[Field] = &[
     req("task", Ty::Int),
     req("action", Ty::Str),
@@ -1102,6 +1109,16 @@ fn cases() -> Vec<Case> {
                 self_report(1)
             },
             R_TOKEN_ADD,
+        ),
+        case(
+            "token.remove",
+            "an existing self-report measurement, by id",
+            |e| {
+                plain_task(e);
+                let added = e.token_add(&self_report(1)).expect("measurement");
+                json!({ "measurement_id": added["measurement"]["id"] })
+            },
+            R_TOKEN_REMOVE,
         ),
         case(
             "tokens.recompute",

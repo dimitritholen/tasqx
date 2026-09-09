@@ -264,6 +264,73 @@ impl Engine {
         Ok(json!({ "short_id": task.short_id, "measurement": measurement }))
     }
 
+    // ---- token.remove (#210: the correction path token.add never had) --------
+
+    /// Delete one measurement by id, echoing what is gone.
+    ///
+    /// The corrective half of `token.add`, absent until now: a self-report has
+    /// no negative-count offset (`input_tokens`/`output_tokens`/… all refuse a
+    /// value below zero), `tokens.recompute` explicitly never touches a
+    /// self-report or OTLP row (D50) — only `source=log-parse` — and `token.add`
+    /// only ever appends. So a mis-scaled count, a retry, or a double-report
+    /// was permanent in every roll-up on every surface, forever.
+    ///
+    /// Bare `measurement_id`, no `ref`: a measurement id is already globally
+    /// unique, the same shape `memory.remove` takes over `docs` instead of
+    /// `token_usage`. Refuses `not_found` (exit 4) naming the id when it does
+    /// not resolve, like every other by-id lookup this engine answers.
+    ///
+    /// The event carries the FULL removed measurement, not just its id —
+    /// compare `memory.remove`, whose event holds neither and so can never be
+    /// undone (`engine/undo.rs`'s own `memory.remove` entry). Even so,
+    /// `token.remove` is not in `undo::UNDOABLE_OPS`: replaying this payload
+    /// back in would mint a NEW row with a NEW id and a NEW `created` stamp —
+    /// a fresh `token.add` in every way that matters, not the exact inverse
+    /// undo promises everywhere else in that closed set. An operator who
+    /// removed the wrong measurement re-adds the right one with `token.add`;
+    /// this event's payload is what tells them what that was.
+    pub fn token_remove(&self, p: &Value) -> Result<Value, ApiError> {
+        let measurement_id = req_str(p, "measurement_id")?;
+
+        let tx = self.begin_mutation()?;
+        let found: Option<(Value, String)> = tx
+            .query_row(
+                &format!("SELECT {TOKEN_COLS}, task_id FROM token_usage WHERE id = ?1"),
+                params![measurement_id],
+                |r| {
+                    let measurement = measurement_from_row(r, 0)?;
+                    let task_id: String = r.get(10)?;
+                    Ok((measurement, task_id))
+                },
+            )
+            .optional()?;
+        let Some((measurement, task_id)) = found else {
+            return Err(ApiError::not_found(
+                format!("no token measurement with id {measurement_id}"),
+                None,
+            ));
+        };
+        tx.execute(
+            "DELETE FROM token_usage WHERE id = ?1",
+            params![measurement_id],
+        )?;
+        let short_id: i64 = tx.query_row(
+            "SELECT short_id FROM tasks WHERE id = ?1",
+            params![task_id],
+            |r| r.get(0),
+        )?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task_id,
+            "token.remove",
+            &json!({ "removed": measurement }),
+        )?;
+        tx.commit()?;
+
+        Ok(json!({ "short_id": short_id, "removed": measurement }))
+    }
+
     // ---- token.attribute (async attribution engine, #17) --------------------
 
     /// Idempotently record the tokens the async attribution engine reconstructed
