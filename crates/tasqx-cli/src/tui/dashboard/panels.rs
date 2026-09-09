@@ -631,16 +631,23 @@ fn tokens_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
 }
 
 /// The header line's spans.
+///
+/// Names no project (#200/D62). Every count here is STORE-WIDE, and the bar
+/// used to set the default project's name beside them — `tasqx work · 5 open`
+/// on a store with more than one project, while the PROJECTS panel eight
+/// lines below, built from the same snapshot, gave `work` a different `open`.
+/// Nothing was miscounted; the line simply put a name next to numbers that
+/// were not its, with no way for a reader to tell which half to believe. The
+/// default project is still marked — the `*` `project.list` already spends on
+/// it — in the PROJECTS panel, which is the one place a project name and a
+/// project's own counts are the same row. A header scope strip that makes the
+/// counts follow a chosen project is D62's fuller fix and is not this one.
 pub fn status_line(bar: &StatusBar, width: u16, theme: &Theme, caps: &Caps) -> Vec<Span<'static>> {
     let s = styles(theme, caps);
     let header = rt_style(theme.role("header"), caps);
-    let mut spans = vec![Span::styled("tasqx ".to_string(), header)];
+    let mut spans = vec![Span::styled("tasqx".to_string(), header)];
     let sep = || Span::styled(" · ".to_string(), s.muted);
 
-    match bar.project() {
-        Some(p) => spans.push(Span::styled(p.to_string(), s.project)),
-        None => spans.push(Span::styled("(no default project)".to_string(), s.muted)),
-    }
     // Zero counts stay legible rather than turning invisible: colour is
     // emphasis here, never the only channel.
     spans.push(sep());

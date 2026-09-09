@@ -347,8 +347,21 @@ impl TokenRow {
         self.name.as_deref()
     }
 
+    /// The blended total across all four buckets — display and sort order
+    /// only; D50 removed the API's own `tokens_total` because the buckets do
+    /// not mean the same thing, and this is not a second one.
+    ///
+    /// Saturating, not `sum()` (#209): a single `token.add` with no ceiling on
+    /// its input can plant a bucket near `i64::MAX`, and plain addition then
+    /// wraps NEGATIVE — sorting the biggest spender to the bottom of the one
+    /// panel built to surface it, silently, in release; in debug the same
+    /// unchecked `sum()` panics the whole screen instead. Saturating pins the
+    /// unrepresentable total at `i64::MAX`, which is still the biggest number
+    /// on the panel rather than the smallest.
     pub fn total(&self) -> i64 {
-        self.buckets.iter().sum()
+        self.buckets
+            .iter()
+            .fold(0i64, |acc, &n| acc.saturating_add(n))
     }
 }
 
@@ -1462,7 +1475,7 @@ impl TaskDetail {
 ///
 /// PROJECTS answers `None` on every row. It has rows and a cursor, and they are
 /// projects; a detail overlay for one is a different decision and is not this
-/// one.
+/// one. [`project_at`] is `⏎`'s answer there instead (#204).
 pub fn row_at(dash: &Dashboard, id: PanelId, idx: usize) -> Option<&Task> {
     match id {
         PanelId::Next => dash.next.rows.get(idx),
@@ -1479,6 +1492,23 @@ pub fn row_at(dash: &Dashboard, id: PanelId, idx: usize) -> Option<&Task> {
             }
             None
         }
+        _ => None,
+    }
+}
+
+/// The project name at row `idx` of PROJECTS, for the `⏎` [`row_at`] refuses
+/// there (#204).
+///
+/// `Option<Option<&str>>`, and both layers mean something different: the OUTER
+/// `None` is "no such row" (past the end, or the wrong panel), the same
+/// question `row_at` answers; the INNER `None` is the "(none)" bucket —
+/// tasks with no project at all — which is a real row with a cursor on it and
+/// nothing `project:VALUE` can express, because that predicate never matches a
+/// task with no project (`filter::Pred::Project`). `⏎` there has nothing to
+/// open either, for a different reason than an out-of-range row does.
+pub fn project_at(dash: &Dashboard, id: PanelId, idx: usize) -> Option<Option<&str>> {
+    match id {
+        PanelId::Projects => dash.projects.rows.get(idx).map(ProjectRow::name),
         _ => None,
     }
 }
