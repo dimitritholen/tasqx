@@ -42,9 +42,9 @@ use crate::storage::{
 use crate::types::{effective_status, Entity, Priority, Status, Task};
 use crate::urgency;
 use crate::util::{
-    duration_secs, iso_duration, now, opt_array, opt_bool, opt_i64, opt_str, opt_str_array,
-    opt_str_nonempty, opt_u64, parse_ts, req_array, req_i64, req_object, req_str, req_str_lookup,
-    req_str_value, seconds_between,
+    duration_secs, is_future_at, iso_duration, now, opt_array, opt_bool, opt_i64, opt_str,
+    opt_str_array, opt_str_nonempty, opt_u64, parse_ts, req_array, req_i64, req_object, req_str,
+    req_str_lookup, req_str_value, seconds_between,
 };
 
 /// The config key holding the default project name (inherited by `task.add`).

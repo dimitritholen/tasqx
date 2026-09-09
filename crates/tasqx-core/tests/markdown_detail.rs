@@ -527,6 +527,10 @@ const RENDERED_AS: &[(&str, Shows)] = &[
     ("completed", Shows::Row("completed")),
     ("blocked", Shows::Cell("| blocked | yes |")),
     ("depends_on", Shows::Cell("| depends on | #1 |")),
+    // The reverse edge (tasqx audit #159): task 1 is the blocker of the fixture
+    // edge added above, so its OWN `task.get` — not task 2's — is where this
+    // ever renders non-empty.
+    ("blocks", Shows::Cell("| blocks | #2 |")),
     ("created", Shows::Row("created")),
     ("modified", Shows::Row("modified")),
     ("_rev", Shows::Row("rev")),
@@ -595,6 +599,10 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
         }),
     );
     d("dependency.add", &json!({ "ref": 2, "depends_on": 1 }));
+    // The BLOCKER's own read — task 2's snapshots all carry an empty
+    // `blocks` (nothing depends on the dependent), so the reverse edge only
+    // renders on task 1's side of the same fixture edge.
+    let blocker = d("task.get", &json!({ "ref": 1 }));
     d("annotation.add", &json!({ "ref": 2, "body": "note" }));
     d(
         "token.add",
@@ -655,13 +663,15 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
         .expect("a store from a newer build");
     let anomalous = d("task.get", &json!({ "ref": 2 }));
 
-    let snapshots: Vec<(Value, String)> = [pending, waiting, elided, running, finished, anomalous]
-        .into_iter()
-        .map(|task| {
-            let view = task_detail(&task, &iso_opts());
-            (task, view)
-        })
-        .collect();
+    let snapshots: Vec<(Value, String)> = [
+        pending, waiting, elided, running, finished, anomalous, blocker,
+    ]
+    .into_iter()
+    .map(|task| {
+        let view = task_detail(&task, &iso_opts());
+        (task, view)
+    })
+    .collect();
 
     let mut keys: Vec<String> = Vec::new();
     for (task, _) in &snapshots {
