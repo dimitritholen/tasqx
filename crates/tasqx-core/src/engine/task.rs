@@ -1288,6 +1288,31 @@ impl Engine {
         Ok(v)
     }
 
+    /// short_ids of the tasks THIS task blocks — the reverse of
+    /// `depends_on_short_ids`. Mirrors it exactly (same join, columns
+    /// swapped, no status filter): `depends_on` names every edge regardless
+    /// of the blocker's status, and the caller who can already see "what
+    /// blocks me" is entitled to the same answer for "what do I block",
+    /// without the entry disappearing the moment either side closes.
+    ///
+    /// Exists because nothing on any surface answered "if I finish this,
+    /// what starts moving?" before the task actually finished — the only
+    /// place the fact appeared was `task.done`'s `unblocked`, after the fact
+    /// (tasqx audit #159).
+    pub(super) fn blocks_short_ids(&self, task_id: &str) -> Result<Vec<i64>, ApiError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.short_id FROM dependencies d \
+             JOIN tasks t ON t.id = d.task_id \
+             WHERE d.depends_on_id = ?1 ORDER BY t.short_id",
+        )?;
+        let rows = stmt.query_map(params![task_id], |r| r.get::<_, i64>(0))?;
+        let mut v = Vec::new();
+        for r in rows {
+            v.push(r?);
+        }
+        Ok(v)
+    }
+
     /// UUIDs of a task's dependencies, sorted (for the canonical export shape).
     ///
     /// Joins `tasks` for the same reason `is_blocked` and `depends_on_short_ids`
@@ -1367,8 +1392,8 @@ impl Engine {
     // ---- task.get ------------------------------------------------------------
 
     /// `task.get` — one task in full. Params: `ref` (short_id or UUID),
-    /// `annotations_limit?`, `annotations_offset?`. Adds the four fields the row
-    /// itself does not carry — `depends_on`, `annotations`, `tokens`,
+    /// `annotations_limit?`, `annotations_offset?`. Adds the five fields the row
+    /// itself does not carry — `depends_on`, `blocks`, `annotations`, `tokens`,
     /// `blocked` — and recomputes `urgency` for the same reason `task.list`
     /// does.
     ///
@@ -1416,6 +1441,9 @@ impl Engine {
             &task.created
         ));
         obj["depends_on"] = json!(self.depends_on_short_ids(&task.id)?);
+        // The reverse edge (D-159): additive per D56/D85, so a v1 client
+        // reading this shape unchanged never notices it arrived.
+        obj["blocks"] = json!(self.blocks_short_ids(&task.id)?);
 
         let limit = opt_u64(p, "annotations_limit")?;
         let offset = opt_u64(p, "annotations_offset")?.unwrap_or(0);
@@ -1899,6 +1927,19 @@ mod tests {
             .find(|t| t["short_id"] == json!(2))
             .unwrap();
         assert_eq!(row2["blocked"], json!(false));
+    }
+
+    /// `task.get`'s `depends_on` names what blocks a task; nothing named the
+    /// reverse edge — what a task itself blocks — so the question "if I
+    /// finish this, what starts moving?" had no answer before completion.
+    /// Reproduces tasqx audit #159.
+    #[test]
+    fn task_get_carries_the_reverse_dependency_edge() {
+        let e = seeded(); // #2 depends_on #1
+        let blocker = e.task_get(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(blocker["blocks"], json!([2]));
+        let dependent = e.task_get(&json!({ "ref": 2 })).unwrap();
+        assert_eq!(dependent["blocks"], json!([]), "a leaf blocks nothing");
     }
 
     #[test]
