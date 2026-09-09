@@ -1137,6 +1137,95 @@ mod tests {
         assert_ne!(json["path"], "/tmp/scratch.db");
     }
 
+    /// #184: the trap from the Observed section, decided in isolation — a live
+    /// daemon on the ambient socket, no `$TASQX_DB`, the exact condition under
+    /// which `api`/`mcp serve` used to say nothing while opening a different
+    /// store than the one the operator can see.
+    #[test]
+    fn ambient_socket_note_fires_when_a_live_daemon_goes_unrouted() {
+        let note = ambient_socket_note(
+            "api",
+            Some("/tmp/tqd-ttd/s"),
+            false,
+            true,
+            Some("/home/u/store.db"),
+            "/home/u/.local/share/tasqx/tasks.db",
+        )
+        .unwrap_or_else(|| panic!("a live, unrouted daemon must produce a note"));
+        assert!(note.contains("/tmp/tqd-ttd/s"), "name the socket: {note}");
+        assert!(
+            note.contains("/home/u/.local/share/tasqx/tasks.db"),
+            "name the store this verb actually opened: {note}"
+        );
+        assert!(
+            note.contains("/home/u/store.db"),
+            "name the daemon's own store when it can be asked: {note}"
+        );
+        assert!(
+            note.contains("D73"),
+            "point at the decision that makes this ambient rather than refused: {note}"
+        );
+    }
+
+    /// D73's ruling is untouched: a daemon that predates the field (or answers
+    /// `core.capabilities` without a `store`) still gets the note, just without
+    /// naming a file it cannot ask for — degrade honestly, the D74 rule
+    /// `store_location` already follows, applied here too.
+    #[test]
+    fn ambient_socket_note_degrades_when_the_daemon_cannot_name_its_store() {
+        let note = ambient_socket_note(
+            "mcp serve",
+            Some("tasqx-default"),
+            false,
+            true,
+            None,
+            "/tmp/scratch.db",
+        )
+        .unwrap_or_else(|| panic!("a live, unrouted daemon must still produce a note"));
+        assert!(note.contains("tasqx-default"), "{note}");
+        assert!(note.contains("/tmp/scratch.db"), "{note}");
+    }
+
+    /// The three ways this must stay quiet — each isolated so a future change
+    /// cannot pass by only ever testing the OR of all three.
+    #[test]
+    fn ambient_socket_note_is_silent_without_a_live_divergent_store() {
+        // No $TASQX_SOCK at all: nothing to route through, nothing to warn about.
+        assert_eq!(
+            ambient_socket_note("api", None, false, false, None, "/tmp/x.db"),
+            None,
+            "an unset $TASQX_SOCK must not produce a note"
+        );
+        // $TASQX_SOCK set, but nothing answers there (stale, or never a daemon).
+        assert_eq!(
+            ambient_socket_note(
+                "api",
+                Some("/tmp/stale.sock"),
+                false,
+                false,
+                None,
+                "/tmp/x.db"
+            ),
+            None,
+            "an unreachable socket has no divergent store to warn about"
+        );
+        // $TASQX_SOCK set AND a daemon answers, but the operator already named
+        // their own store — D73's env-var-stays-ambient case working as
+        // intended, not the invisible-field trap #184 found.
+        assert_eq!(
+            ambient_socket_note(
+                "api",
+                Some("/tmp/tqd-ttd/s"),
+                true,
+                true,
+                Some("/home/u/store.db"),
+                "/home/u/store.db"
+            ),
+            None,
+            "an explicit $TASQX_DB means the operator already chose — silence is correct"
+        );
+    }
+
     /// #249: the daemon announces a congested subscriber's loss with a gap
     /// frame carrying the exact count, and the non-TTY renderer read `op` and
     /// `short_id` and nothing else — so the line a script saw was

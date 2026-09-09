@@ -266,6 +266,47 @@ pub(crate) fn store_location(
     }
 }
 
+/// #184: decide whether `api`/`mcp serve` should note an ambient `$TASQX_SOCK`
+/// they are never going to route through. Pure — every fact about the world is
+/// passed in — so the decision is unit-testable without a socket, a process or
+/// a real store; the caller ([`crate::serve::note_ambient_socket_if_unused`])
+/// owns the env reads and the probe connection.
+///
+/// D73 keeps `$TASQX_SOCK` ambient (never refused) on these verbs: an exported
+/// variable is not a per-command routing request, and refusing it would break
+/// every `mcp serve` an MCP host launches into an environment that happens to
+/// export it. That ruling stands — this adds visibility, not a refusal. Left
+/// completely silent, though, an ambient value naming a *live* daemon, with
+/// `$TASQX_DB` unset, reproduces the exact wrong-store trap D73's flag
+/// refusal exists to prevent: the verb opens the platform default store
+/// in-process while a daemon it could see answers a different one, and
+/// nothing said so (#184's Observed section: 25 tasks on the daemon, `total:
+/// 0` from `api`, stderr empty, a brand-new store file on disk). The note
+/// fires only when there is a live divergent store to warn about — a stale or
+/// absent `$TASQX_SOCK`, or an explicit `$TASQX_DB`, stays quiet.
+pub(crate) fn ambient_socket_note(
+    verb: &str,
+    tasqx_sock: Option<&str>,
+    tasqx_db_set: bool,
+    daemon_reachable: bool,
+    daemon_store: Option<&str>,
+    local_store: &str,
+) -> Option<String> {
+    let socket = tasqx_sock.filter(|s| !s.is_empty())?;
+    if tasqx_db_set || !daemon_reachable {
+        return None;
+    }
+    let owns = daemon_store
+        .map(|s| format!(" — the daemon there answers from {s}"))
+        .unwrap_or_default();
+    Some(format!(
+        "tasqx: note: $TASQX_SOCK names a daemon at {socket}, but `{verb}` opens an \
+         in-process store and never routes through it (DESIGN.md D73); $TASQX_DB is not \
+         set, so it just opened {local_store}{owns}. Set $TASQX_DB to work on the daemon's \
+         own store, or address the daemon directly."
+    ))
+}
+
 pub(crate) fn db_path() -> Result<PathBuf, String> {
     db_path_resolved(true)
 }
