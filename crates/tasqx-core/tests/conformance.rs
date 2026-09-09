@@ -489,6 +489,14 @@ const R_TASK_ADD: Shape = &[&[
     nul("project", Ty::Str),
     req("urgency", Ty::Num),
     nul("recurrence", Ty::Str),
+    // #191, additive (D56): the fields the CLI's inline sugar scanner can
+    // silently rewrite (`title`) or fabricate out of nothing (`due`), echoed
+    // back so a caller — especially one writing an English title with no
+    // human reading the "Added #N" line — can verify what was actually
+    // stored rather than trust that the request was applied unchanged.
+    req("title", Ty::Str),
+    nul("due", Ty::Str),
+    req("tags", Ty::Array),
 ]];
 
 const R_TASK_LIST: Shape = &[&[

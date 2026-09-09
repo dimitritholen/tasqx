@@ -76,6 +76,38 @@ fn storage_round_trip() {
     assert_eq!(t["project"], "work");
 }
 
+/// #191: `task.add`'s result carried `id`/`short_id`/`status`/`project`/
+/// `urgency`/`recurrence` and nothing else, so a caller had no way to verify
+/// what the CLI's inline sugar scanner had actually done to the title it sent
+/// — `add "Explain what due:friday means in the filter DSL"` silently ate the
+/// word `due:friday` and invented a `due` date, and the `--json` result
+/// looked identical to one where nothing had been touched. `title`, `due` and
+/// `tags` are additive (D56 allows a result to grow, closed against a
+/// declared shape) and are exactly the three fields inline sugar can mutate
+/// or fabricate out of the title text.
+#[test]
+fn task_add_echoes_the_fields_its_own_title_can_silently_mutate() {
+    let e = engine();
+    let added = e
+        .task_add(&json!({
+            "title": "Explain what means in the filter DSL",
+            "due": "2026-09-11T00:00:00Z",
+            "tags": ["release"],
+        }))
+        .unwrap();
+    assert_eq!(added["title"], "Explain what means in the filter DSL");
+    assert_eq!(added["due"], "2026-09-11T00:00:00Z");
+    assert_eq!(added["tags"], json!(["release"]));
+
+    // The two optional fields are present-and-null/empty, not absent, when
+    // nothing set them — the same "present" contract `task.get` already
+    // gives, so a caller does not have to branch on key-existence.
+    let bare = e.task_add(&json!({ "title": "bare" })).unwrap();
+    assert_eq!(bare["title"], "bare");
+    assert_eq!(bare["due"], Value::Null);
+    assert_eq!(bare["tags"], json!([]));
+}
+
 // ---- lifecycle --------------------------------------------------------------
 
 #[test]
