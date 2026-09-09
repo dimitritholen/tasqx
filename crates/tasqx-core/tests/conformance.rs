@@ -508,6 +508,11 @@ const R_TASK_ADD: Shape = &[&[
     req("title", Ty::Str),
     nul("due", Ty::Str),
     req("tags", Ty::Array),
+    // tasqx audit #174 (D69 gap): `status` names the EFFECT of an ambiguous
+    // `scheduled` (`"in 3 days"`, `"friday"`) without naming the CAUSE — the
+    // resolved instant the caller could not have predicted. Additive per
+    // D56, the same move D85 already made for `due`.
+    nul("scheduled", Ty::Str),
 ]];
 
 const R_TASK_LIST: Shape = &[&[
@@ -574,7 +579,18 @@ const R_TASK_DONE: Shape = &[&[
     opt("tokens_hint", Ty::Str),
 ]];
 
-const R_TASK_MODIFY: Shape = &[&[req("short_id", Ty::Int), req("_rev", Ty::Int)]];
+const R_TASK_MODIFY: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("_rev", Ty::Int),
+    // tasqx audit #174 (D69 gap): the RESOLVED value of every field this call
+    // named — `due:"friday"` as its ISO instant, `estimate:"90m"` as
+    // `PT90M` — because a write that parses ambiguous caller text into a
+    // stored value must name what it resolved that text to, on the same
+    // rule D69 already applied to `task.reopen`/`report.summary`/
+    // `memory.search`. Its own keys are not frozen here: they vary with
+    // whatever `set` named on a given call, exactly as `set`'s own keys do.
+    req("set", Ty::Object),
+]];
 
 const R_TASK_CANCEL: Shape = &[&[
     req("short_id", Ty::Int),
