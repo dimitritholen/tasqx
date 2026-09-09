@@ -445,9 +445,14 @@ impl<'a> Report<'a> {
                 name = esc(name),
             ));
         }
+        // `.table-wrap` (#166 + #235/3): a nine-column table cannot shrink
+        // below its content's intrinsic width, so on a 375px phone it forced
+        // the whole PAGE into horizontal scroll — dragging the sticky header
+        // sideways with it. Scoping `overflow-x: auto` to this wrapper keeps
+        // an overflowing table's scroll local to the table, on any viewport.
         let table = format!(
-            "<table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
-             <th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th></tr></thead><tbody>{rows}</tbody></table>",
+            "<div class=\"table-wrap\"><table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
+             <th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th></tr></thead><tbody>{rows}</tbody></table></div>",
             // The axis name, title-cased — `esc` because it reaches markup, even
             // though core has already restricted it to SUMMARY_GROUP_BY.
             head = esc(&title_case(axis)),
@@ -562,8 +567,8 @@ impl<'a> Report<'a> {
              padding: 0.9rem 1.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }}\n\
              .brand {{ font-weight: 700; font-size: 1.15rem; letter-spacing: -0.01em; }}\n\
              .brand .muted {{ font-weight: 400; }}\n\
-             .stats {{ display: flex; gap: 1.4rem; }}\n\
-             .stat {{ text-align: right; }}\n\
+             .stats {{ display: flex; gap: 1.4rem; flex-wrap: wrap; row-gap: 0.6rem; }}\n\
+             .stat {{ text-align: right; flex: 0 0 auto; }}\n\
              .stat .n {{ font-size: 1.5rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums;\n\
              font-family: ui-monospace, monospace; }}\n\
              .stat .l {{ font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }}\n\
@@ -583,10 +588,21 @@ impl<'a> Report<'a> {
              .due {{ color: var(--danger); font-size: 0.82rem; }}\n\
              li.over .ttl {{ font-weight: 500; }}\n\
              .chip {{ font-size: 0.72rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0.05rem 0.5rem; }}\n\
+             .table-wrap {{ overflow-x: auto; }}\n\
              table.grid {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}\n\
              table.grid th {{ text-align: left; color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--line); padding: 0.4rem 0.5rem; }}\n\
              table.grid td {{ padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }}\n\
              table.grid td.proj {{ font-weight: 600; }}\n\
+             /* #235/3: the table and the charts are data, not prose — the same\n\
+                ~72ch measure that suits running text forced a nine-column table\n\
+                to wrap project names to three lines beside ~660px of unused\n\
+                viewport at 1280px. Above ~900px both break out of `main`'s\n\
+                column toward 1100px; narrower than that they stay the prose\n\
+                width and (for the table) scroll in their own container. */\n\
+             @media (min-width: 900px) {{\n\
+             .table-wrap, figure {{ width: 100vw; max-width: min(1100px, calc(100vw - 2.5rem));\n\
+             margin-left: 50%; transform: translateX(-50%); }}\n\
+             }}\n\
              .tags {{ display: flex; flex-wrap: wrap; gap: 0.5rem; }}\n\
              .tag {{ background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 0.2rem 0.7rem; font-size: 0.85rem; }}\n\
              .tag .tagn {{ color: var(--accent); font-weight: 700; }}\n\
@@ -1421,6 +1437,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #166: at 390px the eight-tile `.stats` strip (628px, unwrappable) drags
+    /// the WHOLE PAGE into horizontal scroll, which is also why the sticky
+    /// header (which only sticks vertically) slides sideways with it. And the
+    /// nine-column by-project table sits bare in `<section>` with no scroll
+    /// container of its own, so it is the page — not the table — that
+    /// scrolls. Both must be fixed for the phone-width symptom to go away:
+    /// letting `.stats` wrap keeps the page's own width fixed, and giving the
+    /// table its own `overflow-x: auto` box keeps an overflowing table's
+    /// scroll local to the table.
+    #[test]
+    fn stats_strip_wraps_and_the_wide_table_gets_its_own_scroll_container() {
+        let doc = render_with("nord");
+        let stats_at = doc.find(".stats {").expect(".stats rule missing");
+        assert!(
+            doc[stats_at..stats_at + 200].contains("flex-wrap"),
+            "the header stat strip must be allowed to wrap onto more than one row: {doc}"
+        );
+        assert!(
+            doc.contains("<div class=\"table-wrap\"><table class=\"grid\">"),
+            "the by-project table must scroll inside its own container, not the page: {doc}"
+        );
     }
 
     #[test]
