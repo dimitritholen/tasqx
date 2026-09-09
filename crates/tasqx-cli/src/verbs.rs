@@ -587,14 +587,20 @@ pub(crate) fn report_params(args: &[String], all: bool) -> Value {
     params
 }
 
-pub(crate) fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>, all: bool) -> CmdOutcome {
+pub(crate) fn run_report(
+    be: &mut Backend,
+    ctx: &Ctx,
+    args: Vec<String>,
+    all: bool,
+    metrics: Option<Vec<String>>,
+) -> CmdOutcome {
     let params = report_params(&args, all);
     let group_by = params["group_by"]
         .as_str()
         .unwrap_or(tasqx_core::engine::SUMMARY_GROUP_BY[0])
         .to_string();
     let result = be.call("report.summary", &params)?;
-    let text = render::report(ctx, &result, &group_by);
+    let text = render::report(ctx, &result, &group_by, metrics.as_deref());
     Ok((result, text))
 }
 
