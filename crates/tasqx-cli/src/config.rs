@@ -307,7 +307,7 @@ pub const SETTINGS: &[Setting] = &[
         env: None,
         flag: None,
         choices: Choices::OneOf(&["iso", "relative", "both"]),
-        summary: "How the MCP task-detail view writes timestamps and durations.",
+        summary: "How the task-detail view (`show`, MCP) writes timestamps and durations.",
     },
 ];
 

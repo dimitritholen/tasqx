@@ -1308,6 +1308,10 @@ pub fn agenda_json(a: &Agenda) -> Value {
 /// `Status::ALL` is the canonical list. One helper, because the card layout
 /// (D76) renders the same fact and two copies of the unrecognized branch is
 /// how they would drift apart.
+///
+/// `now` is a parameter rather than a `Timestamp::now()` call inside — the same
+/// reason [`task_table`] takes one: relative rendering (`detail.time_format`)
+/// must be reproducible and testable, not a hidden clock.
 fn status_cell(ctx: &Ctx, result: &Value) -> String {
     if status_is_unrecognized(result) {
         ctx.paint(
@@ -1325,17 +1329,17 @@ fn status_cell(ctx: &Ctx, result: &Value) -> String {
     }
 }
 
-pub fn task_detail(ctx: &Ctx, result: &Value) -> String {
+pub fn task_detail(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     // The card is the interactive rendering (D76); everything below it is the
     // byte-stable plain layout every pipe, script and docs example reads.
     if ctx.caps.unicode {
-        return task_detail_card(ctx, result);
+        return task_detail_card(ctx, result, now);
     }
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
     let mut out = String::new();
     out.push_str(&ctx.paint("header", &format!("#{sid}  {}", s(result, "title"))));
     out.push('\n');
-    for row in detail_rows(ctx, result) {
+    for row in detail_rows(ctx, result, now) {
         if matches!(row.field, DetailField::Annotation) {
             out.push_str(&format!("  {} {}\n", ctx.paint("muted", "·"), row.value));
             continue;
@@ -1383,6 +1387,9 @@ enum DetailField {
     Blocked,
     Tags,
     DependsOn,
+    Created,
+    Modified,
+    Rev,
     Tokens,
     Annotation,
 }
@@ -1401,7 +1408,20 @@ struct DetailRow {
 /// that checked label presence only against an all-fields fixture, so a
 /// condition drifting in one layout passed it. A row that renders in one
 /// layout and not the other is unrepresentable now.
-fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
+fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
+    // `detail.time_format` (D49's "on the one retreat", now reaching `show` —
+    // see `Ctx::with_time_format`), read through the same pure formatters
+    // `tasqx_get_task` uses, so `PT4H` becomes `4h` and an ISO instant becomes
+    // `Thu 10 Sep` / `in 2 days` identically on both surfaces. Only the
+    // *values* converge here; the layout stays each renderer's own (D78's rail
+    // card is untouched by this).
+    let opts = tasqx_core::markdown::DetailOpts {
+        time: ctx.time_format,
+        now,
+    };
+    let fmt_i = |v: &str| tasqx_core::markdown::fmt_instant(v, &opts);
+    let fmt_d = |v: &str| tasqx_core::markdown::fmt_duration(v, &opts);
+
     let mut rows = Vec::new();
     let mut row = |label: &'static str, field: DetailField, value: String| {
         rows.push(DetailRow {
@@ -1427,22 +1447,30 @@ fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
     let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
     row("urgency", DetailField::Urgency, format!("{urg:.1}"));
     if !s(result, "due").is_empty() {
-        row("due", DetailField::Due, s(result, "due"));
+        row("due", DetailField::Due, fmt_i(&s(result, "due")));
     }
     if !s(result, "remind").is_empty() {
-        row("remind", DetailField::Remind, s(result, "remind"));
+        row("remind", DetailField::Remind, fmt_i(&s(result, "remind")));
     }
     if !s(result, "scheduled").is_empty() {
-        row("scheduled", DetailField::Scheduled, s(result, "scheduled"));
+        row(
+            "scheduled",
+            DetailField::Scheduled,
+            fmt_i(&s(result, "scheduled")),
+        );
     }
     if !s(result, "wait").is_empty() {
-        row("wait", DetailField::Wait, s(result, "wait"));
+        row("wait", DetailField::Wait, fmt_i(&s(result, "wait")));
     }
     if !s(result, "recurrence").is_empty() {
         row("repeats", DetailField::Repeats, s(result, "recurrence"));
     }
     if !s(result, "estimate").is_empty() {
-        row("estimate", DetailField::Estimate, s(result, "estimate"));
+        row(
+            "estimate",
+            DetailField::Estimate,
+            fmt_d(&s(result, "estimate")),
+        );
     }
     // Conditional for the reason `tracked` is: only a closed task HAS a
     // completion moment, and an empty `completed` row on every pending task is
@@ -1451,7 +1479,11 @@ fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
     // showing a task's fields, was the only place the moment could be looked up
     // later and the only place it did not appear.
     if !s(result, "completed").is_empty() {
-        row("completed", DetailField::Completed, s(result, "completed"));
+        row(
+            "completed",
+            DetailField::Completed,
+            fmt_i(&s(result, "completed")),
+        );
     }
     // Conditional, unlike `blocked`: every task has a blocked answer worth
     // reading, but "tracked PT0S" on the many tasks that were never timed is
@@ -1459,7 +1491,7 @@ fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
     // second onward, which is when the number starts meaning something.
     let tracked = s(result, "tracked");
     if !tracked.is_empty() && tracked != "PT0S" {
-        row("tracked", DetailField::Tracked, tracked);
+        row("tracked", DetailField::Tracked, fmt_d(&tracked));
     }
     // The open interval is NOT folded into `tracked` (see `task_to_json`), so
     // an active task must say the clock is still running or its tracked total
@@ -1468,7 +1500,7 @@ fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
         row(
             "running",
             DetailField::Running,
-            format!("since {}", s(result, "active_since")),
+            format!("since {}", fmt_i(&s(result, "active_since"))),
         );
     }
     let blocked = result
@@ -1492,6 +1524,30 @@ fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
             row("depends_on", DetailField::DependsOn, refs.join(" "));
         }
     }
+    // Always rendered, unconditionally — the same rule D49 states for
+    // `tasqx_get_task`: `status`, `priority`, `project`, `created`, `modified`
+    // and `_rev` are never the noisy zero a reader would want hidden, and
+    // `_rev` in particular is the value `--expected-rev` needs, which used to
+    // force a `--json` round trip just to read it back (audit #188).
+    row(
+        "created",
+        DetailField::Created,
+        fmt_i(&s(result, "created")),
+    );
+    row(
+        "modified",
+        DetailField::Modified,
+        fmt_i(&s(result, "modified")),
+    );
+    row(
+        "rev",
+        DetailField::Rev,
+        result
+            .get("_rev")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .to_string(),
+    );
     // D39: AI token spend renders here or it is data nobody reported.
     // Conditional like `tracked`: most tasks never get a measurement, and four
     // zeroes on every one of them is noise. Totals, not per-measurement rows —
@@ -1772,7 +1828,7 @@ fn wrap_words(text: &str, max: usize) -> Vec<String> {
     lines
 }
 
-fn task_detail_card(ctx: &Ctx, result: &Value) -> String {
+fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     // The label column: "depends_on" (the widest label) plus a two-cell gap.
     const LW: usize = 12;
     // Where the second column of a paired line starts.
@@ -1832,7 +1888,7 @@ fn task_detail_card(ctx: &Ctx, result: &Value) -> String {
     let unrecognized = status_is_unrecognized(result);
     let mut cells: Vec<MetaCell> = Vec::new();
     let mut annotations: Vec<String> = Vec::new();
-    for r in detail_rows(ctx, result) {
+    for r in detail_rows(ctx, result, now) {
         let (role, prepainted): (Option<&'static str>, bool) = match r.field {
             DetailField::Annotation => {
                 annotations.push(r.value);
@@ -2636,6 +2692,7 @@ mod tests {
     use crate::theme::{self, Caps, Ctx};
     use crate::AGENDA_DEFAULT_DAYS;
     use serde_json::json;
+    use tasqx_core::markdown::TimeFormat;
 
     /// The CLI and core are separately deployable — `tasqx` talks to a daemon it
     /// did not necessarily ship with — so a status string this binary cannot
@@ -2678,7 +2735,7 @@ mod tests {
             "project": "work", "due": "2026-07-20T17:00:00Z", "remind": "-1h",
             "estimate": "PT4H"
         });
-        let out = task_detail(&ctx, &base);
+        let out = task_detail(&ctx, &base, Timestamp::now());
         assert!(out.contains("remind"), "remind row missing: {out:?}");
         assert!(out.contains("-1h"), "remind value missing: {out:?}");
         // `estimate` is settable via `est:` sugar and totalled by `report`, so the
@@ -2690,7 +2747,88 @@ mod tests {
         // Absent remind must stay absent — the row is conditional, like `due`.
         let mut bare = base.clone();
         bare["remind"] = json!("");
-        assert!(!task_detail(&ctx, &bare).contains("remind"));
+        assert!(!task_detail(&ctx, &bare, Timestamp::now()).contains("remind"));
+    }
+
+    /// audit #188: `tasqx show` was strictly poorer than the MCP
+    /// `tasqx_get_task` detail view for the exact same `task.get` result —
+    /// `created`/`modified`/`_rev` are in `--json show`'s payload and the human
+    /// renderer simply had no row for any of them, so `--expected-rev` (whose
+    /// own `--help` text points at `--json show` for the value) could not be
+    /// read without dropping to JSON.
+    #[test]
+    fn task_detail_includes_created_modified_and_rev() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let t = json!({
+            "short_id": 169, "title": "raw shape probe", "status": "pending",
+            "urgency": 11.5, "project": "dates",
+            "created": "2026-09-09T10:38:04Z",
+            "modified": "2026-09-09T11:02:00Z",
+            "_rev": 3
+        });
+        let out = task_detail(&ctx, &t, Timestamp::now());
+        assert!(
+            out.lines().any(|l| l.trim_start().starts_with("created")),
+            "created row missing: {out:?}"
+        );
+        assert!(
+            out.lines().any(|l| l.trim_start().starts_with("modified")),
+            "modified row missing: {out:?}"
+        );
+        assert!(
+            out.lines()
+                .any(|l| l.trim_start().starts_with("rev") && l.contains('3')),
+            "rev row missing or wrong value — this is the value `--expected-rev` \
+             needs: {out:?}"
+        );
+    }
+
+    /// audit #143: `detail.time_format` is wired to the MCP `tasqx_get_task`
+    /// renderer only (`serve.rs`'s `McpServer::with_time_format`) — `show`
+    /// rendered byte-identical output under `iso`/`relative`/`both`, always the
+    /// raw ISO instant and the raw ISO-8601 duration.
+    #[test]
+    fn task_detail_honours_configured_time_format() {
+        let now: Timestamp = "2026-09-09T12:00:00Z".parse().unwrap();
+        let t = json!({
+            "short_id": 2, "title": "timed task", "status": "pending",
+            "urgency": 11.5, "project": "apollo",
+            "due": "2026-09-10T00:00:00Z", "estimate": "PT4H"
+        });
+
+        let iso_ctx =
+            Ctx::new(theme::default_theme(), Caps::PLAIN).with_time_format(TimeFormat::Iso);
+        let out_iso = task_detail(&iso_ctx, &t, now);
+        assert!(
+            out_iso.contains("2026-09-10T00:00:00Z"),
+            "iso mode must keep the exact instant: {out_iso:?}"
+        );
+        assert!(
+            out_iso.contains("PT4H"),
+            "iso mode must keep the exact duration: {out_iso:?}"
+        );
+
+        let rel_ctx =
+            Ctx::new(theme::default_theme(), Caps::PLAIN).with_time_format(TimeFormat::Relative);
+        let out_rel = task_detail(&rel_ctx, &t, now);
+        assert!(
+            !out_rel.contains("2026-09-10T00:00:00Z"),
+            "relative mode leaked the raw ISO instant: {out_rel:?}"
+        );
+        assert!(
+            out_rel.contains("4h"),
+            "estimate must read as a humanized duration, not PT4H: {out_rel:?}"
+        );
+        assert!(
+            out_rel.contains("in "),
+            "a future due date must read as relative prose: {out_rel:?}"
+        );
+
+        // The bug, precisely: every mode rendered the identical bytes.
+        assert_ne!(
+            out_iso, out_rel,
+            "detail.time_format had no effect on `show`'s output"
+        );
     }
 
     /// The capability level the card renders at, measurable: `unicode` turns
@@ -2718,7 +2856,9 @@ mod tests {
             "tags": ["docs", "release"], "depends_on": [7, 9],
             "tokens": [{"input_tokens": 10, "output_tokens": 20,
                         "cache_read_tokens": 0, "cache_creation_tokens": 5}],
-            "annotations": [{"body": "called the plumber"}]
+            "annotations": [{"body": "called the plumber"}],
+            "created": "2026-08-20T09:00:00Z", "modified": "2026-09-03T14:00:00Z",
+            "_rev": 6
         })
     }
 
@@ -2728,7 +2868,11 @@ mod tests {
     #[test]
     fn the_cards_render_only_on_a_unicode_terminal() {
         let t = full_task();
-        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &t);
+        let plain = task_detail(
+            &Ctx::new(theme::default_theme(), Caps::PLAIN),
+            &t,
+            Timestamp::now(),
+        );
         assert!(
             plain.contains("  status     "),
             "the plain detail layout changed: {plain:?}"
@@ -2737,7 +2881,11 @@ mod tests {
             !plain.contains('╭') && !plain.contains('─') && !plain.contains('▌'),
             "card glyphs leaked into the plain path: {plain:?}"
         );
-        let card = task_detail(&Ctx::new(theme::default_theme(), card_caps()), &t);
+        let card = task_detail(
+            &Ctx::new(theme::default_theme(), card_caps()),
+            &t,
+            Timestamp::now(),
+        );
         assert!(
             card.contains('▌') && !card.contains("  status     "),
             "unicode caps should render the rail card: {card:?}"
@@ -2791,7 +2939,7 @@ mod tests {
     #[test]
     fn the_show_card_draws_the_rail_on_every_line() {
         let ctx = Ctx::new(theme::default_theme(), card_caps());
-        let out = task_detail(&ctx, &full_task());
+        let out = task_detail(&ctx, &full_task(), Timestamp::now());
         for line in out.lines() {
             assert!(
                 line.starts_with('▌'),
@@ -2810,7 +2958,7 @@ mod tests {
         let mut t = full_task();
         t["title"] = json!("word ".repeat(40).trim().to_string());
         t["annotations"] = json!([{"body": "note ".repeat(50).trim().to_string()}]);
-        let out = task_detail(&ctx, &t);
+        let out = task_detail(&ctx, &t, Timestamp::now());
         for line in out.lines() {
             assert!(
                 width(line) <= 60,
@@ -2840,6 +2988,7 @@ mod tests {
                 "short_id": 7, "title": "pairing", "status": "pending",
                 "priority": "M", "project": "work", "urgency": 4.3
             }),
+            Timestamp::now(),
         );
         let paired = out
             .lines()
@@ -2931,8 +3080,16 @@ mod tests {
         // conditional toggled off in turn, a row CONDITION drifting between
         // the layouts fails here too, not only a renamed label.
         for (name, t) in detail_matrix() {
-            let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &t);
-            let card = task_detail(&Ctx::new(theme::default_theme(), card_caps()), &t);
+            let plain = task_detail(
+                &Ctx::new(theme::default_theme(), Caps::PLAIN),
+                &t,
+                Timestamp::now(),
+            );
+            let card = task_detail(
+                &Ctx::new(theme::default_theme(), card_caps()),
+                &t,
+                Timestamp::now(),
+            );
             for line in plain.lines().skip(1) {
                 let Some(first) = line.split_whitespace().next() else {
                     continue;
@@ -2947,7 +3104,11 @@ mod tests {
             }
         }
         // And the full fixture still exercises the conditional rows at all.
-        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &full_task());
+        let plain = task_detail(
+            &Ctx::new(theme::default_theme(), Caps::PLAIN),
+            &full_task(),
+            Timestamp::now(),
+        );
         let labels = plain
             .lines()
             .skip(1)
@@ -3052,6 +3213,7 @@ mod tests {
                 "short_id": 7, "title": "important work", "status": "Done",
                 "status_unrecognized": true, "urgency": 1.0
             }),
+            Timestamp::now(),
         );
         assert!(
             out.contains("Done"),
