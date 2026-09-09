@@ -236,6 +236,12 @@ impl Engine {
             "project": project,
             "urgency": urg,
             "recurrence": recurrence,
+            // tasqx audit #174 (D69 gap): `status` alone tells a caller its
+            // task landed in `backlog`, not WHY — an ambiguous `scheduled`
+            // value like `in 3 days` is exactly the thing the caller cannot
+            // predict the parse of, and it is precisely what flips this bit.
+            // Additive per D56, the same move D85 already made for `due`.
+            "scheduled": scheduled,
         }))
     }
 
@@ -878,6 +884,20 @@ impl Engine {
         for (col, val) in &assignments {
             update_column(&tx, &task.id, col, val)?;
         }
+        // tasqx audit #174 (D69 gap): `assignments` already holds the RESOLVED
+        // form of every field this call named — `due:"friday"` as its ISO
+        // instant, `estimate:"90m"` as `PT90M` — because that is what
+        // `update_column` just wrote. The caller sent ambiguous NL text and
+        // has had no way to learn what it parsed into short of a second
+        // `task.get` round trip. Echoing it back is additive to the frozen
+        // result (D56) and mirrors `task.add`'s D85 echo of the same class of
+        // caller-can't-predict-the-parse value.
+        let resolved_set: Value = Value::Object(
+            assignments
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        );
         // Cancelling a running task closes its open interval into tracked time
         // and clears active_since, exactly as task.stop/task.done would.
         if cancelling && task.status == Status::Active {
@@ -900,7 +920,7 @@ impl Engine {
         )?;
         tx.commit()?;
 
-        Ok(json!({ "short_id": task.short_id, "_rev": new_rev }))
+        Ok(json!({ "short_id": task.short_id, "_rev": new_rev, "set": resolved_set }))
     }
 
     // ---- task.list -----------------------------------------------------------

@@ -582,7 +582,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             idempotent: false,
             description: "Create a new task. Returns its short_id, urgency and status — which \
                 is `backlog`, not `pending`, when `scheduled` or `wait` is in the future, and a \
-                backlog task is outside the `@working` set until that date passes.",
+                backlog task is outside the `@working` set until that date passes — plus the \
+                resolved `scheduled` itself, so an ambiguous date like `in 3 days` or `friday` \
+                can be checked against what was actually stored.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -634,7 +636,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: true,
             idempotent: false,
-            description: "Change fields on a task via a `set` map. Optimistic concurrency \
+            description: "Change fields on a task via a `set` map. Returns `{short_id, _rev, \
+                set}`, where `set` echoes the RESOLVED value actually stored for each field \
+                this call named — an ambiguous `due:\"friday\"` or `estimate:\"90m\"` comes \
+                back as the instant/duration it parsed to, so a write can be checked without \
+                a follow-up `tasqx_get_task`. Optimistic concurrency \
                 is ON by default: when `expected_rev` is omitted, this server reads the \
                 task's current `_rev` and pins it, so a concurrent edit yields a `conflict` \
                 naming both revs instead of a silent overwrite — there is no way to opt \
