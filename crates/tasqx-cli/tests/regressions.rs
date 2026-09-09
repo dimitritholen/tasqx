@@ -1600,6 +1600,85 @@ fn the_api_refuses_an_unknown_fields_key() {
     );
 }
 
+/// #169 — `tasqx manual json-api` promises "Exit codes mirror the error
+/// model: 0 ok, 2 bad_request, 4 not_found, 5 conflict", but `run_api` printed
+/// the envelope and fell off the end of the function, so the process's own
+/// exit code stayed 0 no matter what the envelope said. A `set -e` wrapper, or
+/// `tasqx api ... || rollback`, therefore saw every refused write as success —
+/// while the plain CLI verb beside it, same conflict, exits 5.
+///
+/// Driven through the real binary for all three documented non-zero codes,
+/// each against the same kind of failure the manual itself measures against:
+/// a write to a project that does not exist (not_found), completing an
+/// already-done task (conflict), and a request that is not JSON at all
+/// (bad_request).
+#[test]
+fn api_exit_code_mirrors_the_error_model_the_manual_promises() {
+    use std::io::Write;
+    let dir = fresh_config_dir("api-exit-codes");
+    assert!(bin("api-exit-codes", &dir)
+        .args(["add", "seed"])
+        .output()
+        .expect("seed")
+        .status
+        .success());
+
+    let send = |body: &[u8]| -> i32 {
+        let mut child = bin("api-exit-codes", &dir)
+            .arg("api")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn tasqx api");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(body)
+            .expect("write envelope");
+        child
+            .wait_with_output()
+            .expect("wait")
+            .status
+            .code()
+            .unwrap_or(-1)
+    };
+
+    // not_found: writing a task into a project that was never created.
+    assert_eq!(
+        send(br#"{"tasqx":"1","id":"1","method":"task.add","params":{"title":"x","project":"no-such-project"}}"#),
+        4,
+        "a not_found envelope must exit 4, per the manual"
+    );
+
+    // conflict: completing a task that is already done.
+    assert!(bin("api-exit-codes", &dir)
+        .args(["done", "1"])
+        .output()
+        .expect("done")
+        .status
+        .success());
+    assert_eq!(
+        send(br#"{"tasqx":"1","id":"1","method":"task.done","params":{"ref":1}}"#),
+        5,
+        "a conflict envelope must exit 5, per the manual"
+    );
+
+    // bad_request: the request is not JSON at all.
+    assert_eq!(
+        send(b"not json"),
+        2,
+        "a malformed request must exit 2, per the manual"
+    );
+
+    // The control: a genuinely successful call still exits 0.
+    assert_eq!(
+        send(br#"{"tasqx":"1","id":"1","method":"task.get","params":{"ref":1}}"#),
+        0,
+        "a successful envelope must still exit 0"
+    );
+}
+
 /// J1 — `due.before:`/`due.after:` took ONLY strict RFC3339, so five of the six
 /// date spellings tasqx's own error message advertises matched zero rows.
 ///
