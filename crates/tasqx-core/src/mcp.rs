@@ -371,7 +371,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 \"project:work.tasqx status:pending +api due.before:tomorrow\". \
                 Rows come back in pages: the response carries `count` (returned), `total` \
                 (matched) and `next_offset`, null once nothing is left. Project \
-                `depends_on` with `fields` to see what a blocked row is waiting on.",
+                `depends_on` with `fields` to see what a blocked row is waiting on. Two \
+                CLI-only recipes worth composing here: the single highest-urgency \
+                unblocked task (\"what now\") is `filter: \"@working\", sort: \
+                [\"-urgency\"], limit: 1`; \"what was I doing\" is `filter: \
+                \"status:active\"`.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -444,9 +448,12 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "How many of the MOST RECENT annotations to return. Omit and this \
                              tool applies its own page size ({ANNOTATION_PAGE}), because an \
                              unbounded history can exceed a client's tool-output limit; pass \
-                             `annotations_total` from a previous response to get every one. \
-                             0 returns none, which is how you read a task's fields without its \
-                             history."
+                             `annotations_total` from a previous response to get every one — \
+                             naming ANY limit here removes the response's byte budget \
+                             entirely (both blocks answered in full, however large), so pair a \
+                             big one with `include_json: false` or the whole history costs \
+                             both blocks' bytes. 0 returns none, which is how you read a \
+                             task's fields without its history."
                         )
                     },
                     "include_json": {
@@ -495,7 +502,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                         "items": {
                             "type": "string",
                             "enum": enum_of(SUMMARY_METRICS)
-                        }
+                        },
+                        "description": "Extra columns per group. Omit and each group carries \
+                             only `count` — `tracked_total`, `overdue` and the token buckets are \
+                             NOT included unless named here, unlike `tasqx report`, which shows \
+                             every metric by default."
                     }
                 }
             }),
@@ -529,7 +540,11 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 read a doc whole with `tasqx_get_memory` on its `id`, and an \
                 annotation whole with `tasqx_get_task` on the task its `source` \
                 names. Every word of a plain query is REQUIRED, so `matched` on the \
-                result is what explains a zero-hit answer.",
+                result is what explains a zero-hit answer. A hit's `rank` is the raw \
+                FTS5 bm25 score: LOWER (more negative) is a BETTER match, the opposite \
+                of most scoring conventions. `hits` is already sorted best-first, so \
+                `rank` is for comparing hits against each other, not for a fixed \
+                threshold.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -920,7 +935,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             write: true,
             destructive: false,
             idempotent: true,
-            description: "Create a project. Returns its id and name.",
+            description: "Create a project. Returns its id and name. This does NOT become \
+                the default project — MCP has no tool for `project.use`, so pass `project` \
+                explicitly on every `tasqx_add_task` that should land here, including the \
+                first one.",
             schema: json!({
                 "type": "object",
                 "properties": {

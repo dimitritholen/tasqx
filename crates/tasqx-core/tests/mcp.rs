@@ -1880,3 +1880,102 @@ fn the_read_only_refusal_names_the_flag_that_fixes_it() {
          cannot succeed on this surface: {text}"
     );
 }
+
+// ---- schema descriptions carry facts the audit found missing ----------------
+
+/// `tasqx_summary`'s `metrics` param was the only property on the whole
+/// surface with no `description` at all, and it is the one param that
+/// controls whether a summary is a bare headcount or the full report (audit
+/// #189).
+#[test]
+fn summary_metrics_schema_names_its_own_default() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let summary = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_summary")
+        .expect("tasqx_summary is listed");
+    let desc = summary["inputSchema"]["properties"]["metrics"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        !desc.is_empty(),
+        "`metrics` must document that it is opt-in, since omitting it silently drops every \
+         metric but `count`"
+    );
+}
+
+/// `memory.search`'s `rank` is FTS5's raw bm25 score, where LOWER is BETTER —
+/// the opposite of most scoring conventions — and nothing said so (audit
+/// #225.12).
+#[test]
+fn search_memory_description_names_the_rank_direction() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let search = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_search_memory")
+        .expect("tasqx_search_memory is listed");
+    let desc = search["description"].as_str().unwrap_or_default();
+    assert!(
+        desc.to_lowercase().contains("lower") || desc.to_lowercase().contains("negative"),
+        "the description must say which direction of `rank` is better: {desc}"
+    );
+}
+
+/// The two parameters that together produce a 327 KB response (naming
+/// `annotations_limit` AND keeping `include_json` at its default) must cross-
+/// reference each other, since the one that leads a caller into the trap
+/// never used to mention the one that gets them out (audit #225.13).
+#[test]
+fn annotations_limit_description_names_include_json_as_the_escape() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let get_task = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_get_task")
+        .expect("tasqx_get_task is listed");
+    let desc = get_task["inputSchema"]["properties"]["annotations_limit"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        desc.contains("include_json"),
+        "`annotations_limit`'s description should point at `include_json` as the way to keep \
+         the budget once a limit is named: {desc}"
+    );
+}
+
+/// `tasqx_create_project` gives the agent nothing to act on: the new project
+/// is not the default and there is no MCP tool to change that. The
+/// description must say so rather than leave the agent to discover it by a
+/// failed `tasqx_add_task` (audit #225's item 2).
+#[test]
+fn create_project_description_says_it_is_never_the_default() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let create = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_create_project")
+        .expect("tasqx_create_project is listed");
+    let desc = create["description"].as_str().unwrap_or_default();
+    assert!(
+        desc.to_lowercase().contains("default") && desc.contains("project"),
+        "the description should say the new project does not become the default: {desc}"
+    );
+}
