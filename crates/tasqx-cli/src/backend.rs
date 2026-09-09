@@ -283,7 +283,8 @@ pub(crate) fn store_location(
 /// nothing said so (#184's Observed section: 25 tasks on the daemon, `total:
 /// 0` from `api`, stderr empty, a brand-new store file on disk). The note
 /// fires only when there is a live divergent store to warn about — a stale or
-/// absent `$TASQX_SOCK`, or an explicit `$TASQX_DB`, stays quiet.
+/// absent `$TASQX_SOCK`, an explicit `$TASQX_DB`, or a daemon that turns out
+/// to answer from the exact file this verb would open anyway, stays quiet.
 pub(crate) fn ambient_socket_note(
     verb: &str,
     tasqx_sock: Option<&str>,
@@ -296,6 +297,17 @@ pub(crate) fn ambient_socket_note(
     if tasqx_db_set || !daemon_reachable {
         return None;
     }
+    // When the daemon can name its store (D74) and it is the very file this
+    // verb resolves by default, there is nothing divergent to warn about:
+    // opening it in-process answers from the right data, just without the
+    // daemon's single-writer coordination. A reviewer caught the first
+    // version of this fix firing here anyway — "opened X — the daemon there
+    // answers from X" with identical paths — which is the precondition the
+    // task's own Verification annotation names ("daemon serving a
+    // non-default store") and this branch had never checked.
+    if daemon_store.is_some_and(|s| same_store(s, local_store)) {
+        return None;
+    }
     let owns = daemon_store
         .map(|s| format!(" — the daemon there answers from {s}"))
         .unwrap_or_default();
@@ -305,6 +317,19 @@ pub(crate) fn ambient_socket_note(
          set, so it just opened {local_store}{owns}. Set $TASQX_DB to work on the daemon's \
          own store, or address the daemon directly."
     ))
+}
+
+/// Do these two store paths name the same file? Canonicalized when both exist
+/// on disk (the ordinary case: the daemon has already opened its store, so a
+/// symlink or a relative-vs-absolute spelling still compares equal); a plain
+/// string comparison otherwise, since a brand-new default store this verb has
+/// not opened yet cannot be canonicalized at all. Used only to decide whether
+/// [`ambient_socket_note`] has a divergence to report — never to open a file.
+fn same_store(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
 }
 
 pub(crate) fn db_path() -> Result<PathBuf, String> {

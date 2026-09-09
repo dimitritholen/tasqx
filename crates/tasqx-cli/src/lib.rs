@@ -1186,8 +1186,8 @@ mod tests {
         assert!(note.contains("/tmp/scratch.db"), "{note}");
     }
 
-    /// The three ways this must stay quiet — each isolated so a future change
-    /// cannot pass by only ever testing the OR of all three.
+    /// The four ways this must stay quiet — each isolated so a future change
+    /// cannot pass by only ever testing the OR of all four.
     #[test]
     fn ambient_socket_note_is_silent_without_a_live_divergent_store() {
         // No $TASQX_SOCK at all: nothing to route through, nothing to warn about.
@@ -1223,6 +1223,27 @@ mod tests {
             ),
             None,
             "an explicit $TASQX_DB means the operator already chose — silence is correct"
+        );
+        // A reviewer rejected the first version of this fix over exactly this
+        // case: $TASQX_SOCK set, a daemon answers, $TASQX_DB unset — but the
+        // daemon happens to serve the very file this verb would open by
+        // default anyway. There is no divergent store here: opening it
+        // in-process answers from the right data, just without the daemon's
+        // single-writer coordination, so the D73 note has nothing to warn
+        // about. The task's own Verification annotation names "daemon serving
+        // a non-default store" as a required precondition; this is the case
+        // where that precondition does not hold.
+        assert_eq!(
+            ambient_socket_note(
+                "api",
+                Some("/tmp/tqd-ttd/s"),
+                false,
+                true,
+                Some("/home/u/.local/share/tasqx/tasks.db"),
+                "/home/u/.local/share/tasqx/tasks.db"
+            ),
+            None,
+            "the daemon's store and the local default are the same file — nothing diverged"
         );
     }
 
