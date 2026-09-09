@@ -1357,11 +1357,7 @@ impl<'e> McpServer<'e> {
         paged_by_us: bool,
     ) -> Value {
         let render = |result: &Value| crate::markdown::task_detail(result, opts);
-        let json_len = |result: &Value| {
-            serde_json::to_string_pretty(result)
-                .map(|s| s.len())
-                .unwrap_or(0)
-        };
+        let json_len = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
 
         // Measured on the FINISHED block, never on the bare view: dropping the
         // JSON adds a sentence saying so, and a view that fits by less than that
@@ -1462,11 +1458,7 @@ impl<'e> McpServer<'e> {
     /// answer. `fields` is the caller's lever for a store whose single row
     /// exceeds the budget, and the schema says so.
     fn fit_list_to_budget(&self, first: Value, args: &Value) -> Value {
-        let size = |result: &Value| {
-            serde_json::to_string_pretty(result)
-                .map(|s| s.len())
-                .unwrap_or(0)
-        };
+        let size = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
         if size(&first) <= RESPONSE_BUDGET_BYTES {
             return tool_ok(&first);
         }
@@ -1565,7 +1557,7 @@ fn tools_list(scope: Scope) -> Vec<Value> {
 fn tool_ok(result: &Value) -> Value {
     json!({
         "content": [
-            { "type": "text", "text": serde_json::to_string_pretty(result).unwrap_or_default() }
+            { "type": "text", "text": serde_json::to_string(result).unwrap_or_default() }
         ],
         "isError": false
     })
@@ -1585,7 +1577,7 @@ fn tool_ok_with_view(view: String, result: &Value) -> Value {
     json!({
         "content": [
             { "type": "text", "text": view },
-            { "type": "text", "text": serde_json::to_string_pretty(result).unwrap_or_default() }
+            { "type": "text", "text": serde_json::to_string(result).unwrap_or_default() }
         ],
         "isError": false
     })
