@@ -411,3 +411,66 @@ fn an_import_never_steals_a_default_the_destination_already_has() {
         "{imp}"
     );
 }
+
+/// #179: a document whose `docs` section moved under a key the importer does
+/// not read (a hand-merge, a typo, an older exporter) used to import
+/// indistinguishably from one that declared an empty `docs` section — both
+/// printed the identical `Imported N task(s), M project(s)` line, with the
+/// doc count segment dropped in both cases. A user reading that green line
+/// believes their memory docs restored; they did not.
+#[test]
+fn an_import_with_no_docs_section_says_so_instead_of_printing_the_same_line_as_zero_docs() {
+    let (dir, a) = store("docstypo", "a");
+    ok(&dir, &a, &["add", "a task"]);
+    let added = api(
+        &dir,
+        &a,
+        "memory.add",
+        json!({ "title": "Runbook", "body": "hard won" }),
+    );
+    assert_eq!(added["ok"], json!(true), "{added}");
+
+    let doc = api(&dir, &a, "store.export", json!({}))["result"].clone();
+    assert_eq!(
+        doc["docs"].as_array().map(|a| a.len()),
+        Some(1),
+        "the fixture must actually carry a doc: {doc}"
+    );
+
+    // Move `docs` under a key the importer does not read — exactly the shape
+    // a hand-merge or a typo produces.
+    let mut typo = doc.as_object().expect("document is an object").clone();
+    let moved = typo.remove("docs").expect("docs key exists");
+    typo.insert("document".to_string(), moved);
+    let typo = Value::Object(typo);
+    let path = dir.join("docs_typo.json");
+    std::fs::write(&path, typo.to_string()).expect("write payload");
+
+    let (_, b) = store("docstypo", "b");
+    let out = ok(&dir, &b, &["import", path.to_str().expect("utf8 path")]);
+    assert!(
+        out.contains("0 memory doc(s)"),
+        "the doc count must be printed even at zero, not dropped: {out}"
+    );
+    assert!(
+        out.contains("note: the document carried no `docs` section"),
+        "a document with no `docs` key must say so, the way a missing `projects` \
+         section already does: {out}"
+    );
+
+    // For contrast: the SAME document, unmangled, restores the doc and prints
+    // no such note.
+    let (_, c) = store("docstypo", "c");
+    let good_path = dir.join("doc_ok.json");
+    std::fs::write(&good_path, doc.to_string()).expect("write payload");
+    let out = ok(
+        &dir,
+        &c,
+        &["import", good_path.to_str().expect("utf8 path")],
+    );
+    assert!(out.contains("1 memory doc(s)"), "{out}");
+    assert!(
+        !out.contains("note: the document carried no `docs` section"),
+        "a document that DOES declare `docs` must not get the absence note: {out}"
+    );
+}

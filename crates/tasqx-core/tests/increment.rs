@@ -1446,6 +1446,17 @@ fn remind_survives_an_export_import_round_trip_byte_identically() {
         .unwrap();
     let export_b = b.store_export(&json!({})).unwrap();
 
+    // #176 added `events` to the document; this test imports a bare `{tasks}`
+    // payload ON PURPOSE, to isolate `remind`'s own fidelity from the rest of
+    // the document, so `b` never had `a`'s `add` events to replay — its own
+    // `events` is legitimately `[]`. Blanked on both sides before the
+    // whole-export comparison below, the same way this narrower payload was
+    // already never going to carry `projects` or `docs` either.
+    let mut export_a = export_a;
+    let mut export_b = export_b;
+    export_a["events"] = json!([]);
+    export_b["events"] = json!([]);
+
     // The whole export must be byte-identical, not merely equivalent.
     assert_eq!(
         serde_json::to_string(&export_a).unwrap(),
@@ -3025,11 +3036,20 @@ fn the_date_gate_leaves_an_export_import_round_trip_byte_identical() {
     .unwrap();
     a.task_add(&json!({ "title": "no dates at all" })).unwrap();
 
-    let export_a = a.store_export(&json!({})).unwrap();
+    let mut export_a = a.store_export(&json!({})).unwrap();
     let b = engine();
     b.store_import(&json!({ "tasks": export_a["tasks"].clone() }))
         .unwrap();
-    let export_b = b.store_export(&json!({})).unwrap();
+    let mut export_b = b.store_export(&json!({})).unwrap();
+
+    // #176 added `events` to the document; this test imports a bare `{tasks}`
+    // payload ON PURPOSE, to isolate the date gate's own fidelity from the
+    // rest of the document, so `b` never had `a`'s `add` events to replay —
+    // its own `events` is legitimately `[]`. Blanked on both sides before the
+    // comparison, the same way this narrower payload was already never going
+    // to carry `projects` or `docs` either.
+    export_a["events"] = json!([]);
+    export_b["events"] = json!([]);
 
     assert_eq!(
         serde_json::to_string(&export_a).unwrap(),
@@ -3265,7 +3285,7 @@ fn blocked_is_projectable_from_task_list_without_disturbing_export() {
 
     // D12: export -> import -> export is byte-identical, and `blocked` (a
     // derived fact, not stored state) never enters the document.
-    let first = e.store_export(&json!({})).unwrap();
+    let mut first = e.store_export(&json!({})).unwrap();
     for t in first["tasks"].as_array().unwrap() {
         assert!(
             t.get("blocked").is_none(),
@@ -3275,7 +3295,15 @@ fn blocked_is_projectable_from_task_list_without_disturbing_export() {
     let e2 = engine();
     e2.store_import(&json!({ "tasks": first["tasks"].clone() }))
         .unwrap();
-    let second = e2.store_export(&json!({})).unwrap();
+    let mut second = e2.store_export(&json!({})).unwrap();
+    // #176 added `events` to the document; this test imports a bare `{tasks}`
+    // payload ON PURPOSE, to isolate the `blocked` projection from the rest of
+    // the document, so `e2` never had `e`'s `add`/`dependency.add` events to
+    // replay — its own `events` is legitimately `[]`. Blanked on both sides
+    // before the comparison, the same way this narrower payload was already
+    // never going to carry `projects` or `docs` either.
+    first["events"] = json!([]);
+    second["events"] = json!([]);
     assert_eq!(
         serde_json::to_string(&first).unwrap(),
         serde_json::to_string(&second).unwrap(),
