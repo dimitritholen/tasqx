@@ -985,11 +985,15 @@ impl Engine {
         statements += 1;
         let mut blocked = HashSet::new();
         {
+            // Same gate `is_blocked` takes, and for the same reason (D-158):
+            // a dependent already `done`/`cancelled` is never blocked, no
+            // matter what its blocker's status is.
             let terminal = Status::sql_in_list(Status::is_terminal);
             let mut stmt = self.conn.prepare(&format!(
                 "SELECT DISTINCT d.task_id FROM dependencies d \
                  JOIN tasks t ON t.id = d.depends_on_id \
-                 WHERE t.status NOT IN ({terminal})"
+                 JOIN tasks self ON self.id = d.task_id \
+                 WHERE t.status NOT IN ({terminal}) AND self.status NOT IN ({terminal})"
             ))?;
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             for row in rows {
@@ -1246,11 +1250,22 @@ impl Engine {
     pub(super) fn is_blocked(&self, task_id: &str) -> Result<bool, ApiError> {
         // Enum-derived, never caller text — see `Status::sql_in_list`.
         let terminal = Status::sql_in_list(Status::is_terminal);
+        // BOTH sides gate on `status NOT IN (terminal)`: a task closed
+        // (`done`/`cancelled`) is never blocked regardless of what it once
+        // depended on — `blocked` is meaningless for work that is already
+        // finished, and answering `true` for it is the D-158 defect (a task
+        // completed while its blocker was still open kept reporting
+        // `blocked: true` forever, and the flag could be set on a closed task
+        // after the fact by a fresh `dependency.add`). `self` here is the
+        // dependent named by `task_id`, joined the same way `t` (the blocker)
+        // already is.
         let n: i64 = self.conn.query_row(
             &format!(
                 "SELECT COUNT(*) FROM dependencies d \
                  JOIN tasks t ON t.id = d.depends_on_id \
-                 WHERE d.task_id = ?1 AND t.status NOT IN ({terminal})"
+                 JOIN tasks self ON self.id = d.task_id \
+                 WHERE d.task_id = ?1 AND t.status NOT IN ({terminal}) \
+                 AND self.status NOT IN ({terminal})"
             ),
             params![task_id],
             |r| r.get(0),
@@ -1855,6 +1870,35 @@ mod tests {
             .load_task_snapshots_for(SnapshotParts::FILTERS_ONLY, at("2999-06-01T00:00:00Z"))
             .unwrap();
         assert_eq!(released[0].task.status, Status::Pending);
+    }
+
+    /// `blocked` was derived from the BLOCKER's status alone, so a dependent
+    /// that closes while its blocker is still open kept reporting
+    /// `blocked: true` forever — on `task.get` and on every `task.list` row.
+    /// Reproduces tasqx audit #158.
+    #[test]
+    fn completing_a_task_whose_blocker_is_still_open_clears_the_blocked_flag() {
+        let e = seeded(); // #1 blocker (pending), #2 depends on #1
+        let done = e.task_done(&json!({ "ref": 2 })).unwrap();
+        assert_eq!(done["status"], json!("done"));
+
+        let got = e.task_get(&json!({ "ref": 2 })).unwrap();
+        assert_eq!(
+            got["blocked"],
+            json!(false),
+            "a closed task must never report blocked, no matter its blocker's status"
+        );
+
+        // The same fact must hold on the bulk read every `list`/`@blocked`
+        // filter is built on, not only on the single-task read.
+        let listed = e.task_list(&json!({ "sort": ["short_id"] })).unwrap();
+        let row2 = listed["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["short_id"] == json!(2))
+            .unwrap();
+        assert_eq!(row2["blocked"], json!(false));
     }
 
     #[test]

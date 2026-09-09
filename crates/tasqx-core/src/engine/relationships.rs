@@ -318,6 +318,30 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
+    /// A `dependency.add` naming a DONE task as `ref` answered `blocked: true`
+    /// — a flag nothing can ever act on, since `done` cannot be re-blocked and
+    /// the task will never be re-evaluated by any lifecycle verb. Reproduces
+    /// tasqx audit #158's second repro ("the flag can be set on an
+    /// already-closed task after the fact").
+    #[test]
+    fn dependency_add_onto_a_done_task_never_reports_it_blocked() {
+        let e = crate::Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "finished" })).unwrap();
+        e.task_add(&json!({ "title": "future-blocker" })).unwrap();
+        e.task_done(&json!({ "ref": 1 })).unwrap();
+
+        let resp = e
+            .dependency_add(&json!({ "ref": 1, "depends_on": 2 }))
+            .unwrap();
+        assert_eq!(resp["blocked"], json!(false));
+        assert_eq!(
+            e.task_get(&json!({ "ref": 1 })).unwrap()["blocked"],
+            json!(false)
+        );
+    }
+
     /// Both dependency handlers answer with "the resulting state", so their
     /// response reads must run INSIDE the mutation's transaction — the rule
     /// `tag_add` states and keeps for the tag pair. Read after `commit()`, a
