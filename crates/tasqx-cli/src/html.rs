@@ -513,23 +513,40 @@ impl<'a> Report<'a> {
 
     /// CSS with a palette derived from the active theme, for both color schemes.
     fn css(&self) -> String {
-        let p = |name: &str, fallback: Rgb| -> String {
-            self.theme.palette_color(name).unwrap_or(fallback).hex()
+        let color = |name: &str, fallback: Rgb| -> Rgb {
+            self.theme.palette_color(name).unwrap_or(fallback)
         };
-        let accent = p("accent", Rgb::new(0x88, 0xc0, 0xd0));
-        let warn = p("warn", Rgb::new(0xeb, 0xcb, 0x8b));
-        let danger = p("danger", Rgb::new(0xbf, 0x61, 0x6a));
-        let muted_dark = p("muted", Rgb::new(0x4c, 0x56, 0x6a));
-        let bg_dark = p("bg", Rgb::new(0x2e, 0x34, 0x40));
-        let fg_dark = p("fg", Rgb::new(0xd8, 0xde, 0xe9));
+        let accent = color("accent", Rgb::new(0x88, 0xc0, 0xd0));
+        let warn = color("warn", Rgb::new(0xeb, 0xcb, 0x8b));
+        let danger = color("danger", Rgb::new(0xbf, 0x61, 0x6a));
+        let muted_dark = color("muted", Rgb::new(0x4c, 0x56, 0x6a)).hex();
+        let bg_dark = color("bg", Rgb::new(0x2e, 0x34, 0x40)).hex();
+        let fg_dark = color("fg", Rgb::new(0xd8, 0xde, 0xe9)).hex();
+
+        // #163: these three roles are picked for a dark terminal ground and
+        // reused verbatim on the light scheme used to make mono's white
+        // accent/warn/danger literally invisible on the white card (1:1) and
+        // put every other built-in's `warn` under 3.3:1 — nowhere near WCAG
+        // AA's 4.5:1 text floor. The dark-scheme value is untouched (it is
+        // the theme's own color, at its own contrast against its own
+        // background, exactly as before); only the light scheme gets a
+        // darkened variant computed to clear AA against white.
+        let white = Rgb::new(0xff, 0xff, 0xff);
+        let accent_l = darkened_for_contrast(accent, white, 4.5).hex();
+        let warn_l = darkened_for_contrast(warn, white, 4.5).hex();
+        let danger_l = darkened_for_contrast(danger, white, 4.5).hex();
+        let accent_d = accent.hex();
+        let warn_d = warn.hex();
+        let danger_d = danger.hex();
 
         format!(
             ":root {{\n\
-             --accent: {accent};\n--warn: {warn};\n--danger: {danger};\n\
              /* light scheme (default) */\n\
+             --accent: {accent_l};\n--warn: {warn_l};\n--danger: {danger_l};\n\
              --bg: #ffffff;\n--fg: #1a1d23;\n--muted: #6b7280;\n--card: #f6f7f9;\n--line: #e3e6ea;\n\
              }}\n\
              @media (prefers-color-scheme: dark) {{\n:root {{\n\
+             --accent: {accent_d};\n--warn: {warn_d};\n--danger: {danger_d};\n\
              --bg: {bg_dark};\n--fg: {fg_dark};\n--muted: {muted_dark};\n\
              --card: color-mix(in srgb, {bg_dark} 82%, #ffffff 18%);\n\
              --line: color-mix(in srgb, {bg_dark} 60%, #ffffff 40%);\n\
@@ -679,6 +696,65 @@ pub(crate) fn esc(s: &str) -> String {
 
 fn parse_ts(s: &str) -> Option<jiff::Timestamp> {
     s.parse().ok()
+}
+
+// ---- WCAG contrast (#163) --------------------------------------------------
+//
+// Theme roles (`accent`/`warn`/`danger`) are colors picked for a dark
+// terminal ground. The report used to hand them to the light scheme
+// verbatim, so `mono`'s white accent — 21:1 against its own dark background —
+// became 1:1 (invisible) on the light card, and every other built-in theme's
+// `warn` landed between 1.1:1 and 3.2:1 on white, all under the 4.5:1 WCAG AA
+// floor for text. These three functions compute that ratio and, where it
+// fails, darken the color just enough to clear it — one algorithm covering
+// every current and future theme rather than a second hand-picked palette.
+
+/// WCAG relative luminance of an sRGB color (0.0 = black, 1.0 = white).
+fn relative_luminance(c: Rgb) -> f64 {
+    let chan = |v: u8| -> f64 {
+        let v = f64::from(v) / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * chan(c.r) + 0.7152 * chan(c.g) + 0.0722 * chan(c.b)
+}
+
+/// WCAG contrast ratio between two colors, order-independent, in `[1.0, 21.0]`.
+fn contrast_ratio(a: Rgb, b: Rgb) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Darken `c` toward black just enough that it clears `min_contrast` against
+/// `bg` — `c` unchanged if it already does. Binary search over the mix
+/// fraction rather than a closed-form solve: contrast against a light `bg`
+/// rises monotonically as a color darkens toward black (which always clears
+/// AA against white/near-white), so 24 bisection steps land within
+/// 1/16-million of the mix ratio, far tighter than an 8-bit channel can
+/// represent — plenty for a value that only has to clear a threshold, not
+/// hit one exactly.
+fn darkened_for_contrast(c: Rgb, bg: Rgb, min_contrast: f64) -> Rgb {
+    if contrast_ratio(c, bg) >= min_contrast {
+        return c;
+    }
+    let mix = |t: f64| -> Rgb {
+        let ch = |v: u8| -> u8 { (f64::from(v) * (1.0 - t)).round() as u8 };
+        Rgb::new(ch(c.r), ch(c.g), ch(c.b))
+    };
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if contrast_ratio(mix(mid), bg) >= min_contrast {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    mix(hi)
 }
 
 /// A friendlier timestamp: `2026-07-15 11:06 UTC` from RFC3339.
@@ -1309,6 +1385,42 @@ mod tests {
             !doc.contains('\u{1b}'),
             "report --html writes to stdout — no ESC may survive"
         );
+    }
+
+    /// #163: `--accent`/`--warn`/`--danger` were emitted once, with the
+    /// theme's dark-terminal value, and reused verbatim on the light
+    /// scheme's white ground — mono's white-on-white accent/warn/danger are
+    /// 1:1 (invisible; the overdue count, task ids, tag counts and the
+    /// throughput chart's "added" bars all use these roles). Every built-in's
+    /// light-mode value for these three roles must clear the WCAG AA text
+    /// floor (4.5:1) against white.
+    #[test]
+    fn theme_roles_meet_aa_contrast_on_the_light_scheme_background() {
+        let white = Rgb::new(0xff, 0xff, 0xff);
+        for name in theme::BUILTINS {
+            let doc = render_with(name);
+            let dark_at = doc
+                .find("@media (prefers-color-scheme: dark)")
+                .unwrap_or_else(|| panic!("{name}: no dark media block: {doc}"));
+            // The LIGHT scheme's declarations come first in `:root {}`, before
+            // the dark block; searching only that prefix cannot pick up the
+            // dark-block redefinition of the same property by accident.
+            let light_css = &doc[..dark_at];
+            for role in ["--accent:", "--warn:", "--danger:"] {
+                let at = light_css
+                    .find(role)
+                    .unwrap_or_else(|| panic!("{name}: {role} missing from light css: {doc}"));
+                let rest = &light_css[at + role.len()..];
+                let hex = rest[..rest.find(';').unwrap()].trim();
+                let rgb = Rgb::parse_hex(hex)
+                    .unwrap_or_else(|| panic!("{name}: unparseable {role} {hex:?}"));
+                let ratio = contrast_ratio(rgb, white);
+                assert!(
+                    ratio >= 4.5,
+                    "{name} {role} {hex} on white is {ratio:.2}:1, under WCAG AA's 4.5:1 — #163"
+                );
+            }
+        }
     }
 
     #[test]
