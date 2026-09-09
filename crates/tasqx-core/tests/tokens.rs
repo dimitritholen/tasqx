@@ -675,6 +675,83 @@ fn one_spend_is_never_billed_to_two_tasks() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #207: `foreign_windows` was built only from CLOSED `done` events, so a
+/// still-ACTIVE neighbour over the same session was invisible to the contest
+/// check. `start parent / start child --keep / done child` (the ordinary shape
+/// of agent work on a ticket with sub-tasks) let the child bank the whole
+/// contested spend at `confidence: high` while the parent was still running —
+/// exactly the double-attribution class D50 exists to end, just reached from
+/// the other side: the parent has not left the pending queue, but its window
+/// still contests, because a window with no end yet is not a window that
+/// cannot contest.
+#[test]
+fn a_still_active_neighbour_contests_a_shared_session_window() {
+    use tasqx_core::attribution::{compute_attribution, pending_attributions};
+    use tasqx_core::otlp::OtlpSample;
+    use tasqx_core::tokens::UsageSample;
+
+    let e = engine();
+    let parent = e.task_add(&json!({ "title": "parent" })).unwrap()["short_id"].clone();
+    let child = e.task_add(&json!({ "title": "child" })).unwrap()["short_id"].clone();
+
+    // Nested intervals over ONE session — parent never stops.
+    e.task_start(&json!({ "ref": parent, "session_id": "sess-ov", "keep": true }))
+        .unwrap();
+    e.task_start(&json!({ "ref": child, "session_id": "sess-ov", "keep": true }))
+        .unwrap();
+
+    // One OTLP sample landing inside both windows: the parent's window has no
+    // end yet, because it is still active.
+    let sample_ts = jiff::Timestamp::now().to_string();
+    e.otlp_ingest(&[OtlpSample {
+        tool: "claude-code".into(),
+        session_id: Some("sess-ov".into()),
+        sample: UsageSample {
+            id: None,
+            ts: sample_ts,
+            model: None,
+            input_tokens: 5000,
+            output_tokens: 9000,
+            cache_read_tokens: 222_222,
+            cache_creation_tokens: 0,
+        },
+    }])
+    .unwrap();
+
+    // Only the child finishes; the parent is still active.
+    e.task_done(&json!({ "ref": child, "client": "claude-code", "session_id": "sess-ov" }))
+        .unwrap();
+
+    let pending = pending_attributions(&e).unwrap();
+    let pa = pending
+        .iter()
+        .find(|p| p.short_id == child.as_i64().unwrap())
+        .expect("the completed child is pending attribution");
+
+    // The parent shares the session and is still running: its window must
+    // show up as foreign even though it never emitted a `done`.
+    assert!(
+        !pa.foreign_windows.is_empty(),
+        "an active neighbour over the same session must contest, but foreign_windows is empty"
+    );
+
+    // End to end: the child must NOT bank the contested spend while the
+    // parent is still active — it must stay transient, exactly like two
+    // completed overlapping windows do.
+    let now = jiff::Timestamp::now();
+    match compute_attribution(pa, now) {
+        Ok(r) => panic!(
+            "child banked a contested spend while its still-active parent shares \
+             the session: {r:?}"
+        ),
+        Err(err) => assert!(
+            err.message.contains("contested"),
+            "expected the contested transient, got: {}",
+            err.message
+        ),
+    }
+}
+
 /// A wrong-typed `sample_ids` is a caller error, not an absent value.
 ///
 /// It read through `p.get("sample_ids").and_then(Value::as_array)`, which
@@ -951,6 +1028,122 @@ fn b4(input: i64, output: i64) -> serde_json::Value {
         "cache_read_tokens": 0,
         "cache_creation_tokens": 0,
     })
+}
+
+/// #213: attribution hard-coded `model: None` at the write call site for every
+/// automated measurement, even when the transcript it just parsed carried a
+/// model on every consumed sample — the one field that can ever turn four
+/// counts into money, thrown away at the moment it was available.
+#[test]
+fn a_log_parse_measurement_that_agrees_on_a_model_records_it() {
+    use tasqx_core::attribution::{attribute_one, compute_attribution, pending_attributions};
+
+    let dir = scratch_dir("model-log-parse");
+    let transcript = dir.join("sess-model.jsonl");
+    std::fs::write(
+        &transcript,
+        r#"{"timestamp":"2026-07-25T10:10:00.000Z","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":1000,"output_tokens":2000}}}"#,
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_start(&json!({ "ref": sid })).unwrap();
+    e.task_done(&json!({ "ref": sid, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    let id = task_uuid(&e, &sid);
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'start'",
+            (r#"{"interval_started":"2026-07-25T10:00:00Z"}"#, &id),
+        )
+        .unwrap();
+    pin_done(&e, &id, "2026-07-25T10:30:00Z", &path);
+
+    let now: jiff::Timestamp = "2026-07-25T10:35:00Z".parse().unwrap();
+    let pending = pending_attributions(&e).unwrap();
+    let pa = pending
+        .iter()
+        .find(|p| p.task_id == id)
+        .expect("the completed task is pending attribution");
+    let r = compute_attribution(pa, now).unwrap();
+    assert!(r.found, "the live bank must succeed");
+    attribute_one(&e, pa, &r).unwrap();
+
+    let model: Option<String> = e
+        .conn()
+        .query_row(
+            "SELECT model FROM token_usage WHERE source = 'log-parse'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        model.as_deref(),
+        Some("claude-opus-4-8"),
+        "every consumed sample named the same model; it must survive onto the measurement"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same defect, OTEL side: buffered telemetry carries a model per sample
+/// (the OTLP receiver populates it), and the preferred-over-transcript branch
+/// dropped it exactly the same way.
+#[test]
+fn an_otel_measurement_that_agrees_on_a_model_records_it() {
+    use tasqx_core::attribution::{attribute_one, compute_attribution, pending_attributions};
+    use tasqx_core::otlp::OtlpSample;
+    use tasqx_core::tokens::UsageSample;
+
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_start(&json!({ "ref": sid, "session_id": "sess-model-otel" }))
+        .unwrap();
+
+    e.otlp_ingest(&[OtlpSample {
+        tool: "claude-code".into(),
+        session_id: Some("sess-model-otel".into()),
+        sample: UsageSample {
+            id: None,
+            ts: jiff::Timestamp::now().to_string(),
+            model: Some("claude-opus-4-6".into()),
+            input_tokens: 5000,
+            output_tokens: 9000,
+            cache_read_tokens: 111_111,
+            cache_creation_tokens: 0,
+        },
+    }])
+    .unwrap();
+
+    e.task_done(&json!({ "ref": sid, "client": "claude-code", "session_id": "sess-model-otel" }))
+        .unwrap();
+
+    let now = jiff::Timestamp::now();
+    let pending = pending_attributions(&e).unwrap();
+    let pa = pending
+        .iter()
+        .find(|p| p.short_id == sid.as_i64().unwrap())
+        .expect("the completed task is pending attribution");
+    let r = compute_attribution(pa, now).unwrap();
+    assert!(r.found, "the OTLP-buffered spend must bank");
+    assert_eq!(r.source, tasqx_core::tokens::SOURCE_OTEL);
+    attribute_one(&e, pa, &r).unwrap();
+
+    let model: Option<String> = e
+        .conn()
+        .query_row(
+            "SELECT model FROM token_usage WHERE source = 'otel'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        model.as_deref(),
+        Some("claude-opus-4-6"),
+        "the buffered sample's model must survive onto the OTEL measurement"
+    );
 }
 
 /// The live store's `019f98a4` shape: Y's window is a strict subset of X's
