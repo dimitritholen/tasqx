@@ -3220,6 +3220,50 @@ fn tracked_time_and_active_since_reach_the_read_surfaces() {
     );
 }
 
+/// #185: `task.stop`'s own JSON result called the interval it had just closed
+/// `tracked` — the same key `task.get` uses for the task's cumulative total.
+/// A caller on a task that already carried tracked time got a `tracked` value
+/// from `task.stop` that disagreed with the `tracked` a following `task.get`
+/// reported for the very same task, both under the identical field name.
+///
+/// Seeded through `store_import` (as above) rather than a real sleep, so the
+/// interval and the pre-existing total are large and distinguishable instead
+/// of both being 0s.
+#[test]
+fn task_stop_names_the_interval_separately_from_the_cumulative_tracked_total() {
+    let e = engine();
+    e.store_import(&json!({ "tasks": [{
+        "id": "019f0000-0000-7000-8000-0000000000a2",
+        "short_id": 1,
+        "title": "already tracked",
+        "status": "active",
+        "tracked_seconds": 3600,
+        "active_since": "2020-01-01T00:00:00Z",
+    }]}))
+    .unwrap();
+
+    let stopped = e.task_stop(&json!({ "ref": 1 })).unwrap();
+    let after = e.task_get(&json!({ "ref": 1 })).unwrap();
+
+    let total = after["tracked"]
+        .as_str()
+        .expect("task.get must carry a tracked total");
+    assert_eq!(
+        stopped["tracked"], total,
+        "task.stop's own `tracked` must be the cumulative total task.get reports for the same \
+         task, not the interval this stop just closed: {stopped}"
+    );
+
+    let interval = stopped["interval"]
+        .as_str()
+        .expect("task.stop must separately name the interval it closed");
+    assert_ne!(
+        interval, total,
+        "on a task that already carried an hour, the interval this stop closed must not equal \
+         the cumulative total: {stopped}"
+    );
+}
+
 // ---- E3: the computed `blocked` flag survives into the projection -----------
 
 /// `task.list` computed `blocked` for every row (the filter grammar needs it),

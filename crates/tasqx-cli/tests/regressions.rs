@@ -3174,3 +3174,71 @@ fn an_explicit_socket_on_a_verb_that_cannot_honour_it_is_refused_not_ignored() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// #185: `stop` printed the interval it had just closed under the label
+/// `tracked` — the exact word `show`, `--json` and `report` use for the
+/// *cumulative* total. On a task that already carried an hour of tracked
+/// time, stopping a fresh few-second interval read `Stopped  ·  tracked
+/// PT3S`, and nothing on the line ever named the real total. A reader who
+/// bills by tracked time has no way to tell the two meanings apart without a
+/// second `show` call.
+///
+/// Seeded through `import` (D42's `active_since`/`tracked_seconds` pair)
+/// rather than a real sleep: elapsed wall-clock through `start`/`stop` is
+/// under a second in a test, which would make the interval and the total
+/// coincide and prove nothing. Importing an already-active task with an old
+/// `active_since` gives a large, easily-distinguished interval against a
+/// pre-existing total.
+#[test]
+fn stop_reports_the_same_tracked_total_show_does() {
+    let dir = fresh_config_dir("stop-tracked-word");
+    let mut fixture = std::env::temp_dir();
+    fixture.push(format!(
+        "tasqx-stop-tracked-word-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &fixture,
+        serde_json::json!({ "tasks": [{
+            "id": "019f0000-0000-7000-8000-0000000000a1",
+            "short_id": 1,
+            "title": "already an hour in",
+            "status": "active",
+            "tracked_seconds": 3600,
+            "active_since": "2020-01-01T00:00:00Z",
+        }]})
+        .to_string(),
+    )
+    .expect("write import fixture");
+
+    let run = |args: &[&str]| {
+        bin("stop-tracked-word", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    let fixture_str = fixture.to_str().expect("fixture path is UTF-8");
+    ok(&["import", fixture_str]);
+
+    let stopped = ok(&["stop", "1"]);
+
+    let shown: serde_json::Value =
+        serde_json::from_str(&ok(&["--json", "show", "1"])).expect("show --json");
+    let total = shown["tracked"].as_str().expect("show must carry tracked");
+
+    assert!(
+        stopped.contains(&format!("tracked {total}")),
+        "`stop` must call the cumulative total `tracked`, the same word `show` uses for it \
+         (show says tracked {total}): {stopped:?}"
+    );
+}
