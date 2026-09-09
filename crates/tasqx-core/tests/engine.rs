@@ -496,12 +496,25 @@ fn a_spawned_instance_is_parked_or_released_by_its_shifted_wait() {
         let sid = e
             .task_add(&json!({
                 "title": "daily",
-                "due": "2020-01-10T12:00:00Z",   // wait is due-2d, then due+5d
-                "wait": wait,
+                "due": "2020-01-10T12:00:00Z",
                 "recurrence": "every 1 days",
             }))
             .unwrap()["short_id"]
             .clone();
+        // `wait` is due-2d in the first case, due+5d in the second — the
+        // latter is `wait` AFTER `due`, which `task.add` now refuses (#141:
+        // it hides a task past its own deadline). This fixture is not
+        // exercising that refusal; it is exercising what the SPAWN carries
+        // forward once the offset already exists on a task, the same way
+        // `store_with_an_unrecognized_status` (engine/reports.rs) reaches a
+        // shape no current writer can produce — so it is written directly,
+        // bypassing the guard, rather than through `task.add`.
+        e.conn()
+            .execute(
+                "UPDATE tasks SET wait = ?1 WHERE short_id = ?2",
+                params![wait, sid.as_i64().unwrap()],
+            )
+            .unwrap();
         e.task_done(&json!({ "ref": sid })).unwrap();
 
         let listed = e

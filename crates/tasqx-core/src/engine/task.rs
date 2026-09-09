@@ -97,6 +97,59 @@ impl SnapshotParts {
 /// keeps testing the same contract it always did.
 const _: () = assert!(SnapshotParts::EVERYTHING.statement_count() == SNAPSHOT_QUERY_COUNT);
 
+/// #141: `wait`/`scheduled` set later than `due` hides a task past its own
+/// deadline — every default surface (`@working`, `next`, `pick`) excludes
+/// `backlog`, so a task that only leaves `backlog` after its own `due` has
+/// passed is invisible until it is already overdue, with no signal anywhere.
+/// Called with the EFFECTIVE (post-merge) values, so `task.add` and
+/// `task.modify` share one rule regardless of which fields a given call
+/// actually named.
+///
+/// Strict `>` only: `wait`/`scheduled` equal to `due` still releases the task
+/// before it is overdue, not after, so that boundary is left alone.
+fn check_dates_not_inverted(
+    due: Option<&str>,
+    scheduled: Option<&str>,
+    wait: Option<&str>,
+) -> Result<(), ApiError> {
+    let Some(due_ts) = due.and_then(parse_ts) else {
+        return Ok(());
+    };
+    for (field, val) in [("wait", wait), ("scheduled", scheduled)] {
+        if let Some(v) = val {
+            if v.parse::<Timestamp>().is_ok_and(|ts| ts > due_ts) {
+                return Err(ApiError::bad_request(format!(
+                    "{field} ({v}) is after due ({}) — the task would be hidden \
+                     until after its own deadline",
+                    due.expect("due_ts came from this same Option")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// #142: a `due`-anchored offset `remind` (`-1h`, `+15m`, …) on a task with no
+/// `due` has nothing to anchor to and can never fire — worse than not setting
+/// one at all, because the caller believes they are covered. An ABSOLUTE
+/// remind (a resolved instant) needs no anchor and is unaffected. Called with
+/// the EFFECTIVE (post-merge) `remind`/`due`, so `task.modify` catches this
+/// whichever field the caller changed — setting an offset remind with no
+/// `due`, or clearing `due` out from under an existing offset remind.
+fn check_remind_has_anchor(remind: Option<&str>, due: Option<&str>) -> Result<(), ApiError> {
+    if due.is_some() {
+        return Ok(());
+    }
+    let Some(r) = remind else { return Ok(()) };
+    if matches!(remind::parse_spec(r), Some(remind::Remind::Offset(_))) {
+        return Err(ApiError::bad_request(format!(
+            "remind:{r} is measured from `due`, and this task has none — \
+             set due:, or give remind: an absolute date"
+        )));
+    }
+    Ok(())
+}
+
 impl Engine {
     // ---- task.add ------------------------------------------------------------
 
@@ -149,6 +202,12 @@ impl Engine {
             Some(s) => Some(remind::spec_to_string(&remind::parse_remind(&s, now_ts)?)),
             None => None,
         };
+
+        // #141/#142: validated together, once every date field has resolved,
+        // so the message can name the actual instants rather than the raw
+        // strings the caller typed.
+        check_dates_not_inverted(due.as_deref(), scheduled.as_deref(), wait.as_deref())?;
+        check_remind_has_anchor(remind.as_deref(), due.as_deref())?;
 
         // add -> pending, or backlog if wait/scheduled is in the future. Asking
         // the shared rule what a *backlog* task would be right now answers both
@@ -723,6 +782,13 @@ impl Engine {
         // Whitelist of modifiable columns; recompute urgency if inputs change.
         let mut priority = task.priority;
         let mut due = task.due.clone();
+        // #141/#142: the EFFECTIVE post-merge values, so the cross-field
+        // checks below see the same task `task_add` would have seen, whether
+        // this call named the field or is only affecting it by leaving it
+        // alone (a `due` change against an untouched `wait`, or vice versa).
+        let mut scheduled = task.scheduled.clone();
+        let mut wait = task.wait.clone();
+        let mut remind_effective = task.remind.clone();
         let mut assignments: Vec<(&str, Value)> = Vec::new();
         // Set when the only sanctioned lifecycle edit — cancellation — is requested.
         let mut cancelling = false;
@@ -794,9 +860,15 @@ impl Engine {
                     assignments.push(("due", norm));
                 }
                 "scheduled" => {
-                    assignments.push(("scheduled", nullable_when(v, "scheduled", now_ts)?))
+                    let norm = nullable_when(v, "scheduled", now_ts)?;
+                    scheduled = norm.as_str().map(str::to_string);
+                    assignments.push(("scheduled", norm));
                 }
-                "wait" => assignments.push(("wait", nullable_when(v, "wait", now_ts)?)),
+                "wait" => {
+                    let norm = nullable_when(v, "wait", now_ts)?;
+                    wait = norm.as_str().map(str::to_string);
+                    assignments.push(("wait", norm));
+                }
                 "estimate" => assignments.push(("estimate", nullable_duration(v, "estimate")?)),
                 "recurrence" => {
                     // Set a rule (validated + normalized) or clear it with null
@@ -817,12 +889,14 @@ impl Engine {
                     // path (§9). A relative offset re-anchors automatically when
                     // `due` changes, so it is stored symbolically, not resolved.
                     if v.is_null() {
+                        remind_effective = None;
                         assignments.push(("remind", Value::Null));
                     } else {
                         let s = v.as_str().ok_or_else(|| {
                             ApiError::bad_request("remind must be a string or null")
                         })?;
                         let norm = remind::spec_to_string(&remind::parse_remind(s, now_ts)?);
+                        remind_effective = Some(norm.clone());
                         assignments.push(("remind", Value::String(norm)));
                     }
                 }
@@ -866,6 +940,14 @@ impl Engine {
                 }
             }
         }
+
+        // #141/#142: the same cross-field checks `task_add` runs, over the
+        // EFFECTIVE post-merge values — so a modify is caught whichever side
+        // of either combination it moves: a `due` set past an untouched
+        // `wait`, a `wait` set past an untouched `due`, an offset `remind`
+        // added with no `due`, or `due` cleared out from under one.
+        check_dates_not_inverted(due.as_deref(), scheduled.as_deref(), wait.as_deref())?;
+        check_remind_has_anchor(remind_effective.as_deref(), due.as_deref())?;
 
         // The operation instant, as the stored string — see `task_add`.
         let ts = now_ts.to_string();
@@ -1562,6 +1644,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorCode;
 
     /// Two tasks — #2 blocked by #1 — plus one annotation and one tag. It seeds
     /// no `token_usage` row: the third gated side table is covered by
@@ -1926,5 +2009,158 @@ mod tests {
             best = Some(best.map_or(elapsed, |b: std::time::Duration| b.min(elapsed)));
         }
         println!("task.list over {task_count} annotated tasks: {best:?} (best of 5)");
+    }
+
+    // ---- #141: wait/scheduled later than due -----------------------------
+
+    /// #141: `wait`/`scheduled` set later than `due` hides a task past its own
+    /// deadline — no default surface (`@working`, `next`, `pick`) will ever
+    /// show a `backlog` task, so the deadline passes unseen. `task.add` must
+    /// refuse the combination, not file it silently.
+    #[test]
+    fn add_refuses_wait_after_due() {
+        let e = Engine::open_in_memory().unwrap();
+        let err = e
+            .task_add(&json!({
+                "title": "conflict1",
+                "due": "2026-07-16T00:00:00Z",
+                "wait": "2026-12-01T00:00:00Z",
+            }))
+            .expect_err("wait after due must be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(
+            err.message.contains("wait") && err.message.contains("due"),
+            "the message must name both fields: {}",
+            err.message
+        );
+    }
+
+    /// The `scheduled` sibling of the same rule.
+    #[test]
+    fn add_refuses_scheduled_after_due() {
+        let e = Engine::open_in_memory().unwrap();
+        let err = e
+            .task_add(&json!({
+                "title": "conflict2",
+                "due": "2026-07-16T00:00:00Z",
+                "scheduled": "2026-12-01T00:00:00Z",
+            }))
+            .expect_err("scheduled after due must be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+
+    /// `task.modify` must catch the same inversion when it is reached one
+    /// field at a time: a `due` already in the past relative to an existing
+    /// `wait` is exactly as hidden-past-deadline as setting both in one call.
+    #[test]
+    fn modify_refuses_a_due_that_lands_before_an_existing_wait() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "x", "wait": "2026-12-01T00:00:00Z" }))
+            .unwrap();
+        let err = e
+            .task_modify(&json!({ "ref": 1, "set": { "due": "2026-07-16T00:00:00Z" } }))
+            .expect_err("a due before the existing wait must be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+
+    /// Equal instants are not an inversion — `wait` releasing exactly at
+    /// `due` still shows the task before it is overdue, not after.
+    #[test]
+    fn wait_equal_to_due_is_allowed() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({
+            "title": "boundary",
+            "due": "2026-07-16T00:00:00Z",
+            "wait": "2026-07-16T00:00:00Z",
+        }))
+        .expect("wait == due must be allowed");
+    }
+
+    // ---- #142: an offset remind with no due ------------------------------
+
+    /// #142: a `due`-anchored offset `remind` on a task with no `due` can
+    /// never fire — `add -h` documents the offset as due-anchored, so the
+    /// caller believes they are covered and are not. `task.add` must refuse
+    /// rather than store a reminder pointing at nothing.
+    #[test]
+    fn add_refuses_an_offset_remind_with_no_due() {
+        let e = Engine::open_in_memory().unwrap();
+        let err = e
+            .task_add(&json!({ "title": "case1", "remind": "-1h" }))
+            .expect_err("an offset remind with no due must be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(
+            err.message.contains("due"),
+            "the message must point at `due`: {}",
+            err.message
+        );
+    }
+
+    /// The documented working case must keep working: an offset remind WITH
+    /// a due in the same call is exactly what the offset is for.
+    #[test]
+    fn add_allows_an_offset_remind_with_a_due() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({
+            "title": "remind+due",
+            "due": "2026-07-16T00:00:00Z",
+            "remind": "-1h",
+        }))
+        .expect("an offset remind anchored to a same-call due must be allowed");
+    }
+
+    /// An ABSOLUTE remind needs no anchor at all — only the offset form is
+    /// due-anchored, so a resolved instant must not be swept into the same
+    /// refusal.
+    #[test]
+    fn add_allows_an_absolute_remind_with_no_due() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "case2", "remind": "2026-07-20T09:00:00Z" }))
+            .expect("an absolute remind needs no due");
+    }
+
+    /// `task.modify` must catch the same hazard reached the other way: adding
+    /// an offset remind to a task that already has no `due`.
+    #[test]
+    fn modify_refuses_setting_an_offset_remind_when_due_is_absent() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "no due" })).unwrap();
+        let err = e
+            .task_modify(&json!({ "ref": 1, "set": { "remind": "-30m" } }))
+            .expect_err("setting an offset remind with no due must be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+
+    /// And the mirror: clearing `due` out from under an existing offset
+    /// remind leaves the same dangling symbolic offset.
+    #[test]
+    fn modify_refuses_clearing_due_while_an_offset_remind_remains() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({
+            "title": "remind+due",
+            "due": "2026-07-16T00:00:00Z",
+            "remind": "-1h",
+        }))
+        .unwrap();
+        let err = e
+            .task_modify(&json!({ "ref": 1, "set": { "due": null } }))
+            .expect_err("clearing due under a live offset remind must be refused");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+
+    /// Clearing `due` while ALSO clearing (or never having) `remind` is fine
+    /// — the refusal is about the combination, not about clearing `due` at
+    /// all.
+    #[test]
+    fn modify_allows_clearing_due_when_remind_is_cleared_too() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({
+            "title": "remind+due",
+            "due": "2026-07-16T00:00:00Z",
+            "remind": "-1h",
+        }))
+        .unwrap();
+        e.task_modify(&json!({ "ref": 1, "set": { "due": null, "remind": null } }))
+            .expect("clearing both together must be allowed");
     }
 }
