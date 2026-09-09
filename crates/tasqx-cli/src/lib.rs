@@ -810,8 +810,18 @@ fn build_ctx(flag: Option<&str>) -> Ctx {
         eprintln!("{msg}");
     }
     let dir = themes_dir();
-    let theme = theme::load(&name, dir.as_deref());
-    Ctx::new(theme, Caps::detect()).with_cols(theme::detect_cols())
+    // `load_reporting`, not `load` (#193, completing D46): a theme FILE that
+    // fails to load must warn the same way an unknown theme NAME already does
+    // a few lines up — before this, `--theme broken`/`$TASQX_THEME=broken`
+    // silently rendered the fallback with nothing on stderr, unlike a typo'd
+    // name. It still never refuses: a broken theme must not block a task
+    // capture, so `Merged`'s dropped-piece warnings and a `Rejected` message
+    // are both just printed and rendering continues on the fallback theme.
+    let loaded = theme::load_reporting(&name, dir.as_deref());
+    for msg in loaded.file.messages() {
+        eprintln!("warning: {msg}");
+    }
+    Ctx::new(loaded.theme, Caps::detect()).with_cols(theme::detect_cols())
 }
 
 /// Result of a rendered command: the raw API result (for `--json`) plus the
