@@ -239,6 +239,51 @@ impl Engine {
         }))
     }
 
+    // ---- backlog refusal hint -------------------------------------------------
+
+    /// Names the field(s) still holding a future date on a `backlog` task,
+    /// and the exact `--clear` command that releases it. Appended to
+    /// `task.done`'s and `task.start`'s refusal so "I scheduled it for
+    /// Monday and finished it Friday" has a next step in the response
+    /// instead of stopping at the transition table with no way out — every
+    /// other refusal in this tool names the verb that gets a caller unstuck
+    /// (`undo`'s messages, `no project named X (create it with
+    /// \`tasqx init X\`)`) and this one was the outlier (tasqx audit #160).
+    ///
+    /// Only `task.status == Status::Backlog` ever calls this, and a task
+    /// resolves to `Backlog` (via `effective_status`) only when at least one
+    /// of `wait`/`scheduled` is still ahead of `now` — so at least one field
+    /// is always found; an empty `fields` here would mean `effective_status`
+    /// and this walk disagree about what "future" means; nothing was found
+    /// wrong, so nothing renders rather than a hint that reads as a full
+    /// sentence with no field named.
+    fn backlog_escape_hint(task: &Task, now: Timestamp) -> String {
+        let fields: Vec<(&'static str, &str)> = [
+            ("wait", task.wait.as_deref()),
+            ("scheduled", task.scheduled.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(name, v)| v.filter(|d| is_future_at(Some(d), now)).map(|d| (name, d)))
+        .collect();
+        if fields.is_empty() {
+            return String::new();
+        }
+        let named = fields
+            .iter()
+            .map(|(name, date)| format!("`{name}` ({date})"))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let clears = fields
+            .iter()
+            .map(|(name, _)| format!("--clear {name}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            " — it is deferred by {named}; clear it first with `tasqx modify {} {clears}`",
+            task.short_id
+        )
+    }
+
     // ---- task.start ----------------------------------------------------------
 
     /// `task.start` — open a time interval. Params: `ref`, `keep`.
@@ -263,6 +308,12 @@ impl Engine {
                 .into());
             }
             Status::Pending => {}
+            Status::Backlog => {
+                return Err(ApiError::conflict(format!(
+                    "cannot start a backlog task (only pending -> active){}",
+                    Self::backlog_escape_hint(&task, Timestamp::now())
+                )));
+            }
             other => {
                 return Err(ApiError::conflict(format!(
                     "cannot start a {} task (only pending -> active)",
@@ -394,6 +445,12 @@ impl Engine {
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
             Status::Pending | Status::Active => {}
+            Status::Backlog => {
+                return Err(ApiError::conflict(format!(
+                    "cannot complete a backlog task (only pending|active -> done){}",
+                    Self::backlog_escape_hint(&task, Timestamp::now())
+                )));
+            }
             other => {
                 return Err(ApiError::conflict(format!(
                     "cannot complete a {} task (only pending|active -> done)",
@@ -1940,6 +1997,59 @@ mod tests {
         assert_eq!(blocker["blocks"], json!([2]));
         let dependent = e.task_get(&json!({ "ref": 2 })).unwrap();
         assert_eq!(dependent["blocks"], json!([]), "a leaf blocks nothing");
+    }
+
+    /// A backlog task refuses `done`/`start` with a message that stops at the
+    /// transition table and names no way out — every other refusal in this
+    /// tool names the verb that gets a caller unstuck (`undo`'s messages,
+    /// `tasqx init {name}` for an unknown project). Reproduces tasqx audit
+    /// #160: the message must name the field still holding a future date and
+    /// the exact `--clear` command that releases the task.
+    #[test]
+    fn a_backlog_refusal_names_the_field_and_the_escape() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "call the bank", "scheduled": "2999-12-01" }))
+            .unwrap();
+
+        let err = e.task_done(&json!({ "ref": 1 })).unwrap_err();
+        assert!(
+            err.message.contains("scheduled") && err.message.contains("2999-12-01"),
+            "refusal must name the field and its date, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("--clear scheduled"),
+            "refusal must name the exact escape, got: {}",
+            err.message
+        );
+
+        let err = e.task_start(&json!({ "ref": 1 })).unwrap_err();
+        assert!(
+            err.message.contains("--clear scheduled"),
+            "task.start's refusal must name the same escape, got: {}",
+            err.message
+        );
+    }
+
+    /// Both deferring fields, both named — clearing only one leaves the task
+    /// in `backlog` and a message naming only `wait` would send the caller
+    /// back into the same refusal.
+    #[test]
+    fn a_backlog_refusal_names_both_fields_when_both_defer_it() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({
+            "title": "call the bank",
+            "wait": "2999-06-01",
+            "scheduled": "2999-12-01",
+        }))
+        .unwrap();
+
+        let err = e.task_done(&json!({ "ref": 1 })).unwrap_err();
+        assert!(
+            err.message.contains("--clear wait") && err.message.contains("--clear scheduled"),
+            "refusal must name both escapes, got: {}",
+            err.message
+        );
     }
 
     #[test]

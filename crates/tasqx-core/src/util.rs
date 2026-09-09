@@ -80,9 +80,13 @@ pub fn duration_secs(iso: &str) -> Option<i64> {
 
 /// True when `s` parses to a timestamp strictly after `now`.
 ///
-/// `now` is a parameter, not `Timestamp::now()`, because the one rule that reads
-/// this — [`crate::types::effective_status`] — is a time-driven state transition
-/// and has to be testable on both sides of its boundary without sleeping.
+/// `now` is a parameter, not `Timestamp::now()`, because its first reader —
+/// [`crate::types::effective_status`] — is a time-driven state transition and
+/// has to be testable on both sides of its boundary without sleeping. A
+/// second reader, `Engine::backlog_escape_hint`, asks the same question for a
+/// diagnostic rather than a transition and does not need that rigor, but
+/// takes `now` as a parameter anyway rather than retyping the check against a
+/// fresh clock read.
 pub fn is_future_at(s: Option<&str>, now: Timestamp) -> bool {
     match s.and_then(parse_ts) {
         Some(t) => t > now,
