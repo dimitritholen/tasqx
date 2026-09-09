@@ -1111,6 +1111,40 @@ fn page_commands() -> String {
          than the one they typed.",
     ));
 
+    // ---- dashboard
+    s.push_str(&h3("dashboard"));
+    s.push_str(&p(
+        "<code>tasqx dashboard</code> — or a bare, interactive <code>tasqx</code> — opens the \
+         overview screen (D58). Every key below is generated from the same table the in-screen \
+         <code>?</code> overlay renders, so this page cannot drift from it the way a second \
+         hand-typed list would.",
+    ));
+    let dashboard_key_rows: Vec<Vec<String>> = crate::tui::dashboard::KEYS
+        .iter()
+        .map(|k| vec![format!("<code>{}</code>", esc(k.keys)), esc(k.help)])
+        .collect();
+    s.push_str(&table_owned(&["Key", "Does"], &dashboard_key_rows));
+    s.push_str(&p(
+        "<code>--json</code> skips the terminal gate entirely and answers the same eight panels as \
+         one document — the only verb where <code>--json</code> decides whether the gate applies.",
+    ));
+
+    // ---- pick
+    s.push_str(&h3("pick"));
+    s.push_str(&p(
+        "<code>tasqx pick [filter]</code> is a full-screen list over the working set that narrows \
+         as you type — a fuzzy SUBSEQUENCE match over id, title, project and tags. Up/down (or \
+         <code>ctrl-p</code>/<code>ctrl-n</code>) move the highlighted row; <code>enter</code> \
+         starts it — the one key on this screen with a side effect, and the same single-active \
+         rule <code>tasqx start</code> follows; <code>esc</code> clears the query first, then \
+         leaves.",
+    ));
+    s.push_str(&p(
+        "It needs a real terminal on BOTH stdin and stdout, so it refuses in a pipe (exit 2, D26) \
+         rather than writing escape codes into it. Cancelling, or a filter that matches nothing, \
+         exits 4 having started nothing.",
+    ));
+
     // ---- show
     s.push_str(&h3("show"));
     s.push_str(&p(
@@ -1213,9 +1247,11 @@ fn page_commands() -> String {
     // ---- archive
     s.push_str(&h3("archive"));
     s.push_str(&p(
-        "<code>archive</code> takes a project out of rotation. Its tasks are untouched — they keep \
-         their history and their project — but the project drops out of <code>tasqx projects</code> \
-         and no verb may name it any more. Archiving is a shelf, not a delete.",
+        "<code>archive</code> takes a project out of rotation for WRITES. Its tasks are untouched — \
+         they keep their history and their project — but the project drops out of \
+         <code>tasqx projects</code> and no write may name it any more. Reads are unaffected: \
+         <code>list</code>, <code>report</code> and <code>agenda</code> still show it and its \
+         tasks, because archiving is a shelf, not a hide.",
     ));
     s.push_str(&snippet(
         "tasqx archive prive.klussen\ntasqx use work.tasqx",
@@ -1239,7 +1275,7 @@ fn page_commands() -> String {
          *        work.tasqx                no         The tasqx project itself",
     ));
     s.push_str(&p(
-        "\u{201c}No verb may name it\u{201d} includes <code>archive</code> itself. Retiring a \
+        "\u{201c}No write may name it\u{201d} includes <code>archive</code> itself. Retiring a \
          project that is already retired would change nothing, so it is a <code>conflict</code> \
          (exit 5) rather than a second success — an <code>ok</code> that changed nothing is \
          byte-identical to the run that did the work, for you and for the event log, which is \
@@ -4175,6 +4211,55 @@ mod tests {
             "the Commands page shows an `archive` refusal the engine does not give.\n\
              engine: {shown}"
         );
+    }
+
+    /// tasqx audit 2026-09 #226.3: the archive page claimed "no verb may name
+    /// [an archived project] any more" — but `list`, `report` and `agenda`
+    /// still show it and its tasks (verified against the binary); only
+    /// WRITES are refused. `cmddoc`'s terminal NOTE carried the identical
+    /// overbroad claim and is guarded the same way in `cmddoc::tests`.
+    #[test]
+    fn archive_page_scopes_the_refusal_to_writes() {
+        let doc = generate();
+        let section = doc
+            .split(&h3("archive"))
+            .nth(1)
+            .expect("an archive section")
+            .split(&h3("start, stop, done, cancel, reopen"))
+            .next()
+            .expect("the archive section ends before the next one");
+        assert!(
+            !section.contains("no verb may name"),
+            "the archive page must not claim every verb refuses an archived \
+             project — list/report/agenda still show it: {section}"
+        );
+        assert!(
+            section.to_lowercase().contains("read")
+                || section.contains("list")
+                || section.contains("report"),
+            "the archive page must say that reads still see an archived \
+             project and its tasks: {section}"
+        );
+    }
+
+    /// tasqx audit 2026-09 #226.6: neither `tasqx manual` nor this HTML guide
+    /// named a single dashboard key binding beyond `p`/enter/q/esc/ctrl-c —
+    /// the rest (`1-8`, `tab`/`S-tab`, `j`/`k`, `g`/`G`, `r`/`R`, `w`, `l`)
+    /// lived only behind the in-screen `?` overlay. Checked against the live
+    /// `KEYS` table, not a retyped list, so a binding added to the overlay
+    /// and not here fails the build.
+    #[test]
+    fn dashboard_page_names_every_key_binding_from_the_live_table() {
+        let doc = generate();
+        for key in crate::tui::dashboard::KEYS {
+            let spelling = key.keys.split(" / ").next().unwrap_or(key.keys);
+            assert!(
+                doc.contains(&esc(spelling)),
+                "the dashboard page never mentions the `{}` binding (help: {:?})",
+                key.keys,
+                key.help
+            );
+        }
     }
 
     /// The page must be substantial — a guard against a refactor quietly rendering
