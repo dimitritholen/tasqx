@@ -925,7 +925,7 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
         ChartKind::Throughput { weeks } => {
             let weeks = chart::default_weeks(false, weeks);
             let events = events_since(engine, anchor, weeks * 7 + 7)?;
-            let series = chart::throughput(&events, weeks, anchor);
+            let series = chart::throughput(&events, weeks, anchor, None);
             let data = series
                 .iter()
                 .map(|b| {

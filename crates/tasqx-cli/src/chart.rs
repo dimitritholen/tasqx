@@ -75,7 +75,21 @@ impl WeekBucket {
 
 /// Bucket `add` vs `done` events into the last `weeks` ISO weeks (oldest→newest),
 /// including empty weeks so the series is contiguous.
-pub fn throughput(result: &Value, weeks: usize, anchor: Date) -> Vec<WeekBucket> {
+///
+/// `members`, when given, scopes the count to those tasks' ids — the same
+/// membership `burndown` already takes, and for the same reason: `report
+/// --html <filter>` hands this function the store-wide `event.list` result
+/// (D59 bounds it by time, not by scope), so without a membership filter a
+/// filtered report's throughput panel drew for the whole store while every
+/// other stat on the page answered the filter (#162). `None` (the terminal
+/// `chart throughput` command, which has no filter to scope by) keeps
+/// counting every event, unfiltered — the exact prior behaviour.
+pub fn throughput(
+    result: &Value,
+    weeks: usize,
+    anchor: Date,
+    members: Option<&[Member]>,
+) -> Vec<WeekBucket> {
     let weeks = weeks.max(1);
     // Build the ordered list of (iso_year, iso_week) keys for the window.
     let mut keys: Vec<(i16, i8)> = Vec::with_capacity(weeks);
@@ -96,12 +110,20 @@ pub fn throughput(result: &Value, weeks: usize, anchor: Date) -> Vec<WeekBucket>
         })
         .collect();
 
+    let ids: Option<std::collections::HashSet<&str>> =
+        members.map(|ms| ms.iter().map(|m| m.id.as_str()).collect());
+
     for ev in events_of(result) {
         let (Some(ts), op) = (ts_of(ev), op_of(ev)) else {
             continue;
         };
         if op != "add" && op != "done" {
             continue;
+        }
+        if let Some(ids) = &ids {
+            if !entity_id_of(ev).is_some_and(|id| ids.contains(id)) {
+                continue;
+            }
         }
         let Some(date) = ev_date(ts) else { continue };
         let iso = date.iso_week_date();
@@ -742,7 +764,7 @@ mod tests {
             // an ignored op
             ev("modify", "2026-07-13T10:00:00Z", "a"),
         ];
-        let buckets = throughput(&result(evs), 3, anchor());
+        let buckets = throughput(&result(evs), 3, anchor(), None);
         assert_eq!(buckets.len(), 3);
         // newest last
         let w29 = buckets.last().unwrap();
@@ -758,6 +780,40 @@ mod tests {
         // oldest (week 27) empty
         assert_eq!(buckets[0].added, 0);
         assert_eq!(buckets[0].done, 0);
+    }
+
+    /// #162: a filtered `report --html` handed its throughput chart the
+    /// UNSCOPED `event.list` result, so a report scoped to one project drew
+    /// bars for the whole store — a zero-match filter still showed a
+    /// full-height chart. `members: Some(...)`, mirroring `burndown_scopes_to_members`,
+    /// is the fix: an event for a task outside the scoped export must not
+    /// move a bar. `None` (the terminal `chart throughput`'s own call) keeps
+    /// counting every event, unfiltered, exactly as before.
+    #[test]
+    fn throughput_scopes_to_members() {
+        let evs = vec![
+            ev("add", "2026-07-13T09:00:00Z", "a"),
+            ev("add", "2026-07-13T09:00:00Z", "x"), // not a member
+            ev("done", "2026-07-14T09:00:00Z", "a"),
+            ev("done", "2026-07-14T09:00:00Z", "x"), // not a member
+        ];
+        let members = [member("a", (2026, 7, 1), true)];
+        let scoped = throughput(&result(evs.clone()), 3, anchor(), Some(&members));
+        let w29 = scoped.last().unwrap();
+        assert_eq!(
+            w29.added, 1,
+            "the non-member's add must not count: {scoped:?}"
+        );
+        assert_eq!(
+            w29.done, 1,
+            "the non-member's done must not count: {scoped:?}"
+        );
+
+        // Unfiltered (the terminal's own call) still counts both.
+        let unfiltered = throughput(&result(evs), 3, anchor(), None);
+        let w29u = unfiltered.last().unwrap();
+        assert_eq!(w29u.added, 2, "None must keep counting every event");
+        assert_eq!(w29u.done, 2, "None must keep counting every event");
     }
 
     #[test]
