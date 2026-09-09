@@ -2308,6 +2308,62 @@ fn archiving_the_default_project_clears_the_default_and_reports_it() {
     assert_eq!(e.default_project().unwrap().as_deref(), Some("work2"));
 }
 
+/// D89: `project.archive` counts the open work it leaves behind and reports it,
+/// instead of saying nothing while the tasks stay fully live everywhere else.
+///
+/// #161: `tasqx archive acme` on a project holding an overdue high-priority
+/// task and a second open task printed "your default project is unchanged"
+/// and exit 0 — nothing about the two tasks `list`, `agenda` and `report`
+/// still show. Only `tasqx projects` (without `--all`) stopped mentioning the
+/// project at all, so the one moment a user is thinking about "retire this
+/// project" is the one line that stays quiet about what retiring it did NOT
+/// do to the work inside it.
+#[test]
+fn project_archive_reports_the_open_work_it_leaves_behind() {
+    let e = engine();
+    e.project_create(&json!({ "name": "acme" })).unwrap();
+
+    // Overdue and open.
+    e.task_add(&json!({
+        "title": "acme open task", "project": "acme",
+        "priority": "H", "due": plus_hours(-48),
+    }))
+    .unwrap();
+    // Open, not overdue.
+    let second = e
+        .task_add(&json!({ "title": "acme second", "project": "acme" }))
+        .unwrap();
+    // Terminal work must NOT inflate the count: done and cancelled stay work
+    // that is finished or abandoned, neither of which is "left behind".
+    let done = e
+        .task_add(&json!({ "title": "acme done", "project": "acme" }))
+        .unwrap();
+    e.task_done(&json!({ "ref": done["short_id"].clone() }))
+        .unwrap();
+    let cancelled = e
+        .task_add(&json!({ "title": "acme cancelled", "project": "acme" }))
+        .unwrap();
+    e.task_cancel(&json!({ "ref": cancelled["short_id"].clone() }))
+        .unwrap();
+
+    let result = e.project_archive(&json!({ "name": "acme" })).unwrap();
+    assert_eq!(
+        result["open_tasks"], 2,
+        "two open tasks stay behind, done/cancelled must not count: {result}"
+    );
+    assert_eq!(
+        result["open_overdue"], 1,
+        "exactly one of the two open tasks is overdue: {result}"
+    );
+
+    // The tasks themselves are genuinely untouched (archiving is a shelf, not
+    // a delete) — `second` still reads back exactly as filed.
+    let got = e
+        .task_get(&json!({ "ref": second["short_id"].clone() }))
+        .unwrap();
+    assert_eq!(got["status"], "pending");
+}
+
 /// D22 in the direction the first cut of it missed: `project.archive` on a
 /// project that is ALREADY archived is a `conflict`, not a second `ok`.
 ///
