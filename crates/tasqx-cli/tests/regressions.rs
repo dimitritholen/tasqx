@@ -1600,6 +1600,139 @@ fn the_api_refuses_an_unknown_fields_key() {
     );
 }
 
+/// #169 — `tasqx manual json-api` promises "Exit codes mirror the error
+/// model: 0 ok, 2 bad_request, 4 not_found, 5 conflict", but `run_api` printed
+/// the envelope and fell off the end of the function, so the process's own
+/// exit code stayed 0 no matter what the envelope said. A `set -e` wrapper, or
+/// `tasqx api ... || rollback`, therefore saw every refused write as success —
+/// while the plain CLI verb beside it, same conflict, exits 5.
+///
+/// Driven through the real binary for all three documented non-zero codes,
+/// each against the same kind of failure the manual itself measures against:
+/// a write to a project that does not exist (not_found), completing an
+/// already-done task (conflict), and a request that is not JSON at all
+/// (bad_request).
+#[test]
+fn api_exit_code_mirrors_the_error_model_the_manual_promises() {
+    use std::io::Write;
+    let dir = fresh_config_dir("api-exit-codes");
+    assert!(bin("api-exit-codes", &dir)
+        .args(["add", "seed"])
+        .output()
+        .expect("seed")
+        .status
+        .success());
+
+    let send = |body: &[u8]| -> i32 {
+        let mut child = bin("api-exit-codes", &dir)
+            .arg("api")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn tasqx api");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(body)
+            .expect("write envelope");
+        child
+            .wait_with_output()
+            .expect("wait")
+            .status
+            .code()
+            .unwrap_or(-1)
+    };
+
+    // not_found: writing a task into a project that was never created.
+    assert_eq!(
+        send(br#"{"tasqx":"1","id":"1","method":"task.add","params":{"title":"x","project":"no-such-project"}}"#),
+        4,
+        "a not_found envelope must exit 4, per the manual"
+    );
+
+    // conflict: completing a task that is already done.
+    assert!(bin("api-exit-codes", &dir)
+        .args(["done", "1"])
+        .output()
+        .expect("done")
+        .status
+        .success());
+    assert_eq!(
+        send(br#"{"tasqx":"1","id":"1","method":"task.done","params":{"ref":1}}"#),
+        5,
+        "a conflict envelope must exit 5, per the manual"
+    );
+
+    // bad_request: the request is not JSON at all.
+    assert_eq!(
+        send(b"not json"),
+        2,
+        "a malformed request must exit 2, per the manual"
+    );
+
+    // The control: a genuinely successful call still exits 0.
+    assert_eq!(
+        send(br#"{"tasqx":"1","id":"1","method":"task.get","params":{"ref":1}}"#),
+        0,
+        "a successful envelope must still exit 0"
+    );
+}
+
+/// #194 — `--json` was honoured on the success arm of `execute` only. On the
+/// error arm the CLI printed an English sentence to stderr and left stdout
+/// empty, so `tasqx --json show 999 | jq` failed with a jq parse error rather
+/// than a diagnosable object, and the structured `data` block naming which
+/// argument was bad (present on the exact same failure through `tasqx api`)
+/// was unreachable from the CLI at all.
+///
+/// Driven for both a not_found and a bad_request, because the fix sits in the
+/// one shared terminal both codes pass through — a fix that only handled one
+/// code would leave the guard blind to the other.
+#[test]
+fn json_flag_emits_the_error_envelope_on_the_error_path_too() {
+    let dir = fresh_config_dir("json-error-envelope");
+
+    // not_found: showing a task that was never created.
+    let out = bin("json-error-envelope", &dir)
+        .args(["--json", "show", "999"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(4), "show 999 must still exit 4");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).is_empty(),
+        "the human line must move off stderr once --json is set: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "`--json show 999` did not emit an envelope on stdout ({e}): stdout={:?}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["error"]["code"], "not_found", "{v}");
+    assert_eq!(
+        v["error"]["data"]["short_id"], 999,
+        "the structured data block naming the offending ref must survive: {v}"
+    );
+
+    // bad_request: an unparseable ref.
+    let out = bin("json-error-envelope", &dir)
+        .args(["--json", "show", "abc"])
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2), "show abc must still exit 2");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "`--json show abc` did not emit an envelope on stdout ({e}): stdout={:?}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["error"]["code"], "bad_request", "{v}");
+}
+
 /// J1 — `due.before:`/`due.after:` took ONLY strict RFC3339, so five of the six
 /// date spellings tasqx's own error message advertises matched zero rows.
 ///
@@ -2879,19 +3012,26 @@ fn archiving_an_already_archived_project_is_told_apart_from_archiving_it() {
 
     // The `--json` surface has to refuse too, because that is the one a script
     // reads: `{"archived": true, "default_cleared": false}` at exit 0 came back
-    // from every repeat. A CLI refusal rides the exit code and stderr rather
-    // than an `ok:false` envelope (that shape belongs to `tasqx api`, D31), so
-    // what is pinned here is that `--json` does not soften it into a payload.
+    // from every repeat. Post-#194, a CLI refusal under `--json` rides the same
+    // `{"ok":false,"error":{...}}` envelope `tasqx api` speaks — what is pinned
+    // here is that it is that envelope, and never the success payload's shape.
     let json_again = run(&["--json", "archive", "old"]);
     assert_eq!(
         json_again.status.code(),
         Some(5),
         "--json must not soften the refusal into ok"
     );
+    let v: serde_json::Value = serde_json::from_slice(&json_again.stdout).unwrap_or_else(|e| {
+        panic!(
+            "`--json archive` (refused) did not emit the error envelope on stdout ({e}): {}",
+            String::from_utf8_lossy(&json_again.stdout)
+        )
+    });
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["error"]["code"], "conflict", "{v}");
     assert!(
-        !String::from_utf8_lossy(&json_again.stdout).contains("archived"),
-        "a refused archive must not print a result payload: {}",
-        String::from_utf8_lossy(&json_again.stdout)
+        v.get("archived").is_none(),
+        "a refused archive must not print the success payload's shape: {v}"
     );
 
     // The audit surface D22 points at for "where did the default go" must not

@@ -141,7 +141,9 @@ fn ok(dir: &Path, db: &Path, args: &[&str]) -> String {
 }
 
 /// One JSON API call over the real binary's stdio transport. Returns the whole
-/// envelope, because a refusal rides `ok:false` at exit 0 there (D31).
+/// envelope: a refusal answers `ok:false` on stdout, at the exit code the
+/// manual promises for its `error.code` (#169) — this helper does not look at
+/// the child's exit status at all, only at the envelope it parses from stdout.
 fn api(dir: &Path, db: &Path, method: &str, params: Value) -> Value {
     use std::io::Write;
     let req = json!({ "tasqx": "1", "id": "t", "method": method, "params": params }).to_string();

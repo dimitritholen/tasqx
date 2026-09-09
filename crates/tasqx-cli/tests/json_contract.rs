@@ -270,9 +270,12 @@ fn every_non_carved_command_emits_json() {
             let stdout = String::from_utf8_lossy(&out.stdout);
             if let Some(code) = case.refuses_with {
                 // Not "it failed somehow": the exact code, plus a stdout that
-                // stayed empty. A TUI that starts anyway writes `\x1b[?1049h`
-                // into the captured pipe and then blocks on a key that never
-                // comes, which looks like a hang rather than a refusal.
+                // carries nothing but the `{"ok":false,...}` envelope (#194) —
+                // never raw escape bytes. A TUI that starts anyway writes
+                // `\x1b[?1049h` into the captured pipe and then blocks on a
+                // key that never comes, which looks like a hang rather than a
+                // refusal, so the escape check still catches that failure
+                // mode even though a refusal is no longer silent on stdout.
                 assert_eq!(
                     out.status.code(),
                     Some(code),
@@ -281,8 +284,21 @@ fn every_non_carved_command_emits_json() {
                     String::from_utf8_lossy(&out.stderr)
                 );
                 assert!(
-                    stdout.is_empty(),
-                    "a refused command wrote to a piped stdout: {stdout:?}"
+                    !stdout.contains('\u{1b}'),
+                    "a refused command wrote raw terminal escapes to a piped stdout: {stdout:?}"
+                );
+                let v: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+                    panic!(
+                        "`tasqx --json {}` refused but did not emit the error envelope on \
+                         stdout ({e}): {stdout:?}",
+                        args.join(" ")
+                    )
+                });
+                assert_eq!(
+                    v["ok"],
+                    false,
+                    "`tasqx --json {}` refusal envelope: {v}",
+                    args.join(" ")
                 );
                 continue;
             }
