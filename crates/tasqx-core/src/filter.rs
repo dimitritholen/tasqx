@@ -899,8 +899,7 @@ impl Parser {
             return Ok(inner);
         }
         let tok = self.toks[self.pos].text.clone();
-        let prev = self.pos.checked_sub(1).and_then(|p| self.toks.get(p));
-        let hint = spacing_hint(prev, &self.toks[self.pos]);
+        let hint = spacing_hint(&self.toks, self.pos);
         self.pos += 1;
         Ok(Expr::Pred(predicate(&tok, self.now).map_err(
             |e| match hint {
@@ -931,9 +930,32 @@ impl Parser {
 /// value was already spelled correctly and the stray word is genuinely stray,
 /// so proposing to swallow it into the value would be advice to break a working
 /// filter.
-fn spacing_hint(prev: Option<&Tok>, tok: &Tok) -> Option<String> {
-    let prev = prev?;
-    if prev.quoted || tok.quoted {
+///
+/// # #168 — the run is walked to its end, not stopped after one token
+///
+/// A three-or-more-word value shell-strips into three-or-more-plus-one bare
+/// tokens (`project:tasqx`, `review`, `2026-09`), and only the FIRST of the
+/// trailing ones is the one `parse_term` ever calls this on — `predicate()`
+/// fails there and the parse aborts, so `2026-09` is never otherwise
+/// examined. Building the suggestion from `prev` and that one token alone
+/// reproduced only `project:"tasqx review"`, dropping `2026-09` — a
+/// suggestion which then parses, returns `ok:true`, and answers zero rows for
+/// a project that holds real tasks. That is the one shape the rest of this
+/// module works hard to avoid: a wrong answer returned as a right one, coming
+/// from the tool's own remediation text.
+///
+/// So `toks`/`pos` (the whole stream and the failing index) replace the pair
+/// of borrows, and every further UNQUOTED bare word starting at `pos` is
+/// folded into the value, stopping at whichever comes first: a quoted token
+/// (already correctly delimited, so not a split fragment), `(`/`)`, the
+/// `and`/`or` keywords, a token opening a value predicate of its own, a `@`
+/// keyword, or simply the end of the tokens. Every one of those is a genuine
+/// boundary a real filter can put right after a multi-word value, so the run
+/// is always bounded by something the caller actually typed — never guessed.
+fn spacing_hint(toks: &[Tok], pos: usize) -> Option<String> {
+    let prev = toks.get(pos.checked_sub(1)?)?;
+    let first = toks.get(pos)?;
+    if prev.quoted || first.quoted {
         return None;
     }
     // Only a bare word is a plausible fragment of a split value. Anything that
@@ -949,16 +971,41 @@ fn spacing_hint(prev: Option<&Tok>, tok: &Tok) -> Option<String> {
     // `a_mistyped_at_keyword_is_never_hinted_as_a_split_value`, one per
     // disjunct, both built out of VALUE_PREFIXES and KEYWORDS so a ninth prefix
     // or a third keyword arrives already covered.
-    if VALUE_PREFIXES.iter().any(|(p, _)| tok.text.starts_with(p)) || tok.text.starts_with('@') {
+    if VALUE_PREFIXES
+        .iter()
+        .any(|(p, _)| first.text.starts_with(p))
+        || first.text.starts_with('@')
+    {
         return None;
     }
     let (p, _) = VALUE_PREFIXES
         .iter()
         .find(|(p, _)| prev.text.strip_prefix(*p).is_some_and(|v| !v.is_empty()))?;
-    let value = prev.text.strip_prefix(*p).expect("just matched");
+    let head = prev.text.strip_prefix(*p).expect("just matched");
+
+    // Extend across every further bare-word token the shell also split off —
+    // not just `first` — stopping at the first token that is not plausibly
+    // more of the same value.
+    let mut words = vec![head];
+    let mut i = pos;
+    while let Some(t) = toks.get(i) {
+        if t.quoted
+            || t.text == "("
+            || t.text == ")"
+            || t.text.eq_ignore_ascii_case("and")
+            || t.text.eq_ignore_ascii_case("or")
+            || VALUE_PREFIXES.iter().any(|(p, _)| t.text.starts_with(p))
+            || t.text.starts_with('@')
+        {
+            break;
+        }
+        words.push(t.text.as_str());
+        i += 1;
+    }
+
     Some(format!(
         "did you mean {p}{}? quote a value that contains a space, so the shell hands it over whole",
-        quote(&format!("{value} {}", tok.text))
+        quote(&words.join(" "))
     ))
 }
 
@@ -1879,6 +1926,45 @@ mod tests {
             );
             assert!(err.contains("quote"), "{stripped:?} must say why: {err}");
         }
+    }
+
+    /// #168 — a shell-stripped value of three or more words must be hinted back
+    /// WHOLE, not truncated to the first two tokens the scanner happened to be
+    /// holding.
+    ///
+    /// Before the fix, `project:tasqx review 2026-09` (a real three-word
+    /// project name with the quotes stripped by the shell) was refused with
+    /// `did you mean project:"tasqx review"?` — dropping the third word. That
+    /// suggestion is the single most likely next action, and following it
+    /// returns `ok:true` with zero rows while the project holds real tasks: a
+    /// confidently wrong answer from the tool's own remediation. The fix walks
+    /// every subsequent bare-word token, not just the first, so the suggestion
+    /// always reproduces the whole run.
+    #[test]
+    fn the_quoting_hint_reproduces_the_whole_value_not_just_two_tokens() {
+        let literal = r#"project:"tasqx review 2026-09""#;
+        let tags: [String; 0] = [];
+        let ctx = MatchCtx {
+            status: Status::Pending,
+            priority: None,
+            project: Some("tasqx review 2026-09"),
+            tags: &tags,
+            due: None,
+            completed: None,
+            blocked: false,
+        };
+        assert!(
+            Filter::parse(literal, anchor())
+                .expect("the literal form parses")
+                .matches(&ctx),
+            "{literal:?} must select"
+        );
+        let err = Filter::parse("project:tasqx review 2026-09", anchor())
+            .expect_err("the shell-stripped three-word form must be refused");
+        assert!(
+            err.contains(literal),
+            "the hint must name the WHOLE value, not a truncated prefix of it: {err}"
+        );
     }
 
     /// The hint must not fire where it would be wrong advice. A value already
