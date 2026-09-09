@@ -3015,11 +3015,14 @@ fn the_date_gate_leaves_an_export_import_round_trip_byte_identical() {
     // Deliberately mixed input forms — bare date, naive datetime, full RFC3339,
     // human duration — so the stored values are the parser's own output rather
     // than something that happened to be canonical already.
+    // `due` carries the latest of the three dates (#141: `wait`/`scheduled`
+    // after `due` is refused) — the input FORM on each field is what this
+    // test is about, so the forms stay put and only the dates swap.
     a.task_add(&json!({
         "title": "every date field",
-        "due": "2099-01-01",
+        "due": "2099-01-03",
         "scheduled": "2099-01-02T09:30",
-        "wait": "2099-01-03T00:00:00Z",
+        "wait": "2099-01-01T00:00:00Z",
         "estimate": "1h30m",
     }))
     .unwrap();

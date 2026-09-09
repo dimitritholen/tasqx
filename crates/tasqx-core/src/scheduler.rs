@@ -276,8 +276,18 @@ mod tests {
     #[test]
     fn unanchored_and_finished_tasks_are_not_scheduled() {
         let e = Engine::open_in_memory().unwrap();
-        // Relative remind with no due -> nothing to anchor to.
-        add(&e, "no due", None, "-1h");
+        // `task.add`/`task.modify` refuse an offset remind with no `due` to
+        // anchor it (tasqx audit #142) — the shape this arm exists to guard
+        // is now unreachable through the API, only through a route that
+        // predates the guard: an older store, or `store.import`, which does
+        // not run the same cross-field check `task.add` does. A direct
+        // column write stands in for that here, the same way
+        // `store_with_an_unrecognized_status` (engine/reports.rs) stands in
+        // for a status value no current writer can produce either.
+        add(&e, "no due", Some("2026-07-20T17:00:00Z"), "-1h");
+        e.conn()
+            .execute("UPDATE tasks SET due = NULL WHERE title = 'no due'", [])
+            .unwrap();
         // Absolute remind, but the task gets completed -> nothing to remind about.
         let done = add(
             &e,
