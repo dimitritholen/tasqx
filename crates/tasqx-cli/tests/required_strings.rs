@@ -105,13 +105,13 @@ fn every_door_refuses_every_blank_required_string() {
                 ),
             ),
         ] {
-            // `api` is a D31 carve-out: it speaks the response envelope, so a
-            // refusal is `ok:false` at exit 0. Asserting the envelope rather
-            // than the exit code is what a JSON caller actually sees.
+            // Every one of these is a blank required string, which is a
+            // `bad_request` wherever it is refused (D32) — exit 2, mirroring
+            // the error model the manual promises for `api` too (#169).
             let (code, text) = api(&dir, "d.db", method, &params);
             assert_eq!(
-                code, 0,
-                "{door} / {label}: `api` always exits 0 (D31): {text}"
+                code, 2,
+                "{door} / {label}: a bad_request envelope must exit 2: {text}"
             );
             assert!(
                 text.contains(r#""ok":false"#),
@@ -497,9 +497,10 @@ fn a_null_title_is_refused_at_both_doors_and_says_why() {
         .status
         .success());
 
-    // `task.add`: null is simply an absent required field.
+    // `task.add`: null is simply an absent required field — a bad_request,
+    // exit 2 (#169).
     let (code, text) = api(&dir, db, "task.add", r#"{"title":null}"#);
-    assert_eq!(code, 0, "the api transport itself must succeed");
+    assert_eq!(code, 2, "a bad_request envelope must exit 2");
     assert!(
         text.contains("bad_request"),
         "task.add must refuse a null title: {text}"
