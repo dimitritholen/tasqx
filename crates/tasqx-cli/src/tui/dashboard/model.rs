@@ -1475,7 +1475,7 @@ impl TaskDetail {
 ///
 /// PROJECTS answers `None` on every row. It has rows and a cursor, and they are
 /// projects; a detail overlay for one is a different decision and is not this
-/// one.
+/// one. [`project_at`] is `⏎`'s answer there instead (#204).
 pub fn row_at(dash: &Dashboard, id: PanelId, idx: usize) -> Option<&Task> {
     match id {
         PanelId::Next => dash.next.rows.get(idx),
@@ -1492,6 +1492,23 @@ pub fn row_at(dash: &Dashboard, id: PanelId, idx: usize) -> Option<&Task> {
             }
             None
         }
+        _ => None,
+    }
+}
+
+/// The project name at row `idx` of PROJECTS, for the `⏎` [`row_at`] refuses
+/// there (#204).
+///
+/// `Option<Option<&str>>`, and both layers mean something different: the OUTER
+/// `None` is "no such row" (past the end, or the wrong panel), the same
+/// question `row_at` answers; the INNER `None` is the "(none)" bucket —
+/// tasks with no project at all — which is a real row with a cursor on it and
+/// nothing `project:VALUE` can express, because that predicate never matches a
+/// task with no project (`filter::Pred::Project`). `⏎` there has nothing to
+/// open either, for a different reason than an out-of-range row does.
+pub fn project_at(dash: &Dashboard, id: PanelId, idx: usize) -> Option<Option<&str>> {
+    match id {
+        PanelId::Projects => dash.projects.rows.get(idx).map(ProjectRow::name),
         _ => None,
     }
 }
