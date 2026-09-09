@@ -1221,6 +1221,7 @@ enum DetailField {
     Blocked,
     Tags,
     DependsOn,
+    Blocks,
     Tokens,
     Annotation,
 }
@@ -1328,6 +1329,20 @@ fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
                 .map(|n| format!("#{n}"))
                 .collect();
             row("depends_on", DetailField::DependsOn, refs.join(" "));
+        }
+    }
+    // The reverse edge (tasqx audit #159): `depends_on` names what blocks
+    // this task, `blocks` names what THIS task blocks. Conditional like its
+    // sibling above — a leaf that blocks nothing is the common case and an
+    // empty row on every one of them would be noise.
+    if let Some(blocks) = result.get("blocks").and_then(Value::as_array) {
+        if !blocks.is_empty() {
+            let refs: Vec<String> = blocks
+                .iter()
+                .filter_map(Value::as_i64)
+                .map(|n| format!("#{n}"))
+                .collect();
+            row("blocks", DetailField::Blocks, refs.join(" "));
         }
     }
     // D39: AI token spend renders here or it is data nobody reported.
