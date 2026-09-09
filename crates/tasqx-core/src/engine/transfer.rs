@@ -103,6 +103,19 @@ impl Engine {
             // answered ok:true and silently lost every doc on restore (review
             // finding).
             "docs": self.export_docs()?,
+            // The audit trail for the tasks THIS document carries (#176): a
+            // restored store used to answer `chart heatmap`/`chart throughput`
+            // with zero `done`s while `list status:done` still counted 81,
+            // because the document carried every task's CURRENT fields and
+            // none of the events that explain how they got there. Filtered to
+            // `present` the same way `depends_on` is trimmed above — a task
+            // `filter` excluded is excluded whole, and an `add` or
+            // `annotation.add` event naming its title or note verbatim would
+            // leak it back into the document by a side door `dropped_
+            // dependencies` was invented to close for edges. Project and doc
+            // events are NOT filtered, matching `projects`/`docs` themselves,
+            // which are always emitted whole regardless of `filter`.
+            "events": self.export_events(&present)?,
             // Store state, so the document carries it (D21: it lives in the
             // store's `config` table, never in config.toml). `null` when there
             // is none, which is a fact and not an omission.
@@ -273,6 +286,74 @@ impl Engine {
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Every event this store has recorded, id-ordered (UUIDv7, so
+    /// chronological), for the tasks in `present` — MINUS the bookkeeping rows
+    /// `store.import` itself writes on every call it makes (`import` on a
+    /// task or project, and a doc's `memory.add` carrying
+    /// `via: "store.import"`).
+    ///
+    /// `present` is the SAME set `export_task` trims `depends_on` against: a
+    /// task-entity event is emitted only when its `entity_id` is one of the
+    /// tasks this document carries, so a filtered export cannot leak an
+    /// excluded task's title or annotation body through its event log after
+    /// `tasks` correctly left the task out. Project- and doc-entity events are
+    /// never filtered, matching `projects`/`docs` themselves.
+    ///
+    /// The `import`/`via` exclusion is what keeps D12's round trip byte-
+    /// identical now that events ARE carried: `store.import` mints a fresh
+    /// marker per row it touches on every single call (see the `insert_event`
+    /// calls in `store_import` below), so replaying those markers on the next
+    /// export would mean two successive `export -> import -> export` cycles
+    /// produce two DIFFERENT `events` arrays — each restore permanently
+    /// growing the next one. Nothing downstream reads an `import` event:
+    /// `chart throughput` keys on `add`/`done`, `chart heatmap` on `done`
+    /// (see `tasqx-cli/src/chart.rs`) — so leaving the markers out costs
+    /// nothing real history depends on. A genuine `memory.add`, including one
+    /// written by the UNRELATED `memory.import` CLI command, is real history
+    /// and stays.
+    fn export_events(&self, present: &HashSet<&str>) -> Result<Vec<Value>, ApiError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, entity, entity_id, op, payload, ts, actor FROM events ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (id, entity, entity_id, op, payload, ts, actor) = r?;
+            if entity == Entity::Task.as_str() && !present.contains(entity_id.as_str()) {
+                continue;
+            }
+            let payload: Value = payload
+                .as_deref()
+                .and_then(|p| serde_json::from_str(p).ok())
+                .unwrap_or(Value::Null);
+            let via_store_import =
+                matches!(payload.get("via"), Some(Value::String(s)) if s == "store.import");
+            if op == "import" || (op == "memory.add" && via_store_import) {
+                continue;
+            }
+            out.push(json!({
+                "id": id,
+                "entity": entity,
+                "entity_id": entity_id,
+                "op": op,
+                "payload": payload,
+                "ts": ts,
+                "actor": actor,
+            }));
         }
         Ok(out)
     }
@@ -483,8 +564,16 @@ impl Engine {
         // Upsert by id via ON CONFLICT DO UPDATE — the UPDATE path fires
         // docs_fts_au, so the search index follows (the same trigger rule the
         // annotation upsert below learned from the review).
+        // #179: PRESENCE, not just contents — a document that declares an
+        // empty `docs` array is a legitimate "no memory docs" answer, while
+        // one that omits the key entirely never claimed to be self-contained
+        // on this axis. `opt_array` (not `unwrap_or_default`) is what lets the
+        // two be told apart, the same distinction `declared` draws for
+        // `projects` above.
+        let docs_param = opt_array(p, "docs")?.cloned();
+        let docs_declared = docs_param.is_some();
         let mut docs_imported = 0i64;
-        if let Some(rows) = opt_array(p, "docs")?.cloned() {
+        if let Some(rows) = docs_param {
             for dv in &rows {
                 let dv = import_shape("", "doc", dv)?;
                 import_keys("", "doc", dv, IMPORT_DOC_KEYS)?;
@@ -523,6 +612,65 @@ impl Engine {
             }
         }
 
+        // #176: the event log half of a restore, optional so a document
+        // written before it existed still imports. Faithfully replays the
+        // ORIGINAL rows — their own id, op and timestamp — which is what lets
+        // a restored store answer `chart heatmap`/`chart throughput` the way
+        // the original did instead of starting its history from today.
+        // `INSERT OR IGNORE` keyed on the original `id`: re-importing a
+        // document already replayed here is a no-op, the same rule every
+        // other section in this method follows, and it is also what keeps
+        // two stores that both replay one shared history from duplicating it.
+        let mut events_imported = 0i64;
+        if let Some(rows) = opt_array(p, "events")?.cloned() {
+            for ev in &rows {
+                let ev = import_shape("", "event", ev)?;
+                import_keys("", "event", ev, IMPORT_EVENT_KEYS)?;
+                let eid = opt_str_nonempty(ev, "id")?.unwrap_or_else(|| Uuid::now_v7().to_string());
+                let entity_raw = req_str(ev, "entity").map_err(|e| {
+                    ApiError::bad_request(format!(
+                        "{} — each imported event requires an `entity`",
+                        e.message
+                    ))
+                })?;
+                let entity = Entity::parse(&entity_raw).ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "store.import: event {eid} has entity {entity_raw:?} — expected one of {}",
+                        Entity::accepted()
+                    ))
+                })?;
+                let entity_id = req_str(ev, "entity_id").map_err(|e| {
+                    ApiError::bad_request(format!(
+                        "{} — each imported event requires an `entity_id`",
+                        e.message
+                    ))
+                })?;
+                let op = req_str(ev, "op").map_err(|e| {
+                    ApiError::bad_request(format!(
+                        "{} — each imported event requires an `op`",
+                        e.message
+                    ))
+                })?;
+                let payload = ev.get("payload").cloned().unwrap_or(Value::Null);
+                let ts = opt_str_nonempty(ev, "ts")?.unwrap_or_else(now);
+                let actor = opt_str_nonempty(ev, "actor")?;
+                let n = tx.execute(
+                    "INSERT OR IGNORE INTO events (id, entity, entity_id, op, payload, ts, actor) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    params![
+                        eid,
+                        entity.as_str(),
+                        entity_id,
+                        op,
+                        payload.to_string(),
+                        ts,
+                        actor
+                    ],
+                )?;
+                events_imported += n as i64;
+            }
+        }
+
         for tv in tasks {
             // Shape first, fields second: a non-object entry used to be
             // diagnosed by `req_str` as "missing required field: id", sending
@@ -538,6 +686,25 @@ impl Engine {
             // After `id`, so the error can name the task the caller must edit —
             // one bad field in a thousand-line export is useless without it.
             import_keys(&format!("task {id}, "), "task", tv, IMPORT_TASK_KEYS)?;
+            // #180: a repeated primary `id` in one payload is the same fault
+            // the short_id check below refuses one field over — two entries
+            // claim to be the same task, and the upsert's `ON CONFLICT(id) DO
+            // UPDATE` would otherwise apply both and silently keep only the
+            // LAST, while `imported` still counted every entry it read rather
+            // than every row it actually wrote. Checked here, before any of
+            // this task's other fields are parsed, so a document with this
+            // fault is refused without the wasted work of validating an entry
+            // that could never be written anyway. `written` is a set, not a
+            // scan of `edges`, so a 10k-task import pays one hash insert per
+            // task rather than 10k² comparisons for a check that almost never
+            // fires.
+            if !written.insert(id.to_string()) {
+                return Err(ApiError::conflict(format!(
+                    "store.import: task {id} appears more than once in this document's `tasks` \
+                     array — one id addresses exactly one task, so this document cannot be \
+                     restored anywhere"
+                )));
+            }
             let short_id = import_field(id, "short_id", req_i64(tv, "short_id"))?;
             // D17's rule where the value ENTERS: `short_id` is untrusted i64 and
             // the mint floor below is `short_id + 1`, which panicked in debug and
@@ -770,9 +937,36 @@ impl Engine {
                      to task {other} in this store — import into a fresh store, or renumber"
                 )));
             }
-            // Set, not a scan of `edges`: an import of 10k tasks would otherwise
-            // cost 10k² comparisons for a check that fires almost never.
-            written.insert(id.to_string());
+
+            // #177: a task ALREADY in this store, at a HIGHER `_rev` than the
+            // payload's, means the payload is a stale copy of this very task —
+            // annotations, tags and dependency edges added since the export
+            // was taken are about to be replaced wholesale by the
+            // DELETE+reinsert every child table below uses, and the caller
+            // finds out only by noticing they are gone afterwards. `_rev` is
+            // exported on every task for exactly this comparison (D13's
+            // `expected_rev` guard already trusts it as one) and nothing here
+            // ever consulted it. Refused by name, the same shape the short_id
+            // collision just above already gets; a payload at or ahead of the
+            // stored rev still passes, which is what keeps re-importing a
+            // store's own export (D12's round trip) a no-op rather than a
+            // refusal.
+            let stored_rev: Option<i64> = tx
+                .query_row("SELECT rev FROM tasks WHERE id = ?1", params![id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if let Some(stored) = stored_rev {
+                if stored > rev {
+                    return Err(ApiError::conflict(format!(
+                        "store.import: task {id} carries _rev {rev}, but the store already holds \
+                         it at _rev {stored} — this payload is older than what is already here, \
+                         and importing it would discard every annotation, tag and dependency \
+                         edge added since (run `tasqx export` first for a merge target, or drop \
+                         this task from the payload)"
+                    )));
+                }
+            }
 
             // Upsert by id.
             // Both timing columns are driven by the payload's STATUS, not
@@ -951,15 +1145,24 @@ impl Engine {
         let default_project = standing.or_else(|| want_default.clone());
         tx.commit()?;
 
-        // All five always present: a machine consumer must be able to tell "no
+        // All seven always present: a machine consumer must be able to tell "no
         // projects in the document" from "this build does not report them", the
         // same reason `dropped_dependencies` and `default_cleared` are never
         // omitted.
+        //
+        // `docs_declared` is #179: `docs_imported: 0` alone cannot tell "the
+        // document had an empty `docs` section" from "the document had none at
+        // all", and a human surface rendering "0" only in the first case made
+        // the two indistinguishable on the one command whose entire job is
+        // telling the caller what came back. This is the same PRESENCE-vs-
+        // absence distinction `declared` already draws for `projects` above.
         Ok(json!({
             "imported": imported,
             "projects_imported": projects_imported,
             "projects_created": projects_created,
             "docs_imported": docs_imported,
+            "docs_declared": docs_declared,
+            "events_imported": events_imported,
             "default_project": default_project,
         }))
     }
@@ -1190,5 +1393,159 @@ mod tests {
         e.task_add(&json!({ "title": "two" }))
             .expect("add after export");
         assert_eq!(exported_task_count(&e), 2);
+    }
+
+    /// #180: a payload with three task entries but only two distinct ids (the
+    /// third repeats the second's id under a different title) used to be
+    /// accepted last-write-wins — "task 2" silently discarded, the store left
+    /// with 2 rows while the result claimed 3 imported. A repeated `id` is the
+    /// same fault the short_id collision below already refuses, one field
+    /// over.
+    #[test]
+    fn store_import_refuses_a_duplicate_task_id_in_one_payload() {
+        let e = Engine::open_in_memory().expect("open");
+        const FIRST: &str = "0193aaaa-0000-7000-8000-0000000000f1";
+        const SECOND: &str = "0193aaaa-0000-7000-8000-0000000000f2";
+        let err = e
+            .store_import(&json!({ "tasks": [
+                { "id": FIRST, "short_id": 1, "title": "task 1" },
+                { "id": SECOND, "short_id": 2, "title": "task 2" },
+                { "id": SECOND, "short_id": 3, "title": "dup second" },
+            ] }))
+            .expect_err("a repeated id must not be accepted");
+
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        assert!(err.message.contains(SECOND), "{}", err.message);
+        assert!(
+            err.message.contains("more than once"),
+            "the message must say the id repeats: {}",
+            err.message
+        );
+        // Same transaction, so the refusal writes nothing — not even the
+        // first, non-conflicting task.
+        assert_eq!(exported_task_count(&e), 0);
+    }
+
+    /// #177: restoring an OLDER export over a store that has since gathered
+    /// more annotations and a tag used to silently regress the task to the
+    /// stale snapshot — the newer child rows are DELETEd and reinserted from
+    /// the payload's own (older) list, with no refusal and no report of what
+    /// was lost. `_rev` is exported on every task and bumped by every one of
+    /// those writes (D13's `expected_rev` already trusts it as an optimistic-
+    /// concurrency token); this pins that a stale payload is refused by name
+    /// instead, and that the refusal writes NOTHING — the live annotations and
+    /// tag survive exactly as they were.
+    #[test]
+    fn store_import_refuses_a_stale_rev_that_would_discard_newer_annotations_and_tags() {
+        let e = Engine::open_in_memory().expect("open");
+        let added = e.task_add(&json!({ "title": "the task" })).expect("add");
+        let sid = added["short_id"].as_i64().expect("short_id");
+        e.annotation_add(&json!({ "ref": sid, "body": "monday: original context" }))
+            .expect("annotate");
+
+        // The "monday" backup: _rev 2 (add, then one annotation).
+        let monday = e.store_export(&json!({})).expect("export");
+        assert_eq!(monday["tasks"][0]["_rev"], json!(2), "{monday}");
+
+        // A week of work happens: two more annotations and a tag, each
+        // bumping `_rev` past what the backup carries.
+        e.annotation_add(&json!({ "ref": sid, "body": "tuesday: found the root cause" }))
+            .expect("annotate");
+        e.annotation_add(&json!({ "ref": sid, "body": "wednesday: fix landed" }))
+            .expect("annotate");
+        e.tag_add(&json!({ "ref": sid, "tags": ["shipped"] }))
+            .expect("tag");
+        let live = e.store_export(&json!({})).expect("export");
+        assert_eq!(live["tasks"][0]["_rev"], json!(5), "{live}");
+        assert_eq!(live["tasks"][0]["annotations"].as_array().unwrap().len(), 3);
+
+        // Restoring the older backup must be refused, not silently applied.
+        let err = e
+            .store_import(&monday)
+            .expect_err("an older _rev must not overwrite a newer task");
+        assert_eq!(err.code, ErrorCode::Conflict, "{}", err.message);
+        for needle in ["_rev 2", "_rev 5"] {
+            assert!(err.message.contains(needle), "{}: {}", needle, err.message);
+        }
+
+        // The refusal wrote NOTHING: the annotations and tag from "the week
+        // of work" are exactly as they were.
+        let after = e.store_export(&json!({})).expect("export");
+        assert_eq!(after, live, "a refused import must not touch the store");
+    }
+
+    /// #176: `store.export` carried no event log at all, so a store restored
+    /// from a backup answered `chart heatmap`/`chart throughput` (both of
+    /// which read `event.list`, see `tasqx-cli/src/chart.rs`) as if no task
+    /// had ever been completed — while `task.list status:done` still counted
+    /// every one of them, because task rows round-tripped fine. This pins
+    /// that the `done` event survives an export/import cycle into a FRESH
+    /// store, which is the whole of what a restore promises.
+    #[test]
+    fn store_export_carries_the_event_log_so_a_restore_keeps_its_done_history() {
+        let e = Engine::open_in_memory().expect("open");
+        let added = e.task_add(&json!({ "title": "ship it" })).expect("add");
+        let sid = added["short_id"].as_i64().expect("short_id");
+        e.task_start(&json!({ "ref": sid })).expect("start");
+        e.task_stop(&json!({ "ref": sid })).expect("stop");
+        e.task_done(&json!({ "ref": sid })).expect("done");
+
+        let doc = e.store_export(&json!({})).expect("export");
+        let events = doc["events"].as_array().expect("events array");
+        let ops: Vec<&str> = events
+            .iter()
+            .map(|ev| ev["op"].as_str().expect("op is a string"))
+            .collect();
+        assert!(
+            ops.contains(&"done"),
+            "the export must carry the `done` event: {ops:?}"
+        );
+
+        let fresh = Engine::open_in_memory().expect("open fresh");
+        let imported = fresh.store_import(&doc).expect("import");
+        assert!(imported["events_imported"].as_i64().unwrap() >= events.len() as i64);
+
+        let restored_ops: Vec<Value> = fresh
+            .event_list(&json!({ "entity": "task", "limit": 100 }))
+            .expect("event.list")["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .map(|ev| ev["op"].clone())
+            .collect();
+        assert!(
+            restored_ops.contains(&json!("done")),
+            "a restored store must still be able to answer `chart heatmap`'s question: {restored_ops:?}"
+        );
+    }
+
+    /// #179: a document with no `docs` section at all (a pre-D41 export, or a
+    /// typo that moved the array under the wrong key) used to import
+    /// indistinguishably from one that declared an EMPTY `docs` section — both
+    /// answered `docs_imported: 0`, silently. `docs_declared` is the signal a
+    /// human surface (verbs.rs::run_import) needs to tell the two apart.
+    #[test]
+    fn store_import_reports_whether_the_document_declared_a_docs_section() {
+        let no_section = Engine::open_in_memory().expect("open");
+        let r = no_section
+            .store_import(&json!({ "tasks": [] }))
+            .expect("import with no docs key");
+        assert_eq!(r["docs_imported"], json!(0), "{r}");
+        assert_eq!(
+            r["docs_declared"],
+            json!(false),
+            "no `docs` key at all must be reported as undeclared: {r}"
+        );
+
+        let empty_section = Engine::open_in_memory().expect("open");
+        let r = empty_section
+            .store_import(&json!({ "tasks": [], "docs": [] }))
+            .expect("import with an empty docs array");
+        assert_eq!(r["docs_imported"], json!(0), "{r}");
+        assert_eq!(
+            r["docs_declared"],
+            json!(true),
+            "an explicit empty `docs` array must be reported as declared: {r}"
+        );
     }
 }

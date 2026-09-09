@@ -89,20 +89,46 @@ impl Engine {
         let ts = now();
         let tx = self.begin_mutation()?;
         let mut out = Vec::new();
+        let mut replaced = 0i64;
         for dv in docs {
             let dv = import_shape("", "doc", dv)?;
             import_keys("", "doc", dv, &["title", "body", "source"])?;
             let title = req_str(dv, "title")?;
             let body = req_str(dv, "body")?;
             let source = opt_str_nonempty(dv, "source")?;
-            if let Some(src) = &source {
-                // Plain DELETE, so the delete trigger keeps the index honest.
-                tx.execute("DELETE FROM docs WHERE source = ?1", params![src])?;
-            }
-            let id = Uuid::now_v7().to_string();
+            // A doc whose `source` matches an existing row is a RE-IMPORT of
+            // the same logical document (a directory re-run after an edit),
+            // not a new one — so it UPDATES that row rather than deleting and
+            // re-minting (#178/#198). The DELETE-then-INSERT this replaces
+            // always struck a fresh UUIDv7, so `memory show <id>`, an
+            // annotation citing the doc, and MCP's `tasqx_get_memory` all
+            // 404'd the moment ANY re-run happened — announced nowhere, and
+            // at scale on a real store one source had been silently
+            // overwritten 34 times.
+            let existing: Option<String> = match &source {
+                Some(src) => tx
+                    .query_row("SELECT id FROM docs WHERE source = ?1", params![src], |r| {
+                        r.get(0)
+                    })
+                    .optional()?,
+                None => None,
+            };
+            let is_replace = existing.is_some();
+            let id = existing.unwrap_or_else(|| Uuid::now_v7().to_string());
+            // ON CONFLICT DO UPDATE, never DELETE+INSERT (D41's own rule,
+            // learned the hard way for the annotation upsert): a DELETE does
+            // not fire `docs_fts`'s delete trigger for free, and re-doing it
+            // by hand here would be a second copy of the exact bug that rule
+            // exists to prevent. The UPDATE path fires `docs_fts_au` and
+            // keeps the index honest. `created` is deliberately absent from
+            // the SET list, so a source-replace keeps the ORIGINAL creation
+            // date rather than pretending the doc is new.
             tx.execute(
                 "INSERT INTO docs (id, source, title, body, created, modified) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                 source=excluded.source, title=excluded.title, body=excluded.body, \
+                 modified=excluded.modified",
                 params![id, source, title, body, ts],
             )?;
             insert_event(
@@ -110,13 +136,21 @@ impl Engine {
                 Entity::Doc,
                 &id,
                 "memory.add",
-                &json!({ "title": title, "source": source, "via": "memory.import" }),
+                &json!({
+                    "title": title,
+                    "source": source,
+                    "via": "memory.import",
+                    "replaced": is_replace,
+                }),
             )?;
-            out.push(json!({ "id": id, "title": title, "source": source }));
+            if is_replace {
+                replaced += 1;
+            }
+            out.push(json!({ "id": id, "title": title, "source": source, "replaced": is_replace }));
         }
         tx.commit()?;
 
-        Ok(json!({ "imported": out.len(), "docs": out }))
+        Ok(json!({ "imported": out.len(), "replaced": replaced, "docs": out }))
     }
 
     // ---- memory.search -------------------------------------------------------

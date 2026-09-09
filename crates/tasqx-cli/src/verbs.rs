@@ -751,10 +751,21 @@ pub(crate) fn run_memory_import(be: &mut Backend, path: &str) -> CmdOutcome {
     // nothing, and a re-run replaces instead of duplicating.
     let docs = memory_docs_from_path(path)?;
     let result = be.call("memory.import", &json!({ "docs": docs }))?;
-    let text = format!(
-        "Imported {} doc(s) into memory\n",
-        result["imported"].as_u64().unwrap_or(0)
-    );
+    let imported = result["imported"].as_u64().unwrap_or(0);
+    // #178: a re-run that replaces a doc sharing its `source` used to print
+    // this identical line whether it created 3 docs or silently overwrote 3
+    // — the only announcement was `undo`'s refusal, reached only by someone
+    // who thought to try. `replaced` is counted by the engine either way, so
+    // rendering it here is the one thing on the write side that was missing.
+    let replaced = result["replaced"].as_u64().unwrap_or(0);
+    let text = if replaced > 0 {
+        format!(
+            "Imported {imported} doc(s) into memory ({replaced} replaced; the previous text is \
+             not recoverable)\n"
+        )
+    } else {
+        format!("Imported {imported} doc(s) into memory\n")
+    };
     Ok((result, text))
 }
 
@@ -918,16 +929,26 @@ pub(crate) fn run_import(be: &mut Backend, file: String) -> CmdOutcome {
         .get("docs_imported")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    // D39: `docs_imported` is computed and returned, so a human surface must
-    // render it — a restore that also restored your memory docs and never said
-    // so would make D41's export completeness unobservable. Mentioned only
-    // when nonzero: pre-D41 documents carry no docs, and "0 doc(s)" on every
-    // legacy restore is noise about a section the document never had.
-    let mut text = if d > 0 {
-        format!("Imported {n} task(s), {p} project(s), {d} memory doc(s)\n")
-    } else {
-        format!("Imported {n} task(s), {p} project(s)\n")
-    };
+    // #179: PRESENT-and-empty and ABSENT used to print the identical line —
+    // dropping the segment whenever `d == 0` made a `docs` typo (or an older
+    // exporter's document) that silently restored zero memory docs read
+    // exactly like a legacy document that never had any. D39: `docs_imported`
+    // is computed and returned, so a human surface must render it, always —
+    // the omission is what made D41's export completeness unobservable.
+    let mut text = format!("Imported {n} task(s), {p} project(s), {d} memory doc(s)\n");
+    // The PRESENCE half `projects` already gets below: a document that never
+    // declared a `docs` section at all (a pre-D41 export, or a typo'd key)
+    // is named by the same shape, so the reader learns WHY it was zero
+    // instead of just that it was.
+    if !result
+        .get("docs_declared")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        text.push_str(
+            "note: the document carried no `docs` section, so no memory docs were restored\n",
+        );
+    }
     if !minted.is_empty() {
         text.push_str(&format!(
             "note: the document carried no `projects` section, so {} created from the tasks: {}\n",
