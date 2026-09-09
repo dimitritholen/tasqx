@@ -246,7 +246,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["dash"],
         method: "task.list + report.summary + project.list + event.list",
         summary: "Open the overview screen, or ask for its panels as data.",
-        usage: "tasqx dashboard [--json]",
+        usage: "tasqx dashboard [--json] [--panels <LIST>]",
         examples: &[
             // `NoRun` for the screen, and `Safe` for the document — the split
             // is the point of this verb. The executable-examples guard runs a
@@ -263,6 +263,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "The same screen a bare `tasqx` opens on a terminal. Spelling it explicitly works even when `dashboard.enabled` is off — that setting protects the meaning of the BARE invocation, and typing the verb is not a breaking change to anything.",
             "It needs a terminal of at least 56x14 on stdin AND stdout, and says which it got when it refuses. A bare `tasqx` in a window that small falls back to the working-set table instead, silently: whoever typed nothing did not ask for a dashboard.",
             "`--json` skips both of those checks, because it opens no screen. It is the only verb where `--json` decides whether the terminal gate applies, and it is what makes the panel data reachable from a script.",
+            "`--panels now,next,due` narrows the `--json` document to those panels, on that one call — it does not touch `dashboard.panels` or the interactive screen. RECENT and NEXT are also row-capped with `total`/`truncated` alongside them, because both track the store's size rather than the screen's (#152).",
             "Read-only, with one exception: `p` opens the picker, and Enter there starts the highlighted task. `q`, `esc` and ctrl-c all close.",
         ],
         see_also: &["list", "pick", "agenda", "chart"],
