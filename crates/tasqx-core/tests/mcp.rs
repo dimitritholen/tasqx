@@ -1274,6 +1274,37 @@ fn untag_removes_what_tag_added() {
     assert_eq!(tags, vec![json!("api")]);
 }
 
+/// The published `tasqx_untag_task` description must say what D52 actually
+/// does — `not_found`, all-or-nothing — not its opposite (audit #170).
+///
+/// Before this fix the description read "Removing a tag the task does not
+/// carry is not an error", which is the exact behaviour D52 refused: an
+/// agent designing a tag-sync routine against that sentence would fire
+/// `tag.remove` over a union of tags and read a miss as a harmless no-op,
+/// when the real contract removes nothing and errors.
+#[test]
+fn untag_task_description_matches_d52_rather_than_contradicting_it() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let listed = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let untag = tools
+        .iter()
+        .find(|t| t["name"] == "tasqx_untag_task")
+        .expect("tasqx_untag_task is listed");
+    let desc = untag["description"].as_str().expect("a description");
+    assert!(
+        !desc.contains("is not an error"),
+        "the description still claims the opposite of D52: {desc}"
+    );
+    assert!(
+        desc.contains("not_found") && desc.to_lowercase().contains("all"),
+        "the description should name the real contract (not_found, all-or-nothing): {desc}"
+    );
+}
+
 /// A dependency added by mistake blocks the task forever unless it can be cut.
 #[test]
 fn remove_dependency_unblocks_what_add_dependency_blocked() {
@@ -1735,5 +1766,117 @@ fn the_json_omission_notice_says_that_naming_a_limit_removes_the_budget() {
     assert!(
         big > budgeted * 2,
         "naming a limit really is several times the budgeted answer: {big} vs {budgeted}"
+    );
+}
+
+// ---- structured errors carry code, message and data (audit #175) ------------
+
+/// An MCP error result must carry the same `code`/`message`/`data` a
+/// `tasqx api` caller gets, as `structuredContent`, not only as a substring of
+/// the text block's `error [code]: message` prose.
+///
+/// Before this fix `data` (here, the project name a caller would need to
+/// retry usefully) was dropped entirely on the way to an MCP client, and
+/// `code` survived only as an undocumented regex target.
+#[test]
+fn an_mcp_error_carries_structured_code_message_and_data() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "x", "project": "no-such-project" }),
+    );
+    assert!(is_error(&resp), "an unknown project must refuse");
+    let structured = &resp["result"]["structuredContent"];
+    assert_eq!(
+        structured["error"]["code"], "not_found",
+        "structuredContent.error.code must carry the machine-readable code: {resp}"
+    );
+    assert_eq!(
+        structured["error"]["data"]["name"], "no-such-project",
+        "structuredContent.error.data must survive the trip over MCP: {resp}"
+    );
+    assert!(
+        structured["error"]["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty()),
+        "structuredContent.error.message must not be empty: {resp}"
+    );
+    // The text block is unchanged — this is additive, not a replacement.
+    let text = resp["result"]["content"][0]["text"].as_str().expect("text");
+    assert!(text.starts_with("error [not_found]:"), "got: {text}");
+}
+
+// ---- MCP-surface error remedies name a tool an agent can call (audit #225.3) -
+
+/// A `task.modify` refusal that tells the caller to use `task.start/stop/done`
+/// is correct advice over `tasqx api` and wrong advice over MCP, where those
+/// are not callable names. The MCP presentation must rewrite it to the tools
+/// that actually exist on this surface.
+#[test]
+fn an_mcp_transition_refusal_names_mcp_tools_not_api_methods() {
+    let engine = engine();
+    engine.task_add(&json!({ "title": "t" })).expect("add");
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_modify_task",
+        json!({ "ref": 1, "set": { "status": "pending" } }),
+    );
+    assert!(is_error(&resp));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        !text.contains("task.start/stop/done"),
+        "the refusal still names JSON-API method names an MCP agent cannot call: {text}"
+    );
+    assert!(
+        text.contains("tasqx_start_timer")
+            && text.contains("tasqx_stop_timer")
+            && text.contains("tasqx_complete_task"),
+        "the refusal should name the real MCP tools: {text}"
+    );
+}
+
+/// `require_live_project`'s refusal names `tasqx init NAME` — a CLI verb with
+/// no MCP equivalent and no shell to run it in. Over MCP it must name the
+/// tool that actually creates a project.
+#[test]
+fn an_mcp_missing_project_refusal_names_the_create_project_tool() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let resp = call(
+        &server,
+        1,
+        "tasqx_add_task",
+        json!({ "title": "x", "project": "no-such-project" }),
+    );
+    assert!(is_error(&resp));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        !text.contains("tasqx init"),
+        "the refusal still names a CLI verb with no MCP equivalent: {text}"
+    );
+    assert!(
+        text.contains("tasqx_create_project"),
+        "the refusal should name the MCP tool that creates a project: {text}"
+    );
+}
+
+// ---- the read-only refusal names the fix (audit #225.11) ---------------------
+
+#[test]
+fn the_read_only_refusal_names_the_flag_that_fixes_it() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Read);
+    let resp = call(&server, 1, "tasqx_add_task", json!({ "title": "nope" }));
+    assert!(is_error(&resp));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("tasqx mcp serve --scope write"),
+        "the refusal should name the exact fix, since a retry or a workaround \
+         cannot succeed on this surface: {text}"
     );
 }

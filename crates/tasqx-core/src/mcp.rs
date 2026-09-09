@@ -790,7 +790,8 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: true,
             idempotent: true,
             description: "Remove one or more tags from a task. Returns the resulting tag set. \
-                Removing a tag the task does not carry is not an error.",
+                A tag the task does not carry is `not_found` and removes NONE of the tags \
+                named — all or nothing, so a typo can never answer ok.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -1079,7 +1080,9 @@ impl<'e> McpServer<'e> {
             return tool_error(
                 "bad_request",
                 format!(
-                    "tool `{name}` requires write scope, but this MCP server is running read-only"
+                    "tool `{name}` requires write scope, but this MCP server is running \
+                     read-only. This cannot be changed from a tool call: the operator must \
+                     relaunch the server as `tasqx mcp serve --scope write`."
                 ),
             );
         }
@@ -1237,7 +1240,8 @@ impl<'e> McpServer<'e> {
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_string))
                     .unwrap_or_else(|| "internal".to_string());
-                tool_error(&code, e.message)
+                let message = mcp_surface_message(e.message, e.data.as_ref());
+                tool_error_with_data(&code, message, e.data)
             }
         }
     }
@@ -1570,14 +1574,85 @@ fn view_only_text(view: &str) -> String {
 }
 
 /// An error `tools/call` result (scope denial, unknown tool, or a core
-/// `ApiError`): the code + message as text content, flagged `isError`.
+/// `ApiError`): the code + message as text content, flagged `isError`, with
+/// no structured detail. Most refusals raised inside this module (an unknown
+/// tool name, a scope denial) have none to carry; a dispatch `ApiError` goes
+/// through [`tool_error_with_data`] instead.
 fn tool_error(code: &str, message: impl Into<String>) -> Value {
+    tool_error_with_data(code, message, None)
+}
+
+/// The same `tools/call` error shape as [`tool_error`], plus the `data` a core
+/// `ApiError` carries — both as a `structuredContent.error` object beside the
+/// text block.
+///
+/// Before this, `code` and `data` reached an MCP caller only as a substring of
+/// prose (`error [not_found]: ...`), an undocumented wire format `code` had to
+/// be regex-matched out of and `data` could not be recovered from at all —
+/// while the same failure over `tasqx api` answers a machine-readable
+/// `{code, message, data}` envelope. `structuredContent` is additive: the text
+/// block is unchanged, so nothing that already parses `content[0].text` is
+/// affected.
+fn tool_error_with_data(code: &str, message: impl Into<String>, data: Option<Value>) -> Value {
+    let message = message.into();
+    let mut error = json!({ "code": code, "message": message });
+    if let Some(d) = data {
+        error["data"] = d;
+    }
     json!({
         "content": [
-            { "type": "text", "text": format!("error [{code}]: {}", message.into()) }
+            { "type": "text", "text": format!("error [{code}]: {message}") }
         ],
-        "isError": true
+        "isError": true,
+        "structuredContent": { "error": error }
     })
+}
+
+/// Engine error phrases naming a CLI verb or JSON-API method that has no MCP
+/// tool of the same name, rewritten to the tool an MCP caller can actually
+/// call.
+///
+/// Each entry is author-written prose emitted by exactly one call site (never
+/// user input echoed back), so a substring replace cannot misfire on a task
+/// title or filter value that happens to contain the same words. The engine
+/// message stays exactly as written for `tasqx api` and the CLI, where
+/// `task.start/stop/done` and `task.get` ARE the right names to print; only
+/// what an MCP session sees is rewritten, here, at the transport boundary the
+/// rest of this file already narrows through (`TRANSPORT_ONLY_ARGS`,
+/// `UNEXPOSED_METHODS`).
+const MCP_REMEDY_REWRITES: &[(&str, &str)] = &[
+    (
+        "use task.start/stop/done for other transitions",
+        "use tasqx_start_timer / tasqx_stop_timer / tasqx_complete_task for other transitions",
+    ),
+    (
+        "read it with task.get on #",
+        "read it with tasqx_get_task on #",
+    ),
+];
+
+/// Apply [`MCP_REMEDY_REWRITES`], then the one rewrite that needs the error's
+/// own `data` rather than a fixed phrase: `require_live_project`'s refusal
+/// names `tasqx init NAME`, a CLI verb with no MCP equivalent and no shell to
+/// run it in. `data.name` carries the same name the message embeds, so the
+/// CLI-specific clause is replaced exactly rather than guessed at from prose.
+fn mcp_surface_message(message: String, data: Option<&Value>) -> String {
+    let mut out = message;
+    for (from, to) in MCP_REMEDY_REWRITES {
+        if out.contains(from) {
+            out = out.replace(from, to);
+        }
+    }
+    if let Some(name) = data.and_then(|d| d.get("name")).and_then(Value::as_str) {
+        let cli_clause = format!("(create it with `tasqx init {name}`)");
+        if out.contains(&cli_clause) {
+            out = out.replace(
+                &cli_clause,
+                "(create it first with the `tasqx_create_project` tool)",
+            );
+        }
+    }
+    out
 }
 
 fn rpc_result(id: Value, result: Value) -> Value {

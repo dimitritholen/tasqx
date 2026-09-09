@@ -1943,7 +1943,7 @@ fn page_mcp() -> String {
     ));
     s.push_str(&snippet(
         "echo '{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"tasqx_add_task\",\"arguments\":{\"title\":\"nope\"}}}' | tasqx mcp serve 2>/dev/null",
-        "{\"id\":4,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"error [bad_request]: tool `tasqx_add_task` requires write scope, but this MCP server is running read-only\",\"type\":\"text\"}],\"isError\":true}}",
+        "{\"id\":4,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"error [bad_request]: tool `tasqx_add_task` requires write scope, but this MCP server is running read-only. This cannot be changed from a tool call: the operator must relaunch the server as `tasqx mcp serve --scope write`.\",\"type\":\"text\"}],\"isError\":true}}",
     ));
 
     s.push_str(&h3("Wiring it into a client"));
