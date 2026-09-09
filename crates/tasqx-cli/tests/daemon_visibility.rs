@@ -283,6 +283,122 @@ fn the_daemon_names_its_store_on_startup() {
     );
 }
 
+/// A scratch `$HOME` for the two `#184` tests below: `directories::ProjectDirs`
+/// resolves the platform-default store from `$HOME` (Linux and macOS; Windows
+/// asks the OS profile API instead and does not read this variable, which is
+/// why both callers are `#[cfg(unix)]`), and `api`/`mcp serve` with no
+/// `$TASQX_DB` is exactly the branch under test — it must land in a directory
+/// this test owns and deletes, never a real developer's data dir.
+#[cfg(unix)]
+fn scratch_home(tag: &str) -> PathBuf {
+    let home = std::env::temp_dir().join(format!("tasqx-dvis-{tag}-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).expect("create scratch HOME");
+    home
+}
+
+/// #184: `api` never routes through a daemon (D73 keeps it an in-process
+/// stdio host), and until now an ambient `$TASQX_SOCK` naming a *live*
+/// daemon, with `$TASQX_DB` unset, was left completely unremarked — the
+/// exact repro in #184's Observed section: a daemon serving 25 real tasks
+/// sat one env var away while `api` silently opened and answered from a
+/// brand-new, empty default store, stderr empty. The note added for this is
+/// additive only — D73's ruling that the env var stays ambient (never
+/// refused) on this verb is untouched, so the assertion below is explicit
+/// that this is a note, not the D73 refusal.
+#[cfg(unix)]
+#[test]
+fn api_notes_a_live_daemon_it_never_routed_through() {
+    use std::io::Write;
+    let w = world("apinote");
+    let shutdown = start_daemon(&w);
+    let home = scratch_home("apinote");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &w.config_dir)
+        .env("TASQX_SOCK", &w.sock)
+        .env("HOME", &home)
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("TASQX_DB")
+        .arg("api")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tasqx api");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(br#"{"tasqx":"1","id":"n","method":"task.list","params":{}}"#)
+        .expect("write envelope");
+    let out = child.wait_with_output().expect("wait");
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&home);
+
+    assert!(
+        out.status.success(),
+        "api must still answer: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&w.sock),
+        "the note must name the daemon it saw but did not route through: {stderr}"
+    );
+    assert!(
+        stderr.contains("TASQX_DB"),
+        "the note must point at the way to reach the daemon's own store: {stderr}"
+    );
+    assert!(
+        !stderr.contains("error ["),
+        "this is a note, not a refusal — D73 keeps $TASQX_SOCK ambient here: {stderr}"
+    );
+}
+
+/// The same gap on `mcp serve` — the surface #184 calls out by name ("`mcp
+/// serve` is how an agent is wired up"). Stdin is closed immediately (EOF),
+/// which is enough to drive the server through its open-and-announce path and
+/// back out without a real MCP client.
+#[cfg(unix)]
+#[test]
+fn mcp_serve_notes_a_live_daemon_it_never_routed_through() {
+    let w = world("mcpnote");
+    let shutdown = start_daemon(&w);
+    let home = scratch_home("mcpnote");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &w.config_dir)
+        .env("TASQX_SOCK", &w.sock)
+        .env("HOME", &home)
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("TASQX_DB")
+        .args(["mcp", "serve"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tasqx mcp serve");
+    drop(child.stdin.take().expect("stdin")); // immediate EOF
+    let out = child.wait_with_output().expect("wait");
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&home);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&w.sock),
+        "the note must name the daemon it saw but did not route through: {stderr}"
+    );
+    assert!(
+        stderr.contains("TASQX_DB"),
+        "the note must point at the way to reach the daemon's own store: {stderr}"
+    );
+    assert!(
+        !stderr.contains("error ["),
+        "this is a note, not a refusal — D73 keeps $TASQX_SOCK ambient here: {stderr}"
+    );
+}
+
 /// #250: a second daemon on a held address used to print
 /// `listening on <addr>` BEFORE attempting the bind, then contradict itself —
 /// and in a log or a service unit the listening line is the one an operator
