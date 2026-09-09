@@ -1492,6 +1492,37 @@ fn attribution_loop(sh: Shared, shutdown: Arc<AtomicBool>) {
     }
 }
 
+/// The stderr line for one tick's batch of newly-banked measurements (#218),
+/// or `None` when the tick measured nothing (an all-attributed store, or a
+/// tick that only wrote empty terminating markers). Pure — a tick's worth of
+/// arithmetic and a format string — so the wording is unit-testable without
+/// capturing a real process's stderr, unlike the `eprintln!` call site it
+/// feeds.
+///
+/// This makes a large batch OBSERVABLE; it deliberately does not change
+/// WHICH completions are eligible to attribute. `pending_attributions`'s own
+/// header states that catch-up after daemon downtime is unbounded by design
+/// ("a task completed by a one-shot CLI while no daemon ran is picked up on
+/// the next tick exactly like a reminder missed while down") — bounding
+/// eligibility by age to quiet the first-run backlog would silently drop
+/// that same catch-up for a store that was down longer than the bound, which
+/// trades one silent behaviour for another. Visibility is the fix that costs
+/// nothing else.
+fn attribution_summary_line(count: usize, tokens: u64, any_low_confidence: bool) -> Option<String> {
+    if count == 0 {
+        return None;
+    }
+    let plural = if count == 1 { "" } else { "s" };
+    let confidence_note = if any_low_confidence {
+        ", confidence low"
+    } else {
+        ""
+    };
+    Some(format!(
+        "tasqx daemon: attributed {count} completion{plural} ({tokens} tokens{confidence_note})"
+    ))
+}
+
 /// One tick of [`attribution_loop`]: if the event log moved, rebuild the pending
 /// set from the store, parse each task's transcript OFF the engine lock, and
 /// write the result through the idempotent [`Engine::token_attribute`] under a
@@ -1531,6 +1562,14 @@ fn attribution_tick(
 
     let mut wrote_any = false;
     let mut failed_any = false;
+    // #218: how many of this tick's writes carried real spend, their summed
+    // total, and whether any leaned on the lowest-trust confidence — the
+    // makings of the one-line summary `attribution_summary_line` renders
+    // below, so a first-run backlog is announced instead of banked in
+    // silence.
+    let mut measured_count = 0usize;
+    let mut measured_tokens: u64 = 0;
+    let mut measured_low_confidence = false;
     // One pass over the pending set is one tick for log-throttling purposes, the
     // same contract [`reminder_tick`] uses: every message below embeds the task's
     // short_id, so a throttle keyed on one global string would see two failing
@@ -1565,6 +1604,13 @@ fn attribution_tick(
             Ok(did_write) => {
                 if did_write {
                     wrote_any = true;
+                    if result.found {
+                        measured_count += 1;
+                        measured_tokens = measured_tokens.saturating_add(result.totals.total());
+                        if result.confidence == crate::tokens::CONFIDENCE_LOW {
+                            measured_low_confidence = true;
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -1578,6 +1624,12 @@ fn attribution_tick(
                 failed_any = true;
             }
         }
+    }
+
+    if let Some(line) =
+        attribution_summary_line(measured_count, measured_tokens, measured_low_confidence)
+    {
+        eprintln!("{line}");
     }
 
     // Push `tokens.attributed` rows to subscribers immediately (the headless
@@ -3737,6 +3789,38 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #218: enabling `tokens`/`otlp` on a store with months of history makes
+    /// EVERY unattributed completion pending on the first tick — 17
+    /// measurements and 430M tokens were banked with three lines of log
+    /// output, none mentioning it, while `tokens.recompute` (which only
+    /// downgrades a confidence field) is dry-run by default and prints a
+    /// per-task delta. `attribution_summary_line` is the pure half of the
+    /// fix: `attribution_tick` calls it once per tick and, when it comes back
+    /// `Some`, that is the line that goes to stderr — so a backlog banked in
+    /// one tick is announced instead of silent, without touching which
+    /// completions are eligible (the daemon-downtime catch-up this module's
+    /// header documents as free must keep working unbounded).
+    #[test]
+    fn attribution_summary_line_names_the_count_and_tokens_when_anything_was_attributed() {
+        assert_eq!(
+            attribution_summary_line(0, 0, false),
+            None,
+            "a tick that measured nothing has nothing to announce"
+        );
+        assert_eq!(
+            attribution_summary_line(17, 430_169_017, true),
+            Some(
+                "tasqx daemon: attributed 17 completions (430169017 tokens, confidence low)"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            attribution_summary_line(1, 500, false),
+            Some("tasqx daemon: attributed 1 completion (500 tokens)".to_string()),
+            "singular count, and no confidence note when nothing was low"
+        );
     }
 
     #[test]
