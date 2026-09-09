@@ -1076,6 +1076,25 @@ fn bound(value: &str, prefix: &str, now: Timestamp) -> Result<Timestamp, String>
         .ok_or_else(|| format!("`{prefix}:{value}` resolved to an unreadable instant {resolved:?}"))
 }
 
+/// Whether an OPEN task with this `due` is overdue at `now` — one INSTANT-
+/// based definition, shared so `report.summary`'s `overdue` metric cannot
+/// independently drift from `due.before:now`, the filter DSL's own overdue
+/// query (#148: the two used to disagree, because `now` itself resolved to
+/// midnight — see `datetime.rs` #144 — not because either side had its own
+/// idea of "overdue").
+///
+/// This is deliberately NOT the dashboard's definition. `tasqx-cli`'s
+/// `tui::dashboard::model` buckets by calendar DATE on purpose, documented at
+/// its own `Task::due_date`: an instant comparison calls a task due *today*
+/// overdue one second past midnight, which the dashboard was built to avoid.
+/// That is a separate, already-reasoned product decision about a panel
+/// display, not an accidental divergence in date PARSING — the seam this
+/// cluster owns — so this fix unifies the two surfaces that share one
+/// definition and leaves that one alone rather than overriding it here.
+pub fn is_overdue(status_is_open: bool, due: Option<&str>, now: Timestamp) -> bool {
+    status_is_open && due.and_then(parse_ts).is_some_and(|d| d < now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

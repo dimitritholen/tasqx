@@ -554,6 +554,44 @@ fn report_summary_aggregates_count_est_and_overdue() {
     assert_eq!(q["overdue"], 0);
 }
 
+/// #148: `report.summary`'s `overdue` metric and the filter DSL's
+/// `due.before:now` must count the same task the same way. Before this and
+/// the `now`-alias fix in `datetime.rs` (#144), `now` in the filter grammar
+/// resolved to midnight of today, so a task due only an hour ago — still
+/// `report.summary`'s real instant-based check flags it — was invisible to
+/// `due.before:now`, because 1-hour-ago is (almost always) LATER than
+/// midnight, not before it. The two surfaces disagreed about the same store
+/// with nothing on either saying which rule it used.
+#[test]
+fn overdue_count_matches_the_due_before_now_filter() {
+    let e = engine();
+    e.task_add(&json!({ "title": "recently overdue", "due": plus_hours(-1) }))
+        .unwrap();
+    e.task_add(&json!({ "title": "future", "due": plus_hours(48) }))
+        .unwrap();
+
+    let rep = e
+        .report_summary(&json!({ "metrics": ["overdue"] }))
+        .unwrap();
+    let total_overdue: i64 = rep["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["overdue"].as_i64().unwrap())
+        .sum();
+    assert_eq!(
+        total_overdue, 1,
+        "report.summary must count the recently-overdue task: {rep}"
+    );
+
+    let listed = e.task_list(&json!({ "filter": "due.before:now" })).unwrap();
+    assert_eq!(
+        listed["total"], 1,
+        "due.before:now must find the same recently-overdue task \
+         report.summary counted, not just tasks overdue since midnight: {listed}"
+    );
+}
+
 /// Attach one token measurement to a task via `token.add`. Source/confidence
 /// come from the closed vocabularies; the four bucket counts are the payload.
 fn add_tokens(e: &Engine, r: &str, input: i64, output: i64, cache_read: i64, cache_creation: i64) {
