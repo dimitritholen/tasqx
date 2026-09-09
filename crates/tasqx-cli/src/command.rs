@@ -732,7 +732,15 @@ pub(super) enum Command {
     /// Needs a terminal of at least 56x14, and says so rather than drawing a
     /// half screen. `--json` needs neither: it opens nothing.
     #[command(alias = "dash", after_help = crate::cmddoc::after_help("dashboard"))]
-    Dashboard,
+    Dashboard {
+        /// Which panels `--json` answers with, comma-separated
+        /// (now,next,due,blocked,recent,projects,burndown,tokens). Narrows
+        /// `dashboard.panels` for this call only, and only on the `--json`
+        /// path — the interactive screen still reads `dashboard.panels` from
+        /// config (#152).
+        #[arg(long, value_name = "LIST")]
+        panels: Option<String>,
+    },
     /// Choose a task on a full-screen list and start it (maps to task.list,
     /// then task.start).
     ///
