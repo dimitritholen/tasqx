@@ -898,9 +898,23 @@ pub(crate) fn run_import(be: &mut Backend, file: String) -> CmdOutcome {
     Ok((result, text))
 }
 
-pub(crate) fn run_next(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
+/// `tasqx next [filter…]` — the "what now" button, optionally scoped.
+///
+/// Unlike `list`/`pick`, the caller's filter does not REPLACE `@working`; it is
+/// ANDed onto it. `next`'s whole value is skipping blocked and backlog work, and
+/// a caller who narrows to one project still wants that: `tasqx next
+/// project:fin-9695` must not resurrect a blocked task in that project the way
+/// `tasqx list project:fin-9695` (which shows every status once a filter is
+/// given) would if used as a substitute. Parenthesised so a caller's own `or`
+/// binds correctly (`@working and (a or b)`, not `@working and a or b`).
+pub(crate) fn run_next(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOutcome {
     // @working already excludes blocked tasks; highest urgency first, take one.
-    let params = json!({ "filter": "@working", "sort": ["-urgency"], "limit": 1 });
+    let filter_str = if filter.is_empty() {
+        "@working".to_string()
+    } else {
+        format!("@working and ({})", tasqx_core::filter::from_argv(filter))
+    };
+    let params = json!({ "filter": filter_str, "sort": ["-urgency"], "limit": 1 });
     let result = be.call("task.list", &params)?;
     let text = render::next_task(ctx, &result);
     Ok((result, text))
