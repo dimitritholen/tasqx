@@ -77,3 +77,15 @@ unicode-truncate = "2.0.1"
 # the package's own test, example and bench targets, so the duplicate entry that
 # used to sit below was a third declaration site that could drift on its own.
 unicode-width = "0.2.2"
+
+[target.'cfg(unix)'.dependencies]
+# The SIGTERM/SIGHUP/SIGQUIT half of D26's terminal-safety guarantee: the
+# panic hook and the `Restore` guard cover a panic and the three key-driven
+# exits, but neither runs for a signal delivered from outside the process,
+# whose default disposition is to terminate immediately with no Rust code —
+# `Drop` included — getting to run. NOT new to the dependency graph: crossterm
+# already pulls this crate in (for its own SIGWINCH handling), so this adds no
+# new package to `Cargo.lock` — the same "already being compiled anyway"
+# rationale as `unicode-width`/`unicode-truncate` above. Unix-only because
+# these are POSIX signals with no Windows equivalent.
+signal-hook = "0.3"
