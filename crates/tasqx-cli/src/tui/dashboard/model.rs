@@ -514,6 +514,7 @@ pub fn build(src: Sources<'_>, now: Timestamp, today: Date) -> Dashboard {
             id: t.id.clone(),
             created: t.created.to_zoned(TimeZone::UTC).date(),
             open_now: t.status.is_open(),
+            status: t.status.as_str().to_string(),
         })
         .collect();
     let event_count = events.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
