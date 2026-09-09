@@ -347,8 +347,21 @@ impl TokenRow {
         self.name.as_deref()
     }
 
+    /// The blended total across all four buckets — display and sort order
+    /// only; D50 removed the API's own `tokens_total` because the buckets do
+    /// not mean the same thing, and this is not a second one.
+    ///
+    /// Saturating, not `sum()` (#209): a single `token.add` with no ceiling on
+    /// its input can plant a bucket near `i64::MAX`, and plain addition then
+    /// wraps NEGATIVE — sorting the biggest spender to the bottom of the one
+    /// panel built to surface it, silently, in release; in debug the same
+    /// unchecked `sum()` panics the whole screen instead. Saturating pins the
+    /// unrepresentable total at `i64::MAX`, which is still the biggest number
+    /// on the panel rather than the smallest.
     pub fn total(&self) -> i64 {
-        self.buckets.iter().sum()
+        self.buckets
+            .iter()
+            .fold(0i64, |acc, &n| acc.saturating_add(n))
     }
 }
 
