@@ -76,16 +76,29 @@ impl WeekBucket {
 /// Bucket `add` vs `done` events into the last `weeks` ISO weeks (oldest→newest),
 /// including empty weeks so the series is contiguous.
 ///
-/// `members` (#164) is what makes this agree with `report`: a raw event tally
+/// `members` (#164, #162) is what makes this agree with `report`, on both the
+/// membership axis and the double-counting axis: a raw event tally
 /// double-counts `done` for a task closed, reopened and closed again (one task,
-/// two events), and counts `add` for a task that was later cancelled, which
-/// `report` excludes by default (D24). Neither bucket can be answered from the
-/// event log alone — it has no idea what a task's status is NOW.
+/// two events), counts `add` for a task that was later cancelled (which
+/// `report` excludes by default, D24), and — with no membership scoping at all
+/// — draws for the whole store while every other stat on a filtered `report
+/// --html <filter>` page answered the filter (#162), because `report --html`
+/// hands this function the store-wide `event.list` result (D59 bounds it by
+/// time, not by scope). Neither bucket can be answered from the event log
+/// alone — it has no idea what a task's status is NOW, or whether it is even
+/// in scope.
 ///
+///  * only events for an id present in `members` are counted at all.
 ///  * `added` skips a task whose CURRENT status is cancelled, matching D24.
 ///  * `done` counts each CURRENTLY-done task once, at its LATEST `done` event
 ///    — the event log's other `done` rows for that id (superseded by a
 ///    `reopen`) are not a second completion.
+///
+/// Every caller passes the membership it actually has — the terminal `chart
+/// throughput` command's own unfiltered run computes the full-store list via
+/// `burndown_members(engine, &None)`, same as a filtered report computes its
+/// scoped one — so this takes `&[Member]`, not an `Option`, and is never asked
+/// to count anonymously.
 pub fn throughput(
     result: &Value,
     members: &[Member],
@@ -113,6 +126,10 @@ pub fn throughput(
         .collect();
 
     use std::collections::HashMap;
+    // Doubles as the membership scope (#162): an id absent from `members` has
+    // no entry here at all, so `status_of.get(id)` returning `None` excludes
+    // it from both `added` and `done` just as surely as a separate id-set
+    // would — one lookup answers "in scope?" and "what status?" together.
     let status_of: HashMap<&str, &str> = members
         .iter()
         .map(|m| (m.id.as_str(), m.status.as_str()))
@@ -137,20 +154,22 @@ pub fn throughput(
         let (Some(ts), op) = (ts_of(ev), op_of(ev)) else {
             continue;
         };
+        if op != "add" && op != "done" {
+            continue;
+        }
+        let Some(id) = entity_id_of(ev) else { continue };
+        let Some(&status) = status_of.get(id) else {
+            continue; // not in scope
+        };
         let Some(date) = ev_date(ts) else { continue };
         match op {
             "add" => {
-                let id = entity_id_of(ev);
-                let cancelled_now = id
-                    .and_then(|id| status_of.get(id))
-                    .is_some_and(|s| *s == "cancelled");
-                if !cancelled_now {
+                if status != "cancelled" {
                     bump_added(date);
                 }
             }
             "done" => {
-                let Some(id) = entity_id_of(ev) else { continue };
-                if status_of.get(id).is_some_and(|s| *s == "done") {
+                if status == "done" {
                     latest_done
                         .entry(id)
                         .and_modify(|d| {
@@ -161,7 +180,7 @@ pub fn throughput(
                         .or_insert(date);
                 }
             }
-            _ => {}
+            _ => unreachable!(),
         }
     }
     for date in latest_done.into_values() {
@@ -960,6 +979,47 @@ mod tests {
         // oldest (week 27) empty
         assert_eq!(buckets[0].added, 0);
         assert_eq!(buckets[0].done, 0);
+    }
+
+    /// #162: a filtered `report --html` handed its throughput chart the
+    /// UNSCOPED `event.list` result, so a report scoped to one project drew
+    /// bars for the whole store — a zero-match filter still showed a
+    /// full-height chart. `members` (mirroring `burndown_scopes_to_members`)
+    /// is the fix: an event for a task outside the scoped export must not
+    /// move a bar. An id absent from `members` has no entry in `status_of` at
+    /// all, which is what actually excludes it (see `throughput`'s doc
+    /// comment) — there is no separate "unfiltered" mode any more; the
+    /// terminal `chart throughput` command gets the same exclusion by simply
+    /// passing the full store's own membership.
+    #[test]
+    fn throughput_scopes_to_members() {
+        let evs = vec![
+            ev("add", "2026-07-13T09:00:00Z", "a"),
+            ev("add", "2026-07-13T09:00:00Z", "x"), // not a member
+            ev("done", "2026-07-14T09:00:00Z", "a"),
+            ev("done", "2026-07-14T09:00:00Z", "x"), // not a member
+        ];
+        let members = [member_status("a", (2026, 7, 1), "done")];
+        let scoped = throughput(&result(evs.clone()), &members, 3, anchor());
+        let w29 = scoped.last().unwrap();
+        assert_eq!(
+            w29.added, 1,
+            "the non-member's add must not count: {scoped:?}"
+        );
+        assert_eq!(
+            w29.done, 1,
+            "the non-member's done must not count: {scoped:?}"
+        );
+
+        // Both in scope: both count.
+        let both_members = [
+            member_status("a", (2026, 7, 1), "done"),
+            member_status("x", (2026, 7, 1), "done"),
+        ];
+        let unfiltered = throughput(&result(evs), &both_members, 3, anchor());
+        let w29u = unfiltered.last().unwrap();
+        assert_eq!(w29u.added, 2, "every in-scope member's event must count");
+        assert_eq!(w29u.done, 2, "every in-scope member's event must count");
     }
 
     #[test]

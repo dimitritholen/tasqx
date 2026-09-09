@@ -73,6 +73,7 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
     let doc = Report {
         theme,
         group_by,
+        filter,
         summary: &summary,
         export: &export,
         actionable: &actionable,
@@ -101,6 +102,9 @@ struct Derived<'a> {
     completed_recent: Vec<&'a Value>,
     velocity: usize,
     top_tags: Vec<(String, u32)>,
+    /// How many DISTINCT tags matched, before `top_tags` was cut to 10
+    /// (#235/2) — the section needs this to say how many it left out.
+    tags_total: usize,
     bucket_totals: Vec<(&'static str, i64)>,
 }
 
@@ -110,6 +114,13 @@ struct Report<'a> {
     /// key after the axis, so reading `project` out of a `status` roll-up would
     /// quietly render a table of `(none)`.
     group_by: &'a str,
+    /// The report's own filter DSL string, verbatim — `None` for an
+    /// unfiltered ("all projects") report. Threaded through so the title and
+    /// the header can say what this page is scoped to (#235/1): every report
+    /// used to carry the identical title and header regardless of filter, so
+    /// four teams' reports were four identically-named tabs with nothing on
+    /// the page itself saying which team each covered.
+    filter: Option<&'a str>,
     summary: &'a Value,
     export: &'a Value,
     actionable: &'a Value,
@@ -118,6 +129,17 @@ struct Report<'a> {
 }
 
 impl<'a> Report<'a> {
+    /// What this report covers, as shown to a reader — the filter DSL
+    /// verbatim, or "all projects" when there is none. Not a translation of
+    /// the DSL into prose (`project:a or project:b and @working` has no
+    /// tidy English name); the raw string still answers the question the
+    /// audit raised (#235/1) — which report, of several, is this one.
+    fn scope_label(&self) -> String {
+        self.filter
+            .map(str::to_string)
+            .unwrap_or_else(|| "all projects".to_string())
+    }
+
     /// Every number the header tiles and lists print, derived once — a pure
     /// function of the injected payloads and `now`, split out of `render` so
     /// each stat is reachable by a direct assertion instead of only through a
@@ -172,24 +194,19 @@ impl<'a> Report<'a> {
         });
         completed_recent.reverse();
 
-        // Velocity: done events in the last 7 days.
-        let velocity = self
-            .events
-            .get("events")
-            .and_then(Value::as_array)
-            .map(|evs| {
-                evs.iter()
-                    .filter(|e| e.get("op").and_then(Value::as_str) == Some("done"))
-                    .filter(|e| {
-                        e.get("ts")
-                            .and_then(Value::as_str)
-                            .and_then(parse_ts)
-                            .map(|t| t >= cutoff)
-                            .unwrap_or(false)
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
+        // Velocity: the SAME count as "done this week" (#165), not a second
+        // computation over the audit log. This used to count
+        // `done` events off the unscoped `event.list` result in the same
+        // 7-day window — two tables, two windows that happened to agree only
+        // by coincidence, and disagreed by exactly one on the audited store
+        // (12 done-this-week vs. 13 velocity/wk in the same minute). Worse,
+        // `event.list` carries no filter (D59 bounds it by time only), so a
+        // report scoped to a project or tag still counted every task's
+        // events — the throughput chart had the identical bug (#162), fixed
+        // the same way one call up in `render` via `chart::throughput`'s
+        // `members`. Reading it off `completed_recent` fixes both at once:
+        // one source, one window, and a number the filter actually scopes.
+        let velocity = completed_recent.len();
 
         // Top tags across open tasks.
         let mut tag_counts: HashMap<String, u32> = HashMap::new();
@@ -206,6 +223,9 @@ impl<'a> Report<'a> {
         }
         let mut top_tags: Vec<(String, u32)> = tag_counts.into_iter().collect();
         top_tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        // Captured before truncating (#235/2): "Top tags" used to cut to 10
+        // with nothing saying how many distinct tags were left out.
+        let tags_total = top_tags.len();
         top_tags.truncate(10);
 
         // Report-wide token totals, one per bucket, summed across the summary's
@@ -237,6 +257,7 @@ impl<'a> Report<'a> {
             completed_recent,
             velocity,
             top_tags,
+            tags_total,
             bucket_totals,
         }
     }
@@ -249,7 +270,13 @@ impl<'a> Report<'a> {
         // Through the shared projection, so the report and the dashboard cannot
         // disagree about whether a task was open on a given day — and (#164)
         // so `throughput` can tell a currently-cancelled task from a
-        // currently-done one, which the event log alone cannot.
+        // currently-done one, which the event log alone cannot. `members` also
+        // scopes it (#162): `self.events` is `event.list`'s store-wide result
+        // (D59 bounds it by time, not by the report's filter), so without this
+        // a filtered report drew throughput bars for every task in the store —
+        // a zero-match filter still showed the whole store's W30. `burndown`
+        // already took this scoping; the chart had no equivalent parameter
+        // until now.
         let members = chart::members_of(&json!({ "tasks": tasks }));
         let throughput = chart::throughput(self.events, &members, 12, today());
         let burndown = chart::burndown(self.events, &members, 30, today());
@@ -267,8 +294,13 @@ impl<'a> Report<'a> {
         ));
         body.push_str("<main>");
 
+        // "Weekly throughput" — matching the terminal chart's own heading
+        // (`chart::render_throughput`) — not "This week's throughput" (#165):
+        // the series is 12 WEEKS, and titling it as a single week put a third,
+        // disagreeing sense of "this week" on the same page as "done this
+        // week" (rolling 7 days) and this very chart's own ISO-week buckets.
         body.push_str(&section(
-            "This week's throughput",
+            "Weekly throughput",
             "Tasks opened versus closed, by ISO week.",
             &svg_throughput(&throughput, self.theme),
         ));
@@ -289,20 +321,31 @@ impl<'a> Report<'a> {
         body.push_str(&self.overdue_section(&d.overdue_tasks));
         body.push_str(&self.per_group_section());
         body.push_str(&self.actionable_section());
-        body.push_str(&self.tags_section(&d.top_tags));
+        body.push_str(&self.tags_section(&d.top_tags, d.tags_total));
 
         body.push_str("</main>");
+        // The raw UTC instant stays reachable in `title` (#235/4) — the
+        // visible text switches to local time, which a viewer opening the
+        // file minutes after generation reads as fresh rather than "2 hours
+        // old" on a UTC+2 machine; `title` is the machine-readable escape
+        // hatch `pretty_local_ts` itself does not carry.
         body.push_str(&format!(
-            "<footer>Generated {} · every panel is a pure read of the tasqx core API.</footer>",
-            esc(&pretty_ts(self.now))
+            "<footer>Generated <span title=\"{utc}\">{local}</span> · every panel is a pure read of the tasqx core API.</footer>",
+            utc = esc(self.now),
+            local = esc(&pretty_local_ts(self.now)),
         ));
 
+        // The title names the SCOPE and the date (#235/1), not the theme —
+        // every report used to carry the identical `tasqx report · {theme}`
+        // regardless of filter, so four teams' reports were four
+        // identically-titled browser tabs.
         format!(
             "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-             <title>tasqx report · {theme}</title>\n<style>\n{css}\n</style>\n</head>\n\
+             <title>tasqx · {scope} · {date}</title>\n<style>\n{css}\n</style>\n</head>\n\
              <body>\n{body}\n</body>\n</html>\n",
-            theme = esc(&self.theme.name),
+            scope = esc(&self.scope_label()),
+            date = date_part(self.now),
             css = css,
             body = body,
         )
@@ -317,6 +360,17 @@ impl<'a> Report<'a> {
     /// even when every bucket is zero: a report whose token tiles vanish on an
     /// unmeasured store would leave a reader guessing whether the work was free
     /// or simply never measured, and those are different answers.
+    ///
+    /// `velocity` carries its window in the label (`velocity /wk (7d)`, #165):
+    /// it used to be silent about it, which read as directly comparable to
+    /// the terminal's differently-windowed "4-wk velocity" — two numbers
+    /// nobody could tell apart without opening both. `velocity` also now
+    /// equals `done` (both come from `Report::derive`'s `completed_recent`),
+    /// so the two tiles can no longer disagree either.
+    ///
+    /// The brand block carries a `.scope` line under "weekly review" (#235/1)
+    /// — the same string the `<title>` uses — so a printed or screenshotted
+    /// page (which loses the tab title) still says what it covers.
     fn header(
         &self,
         open: usize,
@@ -331,13 +385,17 @@ impl<'a> Report<'a> {
             .collect();
         format!(
             "<header class=\"summary\">\
-               <div class=\"brand\">tasqx <span class=\"muted\">weekly review</span></div>\
+               <div class=\"brand-block\">\
+                 <div class=\"brand\">tasqx <span class=\"muted\">weekly review</span></div>\
+                 <div class=\"scope\">{scope}</div>\
+               </div>\
                <div class=\"stats\">{}{}{}{}{token_tiles}</div>\
              </header>",
             stat(&open.to_string(), "open"),
             stat(&done.to_string(), "done this week"),
-            stat(&velocity.to_string(), "velocity /wk"),
+            stat(&velocity.to_string(), "velocity /wk (7d)"),
             stat_flag(&overdue.to_string(), "overdue", overdue > 0),
+            scope = esc(&self.scope_label()),
         )
     }
 
@@ -441,9 +499,14 @@ impl<'a> Report<'a> {
                 name = esc(name),
             ));
         }
+        // `.table-wrap` (#166 + #235/3): a nine-column table cannot shrink
+        // below its content's intrinsic width, so on a 375px phone it forced
+        // the whole PAGE into horizontal scroll — dragging the sticky header
+        // sideways with it. Scoping `overflow-x: auto` to this wrapper keeps
+        // an overflowing table's scroll local to the table, on any viewport.
         let table = format!(
-            "<table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
-             <th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th></tr></thead><tbody>{rows}</tbody></table>",
+            "<div class=\"table-wrap\"><table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
+             <th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th></tr></thead><tbody>{rows}</tbody></table></div>",
             // The axis name, title-cased — `esc` because it reaches markup, even
             // though core has already restricted it to SUMMARY_GROUP_BY.
             head = esc(&title_case(axis)),
@@ -462,6 +525,12 @@ impl<'a> Report<'a> {
         )
     }
 
+    /// #235/2: this list truncates at `task.list`'s own `limit: 12` with
+    /// nothing saying so — a stakeholder reading "12 actionable" beside a
+    /// header saying "46 open" cannot tell whether the list is complete or
+    /// merely cut. `total` is `task.list`'s own answer to that (D70: rows
+    /// matched, vs. `count`'s rows returned); a trailing muted row states the
+    /// gap when the two differ.
     fn actionable_section(&self) -> String {
         let tasks = array_at(self.actionable, "tasks");
         if tasks.is_empty() {
@@ -471,6 +540,11 @@ impl<'a> Report<'a> {
                 "",
             );
         }
+        let total = self
+            .actionable
+            .get("total")
+            .and_then(Value::as_u64)
+            .map_or(tasks.len(), |n| n as usize);
         let mut rows = String::new();
         for t in tasks {
             let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
@@ -482,6 +556,12 @@ impl<'a> Report<'a> {
                 proj = proj_chip(t),
             ));
         }
+        if total > tasks.len() {
+            rows.push_str(&format!(
+                "<li class=\"more muted\">…and {} more</li>",
+                total - tasks.len()
+            ));
+        }
         section(
             "Now actionable",
             "The highest-urgency unblocked tasks — start at the top.",
@@ -489,7 +569,12 @@ impl<'a> Report<'a> {
         )
     }
 
-    fn tags_section(&self, tags: &[(String, u32)]) -> String {
+    /// `total` is the DISTINCT tag count before `derive` truncated to 10
+    /// (#235/2) — the same "how much did this cut" question as
+    /// `actionable_section`, over a list core never gets to paginate for us,
+    /// so this half of the fix is computed locally rather than read off a
+    /// server-side `total`.
+    fn tags_section(&self, tags: &[(String, u32)], total: usize) -> String {
         if tags.is_empty() {
             return String::new();
         }
@@ -498,6 +583,12 @@ impl<'a> Report<'a> {
             chips.push_str(&format!(
                 "<span class=\"tag\">{name} <span class=\"tagn\">{n}</span></span>",
                 name = esc(name),
+            ));
+        }
+        if total > tags.len() {
+            chips.push_str(&format!(
+                "<span class=\"tag muted\">+{} more</span>",
+                total - tags.len()
             ));
         }
         section(
@@ -509,23 +600,40 @@ impl<'a> Report<'a> {
 
     /// CSS with a palette derived from the active theme, for both color schemes.
     fn css(&self) -> String {
-        let p = |name: &str, fallback: Rgb| -> String {
-            self.theme.palette_color(name).unwrap_or(fallback).hex()
+        let color = |name: &str, fallback: Rgb| -> Rgb {
+            self.theme.palette_color(name).unwrap_or(fallback)
         };
-        let accent = p("accent", Rgb::new(0x88, 0xc0, 0xd0));
-        let warn = p("warn", Rgb::new(0xeb, 0xcb, 0x8b));
-        let danger = p("danger", Rgb::new(0xbf, 0x61, 0x6a));
-        let muted_dark = p("muted", Rgb::new(0x4c, 0x56, 0x6a));
-        let bg_dark = p("bg", Rgb::new(0x2e, 0x34, 0x40));
-        let fg_dark = p("fg", Rgb::new(0xd8, 0xde, 0xe9));
+        let accent = color("accent", Rgb::new(0x88, 0xc0, 0xd0));
+        let warn = color("warn", Rgb::new(0xeb, 0xcb, 0x8b));
+        let danger = color("danger", Rgb::new(0xbf, 0x61, 0x6a));
+        let muted_dark = color("muted", Rgb::new(0x4c, 0x56, 0x6a)).hex();
+        let bg_dark = color("bg", Rgb::new(0x2e, 0x34, 0x40)).hex();
+        let fg_dark = color("fg", Rgb::new(0xd8, 0xde, 0xe9)).hex();
+
+        // #163: these three roles are picked for a dark terminal ground and
+        // reused verbatim on the light scheme used to make mono's white
+        // accent/warn/danger literally invisible on the white card (1:1) and
+        // put every other built-in's `warn` under 3.3:1 — nowhere near WCAG
+        // AA's 4.5:1 text floor. The dark-scheme value is untouched (it is
+        // the theme's own color, at its own contrast against its own
+        // background, exactly as before); only the light scheme gets a
+        // darkened variant computed to clear AA against white.
+        let white = Rgb::new(0xff, 0xff, 0xff);
+        let accent_l = darkened_for_contrast(accent, white, 4.5).hex();
+        let warn_l = darkened_for_contrast(warn, white, 4.5).hex();
+        let danger_l = darkened_for_contrast(danger, white, 4.5).hex();
+        let accent_d = accent.hex();
+        let warn_d = warn.hex();
+        let danger_d = danger.hex();
 
         format!(
             ":root {{\n\
-             --accent: {accent};\n--warn: {warn};\n--danger: {danger};\n\
              /* light scheme (default) */\n\
+             --accent: {accent_l};\n--warn: {warn_l};\n--danger: {danger_l};\n\
              --bg: #ffffff;\n--fg: #1a1d23;\n--muted: #6b7280;\n--card: #f6f7f9;\n--line: #e3e6ea;\n\
              }}\n\
              @media (prefers-color-scheme: dark) {{\n:root {{\n\
+             --accent: {accent_d};\n--warn: {warn_d};\n--danger: {danger_d};\n\
              --bg: {bg_dark};\n--fg: {fg_dark};\n--muted: {muted_dark};\n\
              --card: color-mix(in srgb, {bg_dark} 82%, #ffffff 18%);\n\
              --line: color-mix(in srgb, {bg_dark} 60%, #ffffff 40%);\n\
@@ -541,8 +649,9 @@ impl<'a> Report<'a> {
              padding: 0.9rem 1.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }}\n\
              .brand {{ font-weight: 700; font-size: 1.15rem; letter-spacing: -0.01em; }}\n\
              .brand .muted {{ font-weight: 400; }}\n\
-             .stats {{ display: flex; gap: 1.4rem; }}\n\
-             .stat {{ text-align: right; }}\n\
+             .scope {{ color: var(--muted); font-size: 0.78rem; margin-top: 0.15rem; }}\n\
+             .stats {{ display: flex; gap: 1.4rem; flex-wrap: wrap; row-gap: 0.6rem; }}\n\
+             .stat {{ text-align: right; flex: 0 0 auto; }}\n\
              .stat .n {{ font-size: 1.5rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums;\n\
              font-family: ui-monospace, monospace; }}\n\
              .stat .l {{ font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }}\n\
@@ -562,10 +671,21 @@ impl<'a> Report<'a> {
              .due {{ color: var(--danger); font-size: 0.82rem; }}\n\
              li.over .ttl {{ font-weight: 500; }}\n\
              .chip {{ font-size: 0.72rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0.05rem 0.5rem; }}\n\
+             .table-wrap {{ overflow-x: auto; }}\n\
              table.grid {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}\n\
              table.grid th {{ text-align: left; color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--line); padding: 0.4rem 0.5rem; }}\n\
              table.grid td {{ padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }}\n\
              table.grid td.proj {{ font-weight: 600; }}\n\
+             /* #235/3: the table and the charts are data, not prose — the same\n\
+                ~72ch measure that suits running text forced a nine-column table\n\
+                to wrap project names to three lines beside ~660px of unused\n\
+                viewport at 1280px. Above ~900px both break out of `main`'s\n\
+                column toward 1100px; narrower than that they stay the prose\n\
+                width and (for the table) scroll in their own container. */\n\
+             @media (min-width: 900px) {{\n\
+             .table-wrap, figure {{ width: 100vw; max-width: min(1100px, calc(100vw - 2.5rem));\n\
+             margin-left: 50%; transform: translateX(-50%); }}\n\
+             }}\n\
              .tags {{ display: flex; flex-wrap: wrap; gap: 0.5rem; }}\n\
              .tag {{ background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 0.2rem 0.7rem; font-size: 0.85rem; }}\n\
              .tag .tagn {{ color: var(--accent); font-weight: 700; }}\n\
@@ -677,6 +797,65 @@ fn parse_ts(s: &str) -> Option<jiff::Timestamp> {
     s.parse().ok()
 }
 
+// ---- WCAG contrast (#163) --------------------------------------------------
+//
+// Theme roles (`accent`/`warn`/`danger`) are colors picked for a dark
+// terminal ground. The report used to hand them to the light scheme
+// verbatim, so `mono`'s white accent — 21:1 against its own dark background —
+// became 1:1 (invisible) on the light card, and every other built-in theme's
+// `warn` landed between 1.1:1 and 3.2:1 on white, all under the 4.5:1 WCAG AA
+// floor for text. These three functions compute that ratio and, where it
+// fails, darken the color just enough to clear it — one algorithm covering
+// every current and future theme rather than a second hand-picked palette.
+
+/// WCAG relative luminance of an sRGB color (0.0 = black, 1.0 = white).
+fn relative_luminance(c: Rgb) -> f64 {
+    let chan = |v: u8| -> f64 {
+        let v = f64::from(v) / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * chan(c.r) + 0.7152 * chan(c.g) + 0.0722 * chan(c.b)
+}
+
+/// WCAG contrast ratio between two colors, order-independent, in `[1.0, 21.0]`.
+fn contrast_ratio(a: Rgb, b: Rgb) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Darken `c` toward black just enough that it clears `min_contrast` against
+/// `bg` — `c` unchanged if it already does. Binary search over the mix
+/// fraction rather than a closed-form solve: contrast against a light `bg`
+/// rises monotonically as a color darkens toward black (which always clears
+/// AA against white/near-white), so 24 bisection steps land within
+/// 1/16-million of the mix ratio, far tighter than an 8-bit channel can
+/// represent — plenty for a value that only has to clear a threshold, not
+/// hit one exactly.
+fn darkened_for_contrast(c: Rgb, bg: Rgb, min_contrast: f64) -> Rgb {
+    if contrast_ratio(c, bg) >= min_contrast {
+        return c;
+    }
+    let mix = |t: f64| -> Rgb {
+        let ch = |v: u8| -> u8 { (f64::from(v) * (1.0 - t)).round() as u8 };
+        Rgb::new(ch(c.r), ch(c.g), ch(c.b))
+    };
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if contrast_ratio(mix(mid), bg) >= min_contrast {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    mix(hi)
+}
+
 /// A friendlier timestamp: `2026-07-15 11:06 UTC` from RFC3339.
 fn pretty_ts(s: &str) -> String {
     match s.parse::<jiff::Timestamp>() {
@@ -692,6 +871,44 @@ fn pretty_ts(s: &str) -> String {
                 ti.hour(),
                 ti.minute()
             )
+        }
+        Err(_) => s.to_string(),
+    }
+}
+
+/// The footer's "Generated" timestamp, in the generating machine's OWN local
+/// zone with its abbreviation (`2026-09-09 12:42 CEST`) — #235/4. Due dates
+/// stay in `pretty_ts`'s UTC (D53 fixes UTC as the store's and the parser's
+/// zone so a typed date round-trips; converting a `due` midnight-UTC instant
+/// to local time can roll the CALENDAR DAY a reader sees backward west of
+/// Greenwich, the exact failure D53 exists to prevent). The footer carries no
+/// such risk — it names a moment, not a day — and "generated 2 hours ago"
+/// reading as fresh rather than stale is worth doing here even though the
+/// full cross-surface humanizing D76's recorded edges left as follow-up work
+/// is not. A report is generated on one machine and opened on another, so
+/// "local" means the generator's zone, not the reader's; the raw UTC instant
+/// stays reachable in the `title` attribute the caller wraps this in for
+/// exactly that gap. Falls back to the plain instant on any parse/format
+/// failure — never a panic in a read path.
+fn pretty_local_ts(s: &str) -> String {
+    match s.parse::<jiff::Timestamp>() {
+        Ok(t) => t
+            .to_zoned(jiff::tz::TimeZone::system())
+            .strftime("%Y-%m-%d %H:%M %Z")
+            .to_string(),
+        Err(_) => s.to_string(),
+    }
+}
+
+/// The `YYYY-MM-DD` (UTC) prefix of an RFC3339 instant, for the report
+/// `<title>` (#235/1) — a calendar date reads better in a browser tab/PDF
+/// export than a full timestamp, and UTC keeps it a pure function of `now`
+/// rather than of the rendering machine's zone.
+fn date_part(s: &str) -> String {
+    match s.parse::<jiff::Timestamp>() {
+        Ok(t) => {
+            let d = t.to_zoned(jiff::tz::TimeZone::UTC).date();
+            format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day())
         }
         Err(_) => s.to_string(),
     }
@@ -960,6 +1177,7 @@ mod tests {
         Report {
             theme: &th,
             group_by: "project",
+            filter: None,
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -1073,6 +1291,7 @@ mod tests {
         let doc = Report {
             theme: &th,
             group_by: "project",
+            filter: None,
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -1175,6 +1394,7 @@ mod tests {
         let doc = Report {
             theme: &th,
             group_by: "project",
+            filter: None,
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -1194,6 +1414,52 @@ mod tests {
         // The task title's angle brackets/ampersand must be escaped, never raw.
         assert!(doc.contains("Ship &lt;the&gt; v1 &amp; freeze"));
         assert!(!doc.contains("Ship <the> v1"));
+    }
+
+    /// #162 (scope) + #165 (two windows, two answers): the header's "velocity
+    /// /wk" tile counted `done` events straight off the unscoped `event.list`
+    /// result, while the neighbouring "done this week" tile counted completed
+    /// tasks off the (correctly scoped) export — two tables, two windows that
+    /// happened to agree only by coincidence, and the audit's own repro
+    /// (46 open / 12 done this week / 13 velocity /wk on one store, in the
+    /// same minute) is this exact drift. A `done` event for a task the
+    /// filter excluded inflated velocity alone. After the fix both tiles read
+    /// off `completed_recent`, so they cannot disagree and an out-of-scope
+    /// event can no longer move only one of them.
+    #[test]
+    fn velocity_matches_completed_this_week_and_ignores_events_outside_the_scoped_export() {
+        let (summary, export, actionable, mut events) = synthetic();
+        // A 'done' event for a task NOT in the scoped export — as if it
+        // belonged to a project this report's filter excluded.
+        events["events"].as_array_mut().unwrap().push(json!({
+            "op": "done", "ts": "2026-07-14T09:00:00Z", "entity": "task",
+            "entity_id": "OUT-OF-SCOPE"
+        }));
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let report = Report {
+            theme: &th,
+            group_by: "project",
+            filter: None,
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        };
+        let d = report.derive();
+        assert_eq!(
+            d.velocity,
+            d.completed_recent.len(),
+            "velocity ({}) must equal done-this-week ({}) — same source, same window",
+            d.velocity,
+            d.completed_recent.len()
+        );
+        assert_eq!(
+            d.velocity, 1,
+            "the out-of-scope task's done event must not inflate velocity: {}",
+            d.velocity
+        );
     }
 
     /// `report --html` defaults to **stdout** — the same terminal `render.rs`
@@ -1232,6 +1498,7 @@ mod tests {
         let doc = Report {
             theme: &th,
             group_by: "project",
+            filter: None,
             summary: &summary,
             export: &export,
             actionable: &actionable,
@@ -1242,6 +1509,189 @@ mod tests {
         assert!(
             !doc.contains('\u{1b}'),
             "report --html writes to stdout — no ESC may survive"
+        );
+    }
+
+    /// #163: `--accent`/`--warn`/`--danger` were emitted once, with the
+    /// theme's dark-terminal value, and reused verbatim on the light
+    /// scheme's white ground — mono's white-on-white accent/warn/danger are
+    /// 1:1 (invisible; the overdue count, task ids, tag counts and the
+    /// throughput chart's "added" bars all use these roles). Every built-in's
+    /// light-mode value for these three roles must clear the WCAG AA text
+    /// floor (4.5:1) against white.
+    #[test]
+    fn theme_roles_meet_aa_contrast_on_the_light_scheme_background() {
+        let white = Rgb::new(0xff, 0xff, 0xff);
+        for name in theme::BUILTINS {
+            let doc = render_with(name);
+            let dark_at = doc
+                .find("@media (prefers-color-scheme: dark)")
+                .unwrap_or_else(|| panic!("{name}: no dark media block: {doc}"));
+            // The LIGHT scheme's declarations come first in `:root {}`, before
+            // the dark block; searching only that prefix cannot pick up the
+            // dark-block redefinition of the same property by accident.
+            let light_css = &doc[..dark_at];
+            for role in ["--accent:", "--warn:", "--danger:"] {
+                let at = light_css
+                    .find(role)
+                    .unwrap_or_else(|| panic!("{name}: {role} missing from light css: {doc}"));
+                let rest = &light_css[at + role.len()..];
+                let hex = rest[..rest.find(';').unwrap()].trim();
+                let rgb = Rgb::parse_hex(hex)
+                    .unwrap_or_else(|| panic!("{name}: unparseable {role} {hex:?}"));
+                let ratio = contrast_ratio(rgb, white);
+                assert!(
+                    ratio >= 4.5,
+                    "{name} {role} {hex} on white is {ratio:.2}:1, under WCAG AA's 4.5:1 — #163"
+                );
+            }
+        }
+    }
+
+    /// #165: "velocity /wk" carried no window, reading as directly comparable
+    /// to the terminal's differently-windowed "4-wk velocity" with nothing on
+    /// either surface saying they measure different spans. And "This week's
+    /// throughput" mislabeled a 12-WEEK series as a single week — a third,
+    /// disagreeing sense of "this week" beside "done this week" (rolling 7
+    /// days) and the chart's own ISO-week buckets.
+    #[test]
+    fn velocity_states_its_window_and_the_throughput_heading_does_not_claim_a_single_week() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("velocity /wk (7d)"),
+            "the velocity tile must name its window: {doc}"
+        );
+        assert!(
+            !doc.contains("This week's throughput"),
+            "a 12-week series must not be titled as a single week: {doc}"
+        );
+        assert!(
+            doc.contains("Weekly throughput"),
+            "retitled to match the terminal chart's own heading: {doc}"
+        );
+    }
+
+    /// #166: at 390px the eight-tile `.stats` strip (628px, unwrappable) drags
+    /// the WHOLE PAGE into horizontal scroll, which is also why the sticky
+    /// header (which only sticks vertically) slides sideways with it. And the
+    /// nine-column by-project table sits bare in `<section>` with no scroll
+    /// container of its own, so it is the page — not the table — that
+    /// scrolls. Both must be fixed for the phone-width symptom to go away:
+    /// letting `.stats` wrap keeps the page's own width fixed, and giving the
+    /// table its own `overflow-x: auto` box keeps an overflowing table's
+    /// scroll local to the table.
+    #[test]
+    fn stats_strip_wraps_and_the_wide_table_gets_its_own_scroll_container() {
+        let doc = render_with("nord");
+        let stats_at = doc.find(".stats {").expect(".stats rule missing");
+        assert!(
+            doc[stats_at..stats_at + 200].contains("flex-wrap"),
+            "the header stat strip must be allowed to wrap onto more than one row: {doc}"
+        );
+        assert!(
+            doc.contains("<div class=\"table-wrap\"><table class=\"grid\">"),
+            "the by-project table must scroll inside its own container, not the page: {doc}"
+        );
+    }
+
+    /// #235/1: every report carried the identical `<title>tasqx report ·
+    /// {theme}</title>` regardless of its filter, and the rendered header
+    /// read "tasqx weekly review" on all of them — so four teams' reports
+    /// were four identically-titled tabs with nothing on the page itself
+    /// saying which team each covered. The title must name the scope (or
+    /// "all projects") and drop the theme name; the same scope string must
+    /// also appear on the page.
+    #[test]
+    fn title_and_header_name_the_reports_scope_not_its_theme() {
+        let doc_all = render_with("nord");
+        assert!(
+            !doc_all.contains("<title>tasqx report · nord</title>"),
+            "the theme name must not be the thing distinguishing two reports: {doc_all}"
+        );
+        assert!(
+            doc_all.contains("all projects"),
+            "an unfiltered report must say so, on the page: {doc_all}"
+        );
+
+        let (summary, export, actionable, events) = synthetic();
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let doc_scoped = Report {
+            theme: &th,
+            group_by: "project",
+            filter: Some("project:finly-mail-agent"),
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        }
+        .render();
+        assert!(
+            doc_scoped.contains("project:finly-mail-agent"),
+            "the filter must reach the title or header: {doc_scoped}"
+        );
+        assert!(
+            !doc_scoped.contains("all projects"),
+            "a scoped report must not also claim to cover everything: {doc_scoped}"
+        );
+    }
+
+    /// #235/4: the footer stamped UTC unconditionally, so a report generated
+    /// at 12:42 CEST read "Generated ... 10:42 UTC" — two hours stale-looking
+    /// the moment it was opened. The human-facing text may now show local
+    /// time, but the raw instant must stay reachable somewhere a machine (or
+    /// a curious reader) can still read it exactly.
+    #[test]
+    fn footer_carries_the_raw_utc_instant_for_machine_readers_while_showing_local_time() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("<footer>Generated <span title=\"2026-07-15T12:00:00Z\">"),
+            "the footer must keep the raw UTC instant reachable, e.g. in a title attribute: {doc}"
+        );
+    }
+
+    /// #235/2: "Now actionable" truncates at `task.list`'s own `limit: 12`
+    /// and "Top tags" at `.truncate(10)`, both with no indication that
+    /// anything was left out — a stakeholder reading "12 actionable" beside a
+    /// header saying "46 open" cannot tell whether the list is complete or
+    /// merely cut. `task.list` already answers `total` (D70); this test uses
+    /// that plus more than 10 distinct tags to pin the trailing note both
+    /// sections must now render.
+    #[test]
+    fn actionable_and_tags_sections_note_how_much_they_truncated() {
+        let actionable = json!({
+            "tasks": [{ "short_id": 1, "title": "one", "project": "P", "urgency": 5.0 }],
+            "total": 46
+        });
+        let export = json!({
+            "tasks": (1..=12).map(|i| json!({
+                "id": format!("t{i}"), "short_id": i, "title": format!("task {i}"),
+                "status": "pending", "tags": [format!("tag{i:02}")],
+            })).collect::<Vec<_>>()
+        });
+        let summary = json!({ "groups": [] });
+        let events = json!({ "events": [] });
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let doc = Report {
+            theme: &th,
+            group_by: "project",
+            filter: None,
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        }
+        .render();
+        assert!(
+            doc.contains("…and 45 more"),
+            "the actionable list (1 of 46 shown) must say how many more matched: {doc}"
+        );
+        assert!(
+            doc.contains("+2 more"),
+            "top tags (10 of 12 distinct shown) must say how many more: {doc}"
         );
     }
 
