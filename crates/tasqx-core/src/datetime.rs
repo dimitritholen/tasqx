@@ -4,22 +4,42 @@
 //!
 //! Determinism is a hard requirement: [`parse_when`] never reads the wall clock
 //! — the caller passes `now` (the CLI passes the real `util::now`, tests pass a
-//! fixed anchor). All naive dates/times are interpreted in **UTC**, matching the
-//! rest of the store (every stored instant is a `…Z` string). A date with no
-//! time-of-day resolves to **00:00:00** (start of day); a bare time resolves to
-//! **today**, or **tomorrow** if that time has already passed at `now`.
+//! fixed anchor). The one environmental read left is the zone an explicit CLOCK
+//! TIME with no offset of its own is interpreted in (DESIGN.md:458): `due:17:00`
+//! on an Amsterdam box means 17:00 Amsterdam time, converted to UTC for storage
+//! — not 17:00 UTC, which is what it silently stored before (#138). A DATE with
+//! no time carries nothing to localize and stays at midnight **UTC** regardless
+//! of the machine's zone: D-1511's "days are UTC days" is unchanged, and
+//! grouping by a local day would file `--due 2026-08-05` under the 4th for
+//! anyone west of Greenwich. [`parse_when`] reads [`TimeZone::system`] exactly
+//! once, at its own boundary; the crate-private `parse_when_zoned` underneath
+//! it takes the zone as a parameter instead, so this module's own suite (and
+//! [`crate::remind`]'s) can pin it and never depend on the machine they happen
+//! to run on.
 //!
 //! Accepted forms (all case-insensitive):
 //!  * absolute — `2026-07-20`, `2026-07-20T17:00`, `2026-07-20 17:00`, and any
-//!    full RFC3339 (`2026-07-20T17:00:00+02:00`);
-//!  * relative words — `today`, `tomorrow`, `yesterday`;
+//!    full RFC3339 (`2026-07-20T17:00:00+02:00`). A bare date is UTC midnight; a
+//!    date **with** a time resolves in the machine's zone (see above);
+//!  * relative words — `today`, `tomorrow`, `yesterday` (calendar days, always
+//!    UTC-anchored); `now`, which unlike the other three is a full INSTANT, not
+//!    a day — `due.before:now` is the filter DSL's only overdue query, and
+//!    aliasing it to midnight (as it used to) meant it could never see a task
+//!    due earlier the same day (#144);
 //!  * weekdays — `monday`..`sunday` / `mon`..`sun` (the next such weekday; today
-//!    resolves to +7), optional leading `next` (a synonym — same upcoming day);
+//!    resolves to +7). `this`/`last` are refused, and so is a leading `next`
+//!    (#137): it used to be a silent synonym for the bare weekday — tested, but
+//!    documented nowhere a user would read it — which is worse than refusing,
+//!    because "next friday" reads to most people as a DIFFERENT day than
+//!    "friday", not the same one;
 //!  * offsets — `in 3 days`, `in 2 weeks`, `in 1 month`, and the short `3d`,
 //!    `2w`, `1mo`, `1y`, each optionally signed (`+3d`, `-1d` = yesterday);
 //!  * `eom` / `end of month`, `eow` / `end of week` (ISO week ends Sunday);
 //!  * an optional trailing time on any of the above — `friday 17:00`,
-//!    `tomorrow 9am`, `monday 5pm`;
+//!    `tomorrow 9am`, `monday 5pm` — resolved in the machine's zone, INCLUDING
+//!    which calendar day `friday`/`tomorrow`/a bare time itself means: near a
+//!    UTC-day boundary, "today" in Auckland and "today" in UTC can already be
+//!    different days at the same instant;
 //!  * an optional *leading* filler word — `at 6pm`, `on friday`, `by monday
 //!    5pm`. Only leading fillers are ignored, so `at fridya` stays an error
 //!    rather than quietly resolving to a date nobody asked for.
@@ -37,8 +57,24 @@ const FILLERS: &[&str] = &["at", "on", "by", "@", "due"];
 /// Parse `input` relative to `now`, returning an RFC3339 (UTC, `…Z`) string.
 ///
 /// `now` is explicit so the function is deterministic and unit-testable; it is
-/// never read from the system clock here.
+/// never read from the system clock here. The one thing this entry point DOES
+/// read from the environment is [`TimeZone::system`] — consulted only when
+/// `input` carries an explicit clock time with no offset of its own (see the
+/// module docs and `parse_when_zoned`).
 pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
+    parse_when_zoned(input, now, &TimeZone::system())
+}
+
+/// [`parse_when`], with the zone a naive clock time resolves in taken as a
+/// parameter instead of read from the machine. Kept `pub(crate)` — not part of
+/// the public API — purely so [`crate::remind`] and this module's own suite can
+/// pin a zone and stay deterministic; every other caller wants the real
+/// machine zone and goes through [`parse_when`].
+pub(crate) fn parse_when_zoned(
+    input: &str,
+    now: Timestamp,
+    tz: &TimeZone,
+) -> Result<String, ApiError> {
     let raw = input.trim();
     if raw.is_empty() {
         return Err(ApiError::bad_request("empty date expression"));
@@ -49,16 +85,25 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
         return Ok(ts.to_string());
     }
 
-    // 2. A naive datetime (`2026-07-20T17:00[:SS]`, or with a space) → UTC.
-    let norm = raw.replacen(' ', "T", 1);
-    for cand in [norm.clone(), format!("{norm}:00")] {
-        if let Ok(dt) = cand.parse::<DateTime>() {
-            return finish(dt, raw);
+    // 2. A naive datetime (`2026-07-20T17:00[:SS]`, or with a space) — an
+    //    explicit clock time with no offset of its own, so it resolves in
+    //    `tz` (DESIGN.md:458), not UTC. Gated on a literal `:` in `raw`: a
+    //    bare date has none, but `jiff`'s `DateTime` parser is lenient enough
+    //    to accept one anyway (defaulting the time to midnight) — without
+    //    this gate a bare `2026-07-20` would be caught HERE and localized,
+    //    silently reopening the D-1511 hole branch 3 exists to close.
+    if raw.contains(':') {
+        let norm = raw.replacen(' ', "T", 1);
+        for cand in [norm.clone(), format!("{norm}:00")] {
+            if let Ok(dt) = cand.parse::<DateTime>() {
+                return finish(dt, raw, tz);
+            }
         }
     }
-    // 3. A bare ISO date → that day at 00:00 UTC.
+    // 3. A bare ISO date → that day at 00:00 UTC, regardless of `tz`: a date
+    //    with no time carries nothing to localize (D-1511).
     if let Ok(d) = raw.parse::<Date>() {
-        return finish(DateTime::from_parts(d, midnight()), raw);
+        return finish(DateTime::from_parts(d, midnight()), raw, &TimeZone::UTC);
     }
 
     // 4. Keyword / relative grammar. Work lowercased and tokenized.
@@ -89,7 +134,22 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
         }
     }
 
-    let today = now.to_zoned(TimeZone::UTC).date();
+    // `now` is the one keyword that answers with the exact instant rather than
+    // a calendar day, so it is handled before `today`/`resolve_date` ever
+    // reduce anything to a `Date` — there is no `Date` that would represent it
+    // (#144). No trailing time combines with it: `now 17:00` is not a spelling
+    // this grammar models, so it falls through to the ordinary keyword path
+    // below and is refused like any other unmodelled token.
+    if tokens == ["now"] && time.is_none() {
+        return Ok(now.to_string());
+    }
+
+    // A trailing time anchors the WHOLE expression in `tz`; a bare date/
+    // weekday/relative-word with no time of its own stays UTC-anchored
+    // (D-1511). These can legitimately be different calendar days at once —
+    // near a UTC-day boundary a positive-offset `tz` is already tomorrow.
+    let zone = if time.is_some() { tz } else { &TimeZone::UTC };
+    let today = now.to_zoned(zone.clone()).date();
     // Empty tokens now has two causes: a clock was peeled (`6pm` — a real bare
     // time), or the input was filler and nothing else (`at`). Only the first is
     // a date; the second is a bad request, not "today at midnight".
@@ -105,17 +165,18 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
     };
 
     let t = time.unwrap_or_else(midnight);
-    let out = finish(DateTime::from_parts(date, t), raw)?;
+    let out = finish(DateTime::from_parts(date, t), raw, zone)?;
 
-    // A bare time already past today rolls forward to tomorrow.
+    // A bare time already past today rolls forward to tomorrow, in the same
+    // zone the time itself was read in.
     if bare_time {
         let dt = DateTime::from_parts(date, t);
         // The same conversion `finish` makes, through the same helper, so the
         // same failure cannot acquire a second wording here.
-        let ts = to_instant(dt, raw)?;
+        let ts = to_instant(dt, raw, zone)?;
         if ts <= now {
             let tomorrow = date.tomorrow().map_err(|_| out_of_range(raw))?;
-            return finish(DateTime::from_parts(tomorrow, t), raw);
+            return finish(DateTime::from_parts(tomorrow, t), raw, zone);
         }
     }
 
@@ -164,23 +225,24 @@ fn to_the_second(dt: DateTime) -> DateTime {
     DateTime::from_parts(dt.date(), t)
 }
 
-/// The one civil-UTC-to-instant conversion, so its one failure has one message.
+/// The one civil-to-instant conversion, so its one failure has one message.
 ///
-/// The error is not inspected because there is nothing else it could be: the
-/// zone is fixed UTC, which has no gaps and no ambiguous times for a `to_zoned`
-/// to trip over, leaving "outside the representable instant range" as the sole
-/// cause. Reading the library's error text to find that out would be the same
-/// leak this function exists to close, pointed the other way.
-fn to_instant(dt: DateTime, raw: &str) -> Result<Timestamp, ApiError> {
+/// `to_zoned` uses "compatible" disambiguation regardless of `tz` — a spring-
+/// forward gap shifts forward, a fall-back fold picks the earlier instant —
+/// which is what makes the error worth trusting without inspecting it: it
+/// never fires for an ordinary DST transition, only "outside the representable
+/// instant range". Reading the library's error text to find that out would be
+/// the same leak this function exists to close, pointed the other way.
+fn to_instant(dt: DateTime, raw: &str, tz: &TimeZone) -> Result<Timestamp, ApiError> {
     Ok(dt
-        .to_zoned(TimeZone::UTC)
+        .to_zoned(tz.clone())
         .map_err(|_| out_of_range(raw))?
         .timestamp())
 }
 
-/// Convert a naive UTC datetime to an RFC3339 string.
-fn finish(dt: DateTime, raw: &str) -> Result<String, ApiError> {
-    Ok(to_instant(dt, raw)?.to_string())
+/// Convert a naive civil datetime, read in `tz`, to an RFC3339 (UTC) string.
+fn finish(dt: DateTime, raw: &str, tz: &TimeZone) -> Result<String, ApiError> {
+    Ok(to_instant(dt, raw, tz)?.to_string())
 }
 
 fn midnight() -> Time {
@@ -188,9 +250,15 @@ fn midnight() -> Time {
 }
 
 /// Resolve the date portion (no time) from the keyword tokens.
+///
+/// `now` is deliberately absent: it is a full instant, not a `Date`, and is
+/// handled by its own early return in [`parse_when_zoned`] before this
+/// function is ever called (#144). `next <weekday>` is absent too — it used to
+/// alias the bare weekday here and is refused now, on the same terms as
+/// `this`/`last` below (#137).
 fn resolve_date(tokens: &[&str], today: Date) -> Option<Date> {
     match tokens {
-        ["today"] | ["now"] => Some(today),
+        ["today"] => Some(today),
         ["tomorrow"] | ["tmr"] => today.tomorrow().ok(),
         ["yesterday"] => today.yesterday().ok(),
         ["eom"] => Some(today.last_of_month()),
@@ -202,8 +270,6 @@ fn resolve_date(tokens: &[&str], today: Date) -> Option<Date> {
             let n: i64 = n.parse().ok()?;
             add_units(today, n, unit)
         }
-        // `next <weekday>` is a synonym for the upcoming weekday.
-        ["next", wd] => weekday(wd).map(|w| next_weekday(today, w)),
         // A single token: a weekday, a short offset (`3d`), or an ISO date.
         [one] => {
             if let Some(w) = weekday(one) {
@@ -467,8 +533,15 @@ mod tests {
         "2026-07-15T12:00:00Z".parse().unwrap()
     }
 
+    /// Every existing assertion below predates the local-zone behaviour
+    /// (#138) and was written against UTC, so `p` pins UTC explicitly through
+    /// [`parse_when_zoned`] rather than going through the public
+    /// [`parse_when`] (which reads [`TimeZone::system`]) — otherwise this
+    /// whole suite would depend on the zone of whatever machine runs it.
+    /// `zoned_forms` below exercises [`parse_when_zoned`] with a real
+    /// non-UTC zone to prove the feature itself.
     fn p(s: &str) -> String {
-        parse_when(s, now()).unwrap()
+        parse_when_zoned(s, now(), &TimeZone::UTC).unwrap()
     }
 
     /// `--due -1d` has to mean "yesterday", not "unparseable". The short-offset
@@ -604,8 +677,29 @@ mod tests {
         assert_eq!(p("friday"), "2026-07-17T00:00:00Z"); // +2
         assert_eq!(p("monday"), "2026-07-20T00:00:00Z"); // +5
         assert_eq!(p("wed"), "2026-07-22T00:00:00Z"); // same weekday -> +7
-        assert_eq!(p("next monday"), "2026-07-20T00:00:00Z"); // synonym
         assert_eq!(p("friday 17:00"), "2026-07-17T17:00:00Z");
+    }
+
+    /// #137: `next friday` used to be a silent synonym for the bare weekday —
+    /// tested (right here, until now) but documented nowhere a user would
+    /// read it, and it disagreed with `due:next banana` proving the `next`
+    /// token WAS being inspected: only the weekday branch swallowed it. A
+    /// wrong date typed with confidence is worse than a refusal, so `next`
+    /// now joins `this`/`last` on the refused side, for every weekday.
+    #[test]
+    fn next_weekday_is_refused_like_this_and_last() {
+        for bad in [
+            "next friday",
+            "next monday",
+            "next wed",
+            "this friday",
+            "last friday",
+        ] {
+            assert!(
+                parse_when(bad, now()).is_err(),
+                "{bad:?} must be refused, not silently aliased to the bare weekday"
+            );
+        }
     }
 
     #[test]
@@ -632,6 +726,80 @@ mod tests {
         assert_eq!(p("9am"), "2026-07-16T09:00:00Z");
         // 17:00 is still ahead -> today.
         assert_eq!(p("17:00"), "2026-07-15T17:00:00Z");
+    }
+
+    /// #144: `now` is a full INSTANT, not a calendar day — unlike every other
+    /// keyword in this grammar, which all answer in day-or-better granularity.
+    /// It used to alias `today` (midnight), so `due.before:now` — the filter
+    /// DSL's only overdue query — could never see a task due earlier the same
+    /// day, and a task due at exactly midnight fell outside both halves of a
+    /// before/after partition on it.
+    #[test]
+    fn now_resolves_to_the_exact_instant() {
+        assert_eq!(p("now"), now().to_string());
+        assert_eq!(p("NOW"), now().to_string()); // case-insensitive
+                                                 // A sub-second anchor round-trips exactly — proof this is the real
+                                                 // instant, not a truncated or reconstructed one.
+        let precise: Timestamp = "2026-07-15T10:42:57.123456789Z".parse().unwrap();
+        assert_eq!(
+            parse_when_zoned("now", precise, &TimeZone::UTC).unwrap(),
+            precise.to_string()
+        );
+        // `today` keeps meaning midnight — the two are not the same keyword
+        // wearing two names.
+        assert_ne!(p("now"), p("today"));
+    }
+
+    /// #138 (DESIGN.md:458): an explicit clock time with no offset of its own
+    /// resolves in the zone it is given, not always UTC. `parse_when` itself
+    /// reads the real machine zone (untestable here); `parse_when_zoned` is
+    /// the same logic with the zone pinned, so this suite proves the feature
+    /// without depending on wherever it runs.
+    #[test]
+    fn naive_time_resolves_against_the_given_zone() {
+        // A date-and-time literal with no offset: DESIGN.md's own example,
+        // `due:monday 17:00` in Amsterdam's +02:00 summer offset.
+        let cest = TimeZone::fixed(jiff::tz::offset(2));
+        assert_eq!(
+            parse_when_zoned("2026-07-20T17:00", now(), &cest).unwrap(),
+            "2026-07-20T15:00:00Z"
+        );
+        assert_eq!(
+            parse_when_zoned("monday 17:00", now(), &cest).unwrap(),
+            "2026-07-20T15:00:00Z"
+        );
+        // A bare date carries no time to localize and stays UTC midnight
+        // regardless of the zone (D-1511) — the split #138 asks for.
+        assert_eq!(
+            parse_when_zoned("2026-07-20", now(), &cest).unwrap(),
+            "2026-07-20T00:00:00Z"
+        );
+        // A bare weekday/relative word with no time of its own stays
+        // UTC-anchored too, for the same reason.
+        assert_eq!(
+            parse_when_zoned("friday", now(), &cest).unwrap(),
+            "2026-07-17T00:00:00Z"
+        );
+    }
+
+    /// The Auckland case from the audit repro: near a UTC-day boundary, a
+    /// positive-offset zone's "today" is already a different calendar day
+    /// than UTC's — and a bare time must anchor (and roll to tomorrow) in
+    /// ITS OWN day, not UTC's. `now` = 2026-07-15T23:00:00Z is already
+    /// 2026-07-16T08:00 in a fixed +09:00 zone.
+    #[test]
+    fn bare_time_anchors_todays_date_in_the_given_zone_not_utc() {
+        let jst = TimeZone::fixed(jiff::tz::offset(9));
+        let anchor: Timestamp = "2026-07-15T23:00:00Z".parse().unwrap();
+        // UTC-anchored "today" is still the 15th, so the old (buggy) answer
+        // would roll a passed 17:00 to the 16th at 17:00 UTC. In JST "today"
+        // is already the 16th, and 17:00 JST on the 16th has not passed yet
+        // (local clock reads 08:00) — a genuinely different calendar day AND
+        // a different roll decision from the UTC-anchored one.
+        assert_eq!(
+            parse_when_zoned("17:00", anchor, &jst).unwrap(),
+            "2026-07-16T08:00:00Z"
+        );
     }
 
     #[test]
