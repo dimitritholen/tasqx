@@ -121,6 +121,55 @@ pub(crate) fn effective_setting(
     (s.default.to_string(), config::Source::Default, warning)
 }
 
+/// The complaints `config.toml` earns before anything reads a single setting
+/// out of it: it does not parse at all, or a `[section] key` names no
+/// registered setting (#192).
+///
+/// Split from the printing exactly like `unknown_theme_warning` is: the
+/// emitting version can only be observed through process-global stderr. Two
+/// distinct classes, both silent until now: `config::read_table_strict`
+/// already existed for `tasqx config`'s OWN reads (`file_value`), but nothing
+/// called it from the render path, so every OTHER verb read through the silent
+/// `toml_value_in` and never learned the file failed to parse at all. An
+/// unknown key is a different failure mode again — `coerce` only rejects a
+/// value of the wrong TYPE, so a key nothing declares is simply never looked
+/// up, and even `config list` (which reads strictly) had nothing to say about
+/// it.
+pub(crate) fn config_file_warnings_in(dir: &std::path::Path) -> Vec<String> {
+    match config::read_table_strict(dir) {
+        Err(e) => vec![e.message],
+        Ok(None) => Vec::new(),
+        Ok(Some(table)) => table
+            .iter()
+            .filter_map(|(section, value)| value.as_table().map(|t| (section, t)))
+            .flat_map(|(section, inner)| {
+                inner.keys().filter_map(move |key| {
+                    let dotted = format!("{section}.{key}");
+                    (config::find(&dotted).is_none()).then(|| unknown_key(&dotted).message)
+                })
+            })
+            .collect(),
+    }
+}
+
+/// Warn once, on stderr, about whatever [`config_file_warnings_in`] finds in
+/// the user's real `config.toml`.
+///
+/// Called from `build_ctx`, which already runs before every command (see its
+/// own doc comment) — the same "once per process, every verb" treatment the
+/// theme-resolution warning gets a few lines below it. Before this, an
+/// unclosed `[theme` was reported nowhere but `config get`/`config list`, so
+/// `list`, `next` and `add` exited 0 with the config quietly reverted to every
+/// default and nothing on stderr to say so.
+pub(crate) fn warn_about_config_file() {
+    let Some(dir) = config::config_dir() else {
+        return;
+    };
+    for msg in config_file_warnings_in(&dir) {
+        eprintln!("warning: {msg}");
+    }
+}
+
 /// The stems of `themes/*.toml`, sorted. A missing directory is an empty list —
 /// built-ins need no files.
 ///

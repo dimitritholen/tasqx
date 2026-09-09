@@ -385,6 +385,69 @@ fn a_rejected_theme_flag_falls_through_to_config_toml_not_the_default() {
     );
 }
 
+/// #192 — an unparseable `config.toml` was silent on every command except
+/// `config get`/`config list`, which read the file strictly for their own
+/// reasons (`file_value`). `list`, `add` and every other verb exited 0 with
+/// EMPTY stderr while the theme, dashboard panels, notify/otlp settings and
+/// idle timeout all quietly reverted to their defaults.
+#[test]
+fn a_broken_config_toml_warns_on_every_command() {
+    let dir = fresh_config_dir("broken-cfg");
+    // An unclosed table: not valid TOML at all.
+    std::fs::write(dir.join("config.toml"), "[theme\nname = \"nord\"\n").unwrap();
+
+    for args in [["list"].as_slice(), ["add", "cfgtest"].as_slice()] {
+        let out = bin("broken-cfg", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx");
+        assert!(
+            out.status.success(),
+            "{args:?}: a broken config must not block a task capture: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("config.toml") && err.contains("not valid TOML"),
+            "{args:?}: must warn about the broken file, same as `config get` already does: {err}"
+        );
+    }
+}
+
+/// #192 — a MISSPELLED key (parse-clean TOML, but a key no setting owns) was
+/// silent absolutely everywhere, including `config list` — the one command
+/// whose whole job is showing what tasqx thinks the settings are. Coercion
+/// only rejects a wrong-TYPED value (already warned, see the tests above); an
+/// unknown key is never read in the first place, so nothing noticed it.
+#[test]
+fn a_misspelled_config_key_warns_from_config_list() {
+    let dir = fresh_config_dir("misspelled-key");
+    std::fs::write(
+        dir.join("config.toml"),
+        "[theme]\nnmae = \"nord\"\n[dashboard]\nwindw = \"month\"\n",
+    )
+    .unwrap();
+
+    let out = bin("misspelled-key", &dir)
+        .args(["config", "list"])
+        .output()
+        .expect("run config list");
+
+    assert!(
+        out.status.success(),
+        "one bad key must not abort the listing"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("theme.nmae"),
+        "must name the misspelled key: {err}"
+    );
+    assert!(
+        err.contains("dashboard.windw"),
+        "and the other one, independently: {err}"
+    );
+}
+
 /// Saving a theme said nothing about where to see it.
 ///
 /// The user picked gruvbox in `config edit`, it wrote correctly, and they came
