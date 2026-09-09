@@ -554,6 +554,76 @@ fn a_future_wait_set_by_modify_parks_an_already_pending_task_in_backlog() {
     );
 }
 
+// ---- tasqx audit #174 (D69 gap): resolved-value echo on add/modify ---------
+
+/// `task.modify` used to answer only `{short_id, _rev}` — nothing said what
+/// the ambiguous text the caller sent (`due:"tomorrow"`, `estimate:"90m"`)
+/// actually resolved to, so verifying a write cost a second `task.get` round
+/// trip. The result must now carry a `set` map of the RESOLVED values it
+/// stored, not the raw strings the caller sent.
+#[test]
+fn task_modify_echoes_the_resolved_values_it_wrote() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+
+    let result = e
+        .task_modify(&json!({
+            "ref": sid,
+            "set": { "due": "tomorrow", "estimate": "90m" },
+        }))
+        .unwrap();
+
+    // Untouched by this fix: the pre-existing keys must still be there.
+    assert_eq!(result["short_id"], sid);
+    assert_eq!(result["_rev"], 2);
+
+    let set = &result["set"];
+    // `estimate` deterministically resolves to ISO-8601, so the resolved form
+    // is checkable byte-for-byte regardless of when the test runs.
+    assert_eq!(
+        set["estimate"], "PT90M",
+        "estimate must be echoed as the resolved ISO-8601 duration, not the raw \"90m\": {result}"
+    );
+    // `due` is relative to wall-clock `now`, so pin down only what a caller
+    // could not have predicted from the raw text: it is a resolved instant,
+    // not the literal word sent.
+    let due = set["due"].as_str().expect("due must be a resolved string");
+    assert_ne!(
+        due, "tomorrow",
+        "the caller's raw text must not be echoed back verbatim: {result}"
+    );
+    assert!(
+        due.contains('T') && due.ends_with('Z'),
+        "due must be an RFC3339 instant: {due}"
+    );
+
+    // Only the fields this call actually named appear in `set` — it is not a
+    // dump of the whole task.
+    assert_eq!(
+        set.as_object().unwrap().len(),
+        2,
+        "set must carry exactly the fields this call wrote: {result}"
+    );
+}
+
+/// `task.add`'s result named `status` but never the `scheduled` value that
+/// decided it — `status: "backlog"` with no way to check what the ambiguous
+/// date behind it actually parsed to. Additive per D56, the same move D85
+/// already made for `due`.
+#[test]
+fn task_add_echoes_the_resolved_scheduled_value() {
+    let e = engine();
+    let result = e
+        .task_add(&json!({ "title": "date echo probe", "scheduled": "2999-01-01T00:00:00Z" }))
+        .unwrap();
+
+    assert_eq!(result["status"], "backlog");
+    assert_eq!(
+        result["scheduled"], "2999-01-01T00:00:00Z",
+        "task.add must echo the resolved scheduled it stored: {result}"
+    );
+}
+
 /// The recurrence spawn computes the same rule on the shifted timestamps, so it
 /// must reach the same answer: an instance whose shifted `wait` has already
 /// passed is actionable, not parked.

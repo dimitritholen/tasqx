@@ -194,7 +194,10 @@ const METHODS: [(&str, &str, &str); 32] = [
     (
         "task.modify",
         "<code>ref</code>, <code>set</code>, <code>expected_rev?</code>",
-        "The task. <code>null</code> in <code>set</code> clears a field.",
+        "<code>{short_id, _rev, set}</code>; <code>set</code> echoes the RESOLVED value \
+         actually stored for each field this call named (e.g. <code>due:\"friday\"</code> \
+         comes back as its ISO instant). <code>null</code> in the request's own \
+         <code>set</code> clears a field.",
     ),
     (
         "task.cancel",
