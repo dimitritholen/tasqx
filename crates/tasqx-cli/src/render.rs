@@ -700,27 +700,30 @@ pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     out
 }
 
-/// The notes a status-less task table owes its reader about rows the store
-/// could not read back cleanly — one per defect, naming the offending ids and
-/// the way out. Empty for a healthy store, so their presence always means
-/// something.
+/// The notes a task table owes its reader about rows the store could not read
+/// back cleanly — one per defect, naming the offending ids and the way out.
+/// Empty for a healthy store, so their presence always means something.
 ///
-/// Shared rather than written per view, and that is the whole point of it being
-/// a function. Both [`task_table`] and [`agenda_text`] draw the same rows
-/// WITHOUT a status column and WITH a title cell that can come out empty, so
-/// each of them can hide exactly these two defects. `agenda` shipped as a second
-/// table over the same rows and did not carry the notes: an unreadable status
-/// sat under `Wed 2026-08-05` looking like ordinary open work, and a blank-title
-/// row drew as an empty TASK cell with nothing under the table to say why —
-/// the invisible-field failure rebuilt one view over, which is what a copied
-/// layout does. A third view gets them by calling this; it cannot get them by
-/// remembering to.
+/// Shared rather than written per view, and that is the whole point of it
+/// being a function. Both [`task_table`] and [`agenda_text`] now draw a
+/// STATUS marker for an unrecognized status ([`status_marker`], D86) — but
+/// that column is droppable exactly like `DUE` under a narrow terminal or the
+/// piped fixed width ([`TaskCols::fit`]), so the one row that most needs the
+/// warning can be exactly the one the width squeeze takes it from. A title cell can
+/// still come out empty with no column of its own at any width. `agenda`
+/// shipped as a second table over the same rows and did not carry these notes
+/// at all: an unreadable status sat under `Wed 2026-08-05` looking like
+/// ordinary open work, and a blank-title row drew as an empty TASK cell with
+/// nothing under the table to say why — the invisible-field failure rebuilt
+/// one view over, which is what a copied layout does. A third view gets them
+/// by calling this; it cannot get them by remembering to.
 fn store_health_notes(tasks: &[Value]) -> Vec<String> {
     let mut notes = Vec::new();
 
-    // Neither table has a status column, so a row the store could not read
-    // would otherwise sit in the default view indistinguishable from ordinary
-    // open work — the invisible-field failure this project keeps rebuilding.
+    // The STATUS marker (D86) can be dropped by TaskCols::fit under a narrow
+    // terminal or the piped fixed width, so a row the store could not read
+    // back cleanly can still sit in the default view indistinguishable from
+    // ordinary open work — the invisible-field failure this project keeps rebuilding.
     let broken: Vec<String> = tasks
         .iter()
         .filter(|t| status_is_unrecognized(t))
