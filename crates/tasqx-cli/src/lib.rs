@@ -790,6 +790,10 @@ fn execute(cli: Cli) -> Exit {
 }
 
 fn build_ctx(flag: Option<&str>) -> Ctx {
+    // Loud about the FILE ITSELF (#192) before anything reads a setting out of
+    // it — a parse error or an unknown key means every value below is either
+    // the default or a stale idea of what the file said.
+    warn_about_config_file();
     // One chain for every setting (config::resolve), rather than a per-setting
     // fold. The env layer is read inside the resolver so a caller cannot forget it.
     let s = config::find("theme.name").expect("theme.name is a registered setting");
@@ -1687,6 +1691,51 @@ mod tests {
             msg.contains("gruvbx") && msg.contains("using the default"),
             "{msg}"
         );
+    }
+
+    /// #192 — a broken or misspelled `config.toml` must earn a warning
+    /// wherever `config_file_warnings_in` is asked, independent of the
+    /// per-setting readers (`toml_value_in`/`toml_value_strict_in`), which
+    /// stay silent or narrowly scoped for their own reasons.
+    #[test]
+    fn config_file_warnings_name_a_parse_error_and_every_unknown_key() {
+        let dir = std::env::temp_dir().join(format!("tasqx-cfgwarn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // An unclosed table: not valid TOML at all.
+        std::fs::write(dir.join("config.toml"), "[theme\nname = \"nord\"\n").unwrap();
+        let warnings = config_file_warnings_in(&dir);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("not valid TOML"), "{warnings:?}");
+
+        // Two misspelled keys: parse-clean TOML, but neither key is a setting.
+        std::fs::write(
+            dir.join("config.toml"),
+            "[theme]\nnmae = \"nord\"\n[dashboard]\nwindw = \"month\"\n",
+        )
+        .unwrap();
+        let warnings = config_file_warnings_in(&dir);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("theme.nmae")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("dashboard.windw")),
+            "{warnings:?}"
+        );
+
+        // A clean file, and a missing one, must both stay silent.
+        std::fs::write(dir.join("config.toml"), "[theme]\nname = \"gruvbox\"\n").unwrap();
+        assert!(config_file_warnings_in(&dir).is_empty());
+        std::fs::remove_file(dir.join("config.toml")).unwrap();
+        assert!(
+            config_file_warnings_in(&dir).is_empty(),
+            "no file is a fresh install"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The one conversion between `[daemon] idle_timeout` and what the daemon
