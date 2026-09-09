@@ -542,6 +542,37 @@ fn task_done_without_token_params_writes_no_measurement() {
     assert!(event_payload(&e, "done").get("tokens").is_none());
 }
 
+/// #211: the hint is a claim about the TASK's measurement state, not about
+/// whether THIS `task.done` call carried params. A task that already
+/// self-reported through `token.add` before completion (a legitimate calling
+/// order) must not be told "no token counts were self-reported" on a bare
+/// `task.done` — the agent will obey the hint, and following it here is
+/// exactly the double-count #208 refuses.
+#[test]
+fn tokens_hint_reflects_a_self_report_already_on_the_task() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.token_add(&json!({
+        "ref": sid, "tool": "claude-code", "source": "self-report", "confidence": "medium",
+        "input_tokens": 9000, "output_tokens": 4000, "cache_read_tokens": 100_000,
+        "cache_creation_tokens": 8000,
+    }))
+    .unwrap();
+
+    let r = e.task_done(&json!({ "ref": sid })).unwrap();
+    let hint = r["tokens_hint"]
+        .as_str()
+        .expect("tokens_hint must be present");
+    assert!(
+        !hint.contains("no token counts were self-reported"),
+        "the task already self-reported; the hint must not claim otherwise: {hint}"
+    );
+    assert!(
+        hint.contains("self-report"),
+        "the hint should name the existing self-report: {hint}"
+    );
+}
+
 // ---- D50 refusal, end to end (#79 / ATTACK 3) -----------------------------------
 
 /// The #79 mechanism, driven through the real store and the real attribution
