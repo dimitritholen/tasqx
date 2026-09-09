@@ -1441,7 +1441,10 @@ fn page_scheduling() -> String {
     s.push_str(&lead(
         "Every date field — <code>due</code>, <code>scheduled</code>, <code>wait</code> — takes the \
          same natural-language grammar, through the flag or through the sugar. It resolves to \
-         RFC3339 UTC at the moment you type it.",
+         RFC3339 at the moment you type it: a bare DATE resolves to midnight UTC, and a date or \
+         keyword carrying an explicit TIME resolves in your machine's own zone, then converts to \
+         UTC for storage — <code>due:17:00</code> on a machine set to Amsterdam means 17:00 there, \
+         not 17:00 UTC.",
     ));
 
     s.push_str(&h3("The four date fields"));
@@ -1473,8 +1476,8 @@ fn page_scheduling() -> String {
         &["Form", "Examples"],
         &[
             &["Absolute", "<code>2026-07-20</code>, <code>2026-07-20T17:00</code>, <code>\"2026-07-20 17:00\"</code>, any RFC3339"],
-            &["Relative words", "<code>today</code>, <code>tomorrow</code>, <code>yesterday</code>"],
-            &["Weekdays", "<code>monday</code>…<code>sunday</code>, <code>mon</code>…<code>sun</code>, optional leading <code>next</code>"],
+            &["Relative words", "<code>today</code>, <code>tomorrow</code>, <code>yesterday</code>, <code>now</code>"],
+            &["Weekdays", "<code>monday</code>…<code>sunday</code>, <code>mon</code>…<code>sun</code> — <code>this</code>/<code>next</code>/<code>last</code> are refused rather than guessed"],
             &["Long offsets", "<code>\"in 3 days\"</code>, <code>\"in 2 weeks\"</code>, <code>\"in 1 month\"</code>"],
             &["Short offsets", "<code>3d</code>, <code>2w</code>, <code>1mo</code>, <code>1y</code> — signed: <code>+3d</code>, <code>-1d</code>"],
             &["Boundaries", "<code>eom</code> / <code>\"end of month\"</code>, <code>eow</code> / <code>\"end of week\"</code> (ISO week ends Sunday)"],
@@ -1487,18 +1490,26 @@ fn page_scheduling() -> String {
     s.push_str(&table(
         &["Situation", "Resolution"],
         &[
-            &["A date with no time", "00:00:00 — the start of that day."],
+            &[
+                "A date with no time",
+                "00:00:00 UTC — the start of that day, whatever your zone.",
+            ],
             &[
                 "A bare time (<code>9am</code>)",
-                "Today, or tomorrow if that time already passed.",
+                "Today, or tomorrow if that time already passed — \"today\" in YOUR zone.",
             ],
             &[
                 "A weekday that <em>is</em> today",
                 "The next one — seven days out, not zero.",
             ],
             &[
-                "Any naive date/time",
-                "Interpreted as UTC, like everything else in the store.",
+                "A naive date <em>with</em> a time",
+                "Interpreted in your machine's zone, then converted to UTC for storage.",
+            ],
+            &[
+                "The literal <code>now</code>",
+                "This exact instant — not midnight, unlike every other keyword here. It is what \
+                 <code>due.before:now</code> means, so it can find a task due earlier today.",
             ],
         ],
     ));
