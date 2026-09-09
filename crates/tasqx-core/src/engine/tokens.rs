@@ -153,14 +153,40 @@ pub(super) const TOKEN_COLS: &str = "id, tool, source, model, input_tokens, outp
      cache_read_tokens, cache_creation_tokens, confidence, created";
 
 /// One stored log-parse measurement row, as [`Engine::token_recompute`] reads
-/// it back for the before/after report and the unchanged check.
+/// it back for the before/after report and the unchanged check. Carries its
+/// own `id` (#220) so the `channel_conflict` and `downgraded` write arms —
+/// neither of which mints a fresh measurement row — can still name exactly
+/// which row they touched in the audit event, the way the `recomputed` arm's
+/// freshly-inserted row always could.
 struct StoredLogParse {
+    id: String,
     tool: String,
     input: i64,
     output: i64,
     cache_read: i64,
     cache_creation: i64,
     confidence: String,
+}
+
+/// The previous state of every row a `channel_conflict` or `downgraded` write
+/// is about to touch — the id, the confidence it carried, and its counts —
+/// so the `tokens.attributed` marker that write appends is not the one place
+/// in the store that forgets what it changed (#220). The `recomputed` arm
+/// needs none of this: it already records the fresh row's own id and totals.
+fn removed_measurements(rows: &[StoredLogParse]) -> Vec<Value> {
+    rows.iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "tool": r.tool,
+                "confidence": r.confidence,
+                "input_tokens": r.input,
+                "output_tokens": r.output,
+                "cache_read_tokens": r.cache_read,
+                "cache_creation_tokens": r.cache_creation,
+            })
+        })
+        .collect()
 }
 
 /// Whether one `tokens.attributed` marker payload recorded a MEASUREMENT —
@@ -560,7 +586,7 @@ impl Engine {
         let mut stored: HashMap<String, Vec<StoredLogParse>> = HashMap::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT task_id, tool, input_tokens, output_tokens, cache_read_tokens, \
+                "SELECT task_id, id, tool, input_tokens, output_tokens, cache_read_tokens, \
                  cache_creation_tokens, confidence FROM token_usage \
                  WHERE source = ?1 ORDER BY created, id",
             )?;
@@ -568,12 +594,13 @@ impl Engine {
                 Ok((
                     r.get::<_, String>(0)?,
                     StoredLogParse {
-                        tool: r.get(1)?,
-                        input: r.get(2)?,
-                        output: r.get(3)?,
-                        cache_read: r.get(4)?,
-                        cache_creation: r.get(5)?,
-                        confidence: r.get(6)?,
+                        id: r.get(1)?,
+                        tool: r.get(2)?,
+                        input: r.get(3)?,
+                        output: r.get(4)?,
+                        cache_read: r.get(5)?,
+                        cache_creation: r.get(6)?,
+                        confidence: r.get(7)?,
                     },
                 ))
             })?;
@@ -687,17 +714,33 @@ impl Engine {
             if !dry_run {
                 match c.action {
                     RecomputeAction::ChannelConflict => {
-                        self.recompute_replace(task_id, "channel_conflict", None, 0, &[])?;
+                        self.recompute_replace(
+                            task_id,
+                            "channel_conflict",
+                            None,
+                            0,
+                            &[],
+                            &removed_measurements(rows),
+                        )?;
                     }
                     RecomputeAction::Recomputed {
                         usage,
                         samples,
                         sample_ids,
                     } => {
-                        self.recompute_replace(task_id, "recomputed", usage, samples, &sample_ids)?;
+                        self.recompute_replace(
+                            task_id,
+                            "recomputed",
+                            usage,
+                            samples,
+                            &sample_ids,
+                            &[],
+                        )?;
                     }
                     RecomputeAction::Unchanged => {}
-                    RecomputeAction::Downgraded => self.recompute_downgrade(task_id)?,
+                    RecomputeAction::Downgraded => {
+                        self.recompute_downgrade(task_id, &removed_measurements(rows))?;
+                    }
                 }
             }
 
@@ -727,6 +770,11 @@ impl Engine {
     /// [`Engine::token_attribute`]: that door's idempotency guard no-ops on
     /// every already-attributed task, and its one-event shape belongs to the
     /// live tick.
+    ///
+    /// `removed` (#220) is the pre-image of the rows this call is about to
+    /// delete with no replacement — the `channel_conflict` arm's own case,
+    /// since a fresh `usage` already answers the same question on the
+    /// `recomputed` arm. Empty there, so its payload is unchanged.
     fn recompute_replace(
         &self,
         task_id: &str,
@@ -734,6 +782,7 @@ impl Engine {
         usage: Option<NewTokenUsage>,
         samples: usize,
         sample_ids: &[String],
+        removed: &[Value],
     ) -> Result<(), ApiError> {
         let tx = self.begin_mutation()?;
         tx.execute(
@@ -757,6 +806,9 @@ impl Engine {
         if !sample_ids.is_empty() {
             payload["sample_ids"] = json!(sample_ids);
         }
+        if !removed.is_empty() {
+            payload["measurements"] = json!(removed);
+        }
         insert_event(&tx, Entity::Task, task_id, "tokens.attributed", &payload)?;
         tx.commit()
     }
@@ -766,7 +818,17 @@ impl Engine {
     /// downgrade marker, in one transaction. No `sample_ids` here — an
     /// unreadable transcript is exactly the case where they cannot be
     /// re-derived; the task's OLD markers keep whatever claims they held.
-    fn recompute_downgrade(&self, task_id: &str) -> Result<(), ApiError> {
+    ///
+    /// `measurements` (#220) is [`removed_measurements`] over the rows this
+    /// call strips — the id and the confidence EACH ONE carried before this
+    /// write, so the event names what changed instead of just that something
+    /// did. Nothing is deleted here (the rows survive, only their confidence
+    /// moves), but `--apply` is still a one-way door: `undo` refuses
+    /// `tokens.attributed`, so an operator who disagrees with a downgrade
+    /// needs this payload's ids to act on it at all — with them in hand,
+    /// `token.remove` retracts the row outright, or a fresh `token.add`
+    /// re-banks it at the confidence they believe is right.
+    fn recompute_downgrade(&self, task_id: &str, measurements: &[Value]) -> Result<(), ApiError> {
         let tx = self.begin_mutation()?;
         tx.execute(
             "UPDATE token_usage SET confidence = ?1 WHERE task_id = ?2 AND source = ?3",
@@ -777,7 +839,12 @@ impl Engine {
             Entity::Task,
             task_id,
             "tokens.attributed",
-            &json!({ "recompute": true, "action": "downgraded" }),
+            &json!({
+                "recompute": true,
+                "action": "downgraded",
+                "confidence": CONFIDENCE_LOW,
+                "measurements": measurements,
+            }),
         )?;
         tx.commit()
     }
