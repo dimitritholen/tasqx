@@ -60,20 +60,65 @@ pub(crate) fn unknown_theme_warning(key: &str, name: &str, source: &str) -> Opti
 /// happily reported the dropped name. One question, two surfaces, two answers —
 /// and the one the user could read was the wrong one.
 ///
-/// The fallback is `s.default` with `Source::Default` on purpose: that IS where
-/// the value comes from once the named layer is discarded, and crediting
-/// `config.toml` for a value it did not supply would be the same lie one field
-/// over.
+/// **Walks the D9 chain one layer at a time (#197).** The first version called
+/// `config::resolve` once — which only knows precedence, not validity — and
+/// discarded straight to the default the moment THAT single winning layer
+/// failed validation. So `--theme gruvbx` with `gruvbox` sitting right there in
+/// `config.toml` reported `nord`/`Source::Default`: a value the user had typed
+/// AND persisted, thrown away because a *different, higher* layer had a typo in
+/// it. D9's own promise is a chain, and the one thing a chain must get right is
+/// what happens when a link misses — it hands off to the next link, not to the
+/// ground. The fallback is `s.default` with `Source::Default` only once EVERY
+/// layer has been tried and failed: that IS where the value comes from at that
+/// point, and crediting `config.toml` for a value it did not supply would be
+/// the same lie one field over.
 pub(crate) fn effective_setting(
     s: &config::Setting,
     flag: Option<&str>,
     file: Option<&str>,
 ) -> (String, config::Source, Option<String>) {
-    let (value, source) = config::resolve(s, flag, file);
-    match unknown_theme_warning(s.key, &value, &source.label(s)) {
-        None => (value, source, None),
-        Some(msg) => (s.default.to_string(), config::Source::Default, Some(msg)),
+    fn pick(v: Option<&str>) -> Option<String> {
+        v.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
     }
+    // The env layer is read here, not passed in, for the same reason
+    // `config::resolve` reads it internally: a caller cannot forget it.
+    let env = s.env.and_then(|e| std::env::var(e).ok());
+    let candidates = [
+        (pick(flag), config::Source::Flag),
+        (pick(env.as_deref()), config::Source::Env),
+        (pick(file), config::Source::File),
+    ];
+
+    // The highest-precedence layer that supplied a value tasqx could not use —
+    // named in the eventual warning regardless of which lower layer rescues
+    // it, or of "the default" when none does. Only the first is kept: one
+    // warning line per invocation, same as before this walked more than one
+    // layer.
+    let mut rejected: Option<(String, config::Source)> = None;
+    for (value, source) in candidates {
+        let Some(value) = value else { continue };
+        if validate_setting(s.key, &value).is_ok() {
+            let warning = rejected.map(|(name, rej_source)| {
+                format!(
+                    "warning: unknown theme {name:?} from {}; using {} instead (try `tasqx theme list`)",
+                    rej_source.label(s),
+                    source.label(s)
+                )
+            });
+            return (value, source, warning);
+        }
+        rejected.get_or_insert((value, source));
+    }
+
+    // Nothing validated: `unknown_theme_warning`'s own wording is exactly this
+    // case's message, so build it from the same function rather than a second
+    // copy of the sentence.
+    let warning = rejected.map(|(name, source)| {
+        unknown_theme_warning(s.key, &name, &source.label(s)).expect("already known invalid")
+    });
+    (s.default.to_string(), config::Source::Default, warning)
 }
 
 /// The stems of `themes/*.toml`, sorted. A missing directory is an empty list —

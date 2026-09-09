@@ -1643,6 +1643,52 @@ mod tests {
         );
     }
 
+    /// #197 — a rejected layer must fall through to the NEXT layer in the D9
+    /// chain, not straight to the bottom. `effective_setting` used to call
+    /// `config::resolve` once and discard straight to the default the moment
+    /// that single winning layer failed validation, so `--theme gruvbx` with
+    /// `gruvbox` sitting in `config.toml` reported `nord`/`Source::Default` —
+    /// a value the user had typed and persisted, thrown away over a typo in a
+    /// *different, higher* layer.
+    #[test]
+    fn a_rejected_flag_falls_through_to_config_toml_not_the_default() {
+        let s = config::find("theme.name").unwrap();
+        let (value, source, warning) = effective_setting(s, Some("gruvbx"), Some("gruvbox"));
+        assert_eq!(
+            value, "gruvbox",
+            "config.toml must win once --theme is rejected"
+        );
+        assert_eq!(
+            source,
+            config::Source::File,
+            "and be credited as the source, not `default`"
+        );
+        let msg = warning.expect("the rejected flag must still warn");
+        assert!(msg.contains("gruvbx"), "{msg}");
+        assert!(msg.contains("--theme"), "{msg}");
+        assert!(
+            msg.contains("config.toml"),
+            "the message must name the layer that actually won, not just say \
+             \"using the default\": {msg}"
+        );
+    }
+
+    /// The chain's floor is still the default when NOTHING validates — the
+    /// case `effective_setting` already covered before #197, pinned so the
+    /// per-layer walk cannot quietly drop it.
+    #[test]
+    fn a_rejected_flag_with_no_valid_layer_below_it_still_falls_to_the_default() {
+        let s = config::find("theme.name").unwrap();
+        let (value, source, warning) = effective_setting(s, Some("gruvbx"), None);
+        assert_eq!(value, s.default);
+        assert_eq!(source, config::Source::Default);
+        let msg = warning.expect("must still warn");
+        assert!(
+            msg.contains("gruvbx") && msg.contains("using the default"),
+            "{msg}"
+        );
+    }
+
     /// The one conversion between `[daemon] idle_timeout` and what the daemon
     /// takes (D5), including both spellings of "never".
     ///
