@@ -9,7 +9,7 @@
 use jiff::civil::{Date, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Unit};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::theme::Ctx;
 use crate::AGENDA_MAX_DAYS;
@@ -17,12 +17,20 @@ use crate::AGENDA_MAX_DAYS;
 /// Strip terminal-control bytes from untrusted text before it is painted, so an
 /// imported or agent-authored task field can't smuggle ANSI/OSC escapes that
 /// clear the screen, move the cursor, set the window title, or spoof CLI output.
-/// This is the terminal-path analogue of `html::esc`. C0 controls (except tab),
-/// DEL, and C1 controls are dropped; ordinary printable text is untouched.
+/// This is the terminal-path analogue of `html::esc`. Every C0 control
+/// (tab included), DEL, and every C1 control are dropped; ordinary printable
+/// text is untouched.
+///
+/// Tab is dropped here (#234 item 10 / bundle #228's duplicate — same root
+/// cause), where `html::esc` deliberately keeps it (D19): a raw `\t` expands
+/// to the next 8-column stop in any real terminal, shifting every column to
+/// the right of it on that row — the exact misalignment D51 exists to end —
+/// while an HTML `<table>` cell has no fixed-width grid for a tab to break.
+/// D19's "one sanitizer standard" is about the RULE (strip control bytes,
+/// keep printable text) both surfaces share, not that every exception must be
+/// identical when the two surfaces' hazards differ.
 pub fn san(s: &str) -> String {
-    s.chars()
-        .filter(|&c| c == '\t' || !c.is_control())
-        .collect()
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Is this task still open, given the `status` string as it arrived in a JSON
@@ -2368,7 +2376,35 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
     out
 }
 
-pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
+/// `"—"` (the HTML/dashboard "nothing" glyph, via `html::humanize_iso`)
+/// rewritten to the terminal's own dash — matching the TOKENS column's `-`
+/// for an absent value (#234 item 11), rather than mixing two "nothing"
+/// glyphs on one row.
+fn human_or_dash(iso: &str) -> String {
+    let h = crate::html::humanize_iso(iso);
+    if h == "—" {
+        "-".to_string()
+    } else {
+        h
+    }
+}
+
+/// `tasqx report` — the terminal table for `report.summary`.
+///
+/// `token_metrics` is `--metrics`, filtered to the request's `Vec<String>` as
+/// given (validated against `SUMMARY_METRICS` before this is called): when it
+/// names any of the four `tokens_*` buckets, all four render as their own
+/// columns — the same four the HTML report and `--json` already carry —
+/// instead of the single dominant-bucket cell (#212, D48a). `--metrics`
+/// otherwise leaves this table alone: COUNT/EST/OVERDUE/TRACKED are its fixed
+/// axis, and the terminal's actual gap with the other two surfaces is
+/// specifically the token ranking, not those four.
+pub fn report(
+    ctx: &Ctx,
+    result: &Value,
+    group_by: &str,
+    token_metrics: Option<&[String]>,
+) -> String {
     let empty = Vec::new();
     let groups = result
         .get("groups")
@@ -2377,50 +2413,178 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     if groups.is_empty() {
         return "No matching tasks.\n".to_string();
     }
+
+    let show_all_tokens = token_metrics.is_some_and(|m| {
+        m.iter().any(|s| {
+            matches!(
+                s.as_str(),
+                "tokens_in" | "tokens_out" | "tokens_cache_read" | "tokens_cache_creation"
+            )
+        })
+    });
+
+    // #234 item 2: the group_by column used to be a hardcoded 20 cells —
+    // wide enough for most project names, and silent about the rest: a name
+    // past it (`code-review-2026-07` is 19, `eblinqx-claude-plugins` is 22)
+    // was never truncated, so it pushed every column after it to the right
+    // by the overflow, and a table's whole point — scanning a column of
+    // counts straight down — broke on exactly the rows most likely to be
+    // long project names. Sized from the data actually being printed
+    // instead, the same idea `TaskCols` already uses for `list`.
+    const MIN_KEY: usize = 8;
+    const MAX_KEY: usize = 32;
+    let header_label = group_by.to_uppercase();
+    let key_w = groups
+        .iter()
+        .map(|g| width(&san(g.get(group_by).and_then(Value::as_str).unwrap_or(""))))
+        .max()
+        .unwrap_or(0)
+        .max(width(&header_label))
+        .clamp(MIN_KEY, MAX_KEY);
+    // And respect COLUMNS: shrink the one column this table can shrink
+    // rather than let the row run past a narrow terminal uncorrected.
+    let suffix_w = if show_all_tokens {
+        5 + 2 + 10 + 2 + 7 + 2 + 10 + 4 * (2 + 8)
+    } else {
+        5 + 2 + 10 + 2 + 7 + 2 + 10 + 2 + 12
+    };
+    let key_w = key_w
+        .min(ctx.cols.saturating_sub(suffix_w + 2))
+        .max(MIN_KEY);
+
     let mut out = String::new();
-    // D48a: the four buckets are never blended on any output surface, and this
-    // column used to be the blend. `tokens_total` answered "how much did this
-    // cost?" with a number that cannot mean that — cache read is 98% of this
-    // project's own volume and 68% of its cost, so the blend is wrong in the
-    // flattering direction.
-    //
-    // Four columns is what the HTML report gets; here they would take the row
-    // from 74 characters to ~104, past any usable terminal. So the terminal
-    // names the largest bucket and its own count instead: no blend, no derived
-    // figure, same width. `tasqx report --json` and the HTML page carry all four
-    // for anyone who needs the split.
-    out.push_str(&ctx.paint(
-        "header",
-        &format!(
-            "{:<20}  {:>5}  {:>10}  {:>7}  {:>10}  {:>12}",
-            group_by.to_uppercase(),
-            "COUNT",
-            "EST",
-            "OVERDUE",
-            "TRACKED",
-            "TOKENS"
-        ),
-    ));
+    let mut header = format!(
+        "{:<key_w$}  {:>5}  {:>10}  {:>7}  {:>10}",
+        header_label, "COUNT", "EST", "OVERDUE", "TRACKED",
+    );
+    if show_all_tokens {
+        for (_, short, _) in crate::tokens::BUCKETS {
+            header.push_str(&format!("  {:>8}", short.to_uppercase()));
+        }
+    } else {
+        header.push_str(&format!("  {:>12}", "TOKENS"));
+    }
+    out.push_str(&ctx.paint("header", &header));
     out.push('\n');
+
+    // Totals (#234 item 5), accumulated alongside the rows — the report
+    // already holds every group before rendering, so this cannot drift from
+    // what the rows above it show the way a second, independent sum could.
+    let mut total_count = 0i64;
+    let mut total_est_secs = 0i64;
+    let mut total_tracked_secs = 0i64;
+    let mut total_overdue = 0i64;
+    let mut total_bucket = std::collections::HashMap::<&str, i64>::new();
+    let mut any_tokens = false;
+
     for g in groups {
         let key = san(g.get(group_by).and_then(Value::as_str).unwrap_or(""));
         let count = g.get("count").and_then(Value::as_i64).unwrap_or(0);
-        let est = g.get("est_total").and_then(Value::as_str).unwrap_or("-");
-        let overdue = g.get("overdue").and_then(Value::as_i64).unwrap_or(0);
-        let tracked = g
+        let est_iso = g.get("est_total").and_then(Value::as_str).unwrap_or("PT0S");
+        let tracked_iso = g
             .get("tracked_total")
             .and_then(Value::as_str)
-            .unwrap_or("-");
-        let tokens = crate::tokens::dominant_cell(g);
+            .unwrap_or("PT0S");
+        let overdue = g.get("overdue").and_then(Value::as_i64).unwrap_or(0);
+
+        total_count += count;
+        total_overdue += overdue;
+        if let Some(s) = tasqx_core::util::duration_secs(est_iso) {
+            total_est_secs = total_est_secs.saturating_add(s);
+        }
+        if let Some(s) = tasqx_core::util::duration_secs(tracked_iso) {
+            total_tracked_secs = total_tracked_secs.saturating_add(s);
+        }
+        for (bkey, _, _) in crate::tokens::BUCKETS {
+            let n = g.get(bkey).and_then(Value::as_i64).unwrap_or(0);
+            if n != 0 {
+                any_tokens = true;
+            }
+            *total_bucket.entry(bkey).or_insert(0) += n;
+        }
+
         let overdue_cell = format!("{overdue:>7}");
         let overdue_p = if overdue > 0 {
             ctx.paint("warn", &overdue_cell)
         } else {
             ctx.paint("muted", &overdue_cell)
         };
-        out.push_str(&format!(
-            "{}  {count:>5}  {est:>10}  {overdue_p}  {tracked:>10}  {tokens:>12}\n",
-            ctx.paint("project", &pad(&key, 20))
+        let mut line = format!(
+            "{}  {count:>5}  {:>10}  {overdue_p}  {:>10}",
+            ctx.paint(
+                "project",
+                &pad(&truncate(&key, key_w, ctx.caps.unicode), key_w)
+            ),
+            human_or_dash(est_iso),
+            human_or_dash(tracked_iso),
+        );
+        if show_all_tokens {
+            for (bkey, _, _) in crate::tokens::BUCKETS {
+                let n = g.get(bkey).and_then(Value::as_i64).unwrap_or(0);
+                line.push_str(&format!("  {:>8}", crate::tokens::compact(n)));
+            }
+        } else {
+            line.push_str(&format!("  {:>12}", crate::tokens::dominant_cell(g)));
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+
+    // The totals row — same columns, same widths, "TOTAL" where a group name
+    // would be.
+    let total_row = json!({
+        "tokens_cache_read": total_bucket.get("tokens_cache_read").copied().unwrap_or(0),
+        "tokens_cache_creation": total_bucket.get("tokens_cache_creation").copied().unwrap_or(0),
+        "tokens_in": total_bucket.get("tokens_in").copied().unwrap_or(0),
+        "tokens_out": total_bucket.get("tokens_out").copied().unwrap_or(0),
+    });
+    let mut total_line = format!(
+        "{}  {total_count:>5}  {:>10}  {:>7}  {:>10}",
+        ctx.paint(
+            "header",
+            &pad(&truncate("TOTAL", key_w, ctx.caps.unicode), key_w)
+        ),
+        human_or_dash(&tasqx_core::util::iso_duration(total_est_secs)),
+        total_overdue,
+        human_or_dash(&tasqx_core::util::iso_duration(total_tracked_secs)),
+    );
+    if show_all_tokens {
+        for (bkey, _, _) in crate::tokens::BUCKETS {
+            let n = total_bucket.get(bkey).copied().unwrap_or(0);
+            total_line.push_str(&format!("  {:>8}", crate::tokens::compact(n)));
+        }
+    } else {
+        total_line.push_str(&format!(
+            "  {:>12}",
+            crate::tokens::dominant_cell(&total_row)
+        ));
+    }
+    out.push_str(&ctx.paint("header", &total_line));
+    out.push('\n');
+
+    // Footnotes — printed only when they have something to say.
+    if any_tokens && !show_all_tokens {
+        // #212 (D48a, challenges-design — see the commit and the report for
+        // the reasoning): the cell above is one bucket of four, ranked by
+        // volume rather than a priced ratio (D48a's own wording), and until
+        // now the terminal gave no way to see the other three at all.
+        out.push_str(&ctx.paint(
+            "muted",
+            "TOKENS shows the largest of four buckets (cacheR/cacheW/in/out) by volume; \
+             --metrics tokens_in,tokens_out,tokens_cache_read,tokens_cache_creation or --html shows all four.\n",
+        ));
+    }
+    let excluded = result
+        .get("tokens_excluded_cancelled_tasks")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if excluded > 0 {
+        // #234 item 12: D24 excludes cancelled tasks from this report by
+        // default (right for counting abandoned work; silent about the spend
+        // already incurred on it, which this line stops being silent about).
+        out.push_str(&ctx.paint(
+            "muted",
+            &format!("{excluded} cancelled task(s) excluded; --all includes their spend.\n"),
         ));
     }
     out
@@ -2781,7 +2945,28 @@ mod tests {
         let clean = san(malicious);
         assert!(!clean.contains('\x1b'), "escape byte leaked: {clean:?}");
         assert!(!clean.contains('\x07') && !clean.contains('\x08'));
-        assert_eq!(clean, "[2Jpwned]0;evil ok\ttab", "printable kept, tab kept");
+        assert!(!clean.contains('\t'), "a raw tab expands in any terminal and shifts every column to its right on that row — the misalignment D51 exists to end (D19/#234 item 10)");
+        assert_eq!(
+            clean, "[2Jpwned]0;evil oktab",
+            "printable kept, tab dropped"
+        );
+    }
+
+    /// #234 item 10 (= bundle #228's tab-alignment item, same root cause,
+    /// D19): a raw TAB in a title survives `san` and expands to the next
+    /// 8-column stop in any real terminal, shifting every column to the
+    /// RIGHT of it on that one row — the exact misalignment D51 exists to
+    /// end, reintroduced by the one control byte `san` still let through.
+    /// `html::esc` keeps tab deliberately (D19: "legitimate document
+    /// whitespace" — a `<table>` cell has no fixed-width grid to break), so
+    /// this is a `render::san`-only fix, not a second D19 sanitizer standard.
+    #[test]
+    fn san_strips_tab_which_would_misalign_a_terminal_table() {
+        assert_eq!(san("tab\there"), "tabhere");
+        assert_eq!(
+            san("bell\x07 and \x1b]0;PWNED\x07title"),
+            "bell and ]0;PWNEDtitle"
+        );
     }
 
     #[test]
@@ -3829,7 +4014,7 @@ mod tests {
                              "tracked_total": "PT2H", "tokens_total": 123456 })
             })
             .collect();
-        let out = report(&ctx, &json!({ "groups": groups }), "project");
+        let out = report(&ctx, &json!({ "groups": groups }), "project", None);
         let rows: Vec<&str> = out.lines().skip(1).collect();
         let want = cells(rows[0]);
         for (row, k) in rows.iter().zip(AWKWARD) {
@@ -3864,6 +4049,7 @@ mod tests {
                   "tokens_total": 13_900_820 }
             ] }),
             "project",
+            None,
         );
         assert!(out.contains("TOKENS"), "TOKENS header missing: {out:?}");
         let row = out.lines().nth(1).unwrap();
@@ -3890,9 +4076,170 @@ mod tests {
                   "tracked_total": "PT2H" }
             ] }),
             "project",
+            None,
         );
         let row = out.lines().nth(1).unwrap();
         assert!(row.trim_end().ends_with('-'), "expected a dash: {row:?}");
+    }
+
+    // ========================================================================
+    // Regression tests — tasqx audit 2026-09 (#212, #234)
+    // ========================================================================
+
+    /// #234 item 2: a project name past the old hardcoded 20-cell column must
+    /// not shift every following column, and every row (long name or short)
+    /// must hold the SAME width so a straight-down scan of COUNT/EST/OVERDUE/
+    /// TRACKED is possible — the exact repro from the field
+    /// (`code-review-2026-07` 19 cells, `eblinqx-claude-plugins` 22).
+    #[test]
+    fn report_column_does_not_shift_for_a_name_past_the_old_fixed_width() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let groups = json!({ "groups": [
+            { "project": "code-review-2026-07", "count": 38, "est_total": "PT90H15M",
+              "overdue": 0, "tracked_total": "PT0S" },
+            { "project": "eblinqx-claude-plugins", "count": 3, "est_total": "PT7H",
+              "overdue": 0, "tracked_total": "PT0S" },
+            { "project": "fin-10034", "count": 1, "est_total": "PT0S",
+              "overdue": 0, "tracked_total": "PT0S" },
+        ] });
+        let out = report(&ctx, &groups, "project", None);
+        let rows: Vec<&str> = out.lines().skip(1).take(3).collect();
+        // Every row's TOTAL display width must match: that is exactly "every
+        // fixed-width column starts and ends in the same place", regardless
+        // of how a right-justified number happens to sit inside its own
+        // field (a 1-digit count naturally starts one cell later than a
+        // 2-digit one in the SAME 5-cell field — that is correct alignment,
+        // not a shift).
+        let want = cells(rows[0]);
+        for row in &rows {
+            assert_eq!(
+                cells(row),
+                want,
+                "a row's total width differs — the columns are not aligned: {row:?}\n{out}"
+            );
+        }
+    }
+
+    /// #234 item 11: the terminal used to print raw ISO-8601 (`PT5H53S`,
+    /// which reads at a glance as 5h53m and is actually 5h and 53 SECONDS —
+    /// an 87x error). It must use the same human duration the HTML report and
+    /// the dashboard already use, and `-` (matching the TOKENS column) rather
+    /// than `PT0S` for an absent value.
+    #[test]
+    fn report_prints_human_durations_not_iso8601() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let groups = json!({ "groups": [
+            { "project": "p", "count": 1, "est_total": "PT1H30M", "overdue": 0,
+              "tracked_total": "PT5H53S" },
+        ] });
+        let out = report(&ctx, &groups, "project", None);
+        assert!(
+            !out.contains("PT1H30M") && !out.contains("PT5H53S"),
+            "raw ISO leaked: {out:?}"
+        );
+        assert!(out.contains("1h 30m"), "expected a human duration: {out:?}");
+        assert!(
+            out.contains("5h 53s") || out.contains("5h"),
+            "expected a human duration for 5h53s: {out:?}"
+        );
+
+        let zero = json!({ "groups": [
+            { "project": "p", "count": 1, "est_total": "PT0S", "overdue": 0, "tracked_total": "PT0S" },
+        ] });
+        let out = report(&ctx, &zero, "project", None);
+        assert!(
+            !out.contains("PT0S"),
+            "PT0S leaked instead of a dash: {out:?}"
+        );
+    }
+
+    /// #234 item 5: neither renderer had a totals row, forcing "how much
+    /// estimated work is on the board" to be summed by hand across every
+    /// group.
+    #[test]
+    fn report_carries_a_totals_row() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let groups = json!({ "groups": [
+            { "project": "a", "count": 3, "est_total": "PT1H", "overdue": 1, "tracked_total": "PT30M" },
+            { "project": "b", "count": 5, "est_total": "PT2H", "overdue": 0, "tracked_total": "PT1H" },
+        ] });
+        let out = report(&ctx, &groups, "project", None);
+        assert!(out.contains("TOTAL"), "no totals row: {out:?}");
+        let total_line = out.lines().find(|l| l.contains("TOTAL")).unwrap();
+        assert!(
+            total_line.contains('8'),
+            "count total (3+5=8) missing: {total_line:?}"
+        );
+        assert!(
+            total_line.contains('1'),
+            "overdue total (1+0=1) missing: {total_line:?}"
+        );
+    }
+
+    /// #212 (D48a, challenges-design): `--metrics` naming a token bucket must
+    /// show all four as their own columns, and the terminal must otherwise
+    /// carry a legend saying the single TOKENS cell is one bucket of four —
+    /// today nothing on the page says that, and it is the number a lead reads
+    /// weekly to ask "which project is burning the budget".
+    #[test]
+    fn report_metrics_flag_shows_all_four_buckets_and_dominant_mode_carries_a_legend() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let groups = json!({ "groups": [
+            { "project": "budget-a", "count": 1, "est_total": "PT0S", "overdue": 0,
+              "tracked_total": "PT0S", "tokens_in": 50_000, "tokens_out": 200_000,
+              "tokens_cache_read": 300_000, "tokens_cache_creation": 40_000 },
+        ] });
+
+        let dominant = report(&ctx, &groups, "project", None);
+        assert!(
+            dominant.to_lowercase().contains("largest of four buckets"),
+            "expected a legend explaining the TOKENS cell: {dominant:?}"
+        );
+
+        let metrics = vec!["tokens_in".to_string(), "tokens_out".to_string()];
+        let all_four = report(&ctx, &groups, "project", Some(&metrics));
+        for label in ["CACHER", "CACHEW", "IN", "OUT"] {
+            assert!(
+                all_four.contains(label),
+                "expected a {label} column with --metrics: {all_four:?}"
+            );
+        }
+        assert!(
+            all_four.contains("200.0K") && all_four.contains("50.0K"),
+            "expected the out/in counts as their own cells: {all_four:?}"
+        );
+    }
+
+    /// #234 item 12: a cancelled task's spend must not vanish from the
+    /// default report with nothing saying it was excluded.
+    #[test]
+    fn report_footnotes_cancelled_spend_excluded_by_default() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "groups": [
+                { "project": "budget-a", "count": 1, "est_total": "PT0S", "overdue": 0,
+                  "tracked_total": "PT0S" },
+            ],
+            "tokens_excluded_cancelled_tasks": 3,
+        });
+        let out = report(&ctx, &result, "project", None);
+        assert!(
+            out.contains('3') && out.to_lowercase().contains("cancelled"),
+            "expected a footnote naming the 3 excluded cancelled tasks: {out:?}"
+        );
+
+        let clean = json!({
+            "groups": [
+                { "project": "budget-a", "count": 1, "est_total": "PT0S", "overdue": 0,
+                  "tracked_total": "PT0S" },
+            ],
+            "tokens_excluded_cancelled_tasks": 0,
+        });
+        let out = report(&ctx, &clean, "project", None);
+        assert!(
+            !out.to_lowercase().contains("cancelled"),
+            "no footnote should print when nothing was excluded: {out:?}"
+        );
     }
 
     /// Truncation has to cut on a GRAPHEME boundary and budget in cells. Half a

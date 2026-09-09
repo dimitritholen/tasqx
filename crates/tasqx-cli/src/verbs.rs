@@ -631,14 +631,20 @@ pub(crate) fn report_params(args: &[String], all: bool) -> Value {
     params
 }
 
-pub(crate) fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>, all: bool) -> CmdOutcome {
+pub(crate) fn run_report(
+    be: &mut Backend,
+    ctx: &Ctx,
+    args: Vec<String>,
+    all: bool,
+    metrics: Option<Vec<String>>,
+) -> CmdOutcome {
     let params = report_params(&args, all);
     let group_by = params["group_by"]
         .as_str()
         .unwrap_or(tasqx_core::engine::SUMMARY_GROUP_BY[0])
         .to_string();
     let result = be.call("report.summary", &params)?;
-    let text = render::report(ctx, &result, &group_by);
+    let text = render::report(ctx, &result, &group_by, metrics.as_deref());
     Ok((result, text))
 }
 
@@ -1003,8 +1009,13 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
     Ok(match kind {
         ChartKind::Throughput { weeks } => {
             let weeks = chart::default_weeks(false, weeks);
-            let events = events_since(engine, anchor, weeks * 7 + 7)?;
-            let series = chart::throughput(&events, weeks, anchor);
+            // At least 5 weeks back regardless of the display window (#234
+            // item 4): the 4-wk velocity is always computed over the last four
+            // COMPLETE ISO weeks, which `--weeks 1` alone would clip.
+            let events = events_since(engine, anchor, weeks.max(5) * 7 + 7)?;
+            let (members, _) = burndown_members(engine, &None)?;
+            let series = chart::throughput(&events, &members, weeks, anchor);
+            let velocity = chart::velocity_4wk(&events, &members, anchor);
             let data = series
                 .iter()
                 .map(|b| {
@@ -1013,14 +1024,16 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
                 })
                 .collect::<Vec<_>>();
             (
-                json!({ "chart": "throughput", "weeks": weeks, "series": data }),
-                chart::render_throughput(ctx, &series),
+                json!({ "chart": "throughput", "weeks": weeks, "series": data,
+                        "velocity_4wk": velocity }),
+                chart::render_throughput(ctx, &series, velocity),
             )
         }
         ChartKind::Heatmap { year, weeks } => {
             let weeks = chart::default_weeks(year, weeks);
             let events = events_since(engine, anchor, weeks * 7 + 7)?;
-            let days = chart::heatmap(&events, weeks, anchor);
+            let (members, _) = burndown_members(engine, &None)?;
+            let days = chart::heatmap(&events, &members, weeks, anchor);
             let data = days
                 .iter()
                 .map(|d| json!({ "date": d.date.to_string(), "count": d.count }))
@@ -1046,7 +1059,7 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
                 .collect::<Vec<_>>();
             (
                 json!({ "chart": "burndown", "days": days_n, "scope": label, "series": data }),
-                chart::render_burndown(ctx, &series, &label),
+                chart::render_burndown(ctx, &series, &label, !members.is_empty()),
             )
         }
     })

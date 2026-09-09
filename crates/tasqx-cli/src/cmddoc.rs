@@ -557,11 +557,12 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "report.summary",
         summary: "Summary counts, optionally grouped, as text or HTML.",
-        usage: "tasqx report [group_by] [filter…] [--all] [--html] [--out FILE]",
+        usage: "tasqx report [group_by] [filter…] [--all] [--metrics list] [--html] [--out FILE]",
         examples: &[
             ex("tasqx report"),
             ex("tasqx report project"),
             ex("tasqx report --all"),
+            ex("tasqx report --metrics tokens_in,tokens_out,tokens_cache_read,tokens_cache_creation"),
             ex_norun("tasqx report --html --out review.html", "self-contained HTML"),
             // The usage line always promised `[filter…]` alongside `--html`; for a
             // long time only the terminal path kept that promise. Documented as an
@@ -573,6 +574,9 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "A filter scopes BOTH output modes — the HTML page and the terminal table \
              answer the same question.",
             "Cancelled tasks are not counted, unless you pass `--all` or your filter names a status.",
+            "The terminal's TOKENS column names the largest of four buckets by volume; \
+             `--metrics` naming a tokens_* bucket shows all four as their own columns instead, \
+             same as `--html` and `--json`.",
         ],
         see_also: &["chart", "list", "why"],
         topic: Topic::Reports,
