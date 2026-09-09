@@ -130,9 +130,18 @@ pub(crate) fn dashboard_enabled_with(file: Option<&str>) -> bool {
 /// vocabulary is not a value, so it never reaches here and the resolver hands
 /// back the default. What arrives is either the user's list or the built-in one.
 pub(crate) fn dashboard_panels() -> Vec<tui::dashboard::model::PanelId> {
-    use tui::dashboard::model::PanelId;
     let s = config::find("dashboard.panels").expect("dashboard.panels is registered");
     let (v, _) = config::resolve(s, None, config::toml_value(s).as_deref());
+    parse_panel_list(&v)
+}
+
+/// Parse a comma-separated panel list into the panels it names, in the order
+/// given — the same vocabulary and the same "unknown word is dropped, not
+/// refused" rule `dashboard.panels` applies through `coerce`, so a `--panels`
+/// typo on the CLI and a bad value in `config.toml` fail the same quiet way
+/// rather than the CLI inventing a second policy for the same string.
+pub(crate) fn parse_panel_list(v: &str) -> Vec<tui::dashboard::model::PanelId> {
+    use tui::dashboard::model::PanelId;
     v.split(',')
         .filter_map(|name| PanelId::from_slug(name.trim()))
         .collect()
@@ -394,9 +403,18 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
 /// The human rendering is the document too. A `--json` carve-out would have
 /// been dishonest, and a prose summary here would be a second surface to keep
 /// true; anyone who wants prose has the screen.
-pub(crate) fn run_dashboard_json(be: &mut Backend, _ctx: &Ctx) -> CmdOutcome {
+///
+/// `panels` is the CLI's `--panels`, honoured on this path only (#152): the
+/// interactive screen keeps reading `dashboard.panels` from config no matter
+/// what was typed alongside the bare verb, because a flag that reached a
+/// screen already sized and drawn on this terminal would need a redraw
+/// nothing here triggers. `None` falls back to `dashboard_panels()`, same as
+/// before this parameter existed.
+pub(crate) fn run_dashboard_json(be: &mut Backend, _ctx: &Ctx, panels: Option<&str>) -> CmdOutcome {
     let days = dashboard_window_days();
-    let order = dashboard_panels();
+    let order = panels
+        .map(parse_panel_list)
+        .unwrap_or_else(dashboard_panels);
     let data = dashboard_data(be, days, jiff::Timestamp::now(), chart::today())?;
     let doc = tui::dashboard::json::document(&data, days, &order);
     let render = serde_json::to_string_pretty(&doc).unwrap_or_default();

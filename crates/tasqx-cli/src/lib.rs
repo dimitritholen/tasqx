@@ -557,7 +557,7 @@ fn execute(cli: Cli) -> Exit {
         )
     };
     let term_size = terminal_size(&ctx.caps, stdout_tty, stdin_tty);
-    if matches!(&cli.command, Some(Command::Dashboard)) && !cli.json {
+    if matches!(&cli.command, Some(Command::Dashboard { .. })) && !cli.json {
         if let Some(msg) = dashboard_refusal(&ctx.caps, stdout_tty, stdin_tty, term_size) {
             return Exit::Out(Err(ApiError::bad_request(msg)));
         }
@@ -648,7 +648,7 @@ fn execute(cli: Cli) -> Exit {
     let fits = term_size.is_some_and(|(w, h)| {
         dashboard_refusal(&ctx.caps, stdout_tty, stdin_tty, Some((w, h))).is_none()
     });
-    let verb_screen = matches!(&cli.command, Some(Command::Dashboard)) && !cli.json;
+    let verb_screen = matches!(&cli.command, Some(Command::Dashboard { .. })) && !cli.json;
     let bare_screen = cli.command.is_none()
         && dashboard_active(
             &ctx.caps,
@@ -675,7 +675,9 @@ fn execute(cli: Cli) -> Exit {
         // Only the `--json` spelling reaches here: the screen leaves as
         // `SelfFramed` above, for the same D57-hint reason the bare invocation
         // does.
-        Some(Command::Dashboard) => run_dashboard_json(&mut backend, &ctx),
+        Some(Command::Dashboard { panels }) => {
+            run_dashboard_json(&mut backend, &ctx, panels.as_deref())
+        }
         Some(Command::Init { name, desc }) => run_init(&mut backend, &ctx, name, desc),
         Some(Command::Add {
             title,
@@ -922,6 +924,21 @@ mod tests {
         // screen on a guess is how a half-drawn frame lands on a window nobody
         // can read.
         assert!(dashboard_refusal(&caps, true, true, None).is_some());
+    }
+
+    /// `--panels`/`dashboard.panels` share one parser (#152): an unknown word
+    /// is dropped rather than refused, `PanelId::Slot` is unreachable (there
+    /// is no slug for it), and the order typed is the order kept — a caller
+    /// that asked for `due,now` must not get `now,due` back.
+    #[test]
+    fn parse_panel_list_keeps_the_typed_order_and_drops_the_unknown() {
+        use tui::dashboard::model::PanelId;
+        assert_eq!(
+            parse_panel_list("due, now , bogus,next"),
+            vec![PanelId::Due, PanelId::Now, PanelId::Next]
+        );
+        assert_eq!(parse_panel_list(""), Vec::<PanelId>::new());
+        assert_eq!(parse_panel_list("slot"), Vec::<PanelId>::new());
     }
 
     /// A window too small for the screen makes a BARE `tasqx` print the table
