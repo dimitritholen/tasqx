@@ -58,6 +58,12 @@ pub struct Row {
     /// happened in the store and this screen must not re-derive it.
     pub urgency: String,
     pub tags: String,
+    /// Whether `task.list` reported this task's status as `active` — the one
+    /// task, at most, with an open timer. Drawn distinctly (#205) because
+    /// starting a DIFFERENT row auto-stops it (D6) with no other warning on
+    /// this screen, and the row that is about to lose its running timer is
+    /// exactly the thing a chooser bound to a hotkey must not hide.
+    pub active: bool,
     /// The searchable fields, lowercased and kept SEPARATE: the id, the title,
     /// the project and the tag list. A term matches this row when it is a
     /// subsequence of any ONE of them.
@@ -84,6 +90,7 @@ impl Row {
         priority: &str,
         urgency: &str,
         tags: &str,
+        active: bool,
     ) -> Self {
         let title = render::san(title);
         let project = render::san(project);
@@ -103,6 +110,7 @@ impl Row {
             priority: render::san(priority),
             urgency: render::san(urgency),
             tags,
+            active,
             fields,
         }
     }
@@ -386,6 +394,12 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     .areas(area);
 
     let marker = if caps.unicode { "▸" } else { ">" };
+    // #205: the dashboard's NOW panel already uses `▶` for "this task has an
+    // open timer" — the same glyph here, in its own column, so the fact
+    // survives independently of where the CURSOR (`▸`, above) happens to be.
+    // Enter on any OTHER row auto-stops whichever task carries this mark
+    // (D6), with no other warning on this screen.
+    let running = if caps.unicode { "▶" } else { ">" };
     let rule = if caps.unicode { "─" } else { "-" };
     // A block, not a real cursor: `with_terminal` hides the terminal cursor on
     // the way in, so the query line has to draw its own or the user cannot see
@@ -496,6 +510,14 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
                 sty("accent"),
             ),
             Span::styled(
+                if row.active {
+                    format!("{running} ")
+                } else {
+                    "  ".to_string()
+                },
+                sty("timer.active"),
+            ),
+            Span::styled(
                 render::pad(&ids[n], id_w + 2),
                 if at { sty("accent") } else { sty("muted") },
             ),
@@ -565,8 +587,17 @@ mod tests {
                 "H",
                 "11.8",
                 "release api",
+                false,
             ),
-            Row::new(43, "Publish API docs", "work.tasqx", "M", "6.0", "docs"),
+            Row::new(
+                43,
+                "Publish API docs",
+                "work.tasqx",
+                "M",
+                "6.0",
+                "docs",
+                false,
+            ),
             Row::new(
                 47,
                 "Write API conformance tests",
@@ -574,8 +605,17 @@ mod tests {
                 "M",
                 "9.4",
                 "api test",
+                false,
             ),
-            Row::new(55, "Draft README quickstart", "home", "L", "4.2", "docs"),
+            Row::new(
+                55,
+                "Draft README quickstart",
+                "home",
+                "L",
+                "4.2",
+                "docs",
+                false,
+            ),
         ])
     }
 
@@ -758,6 +798,7 @@ mod tests {
                 "H",
                 "9.9",
                 "misc",
+                false,
             ),
             Row::new(
                 90,
@@ -766,6 +807,7 @@ mod tests {
                 "L",
                 "2.0",
                 "bugfix",
+                false,
             ),
         ]);
         typed(&mut a, "mem");
@@ -971,6 +1013,7 @@ mod tests {
             "H",
             "1.0",
             "tag\u{9b}",
+            false,
         );
         for field in [&row.title, &row.project, &row.tags] {
             assert!(
@@ -1050,6 +1093,70 @@ mod tests {
         );
     }
 
+    /// #205: the running task must be visually distinct from every other row,
+    /// with or without the cursor on it — Enter on a DIFFERENT row auto-stops
+    /// it (D6) and this screen is the one place that side effect had no
+    /// warning anywhere on screen or after. The dashboard's NOW panel already
+    /// draws `▶` for exactly this fact; `pick` must draw the same glyph on
+    /// whichever row is active, independent of the `▸` cursor marker.
+    #[test]
+    fn the_running_task_is_marked_independently_of_the_cursor() {
+        let a = App::new(vec![
+            Row::new(
+                42,
+                "Ship the freeze",
+                "work.tasqx",
+                "H",
+                "11.8",
+                "api",
+                false,
+            ),
+            Row::new(
+                43,
+                "Publish API docs",
+                "work.tasqx",
+                "M",
+                "6.0",
+                "docs",
+                true,
+            ),
+        ]);
+        // Cursor starts on row 0 (#42), which is NOT the running task — the
+        // running marker has to show up on #43 regardless.
+        let text = all_text(&draw(&a, 100, 12));
+        let row42 = text.lines().find(|l| l.contains("#42")).expect("row drawn");
+        let row43 = text.lines().find(|l| l.contains("#43")).expect("row drawn");
+        assert!(
+            row43.contains('▶'),
+            "the active task must carry the running marker: {row43:?}"
+        );
+        assert!(
+            !row42.contains('▶'),
+            "a task that is not running must not carry the marker: {row42:?}"
+        );
+
+        // And the ASCII degradation the rest of this screen already follows
+        // (`▸`/`>`, `─`/`-`, `▊`/`_`): `▶` becomes `>` on a terminal with no
+        // Unicode, same as every other glyph here.
+        let ascii = Caps {
+            depth: ColorDepth::Ansi16,
+            ansi: true,
+            unicode: false,
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        term.draw(|f| render(&a, &theme::load("nord", None), &ascii, f))
+            .unwrap();
+        let ascii_text = all_text(term.backend().buffer());
+        let ascii_row43 = ascii_text
+            .lines()
+            .find(|l| l.contains("#43"))
+            .expect("row drawn");
+        assert!(
+            ascii_row43.contains('>'),
+            "the ASCII running marker is missing: {ascii_row43:?}"
+        );
+    }
+
     /// The query the user typed has to be ON SCREEN. A picker that filters
     /// invisibly looks broken the moment a keystroke is dropped or doubled,
     /// and the counter is what separates "no match" from "empty store".
@@ -1100,7 +1207,10 @@ mod tests {
         let text = all_text(term.backend().buffer());
 
         assert!(
-            !text.contains('▸') && !text.contains('─') && !text.contains('▊'),
+            !text.contains('▸')
+                && !text.contains('─')
+                && !text.contains('▊')
+                && !text.contains('▶'),
             "Unicode leaked into ASCII mode:\n{text}"
         );
         assert!(
@@ -1109,7 +1219,12 @@ mod tests {
             "no ASCII caret on the query line:\n{text}"
         );
         assert!(
-            text.lines().any(|l| l.starts_with("> #42")),
+            text.lines().any(|l| {
+                // "> " (cursor) then the running-task column (blank here,
+                // since no fixture row is active) before the id.
+                l.strip_prefix("> ")
+                    .is_some_and(|rest| rest.trim_start().starts_with("#42"))
+            }),
             "no ASCII marker on the highlighted row:\n{text}"
         );
     }
@@ -1131,6 +1246,7 @@ mod tests {
             "H",
             "18.5",
             "pr-55 vh-std",
+            false,
         )]);
         let text = all_text(&draw(&a, 200, 12));
         let row = text.lines().find(|l| l.contains('9')).expect("row drawn");
@@ -1158,6 +1274,7 @@ mod tests {
             "H",
             "18.5",
             "pr-55 vh-std",
+            false,
         )]);
         let text = all_text(&draw(&a, 200, 12));
         let row = text.lines().find(|l| l.contains('9')).expect("row drawn");
@@ -1182,6 +1299,7 @@ mod tests {
             "H",
             "18.5",
             "vh-std",
+            false,
         )]);
         let text = all_text(&draw(&a, 80, 12));
         let row = text.lines().find(|l| l.contains('9')).expect("row drawn");
