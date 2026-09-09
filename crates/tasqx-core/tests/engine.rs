@@ -480,6 +480,48 @@ fn a_future_scheduled_still_holds_the_task_in_backlog() {
     );
 }
 
+/// #157, amending D29: `task.modify <ref> {set:{wait:<future>}}` on an
+/// already-`pending` task used to print the new value and change nothing
+/// else — the task stayed fully visible in `list` for the whole deferred
+/// span, unlike `task.add` with the identical `wait`, which parks the task in
+/// `backlog` immediately. `task.modify` itself never touches the `status`
+/// column (see its handler); this closes purely by extending the read-side
+/// derivation every load already goes through, so no new write path exists.
+#[test]
+fn a_future_wait_set_by_modify_parks_an_already_pending_task_in_backlog() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "modwait" })).unwrap()["short_id"].clone();
+    assert_eq!(
+        e.task_get(&json!({ "ref": sid })).unwrap()["status"],
+        "pending",
+        "no wait yet: an ordinary pending task"
+    );
+
+    e.task_modify(&json!({ "ref": sid, "set": { "wait": "2999-01-01T00:00:00Z" } }))
+        .unwrap();
+
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    assert_eq!(
+        got["status"], "backlog",
+        "task.get must report the same status `add` would have given this wait"
+    );
+
+    let listed = e.task_list(&json!({ "filter": "status:pending" })).unwrap();
+    assert_eq!(
+        listed["count"], 0,
+        "task.list must agree with task.get: not in the pending set any more"
+    );
+
+    // Clearing the wait releases it again — the derivation is total, not a
+    // one-way trapdoor.
+    e.task_modify(&json!({ "ref": sid, "set": { "wait": Value::Null } }))
+        .unwrap();
+    assert_eq!(
+        e.task_get(&json!({ "ref": sid })).unwrap()["status"],
+        "pending"
+    );
+}
+
 /// The recurrence spawn computes the same rule on the shifted timestamps, so it
 /// must reach the same answer: an instance whose shifted `wait` has already
 /// passed is actionable, not parked.
