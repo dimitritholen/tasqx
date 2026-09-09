@@ -265,10 +265,6 @@ impl Engine {
 mod tests {
     use super::*;
 
-    /// The same fixture `increment.rs` uses for the B1 cluster: a row whose
-    /// `status` column holds text `Status::parse` rejects. `store.import`
-    /// accepted such a value until that cluster closed the hole, so this is a
-    /// real store shape an upgrade has to keep readable, not a hypothetical.
     /// #234 item 12: a cancelled task's token spend is dropped from the
     /// default report with nothing saying it was excluded (D24 says nothing
     /// about spend — it excludes cancelled tasks from COUNTS). This test
@@ -297,6 +293,10 @@ mod tests {
         assert_eq!(all["tokens_excluded_cancelled_tasks"], json!(0));
     }
 
+    /// The same fixture `increment.rs` uses for the B1 cluster: a row whose
+    /// `status` column holds text `Status::parse` rejects. `store.import`
+    /// accepted such a value until that cluster closed the hole, so this is a
+    /// real store shape an upgrade has to keep readable, not a hypothetical.
     fn store_with_an_unrecognized_status() -> Engine {
         let e = Engine::open_in_memory().unwrap();
         e.task_add(&json!({ "title": "important work" })).unwrap();
