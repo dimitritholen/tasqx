@@ -336,6 +336,55 @@ fn config_get_is_silent_about_a_well_typed_value() {
     );
 }
 
+/// #197 — a mistyped `--theme`/`$TASQX_THEME` fell straight to the built-in
+/// default, skipping the `config.toml` layer entirely. D9's own chain is
+/// `--flag` -> `$TASQX_*` -> `config.toml` -> default; a layer that misses
+/// must fall through to the NEXT layer, not to the bottom.
+#[test]
+fn a_rejected_theme_flag_falls_through_to_config_toml_not_the_default() {
+    let dir = fresh_config_dir("theme-fallthrough");
+    std::fs::write(dir.join("config.toml"), "[theme]\nname = \"gruvbox\"\n").unwrap();
+
+    let out = bin("theme-fallthrough", &dir)
+        .args(["--theme", "gruvbx", "config", "get", "theme.name"])
+        .output()
+        .expect("run config get");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "gruvbox",
+        "a rejected --theme must fall through to config.toml, not to the default"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("gruvbx"),
+        "the warning must still fire, naming the typo"
+    );
+
+    let out = bin("theme-fallthrough", &dir)
+        .args(["--theme", "gruvbx", "config", "list"])
+        .output()
+        .expect("run config list");
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.lines().any(|l| l.contains("theme.name")
+            && l.contains("gruvbox")
+            && l.contains("config.toml")),
+        "SOURCE must credit config.toml, not default: {s}"
+    );
+
+    // Same fall-through for $TASQX_THEME.
+    let out = bin("theme-fallthrough", &dir)
+        .env("TASQX_THEME", "gruvbx")
+        .args(["config", "get", "theme.name"])
+        .output()
+        .expect("run config get");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "gruvbox",
+        "the same fall-through applies to $TASQX_THEME"
+    );
+}
+
 /// Saving a theme said nothing about where to see it.
 ///
 /// The user picked gruvbox in `config edit`, it wrote correctly, and they came
