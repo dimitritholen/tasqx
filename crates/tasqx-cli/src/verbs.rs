@@ -728,6 +728,59 @@ pub(crate) fn run_memory_import(be: &mut Backend, path: &str) -> CmdOutcome {
     Ok((result, text))
 }
 
+/// Split a leading YAML frontmatter block (`---` … `---`) off `body`.
+///
+/// Returns `(frontmatter, rest)`: `frontmatter` is the text between the two
+/// fence lines (or `None` when the file does not open with one), and `rest`
+/// is everything after the closing fence, ready to store and index. Anything
+/// short of a real closing fence is left alone — a body that merely starts
+/// with a horizontal rule is not frontmatter, and reading it as one would eat
+/// the entire file looking for a `---` that never comes.
+fn split_frontmatter(body: &str) -> (Option<&str>, &str) {
+    let Some(after_open) = body.strip_prefix("---\n") else {
+        return (None, body);
+    };
+    // `\n---` alone would also match `\n---\n` inside a fenced code block that
+    // happens to contain three dashes; scanning line-by-line from the top
+    // (rather than a substring search) is what makes this only ever the FIRST
+    // real fence line, which is the one YAML frontmatter promises.
+    let mut consumed = 0;
+    for line in after_open.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches('\n');
+        if trimmed == "---" {
+            let fm = &after_open[..consumed];
+            let rest = &after_open[consumed + line.len()..];
+            return (Some(fm), rest);
+        }
+        consumed += line.len();
+    }
+    (None, body)
+}
+
+/// The title a frontmatter block would have given the document, if any:
+/// `title:` or `name:` (`title` first), a bare or single-quoted scalar value.
+/// Deliberately not a YAML parser — the values this needs to read are the
+/// simple ones a memory doc's frontmatter actually carries, and a partial
+/// parser that silently mis-reads a list or a block scalar would be worse
+/// than not trying.
+fn frontmatter_title(fm: &str) -> Option<String> {
+    for key in ["title", "name"] {
+        for line in fm.lines() {
+            let Some(rest) = line.strip_prefix(key) else {
+                continue;
+            };
+            let Some(value) = rest.trim_start().strip_prefix(':') else {
+                continue;
+            };
+            let value = value.trim().trim_matches(['"', '\'']);
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Read `path` (a file, or a directory's direct `*.md` children) into
 /// `memory.import` doc objects. Pure I/O — no store access — so the whole
 /// failure surface of an import is exhausted before anything is written.
@@ -769,14 +822,25 @@ pub(crate) fn memory_docs_from_path(path: &str) -> Result<Vec<Value>, tasqx_core
         // A UTF-8 BOM would defeat the `# ` heading match below AND end up in
         // the stored body and the index; strip it once, here.
         let body = body.strip_prefix('\u{FEFF}').unwrap_or(&body);
-        // Title: the first `# ` heading, else the file stem. The heading STAYS
-        // in the body — the title is an index entry, not a cut.
+        // #228.4: YAML frontmatter was indexed and shown as document body —
+        // every file in a `~/.claude/.../memory/` directory (the corpus this
+        // importer's own `--help` example points at, `docs/adr`, is the same
+        // idiom) opens with one, and `originSessionId`/`modified`/`type` then
+        // dominated search snippets over the prose that answers the query.
+        // Cut before the title/heading scan below, so a frontmatter `title:`
+        // does not race the body's own `# ` heading.
+        let (frontmatter, body) = split_frontmatter(body);
+        // Title: the first `# ` heading, else frontmatter's `title:`/`name:`,
+        // else the file stem. The heading STAYS in the body — the title is an
+        // index entry, not a cut. Frontmatter is cut; nothing there is prose
+        // meant to be read.
         let title = body
             .lines()
             .find_map(|l| l.strip_prefix("# "))
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .map(String::from)
+            .or_else(|| frontmatter.and_then(frontmatter_title))
             .unwrap_or_else(|| {
                 file.file_stem()
                     .and_then(|s| s.to_str())
