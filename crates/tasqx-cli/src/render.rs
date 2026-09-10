@@ -556,6 +556,9 @@ impl TaskCols {
     /// `P` used to be a column of its own, which cost a cell of gap on either
     /// side to say something about the number two columns over.
     const PRIO: usize = 2;
+    /// [`urgency_meter`]'s four cells plus the space after them. Zero without
+    /// Unicode, where the gauge is not drawn at all.
+    const METER: usize = 5;
     /// `cancelled` is the longest word this column ever holds; a cut STATUS
     /// still has to stay a word (or the header `STATUS` itself), not a single
     /// ambiguous letter.
@@ -603,7 +606,8 @@ impl TaskCols {
     /// chosen by the caller and a width computed from a different one is a
     /// header that can overhang its column by exactly the difference — the
     /// misalignment this whole function exists to end, rebuilt one caller over.
-    fn fit(rows: &[TaskRow], budget: usize, when_label: &str) -> TaskCols {
+    fn fit(rows: &[TaskRow], budget: usize, when_label: &str, unicode: bool) -> TaskCols {
+        let meter_w = if unicode { Self::METER } else { 0 };
         let max_of = |f: fn(&TaskRow) -> &str| rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
         // A column is as wide as its widest cell OR its own header, whichever
         // asks for more — a label that does not fit its column is the same
@@ -642,8 +646,8 @@ impl TaskCols {
             // function fixes.
             id: max_of(|r| &r.sid).max(4),
             // `r.urg` is the number alone; the cell it is measured for also
-            // holds the priority letter in front of it.
-            urg: (max_of(|r| &r.urg) + Self::PRIO).max(width("URG")),
+            // holds the priority letter and the gauge in front of it.
+            urg: (max_of(|r| &r.urg) + Self::PRIO + meter_w).max(width("URG")),
             title: sized(max_of(|r| &r.title), "TASK").max(width("TASK")),
             marker: sized(marker_content, "STATUS"),
             project: sized(max_of(|r| &r.project), "PROJECT"),
@@ -777,11 +781,22 @@ fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
         _ => "muted",
     };
     // The number is padded to whatever the cell has left once the priority
-    // letter and its space are taken out, so `H 17.9` and `L  1.8` end on the
-    // same cell and the column reads as one number, not two.
-    let urg_plain = rpad(&r.urg, c.urg.saturating_sub(TaskCols::PRIO));
+    // letter, the gauge and their spaces are taken out, so `H ▄▄▄▄ 17.9` and
+    // `L ▁▁▁▁  1.8` end on the same cell and the column reads as one number.
+    let meter_w = if ctx.caps.unicode { TaskCols::METER } else { 0 };
+    let gauge = if ctx.caps.unicode {
+        let (bar, track) = urgency_meter(r.ramp);
+        format!(
+            "{}{} ",
+            ctx.theme.ramp_style(r.ramp).paint(&bar, &ctx.caps),
+            ctx.paint("muted", &track)
+        )
+    } else {
+        String::new()
+    };
+    let urg_plain = rpad(&r.urg, c.urg.saturating_sub(TaskCols::PRIO + meter_w));
     let urg = format!(
-        "{} {}",
+        "{} {gauge}{}",
         cell(ctx, Some(prio_role), &r.prio, 1),
         ctx.theme.ramp_style(r.ramp).paint(&urg_plain, &ctx.caps)
     );
@@ -870,6 +885,41 @@ fn status_marker(t: &Value) -> Option<(&'static str, String)> {
         return Some(("muted", status));
     }
     None
+}
+
+/// The urgency gauge: `r.ramp` — this row's urgency over the hottest on screen
+/// — as a bar on a track. Returns the two halves separately, because they are
+/// painted differently: the bar in the theme's ramp color, the track in
+/// `muted`.
+///
+/// Four cells, three steps inside each. A whole-cell bar was mocked first and
+/// could not tell 17.9 from 15.8 — four filled cells either way — which is
+/// exactly the pair the reader is ranking. The remainder is drawn as a SHORTER
+/// glyph (`▂`, `▃`) rather than a taller one: height above the bar's own `▄`
+/// would make a nearly-empty gauge the loudest mark in the column, which is the
+/// ranking inverted. So visual mass rises monotonically with urgency, which is
+/// the only thing this mark is for.
+///
+/// The number beside it always prints and is the precise answer; the bar is for
+/// the scan down the column, not for reading a value off. Without Unicode there
+/// is no glyph set that degrades honestly here, so the gauge is not drawn at
+/// all — the caller checks `caps.unicode` and the cell falls back to the number.
+fn urgency_meter(ramp: f64) -> (String, String) {
+    /// The remainder glyphs, all SHORTER than the `▄` a full cell draws.
+    const PART: [char; 3] = ['▂', '▃', '▄'];
+    const CELLS: usize = 4;
+    let steps = (ramp.clamp(0.0, 1.0) * (CELLS * PART.len()) as f64).round() as usize;
+    let full = (steps / PART.len()).min(CELLS);
+    let rest = steps % PART.len();
+
+    let mut bar = "▄".repeat(full);
+    if full < CELLS && rest > 0 {
+        bar.push(PART[rest - 1]);
+    }
+    // `▁` rather than a space: an empty gauge reads as a track waiting to fill,
+    // and a gap in the middle of a column of bars reads as a rendering fault.
+    let track = "▁".repeat(CELLS - bar.chars().count());
+    (bar, track)
 }
 
 /// `Sep`, `Jan` — the month as a `DUE` cell abbreviates it. Only ever fed
@@ -1040,22 +1090,25 @@ fn plural_tasks(n: i64) -> String {
 /// Only non-zero facts are printed. A line that says `0 overdue · 0 blocked`
 /// trains the reader to skip it, and then it is not there on the day it says
 /// something.
-fn list_summary(
+fn table_summary(
     ctx: &Ctx,
-    tasks: &[Value],
+    tasks: &[&Value],
     rows: &[TaskRow],
     count: i64,
-    filter: Option<&str>,
+    label: Option<&str>,
     now: Timestamp,
+    day_grouped: bool,
 ) -> String {
-    let mut parts = vec![ctx.paint("card.strong", &plural_tasks(count))];
+    // Collected as (role, plain text) and painted at the END: the line has to
+    // be MEASURED before it is emitted, and an SGR escape is not a cell.
+    let mut parts: Vec<(&str, String)> = vec![("card.strong", plural_tasks(count))];
     if count > rows.len() as i64 {
-        parts.push(ctx.paint("muted", &format!("{} shown", rows.len())));
+        parts.push(("muted", format!("{} shown", rows.len())));
     }
 
     let overdue = rows.iter().filter(|r| r.overdue).count();
     if overdue > 0 {
-        parts.push(ctx.paint("overdue", &format!("{overdue} overdue")));
+        parts.push(("overdue", format!("{overdue} overdue")));
     }
 
     // "Due today" is the rest of THIS day, so a row already past its deadline
@@ -1073,8 +1126,12 @@ fn list_summary(
             })
         })
         .count();
-    if due_today > 0 {
-        parts.push(ctx.paint("warn", &format!("{due_today} due today")));
+    // An agenda prints its own `Today · Thu 2026-09-10` heading with the rows
+    // under it, so the count is already on the screen in a form that also says
+    // WHICH rows. Printing it again beside the heading that made it redundant
+    // is the kind of line a reader learns to skip.
+    if due_today > 0 && !day_grouped {
+        parts.push(("warn", format!("{due_today} due today")));
     }
 
     // Named by id, not counted. There is normally one timer, and "1 running"
@@ -1091,7 +1148,7 @@ fn list_summary(
         })
         .collect();
     if !running.is_empty() {
-        parts.push(ctx.paint("timer.active", &format!("{} running", running.join(" "))));
+        parts.push(("timer.active", format!("{} running", running.join(" "))));
     }
 
     let blocked = tasks
@@ -1099,18 +1156,45 @@ fn list_summary(
         .filter(|t| t.get("blocked").and_then(Value::as_bool).unwrap_or(false))
         .count();
     if blocked > 0 {
-        parts.push(ctx.paint("muted", &format!("{blocked} blocked")));
+        parts.push(("muted", format!("{blocked} blocked")));
     }
 
-    let facts = parts.join(&format!(" {} ", ctx.paint("muted", ctx.mid())));
-    match filter {
-        // The filter is echoed on every run, not only on an empty result:
-        // `tasqx list` defaults to `@working` (`verbs::list`), and a reader
-        // who cannot see which question was asked cannot tell a short answer
-        // from a narrow one.
-        Some(f) => format!(
+    // The line has to FIT. It sits above the table now, where a wrap would put
+    // a second line between the header and the rows it labels — the old
+    // `N task(s)` trailer could overflow harmlessly, and this cannot. Facts are
+    // dropped from the RIGHT until it does, which is why they were pushed in
+    // falling order of what a reader loses by not seeing them: the count, what
+    // is late, what is due today, what is running, what is stuck. Dropping says
+    // less; truncating mid-word would say something else.
+    let head = label.map_or(0, |l| {
+        width(&truncate(l, ctx.cols / 2, ctx.caps.unicode)) + 3
+    });
+    let sep_w = width(ctx.mid()) + 2;
+    let plain_w = |ps: &[(&str, String)]| -> usize {
+        ps.iter().map(|(_, t)| width(t)).sum::<usize>() + sep_w * ps.len().saturating_sub(1)
+    };
+    while parts.len() > 1 && head + plain_w(&parts) > ctx.cols {
+        parts.pop();
+    }
+
+    let sep = format!(" {} ", ctx.paint("muted", ctx.mid()));
+    let facts = parts
+        .iter()
+        .map(|(role, text)| ctx.paint(role, text))
+        .collect::<Vec<_>>()
+        .join(&sep);
+    match label {
+        // What was ASKED, echoed on every run rather than only on an empty
+        // result. For `list` that is the filter — it defaults to `@working`
+        // (`verbs::list`), and a reader who cannot see which question was
+        // asked cannot tell a short answer from a narrow one. For `agenda` it
+        // is the horizon, which its own trailer already stated on every run
+        // and for the same reason: "N tasks" cannot be read as "and that is
+        // all there is" unless the window it is all there is WITHIN is on the
+        // same line.
+        Some(l) => format!(
             "{}   {facts}",
-            ctx.paint("muted", &truncate(f, ctx.cols / 3, ctx.caps.unicode))
+            ctx.paint("muted", &truncate(l, ctx.cols / 2, ctx.caps.unicode))
         ),
         None => facts,
     }
@@ -1168,33 +1252,21 @@ pub fn task_table_filtered(
         .iter()
         .map(|t| task_row(t, max_urg, now, ctx.caps.unicode))
         .collect();
-    let c = TaskCols::fit(&rows, ctx.cols, "DUE");
-
-    // The rule spans the TABLE, not the header text. Those differ by the last
-    // column's padding, which `join_cells` trims — and a rule cut to the trimmed
-    // header stops short of the rows that run under it, which reads as the rows
-    // overflowing something.
-    let rule_len = c.total().min(ctx.cols);
+    let c = TaskCols::fit(&rows, ctx.cols, "DUE", ctx.caps.unicode);
 
     let count = result
         .get("count")
         .and_then(Value::as_i64)
         .unwrap_or(tasks.len() as i64);
 
-    // Summary, blank, header, rule — four lines of chrome, the same four the
-    // header/rule/rule/trailer shape cost, so `serve::watch_repaint`'s row
-    // budget is unchanged by the move.
+    // Summary, blank, header — three lines of chrome where the
+    // header/rule/rule/trailer shape cost four, so `serve::watch_repaint`'s
+    // row budget gains one.
     let mut out = String::new();
-    out.push_str(&list_summary(ctx, tasks, &rows, count, filter, now));
+    out.push_str(&table_summary(ctx, &refs, &rows, count, filter, now, false));
     out.push('\n');
     out.push('\n');
     out.push_str(&ctx.paint("table.label", &header_line(&c, "DUE")));
-    out.push('\n');
-    // ONE rule, under the header, where it separates the labels from the data.
-    // The table used to be bracketed by two, which were the heaviest ink on
-    // the screen and closed off a block the blank line and the summary already
-    // bound.
-    out.push_str(&ctx.paint("muted", &ctx.hrule(rule_len)));
     out.push('\n');
 
     for r in &rows {
@@ -1202,7 +1274,14 @@ pub fn task_table_filtered(
         out.push('\n');
     }
 
-    for note in store_health_notes(tasks) {
+    // Set off by a blank line. These are sentences carrying a command to
+    // paste, not more rows, and the table no longer has a closing rule to end
+    // it — without the gap the first note reads as a row whose columns broke.
+    let notes = store_health_notes(tasks);
+    if !notes.is_empty() {
+        out.push('\n');
+    }
+    for note in notes {
         out.push_str(&ctx.paint("warn", &note));
         out.push('\n');
     }
@@ -1594,10 +1673,21 @@ fn when_cell(kind: When, at: Timestamp, dated: bool) -> String {
         (false, true) => String::new(),
         (false, false) => clock,
     };
-    if stamp.is_empty() {
-        kind.label().to_string()
-    } else {
-        format!("{} {stamp}", kind.label())
+    match (stamp.is_empty(), kind) {
+        // A deadline on the day its own heading names, with no time in the
+        // store: the heading is the whole answer, and a column of rows reading
+        // `due` `due` `due` beneath `Tomorrow · Fri 2026-09-11` spends cells
+        // repeating it. Blank here means "the heading said it" — and if every
+        // row on the agenda is one of these, `TaskCols::fit` drops the column
+        // outright, which is the correct answer to a view whose day headings
+        // carry all of the time information there is (D51, D117).
+        (true, When::Due) => String::new(),
+        // `sched` is not the default reading, so it says so even bare: this row
+        // is on this day because you meant to START it, not because anything is
+        // owed. Same for the overdue group, which spans many days and therefore
+        // has no heading to defer to — `dated` is what puts the date in `stamp`.
+        (true, When::Scheduled) => kind.label().to_string(),
+        (false, _) => format!("{} {stamp}", kind.label()),
     }
 }
 
@@ -1609,6 +1699,29 @@ fn when_cell(kind: When, at: Timestamp, dated: bool) -> String {
 /// the result reads as a table that changes shape as you scroll down it.
 pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
     let mut out = String::new();
+
+    // The horizon is stated on every run, not only when it cut something: "5
+    // tasks" alone cannot be read as "and that is all there is" unless the
+    // window it is all there is WITHIN is on the same line. No weekday here,
+    // unlike the day headings — the count can be four digits and this line has
+    // to survive a 40-cell terminal, and the headings already carry the days.
+    //
+    // That claim stops being true when every visible row is overdue: `--days
+    // 14` did not put any of them on screen, so "through <date> (+14d)"
+    // attached to a set that is 100% before today would be advertising a
+    // horizon none of the rows are anywhere near. `has_future` asks the rows
+    // that actually made it past the cap, not the raw counts, so a store cut
+    // down to nothing-but-overdue prints the same honest line as one that
+    // never had a future row to begin with.
+    //
+    // D117 moved it from a trailer to the head of the table, where `list`'s
+    // filter sits: both views open by naming the question they answered.
+    let has_future = a.entries.iter().any(|e| e.day >= a.today);
+    let horizon = if a.entries.is_empty() || has_future {
+        format!("through {} (+{}d)", a.through, a.days)
+    } else {
+        "all overdue".to_string()
+    };
 
     let refs: Vec<&Value> = a.entries.iter().map(|e| e.task).collect();
     if !refs.is_empty() {
@@ -1628,18 +1741,33 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
                 r
             })
             .collect();
-        let c = TaskCols::fit(&rows, ctx.cols, "WHEN");
-        let rule_len = c.total().min(ctx.cols);
+        let c = TaskCols::fit(&rows, ctx.cols, "WHEN", ctx.caps.unicode);
 
-        out.push_str(&ctx.paint("table.label", &header_line(&c, "WHEN")));
+        out.push_str(&table_summary(
+            ctx,
+            &refs,
+            &rows,
+            a.entries.len() as i64,
+            Some(&horizon),
+            a.at_start_of_today(),
+            true,
+        ));
         out.push('\n');
-        out.push_str(&ctx.hrule(rule_len));
+        out.push('\n');
+        out.push_str(&ctx.paint("table.label", &header_line(&c, "WHEN")));
         out.push('\n');
 
         let mut current: Option<Group> = None;
         for (e, r) in a.entries.iter().zip(&rows) {
             let g = group_of(e.day, a.today);
             if current != Some(g) {
+                // A blank line ahead of every heading but the first. Groups run
+                // flush otherwise, and a heading with no air above it reads as
+                // one more row of the group it is ending rather than the start
+                // of the next.
+                if current.is_some() {
+                    out.push('\n');
+                }
                 let (role, text) = match g {
                     Group::Overdue => ("overdue", "Overdue".to_string()),
                     Group::Day(d) => ("accent", day_heading(d, a.today)),
@@ -1651,48 +1779,28 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
             out.push_str(&row_line(ctx, &c, r));
             out.push('\n');
         }
-        out.push_str(&ctx.hrule(rule_len));
-        out.push('\n');
     }
 
-    // The horizon is stated on every run, not only when it cut something: "5
-    // task(s)" alone cannot be read as "and that is all there is" unless the
-    // window it is all there is WITHIN is on the same line. No weekday here,
-    // unlike the day headings -- the count can be four digits and this line has
-    // to survive a 40-cell terminal, and the headings already carry the days.
-    //
-    // That claim stops being true when every visible row is overdue: `--days
-    // 14` did not put any of them on screen, so "through <date> (+14d)"
-    // attached to a set that is 100% before today would be advertising a
-    // horizon none of the rows are anywhere near. `has_future` asks the rows
-    // that actually made it past the cap, not the raw counts, so a store cut
-    // down to nothing-but-overdue prints the same honest line as one that
-    // never had a future row to begin with.
-    let has_future = a.entries.iter().any(|e| e.day >= a.today);
-    if a.entries.is_empty() || has_future {
-        out.push_str(&ctx.paint(
-            "muted",
-            &format!(
-                "{} · through {} (+{}d)",
-                plural_tasks(a.entries.len() as i64),
-                a.through,
-                a.days
-            ),
-        ));
-    } else {
-        out.push_str(&ctx.paint(
-            "muted",
-            &format!("{}, all overdue", plural_tasks(a.entries.len() as i64)),
-        ));
+    // An agenda with nothing on it draws no table at all, so the line that
+    // names the horizon has to be printed here too — it is the only thing on
+    // screen saying what was looked at and found empty.
+    if a.entries.is_empty() {
+        out.push_str(&ctx.paint("muted", &format!("{}   {}", horizon, plural_tasks(0))));
+        out.push('\n');
+        // #233.1: an empty agenda on a genuinely empty store is the same dead
+        // end as `list`'s and `next`'s — append the getting-started hint rather
+        // than leaving that one line alone on the screen.
+        if a.store_empty {
+            out.push_str(&onboarding_hint());
+        }
     }
-    out.push('\n');
-    // #233.1: an empty agenda on a genuinely empty store is the same dead end
-    // as `list`'s and `next`'s — append the getting-started hint rather than
-    // leaving the footer as the only line on screen.
-    if a.entries.is_empty() && a.store_empty {
-        out.push_str(&onboarding_hint());
+    // Same blank line as `task_table`'s, and for the same reason: prose that
+    // starts flush against the last row reads as a row that came out wrong.
+    let omissions = a.omissions();
+    if !omissions.is_empty() || !a.health.is_empty() {
+        out.push('\n');
     }
-    for note in a.omissions() {
+    for note in omissions {
         out.push_str(&ctx.paint("muted", &note));
         out.push('\n');
     }
@@ -4845,18 +4953,18 @@ mod tests {
     }
 
     /// How many lines of chrome a `task_table` draws before its first row:
-    /// summary, blank, header, rule.
+    /// summary, blank, header.
     ///
-    /// A constant rather than a `skip(4)` written out at each call site. These
+    /// A constant rather than a `skip(3)` written out at each call site. These
     /// tests are about a COLUMN — how wide it is, whether it is drawn at all —
     /// and every one of them that spelled its own row offset had to be edited
     /// when the summary line moved in front of the header, none of them for a
     /// reason to do with what they assert.
-    const CHROME: usize = 4;
+    const CHROME: usize = 3;
 
     /// The `ID … TAGS` label line of a rendered table.
     fn header_of(text: &str) -> &str {
-        text.lines().nth(CHROME - 2).expect("header line")
+        text.lines().nth(CHROME - 1).expect("header line")
     }
 
     /// The data rows of a rendered table. Not trailer-aware on purpose — the
@@ -5075,6 +5183,86 @@ mod tests {
             rows[2].starts_with("  "),
             "an ordinary row grew a rail: {:?}",
             rows[2]
+        );
+    }
+
+    /// The gauge separates the pair the reader is actually ranking.
+    ///
+    /// The first mock drew whole cells only, and 17.9 and 15.8 against a top of
+    /// 17.9 both came out `▄▄▄▄` — the two rows a reader compares hardest,
+    /// drawn identically. Three steps inside each cell is what fixed it.
+    #[test]
+    fn the_urgency_gauge_separates_the_pair_the_reader_is_ranking() {
+        let hot = urgency_meter(1.0);
+        let near = urgency_meter(15.8 / 17.9);
+        assert_ne!(
+            (hot.0.clone(), hot.1.clone()),
+            (near.0.clone(), near.1.clone()),
+            "17.9 and 15.8 draw the same gauge: {hot:?}"
+        );
+    }
+
+    /// More urgency is never less ink.
+    ///
+    /// The first fix for the resolution problem drew the remainder as a TALLER
+    /// glyph than the bar's own `▄`, which made a nearly-empty gauge (`▇▁▁▁` at
+    /// 22% of the range) the heaviest mark in a column whose hottest row was a
+    /// flat `▄▄▄▄`. That is the ranking inverted, and it is invisible to any
+    /// assertion about the value — so this one weighs the glyphs.
+    #[test]
+    fn the_gauge_never_draws_more_ink_for_less_urgency() {
+        let mass = |ramp: f64| -> usize {
+            let (bar, track) = urgency_meter(ramp);
+            format!("{bar}{track}")
+                .chars()
+                .map(|c| match c {
+                    '▁' => 1,
+                    '▂' => 2,
+                    '▃' => 3,
+                    '▄' => 4,
+                    other => panic!("unexpected gauge glyph {other:?}"),
+                })
+                .sum()
+        };
+        let mut last = 0;
+        for step in 0..=100 {
+            let here = mass(f64::from(step) / 100.0);
+            assert!(
+                here >= last,
+                "the gauge got lighter going up the scale at {step}%: {here} after {last}"
+            );
+            last = here;
+        }
+        assert_eq!(mass(0.0), 4, "an empty gauge is a bare track");
+        assert_eq!(mass(1.0), 16, "a full gauge is four full cells");
+    }
+
+    /// No glyph set degrades honestly here, so a terminal without Unicode gets
+    /// the figure and no gauge — and the column narrows by exactly what the
+    /// gauge would have cost, rather than leaving five cells of nothing.
+    #[test]
+    fn a_terminal_without_unicode_gets_no_gauge_and_the_cells_back() {
+        let result = json!({ "tasks": [
+            task_json(1, "a long enough title to notice", "work", "", &["t"]),
+        ], "count": 1 });
+        let plain = task_table(
+            &Ctx::new(theme::default_theme(), Caps::PLAIN),
+            &result,
+            Timestamp::now(),
+        );
+        assert!(
+            !plain.contains('▄') && !plain.contains('▁'),
+            "block glyphs on a terminal that cannot draw them: {plain:?}"
+        );
+
+        let mut uni = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        uni.caps.unicode = true;
+        let drawn = task_table(&uni, &result, Timestamp::now());
+        assert!(drawn.contains('▄'), "no gauge with Unicode: {drawn:?}");
+        assert_eq!(
+            cells(header_of(&drawn)) - cells(header_of(&plain)),
+            TaskCols::METER,
+            "the gauge's cells were not handed back:\n{plain}\n{drawn}"
         );
     }
 
@@ -6160,6 +6348,46 @@ mod tests {
         );
     }
 
+    /// An agenda row does not repeat the day its own heading just named.
+    ///
+    /// A deadline the store holds no time for, placed under `Tomorrow · Fri
+    /// 2026-08-04`, printed the bare word `due` — and three rows of it in a
+    /// column read as a column that failed to render rather than one saying
+    /// anything. `sched` still prints bare: being on a day because you meant to
+    /// START there is not the default reading of a row.
+    #[test]
+    fn an_agenda_row_does_not_repeat_the_day_its_heading_names() {
+        let out = agenda_out(
+            vec![
+                dated(1, "no time on it", "2026-08-05T00:00:00Z", ""),
+                dated(2, "planned for then", "", "2026-08-06T00:00:00Z"),
+                dated(3, "at a real time", "2026-08-05T17:00:00Z", ""),
+            ],
+            14,
+        );
+        let row = |title: &str| {
+            out.lines()
+                .find(|l| l.contains(title))
+                .unwrap_or_else(|| panic!("no row for {title:?}:\n{out}"))
+                .to_string()
+        };
+        assert!(
+            !row("no time on it").contains("due"),
+            "the heading already said the day: {:?}",
+            row("no time on it")
+        );
+        assert!(
+            row("planned for then").contains("sched"),
+            "`sched` is not the default reading and still says so: {:?}",
+            row("planned for then")
+        );
+        assert!(
+            row("at a real time").contains("due 17:00"),
+            "a time the store holds is still shown: {:?}",
+            row("at a real time")
+        );
+    }
+
     /// Overdue rows lead the table, under ONE heading, and the horizon does not
     /// apply to them: `--days 1` must not hide work that was due last month.
     /// The cells in that group carry the date, because the heading cannot.
@@ -6247,26 +6475,25 @@ mod tests {
                 &ctx,
                 &agenda_select(&json!({ "tasks": tasks }), 14, anchor()),
             );
-            // Up to and including the closing rule. What follows it is prose:
-            // the count line and the omission notes are sentences carrying a
-            // command to paste, and a terminal narrower than a sentence gets a
-            // wrapped sentence rather than a truncated instruction -- the same
-            // treatment `task_table` gives its store-health warnings.
-            let mut rules = 0;
+            // EVERY line, and no bookkeeping to say where the table stops:
+            // D117 left it with no rules at all, and the summary line that
+            // opens it is width-bounded like the rows are (facts are dropped
+            // from the right until it fits, since a wrap there would put a line
+            // between the header and the rows it labels). What used to be
+            // exempt was the trailer, which is gone. The fixture has no
+            // omission notes, so nothing here is prose.
             for line in out.lines() {
                 assert!(
                     cells(line) <= cols,
                     "a {}-cell line in a {cols}-cell terminal: {line:?}",
                     cells(line)
                 );
-                if !line.is_empty() && line.chars().all(|c| c == '-' || c == '\u{2500}') {
-                    rules += 1;
-                    if rules == 2 {
-                        break;
-                    }
-                }
             }
-            assert_eq!(rules, 2, "the table must have a rule above and below it");
+            assert!(
+                !out.lines()
+                    .any(|l| { !l.is_empty() && l.chars().all(|c| c == '-' || c == '\u{2500}') }),
+                "the table draws no rules any more: {out}"
+            );
         }
     }
 

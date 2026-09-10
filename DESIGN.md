@@ -464,16 +464,16 @@ $ tasqx add "Ship the v1 JSON API freeze +release +api project:work.tasqx due:mo
 $ tasqx list
 @working   4 tasks · 1 overdue · 1 due today · #47 running
 
-    ID     URG  TASK                             PROJECT     DUE        TAGS
-────────────────────────────────────────────────────────────────────────────────
-    42  H 11.8  Ship the v1 JSON API freeze      work.tasqx  Mon 17:00  +release +api
-▶   47  M  9.4  Write API conformance tests      work.tasqx  today      +api +test
-    31  H  7.1  Fix WAL busy_timeout on Windows  work.infra  3d ago     +bug
-    55  L  4.2  Draft README quickstart          work.tasqx             +docs
+    ID          URG  TASK                             PROJECT     DUE        TAGS
+    42  H ▄▄▄▄ 11.8  Ship the v1 JSON API freeze      work.tasqx  Mon 17:00  +release +api
+▶   47  M ▄▄▄▂  9.4  Write API conformance tests      work.tasqx  today      +api +test
+    31  H ▄▄▂▁  7.1  Fix WAL busy_timeout on Windows  work.infra  3d ago     +bug
+    55  L ▄▂▁▁  4.2  Draft README quickstart          work.tasqx             +docs
 ```
-Row 31's `3d ago` renders in red; the urgency column shades hot→cold. The left rail
-carries the two facts a reader needs before any other — `▶` the running timer, `⊘`
-blocked — and is the one column no width squeeze drops (**D117**). Maps to
+Row 31's `3d ago` renders in red, and the gauge beside each figure is that row's
+urgency over the hottest on screen, in the theme's ramp colour. The left rail carries
+the two facts a reader needs before any other — `▶` the running timer, `⊘` blocked —
+and is the one column no width squeeze drops (**D117**). Maps to
 `task.list {filter:"@working", sort:["-urgency"]}`.
 
 A **bare `tasqx`** produces exactly this whenever nobody is watching: piped, redirected, under `--json`, on `TERM=dumb`, with `[dashboard] enabled = false`, or in a window under 56x14. On an interactive terminal it opens the dashboard instead (**D58**); `tasqx list` is the spelling that always means the table, and is what scripts should use.
@@ -544,10 +544,9 @@ The `↳` line is driven verbatim by `task.done`'s `unblocked:[43,44]` — the C
 $ tasqx ls "project:work.tasqx +api status:pending due.before:friday" --sort -urgency
 project:work.tasqx +api status:pending due.before:friday   2 tasks · 12ms
 
-  ID     URG  TASK                         DUE        TAGS
-──────────────────────────────────────────────────────────────
-  47  M  9.4  Write API conformance tests  Mon 12:00  +api +test
-  43  M  6.0  Publish API docs             Thu 17:00  +api +docs
+  ID          URG  TASK                         DUE        TAGS
+  47  M ▄▄▄▄  9.4  Write API conformance tests  Mon 12:00  +api +test
+  43  M ▄▄▃▁  6.0  Publish API docs             Thu 17:00  +api +docs
 ```
 The `12ms` is real: the filter hits an index, not a scan.
 
@@ -594,19 +593,21 @@ whole point of printing a ref — never reaches it.
 
 ```console
 $ tasqx agenda
-  ID     URG  TASK                             PROJECT     WHEN            TAGS
-----------------------------------------------------------------------------------------
+through 2026-08-17 (+14d)   5 tasks · 1 overdue
+
+  ID          URG  TASK                             PROJECT     WHEN            TAGS
 Overdue
-   3  H 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  +bug
+   3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  +bug
+
 Today · Mon 2026-08-03
-   2  - 12.0  Write API conformance tests      work.tasqx  due 12:00       +api
-   1  H 18.0  Ship the v1 JSON API freeze      work.tasqx  due 17:00       +api +release
+   2  - ▄▄▃▁ 12.0  Write API conformance tests      work.tasqx  due 12:00       +api
+   1  H ▄▄▄▄ 18.0  Ship the v1 JSON API freeze      work.tasqx  due 17:00       +api +release
+
 Tomorrow · Tue 2026-08-04
-   4  -  0.0  Quarterly deps audit             work.tasqx  sched
+   4  - ▁▁▁▁  0.0  Quarterly deps audit             work.tasqx  sched
+
 Thu 2026-08-06
-   5  - 10.1  Publish the API docs             work.tasqx  due
-----------------------------------------------------------------------------------------
-5 tasks · through 2026-08-17 (+14d)
+   5  - ▄▄▂▁ 10.1  Publish the API docs             work.tasqx
 1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them
 1 further out — `tasqx agenda --days 90` reaches the furthest
 ```
@@ -2245,20 +2246,46 @@ they weigh.
   store with nothing running and nothing blocked (D51's rule for `DUE`, applied left of the
   ids). The two glyphs differ in SHAPE, not only in role, because `NO_COLOR` keeps emphasis
   and drops every hue.
-- **(c) `P` stops being a column.** The priority letter moves inside the urgency cell —
-  `H 17.9` — which is where it was already being read: a column of its own cost a gap on
-  either side to say something about a number two columns away.
-- **(d) One rule, and a summary line in place of `N task(s)`.** The table was bracketed by
-  two full-width rules, the heaviest ink on the screen, closing off a block the blank line
-  and the summary already bind; one stays, under the header, where it separates labels from
-  data. The trailer moves to the top and answers what a count cannot: the filter that was
+- **(c) The urgency cell holds the priority, a gauge and the figure.** `P` stops being a
+  column — the letter moves inside the cell it was always describing, where a column of its
+  own cost a gap on either side to say something about a number two columns away — and
+  `urgency_meter` draws this row's urgency over the hottest on screen as a four-cell bar on
+  a `▁` track, in the theme's ramp colour: `H ▄▄▄▄ 17.9`, `L ▄▂▁▁  1.8`. Three steps inside
+  each cell, and the REMAINDER is drawn shorter than the bar's own `▄` rather than taller
+  (`▂`, `▃`): a whole-cell bar could not separate 17.9 from 15.8, which is exactly the pair
+  being ranked, and height above `▄` would have made a nearly-empty gauge the loudest mark
+  in the column — the ranking inverted. The figure always prints beside it and is the
+  precise answer; the bar is for the scan down the column. No glyph set degrades honestly
+  without Unicode, so `caps.unicode` false drops the gauge and the cell falls back to
+  `H 17.9`, five cells narrower.
+- **(d) No rules at all, and a summary line in place of `N task(s)`.** The table was
+  bracketed by two full-width rules, the heaviest ink on the screen, closing off a block the
+  blank line and the summary already bind. Both are gone: a dim `table.label` header over
+  rows that start immediately under it separates them without drawing anything. `agenda`
+  additionally gets a blank line ahead of every day heading but the first — flush against
+  the group above, a heading reads as one more of its rows. The trailer moves to the top and
+  answers what a count cannot: the filter that was
   asked (`@working` is `verbs::list`'s default and was invisible), then `N tasks`, `N shown`
   when the result was bounded, and `N overdue` / `N due today` / `#N running` / `N blocked`
   — each printed only when non-zero, because a line that always says `0 overdue` is one the
   reader learns to skip. The four facts are counted over the rows ON SCREEN and `count` is
   the store's own answer, so a trimmed frame (`serve::bound_to_viewport`, `--limit`) names
-  both numbers rather than attributing a count of twenty to a set of forty-four. Chrome is
-  four lines either way, so `watch`'s row budget is unchanged.
+  both numbers rather than attributing a count of twenty to a set of forty-four. The line
+  FITS: it sits above the header now, where a wrap would put a line between the labels and
+  the rows they name, so facts drop from the right until it does — which is why they are
+  built in falling order of what a reader loses by not seeing them. `agenda` prints the
+  horizon there instead of a filter, the same claim its own trailer made and for the reason
+  that trailer gave: "5 tasks" cannot be read as "and that is all there is" unless the window
+  it is all there is WITHIN is on the same line. Its `due today` fact is suppressed, since
+  its `Today · Thu 2026-09-10` heading already answers that in a form which also says which
+  rows. Chrome falls from four lines to three (summary, blank, header), so `watch` gains a row.
+- **(d2) `agenda`'s `WHEN` cell stops repeating its own heading.** A row placed by a `due`
+  the store holds no time for, under a heading that already names the day, printed the bare
+  word `due` — three of five rows saying nothing. It is blank now; `sched` still prints bare,
+  because being on a day you meant to START is not the default reading of a row, and the
+  overdue group still carries full dates, because it spans many days and has no heading to
+  defer to. If every row on an agenda is a bare `due`, `TaskCols::fit` drops the column, which
+  is the right answer for a view whose headings carry all the time information there is.
 - **(e) A column label is not a title.** The `header` role was painting both — a bold accent
   over `tasqx settings` and `TASQX MANUAL`, and the same bold accent over `ID URG TASK`,
   where it competes with the rows it labels. The new **`table.label`** role carries the
@@ -2274,8 +2301,7 @@ the one carrying the most, nothing on the row was weighted so there was no path 
 and the one piece of live state — which task is running — was the thing the layout was most
 willing to drop.
 
-**Rejected:** urgency drawn as a bar beside the number (it cannot separate 17.9 from 15.8,
-which is exactly where the ordering is read, and the number already sorts); grouping the
+**Rejected:** grouping the
 rows under NOW/NEXT/LATER headings (bands are a concept no other tasqx surface has, and they
 displace the urgency figure that does exist); two lines per task (the best-looking of the
 mocked variants and the wrong shape for forty rows — it ends columnar scanning).
@@ -2285,7 +2311,14 @@ cold row's urgency figure reads as reassuring rather than quiet. The ramp is a s
 asset — charts, the HTML report and the settings preview all draw from it — so re-anchoring
 it is a theme ruling, not a table one, and it is open follow-up rather than part of this.
 
+**How it was chosen:** three layouts were mocked as rendered images before any Rust moved —
+the ledger, the bands and the two-line rows — and the ledger was picked from the pictures.
+A fourth mock, the ledger with the gauge, was picked over the plain one on a second look;
+that is where the resolution problem in (c) was found and fixed, and it is the argument for
+mocking in pixels rather than in prose.
+
 **Where:** `crates/tasqx-cli/src/render.rs` (`due_cell`, `rail_marker`, `status_marker`,
-`list_summary`, `plural_tasks`, `TaskCols`), `theme.rs` (`table.label` in all five
-built-ins), `serve.rs` (the bounded-frame guard), `docs.rs` (every `tasqx list` sample and
-the quickstart's count guard), §3, §8 and §11 above.
+`urgency_meter`, `table_summary`, `plural_tasks`, `when_cell`, `TaskCols`), `theme.rs`
+(`table.label` in all five built-ins), `serve.rs` (the bounded-frame guard and its chrome
+budget), `docs.rs` (every `tasqx list` sample, the agenda sample, and the quickstart's count
+guard), §3, §8 and §11 above.

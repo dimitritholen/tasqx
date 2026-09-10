@@ -391,7 +391,9 @@ pub(crate) fn watch_render(
     // behaviour) just skips the trim for this one frame.
     if tty {
         if let Ok((_, rows)) = ratatui::crossterm::terminal::size() {
-            let chrome = if note.is_some() { 5 } else { 4 };
+            // Summary, blank, header (D117), plus the status note when there
+            // is one.
+            let chrome = if note.is_some() { 4 } else { 3 };
             result = bound_to_viewport(result, rows, chrome);
         }
     }
