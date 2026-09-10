@@ -267,14 +267,40 @@ pub fn render_throughput(
         .max(1);
     let width = 10usize;
 
-    let legend = if ctx.caps.unicode {
-        "added ▁▂▃  done ▁▂▃"
+    // The facts open the chart, where `list` and `agenda` put theirs (D117
+    // rule 8), so the rows underneath are only rows.
+    let recent_net: i64 = buckets.iter().rev().take(4).map(|b| b.net()).sum();
+    let trend = if recent_net < 0 {
+        "WIP trending down"
+    } else if recent_net > 0 {
+        "WIP trending up"
     } else {
-        "added [#]  done [#]"
+        "WIP steady"
     };
-    let mut out = String::new();
-    out.push_str(&ctx.paint("header", "Weekly throughput"));
-    out.push_str(&format!("   {}\n", ctx.paint("muted", legend)));
+    let mut out = format!(
+        "{}   {}\n\n",
+        ctx.paint("header", "weekly throughput"),
+        ctx.paint(
+            "muted",
+            &format!(
+                "4-wk velocity {velocity:.1} done/wk {m} {trend}",
+                m = ctx.mid()
+            )
+        )
+    );
+
+    // A header row, once, instead of the words `added`, `done` and `net`
+    // printed on every line — thirty-six of them on a twelve-week chart, each
+    // saying what the column above it already said. D117 rule 11, and rule 12
+    // for the role it is painted in: a column label is not a title.
+    out.push_str(&ctx.paint(
+        "table.label",
+        &format!(
+            "  {:<4}  {:>3} {:<width$}  {:>4} {:<width$}   {:>4}",
+            "WEEK", "ADD", "", "DONE", "", "NET"
+        ),
+    ));
+    out.push('\n');
 
     let last_idx = buckets.len().saturating_sub(1);
     for (i, b) in buckets.iter().enumerate() {
@@ -292,39 +318,23 @@ pub fn render_throughput(
         } else {
             net.to_string()
         };
-        let mut note = if net < 0 { "  burning down" } else { "" }.to_string();
-        if i == last_idx {
-            note.push_str("  (partial)");
-        }
+        // The sign already says which way the week went, so "burning down"
+        // beside a negative number is the same fact twice. `partial` stays:
+        // nothing else on the row says the week is still running.
+        let note = if i == last_idx { "  partial" } else { "" };
+        // Padded first, painted second. `format!("{:<4}", painted)` counts the
+        // escape bytes as width, so the cell comes out unpadded and every
+        // column to its right drifts by however long the SGR happened to be —
+        // the failure `render::cell` exists to prevent, rebuilt here.
         out.push_str(&format!(
-            "  {}  added {:>3} {added_s}   done {:>3} {done_s}   net {:>4}{}\n",
-            ctx.paint("muted", &b.label()),
+            "  {}  {:>3} {added_s}  {:>4} {done_s}   {}{}\n",
+            ctx.paint("muted", &format!("{:<4}", b.label())),
             b.added,
             b.done,
-            net_s,
-            ctx.paint("muted", &note),
+            ctx.paint("muted", &format!("{net_s:>4}")),
+            ctx.paint("muted", note),
         ));
     }
-
-    let recent_net: i64 = buckets.iter().rev().take(4).map(|b| b.net()).sum();
-    let trend = if recent_net < 0 {
-        "WIP trending down"
-    } else if recent_net > 0 {
-        "WIP trending up"
-    } else {
-        "WIP steady"
-    };
-    out.push_str(&format!(
-        "  {}\n",
-        ctx.paint(
-            "muted",
-            &format!(
-                "{a} 4-wk velocity {velocity:.1} done/wk {m} {trend}",
-                a = ctx.arrow(),
-                m = ctx.mid()
-            )
-        )
-    ));
     out
 }
 
@@ -350,9 +360,18 @@ fn bar(n: u32, max: u32, width: usize, ctx: &Ctx) -> String {
         return String::new();
     }
     let filled = ((n as f64 / max as f64) * width as f64).round() as usize;
-    let filled = filled.min(width);
+    // A week with one task in it rounds to nothing against a peak of
+    // forty-four, and a bar of nothing reads exactly like a bar for zero. Any
+    // non-zero count draws at least one cell: the number beside it carries the
+    // magnitude, and what the bar has to carry is "this week was not empty".
+    let filled = filled.max(usize::from(n > 0)).min(width);
     if ctx.caps.unicode {
-        "█".repeat(filled)
+        // `▄`, not `█`. A full block fills its cell top to bottom, so bars on
+        // consecutive rows touch and a column of them reads as one L-shaped
+        // mass rather than as a bar per week. The half block leaves a gap above
+        // each bar, which is the only thing separating one row from the next in
+        // a chart with no rules on it.
+        "▄".repeat(filled)
     } else {
         "#".repeat(filled)
     }
@@ -474,16 +493,28 @@ pub fn best_streak(days: &[DayCount]) -> u32 {
 /// which already lists every task to build `days` in the first place, can
 /// tell the two apart (#233.2, and the collision it had with #234 item 8's
 /// deliberately all-zero, all-future single-week fixture).
+/// `Sep`, `Jan` — the month as a chart axis abbreviates it. Only ever fed
+/// `Date::month`, whose range is 1..=12.
+fn month_abbrev(m: i8) -> &'static str {
+    const NAMES: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    NAMES.get((m - 1).max(0) as usize).copied().unwrap_or("???")
+}
+
 pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: bool) -> String {
     if store_empty {
         return "No events recorded yet — add a task to start the history.\n".to_string();
     }
     let weeks_n = days.len() / 7;
 
+    // The swatches are two glyphs wide because the cells are: a legend whose
+    // key is half the size of the thing it explains is one the eye has to
+    // translate.
     let legend = if ctx.caps.unicode {
-        "░ 0  ▒ 1–2  ▓ 3–4  █ 5+"
+        "░░ 0  ▒▒ 1–2  ▓▓ 3–4  ██ 5+"
     } else {
-        ". 0  : 1-2  + 3-4  # 5+"
+        ".. 0  :: 1-2  ++ 3-4  ## 5+"
     };
     let mut out = String::new();
     out.push_str(&ctx.paint(
@@ -492,8 +523,27 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: b
     ));
     out.push_str(&format!("   {}\n", ctx.paint("muted", legend)));
 
-    // 7 weekday rows (Mon..Sun) × weeks columns.
+    // A month strip over the columns. Twelve weeks of grid with no date on it
+    // anywhere is a shape a reader cannot place: "when was that gap" has no
+    // answer. A label is written once, at the first column whose week opens a
+    // new month, and only where it fits without colliding with the last one.
     const ROW: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let mut months = String::new();
+    let mut last_month: Option<i8> = None;
+    let mut written = 0usize; // columns of `months` already committed
+    for w in 0..weeks_n {
+        let Some(dc) = days.get(w * 7) else { continue };
+        let m = dc.date.month();
+        let at = w * 2; // each column is a glyph plus its trailing space
+        if last_month != Some(m) && at >= written {
+            let name = month_abbrev(m);
+            months.push_str(&" ".repeat(at - written));
+            months.push_str(name);
+            written = at + name.len();
+        }
+        last_month = Some(m);
+    }
+    out.push_str(&format!("      {}\n", ctx.paint("muted", &months)));
     let mut total = 0u32;
     for dc in days {
         total += dc.count;
@@ -511,12 +561,19 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: b
                 // completions" — a day that has not occurred is not an idle
                 // one — so they get their own blank glyph instead of `cell`'s
                 // 0-count glyph.
+                // Two glyphs per day, with no gap between days.
+                //
+                // A terminal cell is about twice as tall as it is wide, so one
+                // glyph per day drew a grid of tall thin bars — the shape read
+                // as twelve vertical stripes rather than as a calendar of days.
+                // Two glyphs is a square, which is what a day should look like
+                // beside the day next to it, and it costs the same two columns
+                // the glyph-plus-separator already spent.
                 if dc.date > anchor {
-                    line.push_str(&ctx.paint("muted", " "));
+                    line.push_str(&ctx.paint("muted", "  "));
                 } else {
                     line.push_str(&cell(dc.count, ctx));
                 }
-                line.push(' ');
             }
         }
         out.push_str(&line);
@@ -541,18 +598,54 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: b
 }
 
 /// A density cell colored by the urgency ramp bucket for its count.
+/// One day of the completion grid.
+///
+/// `░▒▓█` IS the scale — those four glyphs differ by ink density and nothing
+/// else, which is what a magnitude wants. So the colour does not encode the
+/// count a second time.
+///
+/// It used to: every non-zero cell went through `ramp_style`, which runs cold
+/// to HOT, so five completions in a day were painted the same red this UI uses
+/// for overdue and for danger. The best thing that can appear on this chart was
+/// drawn in the colour reserved for the worst thing on every other one. Fixing
+/// the direction alone would have left two channels carrying one number; taking
+/// the colour off the variable entirely fixes both at once.
 fn cell(count: u32, ctx: &Ctx) -> String {
-    let (glyph, t) = match count {
-        0 => (if ctx.caps.unicode { '░' } else { '.' }, 0.0),
-        1..=2 => (if ctx.caps.unicode { '▒' } else { ':' }, 0.4),
-        3..=4 => (if ctx.caps.unicode { '▓' } else { '+' }, 0.7),
-        _ => (if ctx.caps.unicode { '█' } else { '#' }, 1.0),
+    let glyph = match count {
+        0 => {
+            if ctx.caps.unicode {
+                '░'
+            } else {
+                '.'
+            }
+        }
+        1..=2 => {
+            if ctx.caps.unicode {
+                '▒'
+            } else {
+                ':'
+            }
+        }
+        3..=4 => {
+            if ctx.caps.unicode {
+                '▓'
+            } else {
+                '+'
+            }
+        }
+        _ => {
+            if ctx.caps.unicode {
+                '█'
+            } else {
+                '#'
+            }
+        }
     };
-    let g = glyph.to_string();
+    let g = glyph.to_string().repeat(2);
     if count == 0 {
         ctx.paint("muted", &g)
     } else {
-        ctx.theme.ramp_style(t).paint(&g, &ctx.caps)
+        ctx.paint("accent", &g)
     }
 }
 
@@ -1571,7 +1664,7 @@ mod tests {
                 unicode: true,
             },
         );
-        assert_eq!(bar(3, 6, 6, &no_color), "███", "glyphs kept under NO_COLOR");
+        assert_eq!(bar(3, 6, 6, &no_color), "▄▄▄", "glyphs kept under NO_COLOR");
         let c = cell(6, &no_color);
         assert!(c.contains('█'), "heatmap glyph kept: {c:?}");
         assert!(
@@ -1586,7 +1679,7 @@ mod tests {
             "###",
             "ASCII bars when Unicode unavailable"
         );
-        assert_eq!(cell(6, &plain), "#");
+        assert_eq!(cell(6, &plain), "##", "a day is two glyphs wide");
         assert!(!bar(3, 6, 6, &plain).contains('\x1b'));
     }
 
@@ -1598,7 +1691,7 @@ mod tests {
     /// this alignment work started from.
     #[test]
     fn throughput_rows_line_their_columns_up_whatever_the_bars_do() {
-        use crate::theme::{self, Caps};
+        use crate::theme::{self, Caps, ColorDepth};
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         // Magnitudes chosen to give every row a different bar length, including
         // the empty bar and the full one.
@@ -1613,24 +1706,107 @@ mod tests {
             })
             .collect();
         let out = render_throughput(&ctx, &buckets, 0.0, false);
-        let rows: Vec<&str> = out.lines().skip(1).take(buckets.len()).collect();
+        // The rows are the lines that open with a week label. Found rather than
+        // counted from the top: this test is about columns, and it should not
+        // fail the day a heading is added above them.
+        let rows: Vec<&str> = out
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                // `W28`, not the `WEEK` header, which also opens with a W.
+                t.starts_with('W') && t.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+            })
+            .collect();
         assert_eq!(rows.len(), buckets.len(), "one row per week: {out}");
-        for label in ["added", "done", "net"] {
-            let want = rows[0].find(label);
-            assert!(want.is_some(), "no {label:?} in {:?}", rows[0]);
-            for row in &rows {
-                assert_eq!(row.find(label), want, "the {label:?} column moved:\n{out}");
-            }
+
+        // Equal display width, every row. The labels this used to search for
+        // (`added`, `done`, `net`) were printed on every line and are now a
+        // header printed once, so the assertion is on the GRID instead — which
+        // is what it was always about, and which also catches the failure mode
+        // the words could not: a painted cell padded INSIDE its escape counts
+        // the SGR bytes as width and silently shortens itself.
+        let width = |r: &str| unicode_width::UnicodeWidthStr::width(r);
+        // The last row carries the `partial` note, so it is measured up to it.
+        fn bare(r: &str) -> &str {
+            r.split("  partial").next().unwrap_or(r)
         }
-        // …and the counts themselves, which sit at a fixed offset from `added`.
-        let cut = |row: &str| row.split("done").next().unwrap().len();
+        /// Everything a terminal would not draw: `ESC [ … m`.
+        fn strip_sgr(s: &str) -> String {
+            let mut out = String::with_capacity(s.len());
+            let mut chars = s.chars();
+            while let Some(c) = chars.next() {
+                if c == '\u{1b}' {
+                    for c in chars.by_ref() {
+                        if c == 'm' {
+                            break;
+                        }
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
         for row in &rows {
             assert_eq!(
-                cut(row),
-                cut(rows[0]),
-                "the added block changed width:\n{out}"
+                width(bare(row)),
+                width(bare(rows[0])),
+                "a row is a different width than the first:\n{out}"
             );
         }
+
+        // …and the numbers inside it sit in the same place, whatever the bars
+        // beside them did.
+        let first_digit = |r: &str| r.find(|c: char| c.is_ascii_digit());
+        for row in &rows {
+            assert_eq!(
+                first_digit(row),
+                first_digit(rows[0]),
+                "the count column moved:\n{out}"
+            );
+        }
+
+        // Again WITH colour, measuring visible cells.
+        //
+        // `Caps::PLAIN` emits no escapes at all, so a cell padded inside its
+        // SGR — `format!("{:<4}", painted)`, which counts the escape bytes as
+        // width and pads to nothing — comes out identical under it. That bug
+        // was written into this renderer and this test could not see it. A grid
+        // assertion that never runs against a painted grid is not one.
+        let colour = Ctx::new(
+            theme::default_theme(),
+            Caps {
+                depth: ColorDepth::Truecolor,
+                ansi: true,
+                unicode: true,
+            },
+        );
+        let painted = render_throughput(&colour, &buckets, 0.0, false);
+        let visible: Vec<usize> = painted
+            .lines()
+            .filter(|l| {
+                let t = strip_sgr(l);
+                let t = t.trim_start();
+                t.starts_with('W') && t.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+            })
+            .map(|l| unicode_width::UnicodeWidthStr::width(bare(&strip_sgr(l))))
+            .collect();
+        assert_eq!(visible.len(), buckets.len(), "one painted row per week");
+
+        // Colour must not change the geometry. That is the assertion that
+        // catches the class, and comparing painted rows to EACH OTHER does not:
+        // `label()` is always three characters, so a cell padded inside its own
+        // escape loses exactly one column on every row alike, and a row-against-
+        // row check sees a grid that is merely one narrower than it should be.
+        // Against the unpainted render it has nowhere to hide.
+        let plain_widths: Vec<usize> = rows
+            .iter()
+            .map(|r| unicode_width::UnicodeWidthStr::width(bare(r)))
+            .collect();
+        assert_eq!(
+            visible, plain_widths,
+            "painting the grid changed its width:\n{painted}"
+        );
     }
 
     /// The last point equals the number of members open now, by construction.
@@ -1787,6 +1963,86 @@ mod tests {
             added, 1,
             "a cancelled task must not inflate `added`, matching report's D24 default"
         );
+    }
+
+    /// Finishing things is not a danger state.
+    ///
+    /// Every non-zero heatmap cell went through the urgency ramp, which runs
+    /// cold to HOT — so five completions in a day were painted the red this UI
+    /// reserves for overdue and for danger, and the best thing that can appear
+    /// on the chart wore the colour of the worst thing on every other one.
+    ///
+    /// The assertion is that the count does not reach the colour AT ALL. `░▒▓█`
+    /// already differ by ink density, which is what a magnitude wants; a second
+    /// channel carrying the same number is what let the first one point the
+    /// wrong way without anybody noticing.
+    #[test]
+    fn the_completion_grid_does_not_colour_by_count() {
+        use crate::theme::{self, Caps, ColorDepth};
+        let ctx = Ctx::new(
+            theme::default_theme(),
+            Caps {
+                depth: ColorDepth::Truecolor,
+                ansi: true,
+                unicode: true,
+            },
+        );
+        let sgr = |s: &str| -> String {
+            s.chars()
+                .take_while(|c| !"░▒▓█".contains(*c))
+                .collect::<String>()
+        };
+        let one = sgr(&cell(1, &ctx));
+        for n in [2u32, 3, 4, 5, 9, 40] {
+            assert_eq!(
+                sgr(&cell(n, &ctx)),
+                one,
+                "a day with {n} completions is painted differently from one with 1"
+            );
+        }
+        // …and that colour is not the one danger and overdue are written in.
+        let danger = ctx.paint("danger", "x");
+        assert!(
+            !one.is_empty() && !danger.starts_with(&one),
+            "completions are painted in the danger colour: {one:?}"
+        );
+    }
+
+    /// A day is as wide as it is tall.
+    ///
+    /// One glyph per day made the grid twelve tall thin stripes rather than a
+    /// calendar: a terminal cell is about twice as tall as it is wide, so a
+    /// square day needs two of them.
+    #[test]
+    fn a_heatmap_day_is_two_cells_wide() {
+        use crate::theme::{self, Caps};
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        for n in [0u32, 1, 3, 7] {
+            assert_eq!(
+                crate::render::width(&cell(n, &ctx)),
+                2,
+                "a day with {n} completions is not square"
+            );
+        }
+    }
+
+    /// A week with work in it never draws as a week without.
+    ///
+    /// One task against a peak of forty-four rounds to zero cells, and a bar of
+    /// nothing is indistinguishable from the bar for nothing. The number beside
+    /// it carries the magnitude; what the bar has to carry is that the week was
+    /// not empty.
+    #[test]
+    fn a_non_zero_week_always_draws_something() {
+        use crate::theme::{self, Caps};
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        assert_eq!(bar(0, 44, 10, &ctx), "", "an empty week draws nothing");
+        for n in [1u32, 2, 3] {
+            assert!(
+                !bar(n, 44, 10, &ctx).is_empty(),
+                "{n} of 44 drew an empty bar, which reads as zero"
+            );
+        }
     }
 
     /// The step line's geometry, pinned as a picture.
@@ -2062,11 +2318,17 @@ mod tests {
             "Monday (the anchor itself) already happened and had zero \
              completions — it must draw the ordinary idle glyph: {mon:?}"
         );
-        // Only every other weekday label is printed, so the remaining rows
-        // are matched by position instead: every row after Monday's in this
-        // single-week fixture is a FUTURE day and must not carry the idle
-        // glyph.
-        let future_rows: Vec<&str> = out.lines().skip(2).take(6).collect();
+        // Only every other weekday label is printed, so the remaining rows are
+        // found RELATIVE to Monday's rather than counted from the top of the
+        // output — every row after it in this single-week fixture is a future
+        // day and must not carry the idle glyph. Counting from the top made
+        // this fail the day the grid gained a month strip above it, which is a
+        // change it has no opinion about.
+        let mon_at = out
+            .lines()
+            .position(|l| l.contains("Mon"))
+            .expect("a Monday row");
+        let future_rows: Vec<&str> = out.lines().skip(mon_at + 1).take(6).collect();
         assert_eq!(
             future_rows.len(),
             6,
