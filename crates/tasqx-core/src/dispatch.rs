@@ -128,6 +128,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         ],
         false,
     ),
+    // The corrective half of `token.add` (#210): a measurement is deleted by
+    // its own globally-unique id, so there is no `ref` to name.
+    ("token.remove", &["measurement_id"], false),
     ("dependency.add", &["ref", "depends_on"], false),
     ("dependency.remove", &["ref", "depends_on"], false),
     ("memory.add", &["title", "body", "source"], false),
@@ -241,6 +244,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "project.archive" => engine.project_archive(params),
         "annotation.add" => engine.annotation_add(params),
         "token.add" => engine.token_add(params),
+        "token.remove" => engine.token_remove(params),
         "tokens.recompute" => engine.token_recompute(params),
         "dependency.add" => engine.dependency_add(params),
         "dependency.remove" => engine.dependency_remove(params),

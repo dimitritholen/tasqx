@@ -2648,10 +2648,14 @@ const RECOMPUTE_BUCKETS: [(&str, &str); 4] = [
 /// never `tokens::compact`ed: this is the one surface whose numbers someone
 /// must be able to audit against `--json` before approving a deletion.
 ///
-/// The totals line carries the engine's blended before/after — a migration
-/// delta, deliberately not a report surface (the D48 no-blend rule is about
-/// reporting spend, and labelling this pair as the delta is what keeps it from
-/// reading as one).
+/// The totals line sums every task's `before`/`after` bucket maps and renders
+/// them through the same [`bucket_delta`] the per-task lines use (#219) —
+/// deliberately NOT the engine's blended `totals.before`/`totals.after`
+/// figure, which is exactly the aggregate this module's header exists to
+/// forbid and cannot even detect the failure it is meant to catch: a repair
+/// that drops 200k output tokens and adds 200k cache-read tokens nets to the
+/// SAME blended number on both sides and reads as a no-op, having swapped the
+/// cheapest bucket for one of the most expensive.
 pub fn tokens_recompute(ctx: &Ctx, result: &Value) -> String {
     let empty = Vec::new();
     let tasks = result
@@ -2711,16 +2715,37 @@ pub fn tokens_recompute(ctx: &Ctx, result: &Value) -> String {
         ));
     }
 
-    let before = result["totals"]["before"].as_i64().unwrap_or(0);
-    let after = result["totals"]["after"].as_i64().unwrap_or(0);
     out.push_str(&format!(
-        "totals  {before} -> {after} tokens (blended migration delta)  ·  {} task(s) in scope, {unchanged} unchanged\n",
+        "totals  {}  ·  {} task(s) in scope, {unchanged} unchanged\n",
+        bucket_delta(&sum_buckets(tasks, "before"), &sum_buckets(tasks, "after")),
         tasks.len()
     ));
     if dry_run {
         out.push_str("Dry-run: nothing was written. Run `tasqx tokens recompute --apply` to perform this repair.\n");
     }
     out
+}
+
+/// Sum every task's `side` bucket map (`"before"` or `"after"`) across the
+/// whole report, so the totals line carries the same four buckets the
+/// per-task lines do rather than blending them into the one number #219
+/// flags — a `channel_conflict` task's `null` "after" reads as zero in every
+/// bucket, same as [`bucket_delta`] already treats it per task.
+fn sum_buckets(tasks: &[Value], side: &str) -> Value {
+    let mut totals = serde_json::json!({});
+    for (key, _) in RECOMPUTE_BUCKETS {
+        let sum: i64 = tasks
+            .iter()
+            .map(|t| {
+                t.get(side)
+                    .and_then(|v| v.get(key))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+            })
+            .fold(0i64, i64::saturating_add);
+        totals[key] = serde_json::json!(sum);
+    }
+    totals
 }
 
 /// `in 1500->500 · out 2600->600` — only the buckets that carry a number on
@@ -4449,6 +4474,8 @@ mod tests {
                 { "task": 5, "action": "channel_conflict", "before": b4(70, 0), "after": serde_json::Value::Null },
                 { "task": 6, "action": "unchanged", "before": b4(1, 1), "after": b4(1, 1) },
             ],
+            // The engine's blended figure is still ignored by the renderer
+            // (#219) — present here to prove the totals line does not read it.
             "totals": { "before": 7101, "after": 1101 },
         });
 
@@ -4471,9 +4498,16 @@ mod tests {
             "an unchanged task earns no line of its own: {out:?}"
         );
         assert!(out.contains("1 unchanged"), "{out:?}");
+        // #219: the totals line sums the four buckets across every task
+        // (1500+800+70+1 in, 2600+900+0+1 out; 500+800+0+1 / 600+900+0+1
+        // after) — never the engine's blended 7101 -> 1101 figure above.
         assert!(
-            out.contains("7101 -> 1101"),
-            "the totals line must carry the delta: {out:?}"
+            !out.contains("7101") && !out.contains("blended"),
+            "the totals line must not carry the engine's blended figure: {out:?}"
+        );
+        assert!(
+            out.contains("in 2371->1301") && out.contains("out 3501->1501"),
+            "the totals line must sum the four buckets, not blend them: {out:?}"
         );
         assert!(
             out.contains("--apply"),
@@ -4487,6 +4521,50 @@ mod tests {
             "an applied run advertising --apply invites running it twice: {out:?}"
         );
         assert!(out.contains("applied"), "{out:?}");
+    }
+
+    /// #219: the totals line used to blend all four buckets into the single
+    /// aggregate `tokens.rs`'s own header exists to forbid, and the blend
+    /// cannot even detect the failure it is there to catch — a repair that
+    /// drops 200k OUTPUT tokens and adds 200k CACHE-READ tokens nets to the
+    /// same blended figure on both sides and reads as a no-op, while having
+    /// swapped the cheapest bucket for one of the most expensive.
+    #[test]
+    fn tokens_recompute_totals_never_blend_the_four_buckets() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let bucket = |i: i64, o: i64, cr: i64, cw: i64| {
+            json!({ "input_tokens": i, "output_tokens": o,
+                    "cache_read_tokens": cr, "cache_creation_tokens": cw })
+        };
+        let result = json!({
+            "dry_run": true,
+            "tasks": [
+                {
+                    "task": 20,
+                    "action": "recomputed",
+                    "before": bucket(0, 200_000, 0, 0),
+                    "after": bucket(0, 0, 200_000, 0),
+                },
+            ],
+            // The blended figure nets to the SAME number on both sides for
+            // exactly this swap — the reading the totals line must not give.
+            "totals": { "before": 200_000, "after": 200_000 },
+        });
+
+        let out = tokens_recompute(&ctx, &result);
+        let totals_line = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("totals"))
+            .unwrap_or_else(|| panic!("no totals line: {out:?}"));
+        assert!(
+            !totals_line.contains("blended"),
+            "the totals line must not blend the four buckets: {totals_line:?}"
+        );
+        assert!(
+            totals_line.contains("out 200000->0") && totals_line.contains("cacheR 0->200000"),
+            "the totals line must show the real per-bucket change, not a blended no-op: \
+             {totals_line:?}"
+        );
     }
 
     /// Nothing in scope is an answer, not an empty table — and an action this
