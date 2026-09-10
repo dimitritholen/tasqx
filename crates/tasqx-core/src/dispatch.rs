@@ -112,6 +112,10 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("tag.add", &["ref", "tags"], false),
     ("tag.remove", &["ref", "tags"], false),
     ("annotation.add", &["ref", "body"], false),
+    // D113: `id` alone would collide with every other method's `id`-shaped
+    // reads this table already has (`memory.get`, `memory.remove`) — naming it
+    // `annotation_id` says which child row a `ref`-scoped call means.
+    ("annotation.remove", &["ref", "annotation_id"], false),
     (
         "token.add",
         &[
@@ -246,6 +250,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "project.use" => engine.project_use(params),
         "project.archive" => engine.project_archive(params),
         "annotation.add" => engine.annotation_add(params),
+        "annotation.remove" => engine.annotation_remove(params),
         "token.add" => engine.token_add(params),
         "token.remove" => engine.token_remove(params),
         "tokens.recompute" => engine.token_recompute(params),

@@ -672,6 +672,18 @@ const R_ANNOTATION_ADD: Shape = &[&[
     req_of("annotation", Ty::Object, ANNOTATION),
 ]];
 
+/// `annotation.remove`'s answer (D113) names the id and the removal instant,
+/// never the body: echoing the scrubbed text back would recreate, in an API
+/// response, the exact leak the method exists to close.
+const R_ANNOTATION_REMOVE: Shape = &[&[
+    req("short_id", Ty::Int),
+    req_of(
+        "removed",
+        Ty::Object,
+        &[&[req("id", Ty::Str), req("removed", Ty::Str)]],
+    ),
+]];
+
 const R_TOKEN_ADD: Shape = &[&[
     req("short_id", Ty::Int),
     req_of("measurement", Ty::Object, MEASUREMENT),
@@ -1252,6 +1264,18 @@ fn cases() -> Vec<Case> {
                 json!({ "ref": 1, "body": "a note worth keeping" })
             },
             R_ANNOTATION_ADD,
+        ),
+        case(
+            "annotation.remove",
+            "the answer names the id and when it went — never the scrubbed body (D113)",
+            |e| {
+                plain_task(e);
+                let added = e
+                    .annotation_add(&json!({ "ref": 1, "body": "a secret pasted by mistake" }))
+                    .expect("add");
+                json!({ "ref": 1, "annotation_id": added["annotation"]["id"] })
+            },
+            R_ANNOTATION_REMOVE,
         ),
         case(
             "token.add",

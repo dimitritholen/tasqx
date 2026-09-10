@@ -1361,8 +1361,11 @@ impl Engine {
         let mut annotations: HashMap<String, Vec<Value>> = HashMap::new();
         if parts.annotations {
             statements += 1;
+            // Removed (D113) annotations are tombstones, not history a backup
+            // should carry forward — the same reason a filtered export trims
+            // dependency edges rather than exporting a dangling one.
             let mut stmt = self.conn.prepare(
-                "SELECT task_id, id, body, created FROM annotations \
+                "SELECT task_id, id, body, created FROM annotations WHERE removed IS NULL \
                  ORDER BY task_id, created, id",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -1754,7 +1757,7 @@ impl Engine {
         offset: u64,
     ) -> Result<(Vec<Value>, u64), ApiError> {
         let total: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM annotations WHERE task_id = ?1",
+            "SELECT COUNT(*) FROM annotations WHERE task_id = ?1 AND removed IS NULL",
             params![task_id],
             |r| r.get(0),
         )?;
@@ -1768,7 +1771,7 @@ impl Engine {
         };
         let sql_offset = i64::try_from(offset).unwrap_or(i64::MAX);
         let mut stmt = self.conn.prepare(
-            "SELECT id, body, created FROM annotations WHERE task_id = ?1 \
+            "SELECT id, body, created FROM annotations WHERE task_id = ?1 AND removed IS NULL \
              ORDER BY created DESC, id DESC LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(params![task_id, sql_limit, sql_offset], |r| {
