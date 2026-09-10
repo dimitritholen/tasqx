@@ -4031,9 +4031,14 @@ fn memory_update_prints_the_actual_bumped_rev_not_a_hardcoded_zero() {
 #[test]
 fn a_store_that_cannot_be_opened_is_reported_with_a_bracketed_code() {
     let dir = fresh_config_dir("bad-store");
+    // A directory, not `/proc/nope/x.db`: that path is Unix-specific and, on
+    // Windows, is just an ordinary creatable relative path — the store opened
+    // fine there and the test never exercised the failure it names. Pointing
+    // `TASQX_DB` at a real directory fails identically on both: neither POSIX
+    // nor Win32 will open a directory as a regular file.
     let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
         .env("TASQX_CONFIG_DIR", &dir)
-        .env("TASQX_DB", "/proc/nope/x.db")
+        .env("TASQX_DB", &dir)
         .args(["--no-daemon", "list"])
         .output()
         .expect("run tasqx");
