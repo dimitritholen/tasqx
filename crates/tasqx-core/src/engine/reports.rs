@@ -68,6 +68,56 @@ impl Engine {
         let now_ts = Timestamp::now();
         let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
 
+        // D97: `since`/`until` window WHEN THE SPEND HAPPENED — a task tracked
+        // time, or logged a token measurement — which is a different axis from
+        // `filter`'s `completed.after:`/`completed.before:` entirely. `filter`
+        // still decides which tasks the report is ABOUT; `since`/`until` bound
+        // which slice of each selected task's history counts toward
+        // `tracked_total` and the four token buckets.
+        //
+        // Audit #190/#224: the only date-scoped report was `completed.*`,
+        // which sums a task's WHOLE lifetime tracked/token totals onto
+        // whichever month it happened to close in — a task worked in July,
+        // closed in September, banked all of July's hours as September's, and
+        // a measurement written today attributed to a task closed weeks ago
+        // was invisible to "what did we spend this week". Both are the same
+        // mistake: attributing a rollup by an unrelated date field instead of
+        // by the instant the work or the measurement actually landed.
+        let since = opt_when(p, "since", now_ts)?
+            .map(|when| {
+                parse_ts(&when).ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "`since` resolved to an unreadable instant {when:?}"
+                    ))
+                })
+            })
+            .transpose()?;
+        let until = opt_when(p, "until", now_ts)?
+            .map(|when| {
+                parse_ts(&when).ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "`until` resolved to an unreadable instant {when:?}"
+                    ))
+                })
+            })
+            .transpose()?;
+        if let (Some(s), Some(u)) = (since, until) {
+            if u <= s {
+                return Err(ApiError::bad_request(format!(
+                    "`until` ({u}) must be after `since` ({s})"
+                )));
+            }
+        }
+        let windowed = since.is_some() || until.is_some();
+        // Reconstructed only when asked for: every other caller pays nothing
+        // for a query this report never makes. See `task_tracked_intervals`
+        // for why the event log, not `tasks.tracked_seconds`, is the source.
+        let intervals = if windowed {
+            self.task_tracked_intervals(now_ts)?
+        } else {
+            HashMap::new()
+        };
+
         // D24: a report is an *aggregation*, so abandoned work must not inflate
         // any total. tasqx has no hard delete (DESIGN.md §7, "No hidden bulk
         // delete") — cancelling is how you get rid of a task — so without this
@@ -178,13 +228,46 @@ impl Engine {
             if let Some(e) = t.estimate.as_deref().and_then(duration_secs) {
                 agg.est_secs = agg.est_secs.saturating_add(e);
             }
-            agg.tracked_secs = agg.tracked_secs.saturating_add(t.tracked_seconds);
+            // D97: with a window, `tracked_secs` is the sum of this task's
+            // interval OVERLAP with `[since, until)`, not its lifetime total —
+            // a task with no interval inside the window contributes 0 even
+            // though `t.tracked_seconds` is nonzero, which is the whole fix.
+            let tracked_contribution = if windowed {
+                intervals
+                    .get(&t.id)
+                    .map(|ivs| windowed_overlap_secs(ivs, since, until))
+                    .unwrap_or(0)
+            } else {
+                t.tracked_seconds
+            };
+            agg.tracked_secs = agg.tracked_secs.saturating_add(tracked_contribution);
             // A task carries many measurements (#11); its contribution to the
             // group is the sum of the four buckets across them. Saturating for
             // the same reason as the duration roll-ups above. Scope is already
             // handled: this runs only for tasks that survived the D24 skip and
             // the filter, so cancelled work stays out unless `all:true`.
             for m in &snapshot.tokens {
+                // D97: windowed, a measurement counts only if IT was recorded
+                // inside `[since, until)` — `created` is the instant the spend
+                // was measured, independent of when its task completed (or
+                // whether it ever did).
+                if windowed {
+                    // A variable key, not a literal `.get("created")` chain:
+                    // `no_engine_param_is_read_with_a_raw_json_accessor`
+                    // (D32) bans that shape store-wide because it cannot tell
+                    // "absent" from "wrong type" — the same reason `bucket`
+                    // two lines below reads through a closure parameter
+                    // rather than four literal `.get("...")` calls.
+                    let field = |key: &str| m.get(key).and_then(Value::as_str);
+                    let created = field("created").and_then(parse_ts);
+                    let in_window = match created {
+                        Some(c) => since.is_none_or(|s| c >= s) && until.is_none_or(|u| c < u),
+                        None => false,
+                    };
+                    if !in_window {
+                        continue;
+                    }
+                }
                 let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
                 agg.tokens_in = agg.tokens_in.saturating_add(bucket("input_tokens"));
                 agg.tokens_out = agg.tokens_out.saturating_add(bucket("output_tokens"));
@@ -256,8 +339,103 @@ impl Engine {
             // or a filter that already names a status. Additive to the v1
             // shape (see `tests/conformance.rs`'s `R_REPORT_SUMMARY`).
             "tokens_excluded_cancelled_tasks": tokens_excluded_cancelled_tasks,
+            // D97: echoed for the same reason `filter` is (D69) — a report
+            // whose `tracked_total`/token buckets are window-scoped must say
+            // so, rather than let the reader assume a lifetime total. `null`
+            // when omitted, exactly like an unset date field elsewhere.
+            "since": since.map(|t| t.to_string()),
+            "until": until.map(|t| t.to_string()),
         }))
     }
+
+    /// Reconstruct every task's tracked intervals — `(start, end)` pairs — from
+    /// the event log, the only place that knows WHEN each second of
+    /// `tracked_seconds` was earned. The `tasks` row itself carries only the
+    /// lifetime sum (D97's motivating bug: a report windowed on that sum alone
+    /// can only ever attribute it whole, to whichever month the task last
+    /// touched the clock).
+    ///
+    /// `stop` closes the interval its own `start` opened. `done` and `cancel`
+    /// close one too, WITHOUT a `stop` event of their own (`task_done`,
+    /// `task_cancel` fold the elapsed time into `tracked_seconds` directly) —
+    /// so a `start` with no matching `stop` is closed by whichever of
+    /// `stop`/`done`/`cancel` comes next for that task, using the CLOSING
+    /// event's own `ts`. Neither event's payload is read: `start`'s `ts` and
+    /// the closing event's `ts` are the exact two endpoints already, which is
+    /// simpler than parsing `stop`'s `tracked` back out of an ISO-8601 string
+    /// and sidesteps the very asymmetry noted in audit #190 (`done`/`cancel`
+    /// carry no `tracked` field at all).
+    ///
+    /// A task still active when this runs has an unclosed `start`; its
+    /// interval is closed at `now_ts` — the same instant the rest of this
+    /// report resolves against — so time still on the clock counts toward a
+    /// window that reaches the present, matching the dashboard's "now card".
+    fn task_tracked_intervals(
+        &self,
+        now_ts: Timestamp,
+    ) -> Result<HashMap<String, Vec<(Timestamp, Timestamp)>>, ApiError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT entity_id, op, ts FROM events \
+             WHERE entity = 'task' AND op IN ('start', 'stop', 'done', 'cancel') \
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+
+        let mut open: HashMap<String, Timestamp> = HashMap::new();
+        let mut out: HashMap<String, Vec<(Timestamp, Timestamp)>> = HashMap::new();
+        for row in rows {
+            let (task_id, op, ts) = row?;
+            // A row this reader cannot parse contributes no interval rather
+            // than aborting the whole report — the same "degrade, never
+            // panic" rule `parse_ts`'s callers already follow throughout this
+            // file.
+            let Some(at) = parse_ts(&ts) else { continue };
+            match op.as_str() {
+                "start" => {
+                    open.insert(task_id, at);
+                }
+                _ => {
+                    if let Some(started) = open.remove(&task_id) {
+                        out.entry(task_id).or_default().push((started, at));
+                    }
+                }
+            }
+        }
+        for (task_id, started) in open {
+            out.entry(task_id).or_default().push((started, now_ts));
+        }
+        Ok(out)
+    }
+}
+
+/// Seconds of overlap between `intervals` and the half-open window
+/// `[since, until)` — either bound `None` meaning unbounded on that side.
+/// Shared by nothing else on purpose: this is `report.summary`'s one
+/// consumer, over intervals [`Engine::task_tracked_intervals`] already
+/// resolved to instants, so there is no bound left to fail to parse here.
+fn windowed_overlap_secs(
+    intervals: &[(Timestamp, Timestamp)],
+    since: Option<Timestamp>,
+    until: Option<Timestamp>,
+) -> i64 {
+    intervals
+        .iter()
+        .map(|(start, end)| {
+            let lo = since.map_or(*start, |s| s.max(*start));
+            let hi = until.map_or(*end, |u| u.min(*end));
+            if hi > lo {
+                hi.as_second() - lo.as_second()
+            } else {
+                0
+            }
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -358,5 +536,182 @@ mod tests {
         e.task_add(&json!({ "title": "a" })).unwrap();
         let out = e.report_summary(&json!({ "group_by": "status" })).unwrap();
         assert_eq!(out["groups"][0]["status"], json!("pending"));
+    }
+
+    /// Audit #190, reproduced directly: a task worked a 7.5h interval in July
+    /// and a 1h interval in August, then completed in September. Before D97,
+    /// the only date-scoped report (`completed.after:`/`completed.before:`)
+    /// had no way to ask "how much of this was July's" — it could only bank
+    /// the WHOLE `tracked_seconds` (8h30m) onto whichever month completion
+    /// fell in, and every other month saw none of it. `since`/`until` must
+    /// see each interval in its own month, and the completion month — which
+    /// had no actual work — must see none.
+    #[test]
+    fn since_until_window_tracked_seconds_by_interval_not_by_completion_month() {
+        let e = Engine::open_in_memory().unwrap();
+        let id = e.task_add(&json!({ "title": "cross-month work" })).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Interval 1: 2026-07-05 10:00 -> 17:30 (PT7H30M).
+        e.conn()
+            .execute(
+                "INSERT INTO events (id, entity, entity_id, op, payload, ts) VALUES \
+             ('evt-1-start', 'task', ?1, 'start', \
+             '{\"interval_started\":\"2026-07-05T10:00:00Z\"}', '2026-07-05T10:00:00Z')",
+                params![id],
+            )
+            .unwrap();
+        e.conn()
+            .execute(
+                "INSERT INTO events (id, entity, entity_id, op, payload, ts) VALUES \
+             ('evt-1-stop', 'task', ?1, 'stop', '{\"tracked\":\"PT7H30M\"}', \
+             '2026-07-05T17:30:00Z')",
+                params![id],
+            )
+            .unwrap();
+        // Interval 2: 2026-08-20 09:00 -> 10:00 (PT1H).
+        e.conn()
+            .execute(
+                "INSERT INTO events (id, entity, entity_id, op, payload, ts) VALUES \
+             ('evt-2-start', 'task', ?1, 'start', \
+             '{\"interval_started\":\"2026-08-20T09:00:00Z\"}', '2026-08-20T09:00:00Z')",
+                params![id],
+            )
+            .unwrap();
+        e.conn()
+            .execute(
+                "INSERT INTO events (id, entity, entity_id, op, payload, ts) VALUES \
+             ('evt-2-stop', 'task', ?1, 'stop', '{\"tracked\":\"PT1H\"}', \
+             '2026-08-20T10:00:00Z')",
+                params![id],
+            )
+            .unwrap();
+        e.conn()
+            .execute(
+                "UPDATE tasks SET tracked_seconds = 30600, status = 'done', \
+                 completed = '2026-09-09T12:00:00Z' WHERE id = ?1",
+                params![id],
+            )
+            .unwrap();
+
+        let metrics = json!(["tracked_total"]);
+
+        let july = e
+            .report_summary(
+                &json!({ "since": "2026-07-01", "until": "2026-08-01", "metrics": metrics }),
+            )
+            .unwrap();
+        assert_eq!(
+            july["groups"][0]["tracked_total"],
+            json!("PT7H30M"),
+            "July's window must see only July's interval: {july}"
+        );
+
+        let august = e
+            .report_summary(
+                &json!({ "since": "2026-08-01", "until": "2026-09-01", "metrics": metrics }),
+            )
+            .unwrap();
+        assert_eq!(
+            august["groups"][0]["tracked_total"],
+            json!("PT1H"),
+            "August's window must see only August's interval: {august}"
+        );
+
+        // September is the COMPLETION month, and the bug's exact failure: no
+        // actual work happened there, so a correct window must answer PT0S —
+        // never the whole PT8H30M lifetime total the old completion-scoped
+        // report would have banked here.
+        let september = e
+            .report_summary(
+                &json!({ "since": "2026-09-01", "until": "2026-10-01", "metrics": metrics }),
+            )
+            .unwrap();
+        assert_eq!(
+            september["groups"][0]["tracked_total"],
+            json!("PT0S"),
+            "September had no work at all; the completion month must not inherit the lifetime total: {september}"
+        );
+
+        // Unwindowed (no since/until): unchanged, lifetime-total behaviour.
+        let lifetime = e.report_summary(&json!({ "metrics": metrics })).unwrap();
+        assert_eq!(lifetime["groups"][0]["tracked_total"], json!("PT8H30M"));
+    }
+
+    /// Audit #224, reproduced directly: a task completed weeks before the
+    /// report's window, but one of its token measurements was RECORDED
+    /// (`created`) inside the window — the log-parse-after-the-fact shape the
+    /// audit found. Before D97 the only date-scoped axis was `completed.*`,
+    /// so a report scoped to "this week" excluded the task entirely and its
+    /// whole spend vanished, even though the spend was measured this week.
+    #[test]
+    fn since_until_windows_token_buckets_by_measurement_date_not_completion_date() {
+        let e = Engine::open_in_memory().unwrap();
+        let id = e
+            .task_add(&json!({ "title": "old task, fresh measurement" }))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        e.conn()
+            .execute(
+                "UPDATE tasks SET status = 'done', completed = '2026-08-21T10:00:00Z' \
+                 WHERE id = ?1",
+                params![id],
+            )
+            .unwrap();
+        e.conn()
+            .execute(
+                "INSERT INTO token_usage (id, task_id, tool, source, model, input_tokens, \
+             output_tokens, cache_read_tokens, cache_creation_tokens, confidence, created) \
+             VALUES ('tok-1', ?1, 'claude-code', 'log-parse', NULL, 0, 0, 103441261, 0, \
+             'medium', '2026-09-09T12:00:00Z')",
+                params![id],
+            )
+            .unwrap();
+
+        // The bug: a completion-scoped "this week" report never sees this
+        // task at all, so its 103.4M cache-read tokens are silently absent.
+        let by_completion = e
+            .report_summary(&json!({
+                "filter": "completed.after:2026-09-02",
+                "metrics": ["tokens_cache_read"],
+            }))
+            .unwrap();
+        assert!(
+            by_completion["groups"].as_array().unwrap().is_empty(),
+            "sanity check: completion-scoped filtering excludes this task, \
+             which is exactly the defect since/until exists to route around: {by_completion}"
+        );
+
+        // The fix: windowing by WHEN THE MEASUREMENT LANDED finds it.
+        let by_measurement = e
+            .report_summary(&json!({
+                "since": "2026-09-02",
+                "metrics": ["tokens_cache_read"],
+            }))
+            .unwrap();
+        assert_eq!(
+            by_measurement["groups"][0]["tokens_cache_read"],
+            json!(103_441_261),
+            "a measurement recorded this week must count toward this week's report \
+             regardless of when its task completed: {by_measurement}"
+        );
+
+        // And a window that EXCLUDES the measurement's instant must see none
+        // of it, proving this is real windowing and not just "ignore since".
+        let before = e
+            .report_summary(&json!({
+                "until": "2026-09-09",
+                "metrics": ["tokens_cache_read"],
+            }))
+            .unwrap();
+        assert_eq!(
+            before["groups"][0]["tokens_cache_read"],
+            json!(0),
+            "a window ending before the measurement must not count it: {before}"
+        );
     }
 }

@@ -706,6 +706,11 @@ const R_REPORT_SUMMARY: Shape = &[&[
     // that carried non-zero token spend — additive, JOINing the frozen shape
     // per this file's own rule for a genuine addition.
     req("tokens_excluded_cancelled_tasks", Ty::Int),
+    // D97: null unless the caller passed `since`/`until` — the axis that
+    // windows `tracked_total`/the token buckets by WHEN the work or the
+    // measurement happened, independent of `filter`'s completion-date terms.
+    nul("since", Ty::Str),
+    nul("until", Ty::Str),
 ]];
 
 const R_STORE_EXPORT: Shape = &[&[

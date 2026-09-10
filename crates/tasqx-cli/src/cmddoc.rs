@@ -571,12 +571,14 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "report.summary",
         summary: "Summary counts, optionally grouped, as text or HTML.",
-        usage: "tasqx report [group_by] [filter…] [--all] [--metrics list] [--html] [--out FILE]",
+        usage: "tasqx report [group_by] [filter…] [--all] [--since WHEN] [--until WHEN] \
+                [--metrics list] [--html] [--out FILE]",
         examples: &[
             ex("tasqx report"),
             ex("tasqx report project"),
             ex("tasqx report --all"),
             ex("tasqx report --metrics tokens_in,tokens_out,tokens_cache_read,tokens_cache_creation"),
+            ex("tasqx report --since -7d"),
             ex_norun("tasqx report --html --out review.html", "self-contained HTML"),
             // The usage line always promised `[filter…]` alongside `--html`; for a
             // long time only the terminal path kept that promise. Documented as an
@@ -591,6 +593,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "The terminal's TOKENS column names the largest of four buckets by volume; \
              `--metrics` naming a tokens_* bucket shows all four as their own columns instead, \
              same as `--html` and `--json`.",
+            "`--since`/`--until` window `tracked_total` and the token buckets by WHEN the \
+             time or spend happened (D97) — a different axis from `completed.after:`/\
+             `completed.before:` in the filter, which selects tasks by completion date. \
+             Rejected alongside `--html`, which has no windowed path yet.",
         ],
         see_also: &["chart", "list", "why"],
         topic: Topic::Reports,
