@@ -167,6 +167,18 @@ SVG-to-PNG step runs `resvg` through a WASM runtime that faults there. So:
 3. Rasterize with headless Chrome at `--force-device-scale-factor=2`, sized
    from the SVG's own `width`/`height` attributes.
 
+`scripts/snap.sh` does all three:
+
+```console
+$ scripts/snap.sh list 100 -- list
+$ scripts/snap.sh narrow 80 -- list "+design"
+$ THEME=mono scripts/snap.sh mono 100 -- list
+```
+
+It writes into `target/snaps/`, so the pictures never reach a commit. Driving a
+dev build needs `TASQX` pointed at it **and** a scratch `TASQX_DB` —
+`CLAUDE.md`'s rule, which this script does not relax.
+
 TUI screens (`dashboard`, `pick`) need a pty, which this path does not give;
 capture those through `script(1)` first.
 
