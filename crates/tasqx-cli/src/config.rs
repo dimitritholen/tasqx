@@ -190,7 +190,7 @@ pub const SETTINGS: &[Setting] = &[
         // would resolve to this very string and report its source as `default`.
         // There is deliberately no way to spell "no panels"; a dashboard nobody
         // wants is `dashboard.enabled = false`.
-        default: "now,next,due,blocked,recent,projects,burndown,tokens",
+        default: "tasks,projects,burndown,pulse,effort,tokens",
         // No TASQX_*: `dashboard.enabled` carries one because a CI image needs a
         // one-line off switch, and a panel list is not a CI concern. The env
         // drift gate only demands a row for a variable the code actually reads.

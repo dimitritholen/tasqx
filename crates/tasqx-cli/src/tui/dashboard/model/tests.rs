@@ -139,6 +139,8 @@ fn all_panels() -> Vec<PanelId> {
         PanelId::Tasks,
         PanelId::Projects,
         PanelId::Burndown,
+        PanelId::Pulse,
+        PanelId::Effort,
         PanelId::Tokens,
     ]
 }
@@ -902,6 +904,75 @@ fn a_full_event_page_marks_the_burndown_as_truncated() {
     assert!(!d.burndown.truncated);
 }
 
+/// The cycle time is a MEDIAN, and the difference is not cosmetic.
+///
+/// One task that sat open for a year drags a mean into uselessness, and this
+/// figure is read to answer "how long does this usually take". A fixture with
+/// nine one-day tasks and one four-hundred-day one has a median of 1 and a mean
+/// of about 41 — no reader would accept either number as a description of the
+/// other.
+#[test]
+fn the_cycle_time_is_a_median_so_one_ancient_task_cannot_move_it() {
+    let mut rows = Vec::new();
+    for i in 1..=9i64 {
+        rows.push(with(
+            with(
+                with(task_row(i, "quick"), "status", json!("done")),
+                "created",
+                json!("2026-08-03T12:00:00Z"),
+            ),
+            "completed",
+            json!("2026-08-04T12:00:00Z"),
+        ));
+    }
+    rows.push(with(
+        with(
+            with(task_row(10, "ancient"), "status", json!("done")),
+            "created",
+            json!("2025-07-01T12:00:00Z"),
+        ),
+        "completed",
+        json!("2026-08-04T12:00:00Z"),
+    ));
+    let d = build_with(task_list(rows), summary(vec![]), project_list(vec![]));
+    let cycle = d.pulse.cycle_days.expect("ten finished tasks have a cycle");
+    assert!(
+        (cycle - 1.0).abs() < 0.01,
+        "the median of nine 1-day tasks and one 400-day one is 1, got {cycle}"
+    );
+}
+
+/// EFFORT sums the estimate over OPEN rows, not over the store.
+///
+/// `report.summary`'s `est_total` is scoped by D24, which counts finished work
+/// — so it answers "how much was ever estimated". This panel asks "how much is
+/// left", and the two differ by everything already done. Taking the summary's
+/// number would have been one line shorter and a different question.
+#[test]
+fn effort_counts_the_estimate_left_not_the_estimate_ever() {
+    let d = build_with(
+        task_list(vec![
+            with(task_row(1, "open"), "estimate", json!("PT2H")),
+            with(
+                with(task_row(2, "finished"), "estimate", json!("PT10H")),
+                "status",
+                json!("done"),
+            ),
+        ]),
+        summary(vec![group("work", "PT12H", "PT0S", [0, 0, 0, 0])]),
+        project_list(vec![project("work", true, false)]),
+    );
+    assert_eq!(
+        d.effort.est_open_secs, 7200,
+        "only the open task's two hours are left to do"
+    );
+    assert!(
+        d.effort.by_project.iter().all(|(_, est, _)| *est == 7200),
+        "the finished task's ten hours must not reach the per-project rows: {:?}",
+        d.effort.by_project
+    );
+}
+
 /// The `touched` order is deliberately unfiltered by status: a task finished
 /// four minutes ago is exactly what "where was I" means.
 ///
@@ -969,6 +1040,8 @@ fn no_panel_is_given_more_rows_than_it_has_content_for() {
         PanelId::Projects => 1,
         PanelId::Tokens => 1,
         PanelId::Burndown => 2,
+        PanelId::Pulse => 2,
+        PanelId::Effort => 2,
         PanelId::Slot => 2,
     };
     for w in [56u16, 80, 96, 120, 160, 200] {

@@ -147,6 +147,8 @@ fn all_panels() -> Vec<PanelId> {
         PanelId::Tasks,
         PanelId::Projects,
         PanelId::Burndown,
+        PanelId::Pulse,
+        PanelId::Effort,
         PanelId::Tokens,
     ]
 }
@@ -1161,7 +1163,7 @@ fn a_refresh_keeps_the_cursor_on_the_same_task_not_the_same_row_index() {
 fn every_binding_is_documented_in_the_help_overlay() {
     let documented: String = KEYS.iter().map(|k| k.keys).collect::<Vec<_>>().join(" ");
     for probe in [
-        "1-4", "tab", "j / k", "g / G", "r", "R", "w", "p", "l", "?", "q", "ctrl-c",
+        "1-6", "tab", "j / k", "g / G", "r", "R", "w", "p", "l", "?", "q", "ctrl-c",
     ] {
         assert!(
             documented.contains(probe),
@@ -1939,7 +1941,7 @@ fn the_help_overlay_and_the_key_handler_agree() {
     };
 
     // --- what the overlay promises ------------------------------------------
-    // Tokens are split on `/`; a one-character token is that key, `1-4` is the
+    // Tokens are split on `/`; a one-character token is that key, `1-6` is the
     // range it reads as, and the named ones are spelled out because they are
     // not `Char` at all.
     let mut advertised: Vec<char> = Vec::new();
@@ -1947,7 +1949,7 @@ fn the_help_overlay_and_the_key_handler_agree() {
     for k in KEYS {
         for tok in k.keys.split('/').map(str::trim) {
             match tok {
-                "1-4" => advertised.extend('1'..='4'),
+                "1-6" => advertised.extend('1'..='6'),
                 "tab" | "S-tab" | "esc" | "ctrl-c" | "enter" => named += 1,
                 t if t.chars().count() == 1 => advertised.push(t.chars().next().unwrap()),
                 t => panic!("unreadable key label {t:?} in KEYS — teach this test its shape"),

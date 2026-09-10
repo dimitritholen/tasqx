@@ -623,6 +623,8 @@ fn panel_of_digit(d: u8) -> Option<PanelId> {
         PanelId::Tasks,
         PanelId::Projects,
         PanelId::Burndown,
+        PanelId::Pulse,
+        PanelId::Effort,
         PanelId::Tokens,
     ]
     .into_iter()
@@ -1416,10 +1418,10 @@ pub struct Hint {
 
 pub const KEYS: &[Key] = &[
     Key {
-        keys: "1-4",
+        keys: "1-6",
         help: "focus a panel (or place it in the analytics slot)",
         footer: Some(Hint {
-            keys: "1-4",
+            keys: "1-6",
             word: "panel",
             rank: 4,
         }),
