@@ -44,7 +44,10 @@ clap = { version = "4.6.1", features = ["derive"] }
 # turns on `clap/unstable-ext` itself, so the `clap` line above needs no change
 # for `#[arg(add = ...)]` to work.
 clap_complete = { version = "=4.6.7", features = ["unstable-dynamic"] }
-ctrlc = "3.5"
+# `termination`: without it, ctrlc's Unix handler covers SIGINT alone, so a
+# plain `kill` (SIGTERM — what systemd `stop`, `docker stop` and supervisord
+# send) killed the daemon outright and left its socket file behind (#236.1).
+ctrlc = { version = "3.5", features = ["termination"] }
 directories = "6.0.0"
 jiff = { workspace = true }
 toml = "1.1.3"
