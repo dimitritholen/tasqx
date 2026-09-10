@@ -565,7 +565,11 @@ const R_TASK_START: Shape = &[&[
     nul("interval_started", Ty::Str),
 ]];
 
-const R_TASK_STOP: Shape = &[&[req("status", Ty::Str), req("tracked", Ty::Str)]];
+const R_TASK_STOP: Shape = &[&[
+    req("status", Ty::Str),
+    req("interval", Ty::Str),
+    req("tracked", Ty::Str),
+]];
 
 const R_TASK_DONE: Shape = &[&[
     req("status", Ty::Str),

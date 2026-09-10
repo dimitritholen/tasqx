@@ -488,7 +488,8 @@ impl Engine {
         tx.commit()?;
 
         Ok(commands::TaskStopped {
-            tracked: iso_duration(elapsed),
+            interval: iso_duration(elapsed),
+            tracked: iso_duration(total),
         }
         .into())
     }

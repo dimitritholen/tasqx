@@ -175,7 +175,9 @@ const METHODS: [(&str, &str, &str); 32] = [
     (
         "task.stop",
         "<code>ref</code>",
-        "The task, with tracked time.",
+        "<code>{status, interval, tracked}</code>. <code>interval</code> is the duration just \
+         closed; <code>tracked</code> is the running total, the same word <code>task.get</code> \
+         uses for it.",
     ),
     (
         "task.done",
@@ -840,7 +842,7 @@ fn page_install() -> String {
     s.push_str(&snippet(
         "tasqx start 1\ntasqx stop 1\ntasqx done 1",
         "Started task  ·  timer running (since 2026-07-16T08:51:09.6070293Z)\n\
-         Stopped  ·  tracked PT0S\n\
+         Stopped  ·  interval PT0S  ·  tracked PT0S\n\
          Done  ·  completed 2026-07-16T08:51:10.0430255Z",
     ));
 
