@@ -13,7 +13,8 @@ use super::*;
 use crate::attribution::{consumed_sample_ids_by_task, recompute_measurement, WindowScan};
 use crate::otlp::OtlpSample;
 use crate::tokens::{
-    require_confidence, require_source, CONFIDENCE_LOW, SOURCE_LOG_PARSE, SOURCE_SELF_REPORT,
+    require_confidence, require_source, CONFIDENCE_HIGH, CONFIDENCE_LOW, SOURCE_LOG_PARSE,
+    SOURCE_SELF_REPORT,
 };
 
 /// How long a buffered OTLP sample is kept before opportunistic pruning (#18).
@@ -59,6 +60,13 @@ pub(super) struct NewTokenUsage {
     pub(super) cache_read_tokens: i64,
     pub(super) cache_creation_tokens: i64,
     pub(super) confidence: String,
+    /// Opaque bookkeeping the caller's write door attaches — currently only
+    /// `token_add`'s `idempotency_key` (#221), JSON-encoded so the column
+    /// stays free-form for whatever a future write door needs. `None` for
+    /// every other writer. Deliberately not part of the canonical measurement
+    /// object [`record_token_usage`] returns: the frozen shape (D56) is
+    /// closed, and this is transport bookkeeping, not a fact about the spend.
+    pub(super) extra: Option<String>,
 }
 
 /// Insert one measurement row inside `tx` and answer the canonical
@@ -78,8 +86,8 @@ pub(super) fn record_token_usage(
     let created = now();
     tx.execute(
         "INSERT INTO token_usage (id, task_id, tool, source, model, input_tokens, \
-         output_tokens, cache_read_tokens, cache_creation_tokens, confidence, created) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+         output_tokens, cache_read_tokens, cache_creation_tokens, confidence, created, extra) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![
             id,
             task_id,
@@ -92,6 +100,7 @@ pub(super) fn record_token_usage(
             usage.cache_creation_tokens,
             usage.confidence,
             created,
+            usage.extra,
         ],
     )?;
     Ok(json!({
@@ -188,6 +197,14 @@ fn marker_banked_measurement(payload: &str) -> bool {
     })
 }
 
+/// The `token_usage.extra` value one `token_add` idempotency key encodes to
+/// (#221). JSON-wrapped, not the bare key, so the free-form `extra` column
+/// stays extensible for whatever a later write door needs beside this one
+/// without the two ever colliding on a bare string.
+fn idempotency_extra(key: &str) -> String {
+    json!({ "idempotency_key": key }).to_string()
+}
+
 /// The four-bucket object the recompute report speaks — the same four keys as
 /// a measurement row, never a blended total (D48).
 fn buckets(input: i64, output: i64, cache_read: i64, cache_creation: i64) -> Value {
@@ -218,6 +235,29 @@ impl Engine {
         require_source(&source)?;
         let confidence = req_str(p, "confidence")?;
         require_confidence(&confidence)?;
+        // #216 / D50: confidence describes verifiability, not preference — an
+        // unverified claim does not become more checkable by being preferred,
+        // and the trust hierarchy lives in `source`. The done-time self-report
+        // path (`task.done`) never exposes `confidence` at all and forces
+        // `medium` unconditionally; a self-report through this door must not
+        // reach a trust tier that path can never claim. `medium` and `low`
+        // stay open — a caller marking its own estimate as LESS trustworthy
+        // than the default is not the inversion this refuses.
+        if source == SOURCE_SELF_REPORT && confidence == CONFIDENCE_HIGH {
+            return Err(ApiError::bad_request(
+                "a self-report cannot claim confidence \"high\" — confidence describes \
+                 verifiability, not preference, and an unverified claim is not made more \
+                 checkable by being preferred (D50); send \"medium\" or \"low\""
+                    .to_string(),
+            ));
+        }
+        // #221: an optional caller-supplied idempotency key. Any MCP or HTTP
+        // timeout the client retries otherwise doubles the ticket's recorded
+        // cost, silently and with no way to remove either row — the
+        // self-report twin of the OTLP replay this same finding named on the
+        // telemetry side.
+        let idempotency_key = opt_str_nonempty(p, "idempotency_key")?;
+        let extra = idempotency_key.as_deref().map(idempotency_extra);
         let usage = NewTokenUsage {
             tool: req_str(p, "tool")?,
             source,
@@ -227,10 +267,73 @@ impl Engine {
             cache_read_tokens: opt_token_count(p, "cache_read_tokens")?.unwrap_or(0),
             cache_creation_tokens: opt_token_count(p, "cache_creation_tokens")?.unwrap_or(0),
             confidence,
+            extra,
         };
 
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
+
+        // #221: a replay of the SAME idempotency key on the SAME task returns
+        // the measurement that key already banked, unchanged — ahead of the
+        // #208 check below, deliberately: the write this call would have made
+        // already happened, so nothing about the store's current state (an
+        // attribution that ran since, say) changes what a repeat of a past
+        // success should answer.
+        if let Some(marker) = &usage.extra {
+            if let Some(existing) = tx
+                .query_row(
+                    &format!(
+                        "SELECT {TOKEN_COLS} FROM token_usage WHERE task_id = ?1 AND extra = ?2 \
+                         LIMIT 1"
+                    ),
+                    params![task.id, marker],
+                    |r| measurement_from_row(r, 0),
+                )
+                .optional()?
+            {
+                return Ok(json!({ "short_id": task.short_id, "measurement": existing }));
+            }
+        }
+
+        // #208 / D50: "one task never mixes channels." The attribution engine
+        // already refuses to lay a SECOND automated measurement over an
+        // existing self-report (`token_attribute`'s `self_reported_meanwhile`
+        // TOCTOU guard below) — but that protects only that direction. A
+        // self-report arriving AFTER the daemon already banked this task's
+        // spend automatically hit no such check, and silently doubled the
+        // ledger under two `source`s. Gated on `has_attributed_event` (not
+        // merely "does a non-self-report row exist"): an empty
+        // `tokens.attributed` marker — unknown client, or a window that
+        // turned out to hold nothing — records no row, so there is nothing
+        // for a self-report to conflict with.
+        if usage.source == SOURCE_SELF_REPORT && has_attributed_event(&tx, &task.id)? {
+            if let Some((existing_source, input, output, cache_read, cache_creation)) = tx
+                .query_row(
+                    "SELECT source, input_tokens, output_tokens, cache_read_tokens, \
+                     cache_creation_tokens FROM token_usage \
+                     WHERE task_id = ?1 AND source != ?2 ORDER BY created LIMIT 1",
+                    params![task.id, SOURCE_SELF_REPORT],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, i64>(3)?,
+                            r.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
+                .optional()?
+            {
+                return Err(ApiError::conflict(format!(
+                    "task already carries a {existing_source} measurement from the automated \
+                     attribution pipeline ({input} in / {output} out / {cache_read} cacheR / \
+                     {cache_creation} cacheW tokens) — a self-report here would double the \
+                     ledger; use `tokens.recompute` or remove the existing measurement first"
+                )));
+            }
+        }
+
         let measurement = record_token_usage(&tx, &task.id, &usage)?;
         insert_event(&tx, Entity::Task, &task.id, "token.add", &measurement)?;
         tx.commit()?;
@@ -269,6 +372,12 @@ impl Engine {
         let confidence = req_str(p, "confidence")?;
         require_confidence(&confidence)?;
         let tool = req_str(p, "tool")?;
+        // #213: the model every sample this measurement consumed agreed on,
+        // when [`crate::attribution::attribute_one`] found one — the only
+        // field that can ever turn four counts into money, and previously
+        // discarded at this exact write site regardless of what the caller
+        // computed.
+        let model = opt_str_nonempty(p, "model")?;
         let samples = opt_u64(p, "samples")?.unwrap_or(0);
         // The identities of the samples this measurement consumed, when the
         // parser had any (Claude Code message ids). Persisted in the marker
@@ -336,12 +445,13 @@ impl Engine {
             let usage = NewTokenUsage {
                 tool: tool.clone(),
                 source: source.clone(),
-                model: None,
+                model: model.clone(),
                 input_tokens: input,
                 output_tokens: output,
                 cache_read_tokens: cache_read,
                 cache_creation_tokens: cache_creation,
                 confidence: confidence.clone(),
+                extra: None,
             };
             let measurement = record_token_usage(&tx, &task.id, &usage)?;
             let mut payload = json!({
@@ -384,34 +494,64 @@ impl Engine {
     /// opportunistic retention prune into the same commit; there is no entity to
     /// read-back because a raw append correlates to no task.
     ///
-    /// Returns the number of rows inserted.
+    /// Returns the number of rows actually inserted — which, since #221, can
+    /// be fewer than `samples.len()` when the batch replays a record already
+    /// buffered.
     pub fn otlp_ingest(&self, samples: &[OtlpSample]) -> Result<usize, ApiError> {
         if samples.is_empty() {
             return Ok(0);
         }
         let created = now();
         let tx = self.begin_mutation()?;
+        let mut inserted = 0usize;
         for s in samples {
             // Client-supplied counts can exceed i64 in theory; clamp rather than
             // fail the whole export on one absurd row (the export is best-effort).
             let clamp = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
-            tx.execute(
-                "INSERT INTO otlp_samples (id, session_id, tool, ts, model, input_tokens, \
-                 output_tokens, cache_read_tokens, cache_creation_tokens, created) \
+            let input = clamp(s.sample.input_tokens);
+            let output = clamp(s.sample.output_tokens);
+            let cache_read = clamp(s.sample.cache_read_tokens);
+            let cache_creation = clamp(s.sample.cache_creation_tokens);
+            // #221: the row's id is derived from the record's own natural
+            // identity (timestamp + session + tool + the four counts) rather
+            // than minted fresh, so a replayed export — which the module's
+            // own header notes is a KNOWN condition ("/v1/metrics answers 200
+            // so an exporter configured for both does not retry-storm") —
+            // computes the SAME id and `INSERT OR IGNORE` makes the replay
+            // free instead of a second row. Two samples that genuinely differ
+            // in even one count are different spends and get different ids;
+            // model is deliberately excluded from the key, matching the
+            // suggested natural key, since it never varies for one physical
+            // request the way a retried export's counts do not either.
+            let natural_key = format!(
+                "{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+                s.session_id.as_deref().unwrap_or(""),
+                s.tool,
+                s.sample.ts,
+                input,
+                output,
+                cache_read,
+                cache_creation,
+            );
+            let id = Uuid::new_v5(&Uuid::NAMESPACE_URL, natural_key.as_bytes()).to_string();
+            let rows = tx.execute(
+                "INSERT OR IGNORE INTO otlp_samples (id, session_id, tool, ts, model, \
+                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, created) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 params![
-                    Uuid::now_v7().to_string(),
+                    id,
                     s.session_id,
                     s.tool,
                     s.sample.ts,
                     s.sample.model,
-                    clamp(s.sample.input_tokens),
-                    clamp(s.sample.output_tokens),
-                    clamp(s.sample.cache_read_tokens),
-                    clamp(s.sample.cache_creation_tokens),
+                    input,
+                    output,
+                    cache_read,
+                    cache_creation,
                     created,
                 ],
             )?;
+            inserted += rows;
         }
         // Opportunistic retention prune, in the same transaction. An unresolvable
         // cutoff (clock underflow) yields "" and deletes nothing — never a panic.
@@ -424,7 +564,7 @@ impl Engine {
             params![cutoff],
         )?;
         tx.commit()?;
-        Ok(samples.len())
+        Ok(inserted)
     }
 
     /// Buffered OTLP samples for one session, oldest first, with the tool that
@@ -948,6 +1088,7 @@ fn classify_task(
                 cache_read_tokens: clamp(rc.totals.cache_read),
                 cache_creation_tokens: clamp(rc.totals.cache_creation),
                 confidence: rc.confidence.to_string(),
+                extra: None,
             });
             RecomputeAction::Recomputed {
                 usage,

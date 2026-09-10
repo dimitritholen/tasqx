@@ -150,6 +150,7 @@ impl SelfReport {
             cache_read_tokens: self.cache_read_tokens.unwrap_or(0),
             cache_creation_tokens: self.cache_creation_tokens.unwrap_or(0),
             confidence: crate::tokens::CONFIDENCE_MEDIUM.to_string(),
+            extra: None,
         }))
     }
 }

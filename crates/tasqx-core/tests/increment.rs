@@ -594,12 +594,15 @@ fn overdue_count_matches_the_due_before_now_filter() {
 
 /// Attach one token measurement to a task via `token.add`. Source/confidence
 /// come from the closed vocabularies; the four bucket counts are the payload.
+/// `confidence: medium` — not `high` — because a self-report cannot claim
+/// `high` (#216, D50): confidence describes verifiability, and an unverified
+/// claim does not become more checkable by being preferred.
 fn add_tokens(e: &Engine, r: &str, input: i64, output: i64, cache_read: i64, cache_creation: i64) {
     e.token_add(&json!({
         "ref": r,
         "tool": "claude-code",
         "source": "self-report",
-        "confidence": "high",
+        "confidence": "medium",
         "input_tokens": input,
         "output_tokens": output,
         "cache_read_tokens": cache_read,

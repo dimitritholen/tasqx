@@ -124,6 +124,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "cache_read_tokens",
             "cache_creation_tokens",
             "confidence",
+            "idempotency_key",
         ],
         false,
     ),

@@ -601,12 +601,32 @@ impl Engine {
         // only what is missing is what made the old refusal feel arbitrary —
         // a caller who supplied everything it could observe was told, twice,
         // about the one thing it could not.
+        //
+        // #211: the hint is a claim about the TASK's measurement state, not
+        // about whether THIS call carried params — `usage.is_none()` alone
+        // cannot tell "nobody has self-reported yet" from "a self-report
+        // already covers this task via an earlier `token.add`, and this
+        // particular completion just did not repeat it". The engine already
+        // knows the difference (`attribution::compute_attribution` reads the
+        // same `token_usage` rows to skip log-parse for exactly this task),
+        // so the hint reads it too rather than contradicting a fact the
+        // engine has in hand.
         if usage.is_none() {
+            let already_self_reported: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM token_usage WHERE task_id = ?1 AND source = ?2)",
+                params![task.id, crate::tokens::SOURCE_SELF_REPORT],
+                |r| r.get(0),
+            )?;
             let recorded: Vec<&str> = [("tool", &named_tool), ("model", &named_model)]
                 .into_iter()
                 .filter_map(|(k, v)| v.as_ref().map(|_| k))
                 .collect();
-            out["tokens_hint"] = json!(if recorded.is_empty() {
+            out["tokens_hint"] = json!(if already_self_reported {
+                "a self-report already covers this task; log-parse attribution is \
+                 skipped for it, and a second report on the same measurement would \
+                 double-count it — nothing further is needed here"
+                    .to_string()
+            } else if recorded.is_empty() {
                 "no token counts were self-reported; log-parse attribution is \
                  a best-effort fallback — pass input_tokens/output_tokens/\
                  cache_read_tokens/cache_creation_tokens on completion for a \
