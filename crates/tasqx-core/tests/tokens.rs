@@ -464,7 +464,6 @@ fn start_and_done_events_carry_the_correlation_params() {
     e.task_start(&json!({
         "ref": sid,
         "session_id": "sess-1",
-        "prompt_id": "prompt-9",
         "transcript_path": "/home/me/.claude/projects/x/sess-1.jsonl",
         "client": "claude-code 2.1.0",
     }))
@@ -472,7 +471,6 @@ fn start_and_done_events_carry_the_correlation_params() {
     let start = event_payload(&e, "start");
     assert!(start["interval_started"].is_string());
     assert_eq!(start["session_id"], "sess-1");
-    assert_eq!(start["prompt_id"], "prompt-9");
     assert_eq!(
         start["transcript_path"],
         "/home/me/.claude/projects/x/sess-1.jsonl"
@@ -485,9 +483,8 @@ fn start_and_done_events_carry_the_correlation_params() {
     assert!(done["completed"].is_string());
     assert_eq!(done["session_id"], "sess-1");
     assert_eq!(done["client"], "claude-code 2.1.0");
-    // Keys not supplied stay ABSENT, not null — a human's `tasqx done 4`
-    // must not grow four null fields on every event.
-    assert!(done.get("prompt_id").is_none());
+    // A key not supplied stays ABSENT, not null — a human's `tasqx done 4`
+    // must not grow null fields on every event.
     assert!(done.get("transcript_path").is_none());
 }
 
@@ -1878,6 +1875,101 @@ fn recompute_collapses_reopen_duplicates_to_one_row() {
         "both duplicate rows summed"
     );
     assert_eq!(entry["after"], b4(1000, 2000), "one survivor");
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source='log-parse'"
+        ),
+        1
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The general shape of #81, where the two duplicate rows do NOT happen to
+/// hold the identical total: the first claim covers only its own cycle's
+/// sample, the second (post-reopen) claim's window widens back to the task's
+/// first-ever start (`WindowScan`/`pending_attributions` window a task by its
+/// earliest `start` and latest `done`, not per re-open cycle) and re-sums
+/// BOTH samples, double-banking the first. Unlike
+/// `recompute_collapses_reopen_duplicates_to_one_row`, no stored row equals
+/// the recomputed total here, which is exactly the shape the old per-row
+/// equality filter mishandled: with nothing CONTESTED and no row matching,
+/// it fell to the keep-and-downgrade arm and left the double-count standing
+/// (confidence merely downgraded to `low`) instead of collapsing it.
+#[test]
+fn recompute_collapses_reopen_duplicates_even_when_no_row_matches_the_total() {
+    let dir = scratch_dir("dup-widened");
+    let transcript = dir.join("sess-4.jsonl");
+    std::fs::write(
+        &transcript,
+        "{\"timestamp\":\"2026-07-25T09:47:00.000Z\",\"message\":{\"id\":\"a\",\"usage\":{\"input_tokens\":1000,\"output_tokens\":2000}}}\n\
+         {\"timestamp\":\"2026-07-25T09:55:00.000Z\",\"message\":{\"id\":\"b\",\"usage\":{\"input_tokens\":500,\"output_tokens\":800}}}\n",
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    let t_id = task_uuid(&e, &t);
+    pin_created(&e, &t_id, "2026-07-25T09:40:00Z");
+
+    // Cycle 1: done at 09:50, its window [09:40, 09:50] sees only sample "a".
+    e.task_done(&json!({ "ref": t, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    pin_done(&e, &t_id, "2026-07-25T09:50:00Z", &path);
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+    }))
+    .unwrap();
+
+    // Reopen + re-complete: the window's START stays pinned at the task's
+    // ORIGINAL creation (#81 — a reopen restarts measurement at the first
+    // interval, not the reopen instant), so cycle 2's window is
+    // [09:40, 10:00] and sees BOTH samples — re-banking "a" a second time
+    // alongside the genuinely-new "b".
+    e.task_reopen(&json!({ "ref": t })).unwrap();
+    e.task_done(&json!({ "ref": t, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    e.conn()
+        .execute(
+            "UPDATE events SET payload = ?1 WHERE entity_id = ?2 AND op = 'done' \
+             AND rowid = (SELECT MAX(rowid) FROM events WHERE entity_id = ?2 AND op = 'done')",
+            (done_payload("2026-07-25T10:00:00Z", &path), t_id.as_str()),
+        )
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 2, "input_tokens": 1500, "output_tokens": 2800,
+    }))
+    .unwrap();
+
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM token_usage WHERE source='log-parse'"
+        ),
+        2,
+        "the seeded duplicate must exist for this test to prove anything"
+    );
+
+    let r = dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+    let entry = &r["tasks"][0];
+    assert_eq!(
+        entry["before"],
+        b4(2500, 4800),
+        "both rows summed: sample a counted in cycle 1 AND again in cycle 2's widened window"
+    );
+    assert_eq!(
+        entry["action"], "recomputed",
+        "the duplicate must collapse, not merely downgrade in place: {r}"
+    );
+    assert_eq!(
+        entry["after"],
+        b4(1500, 2800),
+        "each sample counted exactly once across both claim events"
+    );
     assert_eq!(
         count(
             &e,

@@ -466,7 +466,6 @@ pub(crate) fn apply_correlation(params: &mut Value, c: &command::CorrelationArgs
     for (key, value) in [
         ("client", &c.client),
         ("session_id", &c.session_id),
-        ("prompt_id", &c.prompt_id),
         ("transcript_path", &c.transcript_path),
     ] {
         if let Some(v) = value {

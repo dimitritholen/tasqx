@@ -174,8 +174,11 @@ const METHODS: [(&str, &str, &str); 34] = [
     (
         "task.start",
         "<code>ref</code>, <code>keep?</code>, <code>session_id?</code>, \
-         <code>prompt_id?</code>, <code>transcript_path?</code>, <code>client?</code>",
-        "The task, timer running. Correlation params land in the start event.",
+         <code>transcript_path?</code>, <code>client?</code>",
+        "The task, timer running. Correlation params land in the start event. \
+         <code>auto_stopped</code> lists whichever other task D6's single-active \
+         rule just stopped to make room for this one — empty unless <code>keep</code> \
+         was omitted and something else was running.",
     ),
     (
         "task.stop",
@@ -186,7 +189,7 @@ const METHODS: [(&str, &str, &str); 34] = [
     ),
     (
         "task.done",
-        "<code>ref</code>, <code>session_id?</code>, <code>prompt_id?</code>, \
+        "<code>ref</code>, <code>session_id?</code>, \
          <code>transcript_path?</code>, <code>client?</code>, <code>tool?</code>, \
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
          <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>",
