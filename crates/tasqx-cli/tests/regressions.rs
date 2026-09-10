@@ -972,6 +972,47 @@ fn a_leading_hyphen_tag_exclusion_reaches_the_filter_parser() {
     );
 }
 
+/// #130 — a mistyped FLAG on a filter-taking command fell straight to the
+/// filter-DSL explanation ("a tag exclusion takes one dash…"), which is
+/// correct grammar but the wrong story: `--output` is not a mistyped filter
+/// token, it is one edit away from the real flag, `--out`. Close enough
+/// (edit distance <= 2) gets named directly; anything not close to a real
+/// flag still falls back to the C3 message pinned above.
+#[test]
+fn an_unrecognized_flag_close_to_a_real_one_is_named() {
+    let dir = fresh_config_dir("flag-typo-hint");
+    let run = |args: &[&str]| {
+        bin("flag-typo-hint", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    let out = run(&["report", "--html", "--output", "/tmp/flag-typo-hint.html"]);
+    assert!(
+        !out.status.success(),
+        "an unrecognized flag must still be refused"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--output") && err.contains("did you mean \"--out\"?"),
+        "close typo must be named directly, not buried in the filter-DSL message: {err}"
+    );
+    assert!(
+        !err.contains("a tag exclusion takes one dash"),
+        "the near-flag hint must preempt the generic filter-DSL fallback: {err}"
+    );
+
+    // A token with nothing close among the subcommand's flags keeps the C3
+    // fallback — the near-flag check must not swallow every unknown flag.
+    let far = run(&["report", "--bogus"]);
+    let far_err = String::from_utf8_lossy(&far.stderr);
+    assert!(
+        far_err.contains("a tag exclusion takes one dash"),
+        "an unrelated flag must still fall back to the filter-DSL explanation: {far_err}"
+    );
+}
+
 /// C3r — the fix for C3 broke the ordinary case: a flag typed AFTER the filter.
 ///
 /// `allow_hyphen_values` on a multi-value positional does not mean "let a
