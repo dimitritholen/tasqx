@@ -159,6 +159,9 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("event.revert", &[], false),
     ("reminder.fire", &["ref", "at"], false),
     ("core.capabilities", &[], false),
+    // #222: read-only visibility into the opt-in OTLP receiver's buffer — no
+    // params, like `event.revert` and `core.capabilities` above.
+    ("otlp.status", &[], false),
 ];
 
 /// Refuse a params object carrying a key the method does not read.
@@ -255,6 +258,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "event.revert" => engine.event_revert(),
         "reminder.fire" => engine.reminder_fire(params),
         "core.capabilities" => engine.capabilities(),
+        "otlp.status" => engine.otlp_status(),
         other => Err(ApiError::bad_request(format!("unknown method: {other}"))),
     }
 }

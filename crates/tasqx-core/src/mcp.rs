@@ -288,6 +288,12 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
         "it takes a batch of documents read off a filesystem, and the filesystem the CLI          reads is not the one an MCP client is on. `memory.add` is the per-document tool          that does reach across the wire.",
     ),
     (
+        "otlp.status",
+        "an operator diagnostic for a machine-local, opt-in receiver (#18) — is telemetry \
+         reaching THIS daemon on THIS machine — not a fact about any task an agent is \
+         working. `tasqx config store` / a CLI verb is where a human checks it (#222).",
+    ),
+    (
         "project.archive",
         "retiring a project is a decision about the human's workspace, not about the work.          An agent asked to tidy the project list is being asked to make that decision on          their behalf, and the CLI is where it belongs.",
     ),
