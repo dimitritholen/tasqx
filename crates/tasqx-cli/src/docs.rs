@@ -156,7 +156,8 @@ const METHODS: [(&str, &str, &str); 34] = [
         "<code>{count, total, next_offset, tasks}</code>. An omitted <code>filter</code> matches \
          everything; <code>count</code> is how many rows came back and <code>total</code> how many \
          matched, so a windowed list is never mistaken for a complete one. \
-         <code>next_offset</code> is null once nothing is left. \
+         <code>next_offset</code> is null once nothing is left. An omitted <code>limit</code> \
+         defaults to 100; a named <code>limit</code> is clamped to 10,000. \
          <code>fields</code> may include <code>depends_on</code>, which no other projection emits.",
     ),
     (

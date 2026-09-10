@@ -328,6 +328,23 @@ impl Filter {
         constrains_status(&self.root)
     }
 
+    /// Every `project:`/`proj:` value this filter names, duplicates included,
+    /// in the order they appear in the tree.
+    ///
+    /// D109's seam: the vocabulary is open at PARSE time (a project name is
+    /// runtime data, not [`Status`]'s closed set — see the module comment's
+    /// split), but the caller of `parse` — `task.list`, `report.summary`,
+    /// `store.export`, the only three call sites (D109) — holds a live
+    /// project table a parsed [`Filter`] does not, and is the seam where an
+    /// unknown or wrong-case name can finally be told apart from a legitimate
+    /// zero-row answer. This is what a caller walks to ask that question,
+    /// rather than restating the tree shape at every call site.
+    pub fn project_names(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        collect_project_names(&self.root, &mut out);
+        out
+    }
+
     /// The VALUE carried by the single predicate this filter is — `None` when it
     /// is not exactly one predicate, or when that predicate carries no value.
     ///
@@ -386,6 +403,16 @@ fn constrains_status(e: &Expr) -> bool {
         // caller has named a status set just as explicitly as `status:pending`.
         Expr::Pred(Pred::Status(_) | Pred::Working) => true,
         Expr::Pred(_) => false,
+    }
+}
+
+/// [`Filter::project_names`]'s walk, over borrowed [`Pred::Project`] strings so
+/// the caller pays no allocation for a filter that names none.
+fn collect_project_names<'a>(e: &'a Expr, out: &mut Vec<&'a str>) {
+    match e {
+        Expr::And(v) | Expr::Or(v) => v.iter().for_each(|c| collect_project_names(c, out)),
+        Expr::Pred(Pred::Project(name)) => out.push(name.as_str()),
+        Expr::Pred(_) => {}
     }
 }
 
@@ -1963,6 +1990,35 @@ mod tests {
         assert_eq!(value("+api or +infra"), None);
         // The empty filter is `Pred::Always`, which carries nothing.
         assert_eq!(value(""), None);
+    }
+
+    /// D109's seam: every `project:`/`proj:` value in the tree, including
+    /// both sides of an `or` and duplicates, is what the three engine call
+    /// sites walk to validate against the live projects table.
+    #[test]
+    fn project_names_collects_every_project_value_in_the_tree() {
+        let names = |s: &str| {
+            Filter::parse(s, anchor())
+                .unwrap_or_else(|e| panic!("{s:?} must parse: {e}"))
+                .project_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("project:work"), vec!["work".to_string()]);
+        assert_eq!(names("proj:work"), vec!["work".to_string()]);
+        assert_eq!(
+            names("project:work or project:home"),
+            vec!["work".to_string(), "home".to_string()]
+        );
+        assert_eq!(
+            names("project:work and project:work"),
+            vec!["work".to_string(), "work".to_string()],
+            "duplicates are not collapsed — the caller decides what to do with them"
+        );
+        // No `project:` predicate at all: nothing to validate.
+        assert_eq!(names("status:done"), Vec::<String>::new());
+        assert_eq!(names(""), Vec::<String>::new());
     }
 
     /// Every vocabulary in the registry must be reachable, or the CLI's

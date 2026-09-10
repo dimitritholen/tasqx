@@ -168,7 +168,14 @@ const ANNOTATION_PAGE: u64 = 20;
 /// no elision and nothing saying anything had been large. This is the shape
 /// D63 fixed for `task.get`; `task.list`'s worst case is bigger and grows with
 /// the store rather than with one task's history.
-const LIST_PAGE: u64 = 100;
+///
+/// Re-exported from [`crate::engine::task::DEFAULT_TASK_LIST_LIMIT`] rather
+/// than kept as a second literal (D110): this transport's own default-insertion
+/// below still exists — it is what drives [`Self::fit_list_to_budget`]'s
+/// byte-shrink, which `task_list` itself has no notion of — but the NUMBER is
+/// now decided once, at the engine, so the CLI and `tasqx api` share it
+/// instead of falling back to "no limit" behind this transport's back.
+const LIST_PAGE: u64 = crate::engine::task::DEFAULT_TASK_LIST_LIMIT;
 
 /// The size a `tasqx_get_task` response is shrunk to fit, counting BOTH content
 /// blocks — the rendered view and the JSON behind it, which D49 ships together.
@@ -433,8 +440,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "How many rows to return. Omit and this tool applies its own page \
                              ({LIST_PAGE}), shrunk further if the response would exceed its byte \
                              budget; the answer always carries `total` and a `next_offset` that \
-                             is null once nothing is left. A limit you name is answered exactly, \
-                             however large."
+                             is null once nothing is left. A limit you name is honoured up to \
+                             {max_limit}, the ceiling the core itself clamps to.",
+                            max_limit = crate::engine::task::MAX_TASK_LIST_LIMIT
                         )
                     },
                     "offset": {
@@ -1216,9 +1224,11 @@ impl<'e> McpServer<'e> {
         // reason one relation over: `task.list` had no default bound at all,
         // and the escape hatch it did have truncated silently — `count` was
         // the number of rows RETURNED, with no total and no offset anywhere in
-        // the answer. The core still answers whole when asked; the page is
-        // supplied HERE, where the payload limit lives, and `total` /
-        // `next_offset` make what was left out both visible and reachable.
+        // the answer. Since D110 the core itself clamps an explicit `limit` to
+        // `MAX_TASK_LIST_LIMIT` rather than answering whole when asked; the
+        // page for an OMITTED limit is still supplied HERE, where the payload
+        // limit lives, and `total` / `next_offset` make what was left out both
+        // visible and reachable.
         let mut paged_list_by_us = false;
         if spec.method == "task.list" {
             if let Some(obj) = args.as_object_mut() {

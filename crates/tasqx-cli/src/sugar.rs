@@ -99,11 +99,16 @@ pub struct ParsedAdd {
 /// this is the one deliberate exception, and it exists because of what a
 /// leftover title word MEANS on each verb. On `add` there is no prior title
 /// to lose, so a `key:value`-shaped word neither verb recognises is harmless
-/// prose (D45). On `modify` that same word REPLACES whatever the task was
-/// already called, `undo` cannot reach a `modify` event's replaced value
-/// (D54 — it records only what was SET), and `status:`/`priority:` are real,
-/// documented FILTER grammar, so the vocabulary itself teaches the mistake.
-/// See [`declined_key_shape`].
+/// prose that still gets stored, exit 0 — D45's fall-through, narrowed by
+/// D108 to add a stderr warning (never a refusal) so the mistake is at least
+/// visible: a blanket refusal here would break real prose this project's own
+/// tasks are written in (`recur::advance_once`, `note:`, `C:\path`, a ratio).
+/// On `modify` that same word REPLACES whatever the task was already called,
+/// `undo` cannot reach a `modify` event's replaced value (D54 — it records
+/// only what was SET), and `status:`/`priority:` are real, documented FILTER
+/// grammar, so the vocabulary itself teaches the mistake — sharp enough there
+/// to earn an outright refusal (D83) rather than a warning. See
+/// [`declined_key_shape`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ParseContext {
     Add,
@@ -332,6 +337,15 @@ pub fn parse_add(
                 if let Some(ident) = declined_key_shape(&tok) {
                     return Err(unrecognised_modify_field(&tok, ident));
                 }
+            } else if let Some(ident) = declined_key_shape(&tok) {
+                // #139/D108: `add` keeps D45's fall-through — the same word is
+                // harmless prose here (there is no prior title a typo could
+                // destroy, unlike `modify`) — but silence cost nothing to fix:
+                // a stderr warning names what looked like sugar without
+                // refusing the command or changing its exit code, so
+                // `recur::advance_once`, `note:`, a Windows path or a ratio
+                // typed as a title word still store exactly as typed.
+                eprintln!("{}", declined_key_warning(&tok, ident));
             }
             title_words.push(tok);
         }
@@ -759,6 +773,18 @@ fn unrecognised_modify_field(word: &str, ident: &str) -> ApiError {
          title, add another word so it cannot be misread as a key.",
         known.join(", ")
     ))
+}
+
+/// #139/D108: `add`'s non-fatal twin of [`unrecognised_modify_field`] — a
+/// stderr note, not a refusal, printed once per declined word and never
+/// altering `title_words` or the exit code. A plain function (rather than
+/// inlining the `format!` at the one `eprintln!` call site) so the message
+/// itself is asserted in tests without capturing stderr.
+fn declined_key_warning(word: &str, ident: &str) -> String {
+    format!(
+        "warning: {word:?} looks like sugar but {ident:?} isn't a recognized field — kept as \
+         title text"
+    )
 }
 
 /// Names the value and every spelling that would have worked, because `!` has no
@@ -1218,8 +1244,9 @@ mod tests {
     /// no way back (`undo` refuses `modify`: D54 records only what was SET).
     /// `status:`/`priority:` are exactly this sharp because they are real,
     /// documented FILTER grammar, so the vocabulary itself teaches the
-    /// mistake. `add` keeps D45's fall-through unchanged — there is no prior
-    /// title to lose there.
+    /// mistake. `add` keeps D45's fall-through — still stored, still exit 0
+    /// — and only gains a stderr warning (D108, see
+    /// [`add_warns_on_stderr_for_a_declined_key_but_still_stores_and_exits_0`]).
     #[test]
     fn modify_refuses_an_unrecognised_key_value_word_instead_of_destroying_the_title() {
         for tok in ["status:done", "priority:high", "prio:H", "p:H", "urgency:5"] {
@@ -1229,7 +1256,9 @@ mod tests {
             assert!(e.message.contains(tok), "{tok}: {}", e.message);
         }
 
-        // `add` is unaffected: the same word is harmless prose there.
+        // `add` is unaffected on TITLE and EXIT CODE: the same word is still
+        // harmless prose there (D108 adds a warning, not a behaviour change —
+        // see the dedicated test).
         let p = parse_argv(&["status:done"], AddFlags::default());
         assert_eq!(p.title, "status:done");
 
@@ -1248,6 +1277,38 @@ mod tests {
         let s = parse_modify_argv(&["note:", "check", "this"], AddFlags::default())
             .expect("a valueless key plus words is still just a sentence");
         assert_eq!(s.title, "note: check this");
+    }
+
+    /// #139/D108: `add "deadline:friday"` used to fold silently into the
+    /// title, exit 0, with nothing telling the caller that `deadline` is not
+    /// a recognized sugar key — the same class of silence D34 closed for
+    /// `status:pendign` and D109 closes for `project:`, on the write side.
+    /// Dimitri's call: `add` keeps D45's behaviour (still stored, still exit
+    /// 0 — a blanket refusal would break `recur::advance_once`, `note:`,
+    /// `C:\path`, ratios) and gains only a stderr warning. This asserts the
+    /// warning function directly rather than capturing stderr — the same
+    /// pattern `settings.rs`'s `unknown_theme_warning` uses for its own
+    /// `eprintln!`-fed message.
+    #[test]
+    fn add_warns_on_stderr_for_a_declined_key_but_still_stores_and_exits_0() {
+        assert_eq!(
+            declined_key_warning("deadline:friday", "deadline"),
+            "warning: \"deadline:friday\" looks like sugar but \"deadline\" isn't a recognized \
+             field — kept as title text"
+        );
+
+        // The behaviour itself is untouched: `parse_add` on `Add` still never
+        // errors for this shape, and the word still lands in the title.
+        let p = parse_argv(&["deadline:friday"], AddFlags::default());
+        assert_eq!(p.title, "deadline:friday");
+
+        // Real prose a blanket refusal would have broken stays unwarned,
+        // because `declined_key_shape` already excludes it (double colon, an
+        // uppercase drive letter, a valueless key, a digit-led "identifier").
+        for tok in ["recur::advance_once", "note:", r"C:\path", "3:2"] {
+            let p = parse1(tok, AddFlags::default());
+            assert_eq!(p.title, tok, "{tok} must round-trip verbatim");
+        }
     }
 
     // ---- tag_arguments (the `tag`/`untag` verbs) ----------------------------

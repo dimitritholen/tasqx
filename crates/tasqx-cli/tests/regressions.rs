@@ -1576,6 +1576,11 @@ fn report_html_honours_its_filter_in_both_argument_orders() {
     // harmless duplicate.
     ok(&["init", "Alpha"]);
     ok(&["init", "Beta"]);
+    // A third, LIVE project with no tasks in it — D109 made `project:` in a
+    // filter refuse a name the projects table has never heard of, so
+    // "matches nothing" has to be demonstrated with a real, empty project
+    // rather than a typo from here on.
+    ok(&["init", "Gamma"]);
     ok(&["add", "alpha work", "project:Alpha"]);
     ok(&["add", "beta work", "project:Beta"]);
 
@@ -1595,12 +1600,12 @@ fn report_html_honours_its_filter_in_both_argument_orders() {
         "the unfiltered page must still show everything"
     );
 
-    // The empty filter is the sharpest case: a project that does not exist can
-    // only produce an empty page, so any Beta/Alpha content proves the filter
-    // was dropped rather than merely mis-scoped.
+    // The empty filter is the sharpest case: a live project with no tasks in
+    // it can only produce an empty page, so any Beta/Alpha content proves the
+    // filter was dropped rather than merely mis-scoped.
     for (name, args) in [
-        ("none-a.html", vec!["project:Nonexistent", "--html"]),
-        ("none-b.html", vec!["--html", "project:Nonexistent"]),
+        ("none-a.html", vec!["project:Gamma", "--html"]),
+        ("none-b.html", vec!["--html", "project:Gamma"]),
     ] {
         let page = html(name, &args);
         // Compared as a bool, not `assert_ne!`: both sides are whole HTML
@@ -4060,5 +4065,161 @@ fn the_api_carries_the_request_id_through_a_store_open_failure() {
     assert_eq!(
         v["id"], "abc",
         "the response must echo the request id even when the store never opened: {v}"
+    );
+}
+
+/// #139/D108: `add test task deadline:friday` used to fold `deadline:friday`
+/// into the title silently, exit 0, with nothing telling the caller `deadline`
+/// is not a recognized sugar key — reproduced against the real binary before
+/// this landed. `add` still exits 0 and still stores the word verbatim (a
+/// blanket refusal would break `recur::advance_once`/`note:`/`C:\path`/ratios
+/// typed as prose); the only change is a stderr warning naming what looked
+/// like sugar.
+///
+/// Unquoted, separate argv words — `test`, `task`, `deadline:friday` — on
+/// purpose: `declined_key_shape` only scrutinises a single suspicious WORD
+/// with no internal whitespace of its own (#156's rule, shared by D108), so a
+/// user's `tasqx add "test task deadline:friday"` (one shell-quoted title)
+/// stays exactly as unscrutinised as it already was — a multi-word sentence
+/// containing a colon is unambiguously prose either way.
+#[test]
+fn add_warns_on_stderr_for_an_unrecognized_sugar_looking_key_but_still_succeeds() {
+    let dir = fresh_config_dir("add-declined-key-warns");
+    let out = bin("add-declined-key-warns", &dir)
+        .args(["add", "test", "task", "deadline:friday"])
+        .output()
+        .expect("run add");
+    assert!(
+        out.status.success(),
+        "add must still exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("deadline:friday"),
+        "the word must still be stored in the title, exactly as before D108"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("deadline") && err.contains("looks like sugar"),
+        "stderr must warn about the declined key: {err}"
+    );
+
+    // Real prose a blanket refusal would have broken stays silent on stderr,
+    // in the same unquoted, separate-argv-word shape.
+    let quiet = bin("add-declined-key-warns", &dir)
+        .args(["add", "fix", "recur::advance_once"])
+        .output()
+        .expect("run add");
+    assert!(quiet.status.success());
+    assert!(
+        String::from_utf8_lossy(&quiet.stderr).is_empty(),
+        "a Rust path must not trigger the sugar warning: {}",
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+}
+
+/// #153/D109: `tasqx list project:FIN-9695` (wrong case) or
+/// `project:nope-does-not-exist` used to print `No tasks.` at exit 0 — both
+/// reproduced against the real binary before this landed, the same silence
+/// `status:pendign` answered before D34. `project:` in a filter is now
+/// validated against the live projects table, case-sensitive exact match
+/// only, exit 4 naming the typo — mirroring D23's write-side guarantee.
+#[test]
+fn list_refuses_an_unknown_or_wrong_case_project_filter() {
+    let dir = fresh_config_dir("list-project-filter-typo");
+    let run = |args: &[&str]| {
+        bin("list-project-filter-typo", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    assert!(run(&["init", "FIN-9695"]).status.success());
+    assert!(run(&["add", "a task", "project:FIN-9695"]).status.success());
+
+    // Wrong case.
+    let wrong_case = run(&["list", "project:fin-9695"]);
+    assert_eq!(
+        wrong_case.status.code(),
+        Some(4),
+        "wrong case must be not_found"
+    );
+    assert!(
+        String::from_utf8_lossy(&wrong_case.stderr).contains("fin-9695"),
+        "{}",
+        String::from_utf8_lossy(&wrong_case.stderr)
+    );
+
+    // Genuinely unknown.
+    let unknown = run(&["list", "project:nope-does-not-exist"]);
+    assert_eq!(
+        unknown.status.code(),
+        Some(4),
+        "unknown name must be not_found"
+    );
+
+    // The exact, correctly-cased name still works, unaffected.
+    let good = run(&["list", "project:FIN-9695"]);
+    assert!(good.status.success());
+    assert!(String::from_utf8_lossy(&good.stdout).contains("a task"));
+
+    // `status:` still errors on a genuine typo too — the two vocabularies now
+    // agree, which is the whole point.
+    let bad_status = run(&["list", "status:nonsense"]);
+    assert_eq!(
+        bad_status.status.code(),
+        Some(2),
+        "status: is bad_request, not not_found"
+    );
+}
+
+/// D110: `task.list` with no `limit` at all no longer answers the entire
+/// store, through `tasqx api` — a transport that (unlike MCP's own stdio
+/// server) applied no default of its own, and is exactly the surface D110
+/// closes: measured at 10,000 tasks, 4.55 MB and ~1.1M tokens for one
+/// response, with nothing saying anything had been left out.
+///
+/// The store is seeded directly through `tasqx_core::Engine` rather than
+/// through ~120 `tasqx add` subprocesses — fast, and it is `task.list` over
+/// the real `api` one-shot process being asserted on, not `task.add`.
+#[test]
+fn api_task_list_with_no_limit_gets_the_engine_default_page() {
+    use std::io::Write;
+
+    let dir = fresh_config_dir("api-task-list-default-page");
+    let db = db_path("api-task-list-default-page");
+    let want = tasqx_core::engine::task::DEFAULT_TASK_LIST_LIMIT + 15;
+    {
+        let e = tasqx_core::Engine::open(db.to_str().expect("utf8 path")).expect("open store");
+        for i in 0..want {
+            e.task_add(&serde_json::json!({ "title": format!("task {i}") }))
+                .expect("seed task");
+        }
+    }
+
+    let mut child = bin("api-task-list-default-page", &dir)
+        .arg("api")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tasqx api");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(br#"{"tasqx":"1","id":"1","method":"task.list","params":{}}"#)
+        .expect("write envelope");
+    let out = child.wait_with_output().expect("wait");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON response");
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(
+        v["result"]["count"],
+        tasqx_core::engine::task::DEFAULT_TASK_LIST_LIMIT,
+        "an absent `limit` over `tasqx api` must page at the engine default: {v}"
+    );
+    assert_eq!(v["result"]["total"], want, "{v}");
+    assert_eq!(
+        v["result"]["next_offset"],
+        tasqx_core::engine::task::DEFAULT_TASK_LIST_LIMIT,
+        "{v}"
     );
 }
