@@ -70,7 +70,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::engine::Engine;
 use crate::tokens::UsageSample;
@@ -103,8 +103,9 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 /// shutdown-responsiveness discipline.
 const ACCEPT_STEP: Duration = Duration::from_millis(50);
 
-/// The OTLP/HTTP success body. An empty `partialSuccess` means "accepted, nothing
-/// rejected" — the response every OTLP exporter expects on a 200.
+/// The OTLP/HTTP success body when nothing was dropped. An empty
+/// `partialSuccess` means "accepted, nothing rejected" — the response every
+/// OTLP exporter expects on a 200.
 const PARTIAL_SUCCESS: &str = r#"{"partialSuccess":{}}"#;
 
 /// One raw per-request sample lifted from an OTLP export, before any task
@@ -242,41 +243,66 @@ fn handle_connection(stream: TcpStream, engine: &Arc<Mutex<Engine>>) {
         let mut reader = io::BufReader::new(DeadlineReader::new(&stream, REQUEST_DEADLINE));
         match read_http_request(&mut reader, MAX_BODY_BYTES) {
             Ok(req) => dispatch(&req, engine),
-            Err(HttpError::MethodNotAllowed) => (405, "method not allowed"),
-            Err(HttpError::PayloadTooLarge) => (413, "payload too large"),
-            Err(HttpError::BadRequest) => (400, "bad request"),
+            Err(HttpError::MethodNotAllowed) => (405, "method not allowed".to_string()),
+            Err(HttpError::PayloadTooLarge) => (413, "payload too large".to_string()),
+            Err(HttpError::BadRequest) => (400, "bad request".to_string()),
             // The peer closed or timed out mid-request: nothing to answer.
             Err(HttpError::Io) => return,
         }
     };
-    write_response(&stream, status, body);
+    write_response(&stream, status, &body);
 }
 
 /// Route one parsed request. Only POST reaches here (non-POST is rejected in
 /// [`read_http_request`]). `/v1/logs` and `/v1/metrics` are accepted; only logs
 /// are parsed (see module docs). Any other path is `404`.
-fn dispatch(req: &HttpRequest, engine: &Arc<Mutex<Engine>>) -> (u16, &'static str) {
+fn dispatch(req: &HttpRequest, engine: &Arc<Mutex<Engine>>) -> (u16, String) {
     // Strip a query string; OTLP exporters do not use one, but be lenient.
     let path = req.path.split(['?', '#']).next().unwrap_or(&req.path);
     if path != "/v1/logs" && path != "/v1/metrics" {
-        return (404, "not found");
+        return (404, "not found".to_string());
     }
     // A body that is not valid JSON is a genuine client error: 400. A body that
     // is valid JSON but an unknown shape yields zero samples and still succeeds
     // (version tolerance) — an old/new tool schema must not read as a failure.
     let Ok(root) = serde_json::from_slice::<Value>(&req.body) else {
-        return (400, "invalid json");
+        return (400, "invalid json".to_string());
     };
-    let samples = samples_from_otlp_logs(&root);
-    if !samples.is_empty() {
+    let outcome = samples_from_otlp_logs(&root);
+    if !outcome.samples.is_empty() {
         let guard = engine.lock().unwrap_or_else(|p| p.into_inner());
-        if let Err(e) = guard.otlp_ingest(&samples) {
+        if let Err(e) = guard.otlp_ingest(&outcome.samples) {
             // A store fault here must not fail the export (the exporter would
             // retry the same batch forever); log and still answer 200.
             eprintln!("tasqx daemon: OTLP ingest failed: {}", e.message);
         }
     }
-    (200, PARTIAL_SUCCESS)
+    // #222: a record recognized as coming from a known tool but missing a
+    // usable timestamp or any token counts used to vanish behind an unqualified
+    // `{"partialSuccess":{}}` — the same body a fully healthy export gets. Per
+    // the OTLP/HTTP partial-success contract, a dropped record is named in
+    // `rejectedLogRecords` (plus a human-readable `errorMessage`), which is
+    // what an exporter's own diagnostics read; an unrecognized tool namespace
+    // is version tolerance (module docs) and is deliberately NOT counted here.
+    if outcome.rejected == 0 {
+        (200, PARTIAL_SUCCESS.to_string())
+    } else {
+        (
+            200,
+            json!({
+                "partialSuccess": {
+                    "rejectedLogRecords": outcome.rejected,
+                    "errorMessage": format!(
+                        "tasqx: {} of {} log record(s) recognized but missing a usable \
+                         timestamp or token-count attributes; dropped",
+                        outcome.rejected,
+                        outcome.rejected + outcome.samples.len(),
+                    ),
+                }
+            })
+            .to_string(),
+        )
+    }
 }
 
 /// Write a minimal HTTP/1.1 response and close. Best-effort: a write error means
@@ -473,20 +499,37 @@ fn tool_of(event: &str) -> Option<&'static str> {
     }
 }
 
+/// The result of walking one OTLP export: the samples worth buffering, plus
+/// how many records were recognized as coming from a known tool but could not
+/// be turned into a sample (#222) — the count `dispatch` reports back to the
+/// exporter as `rejectedLogRecords`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LogsOutcome {
+    /// Every record turned into a bufferable [`OtlpSample`].
+    pub samples: Vec<OtlpSample>,
+    /// Records recognized as coming from a known tool but dropped anyway —
+    /// no usable timestamp, or no token counts at all.
+    pub rejected: usize,
+}
+
 /// Extract every recognizable per-request sample from an OTLP/HTTP `LogsData`
 /// JSON document. Walks `resourceLogs[].scopeLogs[].logRecords[]`, tolerating
-/// missing levels. Unknown tools, records with no usable timestamp, and
-/// zero-token records are skipped; nothing here can panic on hostile input.
-pub fn samples_from_otlp_logs(root: &Value) -> Vec<OtlpSample> {
-    let mut out = Vec::new();
+/// missing levels. An unrecognized tool namespace is version tolerance
+/// (module docs) and never counts as rejected; a record from a KNOWN tool with
+/// no usable timestamp or no token counts at all is a real, reportable drop.
+/// Nothing here can panic on hostile input.
+pub fn samples_from_otlp_logs(root: &Value) -> LogsOutcome {
+    let mut out = LogsOutcome::default();
     let resource_logs = root.get("resourceLogs").and_then(Value::as_array);
     for rl in resource_logs.into_iter().flatten() {
         let scope_logs = rl.get("scopeLogs").and_then(Value::as_array);
         for sl in scope_logs.into_iter().flatten() {
             let records = sl.get("logRecords").and_then(Value::as_array);
             for record in records.into_iter().flatten() {
-                if let Some(sample) = sample_from_record(record) {
-                    out.push(sample);
+                match sample_from_record(record) {
+                    RecordOutcome::Sample(sample) => out.samples.push(sample),
+                    RecordOutcome::UnrecognizedTool => {}
+                    RecordOutcome::Rejected => out.rejected += 1,
                 }
             }
         }
@@ -494,27 +537,51 @@ pub fn samples_from_otlp_logs(root: &Value) -> Vec<OtlpSample> {
     out
 }
 
-/// Map one OTLP log record onto an [`OtlpSample`], or `None` when it is not a
-/// recognizable, non-empty token event.
-fn sample_from_record(record: &Value) -> Option<OtlpSample> {
+/// Why [`sample_from_record`] did not yield a buffered sample. The distinction
+/// that matters is whether the *tool* was recognized: an unrecognized
+/// namespace is a future/foreign schema tasqx has never been taught (version
+/// tolerance — must not read as a failure), while a recognized tool that
+/// still can't be turned into a sample (no timestamp, no token counts at all)
+/// is a genuine drop the exporter's own diagnostics should hear about.
+enum RecordOutcome {
+    Sample(OtlpSample),
+    UnrecognizedTool,
+    Rejected,
+}
+
+/// Map one OTLP log record onto a [`RecordOutcome`].
+fn sample_from_record(record: &Value) -> RecordOutcome {
     let attrs = record.get("attributes").and_then(Value::as_array);
 
     // The event name lives in the record body for Claude Code / Codex, and in an
     // `event.name` attribute for Gemini CLI — accept either.
-    let event = record
+    let Some(event) = record
         .get("body")
         .and_then(|b| b.get("stringValue"))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| attr_str(attrs, "event.name"))?;
-    let tool = tool_of(&event)?;
+        .or_else(|| attr_str(attrs, "event.name"))
+    else {
+        // No event name at all: there is no namespace to recognize, so this is
+        // an unrecognizable shape rather than a known tool's malformed record.
+        return RecordOutcome::UnrecognizedTool;
+    };
+    let Some(tool) = tool_of(&event) else {
+        return RecordOutcome::UnrecognizedTool;
+    };
+
+    // From here the tool is known, so anything that stops this record from
+    // becoming a sample is a reportable rejection, not silent tolerance.
 
     // Timestamp: nanoseconds since the epoch, as a JSON string or number. Fall
     // back to the observed time. A record with no usable time is unbucketable.
-    let ts_nanos = read_unix_nanos(record, "timeUnixNano")
-        .or_else(|| read_unix_nanos(record, "observedTimeUnixNano"))?;
-    let ts = nanos_to_rfc3339(ts_nanos)?;
+    let Some(ts) = read_unix_nanos(record, "timeUnixNano")
+        .or_else(|| read_unix_nanos(record, "observedTimeUnixNano"))
+        .and_then(nanos_to_rfc3339)
+    else {
+        return RecordOutcome::Rejected;
+    };
 
     let (input, output, cache_read, cache_creation) = match tool {
         "codex" => {
@@ -554,15 +621,17 @@ fn sample_from_record(record: &Value) -> Option<OtlpSample> {
         }
     };
 
-    // A record with no tokens at all is noise; do not buffer it.
+    // A record with no tokens at all is a known tool's export that carried no
+    // usage attributes (#222's exact repro) — a genuine drop, not noise from
+    // an unrecognized shape, so it is rejected rather than silently skipped.
     if input == 0 && output == 0 && cache_read == 0 && cache_creation == 0 {
-        return None;
+        return RecordOutcome::Rejected;
     }
 
     let session_id = SESSION_KEYS.iter().find_map(|k| attr_str(attrs, k));
     let model = MODEL_KEYS.iter().find_map(|k| attr_str(attrs, k));
 
-    Some(OtlpSample {
+    RecordOutcome::Sample(OtlpSample {
         tool: tool.to_string(),
         session_id,
         sample: UsageSample {
@@ -766,7 +835,7 @@ mod tests {
                 ("session.id", r#"{"stringValue":"sess-1"}"#),
             ],
         );
-        let s = samples_from_otlp_logs(&doc);
+        let s = samples_from_otlp_logs(&doc).samples;
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].tool, "claude-code");
         assert_eq!(s[0].session_id.as_deref(), Some("sess-1"));
@@ -793,7 +862,7 @@ mod tests {
                 ]
             }]}]}]
         });
-        let s = samples_from_otlp_logs(&doc);
+        let s = samples_from_otlp_logs(&doc).samples;
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].tool, "gemini-cli");
         assert_eq!(s[0].sample.input_tokens, 200);
@@ -816,7 +885,7 @@ mod tests {
                 ("conversation.id", r#"{"stringValue":"conv-9"}"#),
             ],
         );
-        let s = samples_from_otlp_logs(&doc);
+        let s = samples_from_otlp_logs(&doc).samples;
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].tool, "codex");
         assert_eq!(s[0].session_id.as_deref(), Some("conv-9"));
@@ -839,7 +908,7 @@ mod tests {
                 ("output_tokens", r#"{"intValue":"456"}"#),
             ],
         );
-        let s = samples_from_otlp_logs(&doc);
+        let s = samples_from_otlp_logs(&doc).samples;
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].sample.input_tokens, 123);
         assert_eq!(s[0].sample.output_tokens, 456);
@@ -852,7 +921,20 @@ mod tests {
             "1774339200000000000",
             &[("input_tokens", r#"{"intValue":"10"}"#)],
         );
-        assert!(samples_from_otlp_logs(&doc).is_empty());
+        assert!(samples_from_otlp_logs(&doc).samples.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_tool_namespace_is_not_counted_as_rejected() {
+        // Version tolerance (module docs): an unrecognized namespace is a
+        // future/foreign tool schema, not a malformed record from a known one —
+        // it must not inflate `rejectedLogRecords` on a healthy export.
+        let doc = logs_doc(
+            "some_other_agent.api_request",
+            "1774339200000000000",
+            &[("input_tokens", r#"{"intValue":"10"}"#)],
+        );
+        assert_eq!(rejected_count(&doc), 0);
     }
 
     #[test]
@@ -862,7 +944,7 @@ mod tests {
             "1774339200000000000",
             &[("input_tokens", r#"{"intValue":"0"}"#)],
         );
-        assert!(samples_from_otlp_logs(&doc).is_empty());
+        assert!(samples_from_otlp_logs(&doc).samples.is_empty());
     }
 
     #[test]
@@ -872,14 +954,61 @@ mod tests {
             "not-a-number",
             &[("input_tokens", r#"{"intValue":"10"}"#)],
         );
-        assert!(samples_from_otlp_logs(&doc).is_empty());
+        assert!(samples_from_otlp_logs(&doc).samples.is_empty());
     }
 
     #[test]
     fn a_totally_unknown_shape_yields_no_samples_rather_than_panicking() {
         // Version tolerance: a document with none of the expected levels.
         let doc = serde_json::json!({ "somethingElse": 42, "resourceLogs": "not-an-array" });
-        assert!(samples_from_otlp_logs(&doc).is_empty());
+        assert!(samples_from_otlp_logs(&doc).samples.is_empty());
+    }
+
+    // ---- #222: a known tool's dropped record must be visible, not silent ----
+
+    /// Count how many records `dispatch` would report as `rejectedLogRecords`
+    /// for one document, without going through a real socket.
+    fn rejected_count(doc: &Value) -> usize {
+        let engine = Arc::new(Mutex::new(Engine::open_in_memory().unwrap()));
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            path: "/v1/logs".to_string(),
+            body: serde_json::to_vec(doc).unwrap(),
+        };
+        let (status, body) = dispatch(&req, &engine);
+        assert_eq!(status, 200, "a dropped record is still a 200, per OTLP");
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON response");
+        parsed["partialSuccess"]["rejectedLogRecords"]
+            .as_u64()
+            .unwrap_or(0) as usize
+    }
+
+    #[test]
+    fn a_recognized_tool_record_with_no_usage_attributes_is_reported_rejected() {
+        // #222's exact repro: a `claude_code.api_request` record that carries
+        // no token-count attributes at all. Before the fix this silently
+        // vanished behind an empty `{"partialSuccess":{}}` — indistinguishable
+        // from every record actually being accepted.
+        let doc = logs_doc(
+            "claude_code.api_request",
+            "1784887200000000000",
+            &[("model", r#"{"stringValue":"x"}"#)],
+        );
+        assert_eq!(
+            rejected_count(&doc),
+            1,
+            "a known tool's record with no usable token counts must be counted rejected"
+        );
+    }
+
+    #[test]
+    fn a_healthy_export_reports_zero_rejected() {
+        let doc = logs_doc(
+            "claude_code.api_request",
+            "1784887200000000000",
+            &[("input_tokens", r#"{"intValue":"10"}"#)],
+        );
+        assert_eq!(rejected_count(&doc), 0);
     }
 
     // ---- end-to-end over a real socket ----
