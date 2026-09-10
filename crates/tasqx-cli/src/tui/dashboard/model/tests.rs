@@ -765,6 +765,39 @@ fn a_project_that_spent_no_tokens_is_left_out_of_the_tokens_panel() {
     );
 }
 
+/// #217: `report.summary` carries the group's WORST confidence (D50's trust
+/// hierarchy) in `tokens_confidence` whenever a token metric was requested,
+/// but the dashboard model dropped it on the floor when joining a group into
+/// a `TokenRow` — `tasqx --json dashboard | grep -c confidence` found zero
+/// hits even against a store the daemon had flagged low-confidence.
+#[test]
+fn a_token_rows_confidence_survives_the_summary_join() {
+    let mut low = group("work", "PT0S", "PT0S", [900, 80, 7, 5]);
+    low["tokens_confidence"] = json!("low");
+    let d = build_with(
+        task_list(vec![with(task_row(1, "spendy"), "project", json!("work"))]),
+        summary(vec![low]),
+        project_list(vec![project("work", true, false)]),
+    );
+    assert_eq!(
+        d.tokens.rows[0].confidence(),
+        Some("low"),
+        "the group's low confidence never reached the TokenRow"
+    );
+}
+
+/// A group with no `tokens_confidence` field (no token metric requested, or a
+/// store with nothing to measure) must not fabricate one.
+#[test]
+fn a_token_row_with_no_confidence_field_reports_none() {
+    let d = build_with(
+        task_list(vec![with(task_row(1, "spendy"), "project", json!("work"))]),
+        summary(vec![group("work", "PT0S", "PT0S", [900, 80, 7, 5])]),
+        project_list(vec![project("work", true, false)]),
+    );
+    assert_eq!(d.tokens.rows[0].confidence(), None);
+}
+
 /// The event page coming back full means the window may be incomplete, and the
 /// panel has to be able to say so rather than drawing a confident wrong line.
 #[test]
