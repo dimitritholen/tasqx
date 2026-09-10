@@ -197,7 +197,15 @@ impl Engine {
         for r in rows {
             out.push(r?);
         }
-        Ok(json!({ "count": out.len(), "projects": out }))
+        Ok(json!({
+            "count": out.len(),
+            // See `task_list`'s field of the same name (#233): a fresh store
+            // and an `include_archived:false` read that hid every project
+            // both come back with an empty `projects` array, and only this
+            // tells the reader which one happened.
+            "store_empty": self.store_is_empty()?,
+            "projects": out,
+        }))
     }
 
     // ---- project.archive -----------------------------------------------------
