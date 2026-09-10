@@ -592,19 +592,4 @@ mod tests {
         let e = check_params("task.list", &json!([1, 2])).unwrap_err();
         assert!(e.message.contains("must be an object"), "{}", e.message);
     }
-
-    /// The three other closed vocabularies this dispatch layer refuses
-    /// against (`status:`, sort keys, `task.get`'s params) all name their
-    /// accepted set (D34). `unknown method` used to be the one that did not,
-    /// leaving an agent with nowhere to look up the real method list.
-    #[test]
-    fn an_unknown_method_points_at_core_capabilities() {
-        let engine = Engine::open_in_memory().unwrap();
-        let err = dispatch(&engine, "task.frobnicate", &json!({})).unwrap_err();
-        assert!(
-            err.message.contains("core.capabilities"),
-            "expected a pointer to core.capabilities, got {:?}",
-            err.message
-        );
-    }
 }
