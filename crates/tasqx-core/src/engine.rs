@@ -13,7 +13,7 @@ mod memory;
 mod projects;
 mod relationships;
 mod reports;
-mod task;
+pub mod task;
 mod tokens;
 mod transfer;
 mod undo;
@@ -615,6 +615,45 @@ fn require_live_project(conn: &Connection, name: &str) -> Result<(), ApiError> {
         ))),
         Some(_) => Ok(()),
     }
+}
+
+/// D109: a `project:`/`proj:` value in a FILTER, validated against the live
+/// projects table at the same exact-match strictness the write side already
+/// has (D23's `require_live_project`, above) — but not its archived-vs-missing
+/// split, because a filter is a read: an archived project's tasks are still
+/// real rows, and `tasqx list project:old-thing` naming an archived project is
+/// not the mistake `task.add --project old-thing` is.
+///
+/// `tasqx list project:FIN-9695` (wrong case) or `project:nope-does-not-exist`
+/// used to print `No tasks.` at exit 0 — the same silence `status:pendign`
+/// answered before D34, and D27's collapse (a typo widening or, here,
+/// emptying a result set and reading as the right answer) one predicate over.
+/// `status:`/`priority:` already refuse a typo because their vocabulary is
+/// closed at compile time; `project:` is open at parse time (the module
+/// comment's split) but not at the call sites that hold a live table — this is
+/// where that gap closes. Deliberately narrow: case-sensitive exact match
+/// only, no fuzzy or case-insensitive matching (out of scope).
+fn validate_filter_projects(conn: &Connection, filter: &Filter) -> Result<(), ApiError> {
+    for name in filter.project_names() {
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM projects WHERE name = ?1",
+                params![name],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Err(ApiError::not_found(
+                format!(
+                    "no project named {name} in filter (`tasqx projects --all` lists archived \
+                     ones; names are case-sensitive)"
+                ),
+                Some(json!({ "name": name })),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Does `from` reach `goal` following dependency edges (from -> depends_on

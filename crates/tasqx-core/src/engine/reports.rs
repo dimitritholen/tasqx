@@ -67,6 +67,7 @@ impl Engine {
         // this one instant — it used to be read three separate times here.
         let now_ts = Timestamp::now();
         let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
+        validate_filter_projects(self.conn(), &filter)?;
 
         // D97: `since`/`until` window WHEN THE SPEND HAPPENED — a task tracked
         // time, or logged a token measurement — which is a different axis from
@@ -481,6 +482,24 @@ fn windowed_overlap_secs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D109: `report.summary`'s `filter` is one of the three call sites that
+    /// share `validate_filter_projects` (`task.list`, `store.export` are the
+    /// other two) — an unknown/wrong-case `project:` must refuse here too,
+    /// not just on the read path most people reach for first.
+    #[test]
+    fn report_summary_refuses_a_project_filter_naming_no_live_project() {
+        let e = Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "work" })).unwrap();
+        e.task_add(&json!({ "title": "t", "project": "work" }))
+            .unwrap();
+
+        let err = e
+            .report_summary(&json!({ "filter": "project:Work" }))
+            .unwrap_err();
+        assert_eq!(err.code, crate::error::ErrorCode::NotFound);
+        assert!(err.message.contains("Work"), "{}", err.message);
+    }
 
     /// #234 item 12: a cancelled task's token spend is dropped from the
     /// default report with nothing saying it was excluded (D24 says nothing
