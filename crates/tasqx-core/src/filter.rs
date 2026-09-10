@@ -929,6 +929,15 @@ fn spacing_hint(prev: Option<&Tok>, tok: &Tok) -> Option<String> {
     if VALUE_PREFIXES.iter().any(|(p, _)| tok.text.starts_with(p)) || tok.text.starts_with('@') {
         return None;
     }
+    // Finding #15 (audit-2026-09): a `.` or `:` in the trailing word is the
+    // shape of a filter TERM someone got wrong (`remind.any`, an unsupported
+    // key), not a shape a project name's second word ever takes. Proposing to
+    // swallow it into the previous value is exactly the wrong-rows outcome
+    // this refusal exists to prevent — offering the closest supported term is
+    // `predicate`'s job, not this hint's.
+    if tok.text.contains('.') || tok.text.contains(':') {
+        return None;
+    }
     let (p, _) = VALUE_PREFIXES
         .iter()
         .find(|(p, _)| prev.text.strip_prefix(*p).is_some_and(|v| !v.is_empty()))?;
@@ -1868,6 +1877,25 @@ mod tests {
                 "{tok:?} opens a keyword predicate of its own, so {input:?} must be \
                  refused exactly as {tok:?} alone is — a hint here advises \
                  swallowing a keyword into a project name"
+            );
+        }
+    }
+
+    /// Finding #15 (audit-2026-09): `project:dates remind.any` got the hint
+    /// `did you mean project:"dates remind.any"?` — which would look for a
+    /// project literally named that, when the actual mistake was an
+    /// unsupported filter token (`remind.any`), already correctly diagnosed by
+    /// the first half of the message. A `.` or `:` in the trailing word is the
+    /// shape of a filter TERM, not a project name's second word, so the hint
+    /// must not fire there.
+    #[test]
+    fn the_quoting_hint_does_not_fire_on_a_trailing_word_shaped_like_a_filter_term() {
+        for tok in ["remind.any", "nosuchkey:val"] {
+            let input = format!("project:Home {tok}");
+            let err = Filter::parse(&input, anchor()).expect_err("still refused");
+            assert!(
+                !err.contains("did you mean"),
+                "{tok:?}: looks like a filter term, must not be hinted as a split value: {err}"
             );
         }
     }
