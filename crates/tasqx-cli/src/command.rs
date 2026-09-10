@@ -361,6 +361,11 @@ pub(super) enum Command {
         /// Effort estimate — human duration (4h, 90m, 1h30m, 2d) or ISO PT4H.
         #[arg(long, short = 'e')]
         estimate: Option<String>,
+        /// Correct the tracked-time total — human duration (4h, 90m, 1h30m,
+        /// 2d) or ISO PT4H. Overwrites the stored total outright rather than
+        /// adding to it; clear it back to zero with `--clear tracked`.
+        #[arg(long)]
+        tracked: Option<String>,
         /// Add a tag (repeatable). Routed to tag.add.
         #[arg(
             long = "tag",

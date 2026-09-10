@@ -81,7 +81,7 @@ fn now_ts() -> jiff::Timestamp {
 /// round-trip a `bad_request`. `status` is absent for the same reason it is not
 /// a general modify field: lifecycle moves through start/stop/done/cancel so
 /// their invariants hold (D6).
-const CLEARABLE: [&str; 8] = [
+const CLEARABLE: [&str; 9] = [
     "project",
     "priority",
     "due",
@@ -90,6 +90,7 @@ const CLEARABLE: [&str; 8] = [
     "remind",
     "recurrence",
     "estimate",
+    "tracked",
 ];
 
 /// How far ahead `tasqx agenda` looks when `--days` is not given.
@@ -723,6 +724,7 @@ fn execute(cli: Cli) -> Exit {
                 repeat,
                 remind,
                 estimate,
+                tracked: None,
             },
         ),
         Some(Command::Modify {
@@ -736,6 +738,7 @@ fn execute(cli: Cli) -> Exit {
             repeat,
             remind,
             estimate,
+            tracked,
             tags,
             clear,
             expected_rev,
@@ -754,6 +757,7 @@ fn execute(cli: Cli) -> Exit {
                 repeat,
                 remind,
                 estimate,
+                tracked,
             },
             &clear,
             expected_rev,
