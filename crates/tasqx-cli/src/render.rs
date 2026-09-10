@@ -529,6 +529,12 @@ fn task_row(t: &Value, max_urg: f64, now: Timestamp) -> TaskRow {
         due: s(t, "due"),
         overdue: field_ts(t, "due").map(|d| d < now).unwrap_or(false)
             && status_is_open(&s(t, "status")),
+        // #228.16: rendered bare (`cardtag`), the one filter spelling that
+        // does not parse (`tasqx list cardtag` -> "unknown filter token") is
+        // exactly the text this table just printed. `+tag` is what `modify`'s
+        // echo already renders and the only spelling `list`'s own filter
+        // grammar accepts, so the table matches it rather than adding a third
+        // spelling of the same tag.
         tags: t
             .get("tags")
             .and_then(Value::as_array)
@@ -536,6 +542,7 @@ fn task_row(t: &Value, max_urg: f64, now: Timestamp) -> TaskRow {
                 san(&a
                     .iter()
                     .filter_map(Value::as_str)
+                    .map(|t| format!("+{t}"))
                     .collect::<Vec<_>>()
                     .join(" "))
             })
@@ -1316,8 +1323,14 @@ fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
     row("blocked", DetailField::Blocked, blocked.to_string());
     if let Some(tags) = result.get("tags").and_then(Value::as_array) {
         if !tags.is_empty() {
-            let names: Vec<&str> = tags.iter().filter_map(Value::as_str).collect();
-            row("tags", DetailField::Tags, san(&names.join(" ")));
+            // `+tag`, matching `list`'s table and its own filter grammar — see
+            // the `tags:` field comment on `TaskRow` (#228.16).
+            let names: Vec<String> = tags
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|t| format!("+{}", san(t)))
+                .collect();
+            row("tags", DetailField::Tags, names.join(" "));
         }
     }
     if let Some(deps) = result.get("depends_on").and_then(Value::as_array) {
@@ -1513,10 +1526,13 @@ pub fn task_added_card(ctx: &Ctx, task: &Value) -> String {
         place.push((Some("card.label"), proj));
     }
     if let Some(tags) = task.get("tags").and_then(Value::as_array) {
+        // `+tag`, not `#tag`: the card is the first place a new tag is ever
+        // shown, and `#tag` is the one spelling `list`'s filter grammar
+        // rejects outright (#228.16).
         let names: Vec<String> = tags
             .iter()
             .filter_map(Value::as_str)
-            .map(|t| format!("#{}", san(t)))
+            .map(|t| format!("+{}", san(t)))
             .collect();
         if !names.is_empty() {
             if !place.is_empty() {
@@ -3182,6 +3198,28 @@ mod tests {
                 assert_eq!(cells(row), want, "{field}={v:?} broke alignment: {row:?}");
             }
         }
+    }
+
+    /// #228.16: the table used to print a tag bare (`cardtag`), the one
+    /// spelling `list`'s own filter grammar rejects (`unknown filter token
+    /// "cardtag"`) — copying what the tool just printed into the tool's own
+    /// query language was an error. `+tag` is what `tag.add`/`modify` already
+    /// echo and the only spelling the filter parses.
+    #[test]
+    fn the_table_renders_tags_in_the_spelling_the_filter_accepts() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let tasks = vec![json!({ "short_id": 1, "urgency": 5.0, "priority": "M",
+                                  "title": "t", "project": "", "due": "",
+                                  "tags": ["cardtag"], "status": "pending" })];
+        let out = task_table(
+            &ctx,
+            &json!({ "tasks": tasks, "count": 1 }),
+            Timestamp::now(),
+        );
+        assert!(
+            out.contains("+cardtag"),
+            "the TAGS column must render `+cardtag`, not bare `cardtag`: {out:?}"
+        );
     }
 
     /// One row of table JSON, so a layout test can vary the one field it is about.

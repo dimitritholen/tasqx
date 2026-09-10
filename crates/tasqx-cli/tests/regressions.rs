@@ -3174,3 +3174,39 @@ fn an_explicit_socket_on_a_verb_that_cannot_honour_it_is_refused_not_ignored() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// #228.15: `import -` reads canonical JSON from stdin, so `tasqx add -` reads
+/// like the same convention — but `add` never looked at stdin, and silently
+/// filed a task literally titled "-", swallowing whatever had been piped in.
+#[test]
+fn add_dash_refuses_rather_than_filing_a_task_named_dash() {
+    let dir = fresh_config_dir("add-dash");
+    let out = bin("add-dash", &dir)
+        .arg("add")
+        .arg("-")
+        .output()
+        .expect("run tasqx add -");
+    assert!(
+        !out.status.success(),
+        "`add -` must not succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("import"),
+        "the refusal must point at `import -`, which already owns stdin: {stderr}"
+    );
+
+    let list = bin("add-dash", &dir)
+        .args(["list", "--json"])
+        .output()
+        .expect("run tasqx list");
+    let v: serde_json::Value =
+        serde_json::from_slice(&list.stdout).expect("`list --json` must be one JSON document");
+    let tasks = v["tasks"].as_array().expect("tasks array");
+    assert!(
+        tasks.iter().all(|t| t["title"] != "-"),
+        "no task titled \"-\" may exist after a refused `add -`: {tasks:?}"
+    );
+}
