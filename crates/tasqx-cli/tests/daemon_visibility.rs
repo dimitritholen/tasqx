@@ -602,11 +602,17 @@ fn an_explicit_unreachable_socket_warns_on_fallback() {
     );
 }
 
-/// The mirror of the test above: with NO `--socket` flag, the same missing
-/// daemon (env/default discovery) must stay silent about it — only an
-/// explicit flag is a stated intention worth warning about.
+/// The mirror of the test above, narrowed by D106: with NO `--socket` flag,
+/// the same missing daemon (env/default discovery via `$TASQX_SOCK`) must
+/// stay silent about #14's specific WARNING wording ("this command ran
+/// in-process instead") — that one stays scoped to an explicit `--socket`
+/// flag, a stated intention a bare env var is not. But D106 gave `$TASQX_SOCK`
+/// its own, different NOTE ("running in-process against $TASQX_DB") once a
+/// killed daemon otherwise looked identical to no daemon configured at all —
+/// so this path is no longer silent outright, just silent about the flag-only
+/// warning.
 #[test]
-fn an_unreachable_socket_from_env_discovery_stays_silent() {
+fn an_unreachable_socket_from_env_discovery_gets_the_note_not_the_warning() {
     let w = world("envsock");
     // `$TASQX_SOCK` (set by `bin`) names a path nothing is listening on, and
     // no `--socket` flag is passed.
@@ -617,7 +623,11 @@ fn an_unreachable_socket_from_env_discovery_stays_silent() {
         "the fallback must still succeed: {stderr}"
     );
     assert!(
-        !stderr.contains("no daemon at"),
-        "env/default discovery is silent on a missing daemon: {stderr}"
+        !stderr.contains("this command ran in-process instead"),
+        "env/default discovery must not get #14's explicit-flag-only warning: {stderr}"
+    );
+    assert!(
+        stderr.contains("no daemon at") && stderr.contains("running in-process against $TASQX_DB"),
+        "env discovery gets D106's note instead, so a killed daemon does not look silent: {stderr}"
     );
 }

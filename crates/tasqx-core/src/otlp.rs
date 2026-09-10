@@ -276,7 +276,8 @@ fn dispatch(req: &HttpRequest, engine: &Arc<Mutex<Engine>>) -> (u16, String) {
         return (
             415,
             "this receiver accepts OTLP/HTTP+JSON; set \
-             OTEL_EXPORTER_OTLP_PROTOCOL=http/json",
+             OTEL_EXPORTER_OTLP_PROTOCOL=http/json"
+                .to_string(),
         );
     }
     // A body that is not valid JSON is a genuine client error: 400. A body that
@@ -1032,6 +1033,7 @@ mod tests {
             method: "POST".to_string(),
             path: "/v1/logs".to_string(),
             body: serde_json::to_vec(doc).unwrap(),
+            content_type: None,
         };
         let (status, body) = dispatch(&req, &engine);
         assert_eq!(status, 200, "a dropped record is still a 200, per OTLP");
