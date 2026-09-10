@@ -60,19 +60,113 @@ pub(crate) fn unknown_theme_warning(key: &str, name: &str, source: &str) -> Opti
 /// happily reported the dropped name. One question, two surfaces, two answers —
 /// and the one the user could read was the wrong one.
 ///
-/// The fallback is `s.default` with `Source::Default` on purpose: that IS where
-/// the value comes from once the named layer is discarded, and crediting
-/// `config.toml` for a value it did not supply would be the same lie one field
-/// over.
+/// **Walks the D9 chain one layer at a time (#197).** The first version called
+/// `config::resolve` once — which only knows precedence, not validity — and
+/// discarded straight to the default the moment THAT single winning layer
+/// failed validation. So `--theme gruvbx` with `gruvbox` sitting right there in
+/// `config.toml` reported `nord`/`Source::Default`: a value the user had typed
+/// AND persisted, thrown away because a *different, higher* layer had a typo in
+/// it. D9's own promise is a chain, and the one thing a chain must get right is
+/// what happens when a link misses — it hands off to the next link, not to the
+/// ground. The fallback is `s.default` with `Source::Default` only once EVERY
+/// layer has been tried and failed: that IS where the value comes from at that
+/// point, and crediting `config.toml` for a value it did not supply would be
+/// the same lie one field over.
 pub(crate) fn effective_setting(
     s: &config::Setting,
     flag: Option<&str>,
     file: Option<&str>,
 ) -> (String, config::Source, Option<String>) {
-    let (value, source) = config::resolve(s, flag, file);
-    match unknown_theme_warning(s.key, &value, &source.label(s)) {
-        None => (value, source, None),
-        Some(msg) => (s.default.to_string(), config::Source::Default, Some(msg)),
+    fn pick(v: Option<&str>) -> Option<String> {
+        v.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+    // The env layer is read here, not passed in, for the same reason
+    // `config::resolve` reads it internally: a caller cannot forget it.
+    let env = s.env.and_then(|e| std::env::var(e).ok());
+    let candidates = [
+        (pick(flag), config::Source::Flag),
+        (pick(env.as_deref()), config::Source::Env),
+        (pick(file), config::Source::File),
+    ];
+
+    // The highest-precedence layer that supplied a value tasqx could not use —
+    // named in the eventual warning regardless of which lower layer rescues
+    // it, or of "the default" when none does. Only the first is kept: one
+    // warning line per invocation, same as before this walked more than one
+    // layer.
+    let mut rejected: Option<(String, config::Source)> = None;
+    for (value, source) in candidates {
+        let Some(value) = value else { continue };
+        if validate_setting(s.key, &value).is_ok() {
+            let warning = rejected.map(|(name, rej_source)| {
+                format!(
+                    "warning: unknown theme {name:?} from {}; using {} instead (try `tasqx theme list`)",
+                    rej_source.label(s),
+                    source.label(s)
+                )
+            });
+            return (value, source, warning);
+        }
+        rejected.get_or_insert((value, source));
+    }
+
+    // Nothing validated: `unknown_theme_warning`'s own wording is exactly this
+    // case's message, so build it from the same function rather than a second
+    // copy of the sentence.
+    let warning = rejected.map(|(name, source)| {
+        unknown_theme_warning(s.key, &name, &source.label(s)).expect("already known invalid")
+    });
+    (s.default.to_string(), config::Source::Default, warning)
+}
+
+/// The complaints `config.toml` earns before anything reads a single setting
+/// out of it: it does not parse at all, or a `[section] key` names no
+/// registered setting (#192).
+///
+/// Split from the printing exactly like `unknown_theme_warning` is: the
+/// emitting version can only be observed through process-global stderr. Two
+/// distinct classes, both silent until now: `config::read_table_strict`
+/// already existed for `tasqx config`'s OWN reads (`file_value`), but nothing
+/// called it from the render path, so every OTHER verb read through the silent
+/// `toml_value_in` and never learned the file failed to parse at all. An
+/// unknown key is a different failure mode again — `coerce` only rejects a
+/// value of the wrong TYPE, so a key nothing declares is simply never looked
+/// up, and even `config list` (which reads strictly) had nothing to say about
+/// it.
+pub(crate) fn config_file_warnings_in(dir: &std::path::Path) -> Vec<String> {
+    match config::read_table_strict(dir) {
+        Err(e) => vec![e.message],
+        Ok(None) => Vec::new(),
+        Ok(Some(table)) => table
+            .iter()
+            .filter_map(|(section, value)| value.as_table().map(|t| (section, t)))
+            .flat_map(|(section, inner)| {
+                inner.keys().filter_map(move |key| {
+                    let dotted = format!("{section}.{key}");
+                    (config::find(&dotted).is_none()).then(|| unknown_key(&dotted).message)
+                })
+            })
+            .collect(),
+    }
+}
+
+/// Warn once, on stderr, about whatever [`config_file_warnings_in`] finds in
+/// the user's real `config.toml`.
+///
+/// Called from `build_ctx`, which already runs before every command (see its
+/// own doc comment) — the same "once per process, every verb" treatment the
+/// theme-resolution warning gets a few lines below it. Before this, an
+/// unclosed `[theme` was reported nowhere but `config get`/`config list`, so
+/// `list`, `next` and `add` exited 0 with the config quietly reverted to every
+/// default and nothing on stderr to say so.
+pub(crate) fn warn_about_config_file() {
+    let Some(dir) = config::config_dir() else {
+        return;
+    };
+    for msg in config_file_warnings_in(&dir) {
+        eprintln!("warning: {msg}");
     }
 }
 
@@ -234,10 +328,31 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                         "  {}\n",
                         ctx.paint("muted", &dir.to_string_lossy())
                     ));
+                    // Load-and-validate each file rather than merely listing
+                    // its stem (#193, completing D46): a `.toml` that cannot
+                    // be parsed used to be offered exactly like a working
+                    // theme, and the first place a theme author would learn
+                    // otherwise was `theme show` or `--theme`, both of which
+                    // silently substituted a different theme under the broken
+                    // name.
+                    let mut broken = Vec::new();
                     for name in &user {
-                        text.push_str(&format!("  {name}\n"));
+                        if theme::load_reporting(name, Some(&dir))
+                            .file
+                            .rejection()
+                            .is_some()
+                        {
+                            text.push_str(&format!(
+                                "  {name} {}\n",
+                                ctx.paint("danger", "(parse error)")
+                            ));
+                            broken.push(name.clone());
+                        } else {
+                            text.push_str(&format!("  {name}\n"));
+                        }
                     }
-                    user_block = json!({ "dir": dir.to_string_lossy(), "names": user });
+                    user_block =
+                        json!({ "dir": dir.to_string_lossy(), "names": user, "broken": broken });
                 }
             }
             Ok((
@@ -261,8 +376,22 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                     // cannot drift from `theme set` and `config set` the way an
                     // inline copy already did once.
                     validate_setting("theme.name", &resolved)?;
-                    Ctx::new(theme::load(&resolved, themes_dir().as_deref()), ctx.caps)
-                        .with_cols(ctx.cols)
+                    // `validate_setting` only checks that a `themes/<name>.toml`
+                    // EXISTS, not that it loads — so a broken file passed this
+                    // gate and `theme::load` silently substituted the fallback
+                    // theme, still labelled `Theme: nord` (#193, completing
+                    // D46's "`theme show` treats it as fatal"). `load_reporting`
+                    // is what actually knows the difference; refuse the same way
+                    // an unknown NAME is refused three lines up, rather than
+                    // printing another theme's data under the name that was
+                    // asked for.
+                    let loaded = theme::load_reporting(&resolved, themes_dir().as_deref());
+                    if let Some(reason) = loaded.file.rejection() {
+                        return Err(ApiError::bad_request(format!(
+                            "theme {resolved:?} could not be loaded: {reason}"
+                        )));
+                    }
+                    Ctx::new(loaded.theme, ctx.caps).with_cols(ctx.cols)
                 }
                 None => Ctx::new(ctx.theme.clone(), ctx.caps).with_cols(ctx.cols),
             };

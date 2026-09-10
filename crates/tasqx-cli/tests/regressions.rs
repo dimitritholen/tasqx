@@ -336,6 +336,184 @@ fn config_get_is_silent_about_a_well_typed_value() {
     );
 }
 
+/// #197 — a mistyped `--theme`/`$TASQX_THEME` fell straight to the built-in
+/// default, skipping the `config.toml` layer entirely. D9's own chain is
+/// `--flag` -> `$TASQX_*` -> `config.toml` -> default; a layer that misses
+/// must fall through to the NEXT layer, not to the bottom.
+#[test]
+fn a_rejected_theme_flag_falls_through_to_config_toml_not_the_default() {
+    let dir = fresh_config_dir("theme-fallthrough");
+    std::fs::write(dir.join("config.toml"), "[theme]\nname = \"gruvbox\"\n").unwrap();
+
+    let out = bin("theme-fallthrough", &dir)
+        .args(["--theme", "gruvbx", "config", "get", "theme.name"])
+        .output()
+        .expect("run config get");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "gruvbox",
+        "a rejected --theme must fall through to config.toml, not to the default"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("gruvbx"),
+        "the warning must still fire, naming the typo"
+    );
+
+    let out = bin("theme-fallthrough", &dir)
+        .args(["--theme", "gruvbx", "config", "list"])
+        .output()
+        .expect("run config list");
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.lines().any(|l| l.contains("theme.name")
+            && l.contains("gruvbox")
+            && l.contains("config.toml")),
+        "SOURCE must credit config.toml, not default: {s}"
+    );
+
+    // Same fall-through for $TASQX_THEME.
+    let out = bin("theme-fallthrough", &dir)
+        .env("TASQX_THEME", "gruvbx")
+        .args(["config", "get", "theme.name"])
+        .output()
+        .expect("run config get");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "gruvbox",
+        "the same fall-through applies to $TASQX_THEME"
+    );
+}
+
+/// #192 — an unparseable `config.toml` was silent on every command except
+/// `config get`/`config list`, which read the file strictly for their own
+/// reasons (`file_value`). `list`, `add` and every other verb exited 0 with
+/// EMPTY stderr while the theme, dashboard panels, notify/otlp settings and
+/// idle timeout all quietly reverted to their defaults.
+#[test]
+fn a_broken_config_toml_warns_on_every_command() {
+    let dir = fresh_config_dir("broken-cfg");
+    // An unclosed table: not valid TOML at all.
+    std::fs::write(dir.join("config.toml"), "[theme\nname = \"nord\"\n").unwrap();
+
+    for args in [["list"].as_slice(), ["add", "cfgtest"].as_slice()] {
+        let out = bin("broken-cfg", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx");
+        assert!(
+            out.status.success(),
+            "{args:?}: a broken config must not block a task capture: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("config.toml") && err.contains("not valid TOML"),
+            "{args:?}: must warn about the broken file, same as `config get` already does: {err}"
+        );
+    }
+}
+
+/// #192 — a MISSPELLED key (parse-clean TOML, but a key no setting owns) was
+/// silent absolutely everywhere, including `config list` — the one command
+/// whose whole job is showing what tasqx thinks the settings are. Coercion
+/// only rejects a wrong-TYPED value (already warned, see the tests above); an
+/// unknown key is never read in the first place, so nothing noticed it.
+#[test]
+fn a_misspelled_config_key_warns_from_config_list() {
+    let dir = fresh_config_dir("misspelled-key");
+    std::fs::write(
+        dir.join("config.toml"),
+        "[theme]\nnmae = \"nord\"\n[dashboard]\nwindw = \"month\"\n",
+    )
+    .unwrap();
+
+    let out = bin("misspelled-key", &dir)
+        .args(["config", "list"])
+        .output()
+        .expect("run config list");
+
+    assert!(
+        out.status.success(),
+        "one bad key must not abort the listing"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("theme.nmae"),
+        "must name the misspelled key: {err}"
+    );
+    assert!(
+        err.contains("dashboard.windw"),
+        "and the other one, independently: {err}"
+    );
+}
+
+/// #193 — a malformed user theme file was listed as available, silently
+/// ignored by `--theme`/`$TASQX_THEME` (unlike an outright unknown NAME,
+/// which already warns), and `theme show broken` answered with a DIFFERENT
+/// theme's data printed under the requested name — the worst of the three,
+/// since it reports success while showing the user a theme they did not ask
+/// for. Completes D46 ("A malformed user theme file produces a diagnostic
+/// instead of a silent fall-back, and `theme show` treats it as fatal"),
+/// whose `theme::FileOutcome`/`load_reporting` were built but never wired to
+/// a caller.
+#[test]
+fn a_broken_user_theme_file_is_marked_and_never_silently_substituted() {
+    let dir = fresh_config_dir("broken-theme");
+    std::fs::create_dir_all(dir.join("themes")).unwrap();
+    std::fs::write(
+        dir.join("themes").join("broken.toml"),
+        "name = \"broken\"\n[roles\n",
+    )
+    .unwrap();
+
+    // `theme list` must mark the file as unusable, not offer it plain.
+    let out = bin("broken-theme", &dir)
+        .args(["theme", "list"])
+        .output()
+        .expect("run theme list");
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("broken") && s.contains("parse error"),
+        "an unloadable file must be marked broken in the listing: {s}"
+    );
+
+    // `theme show broken` must refuse outright — never print another theme's
+    // data under the name the user asked for.
+    let out = bin("broken-theme", &dir)
+        .args(["theme", "show", "broken"])
+        .output()
+        .expect("run theme show");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a broken theme file must be a bad_request, like an unknown name"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "must not print a theme the user did not ask for: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("broken"), "{err}");
+
+    // `--theme broken` (the render path) must warn on stderr, the way an
+    // unknown NAME already does — but must still run the command; a broken
+    // theme must never block a task capture.
+    let out = bin("broken-theme", &dir)
+        .args(["--theme", "broken", "list"])
+        .output()
+        .expect("run list");
+    assert!(
+        out.status.success(),
+        "a broken theme must not fail an ordinary command"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).is_empty(),
+        "the render path must warn about a broken theme file, matching --theme <unknown>"
+    );
+}
+
 /// Saving a theme said nothing about where to see it.
 ///
 /// The user picked gruvbox in `config edit`, it wrote correctly, and they came
