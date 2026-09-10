@@ -1284,12 +1284,22 @@ pub fn demand(dash: &Dashboard, slot_members: &[PanelId], id: PanelId) -> u16 {
 /// the two differ by one line per non-empty bucket name. A cursor clamped to
 /// the line count walks onto a heading; `Enter` then has nothing to open.
 ///
-/// The panels absent from the match have no selectable row at all. NOW and
-/// BURNDOWN draw a fixed body. TOKENS is here for a duller reason: `panels::body`
-/// hands `tokens_body` no position and never has, so a cursor in it moved an
+/// The panels absent from the match have no selectable row at all. NOW is
+/// present despite drawing a fixed body (#228.13): its one row IS the
+/// running task, so it needs no cursor position of its own, only the 0/1 a
+/// row count already gives every panel for free — `row_at` never reads a
+/// position back for it, only whether one exists. BURNDOWN has no such row
+/// to give. TOKENS is here for a duller reason: `panels::body` hands
+/// `tokens_body` no position and never has, so a cursor in it moved an
 /// integer that nothing read.
 pub fn row_count(dash: &Dashboard, id: PanelId) -> usize {
     match id {
+        // #228.13: NOW is the one row a reader looks at most — the task
+        // actively running — and it drew no cursor at all, so it was the
+        // only row-bearing panel Enter never reached. It carries at most one
+        // row (the running task, if any), which is exactly what a cursor of
+        // 0/1 already expresses without a new code path.
+        PanelId::Now => usize::from(dash.now.is_some()),
         PanelId::Next => dash.next.rows.len(),
         PanelId::Blocked => dash.blocked.rows.len(),
         PanelId::Recent => dash.recent.rows.len(),
@@ -1465,6 +1475,7 @@ impl TaskDetail {
 /// one.
 pub fn row_at(dash: &Dashboard, id: PanelId, idx: usize) -> Option<&Task> {
     match id {
+        PanelId::Now if idx == 0 => dash.now.as_ref().map(|c| &c.task),
         PanelId::Next => dash.next.rows.get(idx),
         PanelId::Blocked => dash.blocked.rows.get(idx),
         PanelId::Recent => dash.recent.rows.get(idx),
