@@ -1857,10 +1857,18 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
     }
     if let Some(anns) = result.get("annotations").and_then(Value::as_array) {
         for a in anns {
+            // #76.2: `san` neutralises a stray `\n` into a space because most
+            // fields it guards (title, source, a search snippet) are meant to
+            // be ONE line, and a newline in them is itself part of the hazard
+            // (see `san`'s doc). An annotation body is not one of those — it
+            // round-trips `\n` through storage and `task.get` intact, and
+            // holds markdown a human wrote on purpose (headers, lists,
+            // tables) — so it wants `san_multiline`, exactly the swap #195
+            // already made for `memory show`.
             row(
                 "·",
                 DetailField::Annotation,
-                san(a.get("body").and_then(Value::as_str).unwrap_or("")),
+                san_multiline(a.get("body").and_then(Value::as_str).unwrap_or("")),
             );
         }
     }
@@ -2266,11 +2274,27 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         push(&mut out, String::new());
         let aw = avail.saturating_sub(2).max(10);
         for body in &annotations {
-            for (j, line) in wrap_words(body, aw).iter().enumerate() {
-                if j == 0 {
-                    push(&mut out, format!("{} {line}", ctx.paint("card.label", "·")));
-                } else {
-                    push(&mut out, format!("  {line}"));
+            // #76.2: `wrap_words` reflows on `str::split_whitespace`, which
+            // reads a `\n` as just another space — so a markdown annotation
+            // (headers, a table, a list) came out as one run-on paragraph,
+            // its line breaks gone. Each of the AUTHOR'S OWN lines is now
+            // wrapped on its own; only a line too wide for the terminal still
+            // gets `wrap_words`'s reflow, and a blank line (a paragraph
+            // break) still prints as one.
+            let mut first = true;
+            for src_line in body.split('\n') {
+                if src_line.is_empty() {
+                    push(&mut out, String::new());
+                    first = false;
+                    continue;
+                }
+                for line in wrap_words(src_line, aw) {
+                    if first {
+                        push(&mut out, format!("{} {line}", ctx.paint("card.label", "·")));
+                        first = false;
+                    } else {
+                        push(&mut out, format!("  {line}"));
+                    }
                 }
             }
         }
@@ -3586,6 +3610,58 @@ mod tests {
             out.matches("note").count(),
             50,
             "the wrap dropped or cut part of the annotation:\n{out}"
+        );
+    }
+
+    /// #76.2: a multi-line annotation (markdown headers, a list, a table)
+    /// used to come out as one unbroken run — `san` turned every `\n` into a
+    /// space before the card ever saw it, and the card's own wrap reflowed on
+    /// whitespace besides. Both had to change: the body must round-trip its
+    /// line breaks, and the card must respect them rather than re-flowing
+    /// them away.
+    #[test]
+    fn the_show_card_keeps_annotation_line_breaks() {
+        let ctx = Ctx::new(theme::default_theme(), card_caps());
+        let mut t = full_task();
+        t["annotations"] = json!([{"body": "# Heading\n\n- one\n- two\n\n| a | b |\n|---|---|"}]);
+        let out = task_detail(&ctx, &t, Timestamp::now());
+        assert!(
+            out.contains("# Heading"),
+            "the heading line is gone:\n{out}"
+        );
+        assert!(out.contains("- one"), "the first list item is gone:\n{out}");
+        assert!(
+            out.contains("- two"),
+            "the second list item is gone:\n{out}"
+        );
+        assert!(out.contains("| a | b |"), "the table row is gone:\n{out}");
+        // The two list items must land on SEPARATE lines, not fused by a
+        // whitespace-only reflow into "- one - two".
+        assert!(
+            !out.contains("- one - two"),
+            "the line break between list items was collapsed:\n{out}"
+        );
+    }
+
+    /// Same defect, the byte-stable plain path: a stray `\n` in an annotation
+    /// body must survive to stdout rather than being neutralised to a space
+    /// by `san` (that treatment is right for a one-line field like a title,
+    /// wrong for a body that is legitimately more than one line — #195 made
+    /// the same call for `memory show`).
+    #[test]
+    fn the_plain_detail_keeps_annotation_line_breaks() {
+        let t = json!({
+            "short_id": 1, "title": "multi-line note", "status": "pending",
+            "annotations": [{"body": "line one\nline two"}],
+        });
+        let out = task_detail(
+            &Ctx::new(theme::default_theme(), Caps::PLAIN),
+            &t,
+            Timestamp::now(),
+        );
+        assert!(
+            out.contains("line one\nline two"),
+            "the annotation's line break did not survive to the plain layout: {out:?}"
         );
     }
 
