@@ -22,6 +22,7 @@ impl Engine {
         let now_ts = Timestamp::now();
         let filter = Filter::parse(&opt_str(p, "filter")?.unwrap_or_default(), now_ts)
             .map_err(ApiError::bad_request)?;
+        validate_filter_projects(self.conn(), &filter)?;
         // ONE snapshot for the whole document. This function issues
         // SNAPSHOT_QUERY_COUNT statements (`load_task_snapshots`) plus three
         // more — projects, docs and the default. The total is deliberately not
@@ -1308,6 +1309,30 @@ mod tests {
             document,
             "export -> import -> export stays identity"
         );
+    }
+
+    /// D109: `store.export`'s `filter` is the third of the three call sites
+    /// sharing `validate_filter_projects` (`task.list`, `report.summary` are
+    /// the other two). An unknown/wrong-case `project:` must refuse here too.
+    #[test]
+    fn store_export_refuses_a_project_filter_naming_no_live_project() {
+        let e = Engine::open_in_memory().expect("open");
+        e.project_create(&json!({ "name": "work" }))
+            .expect("create project");
+        e.task_add(&json!({ "title": "t", "project": "work" }))
+            .expect("add");
+
+        let err = e
+            .store_export(&json!({ "filter": "project:WORK" }))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(err.message.contains("WORK"), "{}", err.message);
+
+        // The exact, correctly-cased name still exports, as always.
+        let out = e
+            .store_export(&json!({ "filter": "project:work" }))
+            .expect("export");
+        assert_eq!(out["tasks"].as_array().unwrap().len(), 1);
     }
 
     /// `store_export` must read all of its statements from ONE snapshot: in WAL

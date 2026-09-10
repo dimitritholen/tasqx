@@ -168,7 +168,14 @@ const ANNOTATION_PAGE: u64 = 20;
 /// no elision and nothing saying anything had been large. This is the shape
 /// D63 fixed for `task.get`; `task.list`'s worst case is bigger and grows with
 /// the store rather than with one task's history.
-const LIST_PAGE: u64 = 100;
+///
+/// Re-exported from [`crate::engine::task::DEFAULT_TASK_LIST_LIMIT`] rather
+/// than kept as a second literal (D110): this transport's own default-insertion
+/// below still exists — it is what drives [`Self::fit_list_to_budget`]'s
+/// byte-shrink, which `task_list` itself has no notion of — but the NUMBER is
+/// now decided once, at the engine, so the CLI and `tasqx api` share it
+/// instead of falling back to "no limit" behind this transport's back.
+const LIST_PAGE: u64 = crate::engine::task::DEFAULT_TASK_LIST_LIMIT;
 
 /// The size a `tasqx_get_task` response is shrunk to fit, counting BOTH content
 /// blocks — the rendered view and the JSON behind it, which D49 ships together.
