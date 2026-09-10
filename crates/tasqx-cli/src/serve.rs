@@ -220,6 +220,22 @@ pub(crate) fn watch_render(
     Ok(())
 }
 
+/// #228.6: typed bare on a terminal, `tasqx api` used to sit with no prompt
+/// and no output — the process was waiting on `read_to_string`, but nothing
+/// on screen said so, so it read exactly like a hang. Every other
+/// terminal-sensitive verb says so (`dashboard`'s refusal, `config edit`'s
+/// "needs an interactive terminal"); this is the same courtesy for the one
+/// verb whose own `--help` EXAMPLE is a heredoc.
+pub(crate) const API_TTY_HINT: &str =
+    "reading one JSON request envelope from stdin; Ctrl-D to send, Ctrl-C to quit";
+
+/// Testable seam for the tty check below: a pure function of the one fact
+/// that decides it, the way `dashboard_refusal` takes its terminal facts as
+/// plain booleans rather than reading `is_terminal()` itself.
+pub(crate) fn api_stdin_hint(stdin_is_tty: bool) -> Option<&'static str> {
+    stdin_is_tty.then_some(API_TTY_HINT)
+}
+
 /// The stdio one-shot transport.
 pub(crate) fn run_api() {
     let engine = match open_engine() {
@@ -233,6 +249,10 @@ pub(crate) fn run_api() {
             exit(1);
         }
     };
+
+    if let Some(hint) = api_stdin_hint(std::io::stdin().is_terminal()) {
+        eprintln!("{hint}");
+    }
 
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
@@ -359,5 +379,20 @@ pub(crate) fn mcp_stdio_loop(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #228.6: `tasqx api` on a bare terminal used to give no prompt and no
+    /// output while it blocked on `read_to_string` — indistinguishable from a
+    /// hang. Piped stdin (the documented, scripted usage) must stay exactly
+    /// as quiet as before: the hint is for the interactive case only.
+    #[test]
+    fn the_stdin_hint_fires_only_on_a_real_terminal() {
+        assert_eq!(api_stdin_hint(false), None, "piped stdin must stay silent");
+        assert_eq!(api_stdin_hint(true), Some(API_TTY_HINT));
     }
 }

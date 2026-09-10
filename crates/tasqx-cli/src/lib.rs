@@ -54,6 +54,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
+#[cfg(test)]
 use clap::Parser;
 use serde_json::{json, Value};
 
@@ -64,7 +65,8 @@ use tasqx_core::{
 };
 
 use command::{
-    ChartKind, Cli, Command, ConfigAction, McpAction, MemoryAction, ThemeAction, TokensAction,
+    cli_command, ChartKind, Cli, Command, ConfigAction, McpAction, MemoryAction, ThemeAction,
+    TokensAction,
 };
 use theme::{Caps, Ctx};
 
@@ -332,7 +334,14 @@ pub fn run() {
     // and the only way to keep that from disarming clap's flag handling is to
     // hide the dash before clap looks. See `argv`.
     let pre = argv::prepass(std::env::args_os());
-    let mut cli = match Cli::try_parse_from(pre.argv) {
+    // Not `Cli::try_parse_from`: that builds straight off `Cli::command()`,
+    // whose subcommands still carry clap's hyphen-joined `-V` display names
+    // (#228.7). `cli_command()` is the same command tree with those flattened
+    // to `tasqx` first.
+    let mut cli = match cli_command().try_get_matches_from(pre.argv).and_then(|m| {
+        use clap::FromArgMatches;
+        Cli::from_arg_matches(&m)
+    }) {
         Ok(cli) => cli,
         Err(e) => exit_on_parse_error(&e, pre.filter_command),
     };

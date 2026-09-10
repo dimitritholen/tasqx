@@ -409,19 +409,23 @@ fn manual_unknown_topic_exits_2() {
 ///
 /// Driven through the real binary and over EVERY subcommand rather than one,
 /// because the pre-pass treats filter-taking commands differently from the rest
-/// and a single example would only ever prove one of the two paths. The
-/// The expected payload is lifted from `tasqx --version`'s own output — build
-/// id included — so this cannot pass by printing some other version-shaped
-/// string. Only the program-name prefix differs: clap names a subcommand's
-/// version line `tasqx-<sub>`, which is its convention and is left alone.
+/// and a single example would only ever prove one of the two paths.
+///
+/// #228.7: the payload is lifted whole from `tasqx --version` — build id
+/// included — and every subcommand must print EXACTLY that, prefix and all.
+/// clap's own convention names a subcommand's version line `tasqx-<sub>`
+/// (`tasqx-init 0.6.0 …`), which reads as a second binary that does not
+/// exist; `cli_command()` flattens every subcommand's display name back to
+/// `tasqx` before parsing (see `command.rs`), specifically so this assertion
+/// can be the exact string rather than a per-subcommand prefix.
 #[test]
 fn the_version_short_flag_works_on_every_subcommand_the_way_help_does() {
     let root = bin().arg("--version").output().expect("run --version");
     let root_out = String::from_utf8_lossy(&root.stdout).into_owned();
-    let payload = root_out
-        .strip_prefix("tasqx")
-        .expect("root --version: {root_out:?}");
-    assert!(payload.contains('.'), "no version number in {root_out:?}");
+    assert!(
+        root_out.starts_with("tasqx ") && root_out.contains('.'),
+        "no version number in {root_out:?}"
+    );
 
     let names = tasqx_cli::subcommand_names();
     assert!(
@@ -433,9 +437,9 @@ fn the_version_short_flag_works_on_every_subcommand_the_way_help_does() {
         let out = bin().args([&name, "-V"]).output().expect("run -V");
         let got = String::from_utf8_lossy(&out.stdout).into_owned();
         assert_eq!(
-            got,
-            format!("tasqx-{name}{payload}"),
-            "`tasqx {name} -V` did not print the version"
+            got, root_out,
+            "`tasqx {name} -V` must report the one binary this ships as, \
+             not `tasqx-{name}`"
         );
         // The twin that already worked, asserted beside it so a fix that
         // propagates `-V` by breaking `-h` cannot pass.
