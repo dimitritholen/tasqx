@@ -336,6 +336,51 @@ fn config_get_is_silent_about_a_well_typed_value() {
     );
 }
 
+/// #236.2: `daemon.idle_timeout` is stored and read in minutes, but nothing in
+/// `config` says so — `config get`/`config set`/`config list` all show the
+/// bare number, and the unit is discoverable only by reading the daemon's own
+/// startup banner. `tasqx config describe <key>` is the answer: it prints the
+/// registry's own description (which already spells out the unit in prose)
+/// without touching `config get`'s stdout contract (scripts run
+/// `$(tasqx config get daemon.idle_timeout)` and must keep getting a bare
+/// value back).
+#[test]
+fn config_describe_names_the_unit_of_a_minutes_setting() {
+    let dir = fresh_config_dir("describe-idle");
+
+    let out = bin("describe-idle", &dir)
+        .args(["config", "describe", "daemon.idle_timeout"])
+        .output()
+        .expect("run config describe");
+
+    assert!(
+        out.status.success(),
+        "config describe: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("daemon.idle_timeout"),
+        "must name the key: {stdout}"
+    );
+    assert!(
+        stdout.to_lowercase().contains("minutes"),
+        "must name the unit a bare `0`/`5` gives no hint of: {stdout}"
+    );
+    assert!(
+        stdout.contains("0"),
+        "must show the default a reader would otherwise have to look up: {stdout}"
+    );
+
+    // `config get` itself must be completely unaffected — its stdout is a
+    // script's `$(...)` value, not a place for prose.
+    let get = bin("describe-idle", &dir)
+        .args(["config", "get", "daemon.idle_timeout"])
+        .output()
+        .expect("run config get");
+    assert_eq!(String::from_utf8_lossy(&get.stdout).trim(), "0");
+}
+
 /// Saving a theme said nothing about where to see it.
 ///
 /// The user picked gruvbox in `config edit`, it wrote correctly, and they came
