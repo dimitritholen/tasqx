@@ -2042,9 +2042,14 @@ mod tests {
     /// be dropped from the list (or from the arms) with nothing to catch it.
     /// This is that test, for the direction it CAN check: every name in
     /// `MODIFIABLE_FIELDS` must actually be wired to an arm, i.e. sending it
-    /// through `set` must never come back as `field not modifiable`. Watched
-    /// red by removing "estimate" from `MODIFIABLE_FIELDS` above (its arm
-    /// stayed) — the assertion below then failed on the still-accepted field.
+    /// through `set` must never come back as `field not modifiable`. Removing
+    /// a name from `MODIFIABLE_FIELDS` only shrinks what this loop iterates,
+    /// so that mutation stays green — it does not exercise the guard. Watched
+    /// red by renaming the `"estimate"` match arm below to `"estimate_typo"`
+    /// while leaving `"estimate"` in `MODIFIABLE_FIELDS`: the arm no longer
+    /// matched, `task_modify` fell through to the wildcard's `field not
+    /// modifiable` error, and the assertion failed on it. Reverted and it
+    /// passes.
     #[test]
     fn modifiable_fields_are_all_accepted() {
         let sample = |field: &str| -> Value {
