@@ -227,6 +227,34 @@ fn the_first_command_after_a_retirement_reports_it_and_consumes_the_note() {
     );
 }
 
+/// #236.4: a daemon killed outright (no idle retirement, so no marker) must
+/// still be told apart from one that is alive and serving. D74 covers the
+/// idle-retirement case above with a note the first failed-connect command
+/// consumes; a `kill -9`'d daemon leaves no such note, so before this fix
+/// nothing was said at all — "my daemon is serving these writes" and "my
+/// daemon died an hour ago" looked identical on stderr. The fallback fires
+/// only when the socket address was explicitly given (flag or
+/// `$TASQX_SOCK`) and nothing answers there; `bin(&w)` always sets
+/// `$TASQX_SOCK`, matching the audit's repro.
+#[test]
+fn a_dead_daemon_with_no_retirement_note_still_says_it_fell_back() {
+    let w = world("deadnomark");
+    // No daemon ever started on `w.sock`, and no retirement marker planted:
+    // the socket simply has nobody listening, as `kill -9` leaves it.
+
+    let out = bin(&w).args(["list"]).output().expect("run list");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "list in-process fallback: {stderr}");
+    assert!(
+        stderr.contains(&format!("no daemon at {}", w.sock)),
+        "the silent fallback must say so, naming the socket: {stderr}"
+    );
+    assert!(
+        stderr.contains("running in-process against $TASQX_DB"),
+        "the note must name what happens instead: {stderr}"
+    );
+}
+
 /// D74 / #254: `tasqx daemon` names its store on startup, beside the address,
 /// so the one line an operator reads in a scrollback answers the question
 /// every wrong-store incident starts with.
