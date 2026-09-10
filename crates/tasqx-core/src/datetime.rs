@@ -144,10 +144,18 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
 /// The one refusal for a date expression this grammar cannot read. It is a
 /// function because it is reachable from two places, and two copies of a message
 /// carrying an examples list are two things to keep in step.
+///
+/// The unit note is deliberate: `"in 3 days"` reads as a general "in N <unit>"
+/// grammar, but the offsets here are day-scale and larger only (days, weeks,
+/// months, years) — `"in 1 hour"` and `"next week"` are refused by this same
+/// grammar, and without saying so the refusal reads as a bug rather than a
+/// boundary (audit #231.3). Hour/minute offsets are `remind`'s and `est`'s
+/// grammar (`parse_duration`), not this one.
 fn unparseable(raw: &str) -> ApiError {
     ApiError::bad_request(format!(
         "could not parse date: {raw:?} (try e.g. tomorrow, friday, \
-         2026-07-20, \"in 3 days\", eom, or 2026-07-20T17:00)"
+         2026-07-20, \"in 3 days\" (day/week/month/year offsets only, no \
+         hours/minutes), eom, or 2026-07-20T17:00)"
     ))
 }
 
@@ -734,6 +742,23 @@ mod tests {
         assert!(parse_when("not a date", now()).is_err());
         assert!(parse_when("", now()).is_err());
         assert!(parse_when("bluesday", now()).is_err());
+    }
+
+    /// The hint on a refused date used to read as a general "in N <unit>"
+    /// grammar ("try e.g. ... \"in 3 days\" ...") while only day-scale units
+    /// actually parse — `"in 1 hour"` and `"next week"` are refused by the same
+    /// grammar `"in 3 days"` is offered as an example of, which reads as a bug
+    /// rather than a documented boundary (audit #231.3). The hint must say so.
+    #[test]
+    fn unparseable_hint_names_the_unit_boundary() {
+        for bad in ["in 1 hour", "in 2 hours", "next week"] {
+            let err = parse_when(bad, now()).expect_err("must be refused");
+            assert!(
+                err.message.contains("day/week/month/year"),
+                "hint does not name the unit boundary: {}",
+                err.message
+            );
+        }
     }
 
     /// `--due "at 6pm"` is what a human types, and it errored with "could not
