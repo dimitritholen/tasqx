@@ -47,3 +47,9 @@ docs/plans/
 # Bytecode from importing the doc generators under docs/.
 __pycache__/
 *.pyc
+
+# Local environment secrets — never committed.
+.env
+
+# nodeterm's local project metadata, not part of this repo.
+.nodeterm/
