@@ -319,6 +319,19 @@ impl Priority {
             .find(|(spelling, _)| spelling.eq_ignore_ascii_case(s))
             .map(|(_, p)| *p)
     }
+
+    /// The accepted set as a message fragment, e.g. `H, M, L`. Built from
+    /// [`Priority::ALL`] so an `invalid priority` refusal can never fall
+    /// behind the enum — the same shape [`Status::accepted`] and
+    /// [`Entity::accepted`] already use, applied here where the write-side
+    /// `bad_request` had grown its own unstructured wording instead.
+    pub fn accepted() -> String {
+        Priority::ALL
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// A project — hierarchy is expressed via dotted names (`work.api`).
