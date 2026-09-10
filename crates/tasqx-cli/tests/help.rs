@@ -37,6 +37,51 @@ fn add_help_shows_examples() {
     assert!(h.contains("See also"), "{h}");
 }
 
+/// `tasqx mcp serve --help` advertises the global `--socket` and `--theme`
+/// flags — clap lists every global flag on every subcommand's own help — but
+/// `mcp serve` refuses `--socket` outright and never consults `--theme` at
+/// all (it hosts JSON-RPC over stdio against an in-process engine, D73). The
+/// help text used to say nothing about either, so the first anyone learned of
+/// it was a startup failure inside whatever host launched the server.
+///
+/// Same story for `tasqx api --help`: an in-process one-shot with no theming
+/// and no socket route.
+///
+/// `tasqx chart --help` only refuses `--socket` (its output IS themed), so it
+/// gets the narrower note.
+#[test]
+fn socket_and_theme_caveats_are_documented_on_the_verbs_that_refuse_or_ignore_them() {
+    let out = bin()
+        .args(["mcp", "serve", "--help"])
+        .output()
+        .expect("run --help");
+    let h = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        h.contains("--socket") && h.contains("D73"),
+        "mcp serve --help must say --socket is not honoured here: {h}"
+    );
+    assert!(
+        h.contains("--theme"),
+        "mcp serve --help must say --theme is not honoured here: {h}"
+    );
+
+    let api = help_of("api");
+    assert!(
+        api.contains("--socket") && api.contains("D73"),
+        "api --help must say --socket is not honoured here: {api}"
+    );
+    assert!(
+        api.contains("--theme"),
+        "api --help must say --theme is not honoured here: {api}"
+    );
+
+    let chart = help_of("chart");
+    assert!(
+        chart.contains("--socket") && chart.contains("D73"),
+        "chart --help must say --socket is not honoured here: {chart}"
+    );
+}
+
 /// A fresh, isolated store path (file need not pre-exist; the engine creates it).
 fn fresh_db(tag: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
