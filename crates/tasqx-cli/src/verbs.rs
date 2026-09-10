@@ -1050,7 +1050,12 @@ pub(crate) fn run_next(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
 }
 
 pub(crate) fn run_why(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
-    let result = be.call("task.get", &json!({ "ref": r#ref }))?;
+    // #150: `--json` used to be a bare `task.get` result, which never carried
+    // the terms `urgency` sums — only the total the human form already showed.
+    // `explain: true` is the additive opt-in (D56/D1) that puts the breakdown
+    // on the wire, so the machine form answers the question the command name
+    // promises instead of handing back the one number the caller already had.
+    let result = be.call("task.get", &json!({ "ref": r#ref, "explain": true }))?;
     let text = render::why(ctx, &result);
     Ok((result, text))
 }

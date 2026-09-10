@@ -382,6 +382,21 @@ const TASK_ANNOTATION_PAGE: &[Field] = &[
 
 const TASK_BLOCKED: &[Field] = &[req("blocked", Ty::Bool)];
 
+/// #150: the terms `urgency` sums (D1) — absent unless `explain: true` is
+/// asked for, so the default `task.get` shape every existing caller reads is
+/// unchanged. `total` duplicates the top-level `urgency` deliberately: a
+/// breakdown that does not carry its own sum makes a client recompute the
+/// rounding rule to check its work.
+const URGENCY_BREAKDOWN_ROW: &[Field] = &[
+    req("priority", Ty::Num),
+    req("due_proximity", Ty::Num),
+    req("age", Ty::Num),
+    req("total", Ty::Num),
+];
+const URGENCY_BREAKDOWN: Shape = &[URGENCY_BREAKDOWN_ROW];
+const TASK_URGENCY_BREAKDOWN: &[Field] =
+    &[opt_of("urgency_breakdown", Ty::Object, URGENCY_BREAKDOWN)];
+
 const TASK_TOKENS: &[Field] = &[req_of("tokens", Ty::Array, MEASUREMENT)];
 
 /// The same measurements on the export row — but OPTIONAL, because
@@ -555,6 +570,7 @@ const R_TASK_GET: Shape = &[
     TASK_TOKENS,
     TASK_BLOCKED,
     TASK_STATUS_FLAG,
+    TASK_URGENCY_BREAKDOWN,
 ];
 
 const R_TASK_START: Shape = &[&[
@@ -1031,6 +1047,18 @@ fn cases() -> Vec<Case> {
                     .expect("annotate");
                 e.token_add(&self_report(1)).expect("token");
                 json!({ "ref": 1 })
+            },
+            R_TASK_GET,
+        ),
+        case(
+            "task.get",
+            "#150: `explain: true` adds the urgency_breakdown the default read omits",
+            |e| {
+                rich_task(e);
+                e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
+                    .expect("annotate");
+                e.token_add(&self_report(1)).expect("token");
+                json!({ "ref": 1, "explain": true })
             },
             R_TASK_GET,
         ),
