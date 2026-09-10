@@ -2058,8 +2058,9 @@ fn a_report_group_by_is_offered_where_it_is_legal() {
     );
     // `project` the axis and `project:` the predicate are different tokens and
     // both are legal here.
+    // `proj:` (#229 item 5) joined `project:` as a third legal reading.
     let both = complete_bash_in(&db, &socket, 2, &["tasqx", "report", "pro"]);
-    assert_eq!(both, ["project", "project:"], "got {both:?}");
+    assert_eq!(both, ["project", "project:", "proj:"], "got {both:?}");
 
     // Past the first word an axis no longer parses, and the menu says so.
     let later = complete_bash_in(

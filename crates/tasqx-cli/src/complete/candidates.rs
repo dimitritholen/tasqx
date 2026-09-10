@@ -1618,7 +1618,9 @@ mod tests {
         // engine filters a possible value.
         assert_eq!(values(filter_candidates("@")), ["@working", "@blocked"]);
         assert_eq!(values(filter_candidates("@w")), ["@working"]);
-        assert_eq!(values(filter_candidates("pro")), ["project:"]);
+        // #229 item 5: `proj:` joined `project:` as a real read-side prefix,
+        // so both now complete a "pro" partial.
+        assert_eq!(values(filter_candidates("pro")), ["project:", "proj:"]);
         assert_eq!(
             values(filter_candidates("due.")),
             ["due.before:", "due.after:"]
@@ -1804,7 +1806,8 @@ mod tests {
         assert_eq!(at(0, "pri"), ["priority", "priority:"]);
         // `project` the axis and `project:` the predicate are both legal at the
         // first word and both must be offered; they are different tokens.
-        assert_eq!(at(0, "pro"), ["project", "project:"]);
+        // `proj:` (#229 item 5) joins as a third, the alias predicate.
+        assert_eq!(at(0, "pro"), ["project", "project:", "proj:"]);
 
         // Past the first word an axis is no longer legal — `tasqx report project
         // status` exits 2 with `unknown filter token "status"`, measured — so the
@@ -1818,7 +1821,7 @@ mod tests {
             );
         }
         assert!(later.iter().any(|c| c == "@working"), "got {later:?}");
-        assert_eq!(at(1, "pro"), ["project:"]);
+        assert_eq!(at(1, "pro"), ["project:", "proj:"]);
     }
 
     /// The two seams must agree about the grammar: whatever `list` offers for a

@@ -392,6 +392,27 @@ fn task_reopen_from_done_and_cancelled() {
     assert_eq!(err.code, ErrorCode::Conflict);
 }
 
+/// #229 item 15: "cannot reopen a active task" — the transition-conflict
+/// message is machine-assembled (`"cannot reopen a {} task"`), and `active`
+/// is the one status in the set that starts with a vowel, so it is the one
+/// case that reads wrong. `task.start` is what puts a task in the one status
+/// `task.reopen` cannot reach from `done`/`cancelled`, which is exactly what
+/// makes this reachable rather than theoretical.
+#[test]
+fn reopening_an_active_task_uses_the_correct_article() {
+    let e = engine();
+    let sid = e.task_add(&json!({ "title": "grammar" })).unwrap()["short_id"].clone();
+    e.task_start(&json!({ "ref": sid })).unwrap();
+
+    let err = e.task_reopen(&json!({ "ref": sid })).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(
+        err.message.contains("an active task"),
+        "must read \"an active task\", not \"a active task\": {}",
+        err.message
+    );
+}
+
 #[test]
 fn project_list_and_archive() {
     let e = engine();

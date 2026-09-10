@@ -422,7 +422,69 @@ fn hint_occasion(cli: &Cli) -> Option<complete::hint::Occasion> {
 
 /// Run the parsed command, yielding whatever the terminal in [`run`] should do
 /// with it. Every `return` in here owes an [`Exit`].
+/// The static verb name for a subcommand this crate's inert-flag notes ever
+/// name — a small, closed set, not a mirror of clap's whole `Command` enum.
+fn verb_name(command: &Option<Command>) -> Option<&'static str> {
+    match command {
+        Some(Command::Api) => Some("api"),
+        Some(Command::Docs { .. }) => Some("docs"),
+        Some(Command::Manual { .. }) => Some("manual"),
+        Some(Command::Completions { .. }) => Some("completions"),
+        _ => None,
+    }
+}
+
 fn execute(cli: Cli) -> Exit {
+    // #229 item 6: `--json`'s carve-out note (`JSON_CARVE_OUTS`, D31) explains
+    // when the flag is accepted and ignored; `--theme` and `--socket` did the
+    // ignoring silently, on the same class of verb — every subcommand's
+    // `--help` lists all four globals regardless of whether the verb reads
+    // them, so a reader has no way to tell "ignored" from "does something"
+    // short of a note like this one. Narrower than a fully generic
+    // per-flag-per-verb table: only the combinations the finding names,
+    // mirroring `--json`'s wording so the two read as one family of note.
+    //
+    // `--no-daemon` is deliberately EXEMPT, unlike the finding's suggestion:
+    // it is documented as "the escape hatch for scripts" (`command.rs`), and
+    // this repo's own convention — `CLAUDE.md`'s isolation rule, and every
+    // fixture in `tests/completion.rs` — is to pass it on EVERY invocation
+    // defensively, `completions`/`docs`/`manual` included, so a caller never
+    // has to know per-verb whether it matters. A note firing on that pattern
+    // would make the safe default noisy rather than making the noise
+    // informative, which is the opposite of what `--json`'s note is for.
+    let note_inert = |verb: &str, flag: &str, why: &str| {
+        eprintln!("note: `{verb}` does not honour {flag} — {why}");
+    };
+    if cli.theme.is_some() {
+        let why = match &cli.command {
+            Some(Command::Api) => {
+                Some("already speaks the JSON API envelope; there is no themed output")
+            }
+            Some(Command::Completions { .. }) => {
+                Some("prints a shell registration line; there is no themed output")
+            }
+            _ => None,
+        };
+        if let (Some(why), Some(name)) = (why, verb_name(&cli.command)) {
+            note_inert(name, "--theme", why);
+        }
+    }
+    if cli.socket.is_some() {
+        let why = match &cli.command {
+            Some(Command::Docs { .. }) => Some("static content; it opens no store and no daemon"),
+            Some(Command::Manual { .. }) => {
+                Some("a reading surface; it opens no store and no daemon")
+            }
+            Some(Command::Completions { .. }) => {
+                Some("prints a shell registration line; it opens no store and no daemon")
+            }
+            _ => None,
+        };
+        if let (Some(why), Some(name)) = (why, verb_name(&cli.command)) {
+            note_inert(name, "--socket", why);
+        }
+    }
+
     // `--socket` names a daemon to route through, and these verbs open the
     // store without ever consulting it: `api` and `mcp serve` host their own
     // transport over an in-process engine (D73), and charts and the HTML
@@ -626,8 +688,16 @@ fn execute(cli: Cli) -> Exit {
     let mut backend = match open_backend(cli.socket.as_deref(), cli.no_daemon) {
         Ok(b) => b,
         Err(msg) => {
-            eprintln!("error: {msg}");
-            exit(1);
+            // #229 item 8: a bare `error:` prefix is otherwise reserved for
+            // clap's own usage errors, and exit 1 appeared nowhere in
+            // DESIGN.md's documented `0/2/4/5/...` contract — a wrapper
+            // branching on the exit code could not tell "the store is
+            // unreachable" from a clap parse failure by either the code or
+            // the message shape. `ErrorCode::Internal` already maps to exit
+            // 1, so this reuses it rather than inventing a new code.
+            let err = ApiError::internal(msg);
+            eprintln!("error [{}]: {}", code_str(&err), err.message);
+            exit(err.exit_code());
         }
     };
 

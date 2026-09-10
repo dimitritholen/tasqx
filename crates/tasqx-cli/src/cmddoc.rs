@@ -126,6 +126,17 @@ const fn ex_norun(cmd: &'static str, note: &'static str) -> Example {
         run: NoRun,
     }
 }
+/// A `NoRun` example with no note. `ex_norun` requires one — there was no
+/// plain `NoRun` shorthand, so four call sites that had nothing to say
+/// passed `""` just to get the `NoRun` behavior, and `after_help` rendered
+/// that empty note as a dangling `# ` (#229 item 14).
+const fn ex_norun_plain(cmd: &'static str) -> Example {
+    Example {
+        cmd,
+        note: None,
+        run: NoRun,
+    }
+}
 
 pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
@@ -355,7 +366,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         method: "task.stop",
         summary: "Pause an active task.",
         usage: "tasqx stop <ref>",
-        examples: &[ex_norun("tasqx stop 1", "")],
+        examples: &[ex_norun_plain("tasqx stop 1")],
         notes: &[],
         see_also: &["start", "done"],
         topic: Topic::Capturing,
@@ -418,7 +429,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         method: "task.reopen",
         summary: "Reopen a completed or cancelled task.",
         usage: "tasqx reopen <ref>",
-        examples: &[ex_norun("tasqx reopen 1", "")],
+        examples: &[ex_norun_plain("tasqx reopen 1")],
         notes: &[],
         see_also: &["done", "cancel"],
         topic: Topic::Capturing,
@@ -453,7 +464,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         method: "annotation.add",
         summary: "Attach a timestamped note to a task.",
         usage: "tasqx annotate <ref> <text…>",
-        examples: &[ex_norun("tasqx annotate 1 Called the plumber, waiting on a quote", "")],
+        examples: &[ex_norun_plain("tasqx annotate 1 Called the plumber, waiting on a quote")],
         notes: &[],
         see_also: &["show", "modify"],
         topic: Topic::Capturing,
@@ -509,7 +520,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         method: "dependency.remove",
         summary: "Remove a dependency edge.",
         usage: "tasqx undep <ref> <depends_on>",
-        examples: &[ex_norun("tasqx undep 2 1", "")],
+        examples: &[ex_norun_plain("tasqx undep 2 1")],
         notes: &[],
         see_also: &["dep"],
         topic: Topic::Capturing,
@@ -877,7 +888,11 @@ pub fn after_help(verb: &str) -> String {
     for e in d.examples {
         s.push_str("  ");
         s.push_str(e.cmd);
-        if let Some(n) = e.note {
+        // #229 item 14: `ex_norun(cmd, "")` sets `note: Some("")`, so a
+        // bare `if let Some` printed the `#` marker with nothing after it —
+        // guarded here so an empty note can never render a dangling comment,
+        // on top of fixing the four call sites that produced one.
+        if let Some(n) = e.note.filter(|n| !n.is_empty()) {
             s.push_str("    # ");
             s.push_str(n);
         }
@@ -919,6 +934,27 @@ mod tests {
                     "{}: example {:?} must start with `tasqx `",
                     d.verb,
                     e.cmd
+                );
+            }
+        }
+    }
+
+    /// #229 item 14: `stop`, `reopen`, `undep` and `annotate`'s help pages
+    /// printed an example with a trailing `#` and nothing after it —
+    /// `ex_norun(cmd, "")` sets `note: Some("")`, and `after_help` printed
+    /// the `#` marker unconditionally once `note` was `Some`, regardless of
+    /// whether there was a comment to introduce. `--help` is the tool's own
+    /// front door; a dangling `#` reads as truncated output.
+    #[test]
+    fn no_rendered_example_ends_in_a_dangling_comment_marker() {
+        for d in COMMAND_REF {
+            let text = after_help(d.verb);
+            for line in text.lines() {
+                assert!(
+                    !line.trim_end().ends_with('#'),
+                    "{}: an example line ends in a bare `#` with no comment \
+                     after it: {line:?}",
+                    d.verb
                 );
             }
         }

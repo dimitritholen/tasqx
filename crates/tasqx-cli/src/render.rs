@@ -33,10 +33,21 @@ use crate::AGENDA_MAX_DAYS;
 /// For a field that is expected to hold ONE line (a title, a source, a search
 /// snippet), a stray newline is itself part of what this guards against — it
 /// is how a hostile field would forge a second line of fake CLI output — so it
-/// is dropped along with every other control byte. A field that is legitimately
-/// multiple lines wants [`san_multiline`] instead.
+/// is neutralised. A field that is legitimately multiple lines wants
+/// [`san_multiline`] instead.
+///
+/// TAB and newline are replaced with a single visible space rather than
+/// dropped outright: deleting them welds the text on either side into one
+/// word (`"a\tb"` -> `"ab"`, `"line1\nline2"` -> `"line1line2"`), which reads
+/// as a single, different value rather than the two the field actually held —
+/// actively misleading, not merely cosmetic (audit #229 item 11). Every other
+/// control byte (escape, bell, backspace, C1) has no legitimate content
+/// reading and is still dropped outright.
 pub fn san(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    s.chars()
+        .map(|c| if c == '\t' || c == '\n' { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 /// Same guard as [`san`], for text that is legitimately more than one line — a
@@ -113,9 +124,16 @@ pub fn project_created(ctx: &Ctx, result: &Value) -> String {
     } else {
         // Name the verb that would do it: the user's complaint was being left
         // with no way to steer this and no hint that one existed.
+        //
+        // #229 item 13: `name` is quoted here (`filter::quote`'s own
+        // "quotes unconditionally" rule — a project name may hold padding or
+        // spaces D36 keeps verbatim, e.g. `init " padded "`) so the printed
+        // command is always one the shell can carry back in, rather than a
+        // bare word that drops the very whitespace `tasqx use` needs to see.
         format!(
-            "  ·  default is still {}  (tasqx use {name})",
-            default_label(ctx, result)
+            "  ·  default is still {}  (tasqx use {})",
+            default_label(ctx, result),
+            tasqx_core::filter::quote(&name)
         )
     };
     format!(
@@ -772,10 +790,13 @@ pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         .and_then(Value::as_array)
         .unwrap_or(&empty);
     if tasks.is_empty() {
+        // #229 item 1: matches `report`'s phrasing for the same situation —
+        // an empty result set from a read verb — rather than the CLI naming
+        // the same outcome two different ways depending which verb answered.
         return if store_is_empty(result) {
             onboarding_hint()
         } else {
-            "No tasks.\n".to_string()
+            "No matching tasks.\n".to_string()
         };
     }
 
@@ -3126,15 +3147,17 @@ mod tests {
     #[test]
     fn san_strips_control_and_escape_bytes() {
         // A title carrying a screen-clear + OSC title-set + cursor move: every
-        // control byte is removed, printable text survives.
+        // control byte is removed (tab replaced with a space — see
+        // `san_replaces_tab_with_a_space_instead_of_deleting_it` — everything
+        // else dropped outright), printable text survives.
         let malicious = "\x1b[2Jpwned\x1b]0;evil\x07\x08 ok\ttab";
         let clean = san(malicious);
         assert!(!clean.contains('\x1b'), "escape byte leaked: {clean:?}");
         assert!(!clean.contains('\x07') && !clean.contains('\x08'));
         assert!(!clean.contains('\t'), "a raw tab expands in any terminal and shifts every column to its right on that row — the misalignment D51 exists to end (D19/#234 item 10)");
         assert_eq!(
-            clean, "[2Jpwned]0;evil oktab",
-            "printable kept, tab dropped"
+            clean, "[2Jpwned]0;evil ok tab",
+            "printable kept, tab replaced with a visible space (#229 item 11)"
         );
     }
 
@@ -3142,16 +3165,41 @@ mod tests {
     /// D19): a raw TAB in a title survives `san` and expands to the next
     /// 8-column stop in any real terminal, shifting every column to the
     /// RIGHT of it on that one row — the exact misalignment D51 exists to
-    /// end, reintroduced by the one control byte `san` still let through.
-    /// `html::esc` keeps tab deliberately (D19: "legitimate document
+    /// end. `html::esc` keeps tab deliberately (D19: "legitimate document
     /// whitespace" — a `<table>` cell has no fixed-width grid to break), so
     /// this is a `render::san`-only fix, not a second D19 sanitizer standard.
+    ///
+    /// Dropping the tab outright (a prior fix's behaviour) is its own bug:
+    /// `"a\tb"` became `"ab"`, silently welding two words together — audit
+    /// #229 item 11 caught this as a regression on the rebased tree. The
+    /// Direction was explicit: map TAB (and newline, see the sibling test
+    /// below) to a single visible separator space, not delete it.
     #[test]
-    fn san_strips_tab_which_would_misalign_a_terminal_table() {
-        assert_eq!(san("tab\there"), "tabhere");
+    fn san_replaces_tab_with_a_space_instead_of_deleting_it() {
+        assert_eq!(
+            san("tab\there"),
+            "tab here",
+            "a dropped tab welds two words together (#229 item 11), a table's column boundary must stay visible"
+        );
         assert_eq!(
             san("bell\x07 and \x1b]0;PWNED\x07title"),
-            "bell and ]0;PWNEDtitle"
+            "bell and ]0;PWNEDtitle",
+            "other control bytes are still dropped outright, not spaced"
+        );
+    }
+
+    /// #229 item 11: a newline in a single-line field (title, source,
+    /// snippet) was deleted by `san` rather than replaced, so `"line1\nline2"`
+    /// rendered as one welded word `"line1line2"` — actively misleading in
+    /// both `list` and `show`. A newline becomes a visible space instead,
+    /// same treatment as tab, while `san_multiline` (paragraph text) is left
+    /// untouched — it keeps real newlines on purpose.
+    #[test]
+    fn san_replaces_newline_with_a_space_instead_of_deleting_it() {
+        assert_eq!(
+            san("line1\nline2"),
+            "line1 line2",
+            "a deleted newline welds two lines into one misleading word (#229 item 11)"
         );
     }
 
@@ -3700,10 +3748,11 @@ mod tests {
         assert!(out.contains("tasqx manual"), "{out:?}");
 
         // A filter that matched nothing on a non-empty store keeps the plain
-        // "No tasks." — the onboarding hint would be misleading there.
+        // empty-result phrasing — the onboarding hint would be misleading
+        // there. #229 item 1 aligned this wording with `report`'s.
         let filtered_empty = json!({ "tasks": [], "count": 0, "total": 0, "store_empty": false });
         let out2 = task_table(&ctx, &filtered_empty, Timestamp::now());
-        assert_eq!(out2, "No tasks.\n");
+        assert_eq!(out2, "No matching tasks.\n");
     }
 
     /// #233.1: `next` on a genuinely fresh store must not say "you're clear"
@@ -3762,6 +3811,20 @@ mod tests {
         let filtered_empty = json!({ "tasks": [], "store_empty": false });
         let out2 = agenda_text(&ctx, &agenda_select(&filtered_empty, 14, anchor()));
         assert!(!out2.contains("tasqx add"), "{out2:?}");
+    }
+
+    /// #229 item 1: `task_table` (`list`, `watch`) said "No tasks." while
+    /// `report` said "No matching tasks." for the identical situation — an
+    /// empty result set from a read verb, filtered or not. One phrasing
+    /// across the read verbs, matching what `report` already used.
+    #[test]
+    fn an_empty_task_table_matches_reports_empty_phrasing() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let text = task_table(&ctx, &json!({ "tasks": [] }), Timestamp::now());
+        assert_eq!(
+            text, "No matching tasks.\n",
+            "list/watch's empty phrasing must match report's: {text:?}"
+        );
     }
 
     #[test]
@@ -3923,6 +3986,29 @@ mod tests {
         assert!(
             not_claimed.contains("use"),
             "must name the way to switch: {not_claimed:?}"
+        );
+    }
+
+    /// #229 item 13: `init " padded "` mints a project whose own printed
+    /// re-selection command cannot be typed — `tasqx use  padded ` reads as
+    /// `use`, a bare argument `padded`, and two stray tokens the shell drops,
+    /// which is not the name the store actually holds. `project.create`'s
+    /// D36 rule (`req_str_value`) is that a name's padding survives verbatim
+    /// — the fix belongs in the PRINTED hint, quoted the way `filter::quote`
+    /// already quotes a project name inside a composed filter, not in a
+    /// trim at the write door that would fight the store-import round trip
+    /// D36 exists to keep byte-identical.
+    #[test]
+    fn a_padded_project_names_own_re_selection_hint_is_typeable() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = project_created(
+            &ctx,
+            &json!({ "name": " padded ", "default": false, "current_default": "work" }),
+        );
+        assert!(
+            out.contains("\" padded \"") || out.contains("' padded '"),
+            "the printed `tasqx use` hint must quote a name a bare shell word \
+             cannot carry: {out:?}"
         );
     }
 
