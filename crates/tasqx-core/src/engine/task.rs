@@ -150,6 +150,23 @@ fn check_remind_has_anchor(remind: Option<&str>, due: Option<&str>) -> Result<()
     Ok(())
 }
 
+/// "a" or "an" for a status name in a transition-conflict message
+/// (`"cannot {verb} a {status} task"`). #229 item 15: `active` is the one
+/// status in the set that starts with a vowel, so every one of these
+/// machine-assembled messages read "a active task" the moment the task
+/// actually reached this branch in that status — reachable in practice from
+/// `task_reopen` (only `done`/`cancelled -> pending`, so any of
+/// backlog/pending/active can land here), and defended against everywhere
+/// else it could ever become reachable too, since "does the vowel rule hold"
+/// is not a property any one call site should have to re-derive.
+fn article_for_status(status: Status) -> &'static str {
+    if status.as_str().starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    }
+}
+
 impl Engine {
     // ---- task.add ------------------------------------------------------------
 
@@ -389,7 +406,8 @@ impl Engine {
             }
             other => {
                 return Err(ApiError::conflict(format!(
-                    "cannot start a {} task (only pending -> active)",
+                    "cannot start {} {} task (only pending -> active)",
+                    article_for_status(other),
                     other.as_str()
                 )));
             }
@@ -464,7 +482,8 @@ impl Engine {
         let task = self.resolve_ref_value_on(&tx, &command.value)?;
         if task.status != Status::Active {
             return Err(ApiError::conflict(format!(
-                "cannot stop a {} task (only active -> pending)",
+                "cannot stop {} {} task (only active -> pending)",
+                article_for_status(task.status),
                 task.status.as_str()
             )));
         }
@@ -527,7 +546,8 @@ impl Engine {
             }
             other => {
                 return Err(ApiError::conflict(format!(
-                    "cannot complete a {} task (only pending|active -> done)",
+                    "cannot complete {} {} task (only pending|active -> done)",
+                    article_for_status(other),
                     other.as_str()
                 )));
             }
@@ -1047,7 +1067,8 @@ impl Engine {
                         Status::Backlog | Status::Pending | Status::Active => {}
                         other => {
                             return Err(ApiError::conflict(format!(
-                                "cannot cancel a {} task",
+                                "cannot cancel {} {} task",
+                                article_for_status(other),
                                 other.as_str()
                             )));
                         }
@@ -1739,7 +1760,8 @@ impl Engine {
             Status::Backlog | Status::Pending | Status::Active => {}
             other => {
                 return Err(ApiError::conflict(format!(
-                    "cannot cancel a {} task (only backlog|pending|active -> cancelled)",
+                    "cannot cancel {} {} task (only backlog|pending|active -> cancelled)",
+                    article_for_status(other),
                     other.as_str()
                 )));
             }
@@ -1792,7 +1814,8 @@ impl Engine {
             Status::Done | Status::Cancelled => {}
             other => {
                 return Err(ApiError::conflict(format!(
-                    "cannot reopen a {} task (only done|cancelled -> pending)",
+                    "cannot reopen {} {} task (only done|cancelled -> pending)",
+                    article_for_status(other),
                     other.as_str()
                 )));
             }

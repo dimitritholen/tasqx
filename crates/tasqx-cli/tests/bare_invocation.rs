@@ -56,7 +56,7 @@ fn bin(cfg: &std::path::Path, db: &std::path::Path) -> Command {
 
 /// Seed one project and two tasks, so the table under test has rows in it.
 ///
-/// An empty store prints `No tasks.`, which would satisfy a weak assertion
+/// An empty store prints `No matching tasks.`, which would satisfy a weak assertion
 /// ("still exits 0, still says something") while telling us nothing about the
 /// table itself.
 fn seed(cfg: &std::path::Path, db: &std::path::Path) {

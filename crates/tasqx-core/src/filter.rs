@@ -147,6 +147,7 @@ predicate  := \"+\" VALUE                    # require tag; VALUE not empty
             | \"@working\"                   # status in {pending,active} AND not blocked
             | \"@blocked\" | \"+blocked\" | \"status:blocked\"   # the blocked flag
             | \"project:\" VALUE
+            | \"proj:\" VALUE                  # alias of project: (#229 item 5)
             | \"status:\" VALUE
             | \"priority:\" VALUE
             | \"due.before:\" DATE
@@ -530,8 +531,9 @@ pub enum Vocabulary {
 /// list is exported instead, and its consumers read it rather than restating it.
 ///
 /// The order is the grammar's, and is what a completion menu shows.
-pub const VALUE_PREFIXES: [(&str, Vocabulary); 9] = [
+pub const VALUE_PREFIXES: [(&str, Vocabulary); 10] = [
     ("project:", Vocabulary::Project),
+    ("proj:", Vocabulary::Project),
     ("status:", Vocabulary::Status),
     ("priority:", Vocabulary::Priority),
     ("due.before:", Vocabulary::Date),
@@ -576,8 +578,9 @@ pub const OPERATORS: [&str; 2] = ["and", "or"];
 /// the token does not exist. `token_shapes_name_every_value_prefix` pins it to
 /// `VALUE_PREFIXES` so a seventh `key:` predicate cannot be advertised by the
 /// grammar and omitted from the refusal.
-const TOKEN_SHAPES: &str = "+tag, -tag, @working, @blocked, project:, status:, priority:, \
-                            due.before:, due.after:, completed.before: or completed.after:";
+const TOKEN_SHAPES: &str = "+tag, -tag, @working, @blocked, project: (or proj:), status:, \
+                            priority:, due.before:, due.after:, completed.before: or \
+                            completed.after:";
 
 /// Compose one filter string from argv by joining the elements with a space.
 ///
@@ -845,31 +848,42 @@ impl Parser {
     }
 
     fn parse_and(&mut self) -> Result<Expr, String> {
-        let mut parts = Vec::new();
+        // #229 item 12: `and` used to be a word this loop SKIPPED regardless
+        // of position — so `+pr and` (nothing after it), `and +pr` (nothing
+        // before it), and `+pr and or +review` (the `and`'s operand slot
+        // swallowed by the `or` right after it) all parsed as though `and`
+        // had never been typed, silently widening the result exactly the way
+        // a dangling `or` — already refused — would. `parse_and_operand`
+        // makes a missing operand on EITHER side of `and` the same
+        // `"expected a filter term"` a dangling `or` already produces.
+        let mut parts = vec![self.parse_and_operand()?];
         loop {
             if self.peek().is_none() || self.is_sym(")") || self.is_kw("or") {
                 break;
             }
             if self.is_kw("and") {
-                self.pos += 1; // explicit AND separator, skip
-                continue;
+                self.pos += 1; // consume the explicit operator; an operand MUST follow
             }
-            parts.push(self.parse_term()?);
-        }
-        if parts.is_empty() {
-            // Reached from a dangling operator or an empty group — `+api or`,
-            // `()`. This used to yield the always-true term, so a trailing
-            // `or` widened the result to every task instead of failing. The
-            // genuinely empty filter never arrives here: `Filter::parse`
-            // returns early on no tokens at all, which is the one case that
-            // legitimately means "match everything".
-            return Err("expected a filter term".to_string());
+            parts.push(self.parse_and_operand()?);
         }
         if parts.len() == 1 {
             Ok(parts.pop().unwrap())
         } else {
             Ok(Expr::And(parts))
         }
+    }
+
+    /// One operand of an `and_expr`. Refuses to start on `and`/`or`/`)`/
+    /// end-of-input — rather than falling into [`Self::parse_term`], which
+    /// indexes `self.toks[self.pos]` unconditionally and would panic on an
+    /// empty tail — so every "nothing here" case this grammar can reach
+    /// (a dangling `and`, a leading `and`, an empty group `()`, a bare `or`)
+    /// answers with the one message, `"expected a filter term"`.
+    fn parse_and_operand(&mut self) -> Result<Expr, String> {
+        if self.peek().is_none() || self.is_sym(")") || self.is_kw("or") || self.is_kw("and") {
+            return Err("expected a filter term".to_string());
+        }
+        self.parse_term()
     }
 
     fn parse_term(&mut self) -> Result<Expr, String> {
@@ -1054,7 +1068,14 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
             return Ok(Pred::TagExclude(rest.to_string()));
         }
     }
-    if let Some(v) = tok.strip_prefix("project:") {
+    // `proj:` is the write side's alias for `project:` (`tasqx-cli`'s
+    // `sugar.rs`, and the manual documents it); the read side used to refuse
+    // it, which meant an alias learned from `add` or the manual hit a wall
+    // on every read verb sharing this one parser (#229 item 5).
+    if let Some(v) = tok
+        .strip_prefix("project:")
+        .or_else(|| tok.strip_prefix("proj:"))
+    {
         // The empty value is refused, for the reason the `status:` arm below
         // states and every other value prefix already obeys: `project:` names no
         // project, and a token that names nothing is unknown rather than a
@@ -1314,6 +1335,70 @@ mod tests {
         // The same tokens without parentheses DO match, which is what proves the
         // assertion above is about grouping and not about the predicates.
         assert!(parsed("project:home or +api and status:done").matches(&ctx));
+    }
+
+    /// #229 item 5: `proj:` is a valid write-side sugar (`tasqx-cli`'s
+    /// `sugar.rs`, and the manual documents it) but the read side refused it
+    /// with `unknown filter token`, and the refusal's own "expected" list did
+    /// not even mention it — a user who learns the alias from `add` or the
+    /// manual hits a wall on `list`/`report`/`export`/`watch`, all of which
+    /// share this one parser. Accepting it here, rather than dropping the
+    /// write-side alias, is the cheaper of the two fixes the finding names.
+    #[test]
+    fn proj_is_accepted_as_an_alias_of_project_on_the_read_side_too() {
+        let ctx = MatchCtx {
+            status: Status::Pending,
+            priority: None,
+            project: Some("home"),
+            tags: &[],
+            due: None,
+            completed: None,
+            blocked: false,
+        };
+        assert!(parsed("proj:home").matches(&ctx));
+        assert!(!parsed("proj:elsewhere").matches(&ctx));
+    }
+
+    /// #229 item 12: `or` with a missing operand is already refused
+    /// (`+api or` -> `expected a filter term`), but `and` was silently
+    /// SKIPPED as a no-op separator regardless of position — so a truncated
+    /// `project:web and`, a leading `and +api`, or `+pr and or +review` (the
+    /// `and`'s operand slot swallowed by the `or` that follows) all parsed
+    /// and answered the WIDER set silently, exactly the failure mode this
+    /// module refuses `or` to prevent.
+    #[test]
+    fn a_dangling_and_is_refused_exactly_like_a_dangling_or() {
+        for bad in ["+pr and", "and +pr", "+pr and or +review", "and", "and and"] {
+            let err = refused(bad);
+            assert!(
+                err.contains("expected a filter term"),
+                "{bad:?} must be refused the same way a dangling `or` is: {err}"
+            );
+        }
+        // The well-formed forms must still work exactly as before.
+        let ctx = MatchCtx {
+            status: Status::Pending,
+            priority: None,
+            project: None,
+            tags: &["pr".into()],
+            due: None,
+            completed: None,
+            blocked: false,
+        };
+        assert!(parsed("+pr and status:pending").matches(&ctx));
+        assert!(parsed("+pr status:pending").matches(&ctx), "implicit and");
+        assert!(!parsed("+pr and status:done").matches(&ctx));
+
+        // The refusal's own "expected" list is generated from VALUE_PREFIXES
+        // (`token_shapes_name_every_value_prefix`), so once `proj:` is a real
+        // prefix it must be named there too — asserted directly, since a
+        // filter that stops being refused cannot exercise `TOKEN_SHAPES` any
+        // other way.
+        assert!(
+            TOKEN_SHAPES.contains("proj:"),
+            "the refusal's expected-token list must name every accepted \
+             spelling, `proj:` included: {TOKEN_SHAPES}"
+        );
     }
 
     /// `due.before`/`due.after` are documented as STRICT, and the boundary was
@@ -1708,8 +1793,8 @@ mod tests {
         // Without this the guard passes by matching nothing if GRAMMAR is
         // reformatted — the failure mode every text-scanning guard has.
         assert_eq!(
-            seen, 7,
-            "expected seven `key:`-shaped predicates in GRAMMAR"
+            seen, 8,
+            "expected eight `key:`-shaped predicates in GRAMMAR"
         );
     }
 

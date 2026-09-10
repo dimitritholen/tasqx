@@ -1217,6 +1217,11 @@ pub(super) enum MemoryAction {
         raw: bool,
     },
     /// Show one doc whole, by id (maps to memory.get).
+    // #229 item 7: `get` is the name a reader already knows — it is
+    // `memory.get` on the API and `tasqx_get_memory` on MCP — so `memory get`
+    // is an alias here rather than an unrecognised-subcommand error with no
+    // did-you-mean.
+    #[command(alias = "get")]
     Show {
         /// The doc UUID, as printed by `memory add` and `memory search`.
         id: String,
