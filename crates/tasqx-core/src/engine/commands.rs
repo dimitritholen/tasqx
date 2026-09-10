@@ -26,7 +26,6 @@ pub(super) struct StartTask {
 /// command.
 pub(super) struct Correlation {
     pub(super) session_id: Option<String>,
-    pub(super) prompt_id: Option<String>,
     pub(super) transcript_path: Option<String>,
     pub(super) client: Option<String>,
 }
@@ -39,7 +38,6 @@ impl Correlation {
     pub(super) fn apply(&self, payload: &mut Value) {
         for (key, value) in [
             ("session_id", &self.session_id),
-            ("prompt_id", &self.prompt_id),
             ("transcript_path", &self.transcript_path),
             ("client", &self.client),
         ] {
@@ -67,7 +65,6 @@ pub(super) fn parse_start_task(p: &Value) -> Result<StartTask, ApiError> {
 pub(super) fn parse_correlation(p: &Value) -> Result<Correlation, ApiError> {
     Ok(Correlation {
         session_id: opt_str_nonempty(p, "session_id")?,
-        prompt_id: opt_str_nonempty(p, "prompt_id")?,
         transcript_path: opt_str_nonempty(p, "transcript_path")?,
         client: opt_str_nonempty(p, "client")?,
     })
@@ -170,6 +167,31 @@ pub(super) struct TaskStarted {
     /// the timer to a human re-running a lost command. True on the idempotent
     /// re-start path only.
     pub(super) already_running: bool,
+    /// #75: the tasks D6's single-active rule auto-stopped to make room for
+    /// this one — empty when `keep` was set, or when nothing else was
+    /// running. The stop loop already collects exactly this (id, short_id,
+    /// tracked) while writing the `stop`/`auto_stop` events; it used to be
+    /// thrown away, so neither the CLI nor MCP callers had any way to learn a
+    /// running timer had just been closed on their behalf (the same family of
+    /// defect as D18/D21/D23 — behaviour-driving state mutated by a command
+    /// whose own response never mentions it).
+    pub(super) auto_stopped: Vec<AutoStopped>,
+}
+
+/// One task `task.start` auto-stopped (D6) to enforce single-active. Carries
+/// enough for a caller to both name it (`short_id`) and report what it cost
+/// (`tracked`, the ISO-8601 duration of the interval that was just closed —
+/// same encoding [`TaskStopped::tracked`] uses).
+pub(super) struct AutoStopped {
+    pub(super) id: String,
+    pub(super) short_id: i64,
+    pub(super) tracked: String,
+}
+
+impl From<&AutoStopped> for Value {
+    fn from(a: &AutoStopped) -> Self {
+        json!({ "id": a.id, "short_id": a.short_id, "tracked": a.tracked })
+    }
 }
 
 impl From<TaskStarted> for Value {
@@ -181,6 +203,7 @@ impl From<TaskStarted> for Value {
             "short_id": result.short_id,
             "title": result.title,
             "already_running": result.already_running,
+            "auto_stopped": result.auto_stopped.iter().map(Value::from).collect::<Vec<_>>(),
         })
     }
 }

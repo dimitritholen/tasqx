@@ -603,6 +603,18 @@ const R_TASK_START: Shape = &[&[
     // the CLI can say "already running" instead of "Started" for a request
     // that opened no new interval.
     req("already_running", Ty::Bool),
+    // #75: the tasks D6's single-active rule auto-stopped to make room for
+    // this one, empty when nothing was displaced (`keep`, or nothing else
+    // was running).
+    req_of(
+        "auto_stopped",
+        Ty::Array,
+        &[&[
+            req("id", Ty::Str),
+            req("short_id", Ty::Int),
+            req("tracked", Ty::Str),
+        ]],
+    ),
 ]];
 
 const R_TASK_STOP: Shape = &[&[
@@ -1141,9 +1153,11 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "task.start",
-            "pending -> active",
+            "pending -> active, auto-stopping another running task (#75)",
             |e| {
                 plain_task(e);
+                plain_task(e);
+                e.task_start(&json!({ "ref": 2 })).expect("start #2 first");
                 json!({ "ref": 1, "keep": false, "client": "conformance" })
             },
             R_TASK_START,

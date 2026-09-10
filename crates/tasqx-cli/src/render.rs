@@ -316,7 +316,7 @@ pub fn started(ctx: &Ctx, result: &Value) -> String {
         .get("already_running")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let line = if already {
+    let mut line = if already {
         format!(
             "{}  ·  since {started}\n  {}\n",
             ctx.paint("timer.active", "Already running"),
@@ -329,6 +329,29 @@ pub fn started(ctx: &Ctx, result: &Value) -> String {
             task_ref_line(ctx, result)
         )
     };
+    // #75: D6's single-active rule may have auto-stopped a different task to
+    // make room for this one; say so ABOVE the "Started" line so a session
+    // that just ended a running timer sees that before it sees what it
+    // started instead (same ordering D101's `pick`-screen stand-in used).
+    let stopped_lines: String = result
+        .get("auto_stopped")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|a| {
+            let sid = a.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+            let tracked = a.get("tracked").and_then(Value::as_str).unwrap_or("");
+            format!(
+                "{} #{sid}  ·  tracked {}\n",
+                ctx.paint("timer.active", "Stopped"),
+                human_duration(tracked)
+            )
+        })
+        .collect();
+    if !stopped_lines.is_empty() {
+        line = format!("{stopped_lines}{line}");
+    }
     line
 }
 
