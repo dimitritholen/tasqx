@@ -1646,6 +1646,19 @@ fn attribution_tick(
                         if result.confidence == crate::tokens::CONFIDENCE_LOW {
                             measured_low_confidence = true;
                         }
+                        // D111: OTLP also held a non-empty result for this
+                        // window, but log-parse (the more complete source)
+                        // won — surface the disagreement rather than
+                        // discarding it silently.
+                        if let Some(otel_total) = result.otel_disagreement {
+                            eprintln!(
+                                "tasqx daemon: note: #{} log-parse ({} tokens) disagreed with \
+                                 buffered OTLP ({} tokens) for the same window; log-parse won",
+                                pa.short_id,
+                                result.totals.total(),
+                                otel_total
+                            );
+                        }
                     }
                 }
             }
