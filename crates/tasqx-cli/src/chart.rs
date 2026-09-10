@@ -232,7 +232,26 @@ pub fn velocity_4wk(result: &Value, members: &[Member], anchor: Date) -> f64 {
 /// the ISO week containing the anchor (`today` — see `throughput`'s window
 /// construction), so it is marked "(partial)" unconditionally: "today" has, by
 /// definition, not finished its week.
-pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket], velocity: f64) -> String {
+///
+/// `store_empty` is a PARAMETER for the same reason: whether the store has
+/// ever held a task is a fact about the whole store, and a real user whose
+/// current window simply has no activity yet (a quiet week on an otherwise
+/// long-lived store) produces the identical all-zero `buckets` a genuinely
+/// fresh store does — only the caller, which already lists every task to
+/// build `buckets`, can tell the two apart (#233.2).
+pub fn render_throughput(
+    ctx: &Ctx,
+    buckets: &[WeekBucket],
+    velocity: f64,
+    store_empty: bool,
+) -> String {
+    // An entirely empty store is a fact, not a grid of zeros to draw —
+    // twelve identical "added 0 done 0 net 0" rows plus "WIP steady" reads
+    // as a broken tool, and `report` already has the right one-line
+    // treatment for this.
+    if store_empty {
+        return "No events recorded yet — add a task to start the history.\n".to_string();
+    }
     let max = buckets
         .iter()
         .map(|b| b.added.max(b.done))
@@ -438,7 +457,20 @@ pub fn best_streak(days: &[DayCount]) -> u32 {
 }
 
 /// Render a day series the caller has already computed. See `render_throughput`.
-pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date) -> String {
+///
+/// `store_empty` is a PARAMETER for the same reason `velocity` is on
+/// `render_throughput`: whether the store has ever held a task is a fact
+/// about the whole store, not something a zero-filled `days` window can
+/// stand in for. A real user whose current window simply has no completions
+/// yet — the first week of an otherwise long-lived store — produces the
+/// identical all-zero `days` a genuinely fresh store does; only the caller,
+/// which already lists every task to build `days` in the first place, can
+/// tell the two apart (#233.2, and the collision it had with #234 item 8's
+/// deliberately all-zero, all-future single-week fixture).
+pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: bool) -> String {
+    if store_empty {
+        return "No events recorded yet — add a task to start the history.\n".to_string();
+    }
     let weeks_n = days.len() / 7;
 
     let legend = if ctx.caps.unicode {
@@ -1359,7 +1391,7 @@ mod tests {
                 done: *done,
             })
             .collect();
-        let out = render_throughput(&ctx, &buckets, 0.0);
+        let out = render_throughput(&ctx, &buckets, 0.0, false);
         let rows: Vec<&str> = out.lines().skip(1).take(buckets.len()).collect();
         assert_eq!(rows.len(), buckets.len(), "one row per week: {out}");
         for label in ["added", "done", "net"] {
@@ -1476,7 +1508,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Regression tests — tasqx audit 2026-09 (#164, #167, #234)
+    // Regression tests — tasqx audit 2026-09 (#164, #167, #233, #234)
     // ========================================================================
 
     /// #164: `chart heatmap` must count a task once per its CURRENT completion,
@@ -1559,7 +1591,7 @@ mod tests {
         let members = [member_status("a", (2026, 7, 1), "done")];
         let days = heatmap(&result(evs), &members, 1, anchor());
         let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
-        let out = render_heatmap(&ctx, &days, anchor());
+        let out = render_heatmap(&ctx, &days, anchor(), false);
         assert!(
             out.contains("streak 1 day ")
                 || out.contains("streak 1 day\n")
@@ -1645,7 +1677,7 @@ mod tests {
         let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
         let one_week = throughput(&result(evs.clone()), &members, 1, anchor());
         let velocity = velocity_4wk(&result(evs), &members, anchor());
-        let out = render_throughput(&ctx, &one_week, velocity);
+        let out = render_throughput(&ctx, &one_week, velocity, false);
         assert!(
             out.contains("4-wk velocity 2.0 done/wk"),
             "the 4-wk figure must reflect the last 4 COMPLETE weeks (2.0/wk), \
@@ -1671,7 +1703,11 @@ mod tests {
             })
             .collect();
         let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
-        let out = render_heatmap(&ctx, &days, anchor());
+        // Not an empty store — a store with real history whose display
+        // window happens to be mostly future padding. `store_empty` is the
+        // caller's fact to assert, not something this all-zero `days` window
+        // could stand in for (see `render_heatmap`'s doc comment).
+        let out = render_heatmap(&ctx, &days, anchor(), false);
         let mon = out.lines().find(|l| l.contains("Mon")).unwrap();
         assert!(
             mon.contains('.'),
@@ -1694,5 +1730,59 @@ mod tests {
                 "a day that has not happened yet must not draw as idle: {row:?}\n{out}"
             );
         }
+    }
+
+    /// #233.2: a genuinely empty store must print the same one-line
+    /// empty-state treatment `report` already gives, not twelve rows of
+    /// `added 0 done 0 net 0`, which reads as a broken tool rather than an
+    /// empty one. Driven by `store_empty` rather than an all-zero `buckets`:
+    /// a real user whose current window simply has no activity yet produces
+    /// the identical all-zero series a fresh store does, so only the fact
+    /// the caller already has (member list is empty) can tell them apart.
+    #[test]
+    fn render_throughput_short_circuits_an_entirely_empty_series() {
+        use crate::theme::{self, Caps};
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let buckets: Vec<WeekBucket> = (0..12)
+            .map(|i| WeekBucket {
+                iso_year: 2026,
+                iso_week: 26 + i,
+                added: 0,
+                done: 0,
+            })
+            .collect();
+        let out = render_throughput(&ctx, &buckets, 0.0, true);
+        assert!(
+            !out.contains("added   0") && !out.contains("W26"),
+            "still drawing the zero grid: {out}"
+        );
+        assert!(
+            out.to_lowercase().contains("no") && (out.contains("event") || out.contains("task")),
+            "must name the empty state, not just omit the grid: {out:?}"
+        );
+        assert_eq!(out.lines().count(), 1, "one line, like `report`'s: {out:?}");
+
+        // A non-empty store still draws the grid, even over an all-zero window.
+        assert!(render_throughput(&ctx, &buckets, 0.0, false).contains("W26"));
+    }
+
+    /// #233.2: same short-circuit for the heatmap, on the same `store_empty`
+    /// signal — see `render_throughput_short_circuits_an_entirely_empty_series`.
+    #[test]
+    fn render_heatmap_short_circuits_an_entirely_empty_series() {
+        use crate::theme::{self, Caps};
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let days: Vec<DayCount> = (0..84)
+            .map(|i| DayCount {
+                date: anchor().saturating_add((i as i64).days()),
+                count: 0,
+            })
+            .collect();
+        let out = render_heatmap(&ctx, &days, anchor(), true);
+        assert!(!out.contains("Mon"), "still drawing the empty grid: {out}");
+        assert_eq!(out.lines().count(), 1, "one line, like `report`'s: {out:?}");
+
+        // A non-empty store still draws the grid, even over an all-zero window.
+        assert!(render_heatmap(&ctx, &days, anchor(), false).contains("Mon"));
     }
 }

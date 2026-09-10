@@ -1089,7 +1089,7 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
             (
                 json!({ "chart": "throughput", "weeks": weeks, "series": data,
                         "velocity_4wk": velocity }),
-                chart::render_throughput(ctx, &series, velocity),
+                chart::render_throughput(ctx, &series, velocity, members.is_empty()),
             )
         }
         ChartKind::Heatmap { year, weeks } => {
@@ -1105,7 +1105,7 @@ pub(crate) fn run_chart(engine: &Engine, ctx: &Ctx, kind: ChartKind) -> CmdOutco
                 json!({ "chart": "heatmap", "weeks": weeks, "series": data,
                         "current_streak": chart::current_streak(&days, anchor),
                         "best_streak": chart::best_streak(&days) }),
-                chart::render_heatmap(ctx, &days, anchor),
+                chart::render_heatmap(ctx, &days, anchor, members.is_empty()),
             )
         }
         ChartKind::Burndown { project, days } => {

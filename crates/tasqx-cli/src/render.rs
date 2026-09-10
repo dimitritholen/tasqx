@@ -72,6 +72,29 @@ pub fn status_is_open(status: &str) -> bool {
 
 /// Extract a string field, sanitized — every field pulled here is display text
 /// that may originate from `store.import` or an MCP write tool.
+/// True when a `task.list`/`report.summary`/`project.list` result names a
+/// store that has NEVER held a task, distinguished from a filter or window
+/// that simply matched nothing (#233). Missing the key (an older core, or a
+/// hand-built fixture) reads as `false` — the existing dead-end copy — so a
+/// build skew never invents a hint about a store it cannot vouch for.
+fn store_is_empty(result: &Value) -> bool {
+    result
+        .get("store_empty")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The two-line getting-started hint every read verb prints in place of its
+/// ordinary "nothing here" copy when [`store_is_empty`] is true (#233.1): five
+/// verbs (`list`, `next`, `projects`, `report`, `agenda`) used to give a
+/// brand-new store five different dead ends, none naming a way forward, on
+/// literally the first command a new user runs.
+fn onboarding_hint() -> String {
+    "No tasks yet.\n  tasqx init <project> creates one, tasqx add \"…\" captures your first \
+     task, tasqx manual explains the rest.\n"
+        .to_string()
+}
+
 fn s(v: &Value, key: &str) -> String {
     san(v.get(key).and_then(Value::as_str).unwrap_or(""))
 }
@@ -742,7 +765,11 @@ pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         .and_then(Value::as_array)
         .unwrap_or(&empty);
     if tasks.is_empty() {
-        return "No tasks.\n".to_string();
+        return if store_is_empty(result) {
+            onboarding_hint()
+        } else {
+            "No tasks.\n".to_string()
+        };
     }
 
     let refs: Vec<&Value> = tasks.iter().collect();
@@ -952,6 +979,10 @@ pub struct Agenda<'a> {
     /// The oldest day among the rows `overdue_cut` counts. `None` when
     /// nothing was cut.
     overdue_oldest: Option<Date>,
+    /// Whether the underlying `task.list` result named a genuinely empty
+    /// store (#233.1) — the signal [`agenda_text`] needs to tell "nothing
+    /// scheduled yet" apart from "nothing scheduled" on a real backlog.
+    store_empty: bool,
 }
 
 /// A screenful: past this many overdue rows, the Overdue group stops being a
@@ -1025,6 +1056,7 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda<'_> 
         days,
         overdue_cut: 0,
         overdue_oldest: None,
+        store_empty: store_is_empty(result),
     };
 
     // Kept separate from the future side while the cap decision is made: the
@@ -1258,6 +1290,12 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
         ));
     }
     out.push('\n');
+    // #233.1: an empty agenda on a genuinely empty store is the same dead end
+    // as `list`'s and `next`'s — append the getting-started hint rather than
+    // leaving the footer as the only line on screen.
+    if a.entries.is_empty() && a.store_empty {
+        out.push_str(&onboarding_hint());
+    }
     for note in a.omissions() {
         out.push_str(&ctx.paint("muted", &note));
         out.push('\n');
@@ -2397,7 +2435,11 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
         .and_then(Value::as_array)
         .unwrap_or(&empty);
     if projects.is_empty() {
-        return "No projects.\n".to_string();
+        return if store_is_empty(result) {
+            onboarding_hint()
+        } else {
+            "No projects.\n".to_string()
+        };
     }
     let mut out = String::new();
     // D21: the leading column is the default marker. `projects` is THE read
@@ -2461,7 +2503,11 @@ pub fn report(
         .and_then(Value::as_array)
         .unwrap_or(&empty);
     if groups.is_empty() {
-        return "No matching tasks.\n".to_string();
+        return if store_is_empty(result) {
+            onboarding_hint()
+        } else {
+            "No matching tasks.\n".to_string()
+        };
     }
 
     let show_all_tokens = token_metrics.is_some_and(|m| {
@@ -2817,6 +2863,7 @@ pub fn next_task(ctx: &Ctx, result: &Value) -> String {
         .and_then(Value::as_array)
         .unwrap_or(&empty);
     match tasks.first() {
+        None if store_is_empty(result) => onboarding_hint(),
         None => "Nothing actionable — you're clear.\n".to_string(),
         Some(t) => {
             let sid = t.get("short_id").and_then(Value::as_i64).unwrap_or(0);
@@ -3621,6 +3668,84 @@ mod tests {
         let at = |s: &str| s.parse::<Timestamp>().unwrap();
         assert!(!task_row(&t, 1.0, at("2026-08-31T11:59:59Z"), true).overdue);
         assert!(task_row(&t, 1.0, at("2026-08-31T12:00:01Z"), true).overdue);
+    }
+
+    /// #233.1: a genuinely fresh store (never held a task) must not answer
+    /// `list` with the same bare "No tasks." a filter that matched nothing
+    /// gets — the two are indistinguishable dead ends otherwise, and this is
+    /// every user's very first command.
+    #[test]
+    fn task_table_on_a_genuinely_empty_store_names_the_onboarding_commands() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let empty_store = json!({ "tasks": [], "count": 0, "total": 0, "store_empty": true });
+        let out = task_table(&ctx, &empty_store, Timestamp::now());
+        assert!(out.contains("tasqx init"), "{out:?}");
+        assert!(out.contains("tasqx add"), "{out:?}");
+        assert!(out.contains("tasqx manual"), "{out:?}");
+
+        // A filter that matched nothing on a non-empty store keeps the plain
+        // "No tasks." — the onboarding hint would be misleading there.
+        let filtered_empty = json!({ "tasks": [], "count": 0, "total": 0, "store_empty": false });
+        let out2 = task_table(&ctx, &filtered_empty, Timestamp::now());
+        assert_eq!(out2, "No tasks.\n");
+    }
+
+    /// #233.1: `next` on a genuinely fresh store must not say "you're clear"
+    /// — that phrase reads as "you finished your work", which is a lie about
+    /// a store that has never held any.
+    #[test]
+    fn next_task_on_a_genuinely_empty_store_names_the_onboarding_commands() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let empty_store = json!({ "tasks": [], "store_empty": true });
+        let out = next_task(&ctx, &empty_store);
+        assert!(out.contains("tasqx add"), "{out:?}");
+
+        // A working set that is genuinely clear (real tasks exist, none is
+        // actionable right now) keeps the original, true statement.
+        let clear = json!({ "tasks": [], "store_empty": false });
+        assert_eq!(
+            next_task(&ctx, &clear),
+            "Nothing actionable — you're clear.\n"
+        );
+    }
+
+    /// #233.1: `projects` on a fresh store, same treatment as `list`.
+    #[test]
+    fn project_table_on_a_genuinely_empty_store_names_the_onboarding_commands() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let empty_store = json!({ "projects": [], "count": 0, "store_empty": true });
+        assert!(project_table(&ctx, &empty_store).contains("tasqx init"));
+
+        let none_archived = json!({ "projects": [], "count": 0, "store_empty": false });
+        assert_eq!(project_table(&ctx, &none_archived), "No projects.\n");
+    }
+
+    /// #233.1: `report` on a fresh store, same treatment as `list`.
+    #[test]
+    fn report_on_a_genuinely_empty_store_names_the_onboarding_commands() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let empty_store = json!({ "groups": [], "store_empty": true });
+        assert!(report(&ctx, &empty_store, "project", None).contains("tasqx add"));
+
+        let filtered_empty = json!({ "groups": [], "store_empty": false });
+        assert_eq!(
+            report(&ctx, &filtered_empty, "project", None),
+            "No matching tasks.\n"
+        );
+    }
+
+    /// #233.1: an empty agenda on a fresh store gets the same hint, appended
+    /// after the footer that already states the horizon on every run.
+    #[test]
+    fn agenda_on_a_genuinely_empty_store_names_the_onboarding_commands() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let empty_store = json!({ "tasks": [], "store_empty": true });
+        let out = agenda_text(&ctx, &agenda_select(&empty_store, 14, anchor()));
+        assert!(out.contains("tasqx add"), "{out:?}");
+
+        let filtered_empty = json!({ "tasks": [], "store_empty": false });
+        let out2 = agenda_text(&ctx, &agenda_select(&filtered_empty, 14, anchor()));
+        assert!(!out2.contains("tasqx add"), "{out2:?}");
     }
 
     #[test]
