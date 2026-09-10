@@ -920,11 +920,15 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 Unlike every other write on this server, this is a HARD delete: \
                 the body is overwritten in the store, not merely hidden, so a \
                 secret pasted into a note by mistake is actually gone from the \
-                file, not just gone from what tasqx shows you. A tombstone \
-                (the id and when it was removed) stays for audit, with no text \
-                in it. `tasqx undo` does NOT cover this — there is nothing left \
-                in the log to restore — so double-check the id before calling. \
-                An unknown or already-removed id is `not_found`.",
+                file, not just gone from what tasqx shows you — this covers \
+                `event.list` and `store.export` too, by redacting the original \
+                `annotation.add` event's own body field in the same \
+                transaction (D113), not only the `annotations` row. A \
+                tombstone (the id and when it was removed) stays for audit, \
+                with no text in it. `tasqx undo` does NOT cover this — there \
+                is nothing left in the log to restore — so double-check the id \
+                before calling. An unknown or already-removed id is \
+                `not_found`.",
             schema: json!({
                 "type": "object",
                 "properties": {

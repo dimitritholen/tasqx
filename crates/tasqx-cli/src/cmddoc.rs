@@ -484,7 +484,9 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         notes: &[
             "A HARD delete (D113): the text is overwritten in the store, not merely hidden — \
              use it to take back a secret, a customer name, or a wrong root cause pasted into \
-             a note by mistake.",
+             a note by mistake. This also redacts the original `annotate` event's own body, \
+             so `tasqx chart` (`event.list`) and `tasqx export` stop showing it too — not \
+             only `tasqx show`.",
             "The annotation's id is not printed by `tasqx show` — read it from `tasqx show \
              <ref> --json` (the `annotations[].id` field) or a prior `tasqx annotate` \
              response.",
