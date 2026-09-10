@@ -257,8 +257,25 @@ impl App {
                 self.refilter();
                 None
             }
-            KeyCode::Enter => self.selected().map(|r| Action::Choose {
-                short_id: r.short_id,
+            // #228.12: Enter on a typed query with zero matches used to do
+            // nothing at all — no exit, no message, the screen simply sat
+            // there. The CLI-filter equivalent (`pick +nosuchtag`) already
+            // refuses at exit 4 with "nothing to pick"; a zero-match Enter
+            // here reaches the exact same outcome the caller already gives
+            // that message for, via `Action::Cancel` (pick_screen.rs's
+            // "nothing picked — no task was started").
+            // #228.12: Enter on a typed query with zero matches used to do
+            // nothing at all — no exit, no message, the screen simply sat
+            // there. The CLI-filter equivalent (`pick +nosuchtag`) already
+            // refuses at exit 4 with "nothing to pick"; a zero-match Enter
+            // here reaches the exact same outcome the caller already gives
+            // that message for, via `Action::Cancel` (pick_screen.rs's
+            // "nothing picked — no task was started").
+            KeyCode::Enter => Some(match self.selected() {
+                Some(r) => Action::Choose {
+                    short_id: r.short_id,
+                },
+                None => Action::Cancel,
             }),
             KeyCode::Backspace => {
                 self.query.pop();
@@ -682,10 +699,16 @@ mod tests {
     }
 
     /// An empty candidate set must survive every key without panicking, and
-    /// Enter on it must produce NOTHING. Reaching for row 0 here is the
+    /// Enter on it must never choose a task. Reaching for row 0 here is the
     /// index-out-of-bounds this screen is most likely to ship: the caller
     /// refuses an empty store before opening the screen, so the only way in is
     /// a store that empties under a query — which is the next test.
+    ///
+    /// #228.12: Enter used to answer this by doing nothing at all — no exit,
+    /// no message, the screen simply sat there, indistinguishable from a
+    /// frozen one. It now leaves via `Action::Cancel`, the same "nothing
+    /// picked" exit the CLI-filter equivalent (`pick +nosuchtag`) already
+    /// gives — so the keypress is acknowledged instead of swallowed.
     #[test]
     fn an_empty_working_set_navigates_and_refuses_to_choose() {
         let mut a = App::new(Vec::new());
@@ -694,26 +717,28 @@ mod tests {
             assert!(a.on_key(press(code)).is_none(), "{code:?}");
         }
         assert_eq!(a.cursor(), 0);
-        assert!(
-            a.on_key(press(KeyCode::Enter)).is_none(),
-            "enter with nothing to pick must not choose a task"
+        assert_eq!(
+            a.on_key(press(KeyCode::Enter)),
+            Some(Action::Cancel),
+            "enter with nothing to pick must not choose a task, but must leave rather than sit inert"
         );
-        // And it must still be leavable, or the user has to kill the process.
-        assert_eq!(a.on_key(press(KeyCode::Esc)), Some(Action::Cancel));
     }
 
     /// Enter on a query that matches nothing must not start anything. The
     /// failure it guards is this project's named one: a screen that answers a
     /// keystroke by doing less than it looks like it did — here, silently
-    /// starting whatever task happens to sit at index 0 of the unfiltered list.
+    /// starting whatever task happens to sit at index 0 of the unfiltered
+    /// list. #228.12: it must not go inert either — Enter leaves via
+    /// `Action::Cancel`, matching the CLI-filter equivalent's exit.
     #[test]
     fn enter_on_a_query_that_matches_nothing_starts_nothing() {
         let mut a = app();
         typed(&mut a, "zzzz");
         assert!(ids(&a).is_empty(), "the fixture query must match nothing");
-        assert!(
-            a.on_key(press(KeyCode::Enter)).is_none(),
-            "enter must not fall back to an unmatched row"
+        assert_eq!(
+            a.on_key(press(KeyCode::Enter)),
+            Some(Action::Cancel),
+            "enter must not fall back to an unmatched row, and must not go inert"
         );
         assert!(a.selected().is_none());
     }

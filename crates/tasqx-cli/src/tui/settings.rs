@@ -146,8 +146,21 @@ impl App {
 
     fn on_key_browse(&mut self, code: KeyCode) -> Option<Action> {
         match code {
+            // #228.8: a save/cancel status ("saved tokens.enabled = false")
+            // used to sit in the description's row for the rest of the
+            // session, so moving to a different setting kept showing the OLD
+            // one's status against the NEW one's key — actively misleading,
+            // not just stale. The description is what makes this screen
+            // better than `config list`; it must track the cursor.
+            // #228.8: a save/cancel status ("saved tokens.enabled = false")
+            // used to sit in the description's row for the rest of the
+            // session, so moving to a different setting kept showing the OLD
+            // one's status against the NEW one's key — actively misleading,
+            // not just stale. The description is what makes this screen
+            // better than `config list`; it must track the cursor.
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = self.selected.saturating_sub(1);
+                self.status.clear();
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -155,6 +168,7 @@ impl App {
                 // never empty in practice (SETTINGS is non-empty) but the
                 // arithmetic must not depend on that.
                 self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1));
+                self.status.clear();
                 None
             }
             KeyCode::Esc | KeyCode::Char('q') => Some(Action::Quit),
@@ -633,6 +647,52 @@ mod tests {
         let s = config::find("default_project").unwrap();
         assert_eq!(a.status, config::store_home_message(s));
         assert!(a.status.contains("tasqx use"), "{}", a.status);
+    }
+
+    /// #228.8: a save's status message used to sit in the description row
+    /// for the rest of the session — move to a different setting and the OLD
+    /// status ("saved tokens.enabled = false") stayed put next to the NEW
+    /// key, which is actively misleading, not just stale. It must clear the
+    /// moment the cursor moves.
+    #[test]
+    fn moving_the_cursor_after_a_save_clears_the_stale_status() {
+        let mut a = app();
+        let bool_row = a
+            .rows
+            .iter()
+            .position(|r| r.setting.kind == Kind::Bool)
+            .expect("at least one bool setting");
+        a.selected = bool_row;
+        let key = a.row().setting.key;
+        let Some(Action::Save { value, .. }) = a.on_key(press(KeyCode::Enter)) else {
+            panic!("a bool row's Enter must produce a Save");
+        };
+        // The screen's own driving loop calls this once the caller's write
+        // to `config.toml` has actually happened; simulated here the same way.
+        a.refresh(key, value.clone(), "config.toml".to_string());
+        assert!(
+            !a.status.is_empty(),
+            "the toggle must leave a status to begin with"
+        );
+
+        a.on_key(press(KeyCode::Down));
+        assert!(
+            a.status.is_empty(),
+            "the stale save status must not survive a cursor move: {}",
+            a.status
+        );
+
+        // And the same for the other direction.
+        a.selected = bool_row;
+        a.on_key(press(KeyCode::Enter));
+        a.refresh(key, value, "config.toml".to_string());
+        assert!(!a.status.is_empty());
+        a.on_key(press(KeyCode::Up));
+        assert!(
+            a.status.is_empty(),
+            "Up must clear it too, not only Down: {}",
+            a.status
+        );
     }
 
     /// The picker opens on the value already in force, moves within its bounds,

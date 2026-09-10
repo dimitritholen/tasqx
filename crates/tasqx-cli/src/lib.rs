@@ -54,6 +54,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
+#[cfg(test)]
 use clap::Parser;
 use serde_json::{json, Value};
 
@@ -64,7 +65,8 @@ use tasqx_core::{
 };
 
 use command::{
-    ChartKind, Cli, Command, ConfigAction, McpAction, MemoryAction, ThemeAction, TokensAction,
+    cli_command, ChartKind, Cli, Command, ConfigAction, McpAction, MemoryAction, ThemeAction,
+    TokensAction,
 };
 use theme::{Caps, Ctx};
 
@@ -333,7 +335,14 @@ pub fn run() {
     // and the only way to keep that from disarming clap's flag handling is to
     // hide the dash before clap looks. See `argv`.
     let pre = argv::prepass(std::env::args_os());
-    let mut cli = match Cli::try_parse_from(pre.argv) {
+    // Not `Cli::try_parse_from`: that builds straight off `Cli::command()`,
+    // whose subcommands still carry clap's hyphen-joined `-V` display names
+    // (#228.7). `cli_command()` is the same command tree with those flattened
+    // to `tasqx` first.
+    let mut cli = match cli_command().try_get_matches_from(pre.argv).and_then(|m| {
+        use clap::FromArgMatches;
+        Cli::from_arg_matches(&m)
+    }) {
         Ok(cli) => cli,
         Err(e) => exit_on_parse_error(&e, pre.filter_command),
     };
@@ -1856,6 +1865,43 @@ mod tests {
                 "the BOM must not reach the stored body"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #228.4: YAML frontmatter (the shape every file in a
+    /// `~/.claude/.../memory/` directory carries) was indexed and shown as
+    /// document body, so `originSessionId`/`modified`/`type` dominated search
+    /// snippets over the prose that answers the query. It must be cut before
+    /// storage, and its `title:` used when the body has no `# ` heading of
+    /// its own.
+    #[test]
+    fn memory_import_strips_frontmatter_and_reads_its_title() {
+        let dir = std::env::temp_dir().join(format!("tasqx-memimp-fm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("note.md"),
+            "---\ntitle: \"release workflow\"\noriginSessionId: 71aa288e\nmodified: 2026-07-23\n---\nHow releases actually ship.\n",
+        )
+        .unwrap();
+
+        let docs = memory_docs_from_path(dir.to_str().unwrap()).expect("import");
+        assert_eq!(docs.len(), 1);
+        let d = &docs[0];
+        assert_eq!(
+            d["title"].as_str().unwrap(),
+            "release workflow",
+            "frontmatter's `title:` must be used when there is no `# ` heading"
+        );
+        let body = d["body"].as_str().unwrap();
+        assert!(
+            !body.contains("originSessionId"),
+            "frontmatter metadata must not reach the stored/indexed body: {body:?}"
+        );
+        assert!(
+            body.contains("How releases actually ship."),
+            "the real prose must survive the cut: {body:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

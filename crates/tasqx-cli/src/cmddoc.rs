@@ -442,6 +442,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "Undo APPENDS: the event it reverses stays in the log and a new `undo` event lands behind it, so `tasqx chart` and the audit trail read `X happened, then it was undone`.",
             "There is no redo, so `tasqx undo` twice in a row exits 5: the second one would find the first undo as the newest event and the pair would toggle forever.",
             "It reverses the newest RECORDED event, which is not always the last command you typed. A command that changed nothing records nothing — `tasqx undep 1 2` where no such edge exists, or `tasqx start` on a task already running — so `undo` reaches past it to the previous change. That is why the answer names what it undid: read it before assuming it hit what you were aiming at.",
+            "A single event outside the undoable four permanently blocks undo for everything BEFORE it, not just for itself: the newest event on an active store is almost always `add`, `done` or `modify`, and once one of those lands, an annotation from ten seconds earlier can never be reached (#228.2). This is a same-breath affordance — undo the thing you just did — not an undo stack.",
         ],
         see_also: &["untag", "undep", "reopen", "chart"],
         topic: Topic::Capturing,
@@ -664,6 +665,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         examples: &[
             ex("tasqx memory add \"Deploy runbook\" \"deploys go through the blue-green pipeline\""),
             ex("tasqx memory search blue-green"),
+            ex_norun(
+                "tasqx memory search 'pipel*' --raw",
+                "FTS5 operator syntax: prefix search, AND/OR, column filters",
+            ),
             ex_norun(
                 "tasqx memory import docs/adr",
                 "one doc per .md file; title from the first # heading",
@@ -1002,6 +1007,22 @@ mod tests {
     #[test]
     fn after_help_of_unknown_verb_is_empty() {
         assert_eq!(after_help("nope"), "");
+    }
+
+    /// #228.2: `undo --help` read as if it undid "the last thing" generally,
+    /// but on any active store the newest event is almost always `add`,
+    /// `done` or `modify` — none of the four undoable operations — so `undo`
+    /// is unreachable in practice the moment one of those lands. The help
+    /// must say so plainly rather than let the reader learn it from a
+    /// `conflict` error every time.
+    #[test]
+    fn undo_help_says_one_blocking_event_walls_off_everything_before_it() {
+        let h = after_help("undo");
+        assert!(
+            h.contains("permanently blocks undo"),
+            "`undo --help` must say a non-undoable event permanently blocks \
+             reaching back further, not just refuse the newest one: {h}"
+        );
     }
 
     /// D24 changed what `tasqx report` counts, and a default that silently drops
