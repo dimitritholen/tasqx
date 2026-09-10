@@ -148,6 +148,12 @@ impl Engine {
             tokens_out: i64,
             tokens_cache_read: i64,
             tokens_cache_creation: i64,
+            // D50's trust hierarchy lives in `source`/`confidence` per
+            // measurement (#217). The four buckets above blend every
+            // measurement's counts together with no way back to which row
+            // contributed what, so the group's WORST confidence is tracked
+            // alongside them — the one fact a blended total must not drop.
+            tokens_confidence: Option<String>,
         }
         let mut groups: BTreeMap<String, Agg> = BTreeMap::new();
         // #234 item 12: D24 excludes cancelled tasks from the default report
@@ -220,6 +226,7 @@ impl Engine {
                 tokens_out: 0,
                 tokens_cache_read: 0,
                 tokens_cache_creation: 0,
+                tokens_confidence: None,
             });
             agg.count += 1;
             // Saturating: a single estimate is bounded by `duration_secs`, but a
@@ -277,6 +284,19 @@ impl Engine {
                 agg.tokens_cache_creation = agg
                     .tokens_cache_creation
                     .saturating_add(bucket("cache_creation_tokens"));
+                let str_field = |name: &str| m.get(name).and_then(Value::as_str);
+                if let Some(c) = str_field("confidence") {
+                    let is_worse = match agg.tokens_confidence.as_deref() {
+                        Some(existing) => {
+                            crate::tokens::confidence_rank(c)
+                                < crate::tokens::confidence_rank(existing)
+                        }
+                        None => true,
+                    };
+                    if is_worse {
+                        agg.tokens_confidence = Some(c.to_string());
+                    }
+                }
             }
             // Shared with the filter DSL's `due.before:now` (#148) so this
             // count and that query can no longer independently drift.
@@ -284,6 +304,12 @@ impl Engine {
                 agg.overdue += 1;
             }
         }
+
+        // Confidence is metadata about the token figures specifically, so it
+        // travels with them: a caller who asked for none of the four buckets
+        // gets no confidence marker either, rather than a field describing a
+        // number this response never printed.
+        let token_metric_requested = metrics.iter().any(|m| m.starts_with("tokens_"));
 
         let mut out = Vec::new();
         for (key, agg) in groups {
@@ -321,6 +347,16 @@ impl Engine {
                         );
                     }
                     _ => {}
+                }
+            }
+            // D50's trust hierarchy (#217): the group's worst confidence,
+            // carried past the sum that erases which measurement contributed
+            // what. `report.summary`'s clients (the terminal report, the HTML
+            // page, `--json dashboard`) render a token figure with no source
+            // marker at all today — this is the field that lets them stop.
+            if token_metric_requested {
+                if let Some(c) = &agg.tokens_confidence {
+                    obj.insert("tokens_confidence".into(), json!(c));
                 }
             }
             out.push(Value::Object(obj));
@@ -712,6 +748,59 @@ mod tests {
             before["groups"][0]["tokens_cache_read"],
             json!(0),
             "a window ending before the measurement must not count it: {before}"
+        );
+    }
+
+    /// #217: D50's trust hierarchy lives in `source`/`confidence` on each
+    /// measurement, but `report.summary` used to sum the four buckets and drop
+    /// both — a group whose entire volume came from a low-confidence discovery
+    /// pass read exactly like one built from verified `otel` correlations. The
+    /// aggregate must carry the group's WORST confidence forward, so a reader
+    /// of the rolled-up number can still tell it is not fully trustworthy.
+    #[test]
+    fn report_summary_carries_the_groups_worst_confidence() {
+        let e = Engine::open_in_memory().unwrap();
+        let sid = e.task_add(&json!({ "title": "a" })).unwrap()["short_id"].clone();
+        e.token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "otel",
+            "input_tokens": 10, "confidence": "high",
+        }))
+        .unwrap();
+        e.token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "log-parse",
+            "input_tokens": 5, "confidence": "low",
+        }))
+        .unwrap();
+
+        let out = e
+            .report_summary(&json!({ "group_by": "project", "metrics": ["tokens_in"] }))
+            .unwrap();
+        assert_eq!(
+            out["groups"][0]["tokens_confidence"],
+            json!("low"),
+            "the low measurement must not be laundered away by the high one: {out}"
+        );
+    }
+
+    /// The field is metadata about the token metrics specifically: a caller
+    /// who never asked for a token figure gets no confidence marker either,
+    /// so the two always travel together.
+    #[test]
+    fn report_summary_omits_confidence_when_no_token_metric_was_requested() {
+        let e = Engine::open_in_memory().unwrap();
+        let sid = e.task_add(&json!({ "title": "a" })).unwrap()["short_id"].clone();
+        e.token_add(&json!({
+            "ref": sid, "tool": "claude-code", "source": "log-parse",
+            "input_tokens": 5, "confidence": "low",
+        }))
+        .unwrap();
+
+        let out = e
+            .report_summary(&json!({ "group_by": "project", "metrics": ["count"] }))
+            .unwrap();
+        assert!(
+            out["groups"][0].get("tokens_confidence").is_none(),
+            "confidence leaked without a token metric requested: {out}"
         );
     }
 }

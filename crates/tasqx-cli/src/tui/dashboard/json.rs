@@ -216,6 +216,11 @@ pub fn document(d: &Dashboard, days: usize, order: &[PanelId]) -> Value {
                     "name": r.name(),
                     "buckets": r.buckets,
                     "total": r.total(),
+                    // #217 (D50): the group's WORST measurement confidence, or
+                    // absent when `report.summary` sent none. Every bucket
+                    // above is already a blend across measurements, so this
+                    // is the one field that answers "how sure are we" at all.
+                    "confidence": r.confidence(),
                 })).collect::<Vec<_>>(),
             }),
         );
@@ -365,5 +370,44 @@ mod tests {
         ] {
             assert!(obj.contains_key(present), "`{present}` must be present");
         }
+    }
+
+    /// #217: `report.summary`'s `tokens_confidence` (D50's trust hierarchy —
+    /// the group's worst measurement) reached the `TokenRow` model but this
+    /// document, the thing `tasqx --json dashboard` actually prints, dropped
+    /// it on the floor — `grep -c confidence` over that output found zero
+    /// hits even against a store the daemon had flagged low-confidence.
+    #[test]
+    fn tokens_rows_carry_their_confidence() {
+        let tasks = json!({ "count": 0, "tasks": [] });
+        let summary = json!({ "groups": [
+            { "count": 1, "project": "work", "est_total": "PT0S",
+              "tracked_total": "PT0S", "tokens_cache_read": 900,
+              "tokens_cache_creation": 80, "tokens_in": 7, "tokens_out": 5,
+              "tokens_confidence": "low" }
+        ] });
+        let projects = json!({ "count": 1, "projects": [
+            { "archived": false, "default": true, "description": null,
+              "id": "019fd213-0001-7000-8000-0004", "name": "work" }
+        ] });
+        let events = json!({ "count": 0, "events": [] });
+        let d = build(
+            Sources {
+                tasks: &tasks,
+                summary: &summary,
+                projects: &projects,
+                events: &events,
+                event_limit: 100,
+                days: 7,
+            },
+            now(),
+            today(),
+        );
+        let doc = document(&d, 7, &[PanelId::Tokens]);
+        assert_eq!(
+            doc["tokens"]["rows"][0]["confidence"],
+            json!("low"),
+            "confidence never reached the JSON document: {doc}"
+        );
     }
 }

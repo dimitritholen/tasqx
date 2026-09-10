@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tasqx dashboard redesign — 120x40 mockup</title>
+<style>
+  /* Semantic roles, nord anchors. New roles introduced by this redesign:
+     filter.chip, search.match, chart.ideal, chart.scope, group (see design note). */
+  :root {
+    --bg:      #2e3440;
+    --fg:      #d8dee9;
+    --accent:  #88c0d0;  /* accent            */
+    --muted:   #4c566a;  /* muted             */
+    --warn:    #ebcb8b;  /* priority.M / warn */
+    --danger:  #bf616a;  /* overdue, priority.H */
+    --green:   #a3be8c;  /* timer.active, urgency cold */
+    --project: #81a1c1;  /* project           */
+    --tag:     #b48ead;  /* tag               */
+  }
+  html,body { margin:0; height:100%; background:#242933; color:var(--fg);
+              font-family:'JetBrains Mono','Cascadia Code','Fira Code',monospace; }
+  #bar { padding:6px 10px; font-size:12px; color:var(--muted); background:#1d212b;
+         display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  #bar b { color:var(--fg); font-weight:normal; margin-right:6px; }
+  #bar button { background:#2e3440; color:var(--fg); border:1px solid var(--muted);
+                font:inherit; padding:2px 8px; cursor:pointer; border-radius:3px; }
+  #bar button:hover { border-color:var(--accent); color:var(--accent); }
+  #wrap { display:flex; align-items:center; justify-content:center;
+          height:calc(100% - 34px); overflow:hidden; }
+  #term { background:var(--bg); line-height:1.25; white-space:pre; padding:.4em .6em;
+          border-radius:4px; box-shadow:0 0 40px rgba(0,0,0,.5); }
+  .fg      { color:var(--fg); }
+  .muted   { color:var(--muted); }
+  .accent  { color:var(--accent); }
+  .accentB { color:var(--accent); font-weight:bold; }
+  .header  { color:var(--accent); font-weight:bold; }
+  .project { color:var(--project); }
+  .group   { color:var(--project); font-weight:bold; }
+  .tag     { color:var(--tag); }
+  .overdue { color:var(--danger); font-weight:bold; }
+  .priH    { color:var(--danger); font-weight:bold; }
+  .priM    { color:var(--warn); }
+  .priL    { color:var(--muted); }
+  .timer   { color:var(--green); }
+  .urgHot  { color:var(--danger); }
+  .urgWarm { color:var(--warn); }
+  .urgCold { color:var(--green); }
+  .chip    { background:#3b4252; color:var(--fg); }
+  .chipK   { background:#3b4252; color:var(--accent); }
+  .match   { color:var(--accent); font-weight:bold; text-decoration:underline; }
+  .ideal   { color:var(--muted); }
+  .scope   { color:var(--warn); }
+  .cursor  { background:#3b4252; }
+  .cursorA { background:#3b4252; color:var(--accent); font-weight:bold; }
+  .confirm { color:var(--green); font-weight:bold; }
+  .dim     { color:#616e88; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>tasqx dashboard redesign · 120×40 · real store data (2026-09-02)</b>
+  <button onclick="preset('board')">default board</button>
+  <button onclick="preset('project')">project selected</button>
+  <button onclick="preset('filters')">filters active</button>
+  <button onclick="preset('search')">fuzzy search</button>
+  <button onclick="preset('help')">help</button>
+  <button onclick="preset('detail')">⏎ detail</button>
+  <button onclick="preset('action')">action + confirm</button>
+  <span>— or drive it with the keys themselves (click the terminal first)</span>
+</div>
+<div id="wrap"><pre id="term" tabindex="0"></pre></div>
+<script>
+"use strict";
+const W = 120, H = 40;
+const DATA = {"now": "2026-09-02 15:00", "tasks": [{"id": 9, "title": "VH-STD-001 ratificatie: Owner invullen, D39 STS-vraag, effective date (RC 28-7)", "project": "qore-architecture", "pri": "H", "urg": 18.4, "tags": ["pr-55", "vh-std"], "due": -36, "blocked": false, "age": 40, "touched": 40, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 1, "title": "FIN-9695: MR !6601 afronden (M7-vlag Pieter, backfill-rollout, dossier-sleutel, MCP host-scoping, MR-screenshots)", "project": "fin-9695", "pri": "H", "urg": 6.4, "tags": ["fin-9695", "mailbox-ai", "mr"], "due": null, "blocked": false, "age": 40, "touched": 14, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 2, "title": "link-message 403-guard bouwen in AccessTokenService:66 + MR !6517 mergen", "project": "finly-next", "pri": "H", "urg": 6.4, "tags": ["bugfix", "link-message"], "due": null, "blocked": false, "age": 40, "touched": 38, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 79, "title": "Overlapping windows over one transcript double-count the same tokens, at high confidence", "project": "tasqx-field-test-2026-07", "pri": "H", "urg": 6.3, "tags": ["attribution", "correctness", "tokens"], "due": null, "blocked": false, "age": 34, "touched": 33, "est": 6.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 84, "title": "Golden set: extractiescript raw→golden JSONL (redactie bearer token, outcome-labeling, match_policy)", "project": "qore-architecture", "pri": "H", "urg": 6.2, "tags": ["golden-set"], "due": null, "blocked": false, "age": 23, "touched": 23, "est": 3.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 92, "title": "PR #256 afmaken: provenance-label zetten, 8 screenshots (4 lijst-states + 4 kaartjes) uploaden, reviewers Melle/Henk/Pieter, vervolgticket \"AI-verwerking automatisch starten bij binnenkomende mail\" aanmaken en linken", "project": "fin-9854", "pri": "H", "urg": 6.1, "tags": ["pr", "working"], "due": null, "blocked": false, "age": 11, "touched": 5, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 106, "title": "FMA-16/WOR-559 — composite MCP tools resolve_client + get_enrichment_bundle (search·refine·verify server-side)", "project": "finly-mail-agent", "pri": "H", "urg": 6.0, "tags": ["adapter", "fma-16", "wor-559"], "due": null, "blocked": false, "age": 0, "touched": 0, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 3, "title": "FIN-9336: conceptmail voor niet-gekoppelde mails implementeren (plan goedgekeurd, branch nog maken)", "project": "fin-9336", "pri": "M", "urg": 4.3, "tags": ["conceptmail", "fin-9336"], "due": null, "blocked": false, "age": 40, "touched": 40, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 4, "title": "FIN-9658: staging-bundel MR maken (branch van origin/staging + cherry-picks 4 hotfixes + basis-feature)", "project": "fin-9658", "pri": "M", "urg": 4.3, "tags": ["fin-9658", "staging"], "due": null, "blocked": false, "age": 40, "touched": 40, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 5, "title": "Staging webhook-401 fixen: PUT sub 5437d758 naar workflow f78b0665 + oude subs opruimen (wachten op klant-test / herinnering)", "project": "finly-next", "pri": "M", "urg": 4.3, "tags": ["qore", "staging", "webhook"], "due": null, "blocked": false, "age": 40, "touched": 40, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 6, "title": "Qore MCP tools/list cycle-bug: develop-fix + Fix B bridge-vangnet", "project": "finly-next", "pri": "M", "urg": 4.3, "tags": ["bugfix", "mcp", "qore"], "due": null, "blocked": false, "age": 40, "touched": 40, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 7, "title": "FIN-9660: taakaanmaak-code committen (branch FIN-9660, nog niet gecommit sinds 29-6 — eerst staat verifiëren)", "project": "fin-9660", "pri": "M", "urg": 4.3, "tags": ["fin-9660", "qore-mail"], "due": null, "blocked": false, "age": 40, "touched": 40, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 8, "title": "MR !6399 staging-bundel (FIN-9591+FIN-9631) mergen + activatie: qore.concept_workflow + flag QoreConceptMailEnabled", "project": "fin-9591", "pri": "M", "urg": 4.3, "tags": ["conceptmail", "fin-9591", "staging"], "due": null, "blocked": false, "age": 40, "touched": 40, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 71, "title": "FIN-9695 review-ronde Henk: replies posten (13 comments Henk + Chris migratie-soft-deletes + comment-dichtheid)", "project": "fin-9695", "pri": "M", "urg": 4.3, "tags": ["mailbox-ai", "mr", "review"], "due": null, "blocked": false, "age": 37, "touched": 14, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 74, "title": "A partial OTLP buffer outranks a complete transcript without comparison", "project": "tasqx-field-test-2026-07", "pri": "M", "urg": 4.3, "tags": ["attribution", "field-test", "otlp", "tokens"], "due": null, "blocked": false, "age": 35, "touched": 35, "est": 2.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 75, "title": "task.start auto-stops the running task and says nothing about it", "project": "tasqx-field-test-2026-07", "pri": "M", "urg": 4.3, "tags": ["cli", "field-test", "timer"], "due": null, "blocked": false, "age": 35, "touched": 35, "est": 1.5, "trk": 0.0, "timer": false, "wait": false}, {"id": 81, "title": "Reopen + re-complete re-banks the task's own claimed sample", "project": "tasqx-field-test-2026-07", "pri": "M", "urg": 4.2, "tags": ["attribution", "correctness", "tokens"], "due": null, "blocked": false, "age": 33, "touched": 33, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 85, "title": "Golden set: 100 cases selecteren tegen matrix + menselijke verificatie expected outcomes (~1,5 dag review)", "project": "qore-architecture", "pri": "M", "urg": 4.1, "tags": ["golden-set"], "due": null, "blocked": false, "age": 23, "touched": 23, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 86, "title": "Golden set: agent_trace vullen — n8n API key of Langfuse-toegang regelen voor intermediaire MCP-tool-calls", "project": "qore-architecture", "pri": "M", "urg": 4.1, "tags": ["blocked-on-dimitri", "golden-set"], "due": null, "blocked": false, "age": 23, "touched": 23, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 94, "title": "FIN-9695 promoten met release week 31 aug (na merge #267, #261 sluiten)", "project": "fin-9695", "pri": "M", "urg": 4.0, "tags": [], "due": null, "blocked": false, "age": 8, "touched": 8, "est": 0.0, "trk": 0.0, "timer": false, "wait": true}, {"id": 102, "title": "Na admin-rename naar eblinqx-claude-plugins: PR #3 mergen, reef repos.yaml-entry hernoemen (renamed_from), lokaal her-installeren als blinqx-platform@eblinqx", "project": "qore-architecture", "pri": "M", "urg": 3.9, "tags": ["blinqx-platform-plugin"], "due": null, "blocked": false, "age": 1, "touched": 1, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 103, "title": "FIN-9695 Melle 1-9 punt 1: productie-default automation_mode = geen AI-verwerking (nu: koppelen+taak)", "project": "fin-9695", "pri": "M", "urg": 3.9, "tags": [], "due": null, "blocked": false, "age": 1, "touched": 1, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 104, "title": "FIN-9695 Melle 1-9 punt 2: modi-opties disablen (behalve geen AI-verwerking) als featureflag uit EN mail-koppelen uitgevinkt", "project": "fin-9695", "pri": "M", "urg": 3.9, "tags": [], "due": null, "blocked": false, "age": 1, "touched": 1, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 105, "title": "FIN-10034: oorzaak leeg mailboxen-scherm staging (account 1 + 2896) vinden en fixen", "project": "fin-10034", "pri": "M", "urg": 3.9, "tags": ["bug", "fin-9695", "staging"], "due": null, "blocked": false, "age": 0, "touched": 0, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 76, "title": "Three field-test papercuts: empty fields[], show flattens annotations, otlp.enabled without a daemon", "project": "tasqx-field-test-2026-07", "pri": "L", "urg": 2.2, "tags": ["field-test", "papercut"], "due": null, "blocked": false, "age": 35, "touched": 35, "est": 2.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 80, "title": "Decide prompt_id's fate: make it load-bearing (something must read it) or remove it", "project": "tasqx-field-test-2026-07", "pri": "L", "urg": 2.1, "tags": ["attribution", "design", "tokens"], "due": null, "blocked": false, "age": 33, "touched": 33, "est": 2.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 101, "title": "Bij delen plugin met collega's: ADR in reef (plugin = team-kennislaag Claude Code) + repo-nudge via .claude/settings.json in blinqx-hq-repo's", "project": "qore-architecture", "pri": "L", "urg": 1.8, "tags": ["blinqx-platform-plugin"], "due": null, "blocked": false, "age": 1, "touched": 1, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 96, "title": "Melle-feedback 28-8 punt 1+2: lijst-koppelicoon — AI-gekoppeld = blauwe vervangt grijze, handmatig = grijs; vorm handmatig-koppelen-icoon gelijktrekken", "project": "fin-9854", "pri": null, "urg": 0.1, "tags": [], "due": null, "blocked": false, "age": 5, "touched": 5, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 97, "title": "Melle-feedback 28-8 punt 3+4: lang-strings Finly-taal (6 keys) + nieuwe key ai_status_card_linked_body_with_product conditioneel", "project": "fin-9854", "pri": null, "urg": 0.1, "tags": [], "due": null, "blocked": false, "age": 5, "touched": 5, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 98, "title": "Melle-feedback 28-8 punt 5: statusicoon puur visueel, groene toverstaf-knop terug in hover-actielint", "project": "fin-9854", "pri": null, "urg": 0.1, "tags": [], "due": null, "blocked": false, "age": 5, "touched": 5, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}, {"id": 99, "title": "Melle-ronde 2 (31-8) verwerken: AI-UI verbergen als feature uit + status 'Handmatig gekoppeld'", "project": "fin-9854", "pri": null, "urg": 0.0, "tags": [], "due": null, "blocked": false, "age": 2, "touched": 2, "est": 0.0, "trk": 0.0, "timer": false, "wait": false}], "projects": [{"name": "qore-architecture", "open": 6, "overdue": 1, "trk": 0.0, "est": 7.0, "tok": 0, "default": false}, {"name": "tasqx-field-test-2026-07", "open": 6, "overdue": 0, "trk": 0.6, "est": 22.5, "tok": 0, "default": false}, {"name": "fin-9695", "open": 5, "overdue": 0, "trk": 0.6, "est": 7.5, "tok": 0, "default": false}, {"name": "fin-9854", "open": 5, "overdue": 0, "trk": 0.0, "est": 0.0, "tok": 0, "default": false}, {"name": "finly-next", "open": 3, "overdue": 0, "trk": 0.0, "est": 336.0, "tok": 0, "default": true}, {"name": "finly-mail-agent", "open": 1, "overdue": 0, "trk": 0.0, "est": 0.0, "tok": 0, "default": false}, {"name": "fin-9336", "open": 1, "overdue": 0, "trk": 0.0, "est": 0.0, "tok": 0, "default": false}, {"name": "fin-9658", "open": 1, "overdue": 0, "trk": 0.0, "est": 0.0, "tok": 0, "default": false}, {"name": "fin-9660", "open": 1, "overdue": 0, "trk": 0.0, "est": 0.0, "tok": 0, "default": false}, {"name": "fin-9591", "open": 1, "overdue": 0, "trk": 0.0, "est": 0.0, "tok": 0, "default": false}, {"name": "fin-10034", "open": 1, "overdue": 0, "trk": 0.0, "est": 0.0, "tok": 0, "default": false}], "stats": {"done7": 3, "done14": 6, "done30": 12, "spark30": [0, 0, 0, 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 2, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1], "cycle_med": 0.1, "cycle_recent": 0.0, "overdue_now": 1, "overdue_task": 9, "overdue_days": 36, "oldest_id": 9, "oldest_age": 40, "untouched14": 19, "est_left_total": 16.5, "trk_total": 6.7, "est_by_proj": {"qore-architecture": 3.0, "tasqx-field-test-2026-07": 13.5}}, "burn": [{"d": "2026-08-04", "rem": 16, "added": 0, "done": 0}, {"d": "2026-08-05", "rem": 16, "added": 0, "done": 0}, {"d": "2026-08-06", "rem": 16, "added": 0, "done": 0}, {"d": "2026-08-07", "rem": 16, "added": 0, "done": 0}, {"d": "2026-08-08", "rem": 16, "added": 1, "done": 2}, {"d": "2026-08-09", "rem": 16, "added": 0, "done": 0}, {"d": "2026-08-10", "rem": 19, "added": 4, "done": 1}, {"d": "2026-08-11", "rem": 19, "added": 0, "done": 0}, {"d": "2026-08-12", "rem": 19, "added": 0, "done": 0}, {"d": "2026-08-13", "rem": 19, "added": 0, "done": 0}, {"d": "2026-08-14", "rem": 19, "added": 0, "done": 0}, {"d": "2026-08-15", "rem": 19, "added": 0, "done": 0}, {"d": "2026-08-16", "rem": 19, "added": 0, "done": 0}, {"d": "2026-08-17", "rem": 19, "added": 0, "done": 0}, {"d": "2026-08-18", "rem": 19, "added": 0, "done": 0}, {"d": "2026-08-19", "rem": 19, "added": 3, "done": 3}, {"d": "2026-08-20", "rem": 19, "added": 0, "done": 0}, {"d": "2026-08-21", "rem": 20, "added": 3, "done": 2}, {"d": "2026-08-22", "rem": 20, "added": 0, "done": 0}, {"d": "2026-08-23", "rem": 20, "added": 0, "done": 0}, {"d": "2026-08-24", "rem": 21, "added": 2, "done": 1}, {"d": "2026-08-25", "rem": 21, "added": 0, "done": 0}, {"d": "2026-08-26", "rem": 21, "added": 0, "done": 0}, {"d": "2026-08-27", "rem": 21, "added": 1, "done": 1}, {"d": "2026-08-28", "rem": 24, "added": 3, "done": 0}, {"d": "2026-08-29", "rem": 24, "added": 0, "done": 0}, {"d": "2026-08-30", "rem": 24, "added": 0, "done": 0}, {"d": "2026-08-31", "rem": 25, "added": 1, "done": 0}, {"d": "2026-09-01", "rem": 29, "added": 5, "done": 1}, {"d": "2026-09-02", "rem": 31, "added": 3, "done": 1}], "mem": [{"id": "019feb5c-a62f-7d92-9b64-2e50a29cc1f2", "kind": "annotation", "rank": -7.053395498146152, "snippet": "…359 raw executions op disk in finly-dev/mail-agent-golden-set…", "source": "task:#83", "title": "Mail Agent golden set: harvest n8n executions (doel 100 cases, KOK + Vericon)"}, {"id": "01a04565-c8bf-7f11-aae7-452fa0284b0c", "kind": "annotation", "rank": -6.529081262433896, "snippet": "…alleen VERSION verschilt, de golden-set-schema's zijn identiek tussen v3…", "source": "task:#95", "title": "PR #2 (contract pin 3.2.0) mergen; daarna 3.3.0-golf via OCR-86 volgen"}, {"id": "01a0435d-74a5-7bd2-86ad-d5769fa884ad", "kind": "annotation", "rank": -6.437271460300159, "snippet": "…OCR-93 (expect.hitl in golden-set) is al geland. De OCR…", "source": "task:#95", "title": "PR #2 (contract pin 3.2.0) mergen; daarna 3.3.0-golf via OCR-86 volgen"}], "detail": {"id": 9, "title": "VH-STD-001 ratificatie: Owner invullen, D39 STS-vraag, effective date (RC 28-7)", "project": "qore-architecture", "pri": "H", "urg": 18.4, "tags": ["pr-55", "vh-std"], "due": "2026-07-28T00:00:00Z", "created": "2026-07-24T09:51:24.224788289Z", "status": "pending", "blocked": false, "depends_on": [], "annotations": [{"created": "2026-07-24", "body": "Context: memory-doc \"VH MCP-standaard\" (vh-mcp-standaard.md). PR #55 op qore-architecture; review Christian volledig afgerond 23-7. Rest: ratificatie + Owner invullen -> D39 -> effective date. RC-datum 2026-07-28."}]}};
+
+/* ── one key table drives footer AND help (D62 rule kept) ─────────────── */
+const KEYS = [
+  { keys: "[ / ]",       help: "previous / next project scope (all is first)", foot: "[/] project", rank: 2 },
+  { keys: "1-5",         help: "focus a panel",                                foot: null },
+  { keys: "tab / S-tab", help: "next / previous panel",                        foot: null },
+  { keys: "j / k",       help: "move the cursor in the focused panel",         foot: "j/k move",   rank: 3 },
+  { keys: "g / G",       help: "cursor to the first / last row",               foot: null },
+  { keys: "enter",       help: "open the detail overlay for the cursor row",   foot: "\u23ce open", rank: 6 },
+  { keys: "/",           help: "fuzzy search (title, tags, project, memory)",  foot: "/ search",   rank: 4 },
+  { keys: "f",           help: "filter bar (status: pri: tag: due< age> +blocked +waiting +timer)", foot: "f filter", rank: 5 },
+  { keys: "F",           help: "clear every filter",                           foot: null },
+  { keys: "s",           help: "start / stop the timer on the cursor row",     foot: "s start",    rank: 7 },
+  { keys: "d",           help: "mark the cursor row done",                     foot: "d done",     rank: 8 },
+  { keys: "t",           help: "tag the cursor row",                           foot: null },
+  { keys: "p",           help: "set priority on the cursor row (then H/M/L)",  foot: null },
+  { keys: "u",           help: "set due on the cursor row",                    foot: null },
+  { keys: "w",           help: "cycle the burndown window (week/14d/30d)",     foot: "w window",   rank: 9 },
+  { keys: "r / R",       help: "refresh now / toggle auto-refresh",            foot: null },
+  { keys: "l",           help: "leave and print the task list",                foot: null },
+  { keys: "?",           help: "this help",                                    foot: "? help",     rank: 1 },
+  { keys: "q / esc",     help: "close the overlay, else the screen",           foot: "q quit",     rank: 0 },
+  { keys: "ctrl-c",      help: "close, always",                                foot: null },
+];
+
+/* ── state ────────────────────────────────────────────────────────────── */
+const S = {
+  scope: "all",              // "all" or a project name
+  cursor: 0,                 // index into visible task rows
+  panel: 2,                  // focused panel 1..5
+  window: "14d",
+  filters: [],               // e.g. ["status:pending","pri:H"]
+  overlay: null,             // null | "help" | "detail" | "search" | "filter"
+  query: "",                 // search input
+  filterInput: "",
+  confirm: null,             // one-line confirmation after an action
+  pendingKey: null,          // e.g. "p" waiting for H/M/L
+};
+
+/* ── grid ─────────────────────────────────────────────────────────────── */
+let grid;
+function clearGrid(){ grid = Array.from({length:H},()=>Array.from({length:W},()=>({ch:" ",cls:"fg"}))); }
+function put(y,x,text,cls){
+  cls = cls || "fg";
+  for (let i=0;i<text.length;i++){
+    const xx=x+i; if(xx<0||xx>=W||y<0||y>=H) continue;
+    grid[y][xx]={ch:text[i],cls};
+  }
+}
+function hline(y,x1,x2,cls){ for(let x=x1;x<=x2;x++) grid[y][x]={ch:"\u2500",cls:cls||"muted"}; }
+function fillBg(y,x1,x2,cls){ for(let x=x1;x<=x2;x++){ grid[y][x].cls = cls; } }
+
+/* ── data helpers ─────────────────────────────────────────────────────── */
+const PROJECTS = DATA.projects;
+function scopeList(){ return ["all"].concat(PROJECTS.map(p=>p.name)); }
+function moveScope(dir){
+  const l=scopeList(); let i=l.indexOf(S.scope);
+  i=(i+dir+l.length)%l.length; S.scope=l[i]; S.cursor=0;
+}
+function parseFilter(tok){
+  let m;
+  if ((m=tok.match(/^status:(\w+)$/)))  return t=>true; // open snapshot is pending-only; kept for grammar
+  if ((m=tok.match(/^pri:([HML])$/)))   return t=>t.pri===m[1];
+  if ((m=tok.match(/^tag:([\w-]+)$/)))  return t=>t.tags.includes(m[1]);
+  if ((m=tok.match(/^due<(\d+)d$/)))    return t=>t.due!==null && t.due< +m[1];
+  if ((m=tok.match(/^age>(\d+)d$/)))    return t=>t.age> +m[1];
+  if (tok==="+overdue")  return t=>t.due!==null && t.due<0;
+  if (tok==="+blocked")  return t=>t.blocked;
+  if (tok==="+waiting")  return t=>t.wait;
+  if (tok==="+timer")    return t=>t.timer;
+  return null;
+}
+function visibleTasks(){
+  let rows = DATA.tasks;
+  if (S.scope!=="all") rows = rows.filter(t=>t.project===S.scope);
+  for (const f of S.filters){ const p=parseFilter(f); if(p) rows=rows.filter(p); }
+  return rows;
+}
+/* rows interleaved with group headers when scope=all */
+function taskRows(){
+  const rows = visibleTasks();
+  if (S.scope!=="all") return rows.map(t=>({t}));
+  const out=[]; const by={};
+  for (const t of rows) (by[t.project]=by[t.project]||[]).push(t);
+  for (const p of PROJECTS.map(p=>p.name)){
+    if (!by[p]) continue;
+    out.push({group:p, n:by[p].length, ov:by[p].filter(t=>t.due!==null&&t.due<0).length});
+    for (const t of by[p]) out.push({t});
+  }
+  return out;
+}
+function cursorTask(){
+  const rows=taskRows().filter(r=>r.t);
+  return rows[Math.min(S.cursor, rows.length-1)] ? rows[Math.min(S.cursor,rows.length-1)].t : null;
+}
+function fuzzy(q, s){          // subsequence match → matched index list or null
+  q=q.toLowerCase(); s=s.toLowerCase();
+  const idx=[]; let j=0;
+  for (let i=0;i<q.length;i++){
+    j=s.indexOf(q[i], j); if(j<0) return null; idx.push(j); j++;
+  }
+  return idx;
+}
+function searchResults(){
+  if (!S.query) return [];
+  const out=[];
+  for (const t of DATA.tasks){
+    let m=fuzzy(S.query, t.title);
+    if (m) { out.push({kind:"title", t, text:t.title, idx:m}); continue; }
+    for (const tg of t.tags){ m=fuzzy(S.query, tg); if(m){ out.push({kind:"tag", t, text:"+"+tg, idx:m.map(i=>i+1)}); break; } }
+    if (out.length && out[out.length-1].t===t) continue;
+    m=fuzzy(S.query, t.project); if(m) out.push({kind:"project", t, text:t.project, idx:m});
+  }
+  for (const h of DATA.mem){
+    const m=fuzzy(S.query, h.title+" "+h.snippet);
+    if (m) out.push({kind:"memory", mem:h, text:h.snippet.replace(/\u2026/g,"…"), idx:[]});
+  }
+  return out.slice(0,12);
+}
+function hums(h){ if(h<=0) return "0h"; const hh=Math.floor(h), mm=Math.round((h-hh)*60);
+  return mm? hh+"h"+String(mm).padStart(2,"0") : hh+"h"; }
+function urgCls(u){ return u>=9? "urgHot" : u>=4? "urgWarm" : "urgCold"; }
+function fit(s,n){ s=String(s); return s.length>n ? s.slice(0,n-1)+"\u2026" : s.padEnd(n); }
+
+/* ── layout constants ─────────────────────────────────────────────────── */
+const LX=1, LW=28, SEP=29, RX=30, RW=89;      // left col, separator, right region
+const R_PROJ=1, R_PULSE=14, R_EFF=26;         // left rules
+const R_TASK=1, R_BURN=28, R_BOT=38, R_FOOT=39;
+
+/* ── render ───────────────────────────────────────────────────────────── */
+function render(){
+  clearGrid();
+  drawFrame();
+  drawHeader();
+  drawProjects();
+  drawPulse();
+  drawEffort();
+  drawTasks();
+  drawBurndown();
+  drawFooter();
+  if (S.overlay==="help")   drawHelp();
+  if (S.overlay==="detail") drawDetail();
+  if (S.overlay==="search") drawSearch();
+  if (S.overlay==="filter") drawFilterBar();
+  paint();
+}
+function drawFrame(){
+  put(0,0,"\u250c","muted"); put(0,W-1,"\u2510","muted"); hline(0,1,W-2);
+  put(R_BOT,0,"\u2514","muted"); put(R_BOT,W-1,"\u2518","muted"); hline(R_BOT,1,W-2);
+  for(let y=1;y<R_BOT;y++){ put(y,0,"\u2502","muted"); put(y,W-1,"\u2502","muted"); put(y,SEP,"\u2502","muted"); }
+  put(R_BOT,SEP,"\u2534","muted");
+  // rules
+  rule(R_PROJ, 0, SEP, "1", "PROJECTS", S.panel===1);
+  rule(R_PULSE,0, SEP, "4", "PULSE",    S.panel===4);
+  rule(R_EFF,  0, SEP, "5", "EFFORT",   S.panel===5);
+  put(R_PROJ,SEP,"\u252c","muted"); put(R_PULSE,SEP,"\u2524","muted"); put(R_EFF,SEP,"\u2524","muted");
+  ruleRight(R_TASK); ruleBurn();
+}
+function rule(y,x1,x2,num,title,focused){
+  hline(y,x1+1,x2-1); put(y,x1,"\u251c","muted");
+  const label = "\u2500"+num+"\u2500 "+(focused?"\u25b8 ":"")+title+" ";
+  put(y,x1+1,label, focused?"accentB":"header");
+}
+function ruleRight(y){
+  hline(y,SEP+1,W-2); put(y,W-1,"\u2524","muted");
+  const focused = S.panel===2;
+  let label="\u25002\u2500 "+(focused?"\u25b8 ":"")+"TASKS \u2500 "+S.scope+" ";
+  put(y,SEP+1,label, focused?"accentB":"header");
+  let x=SEP+1+label.length+1;
+  if (S.filters.length){
+    for(const f of S.filters){
+      const chip=" "+f+" ";
+      put(y,x,chip,"chip"); x+=chip.length+1;
+    }
+    put(y,x," F clears ","dim"); x+=10;
+  } else {
+    put(y,x," f filter \u00b7 / search ","dim"); x+=22;
+  }
+}
+function ruleBurn(){
+  const y=R_BURN;
+  hline(y,SEP+1,W-2); put(y,SEP,"\u251c","muted"); put(y,W-1,"\u2524","muted");
+  const focused=S.panel===3;
+  let label="\u25003\u2500 "+(focused?"\u25b8 ":"")+"BURNDOWN ";
+  put(y,SEP+1,label,focused?"accentB":"header");
+  let x=SEP+1+label.length+1;
+  for (const w of ["week","14d","30d"]){
+    put(y,x,w, w===S.window?"accentB":"dim"); x+=w.length+2;
+  }
+  put(y,x,"\u2500 \u2500\u2500 remaining  \u00b7\u00b7 ideal  \u2500\u2500 scope added","dim");
+}
+function drawHeader(){
+  // right-hand counts first, so the strip knows its budget
+  const rows=visibleTasks();
+  const ov=rows.filter(t=>t.due!==null&&t.due<0).length;
+  const bl=rows.filter(t=>t.blocked).length;
+  const timer = DATA.tasks.find(t=>t.timer);
+  const right = " "+rows.length+" open \u00b7 "+ov+" overdue \u00b7 "+bl+" blocked \u00b7 "
+    + DATA.stats.done7+" done/wk \u00b7 "+(timer? "\u25b6 #"+timer.id : "no timer")+" ";
+  const budget = W-3-right.length;   // strip may not cross into the counts
+  let x=2; put(0,x," tasqx ","header"); x+=8;
+  // scope strip: all + neighbours of the active scope, active in accent
+  const l=scopeList(); const ai=l.indexOf(S.scope);
+  let shown = l.slice(Math.max(0,ai-1), ai+2).map(n=>({n, cur:n===S.scope}));
+  if (shown[0].n!=="all") shown=[{n:"all",cur:false}].concat(shown.filter(s=>s.n!=="all"));
+  if (ai>1){ put(0,x,"\u2039 ","muted"); x+=2; }
+  for (const s of shown){
+    const t=" "+s.n+" ";
+    if (x+t.length>budget-5) break;
+    put(0,x,t, s.cur?"accentB":"dim"); x+=t.length+1;
+  }
+  const hidden=l.length-1-ai;
+  if (hidden>1 && x+5<=budget){ put(0,x,"\u203a +"+(hidden-1)+" ","muted"); }
+  put(0, W-2-right.length, right, "dim");
+  if (ov) { const p=right.indexOf(ov+" overdue"); put(0,W-2-right.length+p, ov+" overdue", "overdue"); }
+}
+function drawProjects(){
+  const l=scopeList(); let y=R_PROJ+1;
+  for (const name of l){
+    if (y>=R_PULSE) break;
+    const cur = name===S.scope;
+    const p = PROJECTS.find(p=>p.name===name);
+    const open = p? p.open : DATA.tasks.length;
+    const mark = cur? "\u25b8" : (p&&p.default? "*" : " ");
+    put(y,LX," "+mark+" ", cur?"accentB":"muted");
+    put(y,LX+3, fit(name,17), cur?"accentB": name==="all"?"fg":"project");
+    put(y,LX+21, String(open).padStart(3), cur?"accentB":"fg");
+    if (p && p.overdue) put(y,LX+25,"\u25cf","overdue");
+    if (cur) fillBg(y,LX,SEP-1, y===y?grid[y][LX].cls:"cursor");
+    y++;
+  }
+}
+function cyc(d){ return d>=1? d+"d" : d<=0? "<1h" : Math.max(1,Math.round(d*24))+"h"; }
+function drawPulse(){
+  const s=DATA.stats; let y=R_PULSE+1;
+  const spark = sparkline(s.spark30.slice(-28), 26);
+  put(y,LX+1,"done 7d "+s.done7+" \u00b7 14d "+s.done14+" \u00b7 30d "+s.done30,"fg");
+  put(y+1,LX+1,spark,"accent");
+  put(y+2,LX+1,"".padEnd(26," "),"fg");
+  put(y+3,LX+1,"cycle med "+cyc(s.cycle_med)+" \u00b7 14d "+cyc(s.cycle_recent),"fg");
+  put(y+4,LX+1,"trend \u2198 faster close","timer");
+  put(y+5,LX+1,"".padEnd(26,"\u254c"),"muted");
+  put(y+6,LX+1,"overdue now "+s.overdue_now,"overdue");
+  put(y+7,LX+1," #"+s.overdue_task+" \u2212"+s.overdue_days+"d","overdue");
+  put(y+8,LX+1,"oldest open #"+s.oldest_id+" \u00b7 "+s.oldest_age+"d","fg");
+  put(y+9,LX+1,"untouched\u226514d  "+s.untouched14+" tasks","warn"==="warn"?"priM":"fg");
+  put(y+10,LX+1,"scope +13 / \u22126 done 14d","dim");
+}
+function drawEffort(){
+  const s=DATA.stats; let y=R_EFF+1;
+  put(y,LX+1,"est left on open work","fg");
+  put(y+1,LX+1,hums(s.est_left_total)+" est \u00b7 "+hums(s.trk_total)+" tracked","accent");
+  let yy=y+2;
+  const ent=Object.entries(s.est_by_proj);
+  for (const [p,h] of ent){
+    if (yy>=R_BOT-4) break;
+    put(yy,LX+1,fit(p,14),"project");
+    const bw=Math.max(1,Math.round(h/16.5*8));
+    put(yy,LX+16,"\u2587".repeat(bw),"accent");
+    put(yy,LX+16+bw+1,hums(h),"fg");
+    yy++;
+  }
+  put(yy,LX+1,"".padEnd(26,"\u254c"),"muted"); yy++;
+  put(yy,LX+1,"tokens (store, per project)","fg"); yy++;
+  const tp=PROJECTS.filter(p=>p.tok>0);
+  for (const p of tp){
+    put(yy,LX+1,fit(p.name,14),"project");
+    put(yy,LX+16,(p.tok/1e6).toFixed(1)+"M","tag"); yy++;
+  }
+  if (yy<R_BOT-1) put(yy,LX+1,"cost/day: needs API \u2020","dim");
+}
+function sparkline(vals,w){
+  const bars="\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588";
+  const mx=Math.max(1,...vals);
+  return vals.slice(-w).map(v=>v===0?"\u2581":bars[Math.min(7,Math.ceil(v/mx*7))]).join("");
+}
+function drawTasks(){
+  const rows=taskRows();
+  const top=R_TASK+1, bottom=R_BURN-1, avail=bottom-top+1;
+  const cursorRows=rows.filter(r=>r.t);
+  const ci=Math.min(S.cursor,cursorRows.length-1);
+  const cTask=cursorRows[ci];
+  // scroll so cursor visible
+  let cRowIdx=rows.indexOf(cTask);
+  let start=0;
+  if (cRowIdx>=avail) start=cRowIdx-avail+1;
+  let y=top;
+  for (let i=start;i<rows.length && y<=bottom;i++,y++){
+    const r=rows[i];
+    if (r.group){
+      put(y,RX+1,"\u258d ","project");
+      put(y,RX+3,r.group,"group");
+      let info=" \u2500 "+r.n+" open"+(r.ov? " \u00b7 "+r.ov+" overdue":"");
+      put(y,RX+3+r.group.length,info, r.ov?"overdue":"dim");
+      continue;
+    }
+    const t=r.t; const isCur = r===cTask;
+    if (isCur){ fillBg(y,RX,W-2,"cursor"); put(y,RX+1,"\u25b8","accentB"); }
+    const base=isCur?"cursorA":"fg";
+    put(y,RX+3,("#"+t.id).padStart(4), isCur?"cursorA":"dim");
+    put(y,RX+8, (t.urg==null?0:t.urg).toFixed(1).padStart(4), urgCls(t.urg||0));
+    put(y,RX+13, t.pri||"\u00b7", t.pri? "pri"+t.pri : "dim");
+    let title=fit(t.title, 56);
+    put(y,RX+15, title, base);
+    let x=RX+72;
+    const tg=t.tags.slice(0,2).map(x=>"+"+x).join(" ");
+    put(y,RX+72, fit(tg,12), "tag");
+    if (t.blocked) put(y,RX+84,"\u26d4","overdue");
+    if (t.timer)   put(y,RX+84,"\u25b6","timer");
+    if (t.due!==null){
+      const d=t.due<0? "\u2212"+(-t.due)+"d" : t.due===0? "today" : "+"+t.due+"d";
+      put(y,W-2-d.length, d, t.due<0?"overdue": t.due<3?"priM":"dim");
+    }
+    if (isCur){ for(let x2=RX;x2<W-1;x2++){ if(grid[y][x2].cls==="fg") grid[y][x2].cls="cursor"; } }
+  }
+  if (rows.length===0) put(top+1,RX+2,"no rows match \u2014 F clears the filters","dim");
+}
+/* A connected step-line in box-drawing glyphs with rounded corners
+   (╭ ╮ ╰ ╯) — the style that reads as one line instead of scattered marks. */
+function stepLine(vals, x0, x1, py, cls){
+  const n=vals.length, cols=x1-x0+1;
+  const rowAt=[];
+  for(let c=0;c<cols;c++){
+    const i=Math.round(c/(cols-1)*(n-1));
+    rowAt.push(py(vals[i]));
+  }
+  for(let c=0;c<cols;c++){
+    const x=x0+c, r=rowAt[c];
+    if(c===0 || rowAt[c-1]===r){ put(r,x,"\u2500",cls); continue; }
+    const pr=rowAt[c-1];
+    if(r>pr){ // line drops
+      put(pr,x,"\u256e",cls);
+      for(let y=pr+1;y<r;y++) put(y,x,"\u2502",cls);
+      put(r,x,"\u2570",cls);
+    } else {  // line rises
+      put(pr,x,"\u256f",cls);
+      for(let y=r+1;y<pr;y++) put(y,x,"\u2502",cls);
+      put(r,x,"\u256d",cls);
+    }
+  }
+}
+function drawBurndown(){
+  const days = S.window==="week"?7 : S.window==="14d"?14 : 30;
+  const series=DATA.burn.slice(-days);
+  const x0=RX+6, x1=W-3, y0=R_BURN+1, y1=R_BOT-2;
+  const rowsN=y1-y0+1;
+  const rem=series.map(s=>s.rem);
+  let cum=0; const scope=series.map(s=>cum+=s.added);
+  const mx=Math.max(...rem, ...scope, 1);
+  // axis
+  put(y0,RX+1,String(mx).padStart(3),"dim");
+  put(y1,RX+1,"0".padStart(3),"dim");
+  for(let y=y0;y<=y1;y++) put(y,RX+5,"\u2502","muted");
+  const py=v=>y1-Math.round(v/mx*(rowsN-1));
+  // ideal: first remaining → 0, a dotted diagonal under everything
+  const cols=x1-x0+1;
+  for(let c=0;c<cols;c+=2){
+    const v=rem[0]*(1-c/(cols-1));
+    put(py(v),x0+c,"\u00b7","ideal");
+  }
+  stepLine(scope, x0, x1, py, "scope");   // cumulative added work
+  stepLine(rem,   x0, x1, py, "accent");  // remaining, drawn on top
+  put(y0,x1-30,"\u2500\u2500 "+rem[rem.length-1]+" remaining","accent");
+  put(y0,x1-14,"\u2500\u2500 +"+scope[scope.length-1]+" added","scope");
+  put(y1,x1-24,"now "+rem[rem.length-1]+" \u00b7 net +"+ (rem[rem.length-1]-rem[0]) +" over "+S.window,"dim");
+}
+function drawFooter(){
+  const y=R_FOOT;
+  if (S.confirm){ put(y,1,S.confirm.text, S.confirm.cls||"confirm"); return; }
+  if (S.pendingKey==="p"){ put(y,1,"priority for #"+cursorTask().id+":  H / M / L   (esc cancels)","accent"); return; }
+  if (S.pendingKey==="t"){ put(y,1,"tag #"+cursorTask().id+":  +","accent"); return; }
+  if (S.pendingKey==="u"){ put(y,1,"due for #"+cursorTask().id+":  (fri, 2026-09-10, +3d \u2026)  esc cancels","accent"); return; }
+  let x=1;
+  const foots=KEYS.filter(k=>k.foot).sort((a,b)=>a.rank-b.rank);
+  for (const k of foots){
+    const [kk,...w]=k.foot.split(" ");
+    put(y,x,kk,"accent"); x+=kk.length+1;
+    put(y,x,w.join(" "),"dim"); x+=w.join(" ").length+3;
+    if (x>W-10) break;
+  }
+}
+/* ── overlays ─────────────────────────────────────────────────────────── */
+function box(y,x,h,w,title){
+  for(let yy=y;yy<y+h;yy++) for(let xx=x;xx<x+w;xx++) grid[yy][xx]={ch:" ",cls:"fg"};
+  put(y,x,"\u250c"+"\u2500".repeat(w-2)+"\u2510","accent");
+  put(y+h-1,x,"\u2514"+"\u2500".repeat(w-2)+"\u2518","accent");
+  for(let yy=y+1;yy<y+h-1;yy++){ put(yy,x,"\u2502","accent"); put(yy,x+w-1,"\u2502","accent"); }
+  if(title) put(y,x+2," "+title+" ","accentB");
+}
+function drawHelp(){
+  const h=KEYS.length+4, w=72, y=Math.floor((H-h)/2), x=Math.floor((W-w)/2);
+  box(y,x,h,w,"keys");
+  const kw=Math.max(...KEYS.map(k=>k.keys.length))+2;
+  KEYS.forEach((k,i)=>{
+    put(y+2+i,x+3,k.keys.padEnd(kw),"accent");
+    put(y+2+i,x+3+kw,k.help,"fg");
+  });
+  put(y+h-1,x+w-24," any key closes ","dim");
+}
+function drawDetail(){
+  const t=cursorTask(); if(!t) return;
+  const d = (t.id===DATA.detail.id)? DATA.detail : null;
+  const h=16,w=84,y=Math.floor((H-h)/2),x=Math.floor((W-w)/2);
+  box(y,x,h,w,"#"+t.id+" \u00b7 task.get");
+  put(y+2,x+3,t.title.slice(0,w-6),"accentB");
+  put(y+4,x+3,"project ","dim");  put(y+4,x+12,t.project,"project");
+  put(y+4,x+40,"priority ","dim"); put(y+4,x+50,t.pri||"\u2014", t.pri?"pri"+t.pri:"dim");
+  put(y+5,x+3,"urgency ","dim");  put(y+5,x+12,(t.urg||0).toFixed(1),urgCls(t.urg||0));
+  put(y+5,x+40,"status ","dim");  put(y+5,x+50,"pending","fg");
+  put(y+6,x+3,"tags ","dim");     put(y+6,x+12,t.tags.map(x=>"+"+x).join(" ")||"\u2014","tag");
+  put(y+7,x+3,"due ","dim");
+  put(y+7,x+12, t.due===null?"\u2014": (t.due<0? "overdue by "+(-t.due)+"d":"in "+t.due+"d"), t.due!==null&&t.due<0?"overdue":"fg");
+  put(y+7,x+40,"age ","dim");     put(y+7,x+50,t.age+"d \u00b7 untouched "+t.touched+"d","fg");
+  put(y+8,x+3,"est ","dim");      put(y+8,x+12, t.est? hums(t.est):"\u2014","fg");
+  put(y+8,x+40,"tracked ","dim"); put(y+8,x+50, t.trk? hums(t.trk):"\u2014","fg");
+  put(y+9,x+3,"blocked ","dim");  put(y+9,x+12, t.blocked? "yes":"no", t.blocked?"overdue":"fg");
+  put(y+10,x+3,"".padEnd(w-6,"\u254c"),"muted");
+  if (d && d.annotations.length){
+    put(y+11,x+3,"annotations ("+d.annotations.length+")","dim");
+    d.annotations.slice(0,2).forEach((a,i)=>{
+      put(y+12+i,x+3,a.created+"  "+a.body.slice(0,w-20),"fg");
+    });
+  } else {
+    put(y+11,x+3,"annotations \u00b7 loaded lazily via task.get for this row","dim");
+  }
+  put(y+h-1,x+w-36," s start \u00b7 d done \u00b7 any other closes ","dim");
+}
+function drawSearch(){
+  const h=17,w=90,y=5,x=Math.floor((W-w)/2);
+  box(y,x,h,w,"fuzzy search \u00b7 title tags project memory");
+  put(y+2,x+3,"\u203a ","accent");
+  put(y+2,x+5,S.query,"fg");
+  put(y+2,x+5+S.query.length,"\u2588","accent");
+  const res=searchResults();
+  res.forEach((r,i)=>{
+    const yy=y+4+i; if (yy>=y+h-1) return;
+    put(yy,x+3, r.kind.padEnd(8), r.kind==="memory"?"tag":"dim");
+    if (r.t){
+      put(yy,x+12,("#"+r.t.id).padStart(4),"dim");
+      put(yy,x+17,fit(r.t.project,18),"project");
+      const tx=x+36;
+      put(yy,tx,fit(r.text,w-40),"fg");
+      for(const ix of r.idx){ if(ix<w-40) grid[yy][tx+ix].cls="match"; }
+    } else {
+      put(yy,x+12,fit(r.mem.source,9),"dim");
+      put(yy,x+22,fit(r.text,w-26),"fg");
+    }
+  });
+  if (S.query && !res.length) put(y+4,x+3,"nothing matches \u2014 esc to close","dim");
+  if (!S.query) put(y+4,x+3,"type to match \u00b7 memory hits arrive from memory.search","dim");
+  put(y+h-1,x+w-40," \u23ce jump to row \u00b7 esc close \u00b7 memory.search live ","dim");
+}
+function drawFilterBar(){
+  const y=R_FOOT;
+  for(let x=0;x<W;x++) grid[y][x]={ch:" ",cls:"fg"};
+  put(y,1,"filter\u203a ","accent");
+  put(y,9,S.filterInput,"fg");
+  put(y,9+S.filterInput.length,"\u2588","accent");
+  put(y,W-64,"status: pri: tag: due<Nd age>Nd +overdue +blocked +waiting +timer","dim");
+}
+/* ── paint grid → DOM ─────────────────────────────────────────────────── */
+function paint(){
+  const pre=document.getElementById("term");
+  let html="";
+  for (let y=0;y<H;y++){
+    let run="",cls=grid[y][0].cls;
+    for(let x=0;x<W;x++){
+      const c=grid[y][x];
+      if(c.cls!==cls){ html+=span(run,cls); run=""; cls=c.cls; }
+      run+=c.ch;
+    }
+    html+=span(run,cls)+"\n";
+  }
+  pre.innerHTML=html;
+}
+function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+function span(t,c){ return t? '<span class="'+c+'">'+esc(t)+"</span>":""; }
+
+/* ── keys ─────────────────────────────────────────────────────────────── */
+document.addEventListener("keydown", e=>{
+  const k=e.key;
+  if (S.overlay==="search"){
+    if (k==="Escape"){ S.overlay=null; S.query=""; }
+    else if (k==="Backspace") S.query=S.query.slice(0,-1);
+    else if (k==="Enter"){
+      const r=searchResults()[0];
+      if (r&&r.t){ S.scope=r.t.project; const rows=taskRows().filter(x=>x.t);
+        S.cursor=rows.findIndex(x=>x.t.id===r.t.id); if(S.cursor<0)S.cursor=0; }
+      S.overlay=null; S.query="";
+    }
+    else if (k.length===1) S.query+=k;
+    e.preventDefault(); render(); return;
+  }
+  if (S.overlay==="filter"){
+    if (k==="Escape"){ S.overlay=null; S.filterInput=""; }
+    else if (k==="Backspace") S.filterInput=S.filterInput.slice(0,-1);
+    else if (k==="Enter"){ S.filters=S.filterInput.trim().split(/\s+/).filter(Boolean); S.overlay=null; S.filterInput=""; S.cursor=0; }
+    else if (k.length===1) S.filterInput+=k;
+    e.preventDefault(); render(); return;
+  }
+  if (S.overlay){ // help/detail: any key closes (s/d act from detail)
+    if (S.overlay==="detail" && (k==="s"||k==="d")){ S.overlay=null; act(k); render(); return; }
+    S.overlay=null; render(); return;
+  }
+  if (S.pendingKey==="p"){
+    if ("HML".includes(k.toUpperCase()) && k.length===1){
+      const t=cursorTask(); t.pri=k.toUpperCase();
+      S.confirm={text:"\u2713 #"+t.id+" priority \u2192 "+t.pri+" \u00b7 task.modify sent \u00b7 u undoes"};
+    }
+    S.pendingKey=null; render(); return;
+  }
+  if (S.pendingKey){ S.pendingKey=null; render(); return; }
+  S.confirm=null;
+  switch(k){
+    case "[": moveScope(-1); break;
+    case "]": moveScope(1); break;
+    case "j": case "ArrowDown": S.cursor=Math.min(S.cursor+1, taskRows().filter(r=>r.t).length-1); break;
+    case "k": case "ArrowUp":   S.cursor=Math.max(S.cursor-1,0); break;
+    case "g": S.cursor=0; break;
+    case "G": S.cursor=taskRows().filter(r=>r.t).length-1; break;
+    case "Enter": S.overlay="detail"; break;
+    case "/": S.overlay="search"; S.query=""; break;
+    case "f": S.overlay="filter"; S.filterInput=S.filters.join(" ")+(S.filters.length?" ":""); break;
+    case "F": S.filters=[]; break;
+    case "?": S.overlay="help"; break;
+    case "w": S.window = S.window==="week"?"14d": S.window==="14d"?"30d":"week"; break;
+    case "s": case "d": act(k); break;
+    case "t": S.pendingKey="t"; break;
+    case "p": S.pendingKey="p"; break;
+    case "u": S.pendingKey="u"; break;
+    case "Tab": S.panel=e.shiftKey? (S.panel+3)%5+1 : S.panel%5+1; e.preventDefault(); break;
+    case "1": case "2": case "3": case "4": case "5": S.panel=+k; break;
+    case "q": case "Escape": S.filters=[]; S.scope="all"; break;
+  }
+  render();
+});
+function act(k){
+  const t=cursorTask(); if(!t) return;
+  if (k==="s"){
+    t.timer=!t.timer;
+    S.confirm={text: t.timer? "\u25b6 started #"+t.id+"  "+fit(t.title,50).trim()+" \u00b7 task.start \u00b7 s stops"
+                            : "\u23f8 stopped #"+t.id+" \u00b7 tracked this run 0m \u00b7 task.stop", cls: t.timer?"confirm":"fg"};
+  }
+  if (k==="d"){
+    S.confirm={text:"\u2713 done #"+t.id+"  "+fit(t.title,54).trim()+" \u00b7 task.done sent \u00b7 u undoes"};
+  }
+}
+/* ── presets for the demo bar ─────────────────────────────────────────── */
+function preset(name){
+  Object.assign(S,{scope:"all",cursor:0,panel:2,filters:[],overlay:null,query:"",filterInput:"",confirm:null,pendingKey:null});
+  if (name==="project"){ S.scope="fin-9695"; S.panel=2; }
+  if (name==="filters"){ S.filters=["pri:H","due<40d","age>14d"]; }
+  if (name==="search"){ S.overlay="search"; S.query="golden"; }
+  if (name==="help"){ S.overlay="help"; }
+  if (name==="detail"){ S.scope="qore-architecture"; S.cursor=0; S.overlay="detail"; }
+  if (name==="action"){ S.scope="fin-9695"; S.cursor=1; act("s"); }
+  render(); document.getElementById("term").focus();
+}
+/* ── scale to fit ─────────────────────────────────────────────────────── */
+function resize(){
+  const wrap=document.getElementById("wrap");
+  const fw=wrap.clientWidth-40, fh=wrap.clientHeight-30;
+  const fs=Math.max(6, Math.min(fw/(W*0.602), fh/(H*1.25)));
+  document.getElementById("term").style.fontSize=fs+"px";
+}
+window.addEventListener("resize",resize);
+resize(); render(); document.getElementById("term").focus();
+</script>
+</body>
+</html>
