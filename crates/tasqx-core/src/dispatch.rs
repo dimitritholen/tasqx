@@ -260,7 +260,9 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "event.revert" => engine.event_revert(),
         "reminder.fire" => engine.reminder_fire(params),
         "core.capabilities" => engine.capabilities(),
-        other => Err(ApiError::bad_request(format!("unknown method: {other}"))),
+        other => Err(ApiError::bad_request(format!(
+            "unknown method: {other} — see core.capabilities for the method list"
+        ))),
     }
 }
 
@@ -525,6 +527,30 @@ mod tests {
                  key the table declares and nobody reads is silently IGNORED"
             );
         }
+    }
+
+    /// #229 item 1: every other unknown-token error in this CLI (status,
+    /// sort key, filter field) lists the valid values inline so an agent can
+    /// self-correct in one turn. `dispatch`'s own "unknown method" error was
+    /// the one place that just said no — this pins that it now points at
+    /// `core.capabilities`, the method table's own advertisement, the same
+    /// way the others point at their accepted-value lists.
+    #[test]
+    fn an_unknown_method_points_at_core_capabilities() {
+        let engine = crate::engine::Engine::open_in_memory().unwrap();
+        let e = dispatch(&engine, "task.next", &json!({})).unwrap_err();
+        assert!(
+            e.message.contains("task.next"),
+            "must still name the method that was not found: {}",
+            e.message
+        );
+        assert!(
+            e.message.contains("core.capabilities"),
+            "must point at core.capabilities for the method list, the way \
+             every other unknown-token error in this CLI names its valid \
+             values inline: {}",
+            e.message
+        );
     }
 
     /// The gate must not have quietly turned an optional param into a required

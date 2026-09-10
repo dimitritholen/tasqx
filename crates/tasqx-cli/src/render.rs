@@ -90,9 +90,16 @@ pub fn project_created(ctx: &Ctx, result: &Value) -> String {
     } else {
         // Name the verb that would do it: the user's complaint was being left
         // with no way to steer this and no hint that one existed.
+        //
+        // #229 item 13: `name` is quoted here (`filter::quote`'s own
+        // "quotes unconditionally" rule — a project name may hold padding or
+        // spaces D36 keeps verbatim, e.g. `init " padded "`) so the printed
+        // command is always one the shell can carry back in, rather than a
+        // bare word that drops the very whitespace `tasqx use` needs to see.
         format!(
-            "  ·  default is still {}  (tasqx use {name})",
-            default_label(ctx, result)
+            "  ·  default is still {}  (tasqx use {})",
+            default_label(ctx, result),
+            tasqx_core::filter::quote(&name)
         )
     };
     format!(
@@ -742,7 +749,10 @@ pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         .and_then(Value::as_array)
         .unwrap_or(&empty);
     if tasks.is_empty() {
-        return "No tasks.\n".to_string();
+        // #229 item 1: matches `report`'s phrasing for the same situation —
+        // an empty result set from a read verb — rather than the CLI naming
+        // the same outcome two different ways depending which verb answered.
+        return "No matching tasks.\n".to_string();
     }
 
     let refs: Vec<&Value> = tasks.iter().collect();
@@ -3513,6 +3523,20 @@ mod tests {
         assert!(task_row(&t, 1.0, at("2026-08-31T12:00:01Z"), true).overdue);
     }
 
+    /// #229 item 1: `task_table` (`list`, `watch`) said "No tasks." while
+    /// `report` said "No matching tasks." for the identical situation — an
+    /// empty result set from a read verb, filtered or not. One phrasing
+    /// across the read verbs, matching what `report` already used.
+    #[test]
+    fn an_empty_task_table_matches_reports_empty_phrasing() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let text = task_table(&ctx, &json!({ "tasks": [] }), Timestamp::now());
+        assert_eq!(
+            text, "No matching tasks.\n",
+            "list/watch's empty phrasing must match report's: {text:?}"
+        );
+    }
+
     #[test]
     fn task_table_reports_a_status_the_store_could_not_read() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
@@ -3672,6 +3696,29 @@ mod tests {
         assert!(
             not_claimed.contains("use"),
             "must name the way to switch: {not_claimed:?}"
+        );
+    }
+
+    /// #229 item 13: `init " padded "` mints a project whose own printed
+    /// re-selection command cannot be typed — `tasqx use  padded ` reads as
+    /// `use`, a bare argument `padded`, and two stray tokens the shell drops,
+    /// which is not the name the store actually holds. `project.create`'s
+    /// D36 rule (`req_str_value`) is that a name's padding survives verbatim
+    /// — the fix belongs in the PRINTED hint, quoted the way `filter::quote`
+    /// already quotes a project name inside a composed filter, not in a
+    /// trim at the write door that would fight the store-import round trip
+    /// D36 exists to keep byte-identical.
+    #[test]
+    fn a_padded_project_names_own_re_selection_hint_is_typeable() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = project_created(
+            &ctx,
+            &json!({ "name": " padded ", "default": false, "current_default": "work" }),
+        );
+        assert!(
+            out.contains("\" padded \"") || out.contains("' padded '"),
+            "the printed `tasqx use` hint must quote a name a bare shell word \
+             cannot carry: {out:?}"
         );
     }
 

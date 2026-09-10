@@ -6,6 +6,23 @@
 
 use super::*;
 
+/// #229 item 4: validate a memory `id`'s SHAPE before the store is ever
+/// asked about it — mirroring `resolve_ref_value_on`'s `bad_request` for a
+/// task ref that cannot possibly be a short_id or a UUID. Every memory id
+/// this engine ever mints is a UUID (`memory_add`'s `Uuid::now_v7()`), so a
+/// string that fails to parse as one is a malformed request, not a store
+/// miss — the two must not share one exit code (DESIGN.md's `2`
+/// bad_request vs `4` not_found contract exists so a script can branch
+/// without parsing JSON).
+fn require_uuid_shape(id: &str) -> Result<(), ApiError> {
+    if Uuid::parse_str(id).is_ok() {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(format!(
+        "memory id is not a UUID: {id} — expected a UUID like the one memory.add returns"
+    )))
+}
+
 /// The closed `scope` vocabulary for `memory.search`. **First entry is the
 /// default.** Source of truth in the [`SUMMARY_GROUP_BY`] sense: the engine
 /// validates against it, builds its refusal from it, and the MCP tool schema
@@ -267,6 +284,7 @@ impl Engine {
     /// that is real and rejected with a bare "not found" is the worst of both.
     pub fn memory_get(&self, p: &Value) -> Result<Value, ApiError> {
         let id = req_str(p, "id")?;
+        require_uuid_shape(&id)?;
         let found = self
             .conn
             .query_row(
@@ -317,6 +335,7 @@ impl Engine {
     /// there" are different answers to the caller.
     pub fn memory_remove(&self, p: &Value) -> Result<Value, ApiError> {
         let id = req_str(p, "id")?;
+        require_uuid_shape(&id)?;
         let tx = self.begin_mutation()?;
         let n = tx.execute("DELETE FROM docs WHERE id = ?1", params![id])?;
         if n == 0 {
@@ -328,5 +347,58 @@ impl Engine {
         insert_event(&tx, Entity::Doc, &id, "memory.remove", &json!({}))?;
         tx.commit()?;
         Ok(json!({ "id": id, "removed": true }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// #229 item 4: a malformed identifier was `bad_request` for a task
+    /// `ref` (`resolve_ref_value_on`) but `not_found` for a memory id — a
+    /// script that retries on `not_found` (transient/wrong id) and gives up
+    /// on `bad_request` (malformed input) got the opposite treatment
+    /// depending only on which entity it asked about, contradicting
+    /// DESIGN.md's stated exit-code-per-class contract. `notauuid` cannot be
+    /// a UUID, so it is the same failure as a malformed task ref.
+    #[test]
+    fn a_malformed_memory_id_is_bad_request_not_not_found() {
+        let e = crate::Engine::open_in_memory().unwrap();
+
+        let get_err = e
+            .memory_get(&json!({ "id": "notauuid" }))
+            .expect_err("a non-UUID id must be refused");
+        assert_eq!(
+            get_err.code,
+            crate::ErrorCode::BadRequest,
+            "shape is wrong, not merely absent: {}",
+            get_err.message
+        );
+        assert!(
+            get_err.message.contains("UUID"),
+            "must say what shape was expected: {}",
+            get_err.message
+        );
+
+        let rm_err = e
+            .memory_remove(&json!({ "id": "notauuid" }))
+            .expect_err("a non-UUID id must be refused");
+        assert_eq!(
+            rm_err.code,
+            crate::ErrorCode::BadRequest,
+            "{}",
+            rm_err.message
+        );
+
+        // A well-formed but nonexistent UUID is still genuinely not_found —
+        // only the SHAPE check moved, not the "no such doc" answer.
+        let real_uuid = uuid::Uuid::now_v7().to_string();
+        let missing = e.memory_get(&json!({ "id": real_uuid })).unwrap_err();
+        assert_eq!(
+            missing.code,
+            crate::ErrorCode::NotFound,
+            "{}",
+            missing.message
+        );
     }
 }

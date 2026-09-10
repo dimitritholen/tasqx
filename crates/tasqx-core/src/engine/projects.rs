@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// #229 item 3: `project.use` and `project.archive`'s not_found on an unknown
+/// name used to say only "no project named X", while the same class of error
+/// on `task.add --project`/`task.modify --project` (`require_live_project`,
+/// `engine.rs`) names the fix inline. This is that hint, plus the pointer
+/// `require_live_project` does not need but these two verbs do: the likeliest
+/// reason `archive X` (and, less often, `use X`) comes back not_found is that
+/// X is already archived — out of the default `projects` listing — and
+/// `--all` is exactly what reveals that case.
+fn unknown_project_message(name: &str) -> String {
+    format!(
+        "no project named {name} (`tasqx projects --all` lists archived ones; \
+         create it with `tasqx init {name}`)"
+    )
+}
+
 impl Engine {
     // ---- project.create ------------------------------------------------------
 
@@ -122,7 +137,7 @@ impl Engine {
             .optional()?;
         let (id, archived) = row.ok_or_else(|| {
             ApiError::not_found(
-                format!("no project named {name}"),
+                unknown_project_message(&name),
                 Some(json!({ "name": name })),
             )
         })?;
@@ -240,7 +255,7 @@ impl Engine {
             .optional()?;
         let (id, already) = row.ok_or_else(|| {
             ApiError::not_found(
-                format!("no project named {name}"),
+                unknown_project_message(&name),
                 Some(json!({ "name": name })),
             )
         })?;
@@ -344,5 +359,45 @@ impl Engine {
             "open_tasks": open_tasks,
             "open_overdue": open_overdue,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// #229 item 3: `task.add --project nosuch` names the fix
+    /// ("create it with `tasqx init nosuch`"); `project.use`/`project.archive`
+    /// on an unknown name did not, even though it is the identical "no project
+    /// named X" not_found. Pins both verbs against the hint `require_live_project`
+    /// already gives `task.add`/`task.modify`.
+    #[test]
+    fn use_and_archive_on_an_unknown_project_name_the_fix_like_add_does() {
+        let e = crate::Engine::open_in_memory().unwrap();
+
+        let use_err = e
+            .project_use(&json!({ "name": "nosuch" }))
+            .expect_err("an unknown project must be not_found");
+        assert_eq!(use_err.code, crate::ErrorCode::NotFound);
+        assert!(
+            use_err.message.contains("tasqx init nosuch"),
+            "project.use's not_found must name the fix, like task.add's does: {}",
+            use_err.message
+        );
+
+        let archive_err = e
+            .project_archive(&json!({ "name": "nosuch" }))
+            .expect_err("an unknown project must be not_found");
+        assert!(
+            archive_err.message.contains("tasqx init nosuch"),
+            "project.archive's not_found must name the fix, like task.add's does: {}",
+            archive_err.message
+        );
+        assert!(
+            archive_err.message.contains("--all"),
+            "archive's likeliest not_found cause is 'already archived', so the \
+             message must point at `tasqx projects --all` which reveals that case: {}",
+            archive_err.message
+        );
     }
 }
