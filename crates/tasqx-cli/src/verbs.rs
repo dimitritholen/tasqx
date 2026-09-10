@@ -578,6 +578,26 @@ pub(crate) fn run_annotate(
     Ok((result, out))
 }
 
+/// `tasqx unannotate` — scrub one annotation's text by id (D113).
+///
+/// A hard delete, not a hide: `annotation.remove` overwrites the body in the
+/// store, and the answer carries only the id and the removal instant — never
+/// the text, since echoing it back would recreate the leak this verb exists to
+/// close.
+pub(crate) fn run_unannotate(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    annotation_id: String,
+) -> CmdOutcome {
+    let result = be.call(
+        "annotation.remove",
+        &json!({ "ref": r#ref, "annotation_id": annotation_id }),
+    )?;
+    let out = render::annotation_removed(ctx, &result);
+    Ok((result, out))
+}
+
 /// `tasqx tag` / `tasqx untag`, the two spellings of one params shape.
 ///
 /// One function for both, the way [`run_dep`] serves `dep`/`undep`: the params

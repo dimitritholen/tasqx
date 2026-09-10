@@ -123,7 +123,7 @@ fn readme_names_every_platform_the_ci_matrix_tests() {
 /// rather than guessing: extending it is a one-line edit at the moment a
 /// roster actually grows that far.
 fn word(n: usize) -> &'static str {
-    const WORDS: [&str; 24] = [
+    const WORDS: [&str; 25] = [
         "Zero",
         "One",
         "Two",
@@ -148,6 +148,7 @@ fn word(n: usize) -> &'static str {
         "Twenty-one",
         "Twenty-two",
         "Twenty-three",
+        "Twenty-four",
     ];
     WORDS
         .get(n)

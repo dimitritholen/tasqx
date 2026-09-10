@@ -1688,6 +1688,338 @@ fn undo_reverses_every_operation_the_closed_set_claims() {
     );
 }
 
+// ---- annotation.remove (D113) -----------------------------------------------
+
+/// The secret-scrub scenario D113 exists for, end to end: add a note, remove
+/// it, and check the text is actually gone from the sqlite file — not merely
+/// filtered out of `task.get`. A flag beside an untouched `body` column would
+/// pass every read-surface assertion here and still leave the secret sitting
+/// in the `.db` file, which is exactly the gap this test is written to catch.
+#[test]
+fn annotation_remove_scrubs_the_body_from_storage_not_merely_from_the_read_surface() {
+    let e = engine();
+    let task = e
+        .task_add(&json!({ "title": "rotate the leaked key" }))
+        .expect("add");
+    let sid = task["short_id"].clone();
+    let added = e
+        .annotation_add(&json!({ "ref": sid.clone(), "body": "sk-super-secret-token" }))
+        .expect("annotation.add");
+    let id = added["annotation"]["id"].as_str().unwrap().to_string();
+
+    let out = e
+        .annotation_remove(&json!({ "ref": sid.clone(), "annotation_id": id }))
+        .expect("annotation.remove");
+    assert_eq!(out["short_id"], sid);
+    assert_eq!(out["removed"]["id"], id);
+    assert!(
+        out["removed"].get("body").is_none(),
+        "the response must not echo the scrubbed text back — that would recreate the leak in \
+         the API response: {out}"
+    );
+
+    // Gone from the read surface.
+    let got = e.task_get(&json!({ "ref": sid.clone() })).unwrap();
+    assert_eq!(
+        got["annotations"],
+        json!([]),
+        "a removed annotation must not appear in task.get's list"
+    );
+    assert_eq!(
+        got["annotations_total"], 0,
+        "the total must also exclude a removed annotation"
+    );
+
+    // Gone from storage, not merely hidden: the row stays (the tombstone), but
+    // its body is overwritten. This is the assertion a soft-delete-with-a-flag
+    // implementation would fail.
+    let body: String = e
+        .conn()
+        .query_row(
+            "SELECT body FROM annotations WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .expect("the tombstone row stays in the table");
+    assert_eq!(
+        body, "",
+        "the secret must be physically gone from the store, not just filtered out of reads"
+    );
+
+    // The tombstone: the row, its `removed` timestamp, stay for audit.
+    let removed_ts: Option<String> = e
+        .conn()
+        .query_row(
+            "SELECT removed FROM annotations WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .expect("row still present");
+    assert!(
+        removed_ts.is_some(),
+        "a tombstone (the removal timestamp) must remain even though the text is gone"
+    );
+
+    // Gone from the FTS index too, or a search would keep finding text that no
+    // longer exists anywhere in the store.
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM annotations_fts WHERE annotations_fts MATCH 'secret'"
+        ),
+        0,
+        "the scrubbed body must not still be findable through memory.search's index"
+    );
+
+    // The removal event itself never carries the body — recording it there
+    // would just move the leak from one table to another.
+    let payload: String = e
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE op = 'annotation.remove' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the removal wrote an event");
+    assert!(
+        !payload.contains("sk-super-secret-token"),
+        "the annotation.remove event payload must not carry the removed text: {payload}"
+    );
+}
+
+/// The reviewer-found hole in the version of D113 that shipped first: the
+/// `annotations` row and its FTS index were scrubbed, but the ORIGINAL
+/// `annotation.add` event — append-only, and readable forever via `event.list`
+/// and `store.export`, an UNEXPOSED-nothing, fully public method — still
+/// carried the full plaintext body. `event.list` and `store.export` are
+/// exactly the two surfaces D113(2) itself named as what a hard delete has to
+/// defeat ("gone from the file, not just hidden"), so this test reproduces the
+/// leak the reviewer found and pins it closed: annotate with a marker string,
+/// remove it, and assert the marker is absent from BOTH surfaces' full output,
+/// not merely from the fields a narrower assertion might happen to check.
+#[test]
+fn annotation_remove_redacts_the_original_add_event_so_event_list_and_export_stop_leaking_it() {
+    let e = engine();
+    let task = e
+        .task_add(&json!({ "title": "rotate the leaked key" }))
+        .expect("add");
+    let sid = task["short_id"].clone();
+    const MARKER: &str = "sk-reviewer-found-this-secret-marker";
+    let added = e
+        .annotation_add(&json!({ "ref": sid.clone(), "body": MARKER }))
+        .expect("annotation.add");
+    let id = added["annotation"]["id"].as_str().unwrap().to_string();
+
+    // Before removal: the marker IS present in event.list, same as any other
+    // event payload — this is the baseline the leak-closure below has to move.
+    let before = e
+        .event_list(&json!({ "ref": sid.clone() }))
+        .expect("event.list");
+    assert!(
+        before.to_string().contains(MARKER),
+        "sanity check: the marker must be visible before removal, or this test proves nothing"
+    );
+
+    e.annotation_remove(&json!({ "ref": sid.clone(), "annotation_id": id.clone() }))
+        .expect("annotation.remove");
+
+    let after_events = e
+        .event_list(&json!({ "ref": sid.clone() }))
+        .expect("event.list");
+    assert!(
+        !after_events.to_string().contains(MARKER),
+        "event.list must not leak the removed body through the original annotation.add event: \
+         {after_events}"
+    );
+
+    let export = e.store_export(&json!({})).expect("store.export");
+    assert!(
+        !export.to_string().contains(MARKER),
+        "store.export must not leak the removed body through the original annotation.add event: \
+         {export}"
+    );
+
+    // The `annotation.add` event still exists and still names the annotation
+    // id — only its body is redacted, the event itself is not deleted
+    // (append-only holds).
+    let add_payload: String = e
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE op = 'annotation.add' AND payload LIKE ?1",
+            params![format!("%{id}%")],
+            |r| r.get(0),
+        )
+        .expect("the original add event still exists, redacted");
+    assert!(
+        add_payload.contains(&id),
+        "the redacted add event must still name the annotation id: {add_payload}"
+    );
+    assert!(
+        !add_payload.contains(MARKER),
+        "the redacted add event must not carry the body: {add_payload}"
+    );
+}
+
+/// A LIVE annotation — never removed — must undo exactly as before: this
+/// change only touches the event payload inside `annotation_remove`'s own
+/// transaction, so a mistaken `annotation.add` with nothing else having
+/// happened since must still be fully restorable by `undo`.
+#[test]
+fn undo_still_restores_a_live_annotation_unaffected_by_the_remove_redaction() {
+    let e = engine();
+    let task = e.task_add(&json!({ "title": "t" })).expect("add");
+    let sid = task["short_id"].clone();
+    let added = e
+        .annotation_add(&json!({ "ref": sid.clone(), "body": "typed this by mistake" }))
+        .expect("annotation.add");
+    let id = added["annotation"]["id"].as_str().unwrap().to_string();
+
+    let out = e
+        .event_revert()
+        .expect("a live annotation.add must still be undoable");
+    assert_eq!(out["reverted"]["op"], "annotation.add");
+    assert_eq!(out["restored"]["annotation"], "typed this by mistake");
+
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    assert_eq!(
+        got["annotations"],
+        json!([]),
+        "undo must still remove the mistaken annotation entirely"
+    );
+
+    // The row is gone outright (undo's own inverse, DELETE FROM annotations),
+    // not merely tombstoned — confirm no redaction machinery from
+    // annotation.remove ran on this path.
+    let row_count: i64 = e
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM annotations WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        row_count, 0,
+        "undo deletes the row; it does not tombstone it"
+    );
+}
+
+/// Confirms there is no path from a redacted `annotation.add` event to a
+/// corrupted or silently-empty restore: the moment `annotation.remove` writes
+/// its event, THAT event is the newest one in the log, so `event_revert`
+/// refuses by name before it ever reads the (redacted) `annotation.add`
+/// payload — a null/empty body there is never mistaken for "restore an empty
+/// annotation" because undo never reaches it.
+#[test]
+fn undo_never_reaches_a_redacted_add_event_through_the_now_newer_remove_event() {
+    let e = engine();
+    let task = e.task_add(&json!({ "title": "t" })).expect("add");
+    let sid = task["short_id"].clone();
+    let added = e
+        .annotation_add(&json!({ "ref": sid.clone(), "body": "will be redacted" }))
+        .expect("annotation.add");
+    let id = added["annotation"]["id"].as_str().unwrap().to_string();
+    e.annotation_remove(&json!({ "ref": sid.clone(), "annotation_id": id }))
+        .expect("annotation.remove");
+
+    // The newest event is annotation.remove, not the (now redacted)
+    // annotation.add — undo's "exactly one step, the newest row" rule means
+    // the redacted payload is never a candidate.
+    let newest_op: String = e
+        .conn()
+        .query_row("SELECT op FROM events ORDER BY id DESC LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(newest_op, "annotation.remove");
+
+    let err = e
+        .event_revert()
+        .expect_err("must refuse, not attempt a corrupted restore");
+    assert!(
+        err.message.contains("annotation.remove"),
+        "the refusal names annotation.remove, never annotation.add: {}",
+        err.message
+    );
+
+    // Confirm no row was touched: still tombstoned, still empty, no
+    // resurrection with a null/empty body.
+    let body: String = e
+        .conn()
+        .query_row(
+            "SELECT body FROM annotations WHERE id = (SELECT id FROM annotations LIMIT 1)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        body, "",
+        "the tombstone must stay exactly as annotation.remove left it"
+    );
+}
+
+/// D113's ruling on question 3: `annotation.remove` is not undoable, because by
+/// the time the event exists the body is already gone — there is nothing left
+/// to restore. Pinned against the closed-set guard AND behaviourally: the
+/// newest event being `annotation.remove` must refuse `undo` by name.
+#[test]
+fn undo_refuses_annotation_remove_because_the_body_is_already_gone() {
+    let e = engine();
+    let task = e.task_add(&json!({ "title": "t" })).expect("add");
+    let sid = task["short_id"].clone();
+    let added = e
+        .annotation_add(&json!({ "ref": sid.clone(), "body": "gone by the time undo sees it" }))
+        .expect("annotation.add");
+    let id = added["annotation"]["id"].as_str().unwrap().to_string();
+    e.annotation_remove(&json!({ "ref": sid.clone(), "annotation_id": id }))
+        .expect("annotation.remove");
+
+    let err = e
+        .event_revert()
+        .expect_err("annotation.remove must not be undoable");
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(
+        err.message.contains("annotation.remove"),
+        "the refusal must name the operation it will not reverse: {}",
+        err.message
+    );
+
+    // Nothing changed: the annotation is still gone.
+    let got = e.task_get(&json!({ "ref": sid })).unwrap();
+    assert_eq!(got["annotations"], json!([]));
+}
+
+/// An id that never existed, and an id that has already been removed, are both
+/// `not_found` — there is nothing to remove either way, and neither should
+/// answer ok for work it did not do.
+#[test]
+fn annotation_remove_of_an_unknown_or_already_removed_id_is_not_found() {
+    let e = engine();
+    let task = e.task_add(&json!({ "title": "t" })).expect("add");
+    let sid = task["short_id"].clone();
+
+    let err = e
+        .annotation_remove(&json!({ "ref": sid.clone(), "annotation_id": "not-a-real-id" }))
+        .expect_err("an unknown annotation id must be refused");
+    assert_eq!(err.code, ErrorCode::NotFound);
+
+    let added = e
+        .annotation_add(&json!({ "ref": sid.clone(), "body": "once" }))
+        .expect("annotation.add");
+    let id = added["annotation"]["id"].as_str().unwrap().to_string();
+    e.annotation_remove(&json!({ "ref": sid.clone(), "annotation_id": id.clone() }))
+        .expect("first removal succeeds");
+
+    let err = e
+        .annotation_remove(&json!({ "ref": sid, "annotation_id": id }))
+        .expect_err("removing an already-removed annotation must also be refused");
+    assert_eq!(
+        err.code,
+        ErrorCode::NotFound,
+        "there is nothing left to remove either way, so it reads the same as an unknown id"
+    );
+}
+
 /// Rule 2's refusal path, and the reason it names the op rather than saying
 /// "cannot undo that": every one of these has a different way back, and a
 /// refusal that does not say which one leaves the user guessing at a store they
