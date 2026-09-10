@@ -394,8 +394,8 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
         }
         match want {
             // `l` is the one key that means "leave", so it does.
-            Some(Action::List) => {
-                return run_list(be, ctx, &[], &[], None, None, &[]).map(|(_, r)| Some(r))
+            Some(Action::List(scope)) => {
+                return run_list(be, ctx, &scope, &[], None, None, &[]).map(|(_, r)| Some(r))
             }
             // `⏎` on PROJECTS (#204): the same leave-and-print shape as `l`,
             // scoped to the row the cursor was on. `filter::quote` and not a
@@ -405,8 +405,8 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                 let filter = format!("project:{}", tasqx_core::filter::quote(&name));
                 return run_list(be, ctx, &[filter], &[], None, None, &[]).map(|(_, r)| Some(r));
             }
-            Some(Action::Pick) => {
-                match run_pick(be, ctx, &[]) {
+            Some(Action::Pick(scope)) => {
+                match run_pick(be, ctx, &scope) {
                     Ok((_, render)) => picked = Some(render),
                     // Backing out of the picker is not an error HERE. `pick` as
                     // a command exits 4 having started nothing, because its

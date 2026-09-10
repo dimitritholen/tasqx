@@ -48,10 +48,13 @@ pub const WINDOW_CHOICES: [(&str, usize); 3] = [("week", 7), ("14d", 14), ("30d"
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Action {
     Quit,
-    /// Hand over to `pick` inside the SAME terminal session (D58).
-    Pick,
-    /// Leave the screen and print the working-set table into the scrollback.
-    List,
+    /// Hand over to `pick` inside the SAME terminal session (D58), scoped to
+    /// [`App::focused_scope`] — the filter DSL tokens for the row the cursor
+    /// was on, or empty on a panel with no natural scope.
+    Pick(Vec<String>),
+    /// Leave the screen and print the working-set table into the scrollback,
+    /// scoped the same way as [`Action::Pick`].
+    List(Vec<String>),
     /// Re-read the four results and rebuild the model.
     Refresh,
     /// Fetch `task.get` for this short_id and hand it back through
@@ -278,6 +281,34 @@ impl App {
     fn set_cursor(&mut self, id: PanelId, idx: usize) {
         let task_id = model::row_at(&self.dash, id, idx).map(|t| t.short_id);
         self.cursor.insert(id, (idx, task_id));
+    }
+
+    /// The filter DSL tokens for `l`/`p` to carry, taken from the row under
+    /// the cursor on the focused panel — empty on a panel with no natural
+    /// scope (D58 never gave PROJECTS rows anywhere to send that context, so
+    /// `l` printed the whole working set and `p` opened the picker over it
+    /// regardless of which project the cursor sat on).
+    ///
+    /// Only PROJECTS has one today: its rows are projects, and `project:` is
+    /// exactly the token both `list` and `pick` already accept on the command
+    /// line. The task panels (NEXT, DUE, …) point at one task each, and a
+    /// filter naming one task is not what `l`/`p` are for — that stays today's
+    /// behaviour, per row_at's own doc comment.
+    fn focused_scope(&self) -> Vec<String> {
+        if self.focus != PanelId::Projects {
+            return Vec::new();
+        }
+        let Some(row) = self.dash.projects.rows.get(self.cursor_of(self.focus)) else {
+            return Vec::new();
+        };
+        // The "no project" bucket has no name to filter on; leave it unscoped
+        // rather than emit a token nothing can match. Through `filter::quote`,
+        // never interpolated: a project may be named with spaces (D-shared
+        // lesson with `dashboard_screen`'s own `project:` composition).
+        match row.name() {
+            Some(name) => vec![format!("project:{}", tasqx_core::filter::quote(name))],
+            None => Vec::new(),
+        }
     }
 
     /// Open the detail overlay on a card the loop has fetched.
@@ -526,8 +557,8 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('p') => Some(Action::Pick),
-            KeyCode::Char('l') => Some(Action::List),
+            KeyCode::Char('p') => Some(Action::Pick(self.focused_scope())),
+            KeyCode::Char('l') => Some(Action::List(self.focused_scope())),
             KeyCode::Char('?') => {
                 self.help = !self.help;
                 None
@@ -970,12 +1001,8 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     let accent = rt_style(theme.role("accent"), caps);
     let muted = rt_style(theme.role("muted"), caps);
     let header = rt_style(theme.role("header"), caps);
-    let mut lines = vec![
-        Line::from(Span::styled("tasqx dashboard".to_string(), header)),
-        Line::from(Span::styled(String::new(), muted)),
-    ];
-    for k in KEYS {
-        lines.push(Line::from(vec![
+    let key_row = |k: &Key| {
+        Line::from(vec![
             // Width from the table itself: a hard-coded 10 fused
             // `tab / S-tab` (11 cells) into the description beside it.
             Span::styled(
@@ -983,7 +1010,44 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
                 accent,
             ),
             Span::styled(k.help.to_string(), RtStyle::default()),
-        ]));
+        ])
+    };
+
+    // `draw_overlay` clips at `area.height` with a plain top-anchored
+    // `Paragraph` — it draws no more than fit and drops the rest, keeping
+    // whatever happened to be first. Below `KEYS.len()` rows of overhead
+    // (2 border + title + its blank line + a blank + MODAL_FOOT = 6), that
+    // silently dropped the TAIL of the key list — `q / esc`, `ctrl-c` and
+    // the modal's own closing sentence — which is exactly backwards: those
+    // are what a lost reader is looking for. So when it does not all fit,
+    // rows are dropped from KEYS starting at the FRONT, one "… N more" line
+    // takes the slot they vacated, and the close instructions at the tail
+    // are never among the dropped.
+    const OVERHEAD: usize = 6; // 2 border + title + blank + blank + MODAL_FOOT
+    let avail = area.height as usize;
+    let key_budget = avail.saturating_sub(OVERHEAD);
+
+    let mut lines = vec![
+        Line::from(Span::styled("tasqx dashboard".to_string(), header)),
+        Line::from(Span::styled(String::new(), muted)),
+    ];
+    if KEYS.len() <= key_budget || key_budget == 0 {
+        // Either everything fits, or nothing would — in the latter case
+        // showing the whole (truncated-by-the-terminal) list is still more
+        // useful than showing an omission line and nothing else.
+        for k in KEYS {
+            lines.push(key_row(k));
+        }
+    } else {
+        let keep = key_budget - 1; // one row spent on the "… N more" marker
+        let hidden = KEYS.len() - keep;
+        lines.push(Line::from(Span::styled(
+            format!("  … {hidden} more — resize the window to see them"),
+            muted,
+        )));
+        for k in &KEYS[KEYS.len() - keep..] {
+            lines.push(key_row(k));
+        }
     }
     lines.push(Line::from(Span::styled(String::new(), muted)));
     lines.push(Line::from(Span::styled(MODAL_FOOT.to_string(), muted)));

@@ -578,6 +578,16 @@ fn ref_param(p: &Value) -> Result<&Value, ApiError> {
 /// `conflict`, the other half of D22: refusing an archived project as the
 /// *default* while accepting it as an explicit target would leave the guard
 /// half-applied, which is how the last three invisible-state bugs here worked.
+/// Single-quote `value` for a POSIX shell, the way the pasted `tasqx init …`
+/// hint in `require_live_project` needs: unconditionally, so the hint stays
+/// one argv element even when the name holds spaces or embedded double
+/// quotes. Any embedded single quote closes the quoting, escapes itself with
+/// `\'`, then reopens it — the standard trick, since a single-quoted string
+/// cannot contain a literal single quote.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 fn require_live_project(conn: &Connection, name: &str) -> Result<(), ApiError> {
     let archived: Option<i64> = conn
         .query_row(
@@ -588,7 +598,10 @@ fn require_live_project(conn: &Connection, name: &str) -> Result<(), ApiError> {
         .optional()?;
     match archived {
         None => Err(ApiError::not_found(
-            format!("no project named {name} (create it with `tasqx init {name}`)"),
+            format!(
+                "no project named {name} (create it with `tasqx init {}`)",
+                shell_quote(name)
+            ),
             Some(json!({ "name": name })),
         )),
         Some(a) if a != 0 => Err(ApiError::conflict(format!(
