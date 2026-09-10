@@ -17,6 +17,14 @@
 //! [`crate::remind`]'s) can pin it and never depend on the machine they happen
 //! to run on.
 //!
+//! **Period-end keywords are the exception:** `today`, `eod` / `end of day`,
+//! `eow` / `end of week`, `eom` / `end of month` and `eoy` / `end of year` name
+//! a whole period rather than the instant it starts, so with no trailing time
+//! they resolve to that period's **last second** (`23:59:59`), not midnight —
+//! `due:today` typed at noon must not already be overdue. A literal day
+//! reference (`tomorrow`, `friday`, an absolute date) still resolves to
+//! midnight, per D53's "days are UTC days" grouping rule.
+//!
 //! Accepted forms (all case-insensitive):
 //!  * absolute — `2026-07-20`, `2026-07-20T17:00`, `2026-07-20 17:00`, and any
 //!    full RFC3339 (`2026-07-20T17:00:00+02:00`). A bare date is UTC midnight; a
@@ -34,7 +42,8 @@
 //!    "friday", not the same one;
 //!  * offsets — `in 3 days`, `in 2 weeks`, `in 1 month`, and the short `3d`,
 //!    `2w`, `1mo`, `1y`, each optionally signed (`+3d`, `-1d` = yesterday);
-//!  * `eom` / `end of month`, `eow` / `end of week` (ISO week ends Sunday);
+//!  * `eod` / `end of day`, `eom` / `end of month`, `eow` / `end of week` (ISO
+//!    week ends Sunday), `eoy` / `end of year` — see the period-end note above;
 //!  * an optional trailing time on any of the above — `friday 17:00`,
 //!    `tomorrow 9am`, `monday 5pm` — resolved in the machine's zone, INCLUDING
 //!    which calendar day `friday`/`tomorrow`/a bare time itself means: near a
@@ -164,7 +173,17 @@ pub(crate) fn parse_when_zoned(
         resolve_date(&tokens, today).ok_or_else(|| unparseable(raw))?
     };
 
-    let t = time.unwrap_or_else(midnight);
+    // Period-end keywords (`today`, `eod`, `eow`, `eom`, `eoy`) name a deadline
+    // that lasts the whole period, not the instant it starts: `due:today` typed
+    // at noon must not already be overdue. Absent an explicit trailing time,
+    // they resolve to the last second of the period rather than midnight; an
+    // absolute date (`2026-07-20`) or a relative day (`tomorrow`) still resolves
+    // to midnight, matching D53's "days are UTC days" grouping rule.
+    let t = if !bare_time && time.is_none() && is_period_end(&tokens) {
+        end_of_day()
+    } else {
+        time.unwrap_or_else(midnight)
+    };
     let out = finish(DateTime::from_parts(date, t), raw, zone)?;
 
     // A bare time already past today rolls forward to tomorrow, in the same
@@ -186,10 +205,18 @@ pub(crate) fn parse_when_zoned(
 /// The one refusal for a date expression this grammar cannot read. It is a
 /// function because it is reachable from two places, and two copies of a message
 /// carrying an examples list are two things to keep in step.
+///
+/// The unit note is deliberate: `"in 3 days"` reads as a general "in N <unit>"
+/// grammar, but the offsets here are day-scale and larger only (days, weeks,
+/// months, years) — `"in 1 hour"` and `"next week"` are refused by this same
+/// grammar, and without saying so the refusal reads as a bug rather than a
+/// boundary (audit #231.3). Hour/minute offsets are `remind`'s and `est`'s
+/// grammar (`parse_duration`), not this one.
 fn unparseable(raw: &str) -> ApiError {
     ApiError::bad_request(format!(
         "could not parse date: {raw:?} (try e.g. tomorrow, friday, \
-         2026-07-20, \"in 3 days\", eom, or 2026-07-20T17:00)"
+         2026-07-20, \"in 3 days\" (day/week/month/year offsets only, no \
+         hours/minutes), eom, or 2026-07-20T17:00)"
     ))
 }
 
@@ -249,6 +276,49 @@ fn midnight() -> Time {
     Time::new(0, 0, 0, 0).expect("midnight is a valid time")
 }
 
+/// The start (00:00:00 UTC) of the UTC day containing `ts`.
+///
+/// Every date this tool stores is either a clean midnight or a clock minute a
+/// human typed — except a recurrence spawned with no `due`/`scheduled` to
+/// advance, which used to anchor on the raw completion `Timestamp` and carry
+/// its nanoseconds forward forever (audit #231.2: `2026-09-12T10:43:05.798…Z`,
+/// truncated unreadably in the DUE column, drifting a little further each
+/// cycle). Anchoring such a spawn on this function's return value instead
+/// gives it the same clean boundary as every other date.
+pub fn day_start_utc(ts: Timestamp) -> Timestamp {
+    ts.to_zoned(TimeZone::UTC)
+        .date()
+        .to_zoned(TimeZone::UTC)
+        .expect("UTC has no gaps or ambiguous times")
+        .timestamp()
+}
+
+/// The last second of a day — what a period-end keyword resolves to instead of
+/// midnight, so a deadline lasts the period rather than expiring at its start.
+fn end_of_day() -> Time {
+    Time::new(23, 59, 59, 0).expect("23:59:59 is a valid time")
+}
+
+/// Whether `tokens` spells one of the period-end keywords (`today`, `eod`,
+/// `eow`, `eom`, `eoy`, and their `end of <period>` long forms). These name a
+/// whole day/week/month/year, not the instant it begins, so [`parse_when`]
+/// anchors them to the period's last second rather than midnight — unlike a
+/// literal day reference (`tomorrow`, an absolute date), which keeps midnight.
+fn is_period_end(tokens: &[&str]) -> bool {
+    matches!(
+        tokens,
+        ["today"]
+            | ["eod"]
+            | ["end", "of", "day"]
+            | ["eow"]
+            | ["end", "of", "week"]
+            | ["eom"]
+            | ["end", "of", "month"]
+            | ["eoy"]
+            | ["end", "of", "year"]
+    )
+}
+
 /// Resolve the date portion (no time) from the keyword tokens.
 ///
 /// `now` is deliberately absent: it is a full instant, not a `Date`, and is
@@ -261,10 +331,14 @@ fn resolve_date(tokens: &[&str], today: Date) -> Option<Date> {
         ["today"] => Some(today),
         ["tomorrow"] | ["tmr"] => today.tomorrow().ok(),
         ["yesterday"] => today.yesterday().ok(),
+        ["eod"] => Some(today),
+        ["end", "of", "day"] => Some(today),
         ["eom"] => Some(today.last_of_month()),
         ["end", "of", "month"] => Some(today.last_of_month()),
         ["eow"] => Some(end_of_week(today)),
         ["end", "of", "week"] => Some(end_of_week(today)),
+        ["eoy"] => Some(today.last_of_year()),
+        ["end", "of", "year"] => Some(today.last_of_year()),
         // `in N <unit>`
         ["in", n, unit] => {
             let n: i64 = n.parse().ok()?;
@@ -665,10 +739,36 @@ mod tests {
 
     #[test]
     fn relative_words() {
-        assert_eq!(p("today"), "2026-07-15T00:00:00Z");
+        // `today` is a period-end keyword (see below): it resolves to the last
+        // second of the day, not its first. `tomorrow`/`yesterday` are literal
+        // day references and keep midnight.
+        assert_eq!(p("today"), "2026-07-15T23:59:59Z");
         assert_eq!(p("tomorrow"), "2026-07-16T00:00:00Z");
         assert_eq!(p("yesterday"), "2026-07-14T00:00:00Z");
         assert_eq!(p("TOMORROW"), "2026-07-16T00:00:00Z"); // case-insensitive
+    }
+
+    /// `due:today` typed at noon must not already be overdue (audit #231.1):
+    /// the old start-of-day anchor made the most-typed form of the most-typed
+    /// field wrong for up to 24 hours. Same for `eod`/`eow`/`eom`/`eoy` — a
+    /// deadline names the whole period, not the instant it begins. An explicit
+    /// trailing time still wins over the period-end default.
+    #[test]
+    fn period_end_keywords_resolve_to_end_of_period() {
+        // now is Wed 2026-07-15T12:00:00Z.
+        assert_eq!(p("today"), "2026-07-15T23:59:59Z");
+        assert_eq!(p("eod"), "2026-07-15T23:59:59Z");
+        assert_eq!(p("end of day"), "2026-07-15T23:59:59Z");
+        assert_eq!(p("eow"), "2026-07-19T23:59:59Z");
+        assert_eq!(p("end of week"), "2026-07-19T23:59:59Z");
+        assert_eq!(p("eom"), "2026-07-31T23:59:59Z");
+        assert_eq!(p("end of month"), "2026-07-31T23:59:59Z");
+        assert_eq!(p("eoy"), "2026-12-31T23:59:59Z");
+        assert_eq!(p("end of year"), "2026-12-31T23:59:59Z");
+        assert_eq!(p("EOM"), "2026-07-31T23:59:59Z"); // case-insensitive
+                                                      // An explicit trailing time overrides the period-end default.
+        assert_eq!(p("today 9am"), "2026-07-15T09:00:00Z");
+        assert_eq!(p("eom 17:00"), "2026-07-31T17:00:00Z");
     }
 
     #[test]
@@ -714,10 +814,13 @@ mod tests {
 
     #[test]
     fn end_of_month_and_week() {
-        assert_eq!(p("eom"), "2026-07-31T00:00:00Z");
-        assert_eq!(p("end of month"), "2026-07-31T00:00:00Z");
+        // These land on the calendar day covered by `period_end_keywords_…`
+        // above (which pins the 23:59:59 time); this test just re-confirms the
+        // *date* math (correct day of month / correct Sunday).
+        assert_eq!(p("eom")[..10], *"2026-07-31");
+        assert_eq!(p("end of month")[..10], *"2026-07-31");
         // 2026-07-15 is Wed; ISO end of week (Sunday) is 2026-07-19.
-        assert_eq!(p("eow"), "2026-07-19T00:00:00Z");
+        assert_eq!(p("eow")[..10], *"2026-07-19");
     }
 
     #[test]
@@ -807,6 +910,23 @@ mod tests {
         assert!(parse_when("not a date", now()).is_err());
         assert!(parse_when("", now()).is_err());
         assert!(parse_when("bluesday", now()).is_err());
+    }
+
+    /// The hint on a refused date used to read as a general "in N <unit>"
+    /// grammar ("try e.g. ... \"in 3 days\" ...") while only day-scale units
+    /// actually parse — `"in 1 hour"` and `"next week"` are refused by the same
+    /// grammar `"in 3 days"` is offered as an example of, which reads as a bug
+    /// rather than a documented boundary (audit #231.3). The hint must say so.
+    #[test]
+    fn unparseable_hint_names_the_unit_boundary() {
+        for bad in ["in 1 hour", "in 2 hours", "next week"] {
+            let err = parse_when(bad, now()).expect_err("must be refused");
+            assert!(
+                err.message.contains("day/week/month/year"),
+                "hint does not name the unit boundary: {}",
+                err.message
+            );
+        }
     }
 
     /// `--due "at 6pm"` is what a human types, and it errored with "could not
@@ -915,5 +1035,14 @@ mod tests {
     #[test]
     fn a_large_but_in_range_offset_still_parses() {
         assert_eq!(parse_when("3650d", now()).unwrap(), "2036-07-12T00:00:00Z");
+    }
+
+    #[test]
+    fn day_start_utc_truncates_to_midnight() {
+        let ts: Timestamp = "2026-07-15T10:43:05.798165338Z".parse().unwrap();
+        assert_eq!(day_start_utc(ts).to_string(), "2026-07-15T00:00:00Z");
+        // Already at midnight: no change.
+        let midnight_ts: Timestamp = "2026-07-15T00:00:00Z".parse().unwrap();
+        assert_eq!(day_start_utc(midnight_ts), midnight_ts);
     }
 }
