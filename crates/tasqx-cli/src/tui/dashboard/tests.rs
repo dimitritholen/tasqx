@@ -1051,6 +1051,68 @@ fn a_refresh_keeps_focus_and_cursor() {
     assert_eq!(a.cursor_of(PanelId::Next), s);
 }
 
+/// #228.9: a refresh must keep the cursor ON THE SAME TASK, not merely at the
+/// same row INDEX. The observed defect: focus panel 2 (NEXT UP), move the
+/// cursor down to the third row, then have a task ABOVE it (in urgency order)
+/// complete elsewhere — the whole list shifts up one and the cursor, keyed
+/// only on its index, silently lands on the row that used to be one below it.
+#[test]
+fn a_refresh_keeps_the_cursor_on_the_same_task_not_the_same_row_index() {
+    let build_with = |ids: &[i64]| {
+        let tasks: Vec<serde_json::Value> = ids
+            .iter()
+            .map(|&id| {
+                json!({
+                    "_rev": 1, "active_since": null, "blocked": false, "completed": null,
+                    "created": "2026-08-01T09:00:00Z", "due": null, "estimate": null,
+                    "id": format!("019fd213-0000-7000-8000-{id:012}"),
+                    "modified": "2026-08-01T09:00:00Z", "priority": "M", "project": "work",
+                    "recurrence": null, "remind": null, "scheduled": null, "short_id": id,
+                    "status": "pending", "tags": [], "title": format!("task {id}"),
+                    "tracked": "PT0S", "urgency": (100 - id) as f64, "wait": null
+                })
+            })
+            .collect();
+        model::build(
+            Sources {
+                tasks: &json!({ "count": tasks.len(), "tasks": tasks }),
+                summary: &json!({ "groups": [] }),
+                projects: &json!({ "count": 0, "projects": [] }),
+                events: &json!({ "count": 0, "events": [] }),
+                event_limit: 100,
+                days: 7,
+            },
+            "2026-08-05T12:00:00Z".parse().unwrap(),
+            date(2026, 8, 5),
+        )
+    };
+
+    // Urgency = 100 - id, so ascending ids sort into NEXT UP in that order:
+    // #1, #2, #3, #4, #5. The cursor lands on #3, at index 2.
+    let mut a = App::new(build_with(&[1, 2, 3, 4, 5]), all_panels(), 7, true);
+    a.observe(&all_panels(), false);
+    a.on_key(key(KeyCode::Char('2'))); // focus NEXT UP
+    a.on_key(key(KeyCode::Char('j')));
+    a.on_key(key(KeyCode::Char('j')));
+    assert_eq!(
+        model::row_at(a.dash(), PanelId::Next, a.cursor_of(PanelId::Next)).map(|t| t.short_id),
+        Some(3),
+        "the cursor must start on #3"
+    );
+
+    // #1 completes elsewhere (drops out of NEXT UP entirely): the remaining
+    // rows shift up one, so the OLD index 2 now names #4, not #3.
+    a.replace(build_with(&[2, 3, 4, 5]));
+    let after =
+        model::row_at(a.dash(), PanelId::Next, a.cursor_of(PanelId::Next)).map(|t| t.short_id);
+    assert_eq!(
+        after,
+        Some(3),
+        "the cursor must follow #3 to its new index, not silently retarget \
+         to whatever row now sits at the old index: got {after:?}"
+    );
+}
+
 /// Every binding the screen answers to appears in the help, and every help line
 /// names a binding that works. The docs-drift idiom, inside the TUI.
 #[test]
@@ -1167,6 +1229,24 @@ fn enter_on_a_panel_without_rows_names_the_refusal() {
     );
 }
 
+/// #228.13: Enter on NEXT UP, DUE, BLOCKED and RECENT opens the focused row's
+/// detail; NOW — the one panel showing the task actively running, and the row
+/// looked at most — did nothing, because it carried no cursor at all.
+#[test]
+fn enter_on_now_opens_the_running_tasks_detail() {
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.on_key(key(KeyCode::Char('1'))); // NOW is panel 1
+    assert_eq!(a.focus(), PanelId::Now);
+
+    let action = a.on_key(key(KeyCode::Enter));
+    assert_eq!(
+        action,
+        Some(Action::Detail(1)),
+        "Enter on NOW must open the running task's detail, not do nothing"
+    );
+}
+
 /// `task.get` brings strings the dashboard has never held before, and every one
 /// of them is sanitised where it is constructed (D19).
 ///
@@ -1258,10 +1338,73 @@ fn the_detail_overlay_answers_why_a_task_is_blocked() {
             "{probe:?} is missing from the card:\n{text}"
         );
     }
+    // #228.11: the detail overlay's own footer, not the help overlay's — it
+    // stopped being true that any key closes it once scrolling needed keys.
     assert!(
-        text.contains("any key closes this"),
-        "the overlay must say it is modal, as `?` does:\n{text}"
+        text.contains("esc/q closes this"),
+        "the overlay must say how it actually closes:\n{text}"
     );
+}
+
+/// #228.11: an annotation longer than the frame used to be cut with `…`,
+/// which is exactly where the answer to "why is this blocked" tended to live
+/// (the audit's own repro: a 7-annotation task where every one was cut at 78
+/// columns). It must wrap onto more lines instead, in full.
+#[test]
+fn a_long_annotation_wraps_instead_of_being_cut() {
+    let long_body = "one two three four five six seven eight nine ten eleven \
+                      twelve thirteen fourteen fifteen sixteen seventeen eighteen";
+    let card = model::TaskDetail::from_json(&json!({
+        "short_id": 9, "id": "019fd213-0000-7000-8000-000000000009",
+        "title": "long note", "project": "work",
+        "status": "pending", "priority": "M", "urgency": 2.0, "blocked": false,
+        "created": "2026-08-01T09:00:00Z", "modified": "2026-08-01T09:00:00Z",
+        "due": null, "scheduled": null, "wait": null,
+        "estimate": null, "tracked": "PT0S", "recurrence": null,
+        "completed": null, "active_since": null,
+        "depends_on": [],
+        "tags": [],
+        "annotations": [{ "created": "2026-08-02T09:00:00Z", "body": long_body }],
+    }))
+    .expect("fixture parses");
+
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.show_detail(card);
+    let text = all_text(&draw_at(&a, 120, 32, &caps()));
+    assert!(
+        text.contains("eighteen"),
+        "the tail of a long annotation must survive, not be cut with …:\n{text}"
+    );
+    assert!(
+        !text.contains('…'),
+        "wrapping, not truncation, is the fix — no ellipsis should appear:\n{text}"
+    );
+}
+
+/// #228.11: `j` inside the detail overlay used to close it — the same
+/// slot-sharing mistake as `config edit`'s status line. It must scroll
+/// instead, and only esc/`q`/ctrl-c may close it.
+#[test]
+fn j_and_k_scroll_the_detail_overlay_instead_of_closing_it() {
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.show_detail(blocked_card());
+    assert_eq!(a.detail_scroll(), 0);
+
+    a.on_key(key(KeyCode::Char('j')));
+    assert!(a.detail_open(), "j must not close the overlay");
+    assert_eq!(a.detail_scroll(), 1, "j must scroll it down");
+
+    a.on_key(key(KeyCode::Char('k')));
+    assert_eq!(a.detail_scroll(), 0, "k must scroll it back up");
+
+    // A floor, not a panic: k at 0 must not underflow.
+    a.on_key(key(KeyCode::Char('k')));
+    assert_eq!(a.detail_scroll(), 0);
+
+    assert_eq!(a.on_key(key(KeyCode::Esc)), None);
+    assert!(!a.detail_open(), "esc must still close it");
 }
 
 /// The `w` cycle and the `dashboard.window` vocabulary are one list written
@@ -1528,9 +1671,15 @@ fn an_open_overlay_is_modal_and_no_key_reaches_behind_it() {
 
             let action = a.on_key(key(k));
 
-            assert!(
+            // #228.11: the detail overlay stopped promising "any key closes
+            // this" — `j`/`k`/`Down` now scroll it instead, so only esc and
+            // `q` actually leave (ctrl-c always does, tested separately).
+            // The help overlay's promise is unchanged.
+            let must_close = modal == "help" || matches!(k, KeyCode::Esc | KeyCode::Char('q'));
+            assert_eq!(
                 !open(&a),
-                "{modal}: {k:?} must close the overlay — it promises any key does"
+                must_close,
+                "{modal}: {k:?} disagreed with its own close-key contract"
             );
             assert_eq!(
                 action, None,
@@ -1556,11 +1705,17 @@ fn an_open_overlay_is_modal_and_no_key_reaches_behind_it() {
                 auto,
                 "{modal}: {k:?} toggled auto-refresh from behind it"
             );
-            // And the other overlay must not have been opened from behind this
-            // one — `?` closing the card by opening the help would satisfy
-            // every assertion above.
+            // Whichever overlay is now open — this one still, if it did not
+            // close, or neither, if it did — the OTHER one must never be the
+            // one open: `?` closing the card by opening the help would
+            // satisfy every assertion above.
+            let other_open = if modal == "help" {
+                a.detail_open()
+            } else {
+                a.help_open()
+            };
             assert!(
-                !a.help_open() && !a.detail_open(),
+                !other_open,
                 "{modal}: {k:?} swapped one overlay for another"
             );
         }
@@ -1971,6 +2126,51 @@ fn a_narrow_footer_keeps_the_three_that_matter() {
         !text.contains("refresh"),
         "56 columns cannot hold every hint, so this proves nothing:\n{text}"
     );
+}
+
+/// #228.10: pressing `R` used to write its confirmation into the SAME slot
+/// the key legend draws in, so the legend — the only always-visible
+/// discoverability the screen has — never returned once the reader had used
+/// the toggle at all, because nothing else ever cleared it. The state now
+/// lives in its own always-drawn corner, so the legend is never displaced by
+/// it, and the state is visible again on the very next frame, not just for
+/// the one keypress that changed it.
+#[test]
+fn toggling_auto_refresh_leaves_the_legend_intact_and_the_state_visible() {
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    assert!(a.auto_refresh(), "the fixture starts with auto-refresh on");
+
+    a.on_key(key(KeyCode::Char('R')));
+    assert!(!a.auto_refresh(), "R must toggle the flag");
+    assert!(
+        a.status_line().is_empty(),
+        "R must not write into the transient status slot: {:?}",
+        a.status_line()
+    );
+
+    let text = footer_text(&a, 200, 40);
+    for word in ["help", "close", "pick"] {
+        assert!(
+            text.contains(word),
+            "the legend must survive toggling auto-refresh, missing {word:?}:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("auto-refresh off"),
+        "the current state must be visible on the very next frame:\n{text}"
+    );
+
+    // And it stays visible with no further keypress at all — the bug was
+    // exactly this: nothing else ever ran to bring the legend back.
+    let text = footer_text(&a, 200, 40);
+    assert!(text.contains("auto-refresh off"), "{text}");
+    for word in ["help", "close", "pick"] {
+        assert!(
+            text.contains(word),
+            "missing {word:?} on a later frame:\n{text}"
+        );
+    }
 }
 
 /// Two hints at the same rank make "which survives a narrow footer" a question

@@ -90,7 +90,17 @@ pub struct App {
     /// The offset that used to live here is now DERIVED, in `panels`, from this
     /// index and the viewport — the state machine is still never told the
     /// terminal's height.
-    cursor: HashMap<PanelId, usize>,
+    ///
+    /// #228.9: the index ALONE is not enough. Auto-refresh (or a manual `r`)
+    /// swaps the whole `Dashboard` in `replace`, and a row's INDEX in the new
+    /// list is not its identity — a `done` elsewhere removes a row above the
+    /// cursor and every index below shifts up one, silently retargeting a
+    /// cursor nobody moved. The `short_id` recorded alongside the index is
+    /// what `cursor_of` checks first: unchanged, the index is trusted as-is;
+    /// moved, the same task is re-found by id; gone, the index is the
+    /// fallback `pick.rs`'s query-narrowing already established the pattern
+    /// for (keep the same task selected when it can be found at all).
+    cursor: HashMap<PanelId, (usize, Option<i64>)>,
     /// What the last draw actually placed, fed back by the event loop.
     ///
     /// Data in, exactly like a key press. Without it Tab has dead stops: on the
@@ -108,6 +118,13 @@ pub struct App {
     /// [`App::show_detail`]. Modal on the terms `?` established, and checked
     /// beside `help` so the two cannot both be open.
     detail: Option<model::TaskDetail>,
+    /// #228.11: how far the detail overlay has scrolled. Every annotation
+    /// used to be cut to one line at the frame width and the overlay had no
+    /// way to see the rest — the exact fact the overlay exists to answer
+    /// ("why is this blocked") usually lives in the tail of an annotation,
+    /// past whatever fit. Reset to 0 on every open so a stale scroll position
+    /// from a previous task never carries over.
+    detail_scroll: usize,
     /// One transient line, shown in the footer instead of the key hints.
     status: String,
 }
@@ -146,6 +163,7 @@ impl App {
             auto_refresh,
             help: false,
             detail: None,
+            detail_scroll: 0,
             status: String::new(),
         }
     }
@@ -216,9 +234,41 @@ impl App {
     /// under a cursor that nobody touched: `replace` swaps the whole `Dashboard`
     /// on every auto-refresh, and a task completed elsewhere shortens a panel.
     /// A stored index is a claim about a list that no longer exists.
+    ///
+    /// #228.9: identity-preserving, not merely index-preserving. `(idx, id)`
+    /// is stored together on every move; here, `idx` is trusted only while it
+    /// still points at the SAME task it did when it was recorded. When a
+    /// refresh has reordered or shortened the list under it, the same task is
+    /// re-found by id anywhere in the new list before falling back to the raw
+    /// index — the one case an id search cannot help is the task genuinely
+    /// being gone, where the clamped index is the least-wrong answer left.
     pub fn cursor_of(&self, id: PanelId) -> usize {
-        let stored = self.cursor.get(&id).copied().unwrap_or(0);
-        stored.min(self.rows_in(id).saturating_sub(1))
+        let total = self.rows_in(id);
+        if total == 0 {
+            return 0;
+        }
+        let Some(&(idx, task_id)) = self.cursor.get(&id) else {
+            return 0;
+        };
+        if let Some(tid) = task_id {
+            let still_there = model::row_at(&self.dash, id, idx).is_some_and(|t| t.short_id == tid);
+            if still_there {
+                return idx.min(total - 1);
+            }
+            if let Some(found) = (0..total)
+                .find(|&i| model::row_at(&self.dash, id, i).is_some_and(|t| t.short_id == tid))
+            {
+                return found;
+            }
+        }
+        idx.min(total - 1)
+    }
+
+    /// Record the cursor at `idx`, keyed on the task actually there — the
+    /// write half of the identity check in [`App::cursor_of`].
+    fn set_cursor(&mut self, id: PanelId, idx: usize) {
+        let task_id = model::row_at(&self.dash, id, idx).map(|t| t.short_id);
+        self.cursor.insert(id, (idx, task_id));
     }
 
     /// Open the detail overlay on a card the loop has fetched.
@@ -228,6 +278,12 @@ impl App {
     /// still touches no backend.
     pub fn show_detail(&mut self, card: model::TaskDetail) {
         self.detail = Some(card);
+        self.detail_scroll = 0;
+    }
+
+    #[cfg(test)]
+    pub fn detail_scroll(&self) -> usize {
+        self.detail_scroll
     }
 
     /// Tell the reader why the card they asked for never opened.
@@ -333,9 +389,36 @@ impl App {
             self.help = false;
             return None;
         }
+        // #228.11: the detail overlay used to close on ANY key, which made it
+        // impossible to scroll: `j` inside it closed the overlay instead of
+        // moving down, and every annotation was truncated to one line with no
+        // way to see the rest — usually the half of the answer to "why is
+        // this blocked" that mattered. Scrolling keys now stay inside the
+        // overlay; only esc, `q` and ctrl-c (handled above) leave it.
         if self.detail.is_some() {
-            self.detail = None;
-            return None;
+            return match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.detail_scroll = self.detail_scroll.saturating_add(1);
+                    None
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.detail_scroll = self.detail_scroll.saturating_sub(1);
+                    None
+                }
+                KeyCode::PageDown => {
+                    self.detail_scroll = self.detail_scroll.saturating_add(10);
+                    None
+                }
+                KeyCode::PageUp => {
+                    self.detail_scroll = self.detail_scroll.saturating_sub(10);
+                    None
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.detail = None;
+                    None
+                }
+                _ => None,
+            };
         }
 
         match key.code {
@@ -367,7 +450,7 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 let max = self.rows_in(self.focus).saturating_sub(1);
                 let cur = self.cursor_of(self.focus);
-                self.cursor.insert(self.focus, (cur + 1).min(max));
+                self.set_cursor(self.focus, (cur + 1).min(max));
                 None
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -375,26 +458,27 @@ impl App {
                 // mode alt screen, where the message is wiped before it can be
                 // read.
                 let cur = self.cursor_of(self.focus);
-                self.cursor.insert(self.focus, cur.saturating_sub(1));
+                self.set_cursor(self.focus, cur.saturating_sub(1));
                 None
             }
             KeyCode::Char('g') => {
-                self.cursor.insert(self.focus, 0);
+                self.set_cursor(self.focus, 0);
                 None
             }
             KeyCode::Char('G') => {
                 let max = self.rows_in(self.focus).saturating_sub(1);
-                self.cursor.insert(self.focus, max);
+                self.set_cursor(self.focus, max);
                 None
             }
             KeyCode::Char('r') => Some(Action::Refresh),
+            // #228.10: `R` used to write its confirmation into the SAME
+            // transient slot the key legend shares, so the legend — the only
+            // always-visible discoverability the screen has — never came
+            // back once the reader had used the toggle. The state now lives
+            // in its own always-drawn corner (`draw_footer`'s right-aligned
+            // cell) instead of displacing the legend.
             KeyCode::Char('R') => {
                 self.auto_refresh = !self.auto_refresh;
-                self.status = if self.auto_refresh {
-                    "auto-refresh on".into()
-                } else {
-                    "auto-refresh off".into()
-                };
                 None
             }
             KeyCode::Enter => {
@@ -662,7 +746,7 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     if app.help {
         draw_help(area, theme, caps, frame);
     } else if let Some(card) = &app.detail {
-        draw_detail(card, area, theme, caps, frame);
+        draw_detail(card, app.detail_scroll, area, theme, caps, frame);
     }
 }
 
@@ -720,17 +804,57 @@ fn draw_footer(screen: &Screen, app: &App, theme: &Theme, caps: &Caps, frame: &m
     } else {
         Some(app.status.as_str())
     };
+    // #228.10: auto-refresh's state is drawn every frame, in its own
+    // right-aligned cell — never inside `app.status`, the slot a stale
+    // detail-card or digit-refusal message also borrows. `R`'s confirmation
+    // used to overwrite the whole legend and then nothing ever cleared it,
+    // because nothing after the keypress happens to press another key. A
+    // badge that is simply always current cannot go stale.
+    let badge = if app.auto_refresh() {
+        "auto-refresh on"
+    } else {
+        "auto-refresh off"
+    };
+    let badge_w = render::width(badge) as u16;
     let line = match text {
         Some(t) => Line::from(Span::styled(
             render::truncate(t, width as usize, caps.unicode),
             accent,
         )),
-        None => Line::from(footer_spans(KEYS, width, accent, muted)),
+        // The badge never competes with a key hint for room: `footer_spans`
+        // gets the FULL width first, exactly as it always has, and the badge
+        // only claims whatever is left over. A narrow footer keeps every hint
+        // it already fit and simply goes without the badge, rather than the
+        // badge silently displacing one.
+        None => {
+            // The Rect this line actually renders into is `width - 1` wide
+            // (see the `render_widget` call below), so the badge's
+            // right-alignment math has to agree with that or it lands one
+            // cell past the edge and gets clipped, not padded.
+            let drawable = width.saturating_sub(1);
+            let mut spans = footer_spans(KEYS, drawable, accent, muted);
+            let used = spans_width(&spans);
+            let leftover = drawable.saturating_sub(used);
+            if leftover >= badge_w + 2 {
+                let pad = leftover - badge_w;
+                spans.push(Span::styled(" ".repeat(pad as usize), muted));
+                spans.push(Span::styled(badge, muted));
+            }
+            Line::from(spans)
+        }
     };
     frame.render_widget(
         Paragraph::new(line),
         Rect::new(1, screen.footer_y, width.saturating_sub(1), 1),
     );
+}
+
+/// Total display width of a row of spans, for the badge's right-alignment.
+fn spans_width(spans: &[Span<'_>]) -> u16 {
+    spans
+        .iter()
+        .map(|s| render::width(s.content.as_ref()) as u16)
+        .sum()
 }
 
 /// The footer's spans: as many of `keys` as the width affords, lowest rank
@@ -809,12 +933,41 @@ fn draw_help(area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
 /// other key acted on the dashboard underneath it.
 const MODAL_FOOT: &str = "  any key closes this";
 
+/// #228.11: the detail overlay's own footer, once it stopped being true that
+/// "any key closes this" — `j`/`k`/arrows/PageUp/PageDown now scroll it, so
+/// only esc, `q` and ctrl-c actually leave.
+const DETAIL_FOOT: &str = "  j/k scroll · esc/q closes this";
+
 /// Draw `lines` as a centred, bordered box over `area`.
 ///
 /// One frame for both overlays. It was written once for `?` and the detail card
 /// would have been the second copy — the same second-literal drift the footer
 /// was just rebuilt to end (D62), in the code that draws rather than in the code
 /// that lists.
+/// #228.11: `draw_overlay` with a scroll offset, for the one overlay whose
+/// content can run past the screen (the detail card's annotations) — the
+/// help overlay always fits (`the_help_overlay_is_bordered_and_shows_every_binding_whole`
+/// asserts as much), so it keeps calling the unscrolled `draw_overlay` and
+/// this stays a thin wrapper rather than a second implementation.
+fn draw_overlay_scrolled(
+    lines: Vec<Line>,
+    scroll: usize,
+    area: Rect,
+    theme: &Theme,
+    caps: &Caps,
+    frame: &mut Frame,
+) {
+    let visible = area.height.saturating_sub(2) as usize;
+    if lines.len() <= visible || visible == 0 {
+        draw_overlay(lines, area, theme, caps, frame);
+        return;
+    }
+    let max_scroll = lines.len() - visible;
+    let offset = scroll.min(max_scroll);
+    let window: Vec<Line> = lines.into_iter().skip(offset).take(visible).collect();
+    draw_overlay(window, area, theme, caps, frame);
+}
+
 fn draw_overlay(lines: Vec<Line>, area: Rect, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     let muted = rt_style(theme.role("muted"), caps);
     // Wide enough for the longest line it actually holds. A fixed width cut
@@ -871,6 +1024,7 @@ fn draw_overlay(lines: Vec<Line>, area: Rect, theme: &Theme, caps: &Caps, frame:
 /// answer BLOCKED has ever been able to give.
 fn draw_detail(
     card: &model::TaskDetail,
+    scroll: usize,
     area: Rect,
     theme: &Theme,
     caps: &Caps,
@@ -984,23 +1138,79 @@ fn draw_detail(
 
     // Newest last, which is the order they were written and the order every
     // other surface in this program prints them.
+    //
+    // #228.11: every annotation used to be ONE `Line`, cut at the frame width
+    // with `…` — and the answer to "why is this blocked" usually lives in the
+    // half of the sentence that got cut. Wrapped instead: `body_width` is
+    // chosen before `draw_overlay` ever sees these lines (it sizes the box
+    // to the widest line it is HANDED, not the other way around), so the
+    // wrap width has to be picked here, from the same `area` the box will
+    // eventually fit inside.
     if !card.annotations().is_empty() {
         lines.push(Line::from(Span::styled(String::new(), muted)));
+        let body_width = detail_wrap_width(area.width);
         for n in card.annotations() {
             let stamp = n
                 .created
                 .map(|t| t.to_zoned(jiff::tz::TimeZone::UTC).date().to_string())
                 .unwrap_or_else(|| dash.to_string());
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {stamp}  "), muted),
-                Span::styled(n.body.as_str(), plain),
-            ]));
+            let prefix = format!("  {stamp}  ");
+            let indent = " ".repeat(render::width(&prefix));
+            let wrapped = wrap_text(&n.body, body_width.saturating_sub(render::width(&prefix)));
+            let mut rows = wrapped.into_iter();
+            if let Some(first) = rows.next() {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix.clone(), muted),
+                    Span::styled(first, plain),
+                ]));
+            } else {
+                // An empty body still gets its stamp, rather than vanishing.
+                lines.push(Line::from(Span::styled(prefix.clone(), muted)));
+            }
+            for cont in rows {
+                lines.push(Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(cont, plain),
+                ]));
+            }
         }
     }
 
     lines.push(Line::from(Span::styled(String::new(), muted)));
-    lines.push(Line::from(Span::styled(MODAL_FOOT.to_string(), muted)));
-    draw_overlay(lines, area, theme, caps, frame);
+    lines.push(Line::from(Span::styled(DETAIL_FOOT.to_string(), muted)));
+    draw_overlay_scrolled(lines, scroll, area, theme, caps, frame);
+}
+
+/// The width annotation bodies wrap to, given the terminal's actual width —
+/// generous enough to read comfortably, capped so a wide terminal does not
+/// stretch the overlay edge to edge.
+fn detail_wrap_width(area_width: u16) -> usize {
+    (area_width.saturating_sub(6) as usize).clamp(20, 76)
+}
+
+/// Word-wrap `text` to `width` columns. A word longer than `width` on its own
+/// is kept whole rather than sliced mid-word — an overlong URL or id reads
+/// better spilling past the frame edge than butchered into fragments.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        let extra = if cur.is_empty() { 0 } else { 1 };
+        if !cur.is_empty() && render::width(&cur) + extra + render::width(word) > width {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() || lines.is_empty() {
+        lines.push(cur);
+    }
+    lines
 }
 
 /// The width the help overlay's key column needs, derived rather than guessed.
