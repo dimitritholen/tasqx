@@ -896,11 +896,10 @@ fn page_install() -> String {
         "tasqx list",
         "@working   3 tasks\n\
          \n\
-         \x20 ID     URG  TASK                         PROJECT     DUE       TAGS\n\
-         ------------------------------------------------------------------------------\n\
-         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
-         \x20  3  - 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
-         \x20  2  - 11.5  Write the user guide         work.tasqx  Fri       +docs",
+         \x20 ID          URG  TASK                         PROJECT     DUE       TAGS\n\
+         \x20  1  H ▄▄▄▄ 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
+         \x20  3  - ▄▄▃▁ 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
+         \x20  2  - ▄▄▃▁ 11.5  Write the user guide         work.tasqx  Fri       +docs",
     ));
 
     s.push_str(&p(
@@ -1147,9 +1146,8 @@ fn page_commands() -> String {
         "tasqx list \"project:work.tasqx +api\"",
         "project:work.tasqx +api   1 task\n\
          \n\
-         \x20 ID     URG  TASK                         PROJECT     DUE  TAGS\n\
-         -------------------------------------------------------------------------\n\
-         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri  +api +release",
+         \x20 ID          URG  TASK                         PROJECT     DUE  TAGS\n\
+         \x20  1  H ▄▄▄▄ 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri  +api +release",
     ));
 
     // ---- agenda
@@ -1162,19 +1160,22 @@ fn page_commands() -> String {
     ));
     s.push_str(&snippet(
         "tasqx agenda",
-        "\x20 ID     URG  TASK                             PROJECT     WHEN            TAGS\n\
-         ----------------------------------------------------------------------------------------\n\
+        "through 2026-08-17 (+14d)   5 tasks · 1 overdue\n\
+         \n\
+         \x20 ID          URG  TASK                             PROJECT     WHEN            TAGS\n\
          Overdue\n\
-         \x20  3  H 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  +bug\n\
+         \x20  3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  +bug\n\
+         \n\
          Today · Mon 2026-08-03\n\
-         \x20  2  - 12.0  Write API conformance tests      work.tasqx  due 12:00       +api\n\
-         \x20  1  H 18.0  Ship the v1 JSON API freeze      work.tasqx  due 17:00       +api +release\n\
+         \x20  2  - ▄▄▃▁ 12.0  Write API conformance tests      work.tasqx  due 12:00       +api\n\
+         \x20  1  H ▄▄▄▄ 18.0  Ship the v1 JSON API freeze      work.tasqx  due 17:00       +api +release\n\
+         \n\
          Tomorrow · Tue 2026-08-04\n\
-         \x20  4  -  0.0  Quarterly deps audit             work.tasqx  sched\n\
+         \x20  4  - ▁▁▁▁  0.0  Quarterly deps audit             work.tasqx  sched\n\
+         \n\
          Thu 2026-08-06\n\
-         \x20  5  - 10.1  Publish the API docs             work.tasqx  due\n\
-         ----------------------------------------------------------------------------------------\n\
-         5 tasks · through 2026-08-17 (+14d)\n\
+         \x20  5  - ▄▄▂▁ 10.1  Publish the API docs             work.tasqx\n\
+         \n\
          1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them\n\
          1 further out — `tasqx agenda --days 90` reaches the furthest",
     ));
@@ -1299,11 +1300,10 @@ fn page_commands() -> String {
         "tasqx list",
         "@working   3 tasks\n\
          \n\
-         \x20 ID     URG  TASK                         PROJECT     DUE       TAGS\n\
-         ------------------------------------------------------------------------------\n\
-         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
-         \x20  3  - 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
-         \x20  4  - 12.0  Water the plants             home        Thu",
+         \x20 ID          URG  TASK                         PROJECT     DUE       TAGS\n\
+         \x20  1  H ▄▄▄▄ 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
+         \x20  3  - ▄▄▃▁ 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
+         \x20  4  - ▄▄▃▁ 12.0  Water the plants             home        Thu",
     ));
     s.push_str(&snippet(
         "tasqx undep 2 1",
@@ -1544,10 +1544,9 @@ fn page_filters() -> String {
         "tasqx list \"(+api or +ops) and status:pending\"",
         "(+api or +ops) and status:pending   2 tasks\n\
          \n\
-         \x20 ID     URG  TASK                         PROJECT     DUE       TAGS\n\
-         ------------------------------------------------------------------------------\n\
-         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
-         \x20  3  - 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops",
+         \x20 ID          URG  TASK                         PROJECT     DUE       TAGS\n\
+         \x20  1  H ▄▄▄▄ 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
+         \x20  3  - ▄▄▃▁ 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops",
     ));
 
     s.push_str(&h3("Two behaviours worth knowing"));
@@ -2013,12 +2012,11 @@ fn page_daemon() -> String {
         "tasqx watch --socket tasqx-docsdemo | cat\n# ... meanwhile, in another shell:\n#   tasqx --socket tasqx-docsdemo add \"Wire up the docs page ...\"\n#   tasqx --socket tasqx-docsdemo done 3",
         "4 tasks\n\
          \n\
-         \x20 ID     URG  TASK                         PROJECT     DUE       TAGS\n\
-         ------------------------------------------------------------------------------\n\
-         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
-         \x20  3  - 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
-         \x20  5  -  9.7  Water the plants             home        Sun\n\
-         \x20  2  -  8.9  Write the user guide         work.tasqx  Mon       +docs\n\
+         \x20 ID          URG  TASK                         PROJECT     DUE       TAGS\n\
+         \x20  1  H ▄▄▄▄ 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
+         \x20  3  - ▄▄▃▁ 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
+         \x20  5  - ▄▄▂▁  9.7  Water the plants             home        Sun\n\
+         \x20  2  - ▄▄▁▁  8.9  Write the user guide         work.tasqx  Mon       +docs\n\
          task.changed op=add short_id=6\n\
          task.changed op=done short_id=3",
     ));
