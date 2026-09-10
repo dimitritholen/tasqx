@@ -647,6 +647,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("warn", spec("warn")),
                 ("accent", spec("accent")),
                 ("table.label", spec("#8a8a8a")),
+                ("chart.ideal", spec_d("#8a8a8a")),
                 ("card.frame", spec("#585858")),
                 ("card.label", spec("#8a8a8a")),
                 (
@@ -690,6 +691,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("warn", spec("warn")),
                 ("accent", spec("accent")),
                 ("table.label", spec("#8a8a8a")),
+                ("chart.ideal", spec_d("#8a8a8a")),
                 ("card.frame", spec("#585858")),
                 ("card.label", spec("#8a8a8a")),
                 (
@@ -733,6 +735,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("warn", spec("warn")),
                 ("accent", spec("accent")),
                 ("table.label", spec("#8a8a8a")),
+                ("chart.ideal", spec_d("#8a8a8a")),
                 ("card.frame", spec("#585858")),
                 ("card.label", spec("#8a8a8a")),
                 (
@@ -776,6 +779,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ("warn", spec("warn")),
                 ("accent", spec("accent")),
                 ("table.label", spec("#8a8a8a")),
+                ("chart.ideal", spec_d("#8a8a8a")),
                 ("card.frame", spec("#585858")),
                 ("card.label", spec("#8a8a8a")),
                 (
@@ -870,6 +874,13 @@ pub fn builtin(name: &str) -> Option<Theme> {
                 ),
                 (
                     "table.label",
+                    StyleSpec {
+                        dim: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "chart.ideal",
                     StyleSpec {
                         dim: Some(true),
                         ..Default::default()

@@ -763,146 +763,363 @@ fn open_on(m: &Member, d: Date, moves: Option<&[(Timestamp, Lifecycle)]>) -> boo
     }
 }
 
-/// Render the burndown series as a labeled column chart: the data is the
-/// historically-correct remaining-open count per day the CALLER computed
-/// (see `render_throughput` for why the series is a parameter), and the
-/// drawing is compact columns, not §8's dual ideal-vs-actual line — that one
-/// belongs to the HTML report.
+// ============================================================================
+// The step-line plotter
+// ============================================================================
+
+/// The glyphs a step line is drawn from, in whichever alphabet the terminal
+/// can hold.
 ///
-/// `had_any_task` (#234 item 6) is whether the scope this burndown covers has
-/// EVER held a task — a fact the series alone cannot carry, because "the
-/// whole series is zero" means two different things: a real backlog that got
-/// cleared (worth an axis and a "cleared" verdict) and a store that never had
-/// a task to begin with (worth neither — there is no axis to draw and nothing
-/// was cleared).
+/// A corner carries which two edges of its cell the line leaves by, and that
+/// is information ASCII has no way to encode — `+` is every corner at once.
+/// Which is fine: the shape survives, and a reader who can only see `+` still
+/// sees where the line turned.
+pub(crate) struct LineGlyphs {
+    horizontal: char,
+    vertical: char,
+    /// right + down, and left + down
+    down_right: char,
+    down_left: char,
+    /// right + up, and left + up
+    up_right: char,
+    up_left: char,
+    /// The ideal line, which is a reference rather than data. `pub(crate)`
+    /// because the ratatui path has to tell the two apart to paint them apart,
+    /// and comparing against this field beats a second literal that can drift.
+    pub(crate) ideal: char,
+}
+
+impl LineGlyphs {
+    pub(crate) fn new(unicode: bool) -> Self {
+        if unicode {
+            Self {
+                horizontal: '─',
+                vertical: '│',
+                down_right: '╭',
+                down_left: '╮',
+                up_right: '╰',
+                up_left: '╯',
+                ideal: '·',
+            }
+        } else {
+            Self {
+                horizontal: '-',
+                vertical: '|',
+                down_right: '+',
+                down_left: '+',
+                up_right: '+',
+                up_left: '+',
+                ideal: '.',
+            }
+        }
+    }
+}
+
+/// Plot `values` as a step line on a `rows` x `cols` grid of characters, top
+/// row first. A cell no line passes through is a space.
+///
+/// A step rather than a slope, because the data is a step: `remaining` is a
+/// count that holds until something changes it, and drawing a diagonal between
+/// two days invents a series of intermediate values nobody recorded. The riser
+/// sits in the column of the NEW value, so a drop is drawn at the moment it
+/// happened rather than a column early.
+///
+/// `top` is the value the first row represents; 0 is the last. Passing it in
+/// rather than taking the maximum means a caller can hold the scale steady
+/// across a redraw — a chart whose axis moves under a changing series is one
+/// that shows change where there is none.
+///
+/// This replaces a one-row sparkline. Eight glyph levels over one row gave a
+/// thirteen-task swing about three of them to move through, and the row spent
+/// its colour channel re-encoding the same number the height already carried —
+/// two channels for one variable, and the louder of them, colour, ran hot for
+/// "nearly finished" and cold for "barely started", which is backwards.
+pub(crate) fn plot_step_line(
+    values: &[u32],
+    rows: usize,
+    cols: usize,
+    top: u32,
+    g: &LineGlyphs,
+) -> Vec<Vec<char>> {
+    let mut grid = vec![vec![' '; cols]; rows];
+    if rows == 0 || cols == 0 || values.is_empty() {
+        return grid;
+    }
+    let top = top.max(1);
+    let last_row = rows.saturating_sub(1);
+
+    // Value -> row, with 0 on the bottom row and `top` on the first.
+    let row_of = |v: u32| -> usize {
+        let t = f64::from(v.min(top)) / f64::from(top);
+        let r = ((1.0 - t) * last_row as f64).round() as usize;
+        r.min(last_row)
+    };
+
+    let ys: Vec<usize> = (0..cols)
+        .map(|x| {
+            // Columns are sampled from the series rather than the series
+            // stretched over the columns: a 30-day window in 90 cells should
+            // hold each day three times, not smear thirty values across ninety
+            // interpolated ones.
+            let n = values.len();
+            let i = if cols == 1 || n == 1 {
+                n - 1
+            } else if n <= cols {
+                // Fewer values than columns: each holds for its share, which is
+                // what makes a step a step.
+                (x * (n - 1)) / (cols - 1)
+            } else {
+                // More values than columns: each column takes its bucket's LAST
+                // value, `downsample`'s rule and for its reason — a burndown
+                // reads "as of this column", so the newest state in a bucket is
+                // the one that should draw, not an average that blurs a sharp
+                // drop into the plateau before it.
+                (((x + 1) * n) / cols).clamp(x + 1, n) - 1
+            };
+            row_of(values[i])
+        })
+        .collect();
+
+    for (x, &y) in ys.iter().enumerate() {
+        grid[y][x] = g.horizontal;
+    }
+
+    for x in 0..cols.saturating_sub(1) {
+        let (a, b) = (ys[x], ys[x + 1]);
+        if a == b {
+            continue;
+        }
+        // The riser lives in column x+1, between the level it left and the one
+        // it arrived at. Corners name the two edges the line uses, so the one
+        // at the old level opens LEFT (where it came from) and the one at the
+        // new level opens RIGHT (where it goes on).
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        for row in grid.iter_mut().take(hi).skip(lo + 1) {
+            row[x + 1] = g.vertical;
+        }
+        if b < a {
+            // Rising on screen: up and to the right.
+            grid[a][x + 1] = g.up_left;
+            grid[b][x + 1] = g.down_right;
+        } else {
+            grid[a][x + 1] = g.down_left;
+            grid[b][x + 1] = g.up_right;
+        }
+    }
+    grid
+}
+
+/// Lay the ideal burn — a straight run from the opening value to zero at the
+/// close — into the cells the real line does not already occupy.
+///
+/// Only into the free cells: where the two coincide, the one that says what
+/// HAPPENED wins. A reference line that overwrites the data it is a reference
+/// for has the priority backwards.
+pub(crate) fn lay_ideal(
+    grid: &mut [Vec<char>],
+    start: u32,
+    rows: usize,
+    cols: usize,
+    top: u32,
+    g: &LineGlyphs,
+) {
+    if rows == 0 || cols < 2 || start == 0 {
+        return;
+    }
+    let top = top.max(1);
+    let last_row = rows.saturating_sub(1);
+    let rows_for: Vec<usize> = (0..cols)
+        .map(|x| {
+            let frac = x as f64 / (cols - 1) as f64;
+            let v = f64::from(start) * (1.0 - frac);
+            let t = (v / f64::from(top)).clamp(0.0, 1.0);
+            (((1.0 - t) * last_row as f64).round() as usize).min(last_row)
+        })
+        .collect();
+    for (x, &y) in rows_for.iter().enumerate() {
+        if grid[y][x] == ' ' {
+            grid[y][x] = g.ideal;
+        }
+    }
+}
+
+/// How many rows a standalone burndown plots over.
+///
+/// Eight is what it takes for a step to read as a step: a thirteen-task swing
+/// on a twenty-five-task chart moves four rows, which is a shape, where on the
+/// single row this replaced it moved three of eight glyph levels, which is a
+/// texture. The dashboard's panel passes its own smaller number.
+pub const BURNDOWN_ROWS: usize = 8;
+
+/// Draw the remaining-open series as a step line with the ideal beside it.
+///
+/// The chart answers one question — is this burning down — and the shape of
+/// the line is the answer. What it replaces could not give one: a one-row
+/// sparkline, coloured by the same value its height already carried, with the
+/// colour running hot at "almost done" and cold at "barely started". Every
+/// reading of it had to be done from the sentence underneath.
 pub fn render_burndown(
     ctx: &Ctx,
     series: &[RemainingPoint],
     scope_label: &str,
     had_any_task: bool,
 ) -> String {
+    render_burndown_sized(ctx, series, scope_label, had_any_task, BURNDOWN_ROWS)
+}
+
+/// [`render_burndown`] over a caller's own row budget, for a panel that has
+/// fewer than a screen.
+///
+/// The series is the historically-correct remaining-open count per day the
+/// CALLER computed — see `render_throughput` for why that is a parameter.
+///
+/// `had_any_task` (#234 item 6) is whether the scope this burndown covers has
+/// EVER held a task — a fact the series alone cannot carry, because "the whole
+/// series is zero" means two different things: a real backlog that got cleared
+/// (worth an axis and a "cleared" verdict) and a store that never had a task to
+/// begin with (worth neither — there is no axis to draw and nothing was
+/// cleared).
+///
+/// This used to document itself as "compact columns, not §8's dual
+/// ideal-vs-actual line — that one belongs to the HTML report". That split is
+/// retired: §8 sketched the line for the terminal all along, and D80 ruled it
+/// outright ("connected rounded step-lines over a dotted ideal"). The cumulative
+/// scope-added series D80 names beside it is NOT drawn here — `burndown` does
+/// not compute it — and stays open under that ruling.
+pub fn render_burndown_sized(
+    ctx: &Ctx,
+    series: &[RemainingPoint],
+    scope_label: &str,
+    had_any_task: bool,
+    rows: usize,
+) -> String {
     let mut out = String::new();
-    out.push_str(&ctx.paint(
-        "header",
-        &format!("Remaining open {} {scope_label}", ctx.mid()),
-    ));
-    out.push('\n');
 
     if !had_any_task {
+        out.push_str(&ctx.paint("header", "remaining open"));
+        out.push('\n');
         out.push_str(&format!("  {}\n", ctx.paint("muted", "no open tasks yet")));
         return out;
     }
 
+    let first = series.first().map(|p| p.remaining).unwrap_or(0);
+    let last = series.last().map(|p| p.remaining).unwrap_or(0);
     let max = series.iter().map(|p| p.remaining).max().unwrap_or(0).max(1);
+    let delta = i64::from(last) - i64::from(first);
+    let day = day_word(series.len() as i64);
 
-    // #234 item 3: a raw one-glyph-per-day sparkline is unreadable (and, at
-    // the far end, unusable — `--days 3650` emits a 3650-cell line whatever
-    // COLUMNS says) past the terminal's own width. Downsampled for DISPLAY
-    // only — the trend/projection below still reads the full-resolution
-    // `series`, so a coarse chart never coarsens the numbers under it.
-    let avail = ctx.cols.saturating_sub(6).clamp(10, series.len().max(10));
-    let plotted = downsample(series, avail);
-
-    // Sparkline row of vertical blocks, colored hot→cold by fill. The ASCII
-    // fallback (#167) uses the same 8-level ramp as the Unicode one — the
-    // 3-symbol ramp it used to fall back to flattened an 84% rise into two
-    // visually distinct bars.
-    let spark: String = plotted
-        .iter()
-        .map(|p| {
-            let t = p.remaining as f64 / max as f64;
-            let g = spark_glyph(t, ctx.caps.unicode);
-            ctx.theme
-                .ramp_style(1.0 - t)
-                .paint(&g.to_string(), &ctx.caps)
-        })
-        .collect();
+    // The facts go on the line the chart opens with, where `list` and `agenda`
+    // put theirs (D117 rule 8): the shape says whether it is burning down, and
+    // this line says by how much and from what.
+    let trend = if delta < 0 {
+        format!("down {} over {} {day}", -delta, series.len())
+    } else if delta > 0 {
+        format!("up {delta} over {} {day}", series.len())
+    } else {
+        format!("flat over {} {day}", series.len())
+    };
+    let facts = format!(
+        "{last} left {m} {trend}{proj}",
+        m = ctx.mid(),
+        proj = project_finish(series, ctx.mid())
+    );
     out.push_str(&format!(
-        "  {}  {}\n",
-        ctx.paint("muted", &format!("{max:>3}")),
-        spark
+        "{}   {}\n\n",
+        ctx.paint(
+            "header",
+            &format!("remaining open {} {scope_label}", ctx.mid())
+        ),
+        ctx.paint("muted", &facts)
+    ));
+
+    // The gutter holds the two labels the axis needs and nothing else. A row
+    // per value would be a table with a picture in it.
+    let gutter = format!("{max}").len().max(1);
+    let plot_cols = ctx
+        .cols
+        .saturating_sub(gutter + 4)
+        .clamp(10, series.len().max(10) * 3);
+
+    let g = LineGlyphs::new(ctx.caps.unicode);
+    let values: Vec<u32> = series.iter().map(|p| p.remaining).collect();
+    let mut grid = plot_step_line(&values, rows, plot_cols, max, &g);
+    lay_ideal(&mut grid, first, rows, plot_cols, max, &g);
+
+    let (tick, spine, corner, rule) = if ctx.caps.unicode {
+        ('┤', '│', '└', '─')
+    } else {
+        ('+', '|', '+', '-')
+    };
+
+    // A tick means "this row is labelled". Drawing one on every row put five
+    // unlabelled `┤` down the axis, which reads as a scale whose numbers went
+    // missing rather than as a scale with two.
+    let last_row = rows.saturating_sub(1);
+    for (y, row) in grid.iter().enumerate() {
+        let (label, mark) = if y == 0 {
+            (format!("{max:>gutter$}"), tick)
+        } else if y == last_row {
+            (format!("{:>gutter$}", 0), tick)
+        } else {
+            (" ".repeat(gutter), spine)
+        };
+        let line: String = row.iter().collect();
+        // The ideal is a reference and recedes; the line is the data and does
+        // not. Painting them apart is what lets one row carry both without the
+        // reader having to work out which is which.
+        let painted: String = split_ideal(&line, g.ideal)
+            .into_iter()
+            .map(|(is_ideal, part)| {
+                if is_ideal {
+                    ctx.paint("chart.ideal", &part)
+                } else {
+                    ctx.paint("accent", &part)
+                }
+            })
+            .collect();
+        out.push_str(&format!(
+            "  {} {} {painted}\n",
+            ctx.paint("muted", &label),
+            ctx.paint("muted", &mark.to_string())
+        ));
+    }
+    out.push_str(&format!(
+        "  {} {}\n",
+        " ".repeat(gutter),
+        ctx.paint(
+            "muted",
+            &format!("{corner}{}", rule.to_string().repeat(plot_cols + 1))
+        )
     ));
     out.push_str(&format!(
-        "  {}  {}\n",
-        ctx.paint("muted", "  0"),
+        "  {} {}\n",
+        " ".repeat(gutter),
         ctx.paint(
             "muted",
             &axis_labels(
                 series.first().unwrap().date,
                 series.last().unwrap().date,
-                plotted.len(),
+                plot_cols + 1,
                 ctx.caps.unicode
             ),
         ),
     ));
-    // The ramp's own legend, in the heatmap's style (#167): without it, `_`,
-    // `.` and `#` in a piped/dumb-terminal capture are undefined.
-    let ramp_legend = if ctx.caps.unicode {
-        "▁▂▃▄▅▆▇█ low → high, scaled to this chart's own peak"
-    } else {
-        "_.-=+*#@ low -> high, scaled to this chart's own peak"
-    };
-    out.push_str(&format!("  {}\n", ctx.paint("muted", ramp_legend)));
-
-    let first = series.first().map(|p| p.remaining).unwrap_or(0);
-    let last = series.last().map(|p| p.remaining).unwrap_or(0);
-    let delta = last as i64 - first as i64;
-    let day = day_word(series.len() as i64);
-    let trend = if delta < 0 {
-        format!("down {} over {} {day}", -delta, series.len())
-    } else if delta > 0 {
-        format!("up {} over {} {day}", delta, series.len())
-    } else {
-        format!("flat over {} {day}", series.len())
-    };
-    // Simple projection: at the recent net burn rate, days to zero.
-    let proj = project_finish(series, ctx.mid());
-    out.push_str(&format!(
-        "  {}\n",
-        ctx.paint(
-            "muted",
-            &format!(
-                "{a} {last} left {m} {trend}{proj}",
-                a = ctx.arrow(),
-                m = ctx.mid()
-            )
-        )
-    ));
     out
 }
 
-/// Bucket `series` down to at most `max_points` columns for display, each
-/// bucket represented by its LAST (most recent) point — a burndown reads "as
-/// of this column", so the newest state in a bucket is the one that should
-/// draw, not an average that blurs a sharp drop with the plateau before it.
-fn downsample(series: &[RemainingPoint], max_points: usize) -> Vec<RemainingPoint> {
-    let n = series.len();
-    if n <= max_points || max_points == 0 {
-        return series.to_vec();
+/// Split a plotted row into runs of ideal-line cells and runs of everything
+/// else, so the two can be painted in different roles without measuring
+/// anything twice.
+fn split_ideal(line: &str, ideal: char) -> Vec<(bool, String)> {
+    let mut runs: Vec<(bool, String)> = Vec::new();
+    for c in line.chars() {
+        let is_ideal = c == ideal;
+        match runs.last_mut() {
+            Some((flag, text)) if *flag == is_ideal => text.push(c),
+            _ => runs.push((is_ideal, c.to_string())),
+        }
     }
-    let mut out = Vec::with_capacity(max_points);
-    for i in 0..max_points {
-        let end = ((i + 1) * n) / max_points;
-        let end = end.clamp(i + 1, n) - 1;
-        out.push(series[end]);
-    }
-    out
-}
-
-fn spark_glyph(t: f64, unicode: bool) -> char {
-    let t = t.clamp(0.0, 1.0);
-    if unicode {
-        const G: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-        G[(t * (G.len() - 1) as f64).round() as usize]
-    } else {
-        // The ASCII fallback used to have three symbols (`_`, `.`, `#`), which
-        // collapsed an 84%-rising series into two visually distinct bars once
-        // piped or under `TERM=dumb` (#167). Eight levels, matching the
-        // Unicode ramp's resolution exactly, keep the shape of the series
-        // instead of its sign.
-        const G: [char; 8] = ['_', '.', '-', '=', '+', '*', '#', '@'];
-        G[(t * (G.len() - 1) as f64).round() as usize]
-    }
+    runs
 }
 
 fn axis_labels(first: Date, last: Date, width: usize, unicode: bool) -> String {
@@ -1371,9 +1588,6 @@ mod tests {
         );
         assert_eq!(cell(6, &plain), "#");
         assert!(!bar(3, 6, 6, &plain).contains('\x1b'));
-        assert_eq!(spark_glyph(1.0, true), '█');
-        assert_eq!(spark_glyph(1.0, false), '@');
-        assert_eq!(spark_glyph(0.0, false), '_');
     }
 
     /// Every figure in a chart row must sit in the same column as the one above
@@ -1575,19 +1789,146 @@ mod tests {
         );
     }
 
-    /// #167: the ASCII burndown ramp collapses an 8-level rise to 2-3 symbols.
-    /// A monotonically increasing series should produce a monotonically
-    /// non-decreasing set of ASCII glyphs across (at least) 4 distinct levels
-    /// — not the 3-symbol (`_`, `.`, `#`) ramp `spark_glyph` currently has.
+    /// The step line's geometry, pinned as a picture.
+    ///
+    /// Corners carry which two edges the line leaves a cell by, and getting one
+    /// backwards draws a shape that is still a shape — it just describes a
+    /// different series. That is invisible to any assertion about values, so
+    /// this one asserts the drawing.
     #[test]
-    fn ascii_burndown_ramp_has_more_than_three_levels() {
-        let levels: std::collections::BTreeSet<char> = (0..=10)
-            .map(|i| spark_glyph(i as f64 / 10.0, false))
-            .collect();
+    fn the_step_line_turns_the_way_the_series_does() {
+        let g = LineGlyphs::new(true);
+        let grid = plot_step_line(&[0, 0, 2, 2, 1, 1], 3, 6, 2, &g);
+        let picture: Vec<String> = grid.iter().map(|r| r.iter().collect()).collect();
+        assert_eq!(
+            picture,
+            vec![
+                // Low for two columns, up to the peak at column 2, back down
+                // to the middle at column 4. The riser sits in the column of
+                // the NEW value, so a change is drawn where it happened.
+                "  ╭─╮ ".to_string(),
+                "  │ ╰─".to_string(),
+                "──╯   ".to_string(),
+            ],
+            "{picture:#?}"
+        );
+    }
+
+    /// Zero sits on the bottom row and the peak on the top one, so a reader can
+    /// take the two labels on the axis at their word.
+    #[test]
+    fn the_step_line_puts_zero_on_the_floor_and_the_peak_on_the_ceiling() {
+        let g = LineGlyphs::new(true);
+        let grid = plot_step_line(&[0, 5], 4, 2, 5, &g);
+        assert_eq!(grid[3][0], '─', "0 is not on the bottom row: {grid:?}");
+        assert_eq!(grid[0][1], '╭', "the peak is not on the top row: {grid:?}");
+    }
+
+    /// The ideal is a reference; the line is what happened. Where they want the
+    /// same cell, the data keeps it — a reference that overwrites the thing it
+    /// is a reference for has the priority backwards, and the reader cannot
+    /// tell which of the two they are looking at.
+    #[test]
+    fn the_ideal_never_paints_over_the_line() {
+        let g = LineGlyphs::new(true);
+        let values = [10, 8, 6, 4, 2, 0];
+        let mut grid = plot_step_line(&values, 6, 12, 10, &g);
+        let before = grid.clone();
+        lay_ideal(&mut grid, 10, 6, 12, 10, &g);
+        for (y, row) in before.iter().enumerate() {
+            for (x, &c) in row.iter().enumerate() {
+                if c != ' ' {
+                    assert_eq!(grid[y][x], c, "the ideal overwrote the line at {y},{x}");
+                }
+            }
+        }
+        assert!(
+            grid.iter().flatten().any(|&c| c == g.ideal),
+            "the ideal was not drawn at all"
+        );
+    }
+
+    /// More days than columns: each column takes its bucket's LAST value.
+    ///
+    /// A burndown reads "as of this column". Averaging a bucket blurs the drop
+    /// that ended it into the plateau before it, which is the one event in the
+    /// window a reader is looking for.
+    #[test]
+    fn a_window_longer_than_the_terminal_shows_each_bucket_as_it_ended() {
+        let g = LineGlyphs::new(true);
+        // Eight days over four columns: each bucket is one 0 followed by one
+        // 9, so taking the LAST value draws a line along the ceiling and
+        // taking the first draws one along the floor. The two answers could
+        // not look more different, which is what a guard about this needs —
+        // an earlier version of this test used a series where both rules
+        // happened to produce the same picture, and it passed against both.
+        let values = [0, 9, 0, 9, 0, 9, 0, 9];
+        let grid = plot_step_line(&values, 2, 4, 9, &g);
+        let on_ceiling: Vec<bool> = (0..4).map(|x| grid[0][x] != ' ').collect();
+        assert_eq!(
+            on_ceiling,
+            vec![true, true, true, true],
+            "columns did not take their bucket's last value: {grid:?}"
+        );
+    }
+
+    /// #167, restated for the shape that replaced the ramp: a rising burndown
+    /// must not flatten on a terminal without Unicode.
+    ///
+    /// The original defect was an ASCII ramp of three glyphs, which collapsed
+    /// an 84% rise into two visually distinct bars. A step line cannot have
+    /// that defect by construction — its resolution is its ROW COUNT, and rows
+    /// are the same in both alphabets — so the guard now asserts the property
+    /// the ramp was supposed to have rather than the glyph count it was fixed
+    /// to. If the two alphabets ever disagree about a shape, that is the bug.
+    #[test]
+    fn a_rising_burndown_has_the_same_shape_without_unicode() {
+        let values: Vec<u32> = (0..=10).map(|i| i * 3).collect();
+        let rows_of = |unicode: bool| -> Vec<usize> {
+            let g = LineGlyphs::new(unicode);
+            let grid = plot_step_line(&values, 8, 22, 30, &g);
+            // The row each column's line sits on, read back off the picture.
+            (0..22)
+                .map(|x| {
+                    (0..8)
+                        .find(|&y| grid[y][x] != ' ')
+                        .expect("every column carries the line")
+                })
+                .collect()
+        };
+        let uni = rows_of(true);
+        assert_eq!(
+            uni,
+            rows_of(false),
+            "the alphabets disagree about the shape"
+        );
+
+        // Where the line GOES is glyph-independent, so the assertion above
+        // cannot fail on an alphabet alone — the thing an alphabet can lose is
+        // the distinction a cell draws. A corner may collapse to `+` (ASCII has
+        // no way to say which two edges it uses, and the shape survives), but a
+        // run along the line and a run across it must stay tellable apart, or
+        // the picture stops being readable while every row index still agrees.
+        for unicode in [true, false] {
+            let g = LineGlyphs::new(unicode);
+            assert_ne!(
+                g.horizontal, g.vertical,
+                "horizontal and vertical collapsed to one glyph (unicode={unicode})"
+            );
+            assert_ne!(
+                g.horizontal, g.ideal,
+                "the data and the reference collapsed to one glyph (unicode={unicode})"
+            );
+        }
+        let levels: std::collections::BTreeSet<usize> = uni.iter().copied().collect();
         assert!(
             levels.len() >= 6,
-            "the ASCII ramp must have several distinct levels, not the 3-symbol \
-             ramp that flattens a rising burndown into a near-flat line: {levels:?}"
+            "a rising series flattened into {} levels: {uni:?}",
+            levels.len()
+        );
+        assert!(
+            uni.windows(2).all(|w| w[0] >= w[1]),
+            "a monotonically rising series must never dip on screen: {uni:?}"
         );
     }
 

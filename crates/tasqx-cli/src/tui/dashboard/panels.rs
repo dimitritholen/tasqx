@@ -13,6 +13,7 @@
 use ratatui::style::Style as RtStyle;
 use ratatui::text::{Line, Span};
 
+use crate::chart;
 use crate::render;
 use crate::theme::{Caps, Theme};
 use crate::tokens;
@@ -134,6 +135,10 @@ struct Styles {
     overdue: RtStyle,
     active: RtStyle,
     project: RtStyle,
+    /// The burndown's reference line. Its own role (D80) rather than `muted`,
+    /// so a theme can pull the ideal apart from the data without also
+    /// repainting every dim label on the screen.
+    chart_ideal: RtStyle,
     plain: RtStyle,
 }
 
@@ -146,6 +151,7 @@ fn styles(theme: &Theme, caps: &Caps) -> Styles {
         overdue: rt_style(theme.role("overdue"), caps),
         active: rt_style(theme.role("timer.active"), caps),
         project: rt_style(theme.role("project"), caps),
+        chart_ideal: rt_style(theme.role("chart.ideal"), caps),
         plain: RtStyle::default(),
     }
 }
@@ -547,6 +553,16 @@ fn projects_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'
         .collect()
 }
 
+/// The BURNDOWN panel: the same step line the standalone `tasqx chart
+/// burndown` draws, over whatever rows the panel was given.
+///
+/// It used to carry its own sparkline — a third implementation of the idea,
+/// with its own glyph table and its own ASCII fallback, next to the one in
+/// `chart.rs` and the one in `render_burndown`. Three copies of a bad chart is
+/// how a panel and the command it mirrors end up disagreeing about the same
+/// week. The GEOMETRY is shared now (`chart::plot_step_line`) and the painting
+/// is not, which is the right seam: where a line goes is universal, and
+/// ratatui spans and ANSI escapes are not.
 fn burndown_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
     let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
     let series = &dash.burndown.series;
@@ -554,43 +570,63 @@ fn burndown_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
         return empty("no history in this window", s, w as u16, unicode);
     }
     let max = series.iter().map(|p| p.remaining).max().unwrap_or(1).max(1);
-    let bars = if unicode {
-        ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
-    } else {
-        ['.', '.', '-', '-', '=', '=', '#', '#']
-    };
-    let spark: String = series
-        .iter()
-        .map(|p| {
-            let t = (p.remaining as f64 / max as f64 * 7.0).round() as usize;
-            bars[t.min(7)]
-        })
-        .collect();
     let last = series.last().map(|p| p.remaining).unwrap_or(0);
     let first = series.first().map(|p| p.remaining).unwrap_or(0);
-    let net = last as i64 - first as i64;
+    let net = i64::from(last) - i64::from(first);
+
+    // One row goes to the footer, and one more to the clipped warning when
+    // there is one. A plot floored at two rows still shows a direction; at one
+    // it is the sparkline again.
+    let reserved = 1 + usize::from(dash.burndown.truncated && height >= 3);
+    let plot_rows = (height as usize).saturating_sub(reserved).clamp(2, 12);
+    let gutter = format!("{max}").len();
+    let plot_cols = (w.saturating_sub(gutter + 2)).max(4);
+
+    let g = chart::LineGlyphs::new(unicode);
+    let values: Vec<u32> = series.iter().map(|p| p.remaining).collect();
+    let mut grid = chart::plot_step_line(&values, plot_rows, plot_cols, max, &g);
+    chart::lay_ideal(&mut grid, first, plot_rows, plot_cols, max, &g);
+
     // The axis glyphs go through `unicode` like every other one. Hard-coding
     // them here is the exact trap the ASCII test exists to catch: box-drawing
     // bytes on a legacy console are mojibake, and mojibake in a grid misaligns
     // every column to its right.
-    let (tick, foot) = if unicode { ('┤', '┴') } else { ('|', '+') };
-    let mut out = vec![
-        Line::from(Span::styled(
-            render::truncate(&format!("{max:>3} {tick} {spark}"), w, unicode),
-            s.plain,
-        )),
-        Line::from(Span::styled(
-            render::truncate(
-                &format!(
-                    "  0 {foot} {} days · now {last} · net {net:+}",
-                    dash.burndown.days
-                ),
-                w,
-                unicode,
+    let (tick, spine, foot) = if unicode {
+        ('┤', '│', '┴')
+    } else {
+        ('|', '|', '+')
+    };
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for (y, row) in grid.iter().enumerate() {
+        let (label, mark) = if y == 0 {
+            (format!("{max:>gutter$}"), tick)
+        } else if y == plot_rows - 1 {
+            (format!("{:>gutter$}", 0), tick)
+        } else {
+            (" ".repeat(gutter), spine)
+        };
+        let mut spans = vec![Span::styled(format!("{label}{mark}"), s.muted)];
+        for (is_ideal, part) in split_line(row, g.ideal) {
+            spans.push(Span::styled(
+                part,
+                if is_ideal { s.chart_ideal } else { s.accent },
+            ));
+        }
+        out.push(Line::from(spans));
+    }
+    out.push(Line::from(Span::styled(
+        render::truncate(
+            &format!(
+                "{}{foot} {} days · now {last} · net {net:+}",
+                " ".repeat(gutter),
+                dash.burndown.days
             ),
-            s.muted,
-        )),
-    ];
+            w,
+            unicode,
+        ),
+        s.muted,
+    )));
     if dash.burndown.truncated && height >= 3 {
         out.push(Line::from(Span::styled(
             render::truncate("window clipped — history may be incomplete", w, unicode),
@@ -598,6 +634,23 @@ fn burndown_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
         )));
     }
     out
+}
+
+/// Split a plotted row into runs of ideal-line cells and runs of everything
+/// else, so the reference and the data can be painted apart. The mirror of
+/// `chart::split_ideal`, which does the same for the ANSI path; they are two
+/// because a `Span` and an escape sequence are not the same object, not
+/// because the rule differs.
+fn split_line(row: &[char], ideal: char) -> Vec<(bool, String)> {
+    let mut runs: Vec<(bool, String)> = Vec::new();
+    for &c in row {
+        let is_ideal = c == ideal;
+        match runs.last_mut() {
+            Some((flag, text)) if *flag == is_ideal => text.push(c),
+            _ => runs.push((is_ideal, c.to_string())),
+        }
+    }
+    runs
 }
 
 fn tokens_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
