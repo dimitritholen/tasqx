@@ -543,3 +543,53 @@ fn a_daemon_that_cannot_bind_never_claims_to_be_listening() {
     );
     let _ = std::fs::remove_file(&second_db);
 }
+
+/// Finding #14 (audit-2026-09): an explicitly named `--socket` with nothing
+/// listening used to fall back to in-process silently, exit 0 — but
+/// `--socket`'s own help promises single-writer routing "when a daemon is
+/// reachable", so a caller who passed the flag stated an intention the
+/// fallback then quietly broke. No daemon is started in this world on
+/// purpose: the socket path is real (a scratch temp dir) but nothing binds
+/// it, which is the "stale/missing socket" case the flag can genuinely hit.
+#[test]
+fn an_explicit_unreachable_socket_warns_on_fallback() {
+    let w = world("explicitsock");
+    // No daemon started — `w.sock` names a path nothing is listening on.
+    let out = bin(&w)
+        .args(["--socket", &w.sock, "list"])
+        .output()
+        .expect("run list");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the fallback must still succeed: {stderr}"
+    );
+    assert!(
+        stderr.contains("no daemon at"),
+        "an explicit --socket that cannot be reached must warn: {stderr}"
+    );
+    assert!(
+        stderr.contains(&w.sock),
+        "the warning must name the socket: {stderr}"
+    );
+}
+
+/// The mirror of the test above: with NO `--socket` flag, the same missing
+/// daemon (env/default discovery) must stay silent about it — only an
+/// explicit flag is a stated intention worth warning about.
+#[test]
+fn an_unreachable_socket_from_env_discovery_stays_silent() {
+    let w = world("envsock");
+    // `$TASQX_SOCK` (set by `bin`) names a path nothing is listening on, and
+    // no `--socket` flag is passed.
+    let out = bin(&w).args(["list"]).output().expect("run list");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the fallback must still succeed: {stderr}"
+    );
+    assert!(
+        !stderr.contains("no daemon at"),
+        "env/default discovery is silent on a missing daemon: {stderr}"
+    );
+}

@@ -580,6 +580,13 @@ const R_TASK_GET: Shape = &[
     TASK_BLOCKED,
     TASK_STATUS_FLAG,
     TASK_URGENCY_BREAKDOWN,
+    // Finding #8 (audit-2026-09): `why` needs the unmet blockers' titles, not
+    // just the `blocked` bool, to explain WHY a task cannot be worked.
+    &[req_of(
+        "unmet_blockers",
+        Ty::Array,
+        &[&[req("short_id", Ty::Int), req("title", Ty::Str)]],
+    )],
 ];
 
 const R_TASK_START: Shape = &[&[
@@ -588,12 +595,22 @@ const R_TASK_START: Shape = &[&[
     // Null only on the idempotent re-start of a task whose `active_since` is
     // missing; §4 documents the key itself as always present.
     nul("interval_started", Ty::Str),
+    // Finding #3 (audit-2026-09): the CLI needs the task's name to echo
+    // "Started #144 title" instead of a bare "Started task".
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    // Finding #9 (audit-2026-09): true on the idempotent re-start path, so
+    // the CLI can say "already running" instead of "Started" for a request
+    // that opened no new interval.
+    req("already_running", Ty::Bool),
 ]];
 
 const R_TASK_STOP: Shape = &[&[
     req("status", Ty::Str),
     req("interval", Ty::Str),
     req("tracked", Ty::Str),
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
 ]];
 
 const R_TASK_DONE: Shape = &[&[
@@ -606,6 +623,13 @@ const R_TASK_DONE: Shape = &[&[
     opt("spawned", Ty::Object),
     // D50: present only when the completion self-reported no token counts.
     opt("tokens_hint", Ty::Str),
+    // Finding #3 (audit-2026-09): the name of the task that just completed,
+    // plus the tracked-vs-estimate comparison that used to require a
+    // separate `show`.
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    req("tracked", Ty::Str),
+    nul("estimate", Ty::Str),
 ]];
 
 const R_TASK_MODIFY: Shape = &[&[
@@ -681,6 +705,18 @@ const R_DEPENDENCY: Shape = &[&[
     req("short_id", Ty::Int),
     req("depends_on", Ty::Array),
     req("blocked", Ty::Bool),
+]];
+
+// Finding #9 (audit-2026-09): `dependency.add` additionally reports whether
+// the edge was actually inserted, so a re-run on an existing edge can be told
+// apart from a genuinely new one. `dependency.remove` keeps the base shape —
+// its own idempotence is a documented no-op, not something the CLI renders
+// differently today.
+const R_DEPENDENCY_ADD: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("depends_on", Ty::Array),
+    req("blocked", Ty::Bool),
+    req("inserted", Ty::Bool),
 ]];
 
 const R_MEMORY_ADD: Shape = &[&[
@@ -1089,6 +1125,9 @@ fn cases() -> Vec<Case> {
             "an active task, so `active_since` is pinned on its non-null branch",
             |e| {
                 plain_task(e);
+                plain_task(e);
+                e.dependency_add(&json!({ "ref": 1, "depends_on": 2 }))
+                    .expect("dep");
                 e.task_start(&json!({ "ref": 1 })).expect("start");
                 e.annotation_add(&json!({ "ref": 1, "body": "still going" }))
                     .expect("annotate");
@@ -1259,7 +1298,7 @@ fn cases() -> Vec<Case> {
                 plain_task(e);
                 json!({ "ref": 2, "depends_on": 1 })
             },
-            R_DEPENDENCY,
+            R_DEPENDENCY_ADD,
         ),
         case(
             "dependency.remove",

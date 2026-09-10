@@ -1203,7 +1203,11 @@ pub(super) enum MemoryAction {
         #[arg(required = true)]
         query: Vec<String>,
         /// Max hits (default 10).
-        #[arg(long)]
+        // Finding #16 (audit-2026-09): `--limit 0` used to reach `memory.search`
+        // as a genuine zero-wide request and come back "0 hit(s)" with the
+        // same "every term was required" hint a real miss gets — blaming the
+        // query for a limit the user typed. Same floor as `--days`/`--weeks`.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         limit: Option<u64>,
         /// What to search (default: all).
         // The spellings used to be listed in the line above as well. Clap now
@@ -1377,6 +1381,24 @@ mod tests {
                 "{argv:?}: the error must name the flag, got {msg:?}"
             );
         }
+    }
+
+    /// Finding #16 (audit-2026-09): `memory search "x" --limit 0` reported
+    /// "0 hit(s) · every term was required" — the exact wording a genuine
+    /// zero-hit query gets — blaming the query instead of the limit. `--limit`
+    /// must be a usage error at zero, same as `--days`/`--weeks` (D-note at
+    /// DESIGN.md:1427: "the floor of 1 refuses the zero-wide window").
+    #[test]
+    fn memory_search_limit_zero_is_a_usage_error_not_a_silent_zero_hit_query() {
+        let err = Cli::try_parse_from(["tasqx", "memory", "search", "x", "--limit", "0"])
+            .err()
+            .unwrap_or_else(|| panic!("--limit 0 must be rejected"));
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+        assert!(
+            err.to_string().contains("--limit"),
+            "the error must name the flag: {}",
+            err
+        );
     }
 
     /// The bound must not eat the documented windows: DESIGN.md §8 promises the

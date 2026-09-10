@@ -254,13 +254,16 @@ pub fn task_added(ctx: &Ctx, result: &Value, title: &str) -> String {
     // D21: name where it landed. With no explicit `project:`, the task inherits
     // the default, and this is the only place the user finds out which project
     // that was — "silently lands in prive.klussen" is this text not existing.
+    // Finding #10 (audit-2026-09): a bare `add` with no default project set
+    // used to just omit the ` · <project>` suffix — the only tell that the
+    // task landed nowhere, in a line read a hundred times a day. State it.
     let proj = match result
         .get("project")
         .and_then(Value::as_str)
         .filter(|p| !p.is_empty())
     {
         Some(p) => format!("  ·  {}", ctx.paint("project", &san(p))),
-        None => String::new(),
+        None => "  ·  no project (set one with `tasqx use <project>`)".to_string(),
     };
     format!(
         "{}  ·  {status}  ·  urgency {urg:.1}{proj}\n  {}\n",
@@ -269,12 +272,64 @@ pub fn task_added(ctx: &Ctx, result: &Value, title: &str) -> String {
     )
 }
 
+/// A duration in `90h15m` / `2h` / `30s` form: hours, minutes, seconds, each
+/// omitted when zero, with no separators — the same glued shape
+/// `datetime::parse_duration` accepts back in. Finding #3 (audit-2026-09):
+/// `start`/`stop`/`done` never rendered a human-readable duration, leaving raw
+/// ISO-8601 (`PT30S`) on the one surface a reader actually looks at.
+fn human_duration(iso: &str) -> String {
+    let secs = tasqx_core::util::duration_secs(iso).unwrap_or(0).max(0);
+    if secs == 0 {
+        return "0s".to_string();
+    }
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let mut out = String::new();
+    if h > 0 {
+        out.push_str(&format!("{h}h"));
+    }
+    if m > 0 {
+        out.push_str(&format!("{m}m"));
+    }
+    if s > 0 {
+        out.push_str(&format!("{s}s"));
+    }
+    out
+}
+
+/// `#id title`, sanitized — the name every start/stop/done confirmation now
+/// echoes (finding #3) so a success line naming the wrong task is visible
+/// immediately instead of one command later, at `tasqx show`.
+fn task_ref_line(ctx: &Ctx, result: &Value) -> String {
+    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let title = s(result, "title");
+    format!("{}  {title}", ctx.paint("accent", &format!("#{sid}")))
+}
+
 pub fn started(ctx: &Ctx, result: &Value) -> String {
     let started = s(result, "interval_started");
-    format!(
-        "{}  ·  timer running (since {started})\n",
-        ctx.paint("timer.active", "Started task")
-    )
+    // Finding #9 (audit-2026-09): `start` on an already-running task answered
+    // exactly the same "Started" line as a genuine start — the same instant
+    // in `since`, so nothing was lost, but the word claims an action that did
+    // not happen. For a human re-running a lost command that reads as a
+    // heart-attack: the timer LOOKS reset.
+    let already = result
+        .get("already_running")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let line = if already {
+        format!(
+            "{}  ·  since {started}\n  {}\n",
+            ctx.paint("timer.active", "Already running"),
+            task_ref_line(ctx, result)
+        )
+    } else {
+        format!(
+            "{}  ·  timer running (since {started})\n  {}\n",
+            ctx.paint("timer.active", "Started"),
+            task_ref_line(ctx, result)
+        )
+    };
+    line
 }
 
 /// #185: this used to print the interval `stop` had just closed under the
@@ -287,8 +342,11 @@ pub fn stopped(ctx: &Ctx, result: &Value) -> String {
     let interval = s(result, "interval");
     let tracked = s(result, "tracked");
     format!(
-        "{}  ·  interval {interval}  ·  tracked {tracked}\n",
-        ctx.paint("timer.active", "Stopped")
+        "{}  ·  interval {}  ·  tracked {}\n  {}\n",
+        ctx.paint("timer.active", "Stopped"),
+        human_duration(&interval),
+        human_duration(&tracked),
+        task_ref_line(ctx, result)
     )
 }
 
@@ -357,9 +415,21 @@ fn reblocked_line(ctx: &Ctx, result: &Value) -> String {
 
 pub fn done(ctx: &Ctx, result: &Value) -> String {
     let completed = s(result, "completed");
+    // Finding #3 (audit-2026-09): name the task, and — when it carried an
+    // estimate — the comparison that is the entire payoff of typing `est:2h`
+    // at capture time.
+    let tracked_vs_estimate = match result.get("estimate").and_then(Value::as_str) {
+        Some(est) if !est.is_empty() => format!(
+            "  ·  tracked {} of a {} estimate",
+            human_duration(&s(result, "tracked")),
+            human_duration(est)
+        ),
+        _ => String::new(),
+    };
     let mut out = format!(
-        "{}  ·  completed {completed}\n",
-        ctx.paint("timer.active", "Done")
+        "{}  ·  completed {completed}{tracked_vs_estimate}\n  {}\n",
+        ctx.paint("timer.active", "Done"),
+        task_ref_line(ctx, result)
     );
     out.push_str(&unblocked_line(ctx, result));
     // A recurring task spawns its next instance on completion (DESIGN §10, D2).
@@ -784,6 +854,24 @@ fn field_ts(t: &Value, key: &str) -> Option<Timestamp> {
 /// already states at [`agenda_select`], adopted here late: an internal read
 /// made the overdue highlight untestable at the day boundary.
 pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
+    task_table_filtered(ctx, result, now, None)
+}
+
+/// [`task_table`], plus the filter DSL that produced `result` — echoed on an
+/// empty result so "no pending tasks" and "this filter excludes everything"
+/// (which look identical from outside) get different answers. Finding #4
+/// (audit-2026-09): D55 wrote this argument for `pick`'s empty-set line
+/// (DESIGN.md:1554) and it was never applied to the plain-list verb everyone
+/// runs far more often. `None` (every other caller) keeps the original
+/// unconditional "No tasks." — those callers have no single filter string to
+/// name (the dashboard's `@working` repaint, the HTML report's grouped
+/// tables).
+pub fn task_table_filtered(
+    ctx: &Ctx,
+    result: &Value,
+    now: Timestamp,
+    filter: Option<&str>,
+) -> String {
     let empty = Vec::new();
     let tasks = result
         .get("tasks")
@@ -793,10 +881,16 @@ pub fn task_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         // #229 item 1: matches `report`'s phrasing for the same situation —
         // an empty result set from a read verb — rather than the CLI naming
         // the same outcome two different ways depending which verb answered.
+        // A genuinely empty store gets the onboarding hint regardless of
+        // whether a filter was named; a filter that matched nothing on a
+        // non-empty store gets to see the filter it excluded everything with.
         return if store_is_empty(result) {
             onboarding_hint()
         } else {
-            "No matching tasks.\n".to_string()
+            match filter {
+                Some(f) => format!("No tasks match `{f}`.\n"),
+                None => "No matching tasks.\n".to_string(),
+            }
         };
     }
 
@@ -2453,8 +2547,18 @@ pub fn dep_result(ctx: &Ctx, result: &Value, added: bool, target: &str) -> Strin
     let target = san(target.trim_start_matches('#'));
 
     if added {
+        // Finding #9 (audit-2026-09): `dep` on an edge that already existed
+        // answered exactly the same "now depends on" line as a genuinely new
+        // one — both are correct (no duplicate edge, no time lost), but only
+        // one of them is an action. `inserted` (absent from an older core, or
+        // an already-inserted default of true) tells them apart.
+        let already = result
+            .get("inserted")
+            .and_then(Value::as_bool)
+            .is_some_and(|inserted| !inserted);
+        let verb = if already { "already" } else { "now" };
         format!(
-            "{} now depends on #{target}   ·   depends on: {list}   blocked={blocked}\n",
+            "{} {verb} depends on #{target}   ·   depends on: {list}   blocked={blocked}\n",
             ctx.paint("accent", &format!("#{sid}"))
         )
     } else {
@@ -2976,32 +3080,42 @@ pub fn why(ctx: &Ctx, result: &Value) -> String {
             why_rows(ctx, sid, &urgency::breakdown(prio, due, created))
         }
     };
-    if result
+    out.push_str(&blocked_line_for_why(ctx, result));
+    out
+}
+
+/// Finding #8 (audit-2026-09): `why` explained a blocked task's urgency
+/// arithmetic and never mentioned that `next` will skip it anyway — the least
+/// relevant half of the answer, with the more relevant half left unsaid. Empty
+/// when the task is not blocked, or its blockers are not attached to `result`
+/// (an older core, or a caller that trimmed fields).
+fn blocked_line_for_why(ctx: &Ctx, result: &Value) -> String {
+    let blocked = result
         .get("blocked")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        let deps: Vec<String> = result
-            .get("depends_on")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_i64)
-                    .map(|n| format!("#{n}"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let who = if deps.is_empty() {
-            "a dependency that is not done yet".to_string()
-        } else {
-            deps.join(", ")
-        };
-        out.push_str(&ctx.paint(
-            "danger",
-            &format!("  blocked by {who} — not offered by `next`\n"),
-        ));
+        .unwrap_or(false);
+    if !blocked {
+        return String::new();
     }
-    out
+    let empty = Vec::new();
+    let names: Vec<String> = result
+        .get("unmet_blockers")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+        .iter()
+        .map(|b| {
+            let sid = b.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+            format!("#{sid} {}", s(b, "title"))
+        })
+        .collect();
+    if names.is_empty() {
+        return String::new();
+    }
+    format!(
+        "  {} {} — `next` skips this task\n",
+        ctx.paint("overdue", "blocked by"),
+        names.join(", ")
+    )
 }
 
 /// Render a breakdown the caller has already computed.
@@ -3015,7 +3129,6 @@ pub fn why(ctx: &Ctx, result: &Value) -> String {
 /// plus this seam can stage it exactly.
 fn why_rows(ctx: &Ctx, sid: i64, parts: &[(&'static str, f64)]) -> String {
     let total: f64 = parts.iter().map(|(_, v)| v).sum();
-    let total = (total * 10.0).round() / 10.0;
 
     let mut out = String::new();
     out.push_str(&ctx.paint(
@@ -3026,7 +3139,11 @@ fn why_rows(ctx: &Ctx, sid: i64, parts: &[(&'static str, f64)]) -> String {
     for (name, val) in parts {
         out.push_str(&format!("  {name:<14} {:>6}\n", signed(*val, 2)));
     }
-    out.push_str(&format!("  {:<14} {:>6}\n", "= total", signed(total, 1)));
+    // Finding #6 (audit-2026-09): the components print at 2 decimals, so the
+    // total row does too — otherwise a reader who adds up the parts printed
+    // above gets a different answer from the one printed here (`3.90 + 11.52`
+    // must read `15.42`, not the heading's rounder `15.4`).
+    out.push_str(&format!("  {:<14} {:>6}\n", "= total", signed(total, 2)));
     out
 }
 
@@ -3827,6 +3944,26 @@ mod tests {
         );
     }
 
+    /// Finding #4 (audit-2026-09): `tasqx list +nosuchtag` answered only "No
+    /// tasks." — indistinguishable from "nothing is pending" — while D55
+    /// already drew this exact distinction for `pick` (DESIGN.md:1554): "the
+    /// empty-set one quotes the filter back". `task_table` itself is unchanged
+    /// for every caller with no single filter string to name.
+    #[test]
+    fn an_empty_list_with_a_filter_quotes_it_back() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let empty = json!({ "tasks": [], "count": 0 });
+
+        let out = task_table_filtered(&ctx, &empty, Timestamp::now(), Some("+nosuchtag"));
+        assert!(
+            out.contains("+nosuchtag"),
+            "the filter must be quoted back: {out:?}"
+        );
+
+        // The unfiltered caller (task_table itself) is untouched.
+        assert_eq!(task_table(&ctx, &empty, Timestamp::now()), "No tasks.\n");
+    }
+
     #[test]
     fn task_table_reports_a_status_the_store_could_not_read() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
@@ -4200,6 +4337,86 @@ mod tests {
         );
     }
 
+    /// Finding #3 (audit-2026-09): `start`/`stop`/`done` confirmed an action
+    /// without ever naming the task, so a wrong ref printed a success line
+    /// identical to the right one — and `done` never compared tracked time
+    /// against the estimate, the entire payoff of `est:2h` at capture time.
+    #[test]
+    fn start_stop_done_name_the_task_and_done_compares_tracked_to_estimate() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+
+        let started_json = json!({
+            "interval_started": "2026-09-09T10:43:48Z",
+            "short_id": 144,
+            "title": "Prod: mailbox sync 500 op staging",
+        });
+        let out = started(&ctx, &started_json);
+        assert!(out.contains("#144"), "{out:?}");
+        assert!(out.contains("Prod: mailbox sync 500 op staging"), "{out:?}");
+
+        let stopped_json = json!({ "tracked": "PT12S", "short_id": 9, "title": "some task" });
+        let out = stopped(&ctx, &stopped_json);
+        assert!(out.contains("#9"), "{out:?}");
+        assert!(out.contains("some task"), "{out:?}");
+        assert!(
+            out.contains("12s"),
+            "must humanize the ISO duration: {out:?}"
+        );
+
+        let done_json = json!({
+            "completed": "2026-09-09T10:44:18Z",
+            "unblocked": [],
+            "short_id": 144,
+            "title": "Prod: mailbox sync 500 op staging",
+            "tracked": "PT30S",
+            "estimate": "PT2H",
+        });
+        let out = done(&ctx, &done_json);
+        assert!(out.contains("#144"), "{out:?}");
+        assert!(out.contains("Prod: mailbox sync 500 op staging"), "{out:?}");
+        assert!(
+            out.contains("tracked 30s of a 2h estimate"),
+            "the tracked-vs-estimate clause is missing: {out:?}"
+        );
+    }
+
+    /// Finding #9 (audit-2026-09): `start` on an already-active task and `dep`
+    /// on an already-existing edge both answered as if they had just done
+    /// something — the same "Started"/"now depends on" a genuine change gets.
+    #[test]
+    fn start_and_dep_say_already_instead_of_claiming_a_fresh_action() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+
+        let fresh = json!({
+            "interval_started": "2026-09-09T10:35:52Z", "short_id": 1, "title": "restart",
+            "already_running": false,
+        });
+        assert!(started(&ctx, &fresh).contains("Started"));
+
+        let idempotent = json!({
+            "interval_started": "2026-09-09T10:35:52Z", "short_id": 1, "title": "restart",
+            "already_running": true,
+        });
+        let out = started(&ctx, &idempotent);
+        assert!(
+            out.contains("Already running"),
+            "must not claim a fresh start: {out:?}"
+        );
+        assert!(!out.contains("Started"), "{out:?}");
+
+        let fresh_dep =
+            json!({ "short_id": 250, "depends_on": [249], "blocked": true, "inserted": true });
+        assert!(dep_result(&ctx, &fresh_dep, true, "249").contains("now depends on"));
+
+        let existing_dep =
+            json!({ "short_id": 250, "depends_on": [249], "blocked": true, "inserted": false });
+        let out = dep_result(&ctx, &existing_dep, true, "249");
+        assert!(
+            out.contains("already depends on"),
+            "must not claim a fresh edge: {out:?}"
+        );
+    }
+
     /// A bare `add` inherits the default, so the confirmation has to say where
     /// the task actually went — otherwise the landing project stays invisible
     /// at the exact moment it matters.
@@ -4216,15 +4433,21 @@ mod tests {
             "the landing project is invisible: {out:?}"
         );
 
-        // Projectless stays quiet rather than printing an empty field.
+        // Finding #10 (audit-2026-09): a task landing with no default project
+        // must SAY so, naming the way out — not just omit the suffix, which
+        // reads identically to every other successful `add`.
         let none = task_added(
             &ctx,
             &json!({ "short_id": 4, "status": "pending", "urgency": 5.0, "project": null }),
             "homeless",
         );
         assert!(
-            !none.contains("project"),
-            "printed an empty project row: {none:?}"
+            none.contains("no project"),
+            "did not say the task landed nowhere: {none:?}"
+        );
+        assert!(
+            none.contains("tasqx use"),
+            "did not name the way out: {none:?}"
         );
     }
 
@@ -4839,6 +5062,59 @@ mod tests {
             "a real negative lost its sign: {out:?}"
         );
         assert!(out.contains("4.5"), "the total must still net out: {out:?}");
+    }
+
+    /// Finding #6 (audit-2026-09): components print at 2 decimals and the
+    /// `= total` row printed at 1, so the row's own arithmetic visibly failed
+    /// to add up (`3.90 + 11.52` read as `= total 15.4`, not `15.42`). The
+    /// total row must match the components' precision.
+    #[test]
+    fn why_total_row_matches_component_precision() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = why_rows(&ctx, 127, &[("priority", 3.90), ("due_proximity", 11.52)]);
+        assert!(
+            out.contains("= total         15.42"),
+            "total row must add up at 2 decimals like its parts: {out:?}"
+        );
+    }
+
+    /// Finding #8 (audit-2026-09): `why` explained a blocked task's urgency
+    /// and never mentioned that `next` will skip it — the least relevant half
+    /// of the answer, with the fact that decides actionability left unsaid.
+    #[test]
+    fn why_names_the_unmet_blockers_and_that_next_skips_the_task() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = why(
+            &ctx,
+            &json!({
+                "short_id": 279,
+                "priority": "H",
+                "due": null,
+                "created": "2026-09-09T00:00:00Z",
+                "blocked": true,
+                "unmet_blockers": [{ "short_id": 280, "title": "the blocker" }],
+            }),
+        );
+        assert!(out.contains("#280"), "{out:?}");
+        assert!(out.contains("the blocker"), "{out:?}");
+        assert!(out.contains("next"), "must say `next` skips it: {out:?}");
+
+        // Not blocked: no such line at all.
+        let out = why(
+            &ctx,
+            &json!({
+                "short_id": 1,
+                "priority": "H",
+                "due": null,
+                "created": "2026-09-09T00:00:00Z",
+                "blocked": false,
+                "unmet_blockers": [],
+            }),
+        );
+        assert!(
+            !out.contains("blocked by"),
+            "an unblocked task must not claim a blocker: {out:?}"
+        );
     }
 
     /// D50: the recompute delta lists every CHANGED task with auditable raw

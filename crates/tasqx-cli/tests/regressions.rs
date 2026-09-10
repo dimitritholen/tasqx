@@ -1144,7 +1144,10 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
     // nothing precisely because both predicates are read and ANDed.
     let s = ok(&["list", "+api", "status:done"]);
     assert!(
-        s.contains("No matching tasks."),
+        // Finding #4 (audit-2026-09): the empty-result line now quotes the
+        // filter back (D55's rule, extended from `pick` to `list`), so the
+        // needle is the message's own opening rather than the whole sentence.
+        s.contains("No tasks match"),
         "a multi-element filter must stay multi-token: {s}"
     );
     let s = ok(&["list", "+api", "status:pending"]);

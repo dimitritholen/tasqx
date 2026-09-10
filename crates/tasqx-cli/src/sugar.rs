@@ -281,7 +281,12 @@ pub fn parse_add(
     let last_tok = toks.len().saturating_sub(1);
 
     for (i, SugarTok { text: tok, quoted }) in toks.into_iter().enumerate() {
-        if let Some(tag) = tag_of(&tok) {
+        if let Some(lit) = escaped_sugar_char(&tok) {
+            // `\!`/`\+` (audit-2026-09 #2): the one backslash is consumed and
+            // the sugar character underneath reaches the title literally,
+            // mirroring the `\"` the manual already documents for quotes.
+            title_words.push(lit.to_string());
+        } else if let Some(tag) = tag_of(&tok) {
             if !tags.iter().any(|t| t == tag) {
                 tags.push(tag.to_string());
             }
@@ -362,6 +367,21 @@ fn set_if_empty(slot: &mut Option<String>, v: &str) {
 /// `tasqx add -- "Implement Display + std::error::Error"` stored a title with no
 /// `+` in it and created no tag. `+` is ordinary prose in a technical title
 /// ("Display + Error", "C++", "a + b"), so the loss is not exotic.
+/// A token opening with `\!` or `\+` — an escaped sugar character — with the
+/// one leading backslash consumed, or `None` if it names no escape.
+///
+/// The `!` and `+` sugar characters are otherwise unrepresentable at the start
+/// of a title word (audit-2026-09 #2): `!important thing` opens the priority
+/// sugar and refuses on the bad value, and the only workaround left the
+/// backslash in the stored title. This mirrors the `\"` escape
+/// `tasqx_core::filter::split_words` already documents, one level up: it fires
+/// before `tag_of`/`split_key`/the priority prefix are consulted, so the
+/// escaped token never reaches those branches at all.
+fn escaped_sugar_char(tok: &str) -> Option<&str> {
+    let rest = tok.strip_prefix('\\')?;
+    rest.starts_with(['!', '+']).then_some(rest)
+}
+
 fn tag_of(tok: &str) -> Option<&str> {
     tok.strip_prefix('+').filter(|t| !t.is_empty())
 }
@@ -817,6 +837,22 @@ mod tests {
         assert!(parse_err(&["!"], AddFlags::default())
             .message
             .contains("invalid priority"));
+    }
+
+    /// Finding #2 (audit-2026-09): `!important thing` cannot be typed at all (`!`
+    /// opens the priority sugar and `important` is not a valid priority), and the
+    /// only workaround, `\!important thing`, stored the backslash verbatim
+    /// instead of yielding the literal title. `\!` and `\+` must escape into
+    /// literal `!`/`+` text, mirroring the `\"` the manual already documents.
+    #[test]
+    fn backslash_escapes_bang_and_plus_into_literal_title_text() {
+        let p = parse1("\\!important thing", AddFlags::default());
+        assert_eq!(p.title, "!important thing");
+        assert_eq!(p.priority, None);
+
+        let p = parse1("\\+notatag thing", AddFlags::default());
+        assert_eq!(p.title, "+notatag thing");
+        assert!(p.tags.is_empty());
     }
 
     /// An explicit flag outranks sugar on *value*, never on *validity* — the

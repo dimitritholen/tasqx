@@ -416,6 +416,9 @@ impl Engine {
                 return Ok(commands::TaskStarted {
                     id: task.id,
                     interval_started: task.active_since,
+                    short_id: task.short_id,
+                    title: task.title,
+                    already_running: true,
                 }
                 .into());
             }
@@ -488,6 +491,9 @@ impl Engine {
         Ok(commands::TaskStarted {
             id: task.id,
             interval_started: Some(ts),
+            short_id: task.short_id,
+            title: task.title,
+            already_running: false,
         }
         .into())
     }
@@ -531,6 +537,8 @@ impl Engine {
         Ok(commands::TaskStopped {
             interval: iso_duration(elapsed),
             tracked: iso_duration(total),
+            short_id: task.short_id,
+            title: task.title,
         }
         .into())
     }
@@ -630,6 +638,15 @@ impl Engine {
             "status": "done",
             "completed": ts,
             "unblocked": unblocked,
+            // Finding #3 (audit-2026-09): `done` echoed no name of the task it
+            // acted on, and the tracked-vs-estimate comparison — the entire
+            // payoff of typing `est:2h` at capture time — was left for a
+            // separate `show`. Both are already in hand from the row read
+            // above, at no extra query.
+            "short_id": task.short_id,
+            "title": task.title,
+            "tracked": iso_duration(total),
+            "estimate": task.estimate,
         });
         if let Some(sp) = spawned {
             out["spawned"] = sp;
@@ -926,10 +943,24 @@ impl Engine {
         // guard at all, so the stale write landed and the caller was told `ok`.
         if let Some(exp) = expected_rev {
             if exp != task.rev {
-                return Err(ApiError::conflict(format!(
-                    "expected_rev {} but task is at rev {}",
-                    exp, task.rev
-                )));
+                // Finding #7 (audit-2026-09): every other refusal in this tool
+                // names the mechanism and the next step (`undo`'s conflict is
+                // four sentences of it); this one named two numbers. `data`
+                // carries the current row so a retry costs one round trip —
+                // `set` again with `expected_rev` bumped — not a `show` first.
+                return Err(ApiError::new(
+                    crate::ErrorCode::Conflict,
+                    format!(
+                        "expected_rev {exp} but task is at rev {}: re-read with \
+                         `tasqx show {} --json` and retry with --expected-rev {}",
+                        task.rev, task.short_id, task.rev
+                    ),
+                    Some(json!({
+                        "expected": exp,
+                        "current": task.rev,
+                        "task": { "short_id": task.short_id, "title": task.title },
+                    })),
+                ));
             }
         }
 
@@ -1617,6 +1648,28 @@ impl Engine {
         Ok(n > 0)
     }
 
+    /// The dependencies still keeping `task_id` blocked — short_id and title,
+    /// sorted — or an empty vec when there are none. The same resolved/not
+    /// distinction as [`Self::is_blocked`], just with the rows kept instead of
+    /// only counted (finding #8, audit-2026-09).
+    pub(super) fn unmet_blockers(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
+        let terminal = Status::sql_in_list(Status::is_terminal);
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT t.short_id, t.title FROM dependencies d \
+             JOIN tasks t ON t.id = d.depends_on_id \
+             WHERE d.task_id = ?1 AND t.status NOT IN ({terminal}) \
+             ORDER BY t.short_id"
+        ))?;
+        let rows = stmt.query_map(params![task_id], |r| {
+            Ok(json!({ "short_id": r.get::<_, i64>(0)?, "title": r.get::<_, String>(1)? }))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// short_ids of a task's dependencies, sorted (for get/dependency output).
     pub(super) fn depends_on_short_ids(&self, task_id: &str) -> Result<Vec<i64>, ApiError> {
         let mut stmt = self.conn.prepare(
@@ -1812,6 +1865,13 @@ impl Engine {
         };
         obj["tokens"] = json!(self.tokens_of(&task.id)?);
         obj["blocked"] = json!(self.is_blocked(&task.id)?);
+
+        // Finding #8 (audit-2026-09): `blocked` said THAT the task cannot be
+        // worked, never WHY — `why` computed the urgency arithmetic and never
+        // mentioned the one fact that decides whether the number is
+        // actionable. `depends_on` already carries every dependency; this
+        // narrows to the ones still open, with the title `why` needs to name.
+        obj["unmet_blockers"] = json!(self.unmet_blockers(&task.id)?);
 
         // #150 / D1: `tasqx why` renders the urgency breakdown, but `--json`
         // was a bare `task.get` result and `task.get` never carried the terms
@@ -2016,6 +2076,58 @@ mod tests {
     /// The page itself stays in chronological order: it is read as a history,
     /// and reversing it would make the rendered view disagree with every other
     /// surface that prints annotations.
+    /// Finding #7 (audit-2026-09): an `expected_rev` conflict named the two
+    /// numbers and nothing else — no next step, unlike every other refusal in
+    /// this tool. The message must name the retry, and `data` must carry
+    /// enough of the current row that a caller can retry in one round trip
+    /// rather than two (a re-read then a retry).
+    #[test]
+    fn expected_rev_conflict_names_the_retry_and_carries_the_current_state() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "first edit" })).unwrap();
+        e.task_modify(&json!({ "ref": 1, "set": { "title": "second edit" } }))
+            .unwrap(); // bumps rev to 2
+
+        let err = e
+            .task_modify(&json!({
+                "ref": 1,
+                "set": { "title": "third edit" },
+                "expected_rev": 1,
+            }))
+            .unwrap_err();
+        assert!(
+            err.message.contains("tasqx show") || err.message.contains("--expected-rev"),
+            "the message must name the retry step: {}",
+            err.message
+        );
+        let data = err
+            .data
+            .expect("a conflict on expected_rev must carry data");
+        assert_eq!(data["expected"], json!(1));
+        assert_eq!(data["current"], json!(2));
+        assert_eq!(data["task"]["short_id"], json!(1));
+        assert_eq!(data["task"]["title"], json!("second edit"));
+    }
+
+    /// Finding #9 (audit-2026-09): a re-`start` on an already-active task
+    /// answered exactly the same "Started" line as a genuine start, so a human
+    /// re-running a lost command could not tell whether the timer had just
+    /// been reset. The idempotent path must SAY it changed nothing.
+    #[test]
+    fn restarting_an_active_task_says_it_was_already_running() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "restart" })).unwrap();
+        let first = e.task_start(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(first["already_running"], json!(false));
+
+        let second = e.task_start(&json!({ "ref": 1 })).unwrap();
+        assert_eq!(second["already_running"], json!(true));
+        assert_eq!(
+            second["interval_started"], first["interval_started"],
+            "the timer must not have reset"
+        );
+    }
+
     #[test]
     fn task_get_returns_the_newest_annotations_when_a_limit_is_given() {
         let e = with_annotations(10);
