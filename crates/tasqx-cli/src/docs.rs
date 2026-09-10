@@ -120,7 +120,7 @@ const VERBS: [(&str, &str, &str); 39] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 33] = [
+const METHODS: [(&str, &str, &str); 34] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -354,6 +354,16 @@ const METHODS: [(&str, &str, &str); 33] = [
         "core.capabilities",
         "—",
         "<code>{api, methods, params, features, default_project, store}</code>.",
+    ),
+    (
+        "otlp.status",
+        "—",
+        "<code>{received, attributed, orphaned, last_seen}</code>. Read-only visibility into the \
+         opt-in local OTLP receiver's buffer (#18): <code>received</code> is every sample still \
+         inside the 30-day retention window, <code>attributed</code> how many turned into a \
+         <code>source=otel</code> measurement, <code>orphaned</code> the rest, and \
+         <code>last_seen</code> the newest sample's timestamp (<code>null</code> on an empty \
+         buffer) — the only way to tell a misconfigured exporter from a healthy, quiet one.",
     ),
 ];
 
@@ -3197,11 +3207,12 @@ mod tests {
         // Pin the coverage claim itself. If a future edit makes this loop skip
         // everything, the test would pass while guarding nothing. Re-derive from
         // the count this guard reports rather than adding the rows you wrote:
-        // it went 7 -> 8 when `event.revert` joined, and a floor that drifts
-        // below the truth is a guard that has stopped guarding.
+        // it went 7 -> 8 when `event.revert` joined, 8 -> 9 when `otlp.status`
+        // (#222) did, and a floor that drifts below the truth is a guard that
+        // has stopped guarding.
         assert_eq!(
-            checked, 8,
-            "expected to check all 8 bare-callable return shapes; a row that stopped being \
+            checked, 9,
+            "expected to check all 9 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }

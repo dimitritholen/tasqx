@@ -816,6 +816,15 @@ const R_CORE_CAPABILITIES: Shape = &[&[
     nul("store", Ty::Str),
 ]];
 
+const R_OTLP_STATUS: Shape = &[&[
+    req("received", Ty::Int),
+    req("attributed", Ty::Int),
+    req("orphaned", Ty::Int),
+    // Null on an empty buffer, which is why the conformance case below leaves
+    // the buffer empty rather than seeding a sample.
+    nul("last_seen", Ty::Str),
+]];
+
 // ---- envelope shapes --------------------------------------------------------
 
 const E_SUCCESS: Shape = &[&[
@@ -1438,6 +1447,12 @@ fn cases() -> Vec<Case> {
                 json!({})
             },
             R_CORE_CAPABILITIES,
+        ),
+        case(
+            "otlp.status",
+            "an empty buffer, so `last_seen` exercises its null arm (#222)",
+            |_| json!({}),
+            R_OTLP_STATUS,
         ),
     ]
 }
