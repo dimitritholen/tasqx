@@ -277,6 +277,60 @@ impl Engine {
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
         )?;
+
+        // D113's own text used to promise this in part (2) and contradict it in
+        // part (1): the `annotations` row and its FTS index are scrubbed above,
+        // but until now the ORIGINAL `annotation.add` event — append-only,
+        // readable forever via `event.list` and `store.export` — still carried
+        // the full plaintext body. That is the exact leak the finding named:
+        // a secret pasted into a note, "removed", still sitting in the file.
+        //
+        // This is a narrow, deliberate exception to append-only, not a second
+        // precedent: ONLY the `annotation.add` event's own `body` field is
+        // redacted, ONLY here, in the SAME transaction as the tombstone, and
+        // ONLY for the annotation `annotation_remove` has just established is
+        // being removed — so a live annotation's `add` event is never touched
+        // by this code path (it only runs once removal is already underway).
+        // `id` is kept so `event.list` still shows which note this record was
+        // for, and `undo`'s `revert_annotation_add` never reads this payload's
+        // `body` at all (it re-reads `annotations.body` fresh, and by this
+        // point `annotation.remove` is the newest event, which refuses `undo`
+        // by name — see D54/D113(3) — so the redacted payload is never even a
+        // candidate for restoration).
+        // A task can carry more than one `annotation.add` event, so this scans
+        // by task and matches on the payload's own `id`, tolerantly (a
+        // malformed payload is skipped, never a hard failure — matching how
+        // event payloads are read elsewhere, `commands.rs`).
+        let mut stmt = tx.prepare(
+            "SELECT id, payload FROM events \
+             WHERE op = 'annotation.add' AND entity_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![task.id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        let mut redact_event_id = None;
+        for row in rows {
+            let (event_id, payload) = row?;
+            let Some(payload) = payload else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&payload) else {
+                continue;
+            };
+            if opt_str(&v, "id").ok().flatten().as_deref() == Some(annotation_id.as_str()) {
+                redact_event_id = Some(event_id);
+                break;
+            }
+        }
+        drop(stmt);
+        if let Some(event_id) = redact_event_id {
+            tx.execute(
+                "UPDATE events SET payload = ?1 WHERE id = ?2",
+                params![
+                    json!({ "id": annotation_id, "body": null, "redacted": true }).to_string(),
+                    event_id,
+                ],
+            )?;
+        }
+
         insert_event(
             &tx,
             Entity::Task,
