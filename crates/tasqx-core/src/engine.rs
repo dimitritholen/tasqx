@@ -779,7 +779,12 @@ pub const IMPORT_TOKEN_KEYS: &[&str] = &[
 ];
 
 /// Every key an exported memory doc object can carry. D41, held to D34's gate.
-pub const IMPORT_DOC_KEYS: &[&str] = &["id", "source", "title", "body", "created", "modified"];
+// #134/#135: `project` and `_rev` are additive (a pre-D134 export has
+// neither), so a legacy document still imports; both read through
+// `opt_str_nonempty`/`opt_i64` exactly as the rest of this list does.
+pub const IMPORT_DOC_KEYS: &[&str] = &[
+    "id", "source", "title", "body", "created", "modified", "project", "_rev",
+];
 
 /// Every key an exported event object can carry (#176). `id`, `payload`,
 /// `ts` and `actor` are optional so a hand-written or trimmed event still

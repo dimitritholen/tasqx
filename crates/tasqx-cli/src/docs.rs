@@ -105,7 +105,7 @@ const VERBS: [(&str, &str, &str); 39] = [
     ("chart", "—", "event.list"),
     ("theme", "—", "— (no store)"),
     ("config", "—", "— (registry + core.capabilities)"),
-    ("memory", "—", "memory.search + get/add/remove"),
+    ("memory", "—", "memory.search + get/add/remove/list/update"),
     ("tokens", "—", "tokens.recompute"),
     ("export", "—", "store.export"),
     ("import", "—", "store.import"),
@@ -120,7 +120,7 @@ const VERBS: [(&str, &str, &str); 39] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 34] = [
+const METHODS: [(&str, &str, &str); 36] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -266,21 +266,28 @@ const METHODS: [(&str, &str, &str); 34] = [
     ),
     (
         "memory.add",
-        "<code>title</code>, <code>body</code>, <code>source?</code>",
-        "<code>{id, title, created}</code>. Body stored verbatim (D41).",
+        "<code>title</code>, <code>body</code>, <code>source?</code>, <code>project?</code>",
+        "<code>{id, title, project, created}</code>. Body stored verbatim (D41). \
+         <code>project</code> is optional free-standing scoping (#134); an unset doc stays \
+         global rather than defaulting onto whatever project is current.",
     ),
     (
         "memory.get",
         "<code>id</code>",
-        "<code>{id, title, body, source, created, modified}</code> — one doc whole, by the id a \
-         search hit carries. An annotation id is refused, naming the task to read it from.",
+        "<code>{id, title, body, source, project, rev, created, modified}</code> — one doc \
+         whole, by the id a search hit carries. An annotation id is refused, naming the task to \
+         read it from.",
     ),
     (
         "memory.search",
-        "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>",
-        "<code>{count, hits, matched}</code> — bm25-ranked over docs + annotations. \
-         <code>matched</code> is the FTS5 expression actually run, which is how \
-         <code>count: 0</code> is told apart from a store holding nothing on the subject.",
+        "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>, \
+         <code>project?</code>",
+        "<code>{count, total, has_more, hits, matched}</code> — bm25-ranked over docs + \
+         annotations, stemmed (porter tokenizer, #128) so \"reviewing\" matches a doc that only \
+         says \"review\". <code>matched</code> is the FTS5 expression actually run, which is how \
+         <code>count: 0</code> is told apart from a store holding nothing on the subject. \
+         <code>total</code> is every row matched before <code>limit</code> truncates (#132), and \
+         <code>project</code> scopes to one project's docs plus its tasks' annotations (#134).",
     ),
     (
         "memory.remove",
@@ -292,6 +299,22 @@ const METHODS: [(&str, &str, &str); 34] = [
         "<code>docs</code>",
         "<code>{imported, replaced, docs}</code>. One transaction; same <code>source</code> \
          replaces IN PLACE (id and creation date kept) and is counted in <code>replaced</code>.",
+    ),
+    (
+        "memory.list",
+        "<code>limit?</code>, <code>offset?</code>, <code>project?</code>",
+        "<code>{count, total, next_offset, docs}</code> — the same paging shape as \
+         <code>task.list</code> (#133). Browses docs newest-modified first, without a query; \
+         each row carries a <code>body_preview</code>, not the full body.",
+    ),
+    (
+        "memory.update",
+        "<code>id</code>, <code>title?</code>, <code>body?</code>, <code>source?</code>, \
+         <code>project?</code>, <code>expected_rev?</code>",
+        "<code>{id, title, source, project, rev, modified}</code> — replaces a doc's fields IN \
+         PLACE (#135), the correction path <code>memory.remove</code>'s permanence has none of. \
+         <code>expected_rev</code> is <code>task.modify</code>'s optimistic-concurrency guard, \
+         unchanged: mismatched, it is a <code>conflict</code> naming both revs.",
     ),
     (
         "tokens.recompute",
@@ -417,7 +440,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 9] = [
 /// free-prose rows nothing compared, which is the same shape the verb table was
 /// in before the drift guards: a tool could be added, renamed, or moved across
 /// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 21] = [
+const MCP_TOOLS: [(&str, bool, &str); 23] = [
     (
         "tasqx_list_tasks",
         false,
@@ -439,6 +462,11 @@ const MCP_TOOLS: [(&str, bool, &str); 21] = [
         "tasqx_get_memory",
         false,
         "Read one doc whole, by the id a hit carries (D71).",
+    ),
+    (
+        "tasqx_list_memory",
+        false,
+        "Browse docs without a query, newest-modified first (#133).",
     ),
     ("tasqx_add_task", true, "Capture a task."),
     ("tasqx_modify_task", true, "Change fields."),
@@ -473,6 +501,11 @@ const MCP_TOOLS: [(&str, bool, &str); 21] = [
         "Cut a dependency edge; says whether the task is actionable now.",
     ),
     ("tasqx_add_memory", true, "Store a knowledge doc."),
+    (
+        "tasqx_update_memory",
+        true,
+        "Correct a doc's title/body/source/project in place (#135).",
+    ),
     (
         "tasqx_remove_memory",
         true,
@@ -3220,11 +3253,11 @@ mod tests {
         // everything, the test would pass while guarding nothing. Re-derive from
         // the count this guard reports rather than adding the rows you wrote:
         // it went 7 -> 8 when `event.revert` joined, 8 -> 9 when `otlp.status`
-        // (#222) did, and a floor that drifts below the truth is a guard that
-        // has stopped guarding.
+        // (#222) did, 9 -> 10 when `memory.list` (#133) did, and a floor that
+        // drifts below the truth is a guard that has stopped guarding.
         assert_eq!(
-            checked, 9,
-            "expected to check all 9 bare-callable return shapes; a row that stopped being \
+            checked, 10,
+            "expected to check all 10 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }

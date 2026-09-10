@@ -125,11 +125,21 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("token.remove", &["measurement_id"], false),
     ("dependency.add", &["ref", "depends_on"], false),
     ("dependency.remove", &["ref", "depends_on"], false),
-    ("memory.add", &["title", "body", "source"], false),
-    ("memory.search", &["query", "limit", "scope", "raw"], false),
+    ("memory.add", &["title", "body", "source", "project"], false),
+    (
+        "memory.search",
+        &["query", "limit", "scope", "raw", "project"],
+        false,
+    ),
     ("memory.get", &["id"], false),
     ("memory.remove", &["id"], false),
     ("memory.import", &["docs"], false),
+    ("memory.list", &["limit", "offset", "project"], false),
+    (
+        "memory.update",
+        &["id", "title", "body", "source", "project", "expected_rev"],
+        false,
+    ),
     // The D50 Decision 3 one-shot history repair. `dry_run` defaults to TRUE —
     // report the per-task delta, write nothing — and must be explicitly false
     // to apply; it is the one method in this table built to delete
@@ -248,6 +258,8 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "memory.get" => engine.memory_get(params),
         "memory.remove" => engine.memory_remove(params),
         "memory.import" => engine.memory_import(params),
+        "memory.list" => engine.memory_list(params),
+        "memory.update" => engine.memory_update(params),
         "report.summary" => engine.report_summary(params),
         "store.export" => engine.store_export(params),
         "store.import" => engine.store_import(params),

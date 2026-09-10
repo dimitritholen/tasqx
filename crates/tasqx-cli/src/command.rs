@@ -1200,6 +1200,43 @@ pub(super) enum MemoryAction {
         /// Where this came from: a path, URL, or ticket.
         #[arg(long)]
         source: Option<String>,
+        /// Optional project scope. Omitted, the doc stays global.
+        #[arg(long, add = crate::complete::candidates::projects())]
+        project: Option<String>,
+    },
+    /// Browse docs without a query (maps to memory.list). Newest first.
+    List {
+        /// Max rows to return. Omit for everything from `--offset` on.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// How many matching docs to skip.
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        /// Restrict to docs stored with this project.
+        #[arg(long, add = crate::complete::candidates::projects())]
+        project: Option<String>,
+    },
+    /// Correct a doc in place (maps to memory.update).
+    Update {
+        /// The doc UUID, as printed by `memory add`/`memory search`/`memory list`.
+        id: String,
+        /// New title. Omit to leave it unchanged.
+        #[arg(long)]
+        title: Option<String>,
+        /// New body. Omit to leave it unchanged.
+        #[arg(long)]
+        body: Option<String>,
+        /// New source. Omit to leave it unchanged.
+        #[arg(long)]
+        source: Option<String>,
+        /// New project scope. Omit to leave it unchanged.
+        #[arg(long, add = crate::complete::candidates::projects())]
+        project: Option<String>,
+        /// Optimistic concurrency: fail with `conflict` (exit 5) unless the
+        /// doc is still at this rev. Supplied automatically from the doc's
+        /// current rev when omitted.
+        #[arg(long, value_name = "REV")]
+        expected_rev: Option<i64>,
     },
     /// Search docs + annotations, bm25-ranked (maps to memory.search).
     Search {
