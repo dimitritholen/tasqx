@@ -61,6 +61,26 @@ impl SnapshotParts {
         tokens: false,
     };
 
+    /// `task.list` when the caller projects `tokens` or sorts by `-tokens`
+    /// (#215) — the filter inputs plus one task's own measurements, no edge
+    /// list. Same shape as [`Self::REPORT_SUMMARY`], named separately because
+    /// the two readers ask for it for different reasons and each constant
+    /// here documents its own call site.
+    pub(super) const FILTERS_AND_TOKENS: Self = Self {
+        depends_on: false,
+        annotations: false,
+        tokens: true,
+    };
+
+    /// `task.list` when the caller wants BOTH `depends_on` and `tokens`
+    /// projected (or `-tokens` sort together with a `depends_on` projection)
+    /// — the edge list and the measurements, still no annotations.
+    pub(super) const FILTERS_DEPENDENCIES_AND_TOKENS: Self = Self {
+        depends_on: true,
+        annotations: false,
+        tokens: true,
+    };
+
     /// The whole task relation — `store.export`, the one reader that emits
     /// every gated part.
     pub(super) const EVERYTHING: Self = Self {
@@ -1111,15 +1131,26 @@ impl Engine {
         // tags and `blocked`, and `TASK_FIELDS` has no key sourced from the
         // dependency or annotation tables. Loading those here meant every
         // `tasqx list` scanned both end to end and discarded the result.
-        // Read before the load: projecting `depends_on` is the one thing that
-        // makes this reader need a side table, so the gate is decided here
-        // rather than by loading everything and hoping.
+        // Read before the load: projecting `depends_on` (or `tokens`, #215)
+        // is the one thing that makes this reader need a side table, so the
+        // gate is decided here rather than by loading everything and hoping.
+        // `sort` is parsed up front for the same reason: `-tokens` needs the
+        // same side table as the `tokens` field, and the gate has to see both
+        // asks before the snapshot load, not just the one `fields` names.
         let fields = parse_fields(p)?;
+        let sort_keys = parse_sort(p)?;
         let want_deps = crate::engine::fields_want_depends_on(fields.as_ref());
-        let parts = if want_deps {
-            SnapshotParts::FILTERS_AND_DEPENDENCIES
-        } else {
-            SnapshotParts::FILTERS_ONLY
+        // Field projection AND sort both need the same measurements, but only
+        // the field projection means the row promises to CARRY them — sorting
+        // by spend is silent about the numbers themselves, same as sorting by
+        // `priority` never puts a priority rank in the row.
+        let want_tokens_field = crate::engine::fields_want_tokens(fields.as_ref());
+        let want_tokens = want_tokens_field || sort_keys.iter().any(|k| k.key == "tokens");
+        let parts = match (want_deps, want_tokens) {
+            (false, false) => SnapshotParts::FILTERS_ONLY,
+            (true, false) => SnapshotParts::FILTERS_AND_DEPENDENCIES,
+            (false, true) => SnapshotParts::FILTERS_AND_TOKENS,
+            (true, true) => SnapshotParts::FILTERS_DEPENDENCIES_AND_TOKENS,
         };
         let mut all = self.load_task_snapshots_for(parts, now_ts)?;
 
@@ -1145,7 +1176,12 @@ impl Engine {
         // already computed here for the filter, and throwing it away meant
         // `@blocked` could FILTER on a fact that `fields:["blocked"]` could not
         // RETURN. A caller wanting it per row had to issue one `task.get` each.
-        let mut tasks = Vec::new();
+        // Paired with each surviving snapshot: the saturating sum of its own
+        // measurements (#215), computed only when `want_tokens` gated the read
+        // above — otherwise the default zero totals, never read back as a
+        // number, only ever used to compare below and to render the `tokens`
+        // field when projected.
+        let mut tasks: Vec<(TaskSnapshot, crate::tokens::TokenTotals)> = Vec::new();
         for mut snapshot in all.drain(..) {
             let t = &mut snapshot.task;
             t.urgency = urgency::score_at(t.priority, t.due.as_deref(), &t.created, now_ts);
@@ -1158,14 +1194,19 @@ impl Engine {
                 blocked: snapshot.blocked,
             };
             if filter.matches(&ctx) {
-                tasks.push(snapshot);
+                let totals = if want_tokens {
+                    tokens::measurement_totals(&snapshot.tokens)
+                } else {
+                    crate::tokens::TokenTotals::default()
+                };
+                tasks.push((snapshot, totals));
             }
         }
 
         // Sort (default: hottest urgency first). Validated, so an unknown key
         // fails here rather than quietly producing some other order.
-        let sort_keys = parse_sort(p)?;
-        tasks.sort_by(|a, b| compare_by(&a.task, &b.task, &sort_keys));
+        tasks
+            .sort_by(|a, b| compare_by(&a.0.task, &b.0.task, a.1.total(), b.1.total(), &sort_keys));
 
         // How many rows MATCHED, counted before the window is applied (D70).
         // `count` has always been the number of rows returned, which is the
@@ -1198,7 +1239,7 @@ impl Engine {
         // so an unknown key fails before any of this rather than quietly
         // yielding a narrower row.
         let mut out = Vec::with_capacity(tasks.len());
-        for snapshot in &tasks {
+        for (snapshot, totals) in &tasks {
             let deps: Option<Vec<i64>> = want_deps.then(|| {
                 let mut v: Vec<i64> = snapshot
                     .depends_on
@@ -1208,11 +1249,13 @@ impl Engine {
                 v.sort_unstable();
                 v
             });
+            let token_field: Option<Value> = want_tokens_field.then(|| tokens::bucket_json(totals));
             let full = list_row_json(
                 &snapshot.task,
                 &snapshot.tags,
                 snapshot.blocked,
                 deps.as_deref(),
+                token_field.as_ref(),
             );
             match &fields {
                 Some(keys) => {
@@ -1802,6 +1845,68 @@ mod tests {
 
         let out = e.task_list(&json!({ "sort": ["short_id"] })).unwrap();
         assert_eq!(out["count"], 2);
+    }
+
+    /// #215: the only way to reach a task's token spend was `task.get` one
+    /// ref at a time — `task.list` had no `tokens` field and no `-tokens`
+    /// sort key, so "which tickets cost the most" cost one round-trip per
+    /// task on a store where the SQL underneath answers it in one GROUP BY.
+    #[test]
+    fn task_list_sorts_and_projects_by_token_spend() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "cheap" })).unwrap();
+        e.task_add(&json!({ "title": "expensive" })).unwrap();
+        // #1 (cheap) gets a small measurement, #2 (expensive) a large one, so
+        // `-tokens` must put #2 first.
+        e.token_add(&json!({
+            "ref": 1, "source": "self-report", "tool": "claude-code",
+            "confidence": "medium", "input_tokens": 10, "output_tokens": 5,
+        }))
+        .unwrap();
+        e.token_add(&json!({
+            "ref": 2, "source": "self-report", "tool": "claude-code",
+            "confidence": "medium", "input_tokens": 1000, "output_tokens": 500,
+            "cache_read_tokens": 2000, "cache_creation_tokens": 300,
+        }))
+        .unwrap();
+
+        let out = e
+            .task_list(&json!({ "sort": ["-tokens"], "fields": ["short_id", "tokens"] }))
+            .unwrap();
+        let tasks = out["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(
+            tasks[0]["short_id"],
+            json!(2),
+            "the pricier task sorts first"
+        );
+        assert_eq!(
+            tasks[0]["tokens"],
+            json!({
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "cache_read_tokens": 2000,
+                "cache_creation_tokens": 300,
+            }),
+            "the four buckets, never a blended total (D48)"
+        );
+        assert_eq!(
+            tasks[1]["tokens"],
+            json!({
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            })
+        );
+
+        // Default listing (no `fields`) still omits `tokens`, exactly like
+        // `depends_on` — a projection nobody asked for costs nothing.
+        let default_out = e.task_list(&json!({})).unwrap();
+        assert!(
+            default_out["tasks"][0].get("tokens").is_none(),
+            "tokens must stay opt-in on the default row"
+        );
     }
 
     /// A storage fault on the `short_id` read must SURFACE, not silently vanish
