@@ -99,8 +99,14 @@ struct Derived<'a> {
     open: usize,
     overdue: usize,
     overdue_tasks: Vec<&'a Value>,
+    /// Open, not overdue, due within the next 7 days — soonest first.
+    due_soon: Vec<&'a Value>,
+    /// `status:active` — what the reader was doing when the snapshot was taken.
+    active: Vec<&'a Value>,
+    /// Open tasks per `group_by` key, for the table's Open column beside
+    /// `report.summary`'s D24 count (open + done).
+    open_by_group: HashMap<String, usize>,
     completed_recent: Vec<&'a Value>,
-    velocity: usize,
     top_tags: Vec<(String, u32)>,
     /// How many DISTINCT tags matched, before `top_tags` was cut to 10
     /// (#235/2) — the section needs this to say how many it left out.
@@ -156,19 +162,34 @@ impl<'a> Report<'a> {
         let mut overdue = 0usize;
         let mut completed_recent: Vec<&Value> = Vec::new();
         let mut overdue_tasks: Vec<&Value> = Vec::new();
+        let mut due_soon: Vec<&Value> = Vec::new();
+        let mut active: Vec<&Value> = Vec::new();
+        let mut open_by_group: HashMap<String, usize> = HashMap::new();
         // 7-day window, computed with time-based units (calendar spans can't be
         // added to a bare Timestamp without a zone).
         let cutoff = now_ts
             .checked_sub(jiff::ToSpan::hours(168i64))
             .unwrap_or(now_ts);
+        let horizon = now_ts
+            .checked_add(jiff::ToSpan::hours(168i64))
+            .unwrap_or(now_ts);
         for t in tasks {
             let status = t.get("status").and_then(Value::as_str).unwrap_or("");
             if crate::render::status_is_open(status) {
                 open += 1;
+                let key = t.get(self.group_by).and_then(Value::as_str).unwrap_or("");
+                *open_by_group.entry(key.to_string()).or_insert(0) += 1;
+                if tasqx_core::types::Status::parse(status)
+                    == Some(tasqx_core::types::Status::Active)
+                {
+                    active.push(t);
+                }
                 if let Some(due) = t.get("due").and_then(Value::as_str).and_then(parse_ts) {
                     if due < now_ts {
                         overdue += 1;
                         overdue_tasks.push(t);
+                    } else if due <= horizon {
+                        due_soon.push(t);
                     }
                 }
             }
@@ -193,20 +214,18 @@ impl<'a> Report<'a> {
                 .map(str::to_string)
         });
         completed_recent.reverse();
+        due_soon.sort_by_key(|t| t.get("due").and_then(Value::as_str).map(str::to_string));
 
-        // Velocity: the SAME count as "done this week" (#165), not a second
-        // computation over the audit log. This used to count
-        // `done` events off the unscoped `event.list` result in the same
-        // 7-day window — two tables, two windows that happened to agree only
-        // by coincidence, and disagreed by exactly one on the audited store
-        // (12 done-this-week vs. 13 velocity/wk in the same minute). Worse,
-        // `event.list` carries no filter (D59 bounds it by time only), so a
-        // report scoped to a project or tag still counted every task's
+        // `completed_recent` is the ONLY "done this week" number on the page
+        // (#165). A "velocity" tile used to count `done` events off the
+        // unscoped `event.list` result in the same 7-day window — two tables,
+        // two windows that agreed only by coincidence, and disagreed by
+        // exactly one on the audited store (12 vs. 13 in the same minute).
+        // Worse, `event.list` carries no filter (D59 bounds it by time only),
+        // so a report scoped to a project or tag still counted every task's
         // events — the throughput chart had the identical bug (#162), fixed
         // the same way one call up in `render` via `chart::throughput`'s
-        // `members`. Reading it off `completed_recent` fixes both at once:
-        // one source, one window, and a number the filter actually scopes.
-        let velocity = completed_recent.len();
+        // `members`. The tile is gone; this list is the source.
 
         // Top tags across open tasks.
         let mut tag_counts: HashMap<String, u32> = HashMap::new();
@@ -254,8 +273,10 @@ impl<'a> Report<'a> {
             open,
             overdue,
             overdue_tasks,
+            due_soon,
+            active,
+            open_by_group,
             completed_recent,
-            velocity,
             top_tags,
             tags_total,
             bucket_totals,
@@ -291,15 +312,30 @@ impl<'a> Report<'a> {
         let css = self.css();
         let mut body = String::new();
 
-        body.push_str(&self.header(
-            d.open,
-            d.completed_recent.len(),
-            d.velocity,
-            d.overdue,
-            &d.bucket_totals,
-        ));
+        let (backlog_start, backlog_end) = match (burndown.first(), burndown.last()) {
+            (Some(f), Some(l)) => (i64::from(f.remaining), i64::from(l.remaining)),
+            _ => (0, 0),
+        };
+        let backlog_delta = backlog_end - backlog_start;
+        let attention = d.overdue + d.due_soon.len();
+
+        body.push_str(&self.header(d.open, d.completed_recent.len(), backlog_delta, attention));
         body.push_str("<main>");
-        body.push_str(&self.overdue_section(&d.overdue_tasks));
+
+        // Sections in decision order, not data order: what changed, what
+        // needs attention, what to do next, then the evidence. Overdue work
+        // used to sit below two charts and every task closed that week.
+        body.push_str(&format!(
+            "<p class=\"lede\">{}</p>",
+            esc(&lede(
+                d.completed_recent.len(),
+                d.open,
+                d.overdue,
+                d.due_soon.len(),
+                backlog_delta,
+            ))
+        ));
+        body.push_str(&self.attention_section(&d.overdue_tasks, &d.due_soon, &d.active));
         body.push_str(&self.actionable_section());
 
         // "Weekly throughput" — matching the terminal chart's own heading
@@ -309,12 +345,12 @@ impl<'a> Report<'a> {
         // week" (rolling 7 days) and this very chart's own ISO-week buckets.
         body.push_str(&section(
             "Weekly throughput",
-            "Tasks opened versus closed, by ISO week.",
+            &throughput_caption(&throughput),
             &svg_throughput(&throughput, self.theme),
         ));
         body.push_str(&section(
             "Open backlog",
-            "Remaining open tasks over the last 30 days.",
+            &backlog_caption(backlog_start, backlog_end),
             // #234 item 6: a store that never held a task is not "cleared",
             // and a chart whose only y-axis label is an invented "1" teaches a
             // wrong mental model to a brand-new user's very first report.
@@ -325,10 +361,9 @@ impl<'a> Report<'a> {
             },
         ));
 
-        body.push_str(&self.per_group_section());
-        body.push_str("<details><summary>Completed in the last 7 days</summary>");
+        body.push_str(&self.tokens_section(&d.bucket_totals));
+        body.push_str(&self.per_group_section(&d.open_by_group));
         body.push_str(&self.completed_section(&d.completed_recent));
-        body.push_str("</details>");
         body.push_str(&self.tags_section(&d.top_tags, d.tags_total));
 
         body.push_str("</main>");
@@ -359,54 +394,66 @@ impl<'a> Report<'a> {
         )
     }
 
-    /// The header tiles. `buckets` is one `(label, total)` per token bucket, in
-    /// `tokens::BUCKETS` order, so this row and the terminal report name the four
-    /// in the same sequence. That order is fixed but carries no cost meaning —
-    /// see `tokens::BUCKETS` for why it must not be read as a price gradient.
+    /// The header: four tiles, one per question the review says a reader
+    /// brings — how much is open, what shipped, which way the backlog moved,
+    /// what needs attention. Each names its window in its own label, because
+    /// the backlog is a state and the other three are windows (D48d). The
+    /// token buckets moved to their own section: eight tiles gave four
+    /// counters the same weight as the overdue count.
     ///
-    /// D48a: four tiles rather than one blended "AI tokens". They are rendered
-    /// even when every bucket is zero: a report whose token tiles vanish on an
-    /// unmeasured store would leave a reader guessing whether the work was free
-    /// or simply never measured, and those are different answers.
+    /// "done · last 7 days" replaced both "done this week" and "velocity /wk
+    /// (7d)" (#165): the two came from one derivation and showed one number
+    /// twice.
     ///
-    /// `velocity` carries its window in the label (`velocity /wk (7d)`, #165):
-    /// it used to be silent about it, which read as directly comparable to
-    /// the terminal's differently-windowed "4-wk velocity" — two numbers
-    /// nobody could tell apart without opening both. `velocity` also now
-    /// equals `done` (both come from `Report::derive`'s `completed_recent`),
-    /// so the two tiles can no longer disagree either.
-    ///
-    /// The brand block carries a `.scope` line under "weekly review" (#235/1)
-    /// — the same string the `<title>` uses — so a printed or screenshotted
-    /// page (which loses the tab title) still says what it covers.
-    fn header(
-        &self,
-        open: usize,
-        done: usize,
-        velocity: usize,
-        overdue: usize,
-        buckets: &[(&str, i64)],
-    ) -> String {
-        let token_tiles: String = buckets
-            .iter()
-            .map(|(label, n)| stat(&crate::tokens::compact(*n), label))
-            .collect();
+    /// The brand block carries the scope (#235/1) and the snapshot instant —
+    /// a printed or screenshotted page loses the tab title and the footer.
+    fn header(&self, open: usize, done: usize, backlog_delta: i64, attention: usize) -> String {
         format!(
             "<header class=\"summary\">\
                <div class=\"brand-block\">\
                  <div class=\"brand\">tasqx <span class=\"muted\">weekly review</span></div>\
-                 <div class=\"scope\">{scope}</div>\
+                 <div class=\"scope\">{scope} · Snapshot as of <span title=\"{utc}\">{local}</span></div>\
                </div>\
-               <div class=\"stats\">{}{}{}{}{token_tiles}</div>\
+               <div class=\"stats\">{}{}{}{}</div>\
              </header>",
-            stat(&open.to_string(), "open"),
-            stat(&done.to_string(), "done this week"),
-            stat(&velocity.to_string(), "velocity /wk (7d)"),
-            stat_flag(&overdue.to_string(), "overdue", overdue > 0),
+            stat(&open.to_string(), "open now"),
+            stat(&done.to_string(), "done · last 7 days"),
+            stat(&signed(backlog_delta), "backlog · 30 days"),
+            stat_flag(&attention.to_string(), "needs attention", attention > 0),
             scope = esc(&self.scope_label()),
+            utc = esc(self.now),
+            local = esc(&pretty_local_ts(self.now)),
         )
     }
 
+    /// The four token buckets as tiles, in `tokens::BUCKETS` order so this row
+    /// and the terminal report name them in the same sequence. That order is
+    /// fixed but carries no cost meaning — see `tokens::BUCKETS`.
+    ///
+    /// D48a: four tiles rather than one blended total. They render even when
+    /// every bucket is zero: tiles that vanish on an unmeasured store would
+    /// leave a reader guessing whether the work was free or never measured,
+    /// and those are different answers — so the caption says which.
+    fn tokens_section(&self, buckets: &[(&str, i64)]) -> String {
+        let tiles: String = buckets
+            .iter()
+            .map(|(label, n)| stat(&crate::tokens::compact(*n), label))
+            .collect();
+        let measured = buckets.iter().any(|(_, n)| *n != 0);
+        let sub = if measured {
+            "Four buckets, never one total: cache tokens cost a fraction of input and output, so a blended figure would misprice any mix. Per-project figures are in the table below."
+        } else {
+            "No token measurements in this scope — unmeasured, not free. Four buckets, never one total: cache tokens cost a fraction of input and output, so a blended figure would misprice any mix."
+        };
+        section(
+            "Token spend",
+            sub,
+            &format!("<div class=\"tiles\">{tiles}</div>"),
+        )
+    }
+
+    /// The first five rows in the open, the rest behind a toggle: the review
+    /// found 108 completed rows between the header and the overdue list.
     fn completed_section(&self, tasks: &[&Value]) -> String {
         if tasks.is_empty() {
             return section(
@@ -415,49 +462,65 @@ impl<'a> Report<'a> {
                 "",
             );
         }
-        let mut rows = String::new();
-        for t in tasks {
-            rows.push_str(&format!(
-                "<li><span class=\"id\">#{id}</span> <span class=\"ttl\">{title}</span>{proj}</li>",
-                id = t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
-                title = esc(t.get("title").and_then(Value::as_str).unwrap_or("")),
-                proj = proj_chip(t),
+        let (shown, rest) = tasks.split_at(tasks.len().min(5));
+        let mut body = format!("<ul class=\"tasklist\">{}</ul>", task_rows(shown, ""));
+        if !rest.is_empty() {
+            body.push_str(&format!(
+                "<details class=\"more\"><summary>Show {} more</summary><ul class=\"tasklist\">{}</ul></details>",
+                rest.len(),
+                task_rows(rest, ""),
             ));
         }
         section(
             "Completed this week",
-            "What actually shipped in the last 7 days.",
-            &format!("<ul class=\"tasklist\">{rows}</ul>"),
+            &format!("{} shipped in the last 7 days.", count(tasks.len(), "task")),
+            &body,
         )
     }
 
-    fn overdue_section(&self, tasks: &[&Value]) -> String {
-        if tasks.is_empty() {
+    /// Overdue, due within 7 days, and whatever is running — the panel the
+    /// page opens with. Each list is absent when empty; the section itself
+    /// stays, saying so, because "nothing needs attention" is an answer.
+    fn attention_section(
+        &self,
+        overdue: &[&Value],
+        due_soon: &[&Value],
+        active: &[&Value],
+    ) -> String {
+        if overdue.is_empty() && due_soon.is_empty() && active.is_empty() {
             return section(
-                "Carried over & overdue",
-                "Nothing overdue. You're current.",
+                "Needs attention",
+                "Nothing overdue, nothing due within 7 days, nothing running.",
                 "",
             );
         }
-        let mut rows = String::new();
-        for t in tasks {
-            rows.push_str(&format!(
-                "<li class=\"over\"><span class=\"id\">#{id}</span> <span class=\"ttl\">{title}</span> \
-                 <span class=\"due\">due {due}</span>{proj}</li>",
-                id = t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
-                title = esc(t.get("title").and_then(Value::as_str).unwrap_or("")),
-                due = esc(&pretty_ts(t.get("due").and_then(Value::as_str).unwrap_or(""))),
-                proj = proj_chip(t),
+        let mut body = String::new();
+        if !active.is_empty() {
+            body.push_str(&format!(
+                "<h3>In progress</h3><ul class=\"tasklist\">{}</ul>",
+                task_rows(active, "")
+            ));
+        }
+        if !overdue.is_empty() {
+            body.push_str(&format!(
+                "<h3>Overdue</h3><ul class=\"tasklist\">{}</ul>",
+                task_rows(overdue, "over")
+            ));
+        }
+        if !due_soon.is_empty() {
+            body.push_str(&format!(
+                "<h3>Due within 7 days</h3><ul class=\"tasklist\">{}</ul>",
+                task_rows(due_soon, "")
             ));
         }
         section(
-            "Carried over & overdue",
-            "Past their due date and still open — triage these first.",
-            &format!("<ul class=\"tasklist\">{rows}</ul>"),
+            "Needs attention",
+            "Past due, due soon, or already started — triage these first.",
+            &body,
         )
     }
 
-    fn per_group_section(&self) -> String {
+    fn per_group_section(&self, open_by_group: &HashMap<String, usize>) -> String {
         // Derived from `group_by`, never hardcoded: `report.summary` names the
         // group key after the axis it grouped on, so `tasqx report status --html`
         // returned rows keyed `status` while this read `project` and rendered a
@@ -472,6 +535,11 @@ impl<'a> Report<'a> {
         for g in groups {
             let name = g.get(axis).and_then(Value::as_str).unwrap_or("(none)");
             let count = g.get("count").and_then(Value::as_i64).unwrap_or(0);
+            let open = open_by_group
+                .get(name)
+                .or_else(|| open_by_group.get(""))
+                .copied()
+                .unwrap_or(0);
             let est = humanize_iso(g.get("est_total").and_then(Value::as_str).unwrap_or("PT0S"));
             let tracked = humanize_iso(
                 g.get("tracked_total")
@@ -499,11 +567,22 @@ impl<'a> Report<'a> {
             // Column order follows `tokens::BUCKETS` so the table, the header
             // tiles and the terminal's tie-break cannot disagree about which
             // bucket is which.
+            //
+            // A group with no measurement at all renders `—` in all four,
+            // like an untracked estimate: four zeros read as "this cost
+            // nothing", and unmeasured is a different answer from free.
+            let measured = g.get("tokens_confidence").is_some()
+                || crate::tokens::BUCKETS
+                    .iter()
+                    .any(|(key, _, _)| g.get(key).and_then(Value::as_i64).unwrap_or(0) != 0);
             let tokens_cells: String = crate::tokens::BUCKETS
                 .iter()
                 .map(|(key, _, _)| {
+                    if !measured {
+                        return "<td class=\"muted\">—</td>".to_string();
+                    }
                     let n = g.get(key).and_then(Value::as_i64).unwrap_or(0);
-                    // Compacted, like the header tiles. Rendering 13720240 here
+                    // Compacted, like the tiles. Rendering 13720240 here
                     // under a tile reading 13.7M put two formats for one quantity
                     // on one page, which only opening it showed.
                     format!("<td class=\"muted\">{}</td>", crate::tokens::compact(n))
@@ -520,7 +599,7 @@ impl<'a> Report<'a> {
                 None => "<td class=\"muted\">—</td>".to_string(),
             };
             rows.push_str(&format!(
-                "<tr><td class=\"proj\">{name}</td><td>{count}</td><td>{est}</td><td>{tracked}</td>{od}{tokens_cells}{confidence_cell}</tr>",
+                "<tr><td class=\"proj\">{name}</td><td>{open}</td><td>{count}</td><td>{est}</td><td>{tracked}</td>{od}{tokens_cells}{confidence_cell}</tr>",
                 name = esc(name),
             ));
         }
@@ -530,21 +609,21 @@ impl<'a> Report<'a> {
         // sideways with it. Scoping `overflow-x: auto` to this wrapper keeps
         // an overflowing table's scroll local to the table, on any viewport.
         let table = format!(
-            "<div class=\"table-wrap\"><table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
+            "<div class=\"table-wrap\"><table class=\"grid\"><thead><tr><th>{head}</th><th>Open</th><th>Total</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
              <th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th><th>Confidence</th></tr></thead><tbody>{rows}</tbody></table></div>",
             // The axis name, title-cased — `esc` because it reaches markup, even
             // though core has already restricted it to SUMMARY_GROUP_BY.
             head = esc(&title_case(axis)),
         );
-        // "Tasks", not "Open": under D24 this count includes `done`, because
-        // completed work is real work and carries nearly all the tracked time.
-        // Only `cancelled` is left out. The header stat above says "open" and
-        // means something narrower (html.rs's own derivation excludes done too),
-        // so this column must not borrow that word for a different number.
+        // "Total", not "Tasks": under D24 the summary's count includes `done`,
+        // because completed work is real work and carries nearly all the
+        // tracked time; only `cancelled` is left out. One column of it under
+        // a header saying "117 open" summed to 295 and said nothing, so Open
+        // (this module's own derivation) now sits beside it.
         section(
             &title,
             &format!(
-                "Task count (cancelled excluded), estimate vs. tracked time, overdue, and the four AI token buckets per {axis}. The buckets are never summed: cache tokens cost a fraction of input and output, so one blended figure would misprice any mix."
+                "Open and total task counts (cancelled excluded), estimate vs. tracked time, overdue, and the four AI token buckets per {axis}. — is unmeasured or untracked; 0 is a measured zero."
             ),
             &table,
         )
@@ -570,12 +649,22 @@ impl<'a> Report<'a> {
             .get("total")
             .and_then(Value::as_u64)
             .map_or(tasks.len(), |n| n as usize);
+        let now_ts = parse_ts(self.now);
         let mut rows = String::new();
         for t in tasks {
             let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+            // The score alone ("urg 18.5") gave no reason; the due date is
+            // the one term of D1's formula a row already carries.
+            let due = match t.get("due").and_then(Value::as_str) {
+                Some(due) if parse_ts(due).zip(now_ts).is_some_and(|(d, n)| d < n) => {
+                    " <span class=\"pill\">overdue</span>".to_string()
+                }
+                Some(due) => format!(" <span class=\"due\">due {}</span>", esc(&pretty_ts(due))),
+                None => String::new(),
+            };
             rows.push_str(&format!(
-                "<li><span class=\"id\">#{id}</span> <span class=\"ttl\">{title}</span> \
-                 <span class=\"urg\">urg {urg:.1}</span>{proj}</li>",
+                "<li><span class=\"id\">#{id}</span> <span class=\"ttl\">{title}</span>{due} \
+                 <span class=\"urg\" title=\"urgency score: priority, due proximity and age\">urgency {urg:.1}</span>{proj}</li>",
                 id = t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
                 title = esc(t.get("title").and_then(Value::as_str).unwrap_or("")),
                 proj = proj_chip(t),
@@ -631,9 +720,16 @@ impl<'a> Report<'a> {
         let accent = color("accent", Rgb::new(0x88, 0xc0, 0xd0));
         let warn = color("warn", Rgb::new(0xeb, 0xcb, 0x8b));
         let danger = color("danger", Rgb::new(0xbf, 0x61, 0x6a));
-        let muted_dark = color("muted", Rgb::new(0x4c, 0x56, 0x6a)).hex();
-        let bg_dark = color("bg", Rgb::new(0x2e, 0x34, 0x40)).hex();
+        let bg = color("bg", Rgb::new(0x2e, 0x34, 0x40));
+        let bg_dark = bg.hex();
         let fg_dark = color("fg", Rgb::new(0xd8, 0xde, 0xe9)).hex();
+        // A theme's `muted` role is picked to recede on a terminal, and nord's
+        // sits at ~1.7:1 against its own background — every caption, tile
+        // label and chart label on the dark scheme used it as-is. Same AA
+        // floor as the light scheme's roles below, moved toward whichever
+        // pole the background is not.
+        let muted_dark =
+            adjusted_for_contrast(color("muted", Rgb::new(0x4c, 0x56, 0x6a)), bg, 4.5).hex();
 
         // #163: these three roles are picked for a dark terminal ground and
         // reused verbatim on the light scheme used to make mono's white
@@ -668,22 +764,28 @@ impl<'a> Report<'a> {
              font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n\
              line-height: 1.55; }}\n\
              .id, .urg, .due, code, .mono {{ font-family: ui-monospace, \"Cascadia Code\", \"SF Mono\", \"Consolas\", monospace; }}\n\
-             main {{ max-width: 72ch; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }}\n\
+             /* One column for everything (#235/3 revisited): the charts and\n\
+                the table used to break out of a 72ch prose column with a\n\
+                transform, which left every heading hanging off the left edge\n\
+                of its own figure. Prose that wants a measure sets its own. */\n\
+             main {{ max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }}\n\
              header.summary {{ position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);\n\
              backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);\n\
              padding: 0.9rem 1.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }}\n\
-             .brand {{ font-weight: 700; font-size: 1.15rem; letter-spacing: -0.01em; }}\n\
+             .brand {{ font-weight: 700; font-size: 1.25rem; letter-spacing: -0.01em; }}\n\
              .brand .muted {{ font-weight: 400; }}\n\
              .scope {{ color: var(--muted); font-size: 0.78rem; margin-top: 0.15rem; }}\n\
-             .stats {{ display: flex; gap: 1.4rem; flex-wrap: wrap; row-gap: 0.6rem; }}\n\
+             .stats {{ display: flex; gap: 1.6rem; flex-wrap: wrap; row-gap: 0.6rem; }}\n\
              .stat {{ text-align: right; flex: 0 0 auto; }}\n\
              .stat .n {{ font-size: 1.5rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums;\n\
              font-family: ui-monospace, monospace; }}\n\
              .stat .l {{ font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }}\n\
              .stat.flag .n {{ color: var(--danger); }}\n\
-             section {{ margin-top: 2.2rem; }}\n\
-             section > h2 {{ font-size: 1.05rem; margin: 0 0 0.15rem; letter-spacing: -0.01em; }}\n\
-             section > .sub {{ color: var(--muted); font-size: 0.85rem; margin: 0 0 0.9rem; }}\n\
+             .lede {{ max-width: 72ch; font-size: 1.05rem; margin: 0.5rem 0 0; }}\n\
+             section {{ margin-top: 2.4rem; }}\n\
+             section > h2 {{ font-size: 1.15rem; margin: 0 0 0.15rem; letter-spacing: -0.01em; }}\n\
+             section > .sub {{ color: var(--muted); font-size: 0.85rem; margin: 0 0 0.9rem; max-width: 80ch; }}\n\
+             section h3 {{ font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 1.2rem 0 0.3rem; }}\n\
              .muted {{ color: var(--muted); }} .warn {{ color: var(--warn); }}\n\
              .overdue-flag {{ color: var(--danger); font-weight: 700; }}\n\
              figure {{ margin: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 0.9rem; overflow-x: auto; }}\n\
@@ -695,29 +797,147 @@ impl<'a> Report<'a> {
              .ttl {{ flex: 1; min-width: 12ch; }}\n\
              .urg {{ color: var(--muted); font-size: 0.82rem; }}\n\
              .due {{ color: var(--danger); font-size: 0.82rem; }}\n\
+             .pill {{ font-size: 0.72rem; font-weight: 600; color: var(--bg); background: var(--danger); border-radius: 999px; padding: 0.05rem 0.5rem; }}\n\
              li.over .ttl {{ font-weight: 500; }}\n\
              .chip {{ font-size: 0.72rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0.05rem 0.5rem; }}\n\
+             details.more > summary {{ cursor: pointer; color: var(--accent); font-weight: 600; padding: 0.5rem 0.1rem; }}\n\
+             .tiles {{ display: flex; gap: 1.6rem; flex-wrap: wrap; row-gap: 0.6rem; }}\n\
+             .tiles .stat {{ text-align: left; }}\n\
              .table-wrap {{ overflow-x: auto; }}\n\
              table.grid {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}\n\
              table.grid th {{ text-align: left; color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--line); padding: 0.4rem 0.5rem; }}\n\
              table.grid td {{ padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }}\n\
              table.grid td.proj {{ font-weight: 600; }}\n\
-             /* #235/3: the table and the charts are data, not prose — the same\n\
-                ~72ch measure that suits running text forced a nine-column table\n\
-                to wrap project names to three lines beside ~660px of unused\n\
-                viewport at 1280px. Above ~900px both break out of `main`'s\n\
-                column toward 1100px; narrower than that they stay the prose\n\
-                width and (for the table) scroll in their own container. */\n\
-             @media (min-width: 900px) {{\n\
-             .table-wrap, figure {{ width: 100vw; max-width: min(1100px, calc(100vw - 2.5rem));\n\
-             margin-left: 50%; transform: translateX(-50%); }}\n\
-             }}\n\
              .tags {{ display: flex; flex-wrap: wrap; gap: 0.5rem; }}\n\
              .tag {{ background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 0.2rem 0.7rem; font-size: 0.85rem; }}\n\
              .tag .tagn {{ color: var(--accent); font-weight: 700; }}\n\
-             footer {{ max-width: 72ch; margin: 0 auto; padding: 1rem 1.25rem 3rem; color: var(--muted); font-size: 0.8rem; }}\n"
+             footer {{ max-width: 1100px; margin: 0 auto; padding: 1rem 1.25rem 3rem; color: var(--muted); font-size: 0.8rem; }}\n\
+             /* #166 revisited: the pinned header took ~240px of a 640px\n\
+                phone viewport once its tiles wrapped. Unpinned and on a\n\
+                two-column grid it is a compact block the page scrolls past. */\n\
+             @media (max-width: 600px) {{\n\
+             header.summary {{ position: static; padding: 0.7rem 1rem; }}\n\
+             .stats {{ display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem 1rem; width: 100%; }}\n\
+             .stat {{ text-align: left; }}\n\
+             .stat .n {{ font-size: 1.25rem; }}\n\
+             main {{ padding: 1rem 1rem 2rem; }}\n\
+             figure {{ padding: 0.5rem; }}\n\
+             /* A title beside a project chip wrapped into a 12ch column;\n\
+                the meta wraps under the title instead. */\n\
+             .ttl {{ min-width: 70%; }}\n\
+             }}\n"
         )
     }
+}
+
+/// `n task` / `n tasks`.
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// `+3` / `−3` / `±0` for a delta tile.
+fn signed(delta: i64) -> String {
+    match delta.cmp(&0) {
+        std::cmp::Ordering::Greater => format!("+{delta}"),
+        std::cmp::Ordering::Less => format!("−{}", -delta),
+        std::cmp::Ordering::Equal => "±0".to_string(),
+    }
+}
+
+/// The one-paragraph assessment the page opens with: what shipped, what is
+/// open, what needs attention, which way the backlog moved. Facts in the
+/// order a reader asks them; no adjectives.
+fn lede(done: usize, open: usize, overdue: usize, due_soon: usize, backlog_delta: i64) -> String {
+    let attention = match (overdue, due_soon) {
+        (0, 0) => "Nothing is overdue or due within 7 days.".to_string(),
+        (o, 0) => format!("{} overdue.", count(o, "task")),
+        (0, d) => format!("{} due within 7 days.", count(d, "task")),
+        (o, d) => format!(
+            "{} overdue, {} more due within 7 days.",
+            count(o, "task"),
+            count(d, "task")
+        ),
+    };
+    let backlog = match backlog_delta.cmp(&0) {
+        std::cmp::Ordering::Greater => {
+            format!("Open work grew by {backlog_delta} over the last 30 days.")
+        }
+        std::cmp::Ordering::Less => format!(
+            "Open work shrank by {} over the last 30 days.",
+            -backlog_delta
+        ),
+        std::cmp::Ordering::Equal => "Open work is unchanged over the last 30 days.".to_string(),
+    };
+    format!(
+        "{} completed in the last 7 days, {open} open. {attention} {backlog}",
+        count(done, "task")
+    )
+}
+
+/// Says whether work is arriving faster than it closes over the series, and
+/// that the last bar is the week in progress — without it a Wednesday
+/// reading looks like a collapse.
+fn throughput_caption(buckets: &[chart::WeekBucket]) -> String {
+    let added: u64 = buckets.iter().map(|b| u64::from(b.added)).sum();
+    let done: u64 = buckets.iter().map(|b| u64::from(b.done)).sum();
+    let n = buckets.len();
+    let trend = match added.cmp(&done) {
+        std::cmp::Ordering::Greater => format!(
+            "Over these {n} weeks arrivals outpaced completions by {}.",
+            added - done
+        ),
+        std::cmp::Ordering::Less => format!(
+            "Over these {n} weeks completions outpaced arrivals by {}.",
+            done - added
+        ),
+        std::cmp::Ordering::Equal => {
+            format!("Over these {n} weeks arrivals and completions matched.")
+        }
+    };
+    format!(
+        "Tasks opened versus closed per ISO week, Monday to Sunday; the last bar is the current, partial week. {trend}"
+    )
+}
+
+/// Start, end and change, stated — a rising line under a heading that said
+/// "burning down" read as a broken chart.
+fn backlog_caption(start: i64, end: i64) -> String {
+    let change = if end == start {
+        "no change".to_string()
+    } else {
+        signed(end - start)
+    };
+    format!("Open tasks over the last 30 days: {start} → {end} ({change}).")
+}
+
+/// One `<li>` per task: id, title, its due date when it has one, project.
+/// `class` marks the whole row (`over` for overdue).
+fn task_rows(tasks: &[&Value], class: &str) -> String {
+    let mut rows = String::new();
+    for t in tasks {
+        let due = match t.get("due").and_then(Value::as_str) {
+            Some(due) if !due.is_empty() => {
+                format!(" <span class=\"due\">due {}</span>", esc(&pretty_ts(due)))
+            }
+            _ => String::new(),
+        };
+        let li = if class.is_empty() {
+            "<li>".to_string()
+        } else {
+            format!("<li class=\"{class}\">")
+        };
+        rows.push_str(&format!(
+            "{li}<span class=\"id\">#{id}</span> <span class=\"ttl\">{title}</span>{due}{proj}</li>",
+            id = t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
+            title = esc(t.get("title").and_then(Value::as_str).unwrap_or("")),
+            proj = proj_chip(t),
+        ));
+    }
+    rows
 }
 
 // ---- small HTML/format helpers ---------------------------------------------
@@ -863,13 +1083,41 @@ fn contrast_ratio(a: Rgb, b: Rgb) -> f64 {
 /// represent — plenty for a value that only has to clear a threshold, not
 /// hit one exactly.
 fn darkened_for_contrast(c: Rgb, bg: Rgb, min_contrast: f64) -> Rgb {
-    if contrast_ratio(c, bg) >= min_contrast {
-        return c;
-    }
     let mix = |t: f64| -> Rgb {
         let ch = |v: u8| -> u8 { (f64::from(v) * (1.0 - t)).round() as u8 };
         Rgb::new(ch(c.r), ch(c.g), ch(c.b))
     };
+    least_mix_clearing(c, bg, min_contrast, mix)
+}
+
+/// The mirror of `darkened_for_contrast` for a dark ground: lighten toward
+/// white just enough to clear `min_contrast`.
+fn lightened_for_contrast(c: Rgb, bg: Rgb, min_contrast: f64) -> Rgb {
+    let mix = |t: f64| -> Rgb {
+        let ch = |v: u8| -> u8 { (f64::from(v) + (255.0 - f64::from(v)) * t).round() as u8 };
+        Rgb::new(ch(c.r), ch(c.g), ch(c.b))
+    };
+    least_mix_clearing(c, bg, min_contrast, mix)
+}
+
+/// Move `c` toward whichever pole `bg` is not — a dark ground wants a
+/// lighter colour, a light ground a darker one — so one call covers a theme
+/// whose "dark" scheme is in fact light.
+fn adjusted_for_contrast(c: Rgb, bg: Rgb, min_contrast: f64) -> Rgb {
+    if relative_luminance(bg) < 0.18 {
+        lightened_for_contrast(c, bg, min_contrast)
+    } else {
+        darkened_for_contrast(c, bg, min_contrast)
+    }
+}
+
+/// The smallest `t` in `[0, 1]` for which `mix(t)` clears `min_contrast`
+/// against `bg`, given that contrast rises monotonically with `t`; `c`
+/// itself when it already clears.
+fn least_mix_clearing(c: Rgb, bg: Rgb, min_contrast: f64, mix: impl Fn(f64) -> Rgb) -> Rgb {
+    if contrast_ratio(c, bg) >= min_contrast {
+        return c;
+    }
     let (mut lo, mut hi) = (0.0f64, 1.0f64);
     for _ in 0..24 {
         let mid = (lo + hi) / 2.0;
@@ -1037,31 +1285,48 @@ fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
         let added_h = (b.added as f64 / max) * plot_h;
         let done_h = (b.done as f64 / max) * plot_h;
         let base = pad_t + plot_h;
-        // added bar (left), done bar (right)
+        // The week in progress is drawn lighter: its bars are a partial
+        // count and must not read as a drop against the full weeks.
+        let opacity = if i + 1 == buckets.len() {
+            " opacity=\"0.55\""
+        } else {
+            ""
+        };
+        // Dated by the Monday it starts on; "W37" is a key, not a place on
+        // a calendar.
+        let label = b
+            .start()
+            .map(|d| d.strftime("%-d %b").to_string())
+            .unwrap_or_else(|| b.label());
+        // added bar (left), done bar (right); the group's <title> is the
+        // native tooltip.
         bars.push_str(&format!(
-            "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{bw:.1}\" height=\"{hh:.1}\" rx=\"2\" fill=\"{accent}\"/>",
+            "<g><title>Week of {lbl}: {added} added, {done} done</title>\
+             <rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{bw:.1}\" height=\"{hh:.1}\" rx=\"2\" fill=\"{accent}\"{opacity}/>",
+            lbl = esc(&label), added = b.added, done = b.done,
             x = cx - bar_w - 1.0, y = base - added_h, bw = bar_w, hh = added_h,
         ));
         bars.push_str(&format!(
-            "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{bw:.1}\" height=\"{hh:.1}\" rx=\"2\" fill=\"{done_c}\"/>",
+            "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{bw:.1}\" height=\"{hh:.1}\" rx=\"2\" fill=\"{done_c}\"{opacity}/></g>",
             x = cx + 1.0, y = base - done_h, bw = bar_w, hh = done_h,
         ));
         labels.push_str(&format!(
             "<text x=\"{cx:.1}\" y=\"{ly:.1}\" text-anchor=\"middle\" class=\"axl\">{lbl}</text>",
             ly = h - 8.0,
-            lbl = esc(&b.label()),
+            lbl = esc(&label),
         ));
     }
 
     let axis = format!(
         "<line x1=\"{pad_l}\" y1=\"{y0:.1}\" x2=\"{pad_l}\" y2=\"{y1:.1}\" class=\"axis\"/>\
          <line x1=\"{pad_l}\" y1=\"{y1:.1}\" x2=\"{xr:.1}\" y2=\"{y1:.1}\" class=\"axis\"/>\
-         <text x=\"{tx:.1}\" y=\"{ty:.1}\" text-anchor=\"end\" class=\"axl\">{max:.0}</text>",
+         <text x=\"{tx:.1}\" y=\"{ty:.1}\" text-anchor=\"end\" class=\"axl\">{max:.0}</text>{mid}",
         y0 = pad_t,
         y1 = pad_t + plot_h,
         xr = pad_l + plot_w,
         tx = pad_l - 6.0,
         ty = pad_t + 8.0,
+        mid = mid_axis_label(max, pad_l - 6.0, pad_t + plot_h / 2.0 + 4.0),
     );
 
     let legend = format!(
@@ -1110,7 +1375,7 @@ fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
     let axis = format!(
         "<line x1=\"{pad_l}\" y1=\"{y0:.1}\" x2=\"{pad_l}\" y2=\"{y1:.1}\" class=\"axis\"/>\
          <line x1=\"{pad_l}\" y1=\"{y1:.1}\" x2=\"{xr:.1}\" y2=\"{y1:.1}\" class=\"axis\"/>\
-         <text x=\"{tx:.1}\" y=\"{ty:.1}\" text-anchor=\"end\" class=\"axl\">{max:.0}</text>\
+         <text x=\"{tx:.1}\" y=\"{ty:.1}\" text-anchor=\"end\" class=\"axl\">{max:.0}</text>{mid}\
          <text x=\"{tx:.1}\" y=\"{by:.1}\" text-anchor=\"end\" class=\"axl\">0</text>",
         y0 = pad_t,
         y1 = pad_t + plot_h,
@@ -1118,6 +1383,7 @@ fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
         tx = pad_l - 6.0,
         ty = pad_t + 8.0,
         by = pad_t + plot_h,
+        mid = mid_axis_label(max, pad_l - 6.0, pad_t + plot_h / 2.0 + 4.0),
     );
 
     let first = series.first().map(|p| p.date);
@@ -1125,6 +1391,18 @@ fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
     // ISO date for an axis label. Named rather than inlined so the two ends of
     // the axis cannot be formatted differently by accident.
     let ymd = |d: jiff::civil::Date| format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day());
+    // One invisible hit target per day carrying the native tooltip — the
+    // exact value on hover, focus or touch, without a script.
+    let mut points = String::new();
+    for (i, p) in series.iter().enumerate() {
+        points.push_str(&format!(
+            "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"7\" fill=\"transparent\"><title>{}: {} open</title></circle>",
+            x_at(i),
+            y_at(p.remaining),
+            ymd(p.date),
+            p.remaining
+        ));
+    }
     let date_labels = match (first, last) {
         (Some(f), Some(l)) => format!(
             "<text x=\"{pad_l}\" y=\"{ly:.1}\" class=\"axl\">{fs}</text>\
@@ -1140,9 +1418,21 @@ fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
     let body = format!(
         "{axis}<path d=\"{area}\" fill=\"url(#burn_ramp)\" opacity=\"0.28\"/>\
          <path d=\"{line}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"2.5\" stroke-linejoin=\"round\"/>\
-         {date_labels}"
+         {points}{date_labels}"
     );
     svg_wrap(w, h, &body, theme, "burn")
+}
+
+/// A halfway y-axis label, so a reader can place a bar between the top and
+/// the baseline; skipped when the top is 1 and half of it would be a lie.
+fn mid_axis_label(max: f64, x: f64, y: f64) -> String {
+    if max < 2.0 {
+        return String::new();
+    }
+    format!(
+        "<text x=\"{x:.1}\" y=\"{y:.1}\" text-anchor=\"end\" class=\"axl\">{:.0}</text>",
+        (max / 2.0).round()
+    )
 }
 
 /// Wrap chart geometry in a themed `<svg>` with the ramp gradient + axis style.
@@ -1379,7 +1669,10 @@ mod tests {
                 { "id": "018f-b", "short_id": 43,
                   "title": "Overdue thing: see https://example.com, no @import, no url(x), never pushState or fetch(",
                   "status": "pending", "project": "work.tasqx", "tags": ["api"],
-                  "due": "2020-01-01T00:00:00Z", "urgency": 9.0 }
+                  "due": "2020-01-01T00:00:00Z", "urgency": 9.0 },
+                { "id": "018f-c", "short_id": 44, "title": "Due soon thing",
+                  "status": "pending", "project": "work.tasqx", "tags": [],
+                  "due": "2026-07-18T09:00:00Z", "urgency": 4.0 }
             ]
         });
         let actionable = json!({
@@ -1391,7 +1684,8 @@ mod tests {
             "events": [
                 { "op": "add",  "ts": "2026-07-10T09:00:00Z", "entity": "task", "entity_id": "018f-a" },
                 { "op": "done", "ts": "2026-07-14T09:00:00Z", "entity": "task", "entity_id": "018f-a" },
-                { "op": "add",  "ts": "2026-07-11T09:00:00Z", "entity": "task", "entity_id": "018f-b" }
+                { "op": "add",  "ts": "2026-07-11T09:00:00Z", "entity": "task", "entity_id": "018f-b" },
+                { "op": "add",  "ts": "2026-07-12T09:00:00Z", "entity": "task", "entity_id": "018f-c" }
             ]
         });
         (summary, export, actionable, events)
@@ -1456,8 +1750,9 @@ mod tests {
             &json!({ "group_by": "project", "metrics": ["count"] }),
         )
         .unwrap();
+        // Open (pending + active, this module's own count) beside Total.
         assert!(
-            html.contains("<td class=\"proj\">P</td><td>3</td>"),
+            html.contains("<td class=\"proj\">P</td><td>2</td><td>3</td>"),
             "the By-project row must show 3, not the pending-only 1: {html}"
         );
     }
@@ -1795,11 +2090,11 @@ mod tests {
     /// happened to agree only by coincidence, and the audit's own repro
     /// (46 open / 12 done this week / 13 velocity /wk on one store, in the
     /// same minute) is this exact drift. A `done` event for a task the
-    /// filter excluded inflated velocity alone. After the fix both tiles read
-    /// off `completed_recent`, so they cannot disagree and an out-of-scope
-    /// event can no longer move only one of them.
+    /// filter excluded inflated velocity alone. The tile is gone and
+    /// `completed_recent` is the one source; an out-of-scope event must not
+    /// move it.
     #[test]
-    fn velocity_matches_completed_this_week_and_ignores_events_outside_the_scoped_export() {
+    fn done_this_week_ignores_events_outside_the_scoped_export() {
         let (summary, export, actionable, mut events) = synthetic();
         // A 'done' event for a task NOT in the scoped export — as if it
         // belonged to a project this report's filter excluded.
@@ -1821,16 +2116,14 @@ mod tests {
         };
         let d = report.derive();
         assert_eq!(
-            d.velocity,
             d.completed_recent.len(),
-            "velocity ({}) must equal done-this-week ({}) — same source, same window",
-            d.velocity,
-            d.completed_recent.len()
+            1,
+            "the out-of-scope task's done event must not inflate done-this-week"
         );
-        assert_eq!(
-            d.velocity, 1,
-            "the out-of-scope task's done event must not inflate velocity: {}",
-            d.velocity
+        let doc = report.render();
+        assert!(
+            doc.contains("<div class=\"n\">1</div><div class=\"l\">done · last 7 days</div>"),
+            "the tile must read off completed_recent: {doc}"
         );
     }
 
@@ -1926,12 +2219,21 @@ mod tests {
     /// throughput" mislabeled a 12-WEEK series as a single week — a third,
     /// disagreeing sense of "this week" beside "done this week" (rolling 7
     /// days) and the chart's own ISO-week buckets.
+    ///
+    /// The UX review then found the fixed tile's twin: "done this week" and
+    /// "velocity /wk (7d)" showed the same number from the same source, so
+    /// one of them was noise. The velocity tile is gone; the done tile names
+    /// the window in its own label.
     #[test]
-    fn velocity_states_its_window_and_the_throughput_heading_does_not_claim_a_single_week() {
+    fn done_tile_names_its_window_and_the_throughput_heading_does_not_claim_a_single_week() {
         let doc = render_with("nord");
         assert!(
-            doc.contains("velocity /wk (7d)"),
-            "the velocity tile must name its window: {doc}"
+            doc.contains("<div class=\"l\">done · last 7 days</div>"),
+            "the done tile must name its window: {doc}"
+        );
+        assert!(
+            !doc.contains("velocity"),
+            "the velocity tile duplicated the done tile: {doc}"
         );
         assert!(
             !doc.contains("This week's throughput"),
@@ -2064,6 +2366,177 @@ mod tests {
         assert!(
             doc.contains("+2 more"),
             "top tags (10 of 12 distinct shown) must say how many more: {doc}"
+        );
+    }
+
+    /// The UX review's ten-second test: what changed, what needs attention
+    /// and what to do next come before any chart. Overdue work used to start
+    /// roughly 9,000px down a desktop page, behind two charts and every task
+    /// completed that week.
+    #[test]
+    fn sections_run_in_decision_order() {
+        let doc = render_with("nord");
+        let at = |s: &str| {
+            doc.find(s)
+                .unwrap_or_else(|| panic!("missing {s:?}: {doc}"))
+        };
+        let order = [
+            "class=\"lede\"",
+            "Needs attention",
+            "Now actionable",
+            "Weekly throughput",
+            "Open backlog",
+            "Token spend",
+            "By project",
+            "Completed",
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                at(pair[0]) < at(pair[1]),
+                "{:?} must come before {:?}: {doc}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    /// The header's four tiles answer the four questions; the eight-tile
+    /// strip gave four token counters the same weight as the overdue count.
+    /// "Needs attention" is overdue plus due within 7 days — fixture: #43
+    /// overdue, #44 due in three days.
+    #[test]
+    fn needs_attention_counts_overdue_and_due_within_seven_days() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("<div class=\"n\">2</div><div class=\"l\">needs attention</div>"),
+            "the tile must count overdue and due-soon together: {doc}"
+        );
+        assert!(
+            doc.contains("Due within 7 days"),
+            "the attention panel must list what is due soon: {doc}"
+        );
+        assert!(
+            doc.contains("#44"),
+            "the due-soon task must be listed: {doc}"
+        );
+        let header_end = doc.find("</header>").expect("a header");
+        assert!(
+            !doc[..header_end].contains("cache read"),
+            "the token tiles belong in their own section, not the header: {doc}"
+        );
+    }
+
+    #[test]
+    fn header_says_when_the_snapshot_was_taken() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("Snapshot as of <span title=\"2026-07-15T12:00:00Z\">"),
+            "the generation instant belongs beside the title, not only in the footer: {doc}"
+        );
+    }
+
+    /// Dark-mode secondary text was ~1.7:1 against the page (nord's `muted`
+    /// role is a terminal colour picked to recede). Every description, tile
+    /// label and chart label uses it. Same floor the light scheme already
+    /// clears (#163), lightened instead of darkened.
+    #[test]
+    fn muted_text_clears_aa_contrast_on_every_builtin_dark_scheme() {
+        for name in theme::BUILTINS {
+            let doc = render_with(name);
+            let dark_at = doc
+                .find("@media (prefers-color-scheme: dark)")
+                .unwrap_or_else(|| panic!("{name}: no dark media block: {doc}"));
+            let dark_css = &doc[dark_at..];
+            let pick = |role: &str| {
+                let at = dark_css
+                    .find(role)
+                    .unwrap_or_else(|| panic!("{name}: {role} missing from dark css: {doc}"));
+                let rest = &dark_css[at + role.len()..];
+                let hex = rest[..rest.find(';').unwrap()].trim();
+                Rgb::parse_hex(hex).unwrap_or_else(|| panic!("{name}: unparseable {role} {hex:?}"))
+            };
+            let ratio = contrast_ratio(pick("--muted:"), pick("--bg:"));
+            assert!(
+                ratio >= 4.5,
+                "{name} --muted on --bg is {ratio:.2}:1, under WCAG AA's 4.5:1"
+            );
+        }
+    }
+
+    /// "W37" is a bucket key, not a label a reader can place; the bar for
+    /// the current week is incomplete and must not read as a collapse.
+    #[test]
+    fn throughput_weeks_are_dated_and_the_current_one_is_marked_partial() {
+        let doc = render_with("nord");
+        assert!(
+            !doc.contains("class=\"axl\">W2"),
+            "ISO week numbers are not readable axis labels: {doc}"
+        );
+        assert!(
+            doc.contains("the last bar is the current, partial week"),
+            "the caption must say the last bar is incomplete: {doc}"
+        );
+        assert!(
+            doc.contains("<title>Week of "),
+            "each week needs a native tooltip with its counts: {doc}"
+        );
+    }
+
+    /// A rising line under "burning down" read as a broken chart. The
+    /// section says what the line did: start, end, change.
+    #[test]
+    fn backlog_states_its_start_end_and_change() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("Open tasks over the last 30 days: "),
+            "the backlog caption must state start, end and change: {doc}"
+        );
+        assert!(
+            doc.contains("<title>2026-07-15: "),
+            "each day needs a native tooltip: {doc}"
+        );
+    }
+
+    /// Four `0` cells on a project nobody measured read as "this cost
+    /// nothing"; an unmeasured group renders `—` like an untracked estimate.
+    #[test]
+    fn an_unmeasured_group_shows_a_dash_not_four_zeros() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains(
+                "<td class=\"muted\">—</td><td class=\"muted\">—</td>\
+                 <td class=\"muted\">—</td><td class=\"muted\">—</td>"
+            ),
+            "a group with no measurement must not print four zeros: {doc}"
+        );
+    }
+
+    /// "Tasks" per project summed to 295 under a header saying 117 open,
+    /// because the column counted done work too (D24) and said nothing.
+    /// Open and total are now two columns.
+    #[test]
+    fn project_table_separates_open_from_total() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("<th>Open</th><th>Total</th>"),
+            "the table must name both counts: {doc}"
+        );
+        assert!(
+            doc.contains("<td class=\"proj\">work.tasqx</td><td>2</td><td>3</td>"),
+            "work.tasqx has 2 open of 3 counted: {doc}"
+        );
+    }
+
+    /// At phone width the sticky header took ~240px of a 640px viewport.
+    #[test]
+    fn header_is_compact_and_unpinned_on_phones() {
+        let doc = render_with("nord");
+        let at = doc
+            .find("@media (max-width: 600px)")
+            .expect("a phone-width rule");
+        assert!(
+            doc[at..].contains("position: static"),
+            "the header must not stay pinned on a phone: {doc}"
         );
     }
 
