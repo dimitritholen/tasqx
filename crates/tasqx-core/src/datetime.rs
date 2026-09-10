@@ -187,6 +187,23 @@ fn midnight() -> Time {
     Time::new(0, 0, 0, 0).expect("midnight is a valid time")
 }
 
+/// The start (00:00:00 UTC) of the UTC day containing `ts`.
+///
+/// Every date this tool stores is either a clean midnight or a clock minute a
+/// human typed — except a recurrence spawned with no `due`/`scheduled` to
+/// advance, which used to anchor on the raw completion `Timestamp` and carry
+/// its nanoseconds forward forever (audit #231.2: `2026-09-12T10:43:05.798…Z`,
+/// truncated unreadably in the DUE column, drifting a little further each
+/// cycle). Anchoring such a spawn on this function's return value instead
+/// gives it the same clean boundary as every other date.
+pub fn day_start_utc(ts: Timestamp) -> Timestamp {
+    ts.to_zoned(TimeZone::UTC)
+        .date()
+        .to_zoned(TimeZone::UTC)
+        .expect("UTC has no gaps or ambiguous times")
+        .timestamp()
+}
+
 /// Resolve the date portion (no time) from the keyword tokens.
 fn resolve_date(tokens: &[&str], today: Date) -> Option<Date> {
     match tokens {
@@ -747,5 +764,14 @@ mod tests {
     #[test]
     fn a_large_but_in_range_offset_still_parses() {
         assert_eq!(parse_when("3650d", now()).unwrap(), "2036-07-12T00:00:00Z");
+    }
+
+    #[test]
+    fn day_start_utc_truncates_to_midnight() {
+        let ts: Timestamp = "2026-07-15T10:43:05.798165338Z".parse().unwrap();
+        assert_eq!(day_start_utc(ts).to_string(), "2026-07-15T00:00:00Z");
+        // Already at midnight: no change.
+        let midnight_ts: Timestamp = "2026-07-15T00:00:00Z".parse().unwrap();
+        assert_eq!(day_start_utc(midnight_ts), midnight_ts);
     }
 }
