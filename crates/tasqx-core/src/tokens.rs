@@ -90,6 +90,22 @@ pub fn require_source(value: &str) -> Result<(), ApiError> {
     )))
 }
 
+/// Numeric rank of a confidence grade, for finding the WORST of a set (#217):
+/// a rolled-up figure built from several measurements is only as trustworthy
+/// as its least-trustworthy contributor, so a caller aggregating across
+/// measurements takes the minimum by this rank, not the last one seen.
+///
+/// An unrecognized value ranks alongside [`CONFIDENCE_LOW`] rather than
+/// panicking or defaulting high: a confidence this module cannot name must
+/// never be silently treated as trustworthy.
+pub fn confidence_rank(confidence: &str) -> u8 {
+    match confidence {
+        CONFIDENCE_HIGH => 2,
+        CONFIDENCE_MEDIUM => 1,
+        _ => 0,
+    }
+}
+
 /// Refuse a `confidence` outside [`TOKEN_CONFIDENCE`], same contract as
 /// [`require_source`].
 pub fn require_confidence(value: &str) -> Result<(), ApiError> {

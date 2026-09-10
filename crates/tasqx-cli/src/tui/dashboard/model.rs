@@ -340,6 +340,11 @@ pub struct Burndown {
 pub struct TokenRow {
     name: Option<String>,
     pub buckets: [i64; 4],
+    // #217: D50's trust hierarchy, carried from `report.summary`'s
+    // `tokens_confidence` — the group's WORST measurement, since the four
+    // buckets above are already a blend across every measurement that fed
+    // them and cannot answer "how sure are we" on their own.
+    confidence: Option<String>,
 }
 
 impl TokenRow {
@@ -362,6 +367,12 @@ impl TokenRow {
         self.buckets
             .iter()
             .fold(0i64, |acc, &n| acc.saturating_add(n))
+    }
+
+    /// The group's worst confidence, or `None` when `report.summary` sent
+    /// none — no token metric was requested, or nothing was measured.
+    pub fn confidence(&self) -> Option<&str> {
+        self.confidence.as_deref()
     }
 }
 
@@ -616,6 +627,7 @@ fn build_projects_and_tokens(
         est: i64,
         tracked: i64,
         buckets: [i64; 4],
+        confidence: Option<String>,
     }
     let mut agg: HashMap<Option<String>, Agg> = HashMap::new();
     for g in rows_of(summary, "groups") {
@@ -640,6 +652,10 @@ fn build_projects_and_tokens(
                     .and_then(tasqx_core::util::duration_secs)
                     .unwrap_or(0),
                 buckets,
+                confidence: g
+                    .get("tokens_confidence")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             },
         );
     }
@@ -714,6 +730,7 @@ fn build_projects_and_tokens(
             (a.buckets.iter().any(|&n| n > 0)).then(|| TokenRow {
                 name: k.as_ref().map(|n| render::san(n)),
                 buckets: a.buckets,
+                confidence: a.confidence.clone(),
             })
         })
         .collect();

@@ -494,8 +494,18 @@ impl<'a> Report<'a> {
                     format!("<td class=\"muted\">{}</td>", crate::tokens::compact(n))
                 })
                 .collect();
+            // #217: `report.summary` carries the group's WORST confidence
+            // (D50's trust hierarchy) in `tokens_confidence` whenever a token
+            // metric was requested. Rendered as its own column rather than
+            // folded into a bucket cell — the page had a `confidence` string
+            // nowhere on it before, only a same-named CSS/JS token, so this
+            // must be unmistakably a data column.
+            let confidence_cell = match g.get("tokens_confidence").and_then(Value::as_str) {
+                Some(c) => format!("<td class=\"muted\">{}</td>", esc(c)),
+                None => "<td class=\"muted\">—</td>".to_string(),
+            };
             rows.push_str(&format!(
-                "<tr><td class=\"proj\">{name}</td><td>{count}</td><td>{est}</td><td>{tracked}</td>{od}{tokens_cells}</tr>",
+                "<tr><td class=\"proj\">{name}</td><td>{count}</td><td>{est}</td><td>{tracked}</td>{od}{tokens_cells}{confidence_cell}</tr>",
                 name = esc(name),
             ));
         }
@@ -506,7 +516,7 @@ impl<'a> Report<'a> {
         // an overflowing table's scroll local to the table, on any viewport.
         let table = format!(
             "<div class=\"table-wrap\"><table class=\"grid\"><thead><tr><th>{head}</th><th>Tasks</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
-             <th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th></tr></thead><tbody>{rows}</tbody></table></div>",
+             <th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th><th>Confidence</th></tr></thead><tbody>{rows}</tbody></table></div>",
             // The axis name, title-cased — `esc` because it reaches markup, even
             // though core has already restricted it to SUMMARY_GROUP_BY.
             head = esc(&title_case(axis)),
@@ -1338,6 +1348,49 @@ mod tests {
             );
             assert!(doc.contains(&expected), "missing tile {label}: {doc}");
         }
+    }
+
+    /// #217: `report.summary` carries `tokens_confidence` (D50's trust
+    /// hierarchy, the group's worst measurement), but the HTML by-project
+    /// table had no column for it at all — a `grep -c confidence` over the
+    /// rendered page found one hit, and it was a CSS/JS token, not data. A
+    /// low-confidence group must get a visible, named marker.
+    #[test]
+    fn per_group_table_renders_a_confidence_column() {
+        let summary = json!({
+            "groups": [
+                { "project": "work.tasqx", "count": 2, "est_total": "PT1H",
+                  "tracked_total": "PT0S", "overdue": 0,
+                  "tokens_in": 1000, "tokens_out": 200, "tokens_cache_read": 50,
+                  "tokens_cache_creation": 5, "tokens_confidence": "low" }
+            ],
+            "generated": "2026-07-15T12:00:00Z"
+        });
+        let export = json!({ "tasks": [] });
+        let actionable = json!({ "tasks": [] });
+        let events = json!({ "events": [] });
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let doc = Report {
+            theme: &th,
+            group_by: "project",
+            filter: None,
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        }
+        .render();
+
+        assert!(
+            doc.contains("<th>Confidence</th>"),
+            "the by-project table has no confidence column: {doc}"
+        );
+        assert!(
+            doc.contains(">low<"),
+            "the group's low confidence never reached the page: {doc}"
+        );
     }
 
     #[test]
