@@ -734,7 +734,7 @@ fn a_wait_that_has_passed_brings_the_task_back_into_list() {
         .output()
         .expect("run list");
     assert!(
-        String::from_utf8_lossy(&listed.stdout).contains("No tasks"),
+        String::from_utf8_lossy(&listed.stdout).contains("No matching tasks"),
         "while the wait is ahead the task stays out of the default view"
     );
 
@@ -1144,7 +1144,7 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
     // nothing precisely because both predicates are read and ANDed.
     let s = ok(&["list", "+api", "status:done"]);
     assert!(
-        s.contains("No tasks."),
+        s.contains("No matching tasks."),
         "a multi-element filter must stay multi-token: {s}"
     );
     let s = ok(&["list", "+api", "status:pending"]);
@@ -1216,7 +1216,7 @@ fn an_invalid_priority_sugar_token_is_refused_not_dropped() {
     // the typo, and not one silently missing the priority that was asked for.
     let s = String::from_utf8_lossy(&run(&["list"]).stdout).to_string();
     assert!(
-        s.contains("No tasks."),
+        s.contains("No matching tasks."),
         "a refused add must store nothing: {s}"
     );
 
@@ -3730,4 +3730,125 @@ fn memory_show_prints_the_body_with_its_newlines_intact() {
         shown.contains(body),
         "memory show must print the body verbatim, newlines included; got:\n{shown}"
     );
+}
+
+/// #229 item 7: the CLI, the API and MCP each name this operation
+/// differently — `memory show` (CLI), `memory.get` (`core.capabilities`),
+/// `tasqx_get_memory` (MCP) — while every other verb keeps one name across
+/// the three (`show`/`task.get`/`tasqx_get_task`). `memory get`, the name a
+/// reader learns from the API or MCP, was not even an alias.
+#[test]
+fn memory_get_is_an_alias_of_memory_show() {
+    let dir = fresh_config_dir("memory-get-alias");
+    let add = bin("memory-get-alias", &dir)
+        .args(["memory", "add", "T", "B"])
+        .output()
+        .expect("run memory add");
+    let stdout = String::from_utf8_lossy(&add.stdout).to_string();
+    let id = stdout
+        .strip_prefix("Stored ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("expected `Stored <id>  ·  <title>`, got: {stdout}"))
+        .to_string();
+
+    let show = bin("memory-get-alias", &dir)
+        .args(["memory", "show", &id])
+        .output()
+        .expect("run memory show");
+    let get = bin("memory-get-alias", &dir)
+        .args(["memory", "get", &id])
+        .output()
+        .expect("run memory get");
+    assert!(
+        get.status.success(),
+        "`memory get` must be an alias of `memory show`, got: {}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(
+        show.stdout, get.stdout,
+        "`memory get` and `memory show` must produce identical output"
+    );
+}
+
+/// #229 item 8: a store the engine cannot open (`TASQX_DB` pointing at an
+/// unwritable path) printed `error: cannot open store ...` at exit 1 — a bare
+/// `error:` prefix with no bracketed code, which DESIGN.md reserves for
+/// clap's own usage errors, and an exit code (1) that appears nowhere in the
+/// documented `0/2/4/5/...` contract. Every other engine failure carries
+/// `error [<code>]: ...` and an exit code the table maps it to.
+#[test]
+fn a_store_that_cannot_be_opened_is_reported_with_a_bracketed_code() {
+    let dir = fresh_config_dir("bad-store");
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &dir)
+        .env("TASQX_DB", "/proc/nope/x.db")
+        .args(["--no-daemon", "list"])
+        .output()
+        .expect("run tasqx");
+    assert!(!out.status.success(), "an unopenable store must not exit 0");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.starts_with("error ["),
+        "must use the bracketed-code shape every other engine failure uses, \
+         not a bare `error:` (reserved for clap's own usage errors): {err:?}"
+    );
+    assert!(
+        err.contains("cannot open store"),
+        "must still say what went wrong: {err:?}"
+    );
+}
+
+/// #229 item 6: `--json` gets a note explaining it is ignored on a verb that
+/// cannot honour it (D31's `JSON_CARVE_OUTS`) — `--theme` and `--socket` did
+/// not, on verbs that cannot honour THEM either: `api` and `completions`
+/// produce no themed output at all, and `docs`/`manual`/`completions` never
+/// open a store or a daemon connection. Every subcommand's `--help` lists all
+/// four globals regardless, so a reader has no way to tell "ignored silently"
+/// from "does something" short of this note.
+///
+/// `--no-daemon` is deliberately NOT covered here (see `execute`'s comment):
+/// it is a defensive flag meant to ride along on every invocation, and this
+/// suite's own fixtures do exactly that.
+#[test]
+fn theme_and_socket_are_noted_as_inert_the_way_json_already_is() {
+    let dir = fresh_config_dir("inert-flags");
+    let raw = |args: &[&str]| -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_tasqx"))
+            .env("TASQX_CONFIG_DIR", &dir)
+            .env("TASQX_DB", db_path("inert-flags"))
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+
+    // `--theme` on a verb with no themed output.
+    for args in [
+        vec!["--theme", "mono", "completions", "bash"],
+        vec!["--theme", "mono", "api"],
+    ] {
+        let out = raw(&args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("--theme") && err.contains("does not honour"),
+            "{args:?} must note that --theme is ignored, got stderr: {err}"
+        );
+    }
+
+    // `--socket` on a verb that never opens a store or a daemon. `docs` writes
+    // to stdout rather than opening a browser, so the test never launches one.
+    let verb_args: [(&str, &[&str]); 3] = [
+        ("docs", &["docs", "--no-open", "--stdout"]),
+        ("manual", &["manual"]),
+        ("completions", &["completions", "bash"]),
+    ];
+    for (verb, base) in verb_args {
+        let mut args: Vec<&str> = vec!["--socket", "/tmp/unused.sock"];
+        args.extend_from_slice(base);
+        let out = raw(&args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("--socket") && err.contains("does not honour"),
+            "`{verb}` with --socket must note it is ignored, got stderr: {err}"
+        );
+    }
 }
