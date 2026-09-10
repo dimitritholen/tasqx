@@ -9,8 +9,8 @@ and 140 columns. None of them were visible to a fully green test suite, and two
 of them — the gauge's resolution and its inverted ranking — could not have been
 found any other way. §14 is the loop that makes that cheap.
 
-`list` and `agenda` carry the style. `show`, `report`, `next`, the dashboard and
-`pick` do not yet.
+`list`, `agenda` and the dashboard's TASKS panel carry the style. `show`,
+`report`, `next` and `pick` do not yet.
 
 ---
 
@@ -50,6 +50,12 @@ vocabulary both views share.
 
 `▶` running, `⊘` blocked, two cells, at the far left where the eye crosses
 first. Never dropped by the width fit. Not drawn at all when no row has one.
+
+Without Unicode they are `*` and `B` — and NOT `>`, however natural `>` looks
+for "running". `>` is the CURSOR on a terminal that has no better glyph: `pick`
+and the dashboard both reserve it for the row the reader is on. A state marker
+drawn as the cursor is two meanings on one character, on the exact terminal
+that has no colour left to tell them apart.
 
 The glyphs must differ in SHAPE as well as in role. `NO_COLOR` (§8 of
 `DESIGN.md`, the degradation table) keeps emphasis and drops every hue, so a
@@ -192,7 +198,7 @@ leaving a guide describing a screen that no longer exists.
 
 | Thing | Value |
 |---|---|
-| rail, running | `▶` (`>` without Unicode) |
+| rail, running | `▶` (`*` without Unicode) |
 | rail, blocked | `⊘` (`B` without Unicode) |
 | gauge, full cell | `▄` |
 | gauge, track | `▁` |
@@ -203,8 +209,8 @@ leaving a guide describing a screen that no longer exists.
 ## Where it is not carried yet
 
 - `show`, `report`, `next` — not judged as images.
-- The dashboard: `docs/specs/2026-09-02-dashboard-redesign-design.md` predates
-  this file and spells blocked `⛔` where rule 4 says `⊘`. Reconcile before
-  building it, in whichever direction — one screen disagreeing with another
-  about the same fact is the thing the style exists to stop.
 - `pick`.
+- The dashboard's PULSE and EFFORT panels, which D80 names and nothing has
+  built. Its TASKS panel carries the style; the disagreement its spec had with
+  rule 4 (`⛔` for blocked where this file says `⊘`) is settled in favour of
+  `⊘`, which is what `list`, `agenda` and TASKS all now draw.

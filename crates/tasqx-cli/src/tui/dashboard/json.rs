@@ -121,53 +121,39 @@ pub fn document(d: &Dashboard, days: usize, order: &[PanelId]) -> Value {
             "done_week": d.status.done_week,
         }),
     );
-    if want(PanelId::Now) {
+    if want(PanelId::Tasks) {
+        // One key where there were five (D80). `now`, `next`, `due`, `blocked`
+        // and `recent` described five panels over the same rows; a consumer
+        // that wanted "the open work" had to union four of them and dedupe.
+        // The facts they carried are on the row instead — `active_since` is
+        // what NOW selected, `blocked` is what BLOCKED selected, `due` is what
+        // DUE bucketed by, `modified` is what RECENT sorted on — so nothing
+        // moved out of reach, and the grouping and order the screen is showing
+        // are stated rather than inferred.
+        let t = &d.tasks;
+        let groups: Vec<Value> = t
+            .groups
+            .iter()
+            .map(|g| {
+                let (rows, total, truncated) = capped(&g.rows);
+                json!({
+                    "project": g.project(),
+                    "open": g.rows.len(),
+                    "overdue": g.overdue,
+                    "rows": rows,
+                    "total": total,
+                    "truncated": truncated,
+                })
+            })
+            .collect();
         obj.insert(
-            "now".to_string(),
-            json!(d.now.as_ref().map(|n| json!({
-                "task": task(&n.task),
-                "elapsed_secs": n.elapsed_secs,
-                // Tracked PLUS the interval still running — the number the
-                // card shows, because `tracked` alone reads as the final
-                // answer when it is only the total so far.
-                "total_secs": n.total_secs(),
-            }))),
-        );
-    }
-    if want(PanelId::Next) {
-        let (rows, total, truncated) = capped(&d.next.rows);
-        obj.insert(
-            "next".to_string(),
+            "tasks".to_string(),
             json!({
-                "max_urgency": d.next.max_urgency,
-                "rows": rows,
-                "total": total,
-                "truncated": truncated,
+                "sort": t.sort.label(),
+                "max_urgency": t.max_urgency,
+                "total": t.total,
+                "groups": groups,
             }),
-        );
-    }
-    if want(PanelId::Due) {
-        obj.insert(
-            "due".to_string(),
-            json!({
-                "overdue": tasks(&d.due.overdue),
-                "today": tasks(&d.due.today),
-                "tomorrow": tasks(&d.due.tomorrow),
-                "week": tasks(&d.due.week),
-            }),
-        );
-    }
-    if want(PanelId::Blocked) {
-        obj.insert(
-            "blocked".to_string(),
-            json!({ "rows": tasks(&d.blocked.rows) }),
-        );
-    }
-    if want(PanelId::Recent) {
-        let (rows, total, truncated) = capped(&d.recent.rows);
-        obj.insert(
-            "recent".to_string(),
-            json!({ "rows": rows, "total": total, "truncated": truncated }),
         );
     }
     if want(PanelId::Projects) {
@@ -280,11 +266,7 @@ mod tests {
 
     fn all_panels() -> Vec<PanelId> {
         vec![
-            PanelId::Now,
-            PanelId::Next,
-            PanelId::Due,
-            PanelId::Blocked,
-            PanelId::Recent,
+            PanelId::Tasks,
             PanelId::Projects,
             PanelId::Burndown,
             PanelId::Tokens,
@@ -292,53 +274,44 @@ mod tests {
     }
 
     /// #152: `recent` used to return every task the store had, with no count
-    /// and no way to tell a short list from a cut one. RECENT and NEXT UP both
-    /// scale with the store, so both are checked here on a store bigger than
-    /// [`ROW_CAP`].
+    /// and no way to tell a short list from a cut one. The list still scales
+    /// with the store, so the cap is still checked on a store bigger than
+    /// [`ROW_CAP`] — per GROUP now, since that is where the rows live.
     #[test]
-    fn recent_and_next_are_capped_with_total_and_truncated() {
+    fn the_task_rows_are_capped_with_total_and_truncated() {
         let over_cap = ROW_CAP as i64 + 10;
         let dash = dashboard_with(over_cap);
         let doc = document(&dash, 7, &all_panels());
 
-        let recent = &doc["recent"];
+        let groups = doc["tasks"]["groups"]
+            .as_array()
+            .expect("tasks.groups is an array");
+        let biggest = groups
+            .iter()
+            .max_by_key(|g| g["total"].as_i64().unwrap_or(0))
+            .expect("a group");
         assert_eq!(
-            recent["rows"]
-                .as_array()
-                .expect("recent.rows is an array")
-                .len(),
+            biggest["rows"].as_array().expect("rows is an array").len(),
             ROW_CAP,
-            "recent.rows must stop at ROW_CAP, not grow with the store"
+            "a group's rows must stop at ROW_CAP, not grow with the store"
         );
-        assert_eq!(recent["total"], json!(over_cap));
-        assert_eq!(recent["truncated"], json!(true));
-
-        let next = &doc["next"];
-        assert_eq!(
-            next["rows"]
-                .as_array()
-                .expect("next.rows is an array")
-                .len(),
-            ROW_CAP
-        );
-        assert_eq!(next["total"], json!(over_cap));
-        assert_eq!(next["truncated"], json!(true));
+        assert_eq!(biggest["total"], json!(over_cap));
+        assert_eq!(biggest["truncated"], json!(true));
+        // …and the whole-list count is not the capped one.
+        assert_eq!(doc["tasks"]["total"], json!(over_cap));
     }
 
     /// The flip side: a store under the cap is not miscalled truncated, and
     /// nothing is silently dropped from a short list.
     #[test]
-    fn recent_and_next_are_whole_and_untruncated_under_the_cap() {
+    fn the_task_rows_are_whole_and_untruncated_under_the_cap() {
         let under_cap = ROW_CAP as i64 - 5;
         let dash = dashboard_with(under_cap);
         let doc = document(&dash, 7, &all_panels());
-
-        assert_eq!(
-            doc["recent"]["rows"].as_array().unwrap().len(),
-            under_cap as usize
-        );
-        assert_eq!(doc["recent"]["total"], json!(under_cap));
-        assert_eq!(doc["recent"]["truncated"], json!(false));
+        let g = &doc["tasks"]["groups"][0];
+        assert_eq!(g["rows"].as_array().unwrap().len(), under_cap as usize);
+        assert_eq!(g["total"], json!(under_cap));
+        assert_eq!(g["truncated"], json!(false));
     }
 
     /// #152's other half: `--panels`/`dashboard.panels` used to only rename
@@ -348,11 +321,11 @@ mod tests {
     #[test]
     fn only_the_named_panels_appear_in_the_document() {
         let dash = dashboard_with(3);
-        let order = vec![PanelId::Now, PanelId::Next, PanelId::Due];
+        let order = vec![PanelId::Tasks];
         let doc = document(&dash, 7, &order);
         let obj = doc.as_object().expect("document is an object");
 
-        for missing in ["blocked", "recent", "projects", "burndown", "tokens"] {
+        for missing in ["projects", "burndown", "tokens"] {
             assert!(
                 !obj.contains_key(missing),
                 "`{missing}` was not requested and must be absent, not merely empty"
@@ -364,9 +337,7 @@ mod tests {
             "window_days",
             "panels",
             "status",
-            "now",
-            "next",
-            "due",
+            "tasks",
         ] {
             assert!(obj.contains_key(present), "`{present}` must be present");
         }

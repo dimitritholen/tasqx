@@ -33,7 +33,7 @@ use ratatui::Frame;
 use crate::render;
 use crate::theme::{Caps, Theme};
 use crate::tui::rt_style;
-use model::{Dashboard, PanelId, Placement, Screen};
+use model::{Dashboard, PanelId, Placement, Screen, Sort};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -121,6 +121,10 @@ pub struct App {
     placed: Vec<PanelId>,
     has_slot: bool,
     window: usize,
+    /// What the list is ordered by. Sticky across a refresh: `r` and the
+    /// auto-refresh rebuild the whole `Dashboard`, and a rebuild that reset the
+    /// order would be the screen undoing a keypress.
+    sort: Sort,
     auto_refresh: bool,
     help: bool,
     /// The open detail card, or nothing.
@@ -148,7 +152,7 @@ impl App {
         window_days: usize,
         auto_refresh: bool,
     ) -> Self {
-        let focus = order.first().copied().unwrap_or(PanelId::Now);
+        let focus = order.first().copied().unwrap_or(PanelId::Tasks);
         // The slot opens on the first slot member the reader CONFIGURED, in
         // their own ordering. It used to open on a hard-coded Burndown, so a
         // `dashboard.panels` naming only `projects` drew the excluded panel and
@@ -172,6 +176,7 @@ impl App {
                 .iter()
                 .position(|(_, d)| *d == window_days)
                 .unwrap_or(0),
+            sort: Sort::default(),
             auto_refresh,
             help: false,
             detail: None,
@@ -563,6 +568,25 @@ impl App {
                 self.help = !self.help;
                 None
             }
+            // What RECENT was a panel for. Re-sorting is a rebuild of the
+            // grouping as well as the rows — under `touched` there is no
+            // grouping at all — so it goes through the model rather than
+            // shuffling what is already drawn.
+            KeyCode::Char('s') => {
+                self.sort = self.sort.next();
+                self.dash.tasks = model::group_tasks(
+                    self.dash
+                        .tasks
+                        .groups
+                        .iter()
+                        .flat_map(|g| g.rows.iter().cloned())
+                        .collect(),
+                    self.dash.today,
+                    self.sort,
+                );
+                self.status = format!("sorted by {}", self.sort.label());
+                None
+            }
             // The window changes which events are fetched (D59's `from`), so it
             // must re-read. A `w` that only relabelled the axis would lie.
             KeyCode::Char('w') => {
@@ -596,11 +620,7 @@ impl App {
 
 fn panel_of_digit(d: u8) -> Option<PanelId> {
     [
-        PanelId::Now,
-        PanelId::Next,
-        PanelId::Due,
-        PanelId::Blocked,
-        PanelId::Recent,
+        PanelId::Tasks,
         PanelId::Projects,
         PanelId::Burndown,
         PanelId::Tokens,
@@ -1396,12 +1416,21 @@ pub struct Hint {
 
 pub const KEYS: &[Key] = &[
     Key {
-        keys: "1-8",
+        keys: "1-4",
         help: "focus a panel (or place it in the analytics slot)",
         footer: Some(Hint {
-            keys: "1-8",
+            keys: "1-4",
             word: "panel",
             rank: 4,
+        }),
+    },
+    Key {
+        keys: "s",
+        help: "cycle the list order: urgency, due, touched",
+        footer: Some(Hint {
+            keys: "s",
+            word: "sort",
+            rank: 12,
         }),
     },
     Key {

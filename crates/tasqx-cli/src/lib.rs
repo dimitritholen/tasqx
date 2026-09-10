@@ -1084,16 +1084,37 @@ mod tests {
     /// `--panels`/`dashboard.panels` share one parser (#152): an unknown word
     /// is dropped rather than refused, `PanelId::Slot` is unreachable (there
     /// is no slug for it), and the order typed is the order kept — a caller
-    /// that asked for `due,now` must not get `now,due` back.
+    /// that asked for `burndown,projects` must not get them back the other way.
     #[test]
     fn parse_panel_list_keeps_the_typed_order_and_drops_the_unknown() {
         use tui::dashboard::model::PanelId;
         assert_eq!(
-            parse_panel_list("due, now , bogus,next"),
-            vec![PanelId::Due, PanelId::Now, PanelId::Next]
+            parse_panel_list("burndown, projects , bogus,tokens"),
+            vec![PanelId::Burndown, PanelId::Projects, PanelId::Tokens]
         );
         assert_eq!(parse_panel_list(""), Vec::<PanelId>::new());
         assert_eq!(parse_panel_list("slot"), Vec::<PanelId>::new());
+    }
+
+    /// A config written against the eight-panel screen still parses.
+    ///
+    /// D80 folded NOW, NEXT UP, DUE, BLOCKED and RECENT into TASKS, and a
+    /// setting that names them was written against a screen that existed —
+    /// dropping five words as "unknown" would tell a reader their config is
+    /// wrong when what happened is that it moved. They resolve to `tasks`,
+    /// deduplicated, because five names for one panel must not place it five
+    /// times.
+    #[test]
+    fn the_panel_names_d80_retired_still_resolve() {
+        use tui::dashboard::model::PanelId;
+        assert_eq!(
+            parse_panel_list("now,next,due,blocked,recent"),
+            vec![PanelId::Tasks]
+        );
+        assert_eq!(
+            parse_panel_list("projects,next,burndown"),
+            vec![PanelId::Projects, PanelId::Tasks, PanelId::Burndown]
+        );
     }
 
     /// A window too small for the screen makes a BARE `tasqx` print the table

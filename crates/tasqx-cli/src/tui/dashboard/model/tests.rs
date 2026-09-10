@@ -106,7 +106,13 @@ fn no_events() -> Value {
 }
 
 fn build_with(tasks: Value, summary: Value, projects: Value) -> Dashboard {
-    build(
+    build_sorted_with(tasks, summary, projects, Sort::default())
+}
+
+/// [`build_with`] in a chosen order, for the tests about what an order changes
+/// — `touched` is the one that also changes WHICH rows are in the list.
+fn build_sorted_with(tasks: Value, summary: Value, projects: Value, sort: Sort) -> Dashboard {
+    build_sorted(
         Sources {
             tasks: &tasks,
             summary: &summary,
@@ -117,17 +123,20 @@ fn build_with(tasks: Value, summary: Value, projects: Value) -> Dashboard {
         },
         now(),
         today(),
+        sort,
     )
 }
 
 /// Every panel this ladder can place, in display order.
+/// Every task row the list holds, in draw order. What the cursor walks and
+/// what the panel draws, which is the only ordering worth asserting against.
+fn rows(d: &Dashboard) -> Vec<&Task> {
+    d.tasks.groups.iter().flat_map(|g| &g.rows).collect()
+}
+
 fn all_panels() -> Vec<PanelId> {
     vec![
-        PanelId::Now,
-        PanelId::Next,
-        PanelId::Due,
-        PanelId::Blocked,
-        PanelId::Recent,
+        PanelId::Tasks,
         PanelId::Projects,
         PanelId::Burndown,
         PanelId::Tokens,
@@ -334,13 +343,13 @@ fn every_rung_gives_its_columns_room_to_read() {
 #[test]
 fn the_fit_drops_panels_from_the_bottom_rather_than_overflowing() {
     let members = [
-        PanelId::Now,
-        PanelId::Next,
-        PanelId::Due,
-        PanelId::Blocked,
-        PanelId::Recent,
+        PanelId::Tasks,
+        PanelId::Projects,
+        PanelId::Burndown,
+        PanelId::Tokens,
+        PanelId::Slot,
     ];
-    // Five panels need 10 rows at their floors. Give them 5.
+    // Five panels need more than 5 rows at their floors. Give them 5.
     let placed = fit(&members, 5, 0, 80, ANY);
     let total: u16 = placed.iter().map(|p| p.h).sum();
     assert!(
@@ -354,9 +363,9 @@ fn the_fit_drops_panels_from_the_bottom_rather_than_overflowing() {
         members.len()
     );
     // Dropping is from the BOTTOM: the first panels in column order survive.
-    assert_eq!(placed[0].id, PanelId::Now, "the top panel is kept");
+    assert_eq!(placed[0].id, PanelId::Tasks, "the top panel is kept");
     assert!(
-        !placed.iter().any(|p| p.id == PanelId::Recent),
+        !placed.iter().any(|p| p.id == PanelId::Slot),
         "the bottom panel is the first to go"
     );
 
@@ -369,20 +378,20 @@ fn the_fit_drops_panels_from_the_bottom_rather_than_overflowing() {
 /// never placed, and removing one must not strand the others.
 #[test]
 fn a_panel_left_out_of_the_configured_order_is_never_placed() {
-    let order = vec![PanelId::Now, PanelId::Next];
+    let order = vec![PanelId::Tasks, PanelId::Tasks];
     let screen = layout(120, 40, &order, ANY).unwrap();
     for p in &screen.panels {
         assert!(
-            p.id == PanelId::Now || p.id == PanelId::Next,
+            p.id == PanelId::Tasks || p.id == PanelId::Tasks,
             "{:?} was placed but is not in the configured order",
             p.id
         );
     }
-    assert!(screen.placement(PanelId::Now).is_some());
-    assert!(screen.placement(PanelId::Next).is_some());
+    assert!(screen.placement(PanelId::Tasks).is_some());
+    assert!(screen.placement(PanelId::Tasks).is_some());
 
     // Dropping all three slot members drops the slot with them.
-    let no_analytics = vec![PanelId::Now, PanelId::Next, PanelId::Due];
+    let no_analytics = vec![PanelId::Tasks, PanelId::Tasks, PanelId::Tasks];
     let screen = layout(80, 24, &no_analytics, ANY).unwrap();
     assert!(
         !screen.has_slot(),
@@ -423,15 +432,21 @@ fn the_status_bar_counts_agree_with_the_panels_below_it() {
 
     assert_eq!(d.status.open, 3, "active + blocked + overdue are open");
     assert_eq!(d.status.active, 1);
+    // The header used to be counted FROM the DUE and BLOCKED panels so it
+    // could not disagree with them. Those panels are gone; the rule is not,
+    // and it now binds the header to the rows the one list draws.
     assert_eq!(
         d.status.overdue,
-        d.due.overdue.len(),
-        "the header may never disagree with the DUE panel"
+        rows(&d)
+            .iter()
+            .filter(|t| t.due_date().is_some_and(|x| x < d.today))
+            .count(),
+        "the header may never disagree with the list under it"
     );
     assert_eq!(
         d.status.blocked,
-        d.blocked.rows.len(),
-        "the header may never disagree with the BLOCKED panel"
+        rows(&d).iter().filter(|t| t.blocked).count(),
+        "the header may never disagree with the list under it"
     );
     assert_eq!(d.status.done_week, 1, "only the recent completion counts");
 }
@@ -471,22 +486,45 @@ fn a_task_due_today_at_midnight_is_today_and_not_overdue() {
     ]);
     let d = build_with(tasks, summary(vec![]), project_list(vec![]));
 
-    assert_eq!(d.due.today.len(), 1, "midnight today is TODAY, not overdue");
-    assert_eq!(d.due.today[0].short_id, 1);
-    assert_eq!(d.due.overdue.len(), 1);
-    assert_eq!(d.due.overdue[0].short_id, 2);
-    assert_eq!(d.due.tomorrow.len(), 1);
-    assert_eq!(d.due.week.len(), 1, "12 Aug is inside the week horizon");
-    assert!(
-        d.due.week.iter().all(|t| t.short_id != 5),
-        "next month is beyond the horizon and must be dropped, not bucketed"
+    // D80 folded the four DUE buckets into a column and a sort, so the rule
+    // is asserted where it now lives: what the header calls overdue, and what
+    // each group counts as overdue. The horizon went with the buckets — the
+    // list holds every open task, and a deadline next month is a row like any
+    // other rather than one dropped for being far away.
+    assert_eq!(
+        d.status.overdue, 1,
+        "midnight today is TODAY, not overdue — only yesterday's task is late"
+    );
+    let overdue: Vec<i64> = d
+        .tasks
+        .groups
+        .iter()
+        .flat_map(|g| &g.rows)
+        .filter(|t| t.due_date().is_some_and(|x| x < d.today))
+        .map(|t| t.short_id)
+        .collect();
+    assert_eq!(overdue, vec![2]);
+    assert_eq!(
+        d.tasks.total, 5,
+        "every open task is in the list, however far off its deadline is"
+    );
+    assert_eq!(
+        d.tasks.groups.iter().map(|g| g.overdue).sum::<usize>(),
+        1,
+        "the group headings count the same overdue the header does"
     );
 }
 
-/// `@working` excludes blocked work, and the dashboard splits the two apart
-/// rather than inheriting the blind spot (D58).
+/// `@working` excludes blocked work, and the dashboard does not inherit the
+/// blind spot (D58) — but D80 changed where that shows.
+///
+/// The split was two panels. It is one list now, so a blocked task is IN it,
+/// carrying the marker that says so, and counted in the header. That is a
+/// better answer than the panel pair gave: the task the reader is stuck on
+/// sits in urgency order among the work it is competing with, instead of in a
+/// box below it.
 #[test]
-fn a_blocked_task_is_in_blocked_and_not_in_next_up() {
+fn a_blocked_task_is_in_the_list_marked_rather_than_hidden_from_it() {
     let tasks = task_list(vec![
         with(task_row(1, "ready"), "urgency", json!(5.0)),
         with(
@@ -498,10 +536,32 @@ fn a_blocked_task_is_in_blocked_and_not_in_next_up() {
     ]);
     let d = build_with(tasks, summary(vec![]), project_list(vec![]));
 
-    let next_ids: Vec<i64> = d.next.rows.iter().map(|t| t.short_id).collect();
-    assert_eq!(next_ids, vec![1], "only the unblocked, non-backlog task");
-    assert_eq!(d.blocked.rows.len(), 1);
-    assert_eq!(d.blocked.rows[0].short_id, 2);
+    let ids: Vec<i64> = d
+        .tasks
+        .groups
+        .iter()
+        .flat_map(|g| &g.rows)
+        .map(|t| t.short_id)
+        .collect();
+    assert!(
+        ids.contains(&2),
+        "the blocked task is in the list, not hidden from it: {ids:?}"
+    );
+    assert_eq!(
+        ids.iter().filter(|i| **i == 2).count(),
+        1,
+        "and it is in it ONCE — being drawn twice is what the fold fixed"
+    );
+    assert_eq!(d.status.blocked, 1, "the header counts it");
+    assert!(
+        d.tasks
+            .groups
+            .iter()
+            .flat_map(|g| &g.rows)
+            .find(|t| t.short_id == 2)
+            .is_some_and(|t| t.blocked),
+        "and the row carries the flag the marker is drawn from"
+    );
 }
 
 /// The ramp denominator is computed the way `render` computes it, so the
@@ -514,7 +574,7 @@ fn the_urgency_ramp_denominator_never_falls_below_one() {
         project_list(vec![]),
     );
     assert_eq!(
-        d.next.max_urgency, 1.0,
+        d.tasks.max_urgency, 1.0,
         "an all-zero store must not divide by zero"
     );
 
@@ -523,20 +583,26 @@ fn the_urgency_ramp_denominator_never_falls_below_one() {
         summary(vec![]),
         project_list(vec![]),
     );
-    assert_eq!(d.next.max_urgency, 17.6);
+    assert_eq!(d.tasks.max_urgency, 17.6);
 }
 
-/// The NOW card exists only while a timer runs, and reports time INCLUDING the
-/// open interval — `tracked` alone reads as the final answer when it is only
-/// the total so far.
+/// The running row reports time INCLUDING the open interval.
+///
+/// `tracked` alone reads as the final answer when it is only the total so far.
+/// This was the NOW card's number; D80 retired the card, and a row marked `▶`
+/// with nothing beside it answers "which task" and drops "for how long". So the
+/// number moved onto the row, and only onto the one that is running.
 #[test]
-fn the_now_card_adds_the_running_interval_to_the_tracked_total() {
+fn the_running_row_adds_the_open_interval_to_the_tracked_total() {
     let d = build_with(
         task_list(vec![task_row(1, "idle")]),
         summary(vec![]),
         project_list(vec![]),
     );
-    assert!(d.now.is_none(), "no timer, no card");
+    assert!(
+        rows(&d).iter().all(|t| t.running_secs.is_none()),
+        "no timer, no elapsed on any row"
+    );
 
     let tasks = task_list(vec![with(
         with(
@@ -548,12 +614,11 @@ fn the_now_card_adds_the_running_interval_to_the_tracked_total() {
         json!("PT30M"),
     )]);
     let d = build_with(tasks, summary(vec![]), project_list(vec![]));
-    let card = d.now.expect("a running timer produces a card");
-    assert_eq!(card.elapsed_secs, 3600, "one hour since 11:00 at 12:00");
+    let running: Vec<i64> = rows(&d).iter().filter_map(|t| t.running_secs).collect();
     assert_eq!(
-        card.total_secs(),
-        1800 + 3600,
-        "the card shows tracked PLUS the interval still running"
+        running,
+        vec![1800 + 3600],
+        "the row shows tracked PLUS the hour since 11:00, and only that row does"
     );
 }
 
@@ -565,7 +630,7 @@ fn estimates_go_through_the_shared_duration_reader() {
         let tasks = task_list(vec![with(task_row(1, "estimated"), "estimate", json!(iso))]);
         let d = build_with(tasks, summary(vec![]), project_list(vec![]));
         assert_eq!(
-            d.next.rows[0].estimate_secs,
+            rows(&d)[0].estimate_secs,
             Some(want),
             "{iso} must parse through the shared reader"
         );
@@ -583,10 +648,10 @@ fn an_unrecognised_status_is_carried_rather_than_dropped() {
         json!("quantum"),
     )]);
     let d = build_with(tasks, summary(vec![]), project_list(vec![]));
-    assert_eq!(d.recent.rows.len(), 1, "the row must survive the mapping");
-    assert_eq!(d.recent.rows[0].status, Status::Other("quantum".into()));
+    assert_eq!(rows(&d).len(), 1, "the row must survive the mapping");
+    assert_eq!(rows(&d)[0].status, Status::Other("quantum".into()));
     assert!(
-        d.recent.rows[0].status.is_open(),
+        rows(&d)[0].status.is_open(),
         "an unknown status counts as open, as it does everywhere else"
     );
 }
@@ -604,7 +669,8 @@ fn a_row_sanitises_the_untrusted_text_it_is_built_from() {
         json!(["tag\u{7}bell"]),
     )]);
     let d = build_with(tasks, summary(vec![]), project_list(vec![]));
-    let row = &d.recent.rows[0];
+    let binding = rows(&d);
+    let row = binding[0];
     assert!(
         !row.title().contains('\u{1b}') && !row.title().contains('\u{7}'),
         "the title still carries control bytes: {:?}",
@@ -836,10 +902,14 @@ fn a_full_event_page_marks_the_burndown_as_truncated() {
     assert!(!d.burndown.truncated);
 }
 
-/// RECENT is deliberately unfiltered by status: a task finished four minutes
-/// ago is exactly what "where was I" means.
+/// The `touched` order is deliberately unfiltered by status: a task finished
+/// four minutes ago is exactly what "where was I" means.
+///
+/// RECENT was a panel for this and D80 folded it into the sort. What must NOT
+/// fold with it is the unfiltered part — a `touched` list of open work only
+/// would answer a different question from the one the panel answered.
 #[test]
-fn recent_is_newest_first_and_keeps_finished_work() {
+fn the_touched_order_is_newest_first_and_keeps_finished_work() {
     let tasks = task_list(vec![
         with(
             task_row(1, "old"),
@@ -857,13 +927,24 @@ fn recent_is_newest_first_and_keeps_finished_work() {
             json!("2026-08-03T09:00:00Z"),
         ),
     ]);
-    let d = build_with(tasks, summary(vec![]), project_list(vec![]));
-    let ids: Vec<i64> = d.recent.rows.iter().map(|t| t.short_id).collect();
+    let d = build_sorted_with(tasks, summary(vec![]), project_list(vec![]), Sort::Touched);
+    let touched = &d.tasks;
+    let ids: Vec<i64> = touched
+        .groups
+        .iter()
+        .flat_map(|g| &g.rows)
+        .map(|t| t.short_id)
+        .collect();
     assert_eq!(ids, vec![2, 3, 1], "newest `modified` first");
     assert_eq!(
-        d.recent.rows[0].status,
+        touched.groups[0].rows[0].status,
         Status::Done,
         "finished work belongs here"
+    );
+    assert_eq!(
+        touched.groups.len(),
+        1,
+        "`touched` is a question about the store, so it is not grouped by project"
     );
 }
 
@@ -884,11 +965,7 @@ fn no_panel_is_given_more_rows_than_it_has_content_for() {
     // the case that exposed the bug — a store big enough to fill the screen
     // hides it completely.
     let small: &dyn Fn(PanelId) -> u16 = &|id| match id {
-        PanelId::Now => 3,
-        PanelId::Next => 2,
-        PanelId::Due => 2,
-        PanelId::Blocked => 1,
-        PanelId::Recent => 2,
+        PanelId::Tasks => 3,
         PanelId::Projects => 1,
         PanelId::Tokens => 1,
         PanelId::Burndown => 2,
@@ -1005,13 +1082,12 @@ fn the_slot_is_sized_for_its_tallest_member() {
 /// rows in the same column.
 #[test]
 fn a_column_too_small_for_both_fills_the_higher_priority_panel_first() {
-    // NEXT UP and RECENT in one column, each with more content than the column
-    // can hold. NEXT UP comes first in RAISE_ORDER.
-    let members = [PanelId::Next, PanelId::Recent];
+    // TASKS and PROJECTS in one column, each with more content than the column
+    // can hold. TASKS comes first in RAISE_ORDER.
+    let members = [PanelId::Tasks, PanelId::Projects];
     let want = |id: PanelId| -> u16 {
         match id {
-            PanelId::Next => 20,
-            PanelId::Recent => 20,
+            PanelId::Tasks | PanelId::Projects => 20,
             _ => 1,
         }
     };
@@ -1025,19 +1101,20 @@ fn a_column_too_small_for_both_fills_the_higher_priority_panel_first() {
             .map(|p| p.body().3)
             .unwrap_or(0)
     };
-    let (next, recent) = (body(PanelId::Next), body(PanelId::Recent));
+    let (list, context) = (body(PanelId::Tasks), body(PanelId::Projects));
     assert!(
-        next > recent,
-        "the panel the screen exists for got {next} rows and history got {recent}"
+        list > context,
+        "the panel the screen exists for got {list} rows and its context got {context}"
     );
     assert_eq!(
-        next + recent + 2,
+        list + context + 2,
         budget,
-        "every row in the budget should be spent: {next} + {recent} + 2 titles"
+        "every row in the budget should be spent: {list} + {context} + 2 titles"
     );
-    // RECENT is not starved to nothing — it keeps its floor, which is what
-    // stops the priority from turning into "one panel takes the column".
-    assert!(recent >= floor_body(PanelId::Recent), "{recent}");
+    // The lower-priority panel is not starved to nothing — it keeps its floor,
+    // which is what stops the priority from turning into "one panel takes the
+    // whole column".
+    assert!(context >= floor_body(PanelId::Projects), "{context}");
 }
 
 /// A taller terminal never shows LESS of any panel.
@@ -1119,46 +1196,40 @@ fn the_detail_level_matches_the_rows_the_panel_actually_got() {
     }
 }
 
-/// An idle NOW asks for the one row it draws, not the three a running timer
-/// needs.
+/// The list asks for a row per task plus a heading per group, and no more.
 ///
-/// The empty store is the first screen anybody sees, and NOW is its first
-/// panel. `now_body` answers "no timer running · p to pick one" in one line;
-/// demanding the card's full three left two blank rows directly under the
-/// title on exactly that screen.
+/// This replaced a test about the idle NOW card asking for one row rather than
+/// three. The card is gone; the rule it stood for is the same one — a panel
+/// asks for what it can fill, and an empty screen must not open with blank
+/// lines under a heading.
 #[test]
-fn an_idle_now_card_asks_for_one_row_not_three() {
+fn the_list_asks_for_its_rows_plus_its_headings() {
     let members = PanelId::SLOT_MEMBERS.to_vec();
 
-    let idle = build_with(
+    let empty = build_with(
         task_list(vec![]),
         summary(vec![]),
         project_list(vec![project("a", true, false)]),
     );
-    assert!(idle.now.is_none(), "the fixture must have no running timer");
     assert_eq!(
-        demand(&idle, &members, PanelId::Now),
+        demand(&empty, &members, PanelId::Tasks),
         1,
-        "an idle NOW draws one sentence"
+        "an empty list asks for the one line it draws"
     );
 
-    let running = build_with(
-        task_list(vec![with(
-            with(task_row(1, "the running one"), "status", json!("active")),
-            "active_since",
-            json!("2026-08-05T11:00:00Z"),
-        )]),
-        summary(vec![group("work", "PT1H", "PT0S", [0, 0, 0, 0])]),
-        project_list(vec![project("work", true, false)]),
-    );
-    assert!(
-        running.now.is_some(),
-        "the fixture must have a running timer"
+    let full = build_with(
+        task_list(vec![
+            with(task_row(1, "one"), "project", json!("a")),
+            with(task_row(2, "two"), "project", json!("a")),
+            with(task_row(3, "three"), "project", json!("b")),
+        ]),
+        summary(vec![group("a", "PT1H", "PT0S", [0, 0, 0, 0])]),
+        project_list(vec![project("a", true, false), project("b", false, false)]),
     );
     assert_eq!(
-        demand(&running, &members, PanelId::Now),
-        spec_body(PanelId::Now, Detail::Full),
-        "a running NOW is a three-line card"
+        demand(&full, &members, PanelId::Tasks) as usize,
+        full.tasks.total + full.tasks.groups.len(),
+        "three tasks in two groups is three rows and two headings"
     );
 }
 

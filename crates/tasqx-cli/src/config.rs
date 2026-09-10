@@ -196,7 +196,7 @@ pub const SETTINGS: &[Setting] = &[
         // drift gate only demands a row for a variable the code actually reads.
         env: None,
         flag: None,
-        choices: Choices::ManyOf(crate::tui::dashboard::model::PANEL_NAMES),
+        choices: Choices::ManyOf(&crate::tui::dashboard::model::ACCEPTED_PANEL_NAMES),
         summary: "Panels the dashboard draws; membership is visibility, position is \
                   focus and tab order (D58).",
     },

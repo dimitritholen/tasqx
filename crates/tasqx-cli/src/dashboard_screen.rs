@@ -142,9 +142,19 @@ pub(crate) fn dashboard_panels() -> Vec<tui::dashboard::model::PanelId> {
 /// rather than the CLI inventing a second policy for the same string.
 pub(crate) fn parse_panel_list(v: &str) -> Vec<tui::dashboard::model::PanelId> {
     use tui::dashboard::model::PanelId;
-    v.split(',')
-        .filter_map(|name| PanelId::from_slug(name.trim()))
-        .collect()
+    // Deduplicated, in first-mention order. Five of D80's retired names now
+    // resolve to the same panel, so a config saying `now,next,due` would
+    // otherwise place TASKS three times — and a panel placed twice is a column
+    // drawn twice over the same rows.
+    let mut out: Vec<PanelId> = Vec::new();
+    for name in v.split(',') {
+        if let Some(id) = PanelId::from_slug(name.trim()) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
 }
 
 /// Read `dashboard.window` as a day count.
