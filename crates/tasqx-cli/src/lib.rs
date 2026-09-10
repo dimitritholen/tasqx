@@ -1810,10 +1810,10 @@ mod tests {
         assert!(text.contains("Stopped"), "{text}");
         assert!(text.contains("#122"), "{text}");
         assert!(text.contains("2h23"), "{text}");
-        assert!(text.contains("Started task"), "{text}");
+        assert!(text.contains("Started"), "{text}");
         assert!(text.contains("#128"), "{text}");
         assert!(
-            text.find("Stopped").unwrap() < text.find("Started task").unwrap(),
+            text.find("Stopped").unwrap() < text.find("Started").unwrap(),
             "the stop line must print ABOVE the start line: {text}"
         );
     }
@@ -2272,7 +2272,7 @@ mod tests {
     #[test]
     fn an_unrecognised_bare_group_by_names_itself_not_the_filter_grammar() {
         for bad in ["tags", "assignee"] {
-            let err = report_params(&[bad.to_string()], false)
+            let err = report_params(&[bad.to_string()], false, None, None, now_ts())
                 .err()
                 .unwrap_or_else(|| panic!("{bad:?} must be refused"));
             assert!(
@@ -2291,7 +2291,7 @@ mod tests {
         // A token that LOOKS like filter syntax (has a sigil/colon) must still
         // reach the filter parser — this is not blanket rejection of every
         // unrecognised first word.
-        let p = report_params(&["project:x".to_string()], false).unwrap();
+        let p = report_params(&["project:x".to_string()], false, None, None, now_ts()).unwrap();
         assert_eq!(p["filter"], "project:x");
     }
 

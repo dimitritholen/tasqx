@@ -998,7 +998,7 @@ fn spacing_hint(toks: &[Tok], pos: usize) -> Option<String> {
     // swallow it into the previous value is exactly the wrong-rows outcome
     // this refusal exists to prevent — offering the closest supported term is
     // `predicate`'s job, not this hint's.
-    if tok.text.contains('.') || tok.text.contains(':') {
+    if first.text.contains('.') || first.text.contains(':') {
         return None;
     }
     let (p, _) = VALUE_PREFIXES

@@ -734,7 +734,7 @@ fn a_wait_that_has_passed_brings_the_task_back_into_list() {
         .output()
         .expect("run list");
     assert!(
-        String::from_utf8_lossy(&listed.stdout).contains("No matching tasks"),
+        String::from_utf8_lossy(&listed.stdout).contains("No tasks match"),
         "while the wait is ahead the task stays out of the default view"
     );
 
@@ -3702,11 +3702,30 @@ fn stop_reports_the_same_tracked_total_show_does() {
     let shown: serde_json::Value =
         serde_json::from_str(&ok(&["--json", "show", "1"])).expect("show --json");
     let total = shown["tracked"].as_str().expect("show must carry tracked");
+    let total_secs = tasqx_core::util::duration_secs(total).expect("show's tracked must parse");
+
+    // `stop`'s confirmation renders the duration humanized (finding #3, e.g.
+    // "58666h3m44s"), not the raw ISO `show --json` carries — glued h/m/s,
+    // each omitted when zero, the same shape `render::human_duration` builds.
+    let (h, m, s) = (total_secs / 3600, (total_secs % 3600) / 60, total_secs % 60);
+    let mut human = String::new();
+    if h > 0 {
+        human.push_str(&format!("{h}h"));
+    }
+    if m > 0 {
+        human.push_str(&format!("{m}m"));
+    }
+    if s > 0 {
+        human.push_str(&format!("{s}s"));
+    }
+    if human.is_empty() {
+        human.push_str("0s");
+    }
 
     assert!(
-        stopped.contains(&format!("tracked {total}")),
+        stopped.contains(&format!("tracked {human}")),
         "`stop` must call the cumulative total `tracked`, the same word `show` uses for it \
-         (show says tracked {total}): {stopped:?}"
+         (show says tracked {total} = {human}): {stopped:?}"
     );
 }
 

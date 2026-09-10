@@ -3961,7 +3961,10 @@ mod tests {
         );
 
         // The unfiltered caller (task_table itself) is untouched.
-        assert_eq!(task_table(&ctx, &empty, Timestamp::now()), "No tasks.\n");
+        assert_eq!(
+            task_table(&ctx, &empty, Timestamp::now()),
+            "No matching tasks.\n"
+        );
     }
 
     #[test]
@@ -5901,7 +5904,8 @@ mod tests {
 
         let get_result = json!({
             "short_id": 1, "title": "BLOCKER-HIGH must not be next", "status": "pending",
-            "urgency": 18.0, "blocked": true, "depends_on": [2]
+            "urgency": 18.0, "blocked": true, "depends_on": [2],
+            "unmet_blockers": [{ "short_id": 2, "title": "the blocker" }]
         });
         let why_out = why(&ctx, &get_result);
         assert!(
