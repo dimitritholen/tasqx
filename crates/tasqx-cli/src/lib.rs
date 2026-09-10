@@ -1557,6 +1557,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #228.4: YAML frontmatter (the shape every file in a
+    /// `~/.claude/.../memory/` directory carries) was indexed and shown as
+    /// document body, so `originSessionId`/`modified`/`type` dominated search
+    /// snippets over the prose that answers the query. It must be cut before
+    /// storage, and its `title:` used when the body has no `# ` heading of
+    /// its own.
+    #[test]
+    fn memory_import_strips_frontmatter_and_reads_its_title() {
+        let dir = std::env::temp_dir().join(format!("tasqx-memimp-fm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("note.md"),
+            "---\ntitle: \"release workflow\"\noriginSessionId: 71aa288e\nmodified: 2026-07-23\n---\nHow releases actually ship.\n",
+        )
+        .unwrap();
+
+        let docs = memory_docs_from_path(dir.to_str().unwrap()).expect("import");
+        assert_eq!(docs.len(), 1);
+        let d = &docs[0];
+        assert_eq!(
+            d["title"].as_str().unwrap(),
+            "release workflow",
+            "frontmatter's `title:` must be used when there is no `# ` heading"
+        );
+        let body = d["body"].as_str().unwrap();
+        assert!(
+            !body.contains("originSessionId"),
+            "frontmatter metadata must not reach the stored/indexed body: {body:?}"
+        );
+        assert!(
+            body.contains("How releases actually ship."),
+            "the real prose must survive the cut: {body:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Every documented example must at least be a command this binary accepts.
     ///
     /// The executable guard in `tests/help.rs` only runs the `RunKind::Safe`
