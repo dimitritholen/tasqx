@@ -1231,7 +1231,12 @@ pub const KEYS: &[Key] = &[
     },
     Key {
         keys: "ctrl-c",
-        help: "close, always",
+        // Not "always": `p` opens `crate::tui::pick`, and there ctrl-c is
+        // that screen's own cancel key (same as Esc, and load-bearing —
+        // `pick::App`'s tests pin it as "leaves even with a query in
+        // progress"), so it backs out of the picker rather than quitting
+        // the dashboard underneath it (#229 item 10).
+        help: "close (esc leaves the picker)",
         footer: None,
     },
 ];

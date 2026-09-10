@@ -2061,3 +2061,41 @@ fn a_frame_under_the_floor_draws_a_message_instead_of_blanking() {
         "the frame must not be entirely blank"
     );
 }
+
+/// #229 item 10: the `?` overlay promises "ctrl-c close, always", but the
+/// picker `p` opens (`crate::tui::pick`) treats ctrl-c exactly like Esc —
+/// cancel the picker, not quit the program — and that is `pick`'s own,
+/// deliberately tested contract (its "ctrl-n/ctrl-p move ... ctrl-c leaves"
+/// test), not a bug in `pick` to be changed here. So the promise is false in
+/// the one state a user is most likely to reach for it from: nested inside
+/// the picker. This test pins BOTH halves — the picker's real ctrl-c
+/// behaviour and the overlay's own wording about it — so neither can drift
+/// out of sync with the other again.
+#[test]
+fn the_ctrl_c_help_text_does_not_overclaim_against_the_pickers_own_cancel_contract() {
+    use crate::tui::pick;
+
+    let mut picker = pick::App::new(vec![pick::Row::new(
+        1, "a task", "proj", "-", "0.0", "", false,
+    )]);
+    let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(
+        picker.on_key(ctrl_c),
+        Some(pick::Action::Cancel),
+        "the picker's ctrl-c must still cancel (not quit the whole program) — \
+         if this ever changes, the dashboard's ctrl-c help text can go back \
+         to promising \"always\""
+    );
+
+    let entry = KEYS
+        .iter()
+        .find(|k| k.keys == "ctrl-c")
+        .expect("KEYS must document ctrl-c");
+    assert!(
+        !entry.help.contains("always"),
+        "ctrl-c does not always close the dashboard — pressed inside the \
+         picker it only cancels the picker (asserted above), so the help \
+         text must not claim \"always\": {:?}",
+        entry.help
+    );
+}
