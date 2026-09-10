@@ -3732,6 +3732,45 @@ fn memory_show_prints_the_body_with_its_newlines_intact() {
     );
 }
 
+/// #229 item 11: a tab or a newline in a task title used to be deleted by
+/// `render::san` rather than replaced, welding the text on either side into
+/// one different-looking word — `"a\tb"` printed as `"ab"`, `"line1\nline2"`
+/// as `"line1line2"` — in both `list` and `show`. ESC is correctly stripped
+/// (D19 holds); TAB and newline must now render as a visible separator space
+/// instead of vanishing.
+#[test]
+fn a_tab_or_newline_in_a_title_becomes_a_space_not_a_vanished_separator() {
+    let dir = fresh_config_dir("title-tab-newline");
+    let add_tab = bin("title-tab-newline", &dir)
+        .args(["add", "a\tb"])
+        .output()
+        .expect("run tasqx add");
+    assert!(add_tab.status.success());
+    let add_nl = bin("title-tab-newline", &dir)
+        .args(["add", "line1\nline2"])
+        .output()
+        .expect("run tasqx add");
+    assert!(add_nl.status.success());
+
+    let list = bin("title-tab-newline", &dir)
+        .args(["list"])
+        .output()
+        .expect("run tasqx list");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        !stdout.contains("ab") || stdout.contains("a b"),
+        "a tab must not be dropped, welding the title into \"ab\":\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("line1line2"),
+        "a newline must not be dropped, welding the title into \"line1line2\":\n{stdout}"
+    );
+    assert!(
+        stdout.contains("a b") && stdout.contains("line1 line2"),
+        "tab and newline must render as a visible separator space:\n{stdout}"
+    );
+}
+
 /// #229 item 7: the CLI, the API and MCP each name this operation
 /// differently — `memory show` (CLI), `memory.get` (`core.capabilities`),
 /// `tasqx_get_memory` (MCP) — while every other verb keeps one name across
