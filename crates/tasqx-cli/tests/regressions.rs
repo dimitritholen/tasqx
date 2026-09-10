@@ -3174,3 +3174,54 @@ fn an_explicit_socket_on_a_verb_that_cannot_honour_it_is_refused_not_ignored() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// `tasqx api`'s store-open failure fires before the request is even parsed,
+/// which used to mean it fired before `id` was even READ — the one response
+/// shape a multiplexed caller (the daemon protocol, or any batching wrapper)
+/// most needs to correlate is precisely the one that could never carry it.
+#[test]
+fn the_api_carries_the_request_id_through_a_store_open_failure() {
+    use std::io::Write;
+    let dir = fresh_config_dir("store-open-id");
+    // A path whose PARENT is a plain file, not a directory: `db_path()`
+    // creates `$TASQX_DB`'s parent directory on the way (so a bare missing
+    // directory would just get created and the store would open fine), but
+    // it cannot conjure a directory out of an existing regular file, and
+    // `Connection::open` fails identically once it can't either. This is the
+    // one shape that reliably reproduces a store-open failure through the
+    // real `$TASQX_DB` resolution path rather than the read-only completion
+    // one.
+    let mut blocker = std::env::temp_dir();
+    blocker.push(format!(
+        "tasqx-reg-store-open-id-blocker-{}",
+        std::process::id()
+    ));
+    std::fs::write(&blocker, b"not a directory").expect("write blocker file");
+    let mut bad_db = blocker.clone();
+    bad_db.push("sub");
+    bad_db.push("s.db");
+    let mut child = bin("store-open-id", &dir)
+        .env("TASQX_DB", &bad_db)
+        .arg("api")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn tasqx api");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(br#"{"tasqx":"1","id":"abc","method":"task.list","params":{}}"#)
+        .expect("write envelope");
+    let out = child.wait_with_output().expect("wait");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("one JSON response");
+
+    assert_eq!(
+        v["ok"], false,
+        "a missing store directory must not succeed: {v}"
+    );
+    assert_eq!(
+        v["id"], "abc",
+        "the response must echo the request id even when the store never opened: {v}"
+    );
+}
