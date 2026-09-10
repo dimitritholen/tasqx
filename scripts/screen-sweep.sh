@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 #
-# Carry the D117 house style to one terminal screen per run, unattended.
+# Carry the D117 house style to one FAMILY of terminal screens per run,
+# unattended.
 #
-#   scripts/screen-sweep.sh            # every screen still pending
-#   scripts/screen-sweep.sh next show  # only these
+#   scripts/screen-sweep.sh                # every family still pending
+#   scripts/screen-sweep.sh tables charts  # only these
 #
-# One `claude -p "/goal ..."` per screen, sequentially. Five separate runs
-# rather than one goal over five screens, for one reason: `/goal` clears itself
-# on a context overflow auto-compaction cannot resolve, and five screens of
+# One `claude -p "/goal ..."` per family, sequentially. Separate runs rather
+# than one goal over all of them, for one reason: `/goal` clears itself on a
+# context overflow auto-compaction cannot resolve, and six families of
 # rendering, auditing and reviewing in a single context will reach that. A
-# fresh context per screen turns "the night died" into "one screen died".
+# fresh context per family turns "the night died" into "one family died".
 #
-# The runs share one worktree and one branch, so a later screen builds on an
+# The runs share one worktree and one branch, so a later family builds on an
 # earlier one's renderer changes and the morning is a single diff. Nothing is
 # pushed and `main` is never checked out; the worktree keeps your own checkout
 # free while this runs.
@@ -42,13 +43,20 @@ branch=style/screen-sweep
 logs=$root/target/sweep-logs
 playbook=docs/agents/carry-the-style.md
 
-# task id : screen : what it is, and the files it may touch
+# A run is a FAMILY, not a verb. `list` and `agenda` share one renderer and so
+# were one design problem; the same is true of the twelve lifecycle echo lines,
+# of the three charts, of the tables that are not the task table. Sweeping verb
+# by verb would solve the same problem up to twelve times and let the answers
+# drift apart, which is the thing the house style exists to stop.
+#
+# task id : family : the surfaces in it, and the files it may touch
 SCREENS=(
-    "340:next:the one-line answer to \"what now\". crates/tasqx-cli/src/render.rs"
-    "341:show:the task detail card (D78's rail card). crates/tasqx-cli/src/render.rs"
-    "342:report:the grouped terminal summary, NOT the HTML page. crates/tasqx-cli/src/render.rs"
-    "343:pick:the full-screen picker. crates/tasqx-cli/src/tui/pick.rs, crates/tasqx-cli/src/pick_screen.rs"
-    "344:dashboard:the overview screen. crates/tasqx-cli/src/tui/dashboard.rs, crates/tasqx-cli/src/dashboard_screen.rs"
+    "346:tables:tasqx projects, report, config list, theme list, theme show, tokens, memory search/list — every table that is NOT the task table. crates/tasqx-cli/src/render.rs (project_table, report, tokens_recompute), crates/tasqx-cli/src/settings.rs (render_config_table, theme list/show), crates/tasqx-cli/src/verbs.rs (memory)"
+    "347:detail:tasqx show, next, why, and the card add echoes — the single-task answers. crates/tasqx-cli/src/render.rs (task_detail, task_added_card, next_task, why)"
+    "348:echoes:the one- and two-line answers every write verb prints — start, stop, done, cancel, reopen, modify, tag, untag, dep, undep, annotate, unannotate, undo, init, use, archive, import, export. crates/tasqx-cli/src/render.rs (started, stopped, done, status_line, modified, tag_result, dep_result, annotated, annotation_removed, undone, project_created, default_switched, project_archived), crates/tasqx-cli/src/verbs.rs"
+    "349:charts:tasqx chart throughput, heatmap and burndown. crates/tasqx-cli/src/chart.rs"
+    "350:tui:tasqx dashboard, pick, and the settings screen — all three need a pty, see the playbook. crates/tasqx-cli/src/tui/dashboard.rs, tui/pick.rs, tui/settings.rs, dashboard_screen.rs, pick_screen.rs"
+    "351:manual:tasqx manual, its table of contents and every section. crates/tasqx-cli/src/manual.rs, crates/tasqx-cli/src/cmddoc.rs"
 )
 
 want=("$@")
@@ -75,9 +83,9 @@ for entry in "${SCREENS[@]}"; do
     echo "=== $screen (task #$id) -> $log"
 
     read -r -d '' condition <<EOF
-The terminal screen \`tasqx $screen\` carries the house style, and you have
-printed the proof. Work only in $tree, on branch $branch. The tasqx task is
-#$id. The screen: $about
+The $screen family of tasqx screens carries the house style, and you have
+printed the proof. Every surface in the family, not a representative one. Work only in $tree, on branch $branch. The tasqx task is
+#$id. The family: $about
 
 FIRST read $playbook and follow it exactly. It is the procedure, its acceptance
 bar is the bar, and its stop rules are binding. It points at
@@ -96,7 +104,7 @@ strongest model available and told to refute rather than review.
 COMMIT: the sha of the single commit holding this screen.
 
 Also print SCREEN DONE, with whatever you have and a sentence naming which rule
-fired, if you reach turn 12 or if any stop rule in the playbook fires. Stopping
+fired, if you reach turn 20 or if any stop rule in the playbook fires. Stopping
 early and saying why is a result. Do not keep working to avoid saying it.
 
 Never push, never merge, never switch to main, never edit a test so it passes,
