@@ -2437,6 +2437,31 @@ mod tests {
         );
     }
 
+    /// #76.1: `fields: []` used to mean "restrict every row to nothing",
+    /// returning `{}` per row, while OMITTING `fields` entirely meant no
+    /// restriction — an empty list and no list are different requests in
+    /// every other params object this engine reads, but here they answered
+    /// oppositely. The schema says `fields` "restrict[s] each row to these
+    /// fields"; an empty list names none, so it must behave exactly like
+    /// omitting the param, not like a maximal restriction.
+    #[test]
+    fn task_list_empty_fields_is_no_restriction() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "unrestricted" })).unwrap();
+
+        let omitted = e.task_list(&json!({})).unwrap();
+        let empty = e.task_list(&json!({ "fields": [] })).unwrap();
+        assert_eq!(
+            empty["tasks"], omitted["tasks"],
+            "`fields: []` must return full rows, identically to omitting `fields`, \
+             not `{{}}` per row"
+        );
+        assert!(
+            empty["tasks"][0].get("title").is_some(),
+            "an empty `fields` list must not strip every field: {empty}"
+        );
+    }
+
     /// A recurring task with neither `due` nor `scheduled` used to anchor its
     /// spawn on the raw completion `Timestamp` — nanosecond precision, drifting
     /// a little further every cycle, and truncated unreadably in the DUE
