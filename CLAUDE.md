@@ -63,6 +63,17 @@ about the number.
 `dispatch::PARAMS`. MCP tool *names,
 descriptions and input schemas* stay free to move; MCP tool *results* do not.
 
+## Screens
+
+`docs/terminal-style.md` is the house style for the terminal surfaces — how a
+row is weighted, what the left rail carries, how a date is spelled, why there
+are no rules. Read it before laying out or changing a screen; the alternative
+is the next screen inventing its own look, which is what it exists to stop.
+`DESIGN.md` §12 D117 is the ruling behind it.
+
+Its Contract table is generated from the renderer by a test, so a glyph that
+moves in one and not the other is a red build.
+
 ## When a decision lands
 
 Add it to `DESIGN.md` §12 as the next D-number with the ruling and the one-line

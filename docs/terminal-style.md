@@ -1,0 +1,198 @@
+# The terminal house style
+
+How a tasqx screen is laid out, and why. `DESIGN.md` §12 **D117** is the ruling
+that settled these; this file is the working reference you read before touching
+a screen, so the next one does not re-invent a look.
+
+Every rule below came out of judging a rendered screen as an *image* at 80, 100
+and 140 columns. None of them were visible to a fully green test suite, and two
+of them — the gauge's resolution and its inverted ranking — could not have been
+found any other way. §14 is the loop that makes that cheap.
+
+`list` and `agenda` carry the style. `show`, `report`, `next`, the dashboard and
+`pick` do not yet.
+
+---
+
+## 1. One thing per row is the thing being read
+
+The title carries the row. Everything else is context and must recede: dim the
+project, the tags and the dates, keep the title at the terminal's own
+foreground. A row where six cells print at the same brightness gives the eye no
+path, which is what the old table did.
+
+## 2. Spend cells on meaning
+
+A column's width should track how much a reader gets from it. Twenty cells for
+`2026-09-11T00:00:00Z` starved the title of the same twenty, on the one column
+the row is actually read for. Before widening anything, ask what the column
+would say in half the space.
+
+## 3. Dates are calendar days — not instants, not elapsed hours
+
+`today 23:59`, `tomorrow`, `yesterday`, `2d ago`, `Sun`, `17 Sep`, `4 Jan 27`.
+
+Weekday alone inside the coming week (there is exactly one Sunday in any
+six-day window); the date once the weekday stops being unambiguous; the year
+only when it changes. A clock only where "when today" is still a live question
+— today and tomorrow — and only when the store holds one, since a date typed
+without a time resolves to 00:00 UTC and midnight is the store's spelling of
+"no time given".
+
+Calendar days rather than elapsed hours is the point: a deadline at 09:00
+tomorrow is "tomorrow" to the person reading it, and `markdown::fmt_instant`'s
+"in 14 hours" hands them the arithmetic the cell exists to do.
+
+`render::due_cell` is the implementation. `agenda`'s `day_heading` is the
+vocabulary both views share.
+
+## 4. State lives in a left rail, never in a droppable column
+
+`▶` running, `⊘` blocked, two cells, at the far left where the eye crosses
+first. Never dropped by the width fit. Not drawn at all when no row has one.
+
+The glyphs must differ in SHAPE as well as in role. `NO_COLOR` (§8 of
+`DESIGN.md`, the degradation table) keeps emphasis and drops every hue, so a
+rail that said "red bar or green bar" would say nothing at all to the reader
+who most needs the terminal to behave.
+
+This is what the old arrangement cost: the running timer — the single piece of
+state a work block depends on — sat to the RIGHT of a title that can run 72
+cells, in a column `TaskCols::fit` drops on a narrow terminal.
+
+## 5. A modifier belongs in the cell it modifies
+
+Priority went inside the urgency cell rather than keeping a column of its own
+plus a gap on either side to describe a number two columns away. The cell reads
+`H ▄▄▄▄ 17.9`: letter, gauge, figure.
+
+## 6. A magnitude gets a mark, and the mark must rank the way the number does
+
+`render::urgency_meter` draws urgency-over-the-hottest-on-screen as a four-cell
+bar on a `▁` track. Two things it had to get right, both found by looking at it
+rather than by reasoning about it:
+
+- **Resolution where the ranking happens.** Whole cells drew 17.9 and 15.8
+  identically against a top of 17.9 — the pair a reader compares hardest. Three
+  steps inside each cell fixed it.
+- **Visual mass must rise with the value.** Drawing the remainder as a glyph
+  TALLER than the bar's own `▄` made a 22 % gauge the heaviest mark in the
+  column. Remainders are shorter (`▂`, `▃`), and a test weighs the glyphs across
+  the whole scale rather than reading a value off them.
+
+The precise figure always prints beside the mark. The mark is for the scan down
+the column, not for reading a value off. Where no glyph set degrades honestly,
+draw nothing and hand the cells back — `caps.unicode` false drops the gauge.
+
+> **Open:** the denominator is the maximum over the visible rows, so one
+> outlier flattens everything else. Measured on a real store: 100 rows, 16
+> distinct urgency values, **5** distinct gauge marks. Tracked as task #337
+> alongside #329 (the ramp's colours); read both before changing either.
+
+## 7. No rules. Weight and whitespace separate
+
+The table was bracketed by two full-width rules; both are gone. A dim
+`table.label` header over rows that start immediately under it separates them
+without drawing anything.
+
+Where a group needs separating, use a blank line — one ahead of every heading
+but the first, because flush against the group above a heading reads as one
+more of its rows. Prose that follows a table (omission notes, store-health
+warnings) gets a blank line too: with no closing rule, a note starting flush
+against the last row reads as a row whose columns broke.
+
+## 8. A count is the least useful summary available
+
+The reader can count the rows. Say what they cannot see:
+
+- which question was asked — the filter for `list`, the horizon for `agenda`
+- how much is late, due before the day is out, running, blocked
+
+Print only the facts that are non-zero. A line that always says `0 overdue` is
+one the reader learns to skip, and then it is not there on the day it matters.
+Never `N task(s)`; `1 task` / `N tasks` (`render::plural_tasks`).
+
+## 9. The summary must fit, and drops rather than truncates
+
+It sits above the header, where a wrap would put a line between the labels and
+the rows they name. Facts are dropped from the right until the line fits —
+which is why they are built in falling order of what a reader loses by not
+seeing them. Dropping says less; truncating mid-word says something else.
+
+## 10. Facts counted over the rows on screen say so
+
+When the frame is bounded (`serve::bound_to_viewport`, `--limit`), name both
+numbers: `44 tasks · 20 shown`. A fact counted over twenty rows must never read
+as a claim about forty-four.
+
+## 11. Never say the same thing twice on one screen
+
+`agenda`'s day heading names the day, so a `WHEN` cell holding a bare `due`
+under it says nothing — it is blank. Its `due today` fact is suppressed for the
+same reason.
+
+But `sched` still prints bare, because "you meant to start here" is not the
+default reading of a row, and the overdue group keeps full dates, because it
+spans many days and has no heading to defer to. The rule is *redundant with
+what is already on screen*, not *short*.
+
+## 12. A column label is not a title
+
+`table.label` — achromatic in every built-in — carries column headers. The
+`header` role is for titles (`TASQX MANUAL`, `tasqx settings`, a task's own
+name). One role was painting both, and a column label that competes with its
+own rows is structure refusing to recede.
+
+D76's principle, stated for the task card and applying here unchanged:
+structure recedes, only what you act on is emphasized.
+
+## 13. Verify by rendering
+
+Structural tests cannot see weight, spacing or contrast. Render the screen and
+look at it — at 80 and 140 as well as at the default 100, and in `mono` and
+under `NO_COLOR`.
+
+Mock in pixels, not in prose. Both layout decisions behind D117 were made from
+rendered images: three candidates were drawn before any Rust moved, and the
+gauge that replaced the winner was picked the same way.
+
+## 14. The loop
+
+`freeze` v0.2.2 segfaults on WSL2 for any PNG output and for `--execute` — its
+SVG-to-PNG step runs `resvg` through a WASM runtime that faults there. So:
+
+1. Drive the binary yourself and pipe its ANSI into `freeze` on stdin, with
+   `TASQX_FORCE_COLOR=1` and `COLUMNS` set to the width under test.
+2. Ask `freeze` for `.svg`, not `.png`.
+3. Rasterize with headless Chrome at `--force-device-scale-factor=2`, sized
+   from the SVG's own `width`/`height` attributes.
+
+TUI screens (`dashboard`, `pick`) need a pty, which this path does not give;
+capture those through `script(1)` first.
+
+---
+
+## Contract
+
+The strings this document quotes, so a change to one of them reddens
+`the_house_style_doc_still_describes_the_screens` in `render.rs` rather than
+leaving a guide describing a screen that no longer exists.
+
+| Thing | Value |
+|---|---|
+| rail, running | `▶` (`>` without Unicode) |
+| rail, blocked | `⊘` (`B` without Unicode) |
+| gauge, full cell | `▄` |
+| gauge, track | `▁` |
+| gauge, remainder | `▂` `▃` |
+| gauge width | 4 cells |
+| column-header role | `table.label` |
+
+## Where it is not carried yet
+
+- `show`, `report`, `next` — not judged as images.
+- The dashboard: `docs/specs/2026-09-02-dashboard-redesign-design.md` predates
+  this file and spells blocked `⛔` where rule 4 says `⊘`. Reconcile before
+  building it, in whichever direction — one screen disagreeing with another
+  about the same fact is the thing the style exists to stop.
+- `pick`.
