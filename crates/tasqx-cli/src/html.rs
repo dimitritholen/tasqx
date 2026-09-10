@@ -278,8 +278,14 @@ impl<'a> Report<'a> {
         // already took this scoping; the chart had no equivalent parameter
         // until now.
         let members = chart::members_of(&json!({ "tasks": tasks }));
-        let throughput = chart::throughput(self.events, &members, 12, today());
-        let burndown = chart::burndown(self.events, &members, 30, today());
+        // Anchored on the injected `now`, not the wall clock, for the same
+        // reason `derive` is: a fixture pinned to one date must draw the same
+        // chart tomorrow.
+        let anchor = parse_ts(self.now)
+            .map(|t| t.to_zoned(jiff::tz::TimeZone::UTC).date())
+            .unwrap_or_else(today);
+        let throughput = chart::throughput(self.events, &members, 12, anchor);
+        let burndown = chart::burndown(self.events, &members, 30, anchor);
 
         // ---- assemble ----
         let css = self.css();
@@ -293,6 +299,8 @@ impl<'a> Report<'a> {
             &d.bucket_totals,
         ));
         body.push_str("<main>");
+        body.push_str(&self.overdue_section(&d.overdue_tasks));
+        body.push_str(&self.actionable_section());
 
         // "Weekly throughput" — matching the terminal chart's own heading
         // (`chart::render_throughput`) — not "This week's throughput" (#165):
@@ -305,7 +313,7 @@ impl<'a> Report<'a> {
             &svg_throughput(&throughput, self.theme),
         ));
         body.push_str(&section(
-            "Open work, burning down",
+            "Open backlog",
             "Remaining open tasks over the last 30 days.",
             // #234 item 6: a store that never held a task is not "cleared",
             // and a chart whose only y-axis label is an invented "1" teaches a
@@ -317,10 +325,10 @@ impl<'a> Report<'a> {
             },
         ));
 
-        body.push_str(&self.completed_section(&d.completed_recent));
-        body.push_str(&self.overdue_section(&d.overdue_tasks));
         body.push_str(&self.per_group_section());
-        body.push_str(&self.actionable_section());
+        body.push_str("<details><summary>Completed in the last 7 days</summary>");
+        body.push_str(&self.completed_section(&d.completed_recent));
+        body.push_str("</details>");
         body.push_str(&self.tags_section(&d.top_tags, d.tags_total));
 
         body.push_str("</main>");
