@@ -1,20 +1,21 @@
 # Carrying the house style to a screen
 
-The procedure behind `docs/terminal-style.md`: how one terminal screen is
-brought onto the style, and what has to be true before it counts as done.
+The procedure behind `docs/terminal-style.md`: how a family of terminal screens
+is brought onto the style, and what has to be true before it counts as done.
 
 Written to be followed unattended. Every stop rule here exists because the
-alternative is a run that spends a night on one screen, or that reports
-success it cannot show.
+alternative is a run that spends a night on one screen, or that reports success
+it cannot show.
 
 ---
 
 ## The bar
 
-A screen is done when **all** of these hold, and not before:
+A family is done when **all** of these hold for **every surface in it**, and
+not before:
 
 1. A **before/after render** exists at 80, 100 and 140 columns, plus one in
-   `mono`. You have looked at all of them.
+   `mono`, for each surface. You have looked at all of them.
 2. A **rule-by-rule audit** is written: for each of the thirteen rules in
    `docs/terminal-style.md`, one line — *carried*, *not applicable (why)*, or
    *deliberately not (why)*. No rule is left unmentioned.
@@ -30,14 +31,49 @@ A screen is done when **all** of these hold, and not before:
 5. A **fresh reviewer agent**, given only the style doc, the after-images and
    the diff, and told to refute, has returned a verdict — and every real defect
    it named is either fixed or recorded as open with a reason.
-6. The screen is **committed on its own**, and the task annotated with what
+6. The family is **committed on its own**, and the task annotated with what
    landed, what did not, and why.
 
-## The loop, per screen
+## A run is a family, not a verb
+
+`list` and `agenda` share one renderer, so they were one design problem and
+were solved once. The same is true of the twelve lifecycle echo lines, of the
+three charts, of the tables that are not the task table. Sweeping verb by verb
+solves the same problem up to twelve times and lets the answers drift apart,
+which is the thing the style exists to stop.
+
+So a run covers a family, and **every surface in it** — not a representative
+one. Render them all. Audit them all. If two surfaces in a family want
+different answers to the same rule, that is the finding: say which one is
+right and make them agree.
+
+The families, and what is peculiar about each:
+
+- **tables** — `projects`, `report`, `config list`, `theme list`/`show`,
+  `tokens`, `memory`. Rules 1, 2, 7, 8, 9 and 12 carry directly. They are not
+  task tables, so rules 3, 4, 5 and 6 mostly do not apply; say so per rule
+  rather than skipping them.
+- **detail** — `show`, `next`, `why`, the `add` card. D78 already rules the
+  card's layout and is not overturned here. Rule 11 is the sharp one: a card
+  that repeats in its body what its own header line said.
+- **echoes** — the one- and two-line answers of every write verb. Most layout
+  rules are inapplicable; rules 8 and 11 are the whole job, plus one that is
+  not in the style doc because it only shows up here: **eighteen verbs should
+  sound like one program**. Read them all in a row before changing any.
+- **charts** — rule 6 is not a guideline here, it is the subject. Everything
+  the urgency gauge got wrong (resolution where the ranking happens, visual
+  mass rising with the value) is a question these three already answer, well
+  or badly. Check whether they answer it the same way.
+- **tui** — `dashboard`, `pick`, `settings`. All three need a pty. The
+  dashboard also has an open disagreement with the style; see below.
+- **manual** — prose, not layout. Rules 1, 7 and 12 still apply to its headings
+  and tables; the rest largely do not.
+
+## The loop, per family
 
 1. **Read `docs/terminal-style.md` in full.** Every time, not from memory. It
    is short and it is the contract.
-2. **Render the screen as it stands.** `scripts/snap.sh <name>-before <width>
+2. **Render every surface as it stands.** `scripts/snap.sh <name>-before <width>
    -- <args>`, at 80, 100 and 140, plus `THEME=mono`. Read the PNGs. Do not
    skip this because you can read the code: the code is what made the screen
    look like that.
@@ -92,10 +128,10 @@ on a cheaper one. Judging a screen from a picture is the part that needs it.
 
 These are not suggestions. Each one is a way a night gets lost.
 
-- **Three refinement rounds per screen. Then stop.** Commit what works, write
-  what does not, move to the next screen.
+- **Three refinement rounds per family. Then stop.** Commit what works, write
+  what does not, and let the next run have the night.
 - **Three attempts at the same gate failure.** Then `git checkout --` the
-  screen's files, annotate why, move on. A screen you reverted is a result.
+  files, annotate why, and stop. A change you reverted is a result.
 - **Never edit a test so it passes.** If a test disagrees with your change,
   one of you is wrong and it is usually not the test. Say so and move on.
 - **Never rewrite the Contract table in `docs/terminal-style.md` to match new
@@ -108,14 +144,14 @@ These are not suggestions. Each one is a way a night gets lost.
   D117's "Written down" paragraph naming the screens now covered.
 - **Never push, never merge, never switch to `main`.** Commits stay on the
   branch. The morning is when a human decides.
-- **A screen you cannot render is not a screen you skip.** Do the code work
+- **A surface you cannot render is not a surface you skip.** Do the code work
   from the rules, and say in the annotation that the visual check did not
   happen. Then it is visible rather than assumed.
 
 ## Screens that need a pty
 
-`dashboard` and `pick` draw into the alternate screen, so the pipe-into-freeze
-loop does not reach them. Capture through `script(1)` first:
+`dashboard`, `pick` and the settings screen draw into the alternate screen, so
+the pipe-into-freeze loop does not reach them. Capture through `script(1)` first:
 
 ```console
 $ script -qec "COLUMNS=100 tasqx pick" /dev/null > /tmp/pick.ansi
