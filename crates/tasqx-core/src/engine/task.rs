@@ -680,7 +680,10 @@ impl Engine {
     /// misspells a key had to go look. This is the accepted set, named in the
     /// same order the `match` below tests the keys, so `field not modifiable`
     /// can print it instead of leaving the caller to guess a second time.
-    /// `modifiable_fields_lists_every_match_arm` below fails if the two drift.
+    /// `modifiable_fields_are_all_accepted` below fails if a name is listed
+    /// here but the match arm for it is renamed or removed — it cannot see
+    /// the reverse (a new arm added without adding its name here), because
+    /// nothing short of re-typing the match can enumerate its arms.
     const MODIFIABLE_FIELDS: &[&str] = &[
         "title",
         "priority",
@@ -2032,5 +2035,45 @@ mod tests {
             "expected the modifiable field list in the refusal, got {:?}",
             err.message
         );
+    }
+
+    /// `MODIFIABLE_FIELDS`' doc comment used to claim a test asserted it
+    /// against the `match` arms below; no such test existed, so a name could
+    /// be dropped from the list (or from the arms) with nothing to catch it.
+    /// This is that test, for the direction it CAN check: every name in
+    /// `MODIFIABLE_FIELDS` must actually be wired to an arm, i.e. sending it
+    /// through `set` must never come back as `field not modifiable`. Watched
+    /// red by removing "estimate" from `MODIFIABLE_FIELDS` above (its arm
+    /// stayed) — the assertion below then failed on the still-accepted field.
+    #[test]
+    fn modifiable_fields_are_all_accepted() {
+        let sample = |field: &str| -> Value {
+            match field {
+                "title" => json!("a new title"),
+                "priority" => json!("M"),
+                "project" => json!("some-project"),
+                "due" => json!("today"),
+                "scheduled" => json!("today"),
+                "wait" => json!("today"),
+                "estimate" => json!("1h"),
+                "recurrence" => json!("every 1 days"),
+                "remind" => json!("-1h"),
+                "status" => json!("cancelled"),
+                other => panic!("no sample value wired for {other:?} — add one"),
+            }
+        };
+        for field in Engine::MODIFIABLE_FIELDS {
+            let e = seeded();
+            let err = e
+                .task_modify(&json!({ "ref": 1, "set": { (*field): sample(field) } }))
+                .err();
+            if let Some(err) = err {
+                assert!(
+                    !err.message.starts_with("field not modifiable"),
+                    "field {field:?} is listed in MODIFIABLE_FIELDS but has no match arm: {}",
+                    err.message
+                );
+            }
+        }
     }
 }
