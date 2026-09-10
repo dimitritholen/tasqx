@@ -233,6 +233,10 @@ impl Engine {
             "generated": now_ts.to_string(),
             "filter": filter_str,
             "all": all,
+            // See `task_list`'s field of the same name: an empty `groups` on
+            // a genuinely empty store reads identically to one where the
+            // filter matched nothing, and only this tells them apart (#233).
+            "store_empty": self.store_is_empty()?,
         }))
     }
 }

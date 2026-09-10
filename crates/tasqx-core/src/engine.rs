@@ -537,6 +537,23 @@ impl Engine {
             .filter(|p| !p.is_empty())
             .map(str::to_string)
     }
+
+    /// Whether this store has ever held a task, at all — every status, every
+    /// project, no filter applied.
+    ///
+    /// This is the signal `task.list`, `report.summary` and `project.list`
+    /// need to tell a genuinely empty store from a filter (or window) that
+    /// matched nothing: those two look identical from an empty result alone,
+    /// and only this count can tell them apart (#233). A store whose one task
+    /// is done or cancelled is not "empty" in this sense — D24's scope rules
+    /// belong to the report, not to onboarding — so this counts every row
+    /// unconditionally rather than reusing any filtered read.
+    pub(crate) fn store_is_empty(&self) -> Result<bool, ApiError> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?;
+        Ok(n == 0)
+    }
 }
 
 // ---- free helpers -----------------------------------------------------------

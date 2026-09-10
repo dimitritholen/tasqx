@@ -465,6 +465,10 @@ const R_PROJECT_CREATE: Shape = &[&[
 
 const R_PROJECT_LIST: Shape = &[&[
     req("count", Ty::Int),
+    // Whether the STORE has ever held a task, regardless of this call's
+    // `include_archived` — the fact that tells a fresh store apart from one
+    // whose projects are simply all archived (#233).
+    req("store_empty", Ty::Bool),
     req_of("projects", Ty::Array, &[PROJECT_LIST_ROW]),
 ]];
 
@@ -501,6 +505,10 @@ const R_TASK_LIST: Shape = &[&[
     // key that comes and goes makes every client branch on presence, and this
     // one flips on the last page of every walk.
     nul("next_offset", Ty::Int),
+    // Whether the STORE has ever held a task, independent of this filter —
+    // the fact `list`/`next`/`agenda` need to tell "nothing yet" from
+    // "nothing matched" apart (#233).
+    req("store_empty", Ty::Bool),
     req_of(
         "tasks",
         Ty::Array,
@@ -515,6 +523,7 @@ const R_TASK_LIST_PROJECTED: Shape = &[&[
     req("count", Ty::Int),
     req("total", Ty::Int),
     nul("next_offset", Ty::Int),
+    req("store_empty", Ty::Bool),
     req_of(
         "tasks",
         Ty::Array,
@@ -660,6 +669,10 @@ const R_REPORT_SUMMARY: Shape = &[&[
     // the call and was being read as the window boundary.
     req("filter", Ty::Str),
     req("all", Ty::Bool),
+    // Whether the STORE has ever held a task, independent of `filter`/`all` —
+    // the fact that tells a fresh store apart from one whose filter matched
+    // nothing (#233).
+    req("store_empty", Ty::Bool),
 ]];
 
 const R_STORE_EXPORT: Shape = &[&[
