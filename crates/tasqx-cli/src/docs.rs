@@ -1606,7 +1606,7 @@ fn page_scheduling() -> String {
     ));
     s.push_str(&snippet(
         "tasqx add \"Overdue ping\" --due -2h",
-        "error [bad_request]: could not parse date: \"-2h\" (try e.g. tomorrow, friday, 2026-07-20, \"in 3 days\", eom, or 2026-07-20T17:00)",
+        "error [bad_request]: could not parse date: \"-2h\" (try e.g. tomorrow, friday, 2026-07-20, \"in 3 days\" (day/week/month/year offsets only, no hours/minutes), eom, or 2026-07-20T17:00)",
     ));
 
     s.push_str(&h3("A leading hyphen needs no escaping"));
