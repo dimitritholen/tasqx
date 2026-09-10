@@ -800,9 +800,15 @@ impl Engine {
     ///   duplicate-row collapse, sample-id backfill, confidence re-earn): the
     ///   task's log-parse rows are deleted and the recomputed row inserted
     ///   (none when the recomputed total is 0, which is how a fully-contested
-    ///   window ends with `after` all zeros). ONLY CONTEST REMOVES TOKENS:
-    ///   a shrink or deletion happens on this arm exclusively, and only when
-    ///   at least one of the task's samples was contested away.
+    ///   window ends with `after` all zeros). ONLY CONTEST OR A TASK'S OWN
+    ///   REPEATED CLAIM REMOVES TOKENS: a shrink or deletion happens on this
+    ///   arm exclusively, and only when at least one of the task's samples
+    ///   was contested away by ANOTHER task, or the task itself holds more
+    ///   than one stored row (#81 — reopen + re-complete banked the same
+    ///   window's spend twice on this one task; `WindowScan` folds every
+    ///   `start`/`done` cycle into a single union window, so the recomputed
+    ///   row is already the correctly-deduped total and always replaces the
+    ///   duplicates, never leaves a second copy standing).
     /// - `"channel_conflict"` — the task ALSO carries a self-report row
     ///   (pre-TOCTOU-fix history; Decision 1 says one task never mixes
     ///   channels): its log-parse rows are removed outright and `after` is
@@ -1246,10 +1252,25 @@ fn classify_task(
         // evidence is drift — a moved stamp, a truncated file, a re-emission
         // past the window edge — and falls through to the keep-and-downgrade
         // arm below, exactly like an unreadable transcript. Matching is per
-        // stored row, so a reopen duplicate (every row equal to the
-        // re-derived measurement) still collapses, and the equal-totals
+        // stored row, so a reopen duplicate whose every row equals the full
+        // re-derived measurement still collapses, and the equal-totals
         // sample-id backfill still rewrites.
+        //
+        // (#81) `rows.len() > 1` also always passes the filter: a second
+        // stored row can only exist because reopen + re-complete produced a
+        // second claim event for this SAME task, and `WindowScan` folds every
+        // cycle's `start`/`done` into one union window, so `rc` is already
+        // the correctly-deduped single measurement — each sample id counted
+        // once, however many times this task individually banked it. Per-row
+        // equality cannot express that (the union total generally differs
+        // from any one row, e.g. the first cycle's row holds only its own
+        // slice), so it would misfile the collapse as "drift" and downgrade
+        // instead of fixing it — leaving the double-bank exactly as filed.
+        // This is not a second CONTEST exception: no other task's claim is
+        // being overridden, only this task's own repeated claims are being
+        // folded into the one they always should have been.
         rc.contested > 0
+            || rows.len() > 1
             || rows.iter().all(|row| {
                 row.input == clamp(rc.totals.input)
                     && row.output == clamp(rc.totals.output)
