@@ -150,9 +150,22 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("TASQX_BUILD
 /// the result set this CLI refuses. `filter.rs` already has the right words
 /// (name the flag, say a tag exclusion takes one dash, list the tokens that
 /// work), so they are borrowed rather than copied and left to drift.
-fn exit_on_parse_error(e: &clap::Error, filter_command: bool) -> ! {
+fn exit_on_parse_error(e: &clap::Error, filter_command: bool, argv: &[std::ffi::OsString]) -> ! {
     if filter_command && e.kind() == ErrorKind::UnknownArgument {
         if let Some(ContextValue::String(offender)) = e.get(ContextKind::InvalidArg) {
+            // #130: `--output` one edit away from `--out` fell straight to the
+            // filter-DSL explanation below ("a tag exclusion takes one dash…"),
+            // which is correct grammar but the wrong story — the token is not
+            // a mistyped filter token, it is a mistyped FLAG NAME. Checked
+            // first and only for `--xxx`-shaped offenders close to a real flag
+            // this subcommand declares; anything else still falls through.
+            if let Some(hint) = argv::nearest_long_flag(offender, &argv::known_long_flags(argv)) {
+                let err = ApiError::bad_request(format!(
+                    "unknown flag {offender:?} — did you mean \"--{hint}\"?"
+                ));
+                eprintln!("error [{}]: {}", code_str(&err), err.message);
+                exit(err.exit_code());
+            }
             if let Some(msg) = argv::filter_flag_error(offender) {
                 let err = ApiError::bad_request(msg);
                 eprintln!("error [{}]: {}", code_str(&err), err.message);
@@ -335,6 +348,11 @@ pub fn run() {
     // and the only way to keep that from disarming clap's flag handling is to
     // hide the dash before clap looks. See `argv`.
     let pre = argv::prepass(std::env::args_os());
+    // Cloned once for the error path only (#130's flag-typo hint needs the
+    // subcommand's own argv to look up its declared flags); the happy path
+    // never pays for it beyond the clone itself, and `try_get_matches_from`
+    // still consumes the original below.
+    let pre_argv = pre.argv.clone();
     // Not `Cli::try_parse_from`: that builds straight off `Cli::command()`,
     // whose subcommands still carry clap's hyphen-joined `-V` display names
     // (#228.7). `cli_command()` is the same command tree with those flattened
@@ -344,7 +362,7 @@ pub fn run() {
         Cli::from_arg_matches(&m)
     }) {
         Ok(cli) => cli,
-        Err(e) => exit_on_parse_error(&e, pre.filter_command),
+        Err(e) => exit_on_parse_error(&e, pre.filter_command, &pre_argv),
     };
     // Put the dashes back, in ONE place, before any filter value is read.
     unescape_filter_tail(&mut cli);
@@ -3228,6 +3246,38 @@ mod tests {
             result["summary"], want,
             "`tasqx --json config get {key}` must carry the setting's own \
              summary: {result:?}"
+        );
+    }
+
+    /// #76.3: `otlp.enabled = true` persisted with no complaint even when no
+    /// daemon was reachable to act on it — the receiver only binds inside
+    /// `tasqx daemon`, so the config alone does nothing. `otlp_daemon_warning`
+    /// is the pure decision `set_setting` prints on stderr; this pins it
+    /// directly rather than through a spawned binary, since no test in this
+    /// process runs a real daemon for it to find.
+    #[test]
+    fn otlp_daemon_warning_fires_only_for_enabling_with_no_daemon_reachable() {
+        // Setting it true with nothing listening on the resolved socket: warn,
+        // and name both the key/value and why it matters.
+        let w = otlp_daemon_warning("otlp.enabled", "true")
+            .expect("no daemon is running in this test process");
+        assert!(w.contains("otlp.enabled"), "{w}");
+        assert!(
+            w.contains("tasqx daemon"),
+            "must say where the receiver actually binds: {w}"
+        );
+
+        // Turning it OFF needs no daemon and gets no warning.
+        assert_eq!(
+            otlp_daemon_warning("otlp.enabled", "false"),
+            None,
+            "disabling otlp needs no daemon and must stay silent"
+        );
+        // An unrelated key's value must never trip this check.
+        assert_eq!(
+            otlp_daemon_warning("tokens.enabled", "true"),
+            None,
+            "the check is scoped to otlp.enabled, not every boolean setting"
         );
     }
 

@@ -336,6 +336,76 @@ fn canonical_name(cmd: &clap::Command, tok: &OsString) -> Option<String> {
         .map(|sc| sc.get_name().to_string())
 }
 
+/// Long flag names declared on the subcommand `argv` addresses, or empty if it
+/// does not name one clap recognizes.
+///
+/// Used to power the `--output` → `--out` "did you mean" hint (#130):
+/// `filter_flag_error` borrows `filter.rs`'s grammar wording, which cannot
+/// know a subcommand's own flags, so the nearby-flag check has to look them
+/// up itself, the same way [`prepass`] does.
+pub(crate) fn known_long_flags(argv: &[OsString]) -> Vec<String> {
+    let mut cmd = Cli::command();
+    cmd.build();
+    let Some(i) = subcommand_index(&cmd, argv) else {
+        return Vec::new();
+    };
+    let Some(name) = canonical_name(&cmd, &argv[i]) else {
+        return Vec::new();
+    };
+    let Some(sub) = cmd.find_subcommand(&name) else {
+        return Vec::new();
+    };
+    sub.get_arguments()
+        .filter_map(|a| a.get_long().map(str::to_string))
+        .collect()
+}
+
+/// Levenshtein distance between two ASCII-ish flag names. Flags are short and
+/// this runs once per rejected token, so the classic O(n*m) DP table is
+/// plenty; no need for the Myers bit-parallel version this codebase has no
+/// other use for.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// The closest known long flag to a rejected `--xxx` token — one or two
+/// typos/transpositions (edit distance <= 2), OR one name spelled as a
+/// prefix or an extension of the other (`--output` for `--out`: distance 3
+/// by raw Levenshtein, since "put" is appended whole, but unmistakably a
+/// guess at the same flag under a longer, more obvious English word). Not so
+/// loose it guesses at an unrelated flag: an offender sharing no such
+/// relation with anything the subcommand declares gets nothing back.
+///
+/// `None` when nothing is close enough, so the caller falls back to the
+/// generic filter-DSL explanation rather than a wrong guess.
+pub(crate) fn nearest_long_flag<'a>(offender: &str, known: &'a [String]) -> Option<&'a str> {
+    let want = offender.strip_prefix("--")?;
+    if want.is_empty() {
+        return None;
+    }
+    known
+        .iter()
+        .filter_map(|f| {
+            let d = edit_distance(want, f);
+            let prefix_related = f != want && (f.starts_with(want) || want.starts_with(f.as_str()));
+            (prefix_related || (d > 0 && d <= 2)).then_some((f, d))
+        })
+        .min_by_key(|&(_, d)| d)
+        .map(|(f, _)| f.as_str())
+}
+
 /// The error a rejected flag deserves on a filter-taking command.
 ///
 /// Clap's own text ("unexpected argument '--bogus' found", plus a tip to pass

@@ -81,12 +81,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 20 tools present, each with an inputSchema.
+    // 3. tools/list — all 21 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 20, "expected 20 tools");
+    assert_eq!(tools.len(), 21, "expected 21 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -98,6 +98,7 @@ fn full_protocol_sequence() {
         "tasqx_modify_task",
         "tasqx_complete_task",
         "tasqx_reopen_task",
+        "tasqx_cancel_task",
         "tasqx_start_timer",
         "tasqx_stop_timer",
         "tasqx_tag_task",
@@ -1366,7 +1367,60 @@ fn reopen_undoes_a_completion_and_a_cancellation() {
     assert_eq!(back["status"], json!("pending"));
 }
 
-/// All three are writes, and a read-only server refuses them before the engine
+/// D114: `task.cancel` was on `UNEXPOSED_METHODS` (its reasoning: already
+/// reachable via `tasqx_modify_task status:cancelled`) until the MCP tool's
+/// discoverability gap — no status enum on `tasqx_modify_task`'s schema — was
+/// judged to outweigh that. This is the same round trip the read-only
+/// `task.modify status:cancelled` path already had, now via the purpose-built
+/// tool, and it exercises the D11 unblock cascade `tasqx_complete_task`
+/// already reports for the analogous close.
+#[test]
+fn cancel_tool_closes_a_task_and_reports_the_unblock_cascade() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    engine
+        .task_add(&json!({ "title": "blocker" }))
+        .expect("add");
+    engine
+        .task_add(&json!({ "title": "blocked" }))
+        .expect("add");
+    engine
+        .dependency_add(&json!({ "ref": 2, "depends_on": 1 }))
+        .expect("dependency_add");
+
+    let cancelled = tool_text(&call(&server, 1, "tasqx_cancel_task", json!({ "ref": 1 })));
+    assert_eq!(cancelled["status"], json!("cancelled"));
+    let unblocked = cancelled["unblocked"].as_array().expect("unblocked array");
+    assert_eq!(unblocked.len(), 1, "{cancelled:?}");
+
+    // A task that is already terminal is a conflict, not a silent no-op.
+    let out = call(&server, 2, "tasqx_cancel_task", json!({ "ref": 1 }));
+    assert!(is_error(&out), "re-cancelling a cancelled task must error");
+}
+
+/// The tool used to be absent entirely (D67); this guards the other direction
+/// of D114's narrowing — it must not still be excused in `UNEXPOSED_METHODS`
+/// now that it ships a tool.
+#[test]
+fn cancel_is_no_longer_excused_as_unexposed() {
+    let engine = engine();
+    let server = McpServer::new(&engine, Scope::Write);
+    let tools = server
+        .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .expect("tools/list is a request");
+    let names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"tasqx_cancel_task"),
+        "task.cancel must be exposed, not excused: {names:?}"
+    );
+}
+
+/// All four are writes, and a read-only server refuses them before the engine
 /// is touched.
 #[test]
 fn the_corrective_tools_are_write_scoped() {
@@ -1380,6 +1434,7 @@ fn the_corrective_tools_are_write_scoped() {
             json!({ "ref": 1, "depends_on": 1 }),
         ),
         ("tasqx_reopen_task", json!({ "ref": 1 })),
+        ("tasqx_cancel_task", json!({ "ref": 1 })),
     ] {
         assert!(
             is_error(&call(&server, 1, tool, args)),

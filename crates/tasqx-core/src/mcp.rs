@@ -316,10 +316,6 @@ const UNEXPOSED_METHODS: &[(&str, &str)] = &[
         "it overwrites, in bulk, from a document nobody has reviewed. The confirmation model          (§7) defers to the host's gate, and a host gate on a call whose diff nobody can see          is not a safeguard.",
     ),
     (
-        "task.cancel",
-        "already reachable: §7 routes cancellation through `task.modify status:cancelled`,          and the engine accepts exactly that one transition. A second spelling of a reachable          behaviour is the drift D30 warns about, not a missing capability.",
-    ),
-    (
         "token.add",
         "a measurement after the fact, and D50 makes the completion's self-report the primary \
          channel precisely so one task never mixes channels. An agent with a count to report \
@@ -782,6 +778,26 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 },
                 "required": ["ref"]
             })),
+        },
+        ToolSpec {
+            name: "tasqx_cancel_task",
+            method: "task.cancel",
+            write: true,
+            destructive: true,
+            idempotent: false,
+            // D114 narrows D67's UNEXPOSED_METHODS placement of task.cancel:
+            // task_modify status:cancelled already reached this, but its
+            // schema names no status enum, so the reachable path was
+            // reachable in principle and undiscoverable in practice.
+            description: "Cancel a task: backlog, pending or active moves to cancelled. The row \
+                is kept, not deleted, and stops counting in reports. Returns any tasks newly \
+                unblocked by the cancellation (D11: cancelling a blocker resolves it, same as \
+                completing one). A task already done or cancelled is a conflict, not a no-op.",
+            schema: json!({
+                "type": "object",
+                "properties": { "ref": ref_schema() },
+                "required": ["ref"]
+            }),
         },
         ToolSpec {
             name: "tasqx_reopen_task",

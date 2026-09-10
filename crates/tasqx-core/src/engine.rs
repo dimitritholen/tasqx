@@ -1152,6 +1152,14 @@ fn parse_fields(p: &Value) -> Result<Option<Vec<String>>, ApiError> {
             )));
         }
     }
+    // #76.1: `fields: []` used to mean "restrict every row to the empty set",
+    // i.e. `{}` per row — the one reading nobody wants and the schema does not
+    // document. The schema's own words are "restrict to THESE fields"; naming
+    // none is naming no restriction, the same as omitting the param entirely,
+    // not a request for content-free rows.
+    if keys.is_empty() {
+        return Ok(None);
+    }
     Ok(Some(keys))
 }
 
