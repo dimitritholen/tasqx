@@ -136,6 +136,13 @@ fn velocity(buckets: &[WeekBucket]) -> f64 {
 /// two computations that happen to agree today. (Same rule as `report`'s two
 /// modes sharing one request object.)
 pub fn render_throughput(ctx: &Ctx, buckets: &[WeekBucket]) -> String {
+    // #233.2: an entirely empty series (a fresh store, or a window with no
+    // events in it) is a fact, not a grid of zeros to draw — twelve identical
+    // "added 0 done 0 net 0" rows plus "WIP steady" reads as a broken tool,
+    // and `report` already has the right one-line treatment for this.
+    if buckets.iter().all(|b| b.added == 0 && b.done == 0) {
+        return "No events recorded yet — add a task to start the history.\n".to_string();
+    }
     let max = buckets
         .iter()
         .map(|b| b.added.max(b.done))
@@ -314,6 +321,11 @@ pub fn best_streak(days: &[DayCount]) -> u32 {
 
 /// Render a day series the caller has already computed. See `render_throughput`.
 pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date) -> String {
+    // #233.2: see `render_throughput` — seven rows of dots plus "0 done" is
+    // the same broken-tool reading, for the same reason.
+    if days.iter().all(|d| d.count == 0) {
+        return "No events recorded yet — add a task to start the history.\n".to_string();
+    }
     let weeks_n = days.len() / 7;
 
     let legend = if ctx.caps.unicode {
@@ -1187,5 +1199,58 @@ mod tests {
         let members = [member("a", (2026, 7, 11), true)];
         let series = burndown(&result(evs), &members, 3, anchor());
         assert_eq!(series.last().unwrap().remaining, 1);
+    }
+
+    /// #233.2: an entirely empty series (no events at all — a fresh store, or
+    /// a window with nothing in it) must print the same one-line empty-state
+    /// treatment `report` already gives, not twelve rows of `added 0 done 0
+    /// net 0`, which reads as a broken tool rather than an empty one.
+    #[test]
+    fn render_throughput_short_circuits_an_entirely_empty_series() {
+        use crate::theme::{self, Caps};
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let buckets: Vec<WeekBucket> = (0..12)
+            .map(|i| WeekBucket {
+                iso_year: 2026,
+                iso_week: 26 + i,
+                added: 0,
+                done: 0,
+            })
+            .collect();
+        let out = render_throughput(&ctx, &buckets);
+        assert!(
+            !out.contains("added   0") && !out.contains("W26"),
+            "still drawing the zero grid: {out}"
+        );
+        assert!(
+            out.to_lowercase().contains("no") && (out.contains("event") || out.contains("task")),
+            "must name the empty state, not just omit the grid: {out:?}"
+        );
+        assert_eq!(out.lines().count(), 1, "one line, like `report`'s: {out:?}");
+
+        // A series with even one real number still draws the grid.
+        let mut nonzero = buckets.clone();
+        nonzero[0].added = 1;
+        assert!(render_throughput(&ctx, &nonzero).contains("W26"));
+    }
+
+    /// #233.2: same short-circuit for the heatmap.
+    #[test]
+    fn render_heatmap_short_circuits_an_entirely_empty_series() {
+        use crate::theme::{self, Caps};
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let days: Vec<DayCount> = (0..84)
+            .map(|i| DayCount {
+                date: anchor().saturating_add((i as i64).days()),
+                count: 0,
+            })
+            .collect();
+        let out = render_heatmap(&ctx, &days, anchor());
+        assert!(!out.contains("Mon"), "still drawing the empty grid: {out}");
+        assert_eq!(out.lines().count(), 1, "one line, like `report`'s: {out:?}");
+
+        let mut nonzero = days.clone();
+        nonzero[0].count = 1;
+        assert!(render_heatmap(&ctx, &nonzero, anchor()).contains("Mon"));
     }
 }
