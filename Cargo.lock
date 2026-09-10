@@ -1655,6 +1655,7 @@ dependencies = [
  "jiff",
  "ratatui",
  "serde_json",
+ "signal-hook",
  "tasqx-core",
  "toml",
  "toml_edit 0.22.27",

@@ -191,6 +191,80 @@ fn panic_restore(w: &mut impl Write, disable_raw: impl FnOnce()) -> bool {
     restore_terminal(&IN_RAW_MODE, w, disable_raw)
 }
 
+/// Best-effort install of a background thread that restores the terminal
+/// before the process dies of SIGTERM, SIGHUP or SIGQUIT — the paths a daily
+/// tmux user actually hits from *outside* the app: `timeout 30 tasqx
+/// dashboard` in a hotkey wrapper, `pkill tasqx` after an agent run, a
+/// systemd/supervisor stop, `kill %1` from the shell. Installed once per
+/// process the first time `with_terminal` runs, not once per call: the
+/// dashboard's outer loop re-enters `with_terminal` on every return from
+/// `pick` (`dashboard_screen.rs`), and a fresh listener thread on every
+/// iteration would leak.
+///
+/// This closes the gap D26's "On terminal safety" note left open on purpose:
+/// the panic hook and the `Restore` guard cover a panic and the three
+/// key-driven exits (`q`, `esc`, `ctrl-c` — raw mode disables `ISIG`, so a
+/// terminal-generated Ctrl-C reaches the app as an ordinary `KeyEvent`, never
+/// as a signal). Neither one runs for a signal delivered from outside the
+/// process: with no handler installed, the default disposition for these
+/// three is to terminate immediately, before any Rust code — `Drop` included
+/// — gets a chance to run.
+///
+/// Unix only. SIGTERM/SIGHUP/SIGQUIT are POSIX signals with no Windows
+/// equivalent; the nearest analogues there (console close/logoff/shutdown,
+/// via `SetConsoleCtrlHandler`) are a different mechanism this module does
+/// not wire up.
+#[cfg(unix)]
+fn install_signal_teardown() {
+    use signal_hook::consts::{SIGHUP, SIGQUIT, SIGTERM};
+
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        spawn_signal_listener(&[SIGTERM, SIGHUP, SIGQUIT], |sig| {
+            restore_terminal(&IN_RAW_MODE, &mut io::stdout(), || {
+                let _ = ratatui::crossterm::terminal::disable_raw_mode();
+            });
+            // Reset to the default disposition and re-raise, so the process
+            // still dies of the exact signal it was sent — a shell or
+            // supervisor reading the exit status (`$?`, `WIFSIGNALED`) sees
+            // the same thing it would have without any handler installed.
+            // `signal_hook`'s own `Signals::forever` docs use this identical
+            // pattern to let SIGTSTP take effect after cleanup.
+            let _ = signal_hook::low_level::emulate_default_handler(sig);
+        });
+    });
+}
+
+#[cfg(not(unix))]
+fn install_signal_teardown() {}
+
+/// Spawn a background thread that blocks for the first of `sigs` to arrive,
+/// then runs `on_signal` with the signal number that fired.
+///
+/// Split out of [`install_signal_teardown`] so the real `signal_hook` wiring —
+/// register, block, dispatch — can be driven by a test with a signal that is
+/// safe to raise against the test binary itself (`SIGUSR1`), instead of one
+/// whose whole point is to end the process. `emulate_default_handler` really
+/// does that, which is why it lives in the caller and not here — the same
+/// reason `set_hook` stays out of the tested `panic_restore`.
+///
+/// Returns whether registration succeeded, so a caller that could not get a
+/// listener at least knows it is back to the pre-fix behaviour rather than
+/// silently believing it is covered.
+#[cfg(unix)]
+fn spawn_signal_listener(sigs: &[i32], on_signal: impl FnOnce(i32) + Send + 'static) -> bool {
+    let mut signals = match signal_hook::iterator::Signals::new(sigs) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    std::thread::spawn(move || {
+        if let Some(sig) = signals.forever().next() {
+            on_signal(sig);
+        }
+    });
+    true
+}
+
 /// Map a tasqx role style onto a ratatui style at the terminal's real depth.
 ///
 /// Quantization goes through `Rgb::to_xterm256` / `Rgb::to_ansi16`, the same
@@ -286,6 +360,7 @@ pub fn with_terminal<T>(
     use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen};
 
     install_panic_hook();
+    install_signal_teardown();
     enable_raw_mode()?;
     // Arming happens only once the alt screen is actually entered, so a failure
     // here cannot leave a guard that emits a leave-alt-screen for a screen we
@@ -508,6 +583,70 @@ mod tests {
         assert!(
             out.contains("\x1b[?1049l") && out.contains("\x1b[?25h"),
             "the terminal was not restored while unwinding: {out:?}"
+        );
+        assert!(
+            !IN_RAW_MODE.load(Ordering::SeqCst),
+            "the flag must be cleared by the restore"
+        );
+    }
+
+    /// The gap D26's "On terminal safety" note left open on purpose: a panic
+    /// and the three key-driven exits (`q`, `esc`, `ctrl-c`) are covered, but
+    /// nothing reached the restore path when the process was asked to
+    /// terminate from *outside* it — a real SIGTERM, SIGHUP or SIGQUIT sent by
+    /// `kill`, `timeout`'s deadline, or a supervisor stop.
+    ///
+    /// Driven with `SIGUSR1` rather than one of the three production signals,
+    /// so the test binary survives the assertion instead of dying with it —
+    /// `install_signal_teardown` itself, which really does end the process via
+    /// `emulate_default_handler`, is exercised only by construction, the same
+    /// way `install_panic_hook`'s `set_hook` call is (see its doc comment).
+    /// `spawn_signal_listener` is the real `signal_hook` wiring in both cases;
+    /// only the signal and the final disposition differ.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_signal_reaches_the_restore_before_the_process_would_die() {
+        let _lock = RAW_FLAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        IN_RAW_MODE.store(true, Ordering::SeqCst);
+
+        let sink: std::sync::Arc<std::sync::Mutex<Vec<u8>>> = Default::default();
+        let disabled = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let sink2 = sink.clone();
+        let disabled2 = disabled.clone();
+        let installed = spawn_signal_listener(&[signal_hook::consts::SIGUSR1], move |sig| {
+            let mut w = sink2.lock().unwrap_or_else(|e| e.into_inner());
+            restore_terminal(&IN_RAW_MODE, &mut *w, || {
+                disabled2.fetch_add(1, Ordering::SeqCst);
+            });
+            let _ = tx.send(sig);
+        });
+        assert!(
+            installed,
+            "SIGUSR1 registration must succeed on a real unix process"
+        );
+
+        signal_hook::low_level::raise(signal_hook::consts::SIGUSR1)
+            .expect("raising a signal against our own process must succeed");
+
+        let seen = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the listener thread must receive the signal and call back");
+        assert_eq!(seen, signal_hook::consts::SIGUSR1);
+
+        let out = String::from_utf8(sink.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            .expect("restore bytes are valid UTF-8");
+        assert!(
+            out.contains("\x1b[?1049l") && out.contains("\x1b[?25h"),
+            "a signal delivered from outside the process must still restore \
+             the terminal: {out:?}"
+        );
+        assert_eq!(
+            disabled.load(Ordering::SeqCst),
+            1,
+            "the signal path must take the console out of raw mode too, not \
+             just emit the escape sequences"
         );
         assert!(
             !IN_RAW_MODE.load(Ordering::SeqCst),
