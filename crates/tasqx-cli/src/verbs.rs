@@ -743,10 +743,14 @@ pub(crate) fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome 
             title,
             body,
             source,
+            project,
         } => {
             let mut params = json!({ "title": title, "body": body });
             if let Some(s) = source {
                 params["source"] = json!(s);
+            }
+            if let Some(p) = project {
+                params["project"] = json!(p);
             }
             let result = be.call("memory.add", &params)?;
             let text = format!(
@@ -783,7 +787,12 @@ pub(crate) fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome 
                 text.push_str(&format!("{title}  ({kind} · {src})\n  {snip}\n  id {id}\n"));
             }
             let count = result["count"].as_u64().unwrap_or(0);
-            text.push_str(&format!("{count} hit(s)\n"));
+            let total = result["total"].as_u64().unwrap_or(count);
+            text.push_str(&format!("{count} hit(s)"));
+            if total > count {
+                text.push_str(&format!(" of {total} — raise --limit for the rest"));
+            }
+            text.push('\n');
             // On a miss, name the expression that produced it (D69). Every
             // word of a plain query is a required phrase, so a question typed
             // as a sentence comes back exactly as empty as a subject nobody
@@ -815,6 +824,65 @@ pub(crate) fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome 
             Ok((result, text))
         }
         MemoryAction::Import { path } => run_memory_import(be, path),
+        MemoryAction::List {
+            limit,
+            offset,
+            project,
+        } => {
+            let mut params = json!({ "offset": offset });
+            if let Some(n) = limit {
+                params["limit"] = json!(n);
+            }
+            if let Some(p) = project {
+                params["project"] = json!(p);
+            }
+            let result = be.call("memory.list", &params)?;
+            let mut text = String::new();
+            for doc in result["docs"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+                let title = render::san(doc["title"].as_str().unwrap_or(""));
+                let src = render::san(doc["source"].as_str().unwrap_or("—"));
+                let preview = render::san(doc["body_preview"].as_str().unwrap_or(""));
+                let id = render::san(doc["id"].as_str().unwrap_or("?"));
+                text.push_str(&format!("{title}  ({src})\n  {preview}\n  id {id}\n"));
+            }
+            let count = result["count"].as_u64().unwrap_or(0);
+            let total = result["total"].as_u64().unwrap_or(count);
+            text.push_str(&format!("{count} doc(s) of {total}\n"));
+            Ok((result, text))
+        }
+        MemoryAction::Update {
+            id,
+            title,
+            body,
+            source,
+            project,
+            expected_rev,
+        } => {
+            let mut params = json!({ "id": id });
+            if let Some(t) = title {
+                params["title"] = json!(t);
+            }
+            if let Some(b) = body {
+                params["body"] = json!(b);
+            }
+            if let Some(s) = source {
+                params["source"] = json!(s);
+            }
+            if let Some(p) = project {
+                params["project"] = json!(p);
+            }
+            if let Some(rev) = expected_rev {
+                params["expected_rev"] = json!(rev);
+            }
+            let result = be.call("memory.update", &params)?;
+            let text = format!(
+                "Updated {}  ·  {}  (rev {})\n",
+                render::san(result["id"].as_str().unwrap_or("?")),
+                render::san(result["title"].as_str().unwrap_or("?")),
+                result["rev"].as_i64().unwrap_or(0)
+            );
+            Ok((result, text))
+        }
     }
 }
 
