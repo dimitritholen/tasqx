@@ -269,6 +269,8 @@ mod tests {
             PanelId::Tasks,
             PanelId::Projects,
             PanelId::Burndown,
+            PanelId::Pulse,
+            PanelId::Effort,
             PanelId::Tokens,
         ]
     }

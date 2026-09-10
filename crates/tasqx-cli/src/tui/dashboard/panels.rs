@@ -176,6 +176,8 @@ pub fn body(
     let mut lines = match id {
         PanelId::Tasks => tasks_body(dash, &ctx, cursor),
         PanelId::Projects => projects_body(dash, &ctx, cursor),
+        PanelId::Pulse => pulse_body(dash, &ctx),
+        PanelId::Effort => effort_body(dash, &ctx),
         PanelId::Burndown => burndown_body(dash, &ctx),
         PanelId::Tokens => tokens_body(dash, &ctx),
         PanelId::Slot => Vec::new(),
@@ -546,6 +548,156 @@ fn projects_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'
             render::truncate(&text, w, unicode),
             s.muted,
         )));
+    }
+    out
+}
+
+/// The PULSE panel: how the work is MOVING, where the list says what it is.
+///
+/// Four sentences, not a table. Each answers a question the list cannot —
+/// whether things are getting finished, how long they take, what has been
+/// sitting untouched, and whether the pile is growing — and none of them is a
+/// row of anything, so the panel has a height rather than a length.
+fn pulse_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
+    let (s, w, unicode) = (&ctx.s, ctx.w, ctx.unicode());
+    let p = &dash.pulse;
+    let mid = if unicode { " · " } else { " - " };
+
+    let days = |d: f64| -> String {
+        if d < 1.0 {
+            format!("{}h", (d * 24.0).round() as i64)
+        } else {
+            format!("{d:.1}d")
+        }
+    };
+
+    let mut out = vec![Line::from(vec![
+        Span::styled("done ".to_string(), s.muted),
+        Span::styled(format!("{} ", p.done[0]), s.plain),
+        Span::styled(format!("7d{mid}"), s.muted),
+        Span::styled(format!("{} ", p.done[1]), s.plain),
+        Span::styled(format!("14d{mid}"), s.muted),
+        Span::styled(format!("{} ", p.done[2]), s.plain),
+        Span::styled("30d".to_string(), s.muted),
+    ])];
+
+    // The trend word compares the fortnight against the whole history, which is
+    // the comparison a reader is making anyway — "is this getting faster" has
+    // no answer from one number.
+    let cycle = match (p.cycle_days, p.cycle_days_recent) {
+        (Some(all), Some(recent)) => {
+            let word = if recent < all * 0.9 {
+                " faster"
+            } else if recent > all * 1.1 {
+                " slower"
+            } else {
+                " steady"
+            };
+            Some((
+                format!("cycle {} median{mid}{} last 14d,", days(all), days(recent)),
+                word,
+            ))
+        }
+        (Some(all), None) => Some((format!("cycle {} median", days(all)), "")),
+        _ => None,
+    };
+    if let Some((text, word)) = cycle {
+        out.push(Line::from(vec![
+            Span::styled(text, s.muted),
+            Span::styled(word.to_string(), s.active),
+        ]));
+    }
+
+    if let Some((id, age)) = p.oldest {
+        let mut spans = vec![
+            Span::styled("oldest ".to_string(), s.muted),
+            Span::styled(format!("#{id}"), s.accent),
+            Span::styled(format!(" {age}d"), s.muted),
+        ];
+        if p.untouched > 0 {
+            spans.push(Span::styled(
+                format!("{mid}{} untouched ≥14d", p.untouched),
+                s.warn,
+            ));
+        }
+        out.push(Line::from(spans));
+    }
+
+    // Growing is the state worth colouring: a backlog that is shrinking needs
+    // no attention drawn to it.
+    let (word, style) = if p.churn > 0 {
+        (format!("scope +{} over the window", p.churn), s.warn)
+    } else if p.churn < 0 {
+        (format!("scope {} over the window", p.churn), s.active)
+    } else {
+        ("scope flat over the window".to_string(), s.muted)
+    };
+    out.push(Line::from(Span::styled(
+        render::truncate(&word, w, unicode),
+        style,
+    )));
+    out
+}
+
+/// The EFFORT panel: what the open work will cost, beside what it has cost.
+///
+/// The estimate is summed over OPEN rows, which is the number a reader is
+/// after. `report.summary`'s `est_total` counts finished work too (D24's
+/// scope), so it answers "how much was ever estimated" — a different and much
+/// larger question.
+fn effort_body(dash: &Dashboard, ctx: &PanelCtx) -> Vec<Line<'static>> {
+    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
+    let e = &dash.effort;
+    if e.by_project.is_empty() {
+        return empty("nothing estimated or tracked yet", s, w as u16, unicode);
+    }
+    let mid = if unicode { " · " } else { " - " };
+    let mut out = vec![Line::from(vec![
+        Span::styled(dur_compact(e.est_open_secs), s.plain),
+        Span::styled(" est left".to_string(), s.muted),
+        Span::styled(mid.to_string(), s.muted),
+        Span::styled(dur_compact(e.tracked_secs), s.plain),
+        // "on it", not "tracked": both numbers are scoped to the OPEN rows, so
+        // this is time already spent on the work that REMAINS — not the store's
+        // lifetime total, which is what `report.summary` reports and what
+        // PROJECTS shows per row.
+        Span::styled(" tracked on it".to_string(), s.muted),
+    ])];
+
+    // A bar per project, scaled to the biggest — the comparison is between
+    // projects, and an absolute scale would draw every row the same length on a
+    // store where nothing is estimated in days.
+    let top = e
+        .by_project
+        .iter()
+        .map(|(_, est, tracked)| est.max(tracked))
+        .max()
+        .copied()
+        .unwrap_or(1)
+        .max(1);
+    let bar_w = 8usize;
+    let name_w = w.saturating_sub(bar_w + 12).clamp(6, 20);
+    for (name, est, tracked) in e
+        .by_project
+        .iter()
+        .take((height as usize).saturating_sub(1))
+    {
+        let filled = ((*est.max(tracked) as f64 / top as f64) * bar_w as f64).round() as usize;
+        let filled = filled.max(1).min(bar_w);
+        let glyph = if unicode { "▄" } else { "#" };
+        let track = if unicode { "▁" } else { "." };
+        out.push(Line::from(vec![
+            Span::styled(
+                render::pad(
+                    &render::truncate(name.as_deref().unwrap_or("(none)"), name_w, unicode),
+                    name_w,
+                ),
+                s.project,
+            ),
+            Span::styled(format!(" {}", glyph.repeat(filled)), s.accent),
+            Span::styled(track.repeat(bar_w - filled), s.muted),
+            Span::styled(format!(" {}", dur_compact(*est.max(tracked))), s.muted),
+        ]));
     }
     out
 }

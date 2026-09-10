@@ -281,7 +281,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "`--json` skips both of those checks, because it opens no screen. It is the only verb where `--json` decides whether the terminal gate applies, and it is what makes the panel data reachable from a script.",
             "`--panels tasks,burndown` narrows the `--json` document to those panels, on that one call — it does not touch `dashboard.panels` or the interactive screen. The task rows are row-capped per group with `total`/`truncated` alongside them, because the list tracks the store's size rather than the screen's (#152). The four panel names D80 retired — `now`, `next`, `due`, `blocked`, `recent` — still parse, and all mean `tasks`, which is where their rows went.",
             "Read-only, with one exception: `p` opens the picker, and Enter there starts the highlighted task. `q`, `esc` and ctrl-c all close.",
-            "Every key (also behind `?` in the screen itself): `1-4` focus a panel; `s` cycles the list order between urgency, due and touched; `tab`/`S-tab` cycle panels; `j`/`k` move the cursor; `g`/`G` jump to the first/last row; `r` refreshes now; `R` toggles auto-refresh; `w` cycles the burndown window; `enter` opens the row under the cursor; `l` leaves and prints the task list.",
+            "Every key (also behind `?` in the screen itself): `1-6` focus a panel; `s` cycles the list order between urgency, due and touched; `tab`/`S-tab` cycle panels; `j`/`k` move the cursor; `g`/`G` jump to the first/last row; `r` refreshes now; `R` toggles auto-refresh; `w` cycles the burndown window; `enter` opens the row under the cursor; `l` leaves and prints the task list.",
         ],
         see_also: &["list", "pick", "agenda", "chart"],
         topic: Topic::GettingStarted,

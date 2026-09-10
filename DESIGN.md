@@ -1997,8 +1997,20 @@ status, which is the half of RECENT that had to survive the fold. The elapsed ti
 card carried lives on the running row. Digits are `1-4`; `now`, `next`, `due`, `blocked`
 and `recent` still parse in `dashboard.panels` and all resolve to `tasks`, deduplicated,
 because a config written against the eight-panel screen was written against a screen that
-existed. PULSE and EFFORT are not built, and the column they would fill is the gap left at
-the bottom of the context column.
+existed. PULSE and EFFORT are built too, which closes the panel inventory: PROJECTS, TASKS,
+BURNDOWN, PULSE, EFFORT — plus TOKENS, kept because D58's token accounting has nowhere
+else to show. PULSE carries throughput over 7/14/30 days, the cycle-time MEDIAN against
+the last fortnight with a trend word, the oldest open task and how many have gone
+untouched for a fortnight, and the scope churn over the burndown's own window. EFFORT
+carries the estimate summed over OPEN rows — deliberately not `report.summary`'s
+`est_total`, whose D24 scope counts finished work and so answers "how much was ever
+estimated" rather than "how much is left" — beside the tracked time on those same rows,
+and a bar per project. Neither adds a call: both are derived from the snapshot the other
+panels already read, which is what the spec checked before naming them. `dashboard.panels`
+defaults to the six, digits are `1-6`, and the analytics slot sizes for the tallest of the
+five members it can hold. Not built: the scope strip, the filter chips, the fuzzy search
+overlay, the row actions (`s`/`d`/`t`/`p`/`u`), and `chart.scope` with the cumulative
+scope-added series.
 
 Before that: the burndown's step line, in `chart::plot_step_line` — shared geometry, painted separately by the ANSI and ratatui paths, over a dotted ideal in the `chart.ideal` role this entry named. It replaced three copies of a one-row sparkline (the `chart burndown` verb, `render_burndown`, and the dashboard's own panel), each with its own glyph table and its own ASCII fallback, all of which spent a colour channel re-encoding the height they already drew — hot for "almost done", cold for "barely started". The cumulative scope-added series, `chart.scope`, and the other three roles named above are not built.
 

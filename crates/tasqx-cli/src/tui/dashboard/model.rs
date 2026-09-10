@@ -423,7 +423,38 @@ pub fn group_tasks(rows: Vec<Task>, today: Date, sort: Sort) -> Tasks {
     }
 }
 
-/// One project's roll-up.
+/// How the work is MOVING, as opposed to what is on the list (D80).
+///
+/// Every figure is derived from the snapshot the other panels already read —
+/// no call was added for it, which is what the spec checked before naming it.
+#[derive(Clone, Debug, Default)]
+pub struct Pulse {
+    /// Completions in the last 7, 14 and 30 days.
+    pub done: [usize; 3],
+    /// Days from `created` to `completed`, median, over everything finished —
+    /// and over the last fortnight, so a change of pace is visible as one.
+    pub cycle_days: Option<f64>,
+    pub cycle_days_recent: Option<f64>,
+    /// The oldest open task, in days since it was created, and its id.
+    pub oldest: Option<(i64, i64)>,
+    /// Open tasks nobody has touched in a fortnight.
+    pub untouched: usize,
+    /// Opened minus closed over the burndown's own window: is the pile growing.
+    pub churn: i64,
+}
+
+/// What the open work is going to COST, and what it has cost.
+#[derive(Clone, Debug, Default)]
+pub struct Effort {
+    /// Estimate summed over OPEN rows — hours left, not hours ever.
+    pub est_open_secs: i64,
+    /// Tracked, over the same scope `report.summary` reports it for.
+    pub tracked_secs: i64,
+    /// Per project, biggest estimate first: (name, estimate, tracked).
+    pub by_project: Vec<(Option<String>, i64, i64)>,
+}
+
+/// Deadlines, bucketed by calendar date.
 #[derive(Clone, Debug)]
 pub struct ProjectRow {
     name: Option<String>,
@@ -524,6 +555,8 @@ pub struct Dashboard {
     pub tokens: Tokens,
     /// The one task list D80 folds NOW, NEXT UP, DUE, BLOCKED and RECENT into.
     pub tasks: Tasks,
+    pub pulse: Pulse,
+    pub effort: Effort,
 }
 
 // ============================================================================
@@ -615,6 +648,64 @@ pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -
         .filter(|t| t.status.is_open() && t.blocked)
         .count();
 
+    // ---- PULSE: how the work is moving -----------------------------------
+    //
+    // Medians, not means: one task that sat open for a year drags a mean into
+    // uselessness, and a cycle time is read to answer "how long does this
+    // usually take".
+    let day = 24 * 3600;
+    let since = |days: i64| now.as_second() - days * day;
+    let done_in = |days: i64| {
+        all.iter()
+            .filter(|t| t.completed.is_some_and(|c| c.as_second() >= since(days)))
+            .count()
+    };
+    let median = |mut v: Vec<f64>| -> Option<f64> {
+        if v.is_empty() {
+            return None;
+        }
+        v.sort_by(f64::total_cmp);
+        let mid = v.len() / 2;
+        Some(if v.len().is_multiple_of(2) {
+            (v[mid - 1] + v[mid]) / 2.0
+        } else {
+            v[mid]
+        })
+    };
+    let cycle_of = |from: i64| -> Option<f64> {
+        median(
+            all.iter()
+                .filter_map(|t| t.completed.map(|c| (t.created, c)))
+                .filter(|(_, c)| c.as_second() >= from)
+                .map(|(created, c)| (c.as_second() - created.as_second()) as f64 / day as f64)
+                .collect(),
+        )
+    };
+    let oldest = all
+        .iter()
+        .filter(|t| t.status.is_open())
+        .min_by_key(|t| t.created)
+        .map(|t| (t.short_id, (now.as_second() - t.created.as_second()) / day));
+    let pulse = Pulse {
+        done: [done_in(7), done_in(14), done_in(30)],
+        cycle_days: cycle_of(i64::MIN / 2),
+        cycle_days_recent: cycle_of(since(14)),
+        oldest,
+        untouched: all
+            .iter()
+            .filter(|t| t.status.is_open() && t.modified.as_second() < since(14))
+            .count(),
+        churn: {
+            let from = since(burndown_days as i64);
+            let opened = all.iter().filter(|t| t.created.as_second() >= from).count() as i64;
+            let closed = all
+                .iter()
+                .filter(|t| t.completed.is_some_and(|c| c.as_second() >= from))
+                .count() as i64;
+            opened - closed
+        },
+    };
+
     // ---- PROJECTS + TOKENS: one summary, joined to the snapshot ----------
     let (projects_panel, tokens_panel) = build_projects_and_tokens(&all, summary, projects, today);
 
@@ -657,9 +748,36 @@ pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -
             .count(),
     };
 
+    // ---- EFFORT: what the open work will cost ----------------------------
+    //
+    // The estimate is summed over OPEN rows here rather than taken from
+    // `report.summary`, and the difference is the point: D24's scope includes
+    // finished work, so the summary's `est_total` answers "how much was ever
+    // estimated" where this panel asks "how much is left".
+    let mut by_project: Vec<(Option<String>, i64, i64)> = Vec::new();
+    for t in all.iter().filter(|t| t.status.is_open()) {
+        let key = t.project().map(str::to_string);
+        match by_project.iter_mut().find(|(p, _, _)| *p == key) {
+            Some(row) => {
+                row.1 += t.estimate_secs.unwrap_or(0);
+                row.2 += t.tracked_secs;
+            }
+            None => by_project.push((key, t.estimate_secs.unwrap_or(0), t.tracked_secs)),
+        }
+    }
+    by_project.retain(|(_, est, tracked)| *est > 0 || *tracked > 0);
+    by_project.sort_by_key(|(_, est, tracked)| std::cmp::Reverse(*est + *tracked));
+    let effort = Effort {
+        est_open_secs: by_project.iter().map(|(_, e, _)| e).sum(),
+        tracked_secs: by_project.iter().map(|(_, _, t)| t).sum(),
+        by_project,
+    };
+
     Dashboard {
         today,
         status,
+        pulse,
+        effort,
         tasks: group_tasks(rows, today, sort),
         projects: projects_panel,
         burndown,
@@ -840,6 +958,10 @@ pub enum PanelId {
     Tasks,
     Projects,
     Burndown,
+    /// How the work is moving: throughput, cycle time, what is aging.
+    Pulse,
+    /// What the open work will cost, and what it has cost.
+    Effort,
     Tokens,
     /// The shared analytics slot: whichever of Projects/Burndown/Tokens is
     /// showing when there is only room for one of them.
@@ -853,7 +975,7 @@ pub enum PanelId {
 /// (`the_panel_vocabulary_round_trips`), the shape `docs.rs` already uses
 /// against clap. `Slot` is absent on purpose: it is a layout artefact, not a
 /// panel anyone can ask for.
-pub const PANEL_NAMES: &[&str] = &["tasks", "projects", "burndown", "tokens"];
+pub const PANEL_NAMES: &[&str] = &["tasks", "projects", "burndown", "pulse", "effort", "tokens"];
 
 /// The panel names D80 retired, and the panel each now means.
 ///
@@ -871,8 +993,9 @@ pub const RETIRED_PANEL_NAMES: [&str; 5] = ["now", "next", "due", "blocked", "re
 /// what a reader should type. This is what it TOLERATES, so a file written
 /// against the eight-panel screen still validates instead of being refused
 /// word by word for naming panels that used to exist.
-pub const ACCEPTED_PANEL_NAMES: [&str; 9] = [
-    "tasks", "projects", "burndown", "tokens", "now", "next", "due", "blocked", "recent",
+pub const ACCEPTED_PANEL_NAMES: [&str; 11] = [
+    "tasks", "projects", "burndown", "pulse", "effort", "tokens", "now", "next", "due", "blocked",
+    "recent",
 ];
 
 impl PanelId {
@@ -882,6 +1005,8 @@ impl PanelId {
         Some(match self {
             PanelId::Tasks => "tasks",
             PanelId::Projects => "projects",
+            PanelId::Pulse => "pulse",
+            PanelId::Effort => "effort",
             PanelId::Burndown => "burndown",
             PanelId::Tokens => "tokens",
             PanelId::Slot => return None,
@@ -905,6 +1030,8 @@ impl PanelId {
                     PanelId::Tasks,
                     PanelId::Projects,
                     PanelId::Burndown,
+                    PanelId::Pulse,
+                    PanelId::Effort,
                     PanelId::Tokens,
                 ]
                 .into_iter()
@@ -918,18 +1045,28 @@ impl PanelId {
             PanelId::Tasks => 1,
             PanelId::Projects => 2,
             PanelId::Burndown => 3,
-            PanelId::Tokens => 4,
+            PanelId::Pulse => 4,
+            PanelId::Effort => 5,
+            PanelId::Tokens => 6,
             PanelId::Slot => return None,
         })
     }
 
     /// The three panels that share the analytics slot when space is short.
-    pub const SLOT_MEMBERS: [PanelId; 3] = [PanelId::Projects, PanelId::Burndown, PanelId::Tokens];
+    pub const SLOT_MEMBERS: [PanelId; 5] = [
+        PanelId::Projects,
+        PanelId::Burndown,
+        PanelId::Pulse,
+        PanelId::Effort,
+        PanelId::Tokens,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             PanelId::Tasks => "TASKS",
             PanelId::Projects => "PROJECTS",
+            PanelId::Pulse => "PULSE",
+            PanelId::Effort => "EFFORT",
             PanelId::Burndown => "BURNDOWN",
             PanelId::Tokens => "TOKENS",
             PanelId::Slot => "ANALYTICS",
@@ -960,7 +1097,7 @@ struct Spec {
     grows: bool,
 }
 
-const SPECS: [Spec; 5] = [
+const SPECS: [Spec; 7] = [
     Spec {
         // The list. It is the screen, so it takes rows until it runs out of
         // tasks and it never stops at a level: `Detail` reads as a richness
@@ -983,6 +1120,20 @@ const SPECS: [Spec; 5] = [
         full: 3,
         compact: Some(2),
         oneline: None,
+        grows: true,
+    },
+    Spec {
+        id: PanelId::Pulse,
+        full: 3,
+        compact: Some(2),
+        oneline: Some(1),
+        grows: true,
+    },
+    Spec {
+        id: PanelId::Effort,
+        full: 3,
+        compact: Some(2),
+        oneline: Some(1),
         grows: true,
     },
     Spec {
@@ -1242,7 +1393,13 @@ fn column_table(rung: Rung) -> Vec<Vec<PanelId>> {
         // the other. That is the mockup's arrangement (`docs/specs/
         // 2026-09-02-dashboard-redesign-mockup.html`) and D80's.
         Rung::Xl | Rung::L => vec![
-            vec![PanelId::Projects, PanelId::Burndown, PanelId::Tokens],
+            vec![
+                PanelId::Projects,
+                PanelId::Burndown,
+                PanelId::Pulse,
+                PanelId::Effort,
+                PanelId::Tokens,
+            ],
             vec![PanelId::Tasks],
         ],
         // Under 120 a context column would starve the list, so all three
@@ -1281,12 +1438,16 @@ pub(crate) const RUNG_MIN_WIDTH: [(Rung, u16); 5] = [
 /// Not the display order: this is what a reader wants *more* of first. NEXT UP
 /// earns rows before RECENT does, because choosing what to do next is the
 /// question the screen exists to answer.
-const RAISE_ORDER: [PanelId; 5] = [
+const RAISE_ORDER: [PanelId; 7] = [
     // The list first, and by a distance: it is the question the screen exists
-    // to answer, and everything under it is context for it.
+    // to answer, and everything under it is context for it. Then where the work
+    // is, how it is burning down, how it is moving, what it will cost, what it
+    // has cost — falling order of how often a reader acts on the answer.
     PanelId::Tasks,
     PanelId::Projects,
     PanelId::Burndown,
+    PanelId::Pulse,
+    PanelId::Effort,
     PanelId::Tokens,
     PanelId::Slot,
 ];
@@ -1354,6 +1515,12 @@ pub fn demand(dash: &Dashboard, slot_members: &[PanelId], id: PanelId) -> u16 {
             n(live) + u16::from(live < dash.projects.rows.len())
         }
         PanelId::Tokens => n(dash.tokens.rows.len()),
+        // Throughput, cycle time, what is aging, and the churn — four lines,
+        // each of which is a sentence rather than a row of a list, so this one
+        // is a property of the panel and not of the store.
+        PanelId::Pulse => 4,
+        // The totals, then a bar per project that has any.
+        PanelId::Effort => n(dash.effort.by_project.len() + 1),
         PanelId::Slot => slot_members
             .iter()
             .map(|m| demand(dash, &[], *m))
