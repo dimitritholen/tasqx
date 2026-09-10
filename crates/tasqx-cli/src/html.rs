@@ -6,13 +6,128 @@
 //! from the active tasqx theme, so terminal and web match. All data comes from
 //! pure core reads (`report.summary`, `task.list`, `store.export`, `event.list`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 use tasqx_core::{dispatch, ApiError, Engine};
 
 use crate::chart::{self, today};
 use crate::theme::{Rgb, Theme};
+
+/// Detail panels per page, whatever the store size (§7 item 11).
+const PANEL_BUDGET: usize = 160;
+/// Newest annotations shown per panel, and the characters kept of each.
+const ANNOTATIONS_PER_PANEL: usize = 3;
+const ANNOTATION_CHARS: usize = 2000;
+/// The inline script's ceiling in bytes, so growth is a red test rather than
+/// a slow drift (D48d put the whole budget at ~4.7 KB).
+#[cfg(test)]
+const SCRIPT_BUDGET: usize = 6 * 1024;
+
+/// The page's one inline script (D48b/d): search and cross-filter by
+/// attribute flips the CSS renders, an in-place table sort over the numbers
+/// already on each row, and focus for the panel `:target` reveals. Nothing
+/// here re-aggregates, fetches, or touches the History API — assigning
+/// `location.hash` is a navigation, which is `file://`-safe where the state
+/// methods throw. Readable on purpose: the generated file is a document a
+/// reader may need to trust.
+const SCRIPT: &str = r##"(function () {
+  var main = document.getElementById('top');
+  var live = document.getElementById('live');
+  var q = document.getElementById('q'), st = document.getElementById('st');
+  var active = document.getElementById('active'), clear = document.getElementById('clear');
+  var f = { project: '', tag: '' };
+  function say(t) { if (live) live.textContent = t; }
+
+  // Search + filters: every task row carries data-project/-status/-tags,
+  // and CSS hides rows without .match while main[data-filter] is set.
+  function apply() {
+    var text = q.value.trim().toLowerCase(), status = st.value;
+    var on = text || status || f.project || f.tag;
+    var n = 0;
+    main.querySelectorAll('ul.tasklist li[data-status]').forEach(function (li) {
+      var s = li.dataset.status, open = s !== 'done' && s !== 'cancelled';
+      var ok = (!text || li.textContent.toLowerCase().indexOf(text) >= 0)
+        && (!status || (status === 'open' ? open : s === status))
+        && (!f.project || li.dataset.project === f.project)
+        && (!f.tag || (' ' + li.dataset.tags + ' ').indexOf(' ' + f.tag + ' ') >= 0);
+      li.classList.toggle('match', ok);
+      if (ok) n++;
+    });
+    if (on) { main.dataset.filter = '1'; } else { delete main.dataset.filter; }
+    main.querySelectorAll('details.more').forEach(function (d) { if (on) d.open = true; });
+    var parts = [];
+    if (f.project) parts.push('project ' + f.project);
+    if (f.tag) parts.push('tag ' + f.tag);
+    if (status) parts.push('status ' + status);
+    if (text) parts.push('"' + text + '"');
+    active.textContent = on ? parts.join(' · ') + ' — ' + n + ' rows' : '';
+    active.hidden = clear.hidden = !on;
+    main.querySelectorAll('button[data-project], button[data-tag]').forEach(function (b) {
+      var hit = (b.dataset.project && b.dataset.project === f.project)
+        || (b.dataset.tag && b.dataset.tag === f.tag);
+      b.setAttribute('aria-pressed', hit ? 'true' : 'false');
+    });
+    if (on) say(n + ' matching rows.');
+  }
+  q.addEventListener('input', apply);
+  st.addEventListener('change', apply);
+  clear.addEventListener('click', function () {
+    q.value = ''; st.value = ''; f.project = ''; f.tag = ''; apply();
+  });
+  main.addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-project], button[data-tag]');
+    if (!b) return;
+    if (b.dataset.project) f.project = f.project === b.dataset.project ? '' : b.dataset.project;
+    if (b.dataset.tag) f.tag = f.tag === b.dataset.tag ? '' : b.dataset.tag;
+    apply();
+    if (location.hash.indexOf('#task-') === 0) location.hash = '#top';
+  });
+
+  // Sort the project table in place. Every key is a data-* number already
+  // on the row, so no cell is re-parsed or rewritten — only row order.
+  var tbl = document.getElementById('bygroup');
+  if (tbl) tbl.addEventListener('click', function (e) {
+    var btn = e.target.closest('.sortbtn');
+    if (!btn) return;
+    var th = btn.parentNode, k = btn.dataset.key;
+    var dir = th.getAttribute('aria-sort') === 'descending' ? 1 : -1;
+    var body = tbl.tBodies[0], rows = [].slice.call(body.rows);
+    rows.sort(function (x, y) {
+      var a = x.dataset[k], b = y.dataset[k], d = a - b;
+      return (d === d ? d : String(a).localeCompare(String(b))) * dir;
+    });
+    rows.forEach(function (r) { body.appendChild(r); });
+    [].forEach.call(th.parentNode.children, function (c) { c.removeAttribute('aria-sort'); });
+    th.setAttribute('aria-sort', dir < 0 ? 'descending' : 'ascending');
+    say('Sorted by ' + btn.textContent + ', ' + (dir < 0 ? 'highest' : 'lowest') + ' first.');
+  });
+
+  // :target reveals a panel but no browser focuses it, so a keyboard user
+  // would tab the page behind it and a screen reader would say nothing.
+  // Opening a panel navigates to the bottom of the page; closing it returns
+  // the reader to where they were, not to the top.
+  var back = null;
+  main.addEventListener('click', function (e) {
+    if (e.target.closest('a.id')) back = window.scrollY;
+  });
+  function land() {
+    if (location.hash === '#top' && back !== null) {
+      window.scrollTo(0, back);
+      back = null;
+      return;
+    }
+    var el = location.hash.length > 1 && document.getElementById(location.hash.slice(1));
+    if (!el || !el.classList.contains('detail')) return;
+    el.focus();
+    say('Task detail opened. Press Escape to close.');
+  }
+  window.addEventListener('hashchange', land);
+  if (location.hash) land();
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && location.hash.indexOf('#task-') === 0) location.hash = '#top';
+  });
+})();"##;
 
 /// Generate the full report document as one self-contained HTML string.
 ///
@@ -49,10 +164,17 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
         Some(f) => format!("({f}) and @working"),
         None => "@working".to_string(),
     };
+    // Every actionable row, not a page of twelve: the section shows twelve
+    // and puts the rest behind a toggle, where "…and 103 more" used to be
+    // a dead end.
     let actionable = dispatch(
         engine,
         "task.list",
-        &json!({ "filter": actionable_filter, "sort": ["-urgency"], "limit": 12 }),
+        &json!({
+            "filter": actionable_filter,
+            "sort": ["-urgency"],
+            "limit": tasqx_core::engine::task::MAX_TASK_LIST_LIMIT,
+        }),
     )?;
     // ONE clock read, and the event bound is derived from it rather than from a
     // second one. The report's charts draw 12 weeks of throughput and 30 days of
@@ -81,6 +203,57 @@ pub fn generate(engine: &Engine, theme: &Theme, params: &Value) -> Result<String
         now: &now,
     };
     Ok(doc.render())
+}
+
+/// The `#task-N` collector (§7 item 6). Every emitter of a task id goes
+/// through [`TaskRefs::link`], which hands back an anchor only for an id it
+/// registers for a panel in the same call — so a link without a panel cannot
+/// be written, and past [`PANEL_BUDGET`] an id degrades to inert text rather
+/// than a dangling anchor. Panels render in link order, so the ids a reader
+/// meets first are the ones that keep their panels on a big store.
+struct TaskRefs<'a> {
+    by_short: HashMap<i64, &'a Value>,
+    by_uuid: HashMap<&'a str, i64>,
+    linked: Vec<i64>,
+    seen: HashSet<i64>,
+}
+
+impl<'a> TaskRefs<'a> {
+    fn new(tasks: &'a [Value]) -> Self {
+        let mut by_short = HashMap::new();
+        let mut by_uuid = HashMap::new();
+        for t in tasks {
+            if let Some(short) = t.get("short_id").and_then(Value::as_i64) {
+                by_short.insert(short, t);
+                if let Some(uuid) = t.get("id").and_then(Value::as_str) {
+                    by_uuid.insert(uuid, short);
+                }
+            }
+        }
+        TaskRefs {
+            by_short,
+            by_uuid,
+            linked: Vec::new(),
+            seen: HashSet::new(),
+        }
+    }
+
+    fn link(&mut self, short_id: i64) -> String {
+        let known = self.by_short.contains_key(&short_id);
+        let room = self.seen.contains(&short_id) || self.linked.len() < PANEL_BUDGET;
+        if known && room {
+            if self.seen.insert(short_id) {
+                self.linked.push(short_id);
+            }
+            format!("<a class=\"id\" href=\"#task-{short_id}\">#{short_id}</a>")
+        } else {
+            format!("<span class=\"id nolink\">#{short_id}</span>")
+        }
+    }
+
+    fn short_of(&self, uuid: &str) -> Option<i64> {
+        self.by_uuid.get(uuid).copied()
+    }
 }
 
 /// Add `filter` to a params object, or leave it absent. Absent, not `null`:
@@ -319,8 +492,11 @@ impl<'a> Report<'a> {
         let backlog_delta = backlog_end - backlog_start;
         let attention = d.overdue + d.due_soon.len();
 
+        let mut refs = TaskRefs::new(tasks);
+
         body.push_str(&self.header(d.open, d.completed_recent.len(), backlog_delta, attention));
-        body.push_str("<main>");
+        // `#top` is where a panel's close link and Escape return to.
+        body.push_str("<main id=\"top\"><p id=\"live\" class=\"vh\" aria-live=\"polite\"></p>");
 
         // Sections in decision order, not data order: what changed, what
         // needs attention, what to do next, then the evidence. Overdue work
@@ -335,8 +511,16 @@ impl<'a> Report<'a> {
                 backlog_delta,
             ))
         ));
-        body.push_str(&self.attention_section(&d.overdue_tasks, &d.due_soon, &d.active));
-        body.push_str(&self.actionable_section());
+        body.push_str(
+            "<div class=\"filterbar\" role=\"search\">\
+             <input id=\"q\" type=\"search\" placeholder=\"Search tasks: title, #id, project, tag\" aria-label=\"Search tasks\">\
+             <select id=\"st\" aria-label=\"Status\"><option value=\"\">any status</option>\
+             <option value=\"open\">open</option><option value=\"done\">done</option></select>\
+             <span id=\"active\" class=\"active\" hidden></span>\
+             <button id=\"clear\" class=\"linkbtn\" hidden>Clear filters</button></div>",
+        );
+        body.push_str(&self.attention_section(&d.overdue_tasks, &d.due_soon, &d.active, &mut refs));
+        body.push_str(&self.actionable_section(&mut refs));
 
         // "Weekly throughput" — matching the terminal chart's own heading
         // (`chart::render_throughput`) — not "This week's throughput" (#165):
@@ -363,8 +547,10 @@ impl<'a> Report<'a> {
 
         body.push_str(&self.tokens_section(&d.bucket_totals));
         body.push_str(&self.per_group_section(&d.open_by_group));
-        body.push_str(&self.completed_section(&d.completed_recent));
+        body.push_str(&self.completed_section(&d.completed_recent, &mut refs));
         body.push_str(&self.tags_section(&d.top_tags, d.tags_total));
+        // Last, because every section above may have linked a task.
+        body.push_str(&self.panels(&mut refs));
 
         body.push_str("</main>");
         // The raw UTC instant stays reachable in `title` (#235/4) — the
@@ -386,11 +572,116 @@ impl<'a> Report<'a> {
             "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
              <title>tasqx · {scope} · {date}</title>\n<style>\n{css}\n</style>\n</head>\n\
-             <body>\n{body}\n</body>\n</html>\n",
+             <body>\n{body}\n<script>\n{SCRIPT}\n</script>\n</body>\n</html>\n",
             scope = esc(&self.scope_label()),
             date = date_part(self.now),
             css = css,
             body = body,
+        )
+    }
+
+    /// One detail panel per task the page linked, in link order. A panel's
+    /// own dependency links may register further tasks, so this walks the
+    /// list while it grows — `link` stops growing it at the budget.
+    fn panels(&self, refs: &mut TaskRefs<'a>) -> String {
+        let mut out = String::from("<div class=\"details\">");
+        let mut i = 0;
+        while i < refs.linked.len() {
+            let short = refs.linked[i];
+            i += 1;
+            let Some(t) = refs.by_short.get(&short).copied() else {
+                continue;
+            };
+            out.push_str(&self.panel(t, short, refs));
+        }
+        out.push_str("</div>");
+        out
+    }
+
+    fn panel(&self, t: &Value, short: i64, refs: &mut TaskRefs<'a>) -> String {
+        let s = |k: &str| t.get(k).and_then(Value::as_str).unwrap_or("");
+        let mut meta = String::new();
+        let mut row = |k: &str, v: String| {
+            if !v.is_empty() {
+                meta.push_str(&format!("<div><dt>{k}</dt><dd>{v}</dd></div>"));
+            }
+        };
+        row("status", esc(s("status")));
+        row("project", esc(s("project")));
+        row("priority", esc(s("priority")));
+        if let Some(u) = t.get("urgency").and_then(Value::as_f64) {
+            row("urgency", format!("{u:.1}"));
+        }
+        for (k, label) in [
+            ("due", "due"),
+            ("scheduled", "scheduled"),
+            ("wait", "wait until"),
+            ("completed", "completed"),
+            ("created", "created"),
+            ("modified", "modified"),
+        ] {
+            let v = s(k);
+            if !v.is_empty() {
+                row(label, esc(&pretty_ts(v)));
+            }
+        }
+        for (k, label) in [("estimate", "estimate"), ("tracked", "tracked")] {
+            let v = s(k);
+            if !v.is_empty() {
+                row(label, esc(&humanize_iso(v)));
+            }
+        }
+
+        let tags: String = t
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|tag| {
+                        format!(
+                            "<button class=\"tag\" data-tag=\"{0}\">{0}</button>",
+                            esc(tag)
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tags = if tags.is_empty() {
+            String::new()
+        } else {
+            format!("<div class=\"tags\">{tags}</div>")
+        };
+
+        // A dependency the export does not carry — outside a filtered
+        // report's scope — is a stub, never a dead anchor.
+        let deps: Vec<String> = t
+            .get("depends_on")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|uuid| match refs.short_of(uuid) {
+                        Some(dep) => refs.link(dep),
+                        None => "<span class=\"muted\">a task outside this report's scope</span>"
+                            .to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let deps = if deps.is_empty() {
+            String::new()
+        } else {
+            format!("<h4>Depends on</h4><p>{}</p>", deps.join(" "))
+        };
+
+        section_panel(
+            short,
+            esc(s("title")),
+            meta,
+            tags,
+            deps,
+            annotations_of(t, short),
         )
     }
 
@@ -454,7 +745,7 @@ impl<'a> Report<'a> {
 
     /// The first five rows in the open, the rest behind a toggle: the review
     /// found 108 completed rows between the header and the overdue list.
-    fn completed_section(&self, tasks: &[&Value]) -> String {
+    fn completed_section(&self, tasks: &[&Value], refs: &mut TaskRefs<'a>) -> String {
         if tasks.is_empty() {
             return section(
                 "Completed this week",
@@ -463,12 +754,12 @@ impl<'a> Report<'a> {
             );
         }
         let (shown, rest) = tasks.split_at(tasks.len().min(5));
-        let mut body = format!("<ul class=\"tasklist\">{}</ul>", task_rows(shown, ""));
+        let mut body = format!("<ul class=\"tasklist\">{}</ul>", task_rows(shown, "", refs));
         if !rest.is_empty() {
             body.push_str(&format!(
                 "<details class=\"more\"><summary>Show {} more</summary><ul class=\"tasklist\">{}</ul></details>",
                 rest.len(),
-                task_rows(rest, ""),
+                task_rows(rest, "", refs),
             ));
         }
         section(
@@ -486,6 +777,7 @@ impl<'a> Report<'a> {
         overdue: &[&Value],
         due_soon: &[&Value],
         active: &[&Value],
+        refs: &mut TaskRefs<'a>,
     ) -> String {
         if overdue.is_empty() && due_soon.is_empty() && active.is_empty() {
             return section(
@@ -498,19 +790,19 @@ impl<'a> Report<'a> {
         if !active.is_empty() {
             body.push_str(&format!(
                 "<h3>In progress</h3><ul class=\"tasklist\">{}</ul>",
-                task_rows(active, "")
+                task_rows(active, "", refs)
             ));
         }
         if !overdue.is_empty() {
             body.push_str(&format!(
                 "<h3>Overdue</h3><ul class=\"tasklist\">{}</ul>",
-                task_rows(overdue, "over")
+                task_rows(overdue, "over", refs)
             ));
         }
         if !due_soon.is_empty() {
             body.push_str(&format!(
                 "<h3>Due within 7 days</h3><ul class=\"tasklist\">{}</ul>",
-                task_rows(due_soon, "")
+                task_rows(due_soon, "", refs)
             ));
         }
         section(
@@ -540,12 +832,13 @@ impl<'a> Report<'a> {
                 .or_else(|| open_by_group.get(""))
                 .copied()
                 .unwrap_or(0);
-            let est = humanize_iso(g.get("est_total").and_then(Value::as_str).unwrap_or("PT0S"));
-            let tracked = humanize_iso(
-                g.get("tracked_total")
-                    .and_then(Value::as_str)
-                    .unwrap_or("PT0S"),
-            );
+            let est_iso = g.get("est_total").and_then(Value::as_str).unwrap_or("PT0S");
+            let tracked_iso = g
+                .get("tracked_total")
+                .and_then(Value::as_str)
+                .unwrap_or("PT0S");
+            let est = humanize_iso(est_iso);
+            let tracked = humanize_iso(tracked_iso);
             let overdue = g.get("overdue").and_then(Value::as_i64).unwrap_or(0);
             // #129: this used to be `class="warn"`, styled with `--warn`
             // (a pale gold, even after the #163 contrast fix) and no
@@ -598,22 +891,64 @@ impl<'a> Report<'a> {
                 Some(c) => format!("<td class=\"muted\">{}</td>", esc(c)),
                 None => "<td class=\"muted\">—</td>".to_string(),
             };
-            rows.push_str(&format!(
-                "<tr><td class=\"proj\">{name}</td><td>{open}</td><td>{count}</td><td>{est}</td><td>{tracked}</td>{od}{tokens_cells}{confidence_cell}</tr>",
+            // Sort keys as data on the row, so the script reorders rows
+            // without re-parsing a cell: durations in seconds, tokens raw.
+            let token_data: String = crate::tokens::BUCKETS
+                .iter()
+                .map(|(key, _, _)| {
+                    format!(
+                        " data-{key}=\"{}\"",
+                        g.get(key).and_then(Value::as_i64).unwrap_or(0)
+                    )
+                })
+                .collect();
+            let data = format!(
+                "data-name=\"{name}\" data-open=\"{open}\" data-total=\"{count}\" data-est=\"{est_s}\" data-tracked=\"{tracked_s}\" data-overdue=\"{overdue}\"{token_data}",
                 name = esc(name),
+                est_s = duration_secs(est_iso).unwrap_or(0),
+                tracked_s = duration_secs(tracked_iso).unwrap_or(0),
+            );
+            // The name is a filter control when the axis is the project one
+            // the rows carry; a status or priority group has no rows to
+            // filter by project.
+            let name_cell = if axis == "project" {
+                format!(
+                    "<button class=\"pf\" data-project=\"{0}\">{0}</button>",
+                    esc(name)
+                )
+            } else {
+                esc(name)
+            };
+            rows.push_str(&format!(
+                "<tr {data}><td class=\"proj\">{name_cell}</td><td>{open}</td><td>{count}</td><td>{est}</td><td>{tracked}</td>{od}{tokens_cells}{confidence_cell}</tr>",
             ));
         }
+        let sortable = |key: &str, label: &str| {
+            format!("<th><button class=\"sortbtn\" data-key=\"{key}\">{label}</button></th>")
+        };
+        // Column heads as before: the two cache buckets spelled out, the
+        // other two abbreviated to keep an eleven-column table narrow.
+        let token_heads: String = crate::tokens::BUCKETS
+            .iter()
+            .zip(["Cache read", "Cache write", "In", "Out"])
+            .map(|((key, _, _), label)| sortable(key, label))
+            .collect();
         // `.table-wrap` (#166 + #235/3): a nine-column table cannot shrink
         // below its content's intrinsic width, so on a 375px phone it forced
         // the whole PAGE into horizontal scroll — dragging the sticky header
         // sideways with it. Scoping `overflow-x: auto` to this wrapper keeps
         // an overflowing table's scroll local to the table, on any viewport.
         let table = format!(
-            "<div class=\"table-wrap\"><table class=\"grid\"><thead><tr><th>{head}</th><th>Open</th><th>Total</th><th>Est</th><th>Tracked</th><th>Overdue</th>\
-             <th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th><th>Confidence</th></tr></thead><tbody>{rows}</tbody></table></div>",
+            "<div class=\"table-wrap\"><table class=\"grid\" id=\"bygroup\"><thead><tr>{head}{open}{total}{est}{tracked}{overdue}\
+             {token_heads}<th>Confidence</th></tr></thead><tbody>{rows}</tbody></table></div>",
             // The axis name, title-cased — `esc` because it reaches markup, even
             // though core has already restricted it to SUMMARY_GROUP_BY.
-            head = esc(&title_case(axis)),
+            head = sortable("name", &esc(&title_case(axis))),
+            open = sortable("open", "Open"),
+            total = sortable("total", "Total"),
+            est = sortable("est", "Est"),
+            tracked = sortable("tracked", "Tracked"),
+            overdue = sortable("overdue", "Overdue"),
         );
         // "Total", not "Tasks": under D24 the summary's count includes `done`,
         // because completed work is real work and carries nearly all the
@@ -635,7 +970,7 @@ impl<'a> Report<'a> {
     /// merely cut. `total` is `task.list`'s own answer to that (D70: rows
     /// matched, vs. `count`'s rows returned); a trailing muted row states the
     /// gap when the two differ.
-    fn actionable_section(&self) -> String {
+    fn actionable_section(&self, refs: &mut TaskRefs<'a>) -> String {
         let tasks = array_at(self.actionable, "tasks");
         if tasks.is_empty() {
             return section(
@@ -650,36 +985,53 @@ impl<'a> Report<'a> {
             .and_then(Value::as_u64)
             .map_or(tasks.len(), |n| n as usize);
         let now_ts = parse_ts(self.now);
-        let mut rows = String::new();
-        for t in tasks {
-            let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-            // The score alone ("urg 18.5") gave no reason; the due date is
-            // the one term of D1's formula a row already carries.
-            let due = match t.get("due").and_then(Value::as_str) {
-                Some(due) if parse_ts(due).zip(now_ts).is_some_and(|(d, n)| d < n) => {
-                    " <span class=\"pill\">overdue</span>".to_string()
-                }
-                Some(due) => format!(" <span class=\"due\">due {}</span>", esc(&pretty_ts(due))),
-                None => String::new(),
-            };
-            rows.push_str(&format!(
-                "<li><span class=\"id\">#{id}</span> <span class=\"ttl\">{title}</span>{due} \
-                 <span class=\"urg\" title=\"urgency score: priority, due proximity and age\">urgency {urg:.1}</span>{proj}</li>",
-                id = t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
-                title = esc(t.get("title").and_then(Value::as_str).unwrap_or("")),
-                proj = proj_chip(t),
+        let mut render = |rows: &[Value]| -> String {
+            let mut out = String::new();
+            for t in rows {
+                let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+                // The score alone ("urg 18.5") gave no reason; the due date is
+                // the one term of D1's formula a row already carries.
+                let due = match t.get("due").and_then(Value::as_str) {
+                    Some(due) if parse_ts(due).zip(now_ts).is_some_and(|(d, n)| d < n) => {
+                        " <span class=\"pill\">overdue</span>".to_string()
+                    }
+                    Some(due) => {
+                        format!(" <span class=\"due\">due {}</span>", esc(&pretty_ts(due)))
+                    }
+                    None => String::new(),
+                };
+                out.push_str(&format!(
+                    "<li{data}>{id} <span class=\"ttl\">{title}</span>{due} \
+                     <span class=\"urg\" title=\"urgency score: priority, due proximity and age\">urgency {urg:.1}</span>{proj}</li>",
+                    data = row_data(t),
+                    id = refs.link(t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
+                    title = esc(t.get("title").and_then(Value::as_str).unwrap_or("")),
+                    proj = proj_chip(t),
+                ));
+            }
+            out
+        };
+        let (shown, rest) = tasks.split_at(tasks.len().min(12));
+        let mut body = format!("<ul class=\"tasklist\">{}</ul>", render(shown));
+        if !rest.is_empty() {
+            body.push_str(&format!(
+                "<details class=\"more\"><summary>Show {} more</summary><ul class=\"tasklist\">{}</ul></details>",
+                rest.len(),
+                render(rest),
             ));
         }
+        // Only when `task.list` itself cut the list (D70's `total` vs rows
+        // returned), which takes more rows than its ceiling allows.
         if total > tasks.len() {
-            rows.push_str(&format!(
-                "<li class=\"more muted\">…and {} more</li>",
+            body.push_str(&format!(
+                "<p class=\"muted\">…and {} more</p>",
                 total - tasks.len()
             ));
         }
         section(
             "Now actionable",
             "The highest-urgency unblocked tasks — start at the top.",
-            &format!("<ul class=\"tasklist\">{rows}</ul>"),
+            &body,
         )
     }
 
@@ -695,7 +1047,7 @@ impl<'a> Report<'a> {
         let mut chips = String::new();
         for (name, n) in tags {
             chips.push_str(&format!(
-                "<span class=\"tag\">{name} <span class=\"tagn\">{n}</span></span>",
+                "<button class=\"tag\" data-tag=\"{name}\">{name} <span class=\"tagn\">{n}</span></button>",
                 name = esc(name),
             ));
         }
@@ -812,6 +1164,44 @@ impl<'a> Report<'a> {
              .tag {{ background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 0.2rem 0.7rem; font-size: 0.85rem; }}\n\
              .tag .tagn {{ color: var(--accent); font-weight: 700; }}\n\
              footer {{ max-width: 1100px; margin: 0 auto; padding: 1rem 1.25rem 3rem; color: var(--muted); font-size: 0.8rem; }}\n\
+             /* Search + filters. Rows without .match hide while a filter is on. */\n\
+             .filterbar {{ display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin-top: 1.2rem; }}\n\
+             #q {{ flex: 1 1 18rem; min-width: 12rem; font: inherit; padding: 0.45rem 0.7rem; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); }}\n\
+             #st, .linkbtn {{ font: inherit; font-size: 0.85rem; padding: 0.4rem 0.6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); cursor: pointer; }}\n\
+             .active {{ font-size: 0.85rem; color: var(--muted); }}\n\
+             main[data-filter] ul.tasklist li:not(.match) {{ display: none; }}\n\
+             main[data-filter] ul.tasklist:not(:has(li.match))::after {{ content: \"No matching tasks.\"; display: block; color: var(--muted); font-size: 0.85rem; padding: 0.4rem 0.1rem; }}\n\
+             button.chip, button.tag {{ font: inherit; cursor: pointer; }}\n\
+             button.chip {{ font-size: 0.72rem; }}\n\
+             button.tag {{ font-size: 0.85rem; color: var(--fg); }}\n\
+             button.pf {{ font: inherit; font-weight: 600; background: none; border: 0; padding: 0; color: var(--fg); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }}\n\
+             [aria-pressed=\"true\"] {{ background: var(--accent); color: var(--bg); border-color: var(--accent); }}\n\
+             [aria-pressed=\"true\"] .tagn {{ color: var(--bg); }}\n\
+             .sortbtn {{ font: inherit; font-weight: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }}\n\
+             th[aria-sort=\"descending\"] .sortbtn::after {{ content: \" \\2193\"; }}\n\
+             th[aria-sort=\"ascending\"] .sortbtn::after {{ content: \" \\2191\"; }}\n\
+             a.id {{ text-decoration: none; }} a.id:hover, a.id:focus-visible {{ text-decoration: underline; }}\n\
+             .nolink {{ opacity: 0.7; }}\n\
+             .vh {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }}\n\
+             /* Detail panels: hidden until :target selects one. scroll-margin\n\
+                lives on the panel so the sticky header does not cover it. */\n\
+             .details .detail {{ display: none; scroll-margin-top: 5.5rem; }}\n\
+             .details .detail:target {{ display: block; border: 1px solid var(--accent); border-radius: 12px; padding: 1rem 1.2rem; margin-top: 2rem; background: var(--card); }}\n\
+             .details .detail:focus {{ outline: none; }}\n\
+             .details .detail:focus-visible {{ outline: 3px solid var(--accent); outline-offset: 3px; }}\n\
+             .detail header {{ display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }}\n\
+             .detail header h3 {{ margin: 0; font-size: 1.05rem; text-transform: none; letter-spacing: 0; color: var(--fg); flex: 1; }}\n\
+             .detail .close {{ font-size: 0.8rem; white-space: nowrap; color: var(--accent); }}\n\
+             dl.meta {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 0.4rem 1rem; margin: 0.8rem 0; }}\n\
+             dl.meta div {{ display: flex; gap: 0.5rem; align-items: baseline; }}\n\
+             dl.meta dt {{ font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }}\n\
+             dl.meta dd {{ margin: 0; font-size: 0.9rem; }}\n\
+             .detail h4 {{ font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 1rem 0 0.3rem; }}\n\
+             ul.anns {{ list-style: none; margin: 0; padding: 0; }}\n\
+             ul.anns li {{ border-top: 1px solid var(--line); padding: 0.5rem 0; }}\n\
+             ul.anns .when {{ font-size: 0.78rem; color: var(--muted); }}\n\
+             ul.anns pre.body {{ white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 0.9rem; margin: 0.2rem 0 0; }}\n\
+             @media print {{ .details .detail {{ display: block; }} .filterbar {{ display: none; }} }}\n\
              /* #166 revisited: the pinned header took ~240px of a 640px\n\
                 phone viewport once its tiles wrapped. Unpinned and on a\n\
                 two-column grid it is a compact block the page scrolls past. */\n\
@@ -914,9 +1304,10 @@ fn backlog_caption(start: i64, end: i64) -> String {
     format!("Open tasks over the last 30 days: {start} → {end} ({change}).")
 }
 
-/// One `<li>` per task: id, title, its due date when it has one, project.
-/// `class` marks the whole row (`over` for overdue).
-fn task_rows(tasks: &[&Value], class: &str) -> String {
+/// One `<li>` per task: id (linked through `refs`), title, its due date
+/// when it has one, project. `class` marks the whole row (`over` for
+/// overdue).
+fn task_rows(tasks: &[&Value], class: &str, refs: &mut TaskRefs<'_>) -> String {
     let mut rows = String::new();
     for t in tasks {
         let due = match t.get("due").and_then(Value::as_str) {
@@ -925,19 +1316,96 @@ fn task_rows(tasks: &[&Value], class: &str) -> String {
             }
             _ => String::new(),
         };
-        let li = if class.is_empty() {
-            "<li>".to_string()
+        let cls = if class.is_empty() {
+            String::new()
         } else {
-            format!("<li class=\"{class}\">")
+            format!(" class=\"{class}\"")
         };
         rows.push_str(&format!(
-            "{li}<span class=\"id\">#{id}</span> <span class=\"ttl\">{title}</span>{due}{proj}</li>",
-            id = t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
+            "<li{cls}{data}>{id} <span class=\"ttl\">{title}</span>{due}{proj}</li>",
+            data = row_data(t),
+            id = refs.link(t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
             title = esc(t.get("title").and_then(Value::as_str).unwrap_or("")),
             proj = proj_chip(t),
         ));
     }
     rows
+}
+
+/// The facts the page's filters read off a row, as data attributes.
+fn row_data(t: &Value) -> String {
+    let s = |k: &str| t.get(k).and_then(Value::as_str).unwrap_or("");
+    let tags: Vec<&str> = t
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    format!(
+        " data-project=\"{}\" data-status=\"{}\" data-tags=\"{}\"",
+        esc(s("project")),
+        esc(s("status")),
+        esc(&tags.join(" "))
+    )
+}
+
+/// The panel markup: `tabindex="-1"` so the script can focus it,
+/// `role="region"` + `aria-labelledby` so focusing it announces the title.
+fn section_panel(
+    short: i64,
+    title: String,
+    meta: String,
+    tags: String,
+    deps: String,
+    annotations: String,
+) -> String {
+    format!(
+        "<article class=\"detail\" id=\"task-{short}\" tabindex=\"-1\" role=\"region\" aria-labelledby=\"task-{short}-t\">\
+         <header><span class=\"id\">#{short}</span><h3 id=\"task-{short}-t\">{title}</h3>\
+         <a class=\"close\" href=\"#top\">close<span class=\"vh\"> task detail</span></a></header>\
+         <dl class=\"meta\">{meta}</dl>{tags}{deps}{annotations}</article>"
+    )
+}
+
+/// The newest [`ANNOTATIONS_PER_PANEL`] annotations, each cut at
+/// [`ANNOTATION_CHARS`] with the remainder stated and where to read it. The
+/// store this page is built from carries 870 KB of annotation bodies; every
+/// report cannot ride the whole of it.
+fn annotations_of(t: &Value, short: i64) -> String {
+    let all = t
+        .get("annotations")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if all.is_empty() {
+        return String::new();
+    }
+    let mut items = String::new();
+    // Export order is oldest first; the panel reads newest first.
+    for a in all.iter().rev().take(ANNOTATIONS_PER_PANEL) {
+        let body = a.get("body").and_then(Value::as_str).unwrap_or("");
+        let total = body.chars().count();
+        let shown: String = body.chars().take(ANNOTATION_CHARS).collect();
+        let cut = if total > ANNOTATION_CHARS {
+            format!(
+                "<span class=\"muted\">… {} more characters, see tasqx show {short}</span>",
+                total - ANNOTATION_CHARS
+            )
+        } else {
+            String::new()
+        };
+        items.push_str(&format!(
+            "<li class=\"ann\"><span class=\"when\">{}</span><pre class=\"body\">{}</pre>{cut}</li>",
+            esc(&pretty_ts(a.get("created").and_then(Value::as_str).unwrap_or(""))),
+            esc(&shown),
+        ));
+    }
+    if all.len() > ANNOTATIONS_PER_PANEL {
+        items.push_str(&format!(
+            "<li class=\"muted\">{} not shown — tasqx show {short}</li>",
+            count(all.len() - ANNOTATIONS_PER_PANEL, "older annotation")
+        ));
+    }
+    format!("<h4>Annotations</h4><ul class=\"anns\">{items}</ul>")
 }
 
 // ---- small HTML/format helpers ---------------------------------------------
@@ -1005,7 +1473,10 @@ fn proj_chip(t: &Value) -> String {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
     {
-        Some(p) => format!(" <span class=\"chip\">{}</span>", esc(p)),
+        Some(p) => format!(
+            " <button class=\"chip\" data-project=\"{0}\">{0}</button>",
+            esc(p)
+        ),
         None => String::new(),
     }
 }
@@ -1752,7 +2223,7 @@ mod tests {
         .unwrap();
         // Open (pending + active, this module's own count) beside Total.
         assert!(
-            html.contains("<td class=\"proj\">P</td><td>2</td><td>3</td>"),
+            html.contains("</td><td>2</td><td>3</td>"),
             "the By-project row must show 3, not the pending-only 1: {html}"
         );
     }
@@ -1780,7 +2251,7 @@ mod tests {
             .unwrap();
             let head = title_case(axis);
             assert!(
-                doc.contains(&format!("<th>{head}</th>")),
+                doc.contains(&format!("data-key=\"name\">{head}</button></th>")),
                 "{axis}: header not relabelled"
             );
             assert!(
@@ -1822,10 +2293,12 @@ mod tests {
         }
         .render();
 
-        assert!(
-            doc.contains("<th>Cache read</th><th>Cache write</th><th>In</th><th>Out</th>"),
-            "token columns missing from the By-project table: {doc}"
-        );
+        for label in ["Cache read", "Cache write", "In", "Out"] {
+            assert!(
+                doc.contains(&format!(">{label}</button></th>")),
+                "token column {label} missing from the By-project table: {doc}"
+            );
+        }
         // Fixture: in 1000, out 200, cacheR 50, cacheW 5, total 1255. Columns run
         // in `tokens::BUCKETS` order — cacheR, cacheW, in, out.
         assert!(
@@ -2263,7 +2736,7 @@ mod tests {
             "the header stat strip must be allowed to wrap onto more than one row: {doc}"
         );
         assert!(
-            doc.contains("<div class=\"table-wrap\"><table class=\"grid\">"),
+            doc.contains("<div class=\"table-wrap\"><table class=\"grid\" id=\"bygroup\">"),
             "the by-project table must scroll inside its own container, not the page: {doc}"
         );
     }
@@ -2518,11 +2991,11 @@ mod tests {
     fn project_table_separates_open_from_total() {
         let doc = render_with("nord");
         assert!(
-            doc.contains("<th>Open</th><th>Total</th>"),
+            doc.contains(">Open</button></th><th><button class=\"sortbtn\" data-key=\"total\">Total</button></th>"),
             "the table must name both counts: {doc}"
         );
         assert!(
-            doc.contains("<td class=\"proj\">work.tasqx</td><td>2</td><td>3</td>"),
+            doc.contains("</td><td>2</td><td>3</td>"),
             "work.tasqx has 2 open of 3 counted: {doc}"
         );
     }
@@ -2593,5 +3066,222 @@ mod tests {
         // the empty-state sections, it does not panic.
         assert!(array_at(&json!({}), "tasks").is_empty());
         assert!(array_at(&json!({ "tasks": "not an array" }), "tasks").is_empty());
+    }
+
+    // ---- pass 2: the interaction layer (#307) --------------------------------
+
+    /// `n` pending tasks in one project, all actionable, one due tomorrow,
+    /// the first depending on the second; annotations only where asked.
+    fn fixture_with_tasks(n: usize, annotation: Option<&str>) -> (Value, Value, Value, Value) {
+        let tasks: Vec<Value> = (1..=n)
+            .map(|i| {
+                let mut t = json!({
+                    "id": format!("uuid-{i}"), "short_id": i, "title": format!("task {i}"),
+                    "status": "pending", "project": "P", "tags": ["t"],
+                    "created": "2026-07-01T00:00:00Z", "urgency": 5.0,
+                    "depends_on": if i == 1 { json!(["uuid-2"]) } else { json!([]) },
+                });
+                if i == 3 {
+                    t["due"] = json!("2026-07-16T09:00:00Z");
+                }
+                if let Some(body) = annotation {
+                    t["annotations"] = json!((0..5)
+                        .map(|k| json!({
+                            "id": format!("a{i}-{k}"), "body": body,
+                            "created": format!("2026-07-0{}T00:00:00Z", k + 1)
+                        }))
+                        .collect::<Vec<_>>());
+                }
+                t
+            })
+            .collect();
+        let actionable = json!({ "tasks": tasks, "total": n });
+        let export = json!({ "tasks": tasks });
+        let summary = json!({ "groups": [{ "project": "P", "count": n, "est_total": "PT0S",
+            "tracked_total": "PT0S", "overdue": 0 }] });
+        (summary, export, actionable, json!({ "events": [] }))
+    }
+
+    fn render_fixture(fx: &(Value, Value, Value, Value)) -> String {
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        Report {
+            theme: &th,
+            group_by: "project",
+            filter: None,
+            summary: &fx.0,
+            export: &fx.1,
+            actionable: &fx.2,
+            events: &fx.3,
+            now: &now,
+        }
+        .render()
+    }
+
+    fn ids_after(doc: &str, marker: &str) -> std::collections::BTreeSet<String> {
+        doc.match_indices(marker)
+            .map(|(i, _)| {
+                let rest = &doc[i + marker.len()..];
+                rest[..rest.find('"').unwrap()].to_string()
+            })
+            .collect()
+    }
+
+    /// §7 item 6, both directions: every `href="#task-N"` has a panel with
+    /// that id, and every panel is linked from somewhere — the old
+    /// 24-panels/15-links waste is the dual.
+    #[test]
+    fn every_task_link_resolves_to_a_panel_and_every_panel_is_linked() {
+        let doc = render_fixture(&fixture_with_tasks(30, None));
+        let links = ids_after(&doc, "href=\"#task-");
+        let panels = ids_after(&doc, "<article class=\"detail\" id=\"task-");
+        assert!(!links.is_empty(), "no task links at all: {doc}");
+        assert_eq!(links, panels, "links and panels differ: {doc}");
+    }
+
+    /// §7 item 11: panels are bounded independently of store size. Past the
+    /// budget an id renders as inert text, never as a dangling anchor.
+    #[test]
+    fn panels_are_bounded_by_the_budget_and_the_rest_are_inert() {
+        let doc = render_fixture(&fixture_with_tasks(500, None));
+        let panels = doc.matches("<article class=\"detail\"").count();
+        assert!(
+            panels <= PANEL_BUDGET,
+            "{panels} panels, budget is {PANEL_BUDGET}"
+        );
+        assert!(
+            doc.contains("<span class=\"id nolink\">#"),
+            "ids past the budget must render as inert text: {doc}"
+        );
+        assert_eq!(
+            ids_after(&doc, "href=\"#task-"),
+            ids_after(&doc, "<article class=\"detail\" id=\"task-")
+        );
+    }
+
+    /// D48b, applied to the page that now has the script: one inline
+    /// `<script>`, no network, no History API, no dynamic code — and a
+    /// measured size, so the budget is a number rather than a feeling.
+    #[test]
+    fn the_page_has_one_script_within_budget_that_passes_the_guard() {
+        let doc = render_fixture(&fixture_with_tasks(30, None));
+        let found = guard::violations(&doc);
+        assert!(found.is_empty(), "{found:#?}");
+        assert_eq!(doc.matches("<script>").count(), 1);
+        let bytes = SCRIPT.len();
+        assert!(
+            bytes <= SCRIPT_BUDGET,
+            "the inline script is {bytes} B, over the {SCRIPT_BUDGET} B budget"
+        );
+        assert!(
+            doc.contains("addEventListener('hashchange'"),
+            "panel focus must be hash-driven, the only mechanism file:// allows: {doc}"
+        );
+    }
+
+    /// Every task row carries the facts the filters read, and the page
+    /// carries the search box and the CSS that hides non-matching rows.
+    #[test]
+    fn rows_carry_filter_data_and_the_page_has_a_search_box() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("<input id=\"q\" type=\"search\""),
+            "no search box: {doc}"
+        );
+        assert!(
+            doc.contains("data-project=\"work.tasqx\" data-status=\"pending\" data-tags=\"api\""),
+            "task rows must carry project, status and tags: {doc}"
+        );
+        assert!(
+            doc.contains("main[data-filter] ul.tasklist li:not(.match) { display: none; }"),
+            "the CSS must hide non-matching rows when a filter is active: {doc}"
+        );
+        assert!(
+            doc.contains("<button class=\"tag\" data-tag=\"api\">"),
+            "tag chips must be filter controls: {doc}"
+        );
+    }
+
+    /// The project table sorts in place by the numbers already on each row.
+    #[test]
+    fn project_table_is_sortable_by_the_numbers_on_its_rows() {
+        let doc = render_with("nord");
+        for key in ["open", "total", "est", "tracked", "overdue", "tokens_in"] {
+            assert!(
+                doc.contains(&format!("<button class=\"sortbtn\" data-key=\"{key}\">")),
+                "no sort control for {key}: {doc}"
+            );
+        }
+        assert!(
+            doc.contains(
+                "<tr data-name=\"work.tasqx\" data-open=\"2\" data-total=\"3\" data-est=\"32400\""
+            ),
+            "rows must carry their sort keys as data: {doc}"
+        );
+    }
+
+    /// A panel shows the newest three annotations, each cut at a fixed
+    /// length with a pointer to the full text: this store carries 870 KB of
+    /// annotation bodies over 228 tasks, and the whole store cannot ride in
+    /// every report.
+    #[test]
+    fn panel_annotations_are_capped_in_count_and_length() {
+        let long = "x".repeat(ANNOTATION_CHARS + 500);
+        let doc = render_fixture(&fixture_with_tasks(3, Some(&long)));
+        let panel_start = doc.find("<article class=\"detail\" id=\"task-1\"").unwrap();
+        let panel = &doc[panel_start..doc[panel_start..].find("</article>").unwrap() + panel_start];
+        assert_eq!(
+            panel.matches("<li class=\"ann\">").count(),
+            3,
+            "newest three only: {panel}"
+        );
+        assert!(
+            panel.contains("2 older annotations not shown"),
+            "the cut must be stated: {panel}"
+        );
+        assert!(
+            panel.contains(&format!("… {} more characters, see tasqx show 1", 500)),
+            "a truncated body must say how much is missing and where it is: {panel}"
+        );
+        assert!(
+            !panel.contains(&"x".repeat(ANNOTATION_CHARS + 1)),
+            "the body was not cut: {panel}"
+        );
+    }
+
+    /// A dependency the export does not carry (out of the filter's scope)
+    /// renders as a stub, not a dead `#task-N` anchor.
+    #[test]
+    fn a_dependency_outside_the_export_renders_a_stub_not_a_dead_anchor() {
+        let (summary, mut export, actionable, events) = fixture_with_tasks(3, None);
+        export["tasks"][0]["depends_on"] = json!(["uuid-2", "uuid-outside"]);
+        let doc = render_fixture(&(summary, export, actionable, events));
+        assert!(
+            doc.contains("outside this report's scope"),
+            "the foreign dependency needs a stub: {doc}"
+        );
+        assert!(
+            doc.contains("href=\"#task-2\""),
+            "the in-scope dependency links: {doc}"
+        );
+        assert_eq!(
+            ids_after(&doc, "href=\"#task-"),
+            ids_after(&doc, "<article class=\"detail\" id=\"task-")
+        );
+    }
+
+    /// "…and 103 more" was a dead end. The list now carries every actionable
+    /// row, twelve in the open and the rest behind a script-free toggle.
+    #[test]
+    fn actionable_list_reveals_the_rest_without_a_script() {
+        let doc = render_fixture(&fixture_with_tasks(15, None));
+        assert!(
+            doc.contains("<summary>Show 3 more</summary>"),
+            "the rest must be one toggle away: {doc}"
+        );
+        assert!(
+            !doc.contains("…and 3 more"),
+            "the dead end is still there: {doc}"
+        );
     }
 }
