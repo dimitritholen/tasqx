@@ -17,8 +17,8 @@ tasqx start 42 --keep    # keep other active tasks running too
 By default starting one task stops any other active one ("single-active") —
 `--keep` opts out.
 
-The extra flags (`--client`, `--session-id`, `--transcript-path`,
-`--prompt-id`) are for AI agents reporting who is doing the work; see
+The extra flags (`--client`, `--session-id`, `--transcript-path`) are for AI
+agents reporting who is doing the work; see
 [AI Agents and Automation](AI-Agents-and-Automation.md#token-accounting).
 
 ## tasqx stop

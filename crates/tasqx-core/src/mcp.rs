@@ -210,7 +210,7 @@ fn ref_schema() -> Value {
 /// Add the #12 correlation properties to a lifecycle tool's schema.
 ///
 /// One function, not two hand-typed copies, because `tasqx_start_timer` and
-/// `tasqx_complete_task` must describe the same four params identically
+/// `tasqx_complete_task` must describe the same three params identically
 /// (D30). They are deliberately agent-visible: the schema-equality test
 /// requires schema properties == PARAMS, and that is intended — an agent that
 /// knows its own session id or transcript path SHOULD pass them, and `client`
@@ -225,14 +225,6 @@ fn with_correlation(mut schema: Value) -> Value {
             "type": "string",
             "description": "Correlation: your agent-session id, recorded on this task's \
                 event for later token attribution. Pass it if your runtime exposes one."
-        }),
-    );
-    props.insert(
-        "prompt_id".to_string(),
-        json!({
-            "type": "string",
-            "description": "Correlation: the id of the prompt/turn driving this call, \
-                recorded on this task's event for later token attribution."
         }),
     );
     props.insert(
@@ -737,7 +729,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 count records a measurement. If you cannot observe your token spend, still \
                 send `tool` and `model` — they are recorded on the completion event without \
                 any count, and the response says what was recorded. Correlation params \
-                (session_id, prompt_id, transcript_path, client) land on that same event; \
+                (session_id, transcript_path, client) land on that same event; \
                 without a self-report, log-parse attribution is a fallback that refuses \
                 samples claimed by more than one task's window.",
             // The token-count fields carry no `minimum`: the numeric-minimum
@@ -810,7 +802,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             destructive: false,
             idempotent: false,
             description: "Start the timer on a task (moves it to active). Correlation \
-                params (session_id, prompt_id, transcript_path, client) are recorded on \
+                params (session_id, transcript_path, client) are recorded on \
                 the start event for token attribution.",
             schema: with_correlation(json!({
                 "type": "object",

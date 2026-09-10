@@ -340,7 +340,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["s"],
         method: "task.start",
         summary: "Mark a task active.",
-        usage: "tasqx start <ref> [--keep] [--client TOOL] [--session-id ID] [--prompt-id ID] [--transcript-path PATH]",
+        usage: "tasqx start <ref> [--keep] [--client TOOL] [--session-id ID] [--transcript-path PATH]",
         examples: &[
             ex_norun("tasqx start 1", "single-active by default"),
             ex_norun("tasqx start 1 --keep", "keep others running"),
@@ -376,7 +376,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["d", "x", "complete"],
         method: "task.done",
         summary: "Complete a task.",
-        usage: "tasqx done <ref> [--client TOOL] [--session-id ID] [--prompt-id ID] \
+        usage: "tasqx done <ref> [--client TOOL] [--session-id ID] \
                 [--transcript-path PATH] [--tool TOOL] [--model MODEL] \
                 [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] \
                 [--cache-creation-tokens N]",
