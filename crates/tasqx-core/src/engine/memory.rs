@@ -33,6 +33,42 @@ fn phrase_escape(query: &str) -> Result<String, ApiError> {
     Ok(terms.join(" "))
 }
 
+/// The FTS5 columns `--raw` can name a `column:query` against, for the given
+/// `scope`. Kept beside [`MEMORY_SCOPES`]'s table rather than derived from
+/// `docs_fts`/`annotations_fts` at query time — sqlite's own column
+/// introspection would need a second round trip for an error path that is
+/// already reporting a failure.
+fn fts5_columns_for(scope: &str) -> &'static str {
+    match scope {
+        "docs" => "title, body",
+        "annotations" => "body",
+        _ => "title, body (docs) or body (annotations)",
+    }
+}
+
+/// #228.5: wrap a raw-mode FTS5 failure so it teaches instead of just
+/// refusing. `--raw`'s own help advertises "columns" as part of the syntax it
+/// hands the caller, so `no such column: title` must say which ones this
+/// scope actually has — the same standard every other tasqx error holds
+/// (`unknown scope`, `unknown setting`, `invalid priority`, …) — rather than
+/// stopping at sqlite's own bare message, which also has no obligation to
+/// stay legible outside its own error taxonomy.
+fn raw_fts5_error(e: &rusqlite::Error, scope: &str) -> String {
+    let msg = e.to_string();
+    if let Some(col) = msg
+        .rsplit("no such column: ")
+        .next()
+        .filter(|_| msg.contains("no such column: "))
+    {
+        return format!(
+            "invalid FTS5 query: no such column {col:?} (searchable columns for \
+             scope {scope:?}: {})",
+            fts5_columns_for(scope)
+        );
+    }
+    format!("invalid FTS5 query: {msg}")
+}
+
 impl Engine {
     // ---- memory.add ----------------------------------------------------------
 
@@ -230,8 +266,15 @@ impl Engine {
             Ok(hits) => hits,
             // In raw mode the MATCH expression is caller input, so a query
             // SQLite refuses is the caller's error — surfaced with SQLite's
-            // own message, never as ok-empty and never as `internal`.
-            Err(e) if raw => return Err(ApiError::bad_request(format!("invalid FTS5 query: {e}"))),
+            // own message, never as ok-empty and never as `internal`. #228.5:
+            // `--raw`'s own help advertises "columns", so a `col:query` typo
+            // that names a column this scope does not have must say which
+            // ones exist, the same way every other tasqx error names the
+            // valid set (`unknown scope`, three lines up, does this already)
+            // rather than stopping at SQLite's bare `no such column: X`.
+            Err(e) if raw => {
+                return Err(ApiError::bad_request(raw_fts5_error(&e, &scope)));
+            }
             Err(e) => return Err(e.into()),
         };
 

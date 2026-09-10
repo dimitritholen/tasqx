@@ -209,7 +209,17 @@ pub(super) struct SelfReportArgs {
     // clap's own arg table rather than a list of letters (D30).
     propagate_version = true,
     about = "A fast, terminal-first, AI-native task manager.",
-    after_help = "Run `tasqx manual` for the full in-terminal guide, or `tasqx <command> -h` for examples.",
+    // #228.1: short aliases (`ls`, `d`, `rm`, `mod`, …) are deliberately
+    // HIDDEN from clap — `visible_alias` was tried and reverted, because
+    // hidden is what lets `tasqx mod<TAB>` complete to the canonical `modify`
+    // rather than to `mod` itself (`aliases_complete_when_no_canonical_name_claims_the_prefix`
+    // in `tests/completion.rs` pins that behaviour, and it is a real feature:
+    // a bare `tasqx <TAB>` stays a readable list of ~20 verbs instead of the
+    // ~35 the alias set would add). The one place they ARE all listed is
+    // `tasqx manual`'s COMMANDS table, which this line now says outright
+    // instead of leaving a reader who checks `--help` first to guess that
+    // `ls`/`d`/`rm`/… exist at all.
+    after_help = "Run `tasqx manual` for the full in-terminal guide (COMMANDS lists every short alias), or `tasqx <command> -h` for examples.",
     disable_help_subcommand = true
 )]
 pub(super) struct Cli {
@@ -236,6 +246,36 @@ pub(super) struct Cli {
 
     #[command(subcommand)]
     pub(super) command: Option<Command>,
+}
+
+/// [`Cli::command()`] with every subcommand's `-V` display name flattened
+/// back to `tasqx` (#228.7).
+///
+/// clap's `propagate_version` gives every subcommand its own `-V`/`--version`
+/// flag, which is what lets `tasqx list -V` work at all — but the string it
+/// prints comes from `Command::_build_subcommand`, which manufactures a
+/// display name by joining the parent chain with hyphens
+/// (`Command::display_name`'s doc calls this the "canonical" name, the same
+/// shape cargo subcommands use). For a single-binary tool with one version,
+/// `tasqx-list 0.6.0` looks like a second binary that does not exist, and a
+/// nested one like `tasqx chart throughput -V` would read `tasqx-chart-throughput`.
+/// There is one version everywhere, so every position should print the one
+/// name the binary actually has. `Command::display_name` only takes effect
+/// when it is `None` at build time, so this must run before parsing, not
+/// after.
+pub(super) fn cli_command() -> clap::Command {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    flatten_display_names(&mut cmd, "tasqx");
+    cmd
+}
+
+fn flatten_display_names(cmd: &mut clap::Command, name: &str) {
+    let owned = std::mem::replace(cmd, clap::Command::new(""));
+    *cmd = owned.display_name(name.to_string());
+    for sub in cmd.get_subcommands_mut() {
+        flatten_display_names(sub, name);
+    }
 }
 
 #[derive(Subcommand)]
@@ -471,7 +511,7 @@ pub(super) enum Command {
         // the window a Wednesday afternoon actually wants. One number covers
         // every case the keywords would have, and the footer already reports the
         // exact `--days` that would reach whatever the horizon cut.
-        #[arg(long, value_parser = window_parser(MAX_AGENDA_DAYS))]
+        #[arg(long, allow_hyphen_values = true, value_parser = window_parser(MAX_AGENDA_DAYS))]
         days: Option<usize>,
     },
     /// Start a task timer (maps to task.start).
@@ -1067,7 +1107,7 @@ pub(super) enum ChartKind {
         /// Number of weeks to show (1-520; default 12).
         // Weekly is the only bucketing — the spec's `--weekly` flag was parsed
         // and dropped for two releases, so it is gone rather than documented.
-        #[arg(long, value_parser = window_parser(MAX_CHART_WEEKS))]
+        #[arg(long, allow_hyphen_values = true, value_parser = window_parser(MAX_CHART_WEEKS))]
         weeks: Option<usize>,
     },
     /// GitHub-style completion density per day (from done events).
@@ -1076,7 +1116,7 @@ pub(super) enum ChartKind {
         #[arg(long)]
         year: bool,
         /// Number of weeks to show (1-520; default 12; overrides --year).
-        #[arg(long, value_parser = window_parser(MAX_CHART_WEEKS))]
+        #[arg(long, allow_hyphen_values = true, value_parser = window_parser(MAX_CHART_WEEKS))]
         weeks: Option<usize>,
     },
     /// Remaining open tasks over the last N days (reconstructed backwards
@@ -1092,7 +1132,7 @@ pub(super) enum ChartKind {
         #[arg(long, add = crate::complete::candidates::projects_including_archived())]
         project: Option<String>,
         /// Number of days to show (1-3650; default 30).
-        #[arg(long, value_parser = window_parser(MAX_CHART_DAYS))]
+        #[arg(long, allow_hyphen_values = true, value_parser = window_parser(MAX_CHART_DAYS))]
         days: Option<usize>,
     },
 }
@@ -1229,6 +1269,67 @@ mod tests {
     use clap::error::ErrorKind;
     use clap::CommandFactory;
 
+    /// #228.1: aliases (`ls`, `d`, `rm`, `mod`, …) were only reachable through
+    /// a typo — `tasqx --help` never mentioned them, and the only reliable
+    /// way to learn one existed was to trigger clap's did-you-mean tip by
+    /// misspelling a command. `visible_alias` would have been the one-word
+    /// fix, but it changes clap's OWN completion-fallback behaviour along
+    /// with `--help` (`aliases_complete_when_no_canonical_name_claims_the_prefix`
+    /// in `tests/completion.rs` pins the hidden-alias fallback as a real,
+    /// deliberate feature), so the fix here is narrower: the top-level
+    /// `--help`'s `after_help` now says outright that `tasqx manual` lists
+    /// every alias, rather than leaving a reader to discover the gap the way
+    /// the audit did.
+    #[test]
+    fn top_level_help_points_at_the_manual_for_aliases() {
+        let mut cmd = Cli::command();
+        let help = cmd.render_help().to_string();
+        assert!(
+            help.contains("tasqx manual") && help.to_lowercase().contains("alias"),
+            "`--help` must say where the aliases actually are, got {help:?}"
+        );
+    }
+
+    /// #228.7: `tasqx list -V` used to print `tasqx-list 0.6.0 (...)`, naming a
+    /// binary that does not exist — clap's `propagate_version` builds each
+    /// subcommand's display name by joining the parent chain with hyphens.
+    /// `cli_command()` flattens every subcommand's display name back to
+    /// `tasqx` before parsing, so every position renders identically to
+    /// `tasqx --version`.
+    #[test]
+    fn every_subcommand_reports_the_one_binary_name_on_dash_v() {
+        // clap only manufactures a subcommand's display name during `build()`
+        // (invoked internally on the first parse); `Cli::command()` alone
+        // gives every subcommand an empty version string.
+        let mut raw = Cli::command();
+        raw.build();
+        let raw_list = raw
+            .get_subcommands()
+            .find(|c| c.get_name() == "list")
+            .expect("list is a subcommand");
+        assert!(
+            raw_list.render_version().starts_with("tasqx-list "),
+            "clap's default joins the parent chain with hyphens; if this \
+             assertion starts failing, clap's default behaviour changed and \
+             `cli_command`'s flattening may no longer be doing anything, \
+             got {:?}",
+            raw_list.render_version()
+        );
+
+        let mut flattened = cli_command();
+        flattened.build();
+        for sub in flattened.get_subcommands() {
+            assert!(
+                sub.render_version()
+                    .starts_with(&format!("tasqx {VERSION}")),
+                "`{}` -V must report `tasqx`, the one binary this ships as, \
+                 got {:?}",
+                sub.get_name(),
+                sub.render_version()
+            );
+        }
+    }
+
     /// Chart windows are fed straight into `jiff`'s `ToSpan::days`, which PANICS
     /// outside ±7,304,484, and long before that a `weeks * 7` window is a
     /// multi-gigabyte allocation that never returns. The window therefore has to
@@ -1326,6 +1427,27 @@ mod tests {
         assert!(
             help.contains(&format!("default {}", crate::AGENDA_DEFAULT_DAYS)),
             "the `--days` help must name the default the renderer applies, got {help:?}"
+        );
+    }
+
+    /// #228.3: `tasqx agenda --days -3` used to fail with clap's generic
+    /// "unexpected argument '-3'" and a tip (`use '-- -3'`) that itself fails
+    /// against a flag value (`--days -- -3` errors "a value is required").
+    /// The only spelling that actually reaches `window_parser` is
+    /// `--days=-3`, which clap never suggests. `allow_hyphen_values` lets the
+    /// space-separated form reach the value parser directly, so the FIRST
+    /// error the user sees is the useful one: "invalid digit found in
+    /// string", not a fake path through two dead ends.
+    #[test]
+    fn agenda_days_with_a_leading_hyphen_reaches_the_value_parser() {
+        let err = Cli::try_parse_from(["tasqx", "agenda", "--days", "-3"])
+            .err()
+            .expect("a negative day count is not a valid window");
+        assert_eq!(
+            err.kind(),
+            ErrorKind::ValueValidation,
+            "the space-separated form must reach window_parser's own error, \
+             not clap's unrecognized-argument tip; got {err}"
         );
     }
 

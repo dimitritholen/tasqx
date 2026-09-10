@@ -390,9 +390,27 @@ fn complete_bash(cursor: usize, words: &[&str]) -> std::process::Output {
         // variable. Set here so the fixture reproduces the real protocol rather
         // than the newline fallback a bare invocation happens to take.
         .env("_CLAP_IFS", SEP.to_string())
+        // Isolation, the same reason `complete_bash_in` a few hundred lines
+        // down takes an explicit `db`: without `TASQX_DB` the completion
+        // engine falls back to the developer's real per-platform store, and a
+        // real project name can then surface in a candidate list a test
+        // asserts against — found via `-needs` picking up a project like
+        // `dimitri-decision` from this machine's own store, which is not
+        // fixture data and must never be. Bare `complete_bash` (unlike
+        // `complete_bash_in`) never seeds tasks or projects, so an empty
+        // scratch path is enough — there is nothing there for it to read.
+        .env("TASQX_DB", complete_bash_scratch_db())
         .arg("--")
         .args(words);
     c.output().expect("run the completion callback")
+}
+
+/// A store path `complete_bash` points at that is guaranteed to hold nothing
+/// — process-pid-scoped so parallel test threads never share (or race on) it.
+fn complete_bash_scratch_db() -> std::path::PathBuf {
+    let mut p = std::env::temp_dir();
+    p.push(format!("tasqx-completion-bare-{}.db", std::process::id()));
+    p
 }
 
 /// The candidate separator bash's registration installs: vertical tab, chosen

@@ -111,6 +111,39 @@ fn raw_mode_passes_operators_through_and_refuses_bad_syntax_cleanly() {
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
+/// #228.5: `--raw`'s own help advertises "columns" as part of the grammar it
+/// hands the caller, but a `col:query` naming one this scope does not have
+/// used to answer with sqlite's bare `no such column: title` — the raw
+/// storage-engine text, never a `tasqx` message elsewhere refuses without
+/// naming the valid set (`unknown scope`, `unknown setting "bogus.key"`, …).
+#[test]
+fn a_raw_query_against_an_unknown_column_names_the_real_ones() {
+    let e = engine();
+    // `annotations_fts` has no `title` column (only `docs_fts` does) — the
+    // scope-`all` union hits that arm and it is FTS5, not this engine, that
+    // refuses, so the annotations arm needs a row for FTS5 to reach it.
+    let t = call(&e, "task.add", json!({ "title": "Ship" })).unwrap();
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": t["short_id"], "body": "release notes" }),
+    )
+    .unwrap();
+
+    let err = call(
+        &e,
+        "memory.search",
+        json!({ "query": "title:release", "raw": true }),
+    )
+    .expect_err("`title` is not a column on the annotations_fts table");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(
+        err.message.contains("title") && err.message.contains("body"),
+        "the refusal must name the columns that DO exist, not just refuse: {}",
+        err.message
+    );
+}
+
 #[test]
 fn annotations_are_searchable_and_hits_name_their_task() {
     let e = engine();
