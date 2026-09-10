@@ -1098,17 +1098,10 @@ pub enum FileOutcome {
     Rejected(String),
 }
 
-// Both readers live in `lib.rs`, which this change does not touch: the render
-// path (`build_ctx`) warns and continues, `theme show` refuses a rejection the
-// way it already refuses an unknown *name*. Until those two lines land, nothing
-// outside the tests reads either method, and `mod theme` is private so
-// `pub` alone does not keep dead_code quiet. Drop these two attributes when the
-// call sites are wired up. Better still, make them `#[expect(dead_code)]`:
-// `lint_reasons` is stable since 1.81, well under the 1.95 workspace floor
-// (Cargo.toml), so the loud option IS available here — an `expect` that stops
-// firing becomes a warning, and `-D warnings` turns that into the reminder,
-// instead of this paragraph having to be found and remembered.
-#[allow(dead_code)]
+// Both readers now live in `settings.rs`/`lib.rs` (#193, completing D46): the
+// render path (`build_ctx`) warns and continues, `theme show` refuses a
+// rejection the way it already refuses an unknown *name*, and `theme list`
+// marks a file it could not load rather than offering it plain.
 impl FileOutcome {
     /// The complaint that means "this is not the theme you asked for". `None`
     /// for `Merged`, however many pieces it dropped: the user's name, palette
@@ -1136,7 +1129,6 @@ impl FileOutcome {
 /// A theme plus what loading it had to say. `load` throws the second half away.
 pub struct Loaded {
     pub theme: Theme,
-    #[allow(dead_code)] // see FileOutcome above: read by lib.rs once wired up.
     pub file: FileOutcome,
 }
 
