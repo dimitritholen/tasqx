@@ -589,6 +589,20 @@ pub(super) enum Command {
         /// The annotation text.
         text: Vec<String>,
     },
+    /// Permanently scrub one annotation's text by id (maps to
+    /// annotation.remove).
+    ///
+    /// A hard delete (D113): the body is overwritten in the store, not merely
+    /// hidden, so a secret pasted into a note is actually gone. `tasqx undo`
+    /// does not cover this — there is nothing left to restore.
+    #[command(after_help = crate::cmddoc::after_help("unannotate"))]
+    Unannotate {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// The annotation's id, as `tasqx show <ref>` reports it.
+        annotation_id: String,
+    },
     /// Attach one or more tags to a task (maps to tag.add).
     ///
     /// The same operation `tasqx modify <ref> +tag` performs, spelled as its own

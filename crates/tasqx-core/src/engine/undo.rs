@@ -238,6 +238,15 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          toggle one change back and forth forever. Whatever the undo restored can be changed \
          again with the verb that changes it.",
     ),
+    (
+        "annotation.remove",
+        "D113: the body is overwritten in the same statement that records the removal, so by \
+         the time this event exists there is nothing left in the row to put back — undoing it \
+         would restore a tombstone, not the note. That is deliberate: the whole point of this \
+         op is a caller who pasted a secret and needs it gone, not gone-until-the-next-undo. \
+         `tasqx annotate <ref> <text>` writes a fresh note if the removal was itself the \
+         mistake.",
+    ),
 ];
 
 impl Engine {

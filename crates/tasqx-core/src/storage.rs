@@ -340,6 +340,12 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
     add_dependency_foreign_keys_if_missing(conn)?;
     repair_stale_default_project(conn)?;
     migrate_memory(conn)?;
+
+    // D113: `annotation.remove` tombstones a row rather than deleting it — the
+    // removal event, the id and the timestamp stay, only `body` is overwritten.
+    // `NULL` means "never removed"; every reader that lists annotations filters
+    // on it. Additive column, same upgrade path as `remind` above.
+    add_column_if_missing(conn, "annotations", "removed", "TEXT")?;
     Ok(())
 }
 

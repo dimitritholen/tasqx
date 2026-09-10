@@ -121,6 +121,16 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("show", &["show", "1"]),
         c("modify", &["modify", "1", "--priority", "high"]),
         c("annotate", &["annotate", "1", "a note"]),
+        // `unannotate` needs a real annotation id, which is a UUID minted at
+        // runtime — no static arg list can name one for a success case. Driven
+        // for its refusal instead, the same choice `pick` makes above: the
+        // refusal is an ordinary result through the same `Exit::Out` terminal,
+        // so it still proves `--json` on the path this table CAN reach.
+        c_refuses(
+            "unannotate",
+            &["unannotate", "1", "not-a-real-annotation-id"],
+            4,
+        ),
         // Add before search so the search case has a doc to find; the shared
         // store carries both forward.
         c(
