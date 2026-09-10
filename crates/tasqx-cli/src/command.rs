@@ -464,6 +464,8 @@ pub(super) enum Command {
         #[arg(long, allow_hyphen_values = true, value_delimiter = ',')]
         sort: Vec<String>,
         /// Cap the number of rows returned. Maps to `task.list`'s `limit`.
+        /// Defaults to 100 when omitted, and is clamped to 10,000 even when
+        /// given explicitly.
         #[arg(long)]
         limit: Option<u64>,
         /// Skip this many matching rows before `--limit` is applied. Maps to

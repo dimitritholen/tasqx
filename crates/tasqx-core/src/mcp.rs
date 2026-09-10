@@ -440,8 +440,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             "How many rows to return. Omit and this tool applies its own page \
                              ({LIST_PAGE}), shrunk further if the response would exceed its byte \
                              budget; the answer always carries `total` and a `next_offset` that \
-                             is null once nothing is left. A limit you name is answered exactly, \
-                             however large."
+                             is null once nothing is left. A limit you name is honoured up to \
+                             {max_limit}, the ceiling the core itself clamps to.",
+                            max_limit = crate::engine::task::MAX_TASK_LIST_LIMIT
                         )
                     },
                     "offset": {
@@ -1223,9 +1224,11 @@ impl<'e> McpServer<'e> {
         // reason one relation over: `task.list` had no default bound at all,
         // and the escape hatch it did have truncated silently — `count` was
         // the number of rows RETURNED, with no total and no offset anywhere in
-        // the answer. The core still answers whole when asked; the page is
-        // supplied HERE, where the payload limit lives, and `total` /
-        // `next_offset` make what was left out both visible and reachable.
+        // the answer. Since D110 the core itself clamps an explicit `limit` to
+        // `MAX_TASK_LIST_LIMIT` rather than answering whole when asked; the
+        // page for an OMITTED limit is still supplied HERE, where the payload
+        // limit lives, and `total` / `next_offset` make what was left out both
+        // visible and reachable.
         let mut paged_list_by_us = false;
         if spec.method == "task.list" {
             if let Some(obj) = args.as_object_mut() {
