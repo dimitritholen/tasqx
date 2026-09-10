@@ -464,7 +464,6 @@ fn start_and_done_events_carry_the_correlation_params() {
     e.task_start(&json!({
         "ref": sid,
         "session_id": "sess-1",
-        "prompt_id": "prompt-9",
         "transcript_path": "/home/me/.claude/projects/x/sess-1.jsonl",
         "client": "claude-code 2.1.0",
     }))
@@ -472,7 +471,6 @@ fn start_and_done_events_carry_the_correlation_params() {
     let start = event_payload(&e, "start");
     assert!(start["interval_started"].is_string());
     assert_eq!(start["session_id"], "sess-1");
-    assert_eq!(start["prompt_id"], "prompt-9");
     assert_eq!(
         start["transcript_path"],
         "/home/me/.claude/projects/x/sess-1.jsonl"
@@ -485,9 +483,8 @@ fn start_and_done_events_carry_the_correlation_params() {
     assert!(done["completed"].is_string());
     assert_eq!(done["session_id"], "sess-1");
     assert_eq!(done["client"], "claude-code 2.1.0");
-    // Keys not supplied stay ABSENT, not null — a human's `tasqx done 4`
-    // must not grow four null fields on every event.
-    assert!(done.get("prompt_id").is_none());
+    // A key not supplied stays ABSENT, not null — a human's `tasqx done 4`
+    // must not grow null fields on every event.
     assert!(done.get("transcript_path").is_none());
 }
 
