@@ -1214,9 +1214,13 @@ fn an_invalid_priority_sugar_token_is_refused_not_dropped() {
 
     // Refused at the door means nothing was written — not a task named after
     // the typo, and not one silently missing the priority that was asked for.
+    // A fresh config dir has never held a task, so `list` answers with the
+    // onboarding hint (#233) rather than the bare "No tasks." a filter that
+    // matched nothing would get — either way, the assertion is that nothing
+    // from the refused `add` shows up.
     let s = String::from_utf8_lossy(&run(&["list"]).stdout).to_string();
     assert!(
-        s.contains("No tasks."),
+        s.contains("No tasks") && !s.contains("urgent thing"),
         "a refused add must store nothing: {s}"
     );
 

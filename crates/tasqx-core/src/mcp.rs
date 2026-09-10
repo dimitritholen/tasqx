@@ -1507,6 +1507,11 @@ impl<'e> McpServer<'e> {
             return tool_ok(&first);
         };
         let total = first.get("total").and_then(Value::as_u64).unwrap_or(0);
+        // Carried through unchanged (#233): it describes the STORE, not this
+        // page, so re-cutting the array never changes it — dropping it here
+        // would make the re-cut answer diverge from a real `limit: k` call,
+        // which is exactly what this function exists to not do.
+        let store_empty = first.get("store_empty").cloned().unwrap_or(json!(false));
         let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0);
         let cut = |k: usize| -> Value {
             let reached = offset + k as u64;
@@ -1514,6 +1519,7 @@ impl<'e> McpServer<'e> {
                 "count": k,
                 "total": total,
                 "next_offset": if reached < total { json!(reached) } else { Value::Null },
+                "store_empty": store_empty,
                 "tasks": rows[..k].to_vec(),
             })
         };

@@ -1466,6 +1466,11 @@ impl Engine {
             "count": out.len(),
             "total": total,
             "next_offset": next_offset,
+            // Whether the STORE (not this filter) has ever held a task — the
+            // fact `list`/`next`/`agenda` need to tell "nothing yet" from
+            // "nothing matched" apart (#233), which an empty `tasks` array
+            // alone cannot say.
+            "store_empty": self.store_is_empty()?,
             "tasks": out,
         }))
     }

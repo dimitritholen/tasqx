@@ -381,6 +381,10 @@ impl Engine {
             // when omitted, exactly like an unset date field elsewhere.
             "since": since.map(|t| t.to_string()),
             "until": until.map(|t| t.to_string()),
+            // See `task_list`'s field of the same name: an empty `groups` on
+            // a genuinely empty store reads identically to one where the
+            // filter matched nothing, and only this tells them apart (#233).
+            "store_empty": self.store_is_empty()?,
         }))
     }
 
