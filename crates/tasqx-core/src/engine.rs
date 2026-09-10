@@ -1339,6 +1339,7 @@ mod tests {
             short_id: 42,
             title: "the title".to_string(),
             already_running: false,
+            auto_stopped: Vec::new(),
         }
         .into();
         assert_eq!(
@@ -1350,6 +1351,7 @@ mod tests {
                 "short_id": 42,
                 "title": "the title",
                 "already_running": false,
+                "auto_stopped": [],
             })
         );
 

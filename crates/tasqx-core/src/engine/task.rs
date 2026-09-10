@@ -419,6 +419,7 @@ impl Engine {
                     short_id: task.short_id,
                     title: task.title,
                     already_running: true,
+                    auto_stopped: Vec::new(),
                 }
                 .into());
             }
@@ -441,26 +442,29 @@ impl Engine {
         let ts = now();
 
         // D6: single active by default — auto-stop any currently active task.
+        let mut auto_stopped: Vec<commands::AutoStopped> = Vec::new();
         if !command.keep {
-            let mut actives: Vec<(String, Option<String>, i64, i64)> = Vec::new();
+            let mut actives: Vec<(String, i64, Option<String>, i64, i64)> = Vec::new();
             {
                 let mut stmt = tx.prepare(
-                    "SELECT id, active_since, tracked_seconds, rev FROM tasks WHERE status = 'active'",
+                    "SELECT id, short_id, active_since, tracked_seconds, rev FROM tasks WHERE status = 'active'",
                 )?;
                 let rows = stmt.query_map([], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
-                        r.get::<_, Option<String>>(1)?,
-                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Option<String>>(2)?,
                         r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
                     ))
                 })?;
                 for row in rows {
                     actives.push(row?);
                 }
             }
-            for (aid, active_since, tracked, rev) in actives {
+            for (aid, a_short_id, active_since, tracked, rev) in actives {
                 let elapsed = seconds_between(&active_since, &ts);
+                let elapsed_iso = iso_duration(elapsed);
                 tx.execute(
                     "UPDATE tasks SET status='pending', active_since=NULL, \
                      tracked_seconds=?1, rev=?2, modified=?3 WHERE id=?4",
@@ -471,8 +475,17 @@ impl Engine {
                     Entity::Task,
                     &aid,
                     "stop",
-                    &json!({ "reason": "auto_stop", "tracked": iso_duration(elapsed) }),
+                    &json!({ "reason": "auto_stop", "tracked": elapsed_iso }),
                 )?;
+                // #75: report what the stop loop already knows instead of
+                // throwing it away — `task.start`'s own response used to say
+                // nothing about the timer it just closed on the caller's
+                // behalf.
+                auto_stopped.push(commands::AutoStopped {
+                    id: aid,
+                    short_id: a_short_id,
+                    tracked: elapsed_iso,
+                });
             }
         }
 
@@ -494,6 +507,7 @@ impl Engine {
             short_id: task.short_id,
             title: task.title,
             already_running: false,
+            auto_stopped,
         }
         .into())
     }
