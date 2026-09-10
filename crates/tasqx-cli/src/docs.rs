@@ -120,7 +120,7 @@ const VERBS: [(&str, &str, &str); 39] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 32] = [
+const METHODS: [(&str, &str, &str); 33] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -238,6 +238,13 @@ const METHODS: [(&str, &str, &str); 32] = [
         "<code>{short_id, measurement}</code>. Records AI token spend; never bumps \
          <code>_rev</code>. A repeated <code>idempotency_key</code> on the same task \
          returns the measurement it already banked, unchanged.",
+    ),
+    (
+        "token.remove",
+        "<code>measurement_id</code>",
+        "<code>{short_id, removed}</code>. Deletes one measurement by id — the correction path \
+         a wrong self-report otherwise has none of (D50, D67; #210). <code>removed</code> is \
+         the measurement object that is now gone.",
     ),
     (
         "dependency.add",

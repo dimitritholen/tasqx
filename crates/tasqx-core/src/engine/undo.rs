@@ -167,7 +167,17 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
         "token.add",
         "A token measurement is the only record of what an agent turn cost, and nothing can \
          recompute a self-reported one. `tasqx tokens recompute` re-derives the measurements \
-         attribution owns; a self-report is corrected by measuring again.",
+         attribution owns; a self-report written in error is retracted with `token.remove \
+         {measurement_id}` over the API (#210) — there is no CLI verb yet — which deletes the \
+         row outright rather than adding another one beside it.",
+    ),
+    (
+        "token.remove",
+        "Deleting a measurement is itself the correction (#210); reversing it would mean \
+         inserting the removed row back, and `record_token_usage` always mints a fresh id and \
+         `created` stamp for an insert, so what came back would be a new measurement, not the \
+         one that left. `tasqx api token.add` re-adds the counts this event's payload still \
+         names, under a receipt of its own.",
     ),
     (
         "tokens.attributed",

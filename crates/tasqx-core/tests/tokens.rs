@@ -1554,6 +1554,70 @@ fn recompute_downgrades_when_the_transcript_is_gone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #220: the `downgraded` arm strips confidence in place and used to record
+/// only `{"action":"downgraded","recompute":true}` — no measurement id, no
+/// previous confidence, no counts. `--apply` is a one-way door (undo refuses
+/// `tokens.attributed`, there is no `token.remove` for this to fall back on),
+/// so an event that cannot name what it touched leaves an applied repair
+/// unrecoverable even though nothing here was actually deleted.
+#[test]
+fn recompute_downgrade_event_records_the_measurement_id_and_previous_confidence() {
+    let dir = scratch_dir("gone-audit");
+    let transcript = dir.join("sess-9.jsonl");
+    std::fs::write(
+        &transcript,
+        r#"{"timestamp":"2026-07-25T09:47:00.000Z","message":{"id":"g","usage":{"input_tokens":800,"output_tokens":900}}}"#,
+    )
+    .unwrap();
+    let path = transcript.to_string_lossy().into_owned();
+
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": t, "client": "claude-code", "transcript_path": path }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "high",
+        "samples": 1, "input_tokens": 800, "output_tokens": 900,
+    }))
+    .unwrap();
+    let measurement_id: String = e
+        .conn()
+        .query_row(
+            "SELECT id FROM token_usage WHERE source = 'log-parse'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // The transcript is deleted before the recompute runs, same as the test
+    // above — the counts cannot be re-derived, so they are kept.
+    std::fs::remove_file(&transcript).unwrap();
+
+    dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+
+    let payload: String = e
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE op = 'tokens.attributed' ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(v["action"], "downgraded", "{v}");
+    assert_eq!(v["confidence"], "low", "the NEW confidence: {v}");
+    let measurements = v["measurements"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no `measurements` in the downgrade event: {v}"));
+    assert_eq!(measurements.len(), 1, "{v}");
+    assert_eq!(measurements[0]["id"], measurement_id, "{v}");
+    assert_eq!(
+        measurements[0]["confidence"], "high",
+        "the PREVIOUS confidence, not the one it was stripped to: {v}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn recompute_never_touches_self_report_or_otel_rows() {
     let dir = scratch_dir("sources");
@@ -1705,6 +1769,58 @@ fn recompute_resolves_a_channel_conflict_toward_the_self_report() {
         )
         .unwrap();
     assert_eq!(self_report_input, 111);
+}
+
+/// #220: the `channel_conflict` arm deletes the task's log-parse rows outright
+/// and used to record only `{"action":"channel_conflict","samples":0}` — no
+/// measurement id, no counts. Compare the rich payload a live bank writes
+/// (`recompute_replace`'s `usage` branch: source, tool, confidence, totals,
+/// measurement) — an applied repair here recorded strictly less right beside
+/// it, and the deleted row is unrecoverable from the store once it is gone.
+#[test]
+fn recompute_channel_conflict_event_records_the_removed_measurement() {
+    let e = engine();
+    let t = e.task_add(&json!({ "title": "t" })).unwrap()["short_id"].clone();
+    e.task_done(&json!({ "ref": t, "client": "claude-code",
+                 "transcript_path": "/no/such/transcript.jsonl" }))
+        .unwrap();
+    e.token_attribute(&json!({
+        "ref": t, "source": "log-parse", "tool": "claude-code", "confidence": "medium",
+        "samples": 1, "input_tokens": 1000, "output_tokens": 2000,
+    }))
+    .unwrap();
+    let measurement_id: String = e
+        .conn()
+        .query_row(
+            "SELECT id FROM token_usage WHERE source = 'log-parse'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // The same task later self-reported through the other door (token.add) —
+    // seeded directly (#208 now refuses this through the API; see
+    // `seed_self_report_row`).
+    seed_self_report_row(&e, &task_uuid(&e, &t), "claude-code", 111, 222);
+
+    dispatch(&e, "tokens.recompute", &json!({ "dry_run": false })).unwrap();
+
+    let payload: String = e
+        .conn()
+        .query_row(
+            "SELECT payload FROM events WHERE op = 'tokens.attributed' ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(v["action"], "channel_conflict", "{v}");
+    let measurements = v["measurements"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no `measurements` in the removal event: {v}"));
+    assert_eq!(measurements.len(), 1, "{v}");
+    assert_eq!(measurements[0]["id"], measurement_id, "{v}");
+    assert_eq!(measurements[0]["input_tokens"], 1000, "{v}");
+    assert_eq!(measurements[0]["output_tokens"], 2000, "{v}");
 }
 
 /// Task #81's shape: a reopen + re-complete banked the same window twice, so
