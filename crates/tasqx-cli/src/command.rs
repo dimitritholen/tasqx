@@ -153,6 +153,48 @@ pub(super) struct CorrelationArgs {
     pub(super) transcript_path: Option<String>,
 }
 
+/// The self-report facts `task.done` accepts on top of [`CorrelationArgs`]
+/// (#13, D50/D65): who did the work and what it cost, in the caller's own
+/// words. `task.start` does not take these — a report describes a completed
+/// turn's spend, and a task can be started without one ever having happened.
+///
+/// Every field is optional and none is read from the environment, for the
+/// same reason `CorrelationArgs` is not: `tasqx done 4` must stay a one-word
+/// command. `--tool`/`--model` alone (no count) still land on the completion
+/// event (D65) — only a count with neither `--tool` nor `--client` present is
+/// refused by the engine, since a measurement attributed to nobody cannot be
+/// reported per tool later.
+#[derive(Args, Clone, Default)]
+pub(super) struct SelfReportArgs {
+    /// The AI tool doing the work, free-form (e.g. "claude-code"). Recorded on
+    /// the completion event on its own; when token counts are present it also
+    /// names the measurement, defaulting to --client if omitted.
+    #[arg(long, value_name = "TOOL")]
+    pub(super) tool: Option<String>,
+
+    /// The model doing the work, e.g. "claude-opus-5". Recorded on the
+    /// completion event on its own, and carried on the measurement when token
+    /// counts are present.
+    #[arg(long, value_name = "MODEL")]
+    pub(super) model: Option<String>,
+
+    /// Self-reported input tokens this task cost (0 or more).
+    #[arg(long, value_name = "N")]
+    pub(super) input_tokens: Option<i64>,
+
+    /// Self-reported output tokens this task cost (0 or more).
+    #[arg(long, value_name = "N")]
+    pub(super) output_tokens: Option<i64>,
+
+    /// Self-reported cache-read tokens this task cost (0 or more).
+    #[arg(long, value_name = "N")]
+    pub(super) cache_read_tokens: Option<i64>,
+
+    /// Self-reported cache-creation tokens this task cost (0 or more).
+    #[arg(long, value_name = "N")]
+    pub(super) cache_creation_tokens: Option<i64>,
+}
+
 #[derive(Parser)]
 #[command(
     name = "tasqx",
@@ -454,6 +496,8 @@ pub(super) enum Command {
         r#ref: String,
         #[command(flatten)]
         correlation: CorrelationArgs,
+        #[command(flatten)]
+        self_report: SelfReportArgs,
     },
     /// Show a task's full detail incl. tags/annotations/deps (maps to task.get).
     #[command(alias = "get", after_help = crate::cmddoc::after_help("show"))]

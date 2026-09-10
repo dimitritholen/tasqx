@@ -469,14 +469,41 @@ pub(crate) fn run_stop(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome
     Ok((result, text))
 }
 
+/// Widen a `task.done` params object with whichever self-report facts were
+/// given on the command line (#13, D50/D65).
+///
+/// Present keys only, same discipline as [`apply_correlation`]: a flagless
+/// `tasqx done 4` sends byte-for-byte the object it sent before these flags
+/// existed. Token counts are sent as JSON numbers, not strings — clap already
+/// parsed and typed them as `i64`.
+pub(crate) fn apply_self_report(params: &mut Value, r: &command::SelfReportArgs) {
+    for (key, value) in [("tool", &r.tool), ("model", &r.model)] {
+        if let Some(v) = value {
+            params[key] = json!(v);
+        }
+    }
+    for (key, value) in [
+        ("input_tokens", r.input_tokens),
+        ("output_tokens", r.output_tokens),
+        ("cache_read_tokens", r.cache_read_tokens),
+        ("cache_creation_tokens", r.cache_creation_tokens),
+    ] {
+        if let Some(v) = value {
+            params[key] = json!(v);
+        }
+    }
+}
+
 pub(crate) fn run_done(
     be: &mut Backend,
     ctx: &Ctx,
     r#ref: String,
     correlation: &command::CorrelationArgs,
+    self_report: &command::SelfReportArgs,
 ) -> CmdOutcome {
     let mut params = json!({ "ref": r#ref });
     apply_correlation(&mut params, correlation);
+    apply_self_report(&mut params, self_report);
     let result = be.call("task.done", &params)?;
     let text = render::done(ctx, &result);
     Ok((result, text))
