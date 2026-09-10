@@ -1425,6 +1425,25 @@ impl Engine {
         };
         obj["tokens"] = json!(self.tokens_of(&task.id)?);
         obj["blocked"] = json!(self.is_blocked(&task.id)?);
+
+        // #150 / D1: `tasqx why` renders the urgency breakdown, but `--json`
+        // was a bare `task.get` result and `task.get` never carried the terms
+        // that sum to `urgency` — only the total. `explain` is additive and
+        // opt-in (D56: the key is absent unless asked for, so the default
+        // `task.get` shape every existing caller reads is unchanged) rather
+        // than a standing `task.why` method, since this IS `task.get` plus
+        // the D1 formula, not a second read path to the same row.
+        if opt_bool(p, "explain")?.unwrap_or(false) {
+            let parts = urgency::breakdown(task.priority, task.due.as_deref(), &task.created);
+            let total: f64 = parts.iter().map(|(_, v)| v).sum();
+            let total = (total * 10.0).round() / 10.0;
+            let mut breakdown = Map::new();
+            for (name, value) in &parts {
+                breakdown.insert((*name).to_string(), json!(value));
+            }
+            breakdown.insert("total".to_string(), json!(total));
+            obj["urgency_breakdown"] = Value::Object(breakdown);
+        }
         Ok(obj)
     }
 
@@ -1621,6 +1640,37 @@ mod tests {
             .collect();
         assert_eq!(bodies, ["note 7", "note 8", "note 9"]);
         assert_eq!(out["annotations_total"], json!(10));
+    }
+
+    /// `tasqx why --json` (#150): the human form of `why` prints the urgency
+    /// breakdown, but `--json` is a bare `task.get` result, and `task.get`
+    /// never carried the terms that add up to `urgency` — only the total.
+    /// `explain: true` is the additive, D56-safe opt-in: the key is absent by
+    /// default (every existing `task.get` caller sees no change) and present,
+    /// summing to the stored `urgency`, only when asked for.
+    #[test]
+    fn task_get_with_explain_carries_the_urgency_breakdown() {
+        let e = seeded();
+        let out = e.task_get(&json!({ "ref": 1 })).unwrap();
+        assert!(
+            out.get("urgency_breakdown").is_none(),
+            "urgency_breakdown must stay absent unless explain:true is asked for"
+        );
+
+        let out = e.task_get(&json!({ "ref": 1, "explain": true })).unwrap();
+        let b = &out["urgency_breakdown"];
+        assert!(b["priority"].is_f64() || b["priority"].is_i64());
+        assert!(b["due_proximity"].is_f64() || b["due_proximity"].is_i64());
+        assert!(b["age"].is_f64() || b["age"].is_i64());
+        let sum = b["priority"].as_f64().unwrap()
+            + b["due_proximity"].as_f64().unwrap()
+            + b["age"].as_f64().unwrap();
+        let rounded = (sum * 10.0).round() / 10.0;
+        assert_eq!(rounded, out["urgency"].as_f64().unwrap());
+        assert_eq!(
+            b["total"].as_f64().unwrap(),
+            out["urgency"].as_f64().unwrap()
+        );
     }
 
     /// An offset walks BACKWARDS from the newest, so the caller pages into

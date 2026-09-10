@@ -465,6 +465,14 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             newest. Pass the `annotations_next_offset` of the previous response \
                             to walk further into the history; that field is null once there is \
                             nothing older."
+                    },
+                    "explain": {
+                        "type": "boolean",
+                        "description": "Add `urgency_breakdown` (`priority`, `due_proximity`, \
+                            `age`, `total`) — the terms `urgency` sums (D1). Default false: an \
+                            agent deciding whether to trust or override the ranking otherwise \
+                            gets the one number it already had and no way to see the arithmetic \
+                            behind it (#150)."
                     }
                 },
                 "required": ["ref"]
