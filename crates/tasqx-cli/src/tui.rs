@@ -83,10 +83,12 @@ pub fn write_restore(w: &mut impl Write) -> io::Result<()> {
     w.flush()
 }
 
-/// Set when the terminal is in raw mode + the alt screen, so the panic hook
-/// knows whether it has anything to undo. Swapped to false by whoever restores
-/// first, so the guard and the hook cannot both emit the sequence.
-static IN_RAW_MODE: AtomicBool = AtomicBool::new(false);
+/// Set when the terminal is in the alternate screen — raw mode or not, since
+/// `serve::WatchScreen` arms this same flag for `watch`'s alt-screen-only
+/// session (#206) — so the panic hook knows whether it has anything to undo.
+/// Swapped to false by whoever restores first, so the guard and the hook
+/// cannot both emit the sequence.
+pub(crate) static IN_RAW_MODE: AtomicBool = AtomicBool::new(false);
 
 /// Restore the terminal if — and only if — this is the first claim on it.
 ///
@@ -170,7 +172,10 @@ fn restore_terminal(flag: &AtomicBool, w: &mut impl Write, disable_raw: impl FnO
 /// Untestable by construction — `set_hook` is process-global — so the logic it
 /// installs lives in [`panic_restore`], which is tested directly. The closure
 /// here is the plumbing only.
-fn install_panic_hook() {
+///
+/// `pub(crate)`: `serve::WatchScreen::enter` installs the same hook rather
+/// than growing a second, less-tested copy of it for `watch`'s alt screen.
+pub(crate) fn install_panic_hook() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         panic_restore(&mut io::stdout(), || {
