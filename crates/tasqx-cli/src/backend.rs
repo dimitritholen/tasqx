@@ -116,6 +116,12 @@ pub(crate) fn default_socket() -> String {
 /// missing/stale socket falls back immediately (no hang).
 pub(crate) fn open_backend(socket_flag: Option<&str>, no_daemon: bool) -> Result<Backend, String> {
     if !no_daemon {
+        // Explicit, not resolved: a note about "no daemon at <addr>" is only
+        // worth printing when the operator named that address themselves —
+        // the default address silently having no daemon is the common case
+        // (`tasqx` with nothing configured), not a transition to flag.
+        let explicit =
+            socket_flag.is_some() || std::env::var("TASQX_SOCK").is_ok_and(|v| !v.is_empty());
         let target = resolve_socket(socket_flag);
         if let Some(conn) = daemon::try_connect(&target) {
             return Ok(Backend::Remote {
@@ -127,7 +133,15 @@ pub(crate) fn open_backend(socket_flag: Option<&str>, no_daemon: bool) -> Result
         // store than the last one did, if a daemon recently retired here. Say
         // so once (D74). Deliberately not on the `--no-daemon` path: there the
         // operator chose the in-process store themselves.
-        report_daemon_retirement(&target);
+        let reported_retirement = report_daemon_retirement(&target);
+        // #236.4: a daemon killed outright (SIGKILL, a crash) leaves no
+        // retirement marker, so `reported_retirement` is false and — before
+        // this — nothing was said at all. A live daemon announces itself on
+        // every command (the note above); a dead one must not fall back in
+        // silence and look the same.
+        if !reported_retirement && explicit {
+            eprintln!("tasqx: note: no daemon at {target}; running in-process against $TASQX_DB");
+        }
     }
     Ok(Backend::Local(open_engine()?))
 }
@@ -161,12 +175,17 @@ pub(crate) fn daemon_retired_marker(socket: &str) -> Option<PathBuf> {
 /// The recorded socket must equal the one this command resolved: two addresses
 /// can sanitize to one filename, and a note about a different daemon is not
 /// this command's transition.
-pub(crate) fn report_daemon_retirement(target: &str) {
+///
+/// Returns whether the D74 note was printed, so [`open_backend`] can tell a
+/// reported idle retirement apart from a connect failure with no marker at
+/// all (#236.4) — the two states call for different stderr, not a doubled-up
+/// one.
+pub(crate) fn report_daemon_retirement(target: &str) -> bool {
     let Some(marker) = daemon_retired_marker(target) else {
-        return;
+        return false;
     };
     let Ok(body) = std::fs::read_to_string(&marker) else {
-        return;
+        return false;
     };
     let field = |key: &str| {
         body.lines()
@@ -174,7 +193,7 @@ pub(crate) fn report_daemon_retirement(target: &str) {
             .filter(|v| !v.is_empty())
     };
     if field("socket ") != Some(target) {
-        return;
+        return false;
     }
     let owned = field("store ").filter(|s| *s != "-");
     let when = field("retired ");
@@ -187,6 +206,7 @@ pub(crate) fn report_daemon_retirement(target: &str) {
             .unwrap_or_default(),
     );
     let _ = std::fs::remove_file(&marker);
+    true
 }
 
 /// Resolve the store path and open the engine.
