@@ -887,7 +887,7 @@ impl Engine {
         // D23: the project this modify moves the task into, if any (None for an
         // unchanged or cleared project). Validated inside the write tx below.
         let mut project_target: Option<String> = None;
-        // D96: a `tracked` correction, resolved to whole seconds. Kept apart
+        // D98: a `tracked` correction, resolved to whole seconds. Kept apart
         // from `assignments` because `tracked_seconds` is an INTEGER column —
         // `update_column` below only knows TEXT and NULL, the shape every
         // other whitelisted field stores its value as.
@@ -968,7 +968,7 @@ impl Engine {
                 }
                 "estimate" => assignments.push(("estimate", nullable_duration(v, "estimate")?)),
                 "tracked" => {
-                    // D96: the audit's "tracked time can never be corrected"
+                    // D98: the audit's "tracked time can never be corrected"
                     // gap — a timer left running overnight banks hours onto a
                     // task with no way back once anything else is logged
                     // (`undo` reaches only the immediately preceding event).
