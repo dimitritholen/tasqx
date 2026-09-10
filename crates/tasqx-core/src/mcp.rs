@@ -577,7 +577,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             description: "Search the memory store: imported docs/patterns and \
                 task annotations, bm25-ranked with snippets. Plain text queries \
                 are matched as phrases; set raw=true for FTS5 operator syntax \
-                (prefix*, AND/OR, column filters). A hit carries a short excerpt: \
+                (prefix*, AND/OR, column filters). Every word of a query is matched \
+                by its STEM, so \"reviewing\" finds a doc that only says \"review\" or \
+                \"reviewed\". A hit carries a short excerpt: \
                 read a doc whole with `tasqx_get_memory` on its `id`, and an \
                 annotation whole with `tasqx_get_task` on the task its `source` \
                 names. Every word of a plain query is REQUIRED, so `matched` on the \
@@ -585,7 +587,9 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 FTS5 bm25 score: LOWER (more negative) is a BETTER match, the opposite \
                 of most scoring conventions. `hits` is already sorted best-first, so \
                 `rank` is for comparing hits against each other, not for a fixed \
-                threshold.",
+                threshold. The response carries `total` (every row the query matched, \
+                before `limit` truncates) and `has_more`, so a hit list that looks \
+                complete is never mistaken for one that is.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -595,7 +599,7 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     },
                     // No `minimum` bound: `query` is required, so the one-key
                     // boundary probe in the minimum guard could never test it.
-                    "limit": { "type": "integer", "description": "Max hits (0 or more); default 10." },
+                    "limit": { "type": "integer", "description": "Max hits (0 or more); default 10. The response's `total`/`has_more` say what this left out." },
                     "scope": {
                         "type": "string",
                         "enum": enum_of(MEMORY_SCOPES),
@@ -604,9 +608,45 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "raw": {
                         "type": "boolean",
                         "description": "Pass the query through as FTS5 syntax. Invalid syntax is refused as bad_request."
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Scope to one project: docs stored with this `project`, and annotations whose task carries it. Omit to search across every project (and unscoped docs)."
                     }
                 },
                 "required": ["query"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_list_memory",
+            method: "memory.list",
+            write: false,
+            destructive: false,
+            idempotent: true,
+            description: "Browse memory docs without already knowing a word inside one — the \
+                enumeration `tasqx_search_memory` cannot do without a query. Newest-modified \
+                first by default. Rows come back in pages: the response carries `count` \
+                (returned), `total` (matched) and `next_offset`, null once nothing is left — the \
+                same shape `tasqx_list_tasks` uses. Each row carries a short `body_preview`, not \
+                the full body; read one whole with `tasqx_get_memory` on its `id`.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How many rows to return. Omit for every doc from `offset` on."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How many matching docs to skip. Pass the previous response's `next_offset` to keep walking."
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Restrict to docs stored with this `project`. Omit to list every doc regardless of project."
+                    }
+                }
             }),
         },
         // ---- writes ---------------------------------------------------------
@@ -961,9 +1001,41 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "title": { "type": "string" },
                     "body": { "type": "string", "description": "Stored verbatim; multi-line markdown is fine." },
-                    "source": { "type": "string", "description": "Where this came from: a path, URL, or ticket." }
+                    "source": { "type": "string", "description": "Where this came from: a path, URL, or ticket." },
+                    "project": { "type": "string", "description": "Optional project scope. Omit to leave the doc global/unscoped — it is not defaulted onto whatever project is current." }
                 },
                 "required": ["title", "body"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_update_memory",
+            method: "memory.update",
+            write: true,
+            destructive: true,
+            idempotent: false,
+            description: "Correct a memory doc in place: title, body, source and/or project, by \
+                id. Use it instead of `tasqx_add_memory` for a correction — a fix written as a \
+                second doc leaves the stale one polluting search rankings forever, and \
+                `tasqx_remove_memory` is permanent, so delete-then-recreate risks losing the doc \
+                with nothing to put it back. Optimistic concurrency is the same shape \
+                `tasqx_modify_task` uses: when `expected_rev` is omitted, this server reads the \
+                doc's current `rev` and pins it, so a concurrent edit yields a `conflict` naming \
+                both revs instead of a silent overwrite. On `conflict`: re-read the doc \
+                (`tasqx_get_memory`), re-apply the change, and retry with the fresh `rev`.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The doc UUID, as printed by a search hit, `tasqx_add_memory`, or `tasqx_list_memory`."
+                    },
+                    "title": { "type": "string", "description": "New title. Omit to leave it unchanged." },
+                    "body": { "type": "string", "description": "New body, stored verbatim. Omit to leave it unchanged." },
+                    "source": { "type": "string", "description": "New source. Omit to leave it unchanged." },
+                    "project": { "type": "string", "description": "New project scope. Omit to leave it unchanged." },
+                    "expected_rev": { "type": "integer", "description": "Optimistic-concurrency guard. Supplied by the server from the doc's current `rev` when omitted; pass it only to pin a rev you read earlier." }
+                },
+                "required": ["id"]
             }),
         },
         ToolSpec {
@@ -1198,6 +1270,21 @@ impl<'e> McpServer<'e> {
             if let Some(obj) = args.as_object_mut() {
                 if !obj.contains_key("expected_rev") {
                     if let Some(rev) = self.current_rev(obj.get("ref")) {
+                        obj.insert("expected_rev".to_string(), json!(rev));
+                    }
+                }
+            }
+        }
+
+        // The same optimistic-concurrency default one entity over (#135):
+        // `memory.update` gets the identical treatment `task.modify` gets
+        // above, so `tasqx_update_memory`'s own description ("when omitted,
+        // this server reads the doc's current rev and pins it") is true
+        // rather than aspirational.
+        if spec.method == "memory.update" {
+            if let Some(obj) = args.as_object_mut() {
+                if !obj.contains_key("expected_rev") {
+                    if let Some(rev) = self.current_memory_rev(obj.get("id")) {
                         obj.insert("expected_rev".to_string(), json!(rev));
                     }
                 }
@@ -1574,6 +1661,14 @@ impl<'e> McpServer<'e> {
     fn current_rev(&self, ref_val: Option<&Value>) -> Option<i64> {
         let ref_val = ref_val?;
         let got = dispatch(self.engine, "task.get", &json!({ "ref": ref_val })).ok()?;
+        got.get("_rev").and_then(Value::as_i64)
+    }
+
+    /// `memory.update`'s counterpart to [`Self::current_rev`]: read a doc's
+    /// current `rev` by id, for the same server-side auto-pin.
+    fn current_memory_rev(&self, id_val: Option<&Value>) -> Option<i64> {
+        let id_val = id_val?;
+        let got = dispatch(self.engine, "memory.get", &json!({ "id": id_val })).ok()?;
         got.get("_rev").and_then(Value::as_i64)
     }
 }

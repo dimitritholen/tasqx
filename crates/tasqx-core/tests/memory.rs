@@ -671,3 +671,226 @@ fn get_memory_is_reachable_from_a_read_only_server() {
     let doc: Value = serde_json::from_str(text).expect("json");
     assert_eq!(doc["body"], json!("deploys go through blue-green"));
 }
+
+// ---- #128: stemming --------------------------------------------------------
+
+/// The porter tokenizer stems each term before matching, so "reviewing" finds
+/// a doc that only ever says "review" — the exact miss the review finding
+/// reported (default AND-of-literal-tokens had zero tolerance for a single
+/// absent inflection).
+#[test]
+fn a_stemmed_query_matches_an_unrelated_inflection_of_the_same_word() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "PR checklist", "body": "review the diff before merging" }),
+    )
+    .expect("add");
+
+    let hits = call(&e, "memory.search", json!({ "query": "reviewing" })).expect("search");
+    assert_eq!(
+        hits["count"], 1,
+        "the porter tokenizer should stem \"reviewing\" to match \"review\": {hits}"
+    );
+
+    // And the reverse direction, so the guard is not a coincidence of one
+    // particular pair of inflections.
+    let hits2 = call(&e, "memory.search", json!({ "query": "reviewed" })).expect("search");
+    assert_eq!(
+        hits2["count"], 1,
+        "\"reviewed\" should stem-match too: {hits2}"
+    );
+}
+
+// ---- #132: total / has_more -------------------------------------------------
+
+/// `total` counts every match before `limit` truncates, and `has_more` is
+/// that comparison already done — a query matching more docs than `limit`
+/// must say so instead of coming back looking complete.
+#[test]
+fn search_total_and_has_more_survive_a_limit_narrower_than_the_match_set() {
+    let e = engine();
+    for i in 0..5 {
+        call(
+            &e,
+            "memory.add",
+            json!({ "title": format!("doc {i}"), "body": "shared keyword everywhere" }),
+        )
+        .expect("add");
+    }
+
+    let narrow = call(
+        &e,
+        "memory.search",
+        json!({ "query": "keyword", "limit": 2 }),
+    )
+    .expect("search");
+    assert_eq!(narrow["count"], 2, "{narrow}");
+    assert_eq!(narrow["total"], 5, "{narrow}");
+    assert_eq!(narrow["has_more"], true, "{narrow}");
+
+    let wide = call(
+        &e,
+        "memory.search",
+        json!({ "query": "keyword", "limit": 10 }),
+    )
+    .expect("search");
+    assert_eq!(wide["count"], 5, "{wide}");
+    assert_eq!(wide["total"], 5, "{wide}");
+    assert_eq!(wide["has_more"], false, "{wide}");
+}
+
+// ---- #133: memory.list ------------------------------------------------------
+
+/// `memory.list` browses without a query, newest-modified first, and pages
+/// the same way `task.list` does: `total`, and a `next_offset` that is null
+/// once nothing is left and otherwise walks the rest.
+#[test]
+fn list_pages_newest_first_and_next_offset_walks_to_the_end() {
+    let e = engine();
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let added = call(
+            &e,
+            "memory.add",
+            json!({ "title": format!("doc {i}"), "body": "body" }),
+        )
+        .expect("add");
+        ids.push(added["id"].as_str().unwrap().to_string());
+    }
+    // UUIDv7 ids (and `modified`) are monotonic with insertion order, so the
+    // newest-first default should hand them back reversed.
+    ids.reverse();
+
+    let page1 = call(&e, "memory.list", json!({ "limit": 2 })).expect("list");
+    assert_eq!(page1["count"], 2, "{page1}");
+    assert_eq!(page1["total"], 3, "{page1}");
+    let page1_ids: Vec<&str> = page1["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(page1_ids, vec![ids[0].as_str(), ids[1].as_str()]);
+    let next = page1["next_offset"].as_u64().expect("more to walk");
+
+    let page2 = call(&e, "memory.list", json!({ "limit": 2, "offset": next })).expect("list");
+    assert_eq!(page2["count"], 1, "{page2}");
+    assert!(
+        page2["next_offset"].is_null(),
+        "the walk must end once nothing is left: {page2}"
+    );
+    let page2_ids: Vec<&str> = page2["docs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(page2_ids, vec![ids[2].as_str()]);
+}
+
+// ---- #134: project scoping --------------------------------------------------
+
+/// A doc's `project` is optional and free-standing: `memory.search` and
+/// `memory.list` scope to it when asked, and an unscoped doc is invisible to
+/// a project-scoped query — not defaulted into it.
+#[test]
+fn project_scopes_search_and_list_without_leaking_unscoped_docs() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "alpha doc", "body": "shared term", "project": "alpha" }),
+    )
+    .expect("add");
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "unscoped doc", "body": "shared term" }),
+    )
+    .expect("add");
+
+    let scoped = call(
+        &e,
+        "memory.search",
+        json!({ "query": "shared", "project": "alpha" }),
+    )
+    .expect("search");
+    assert_eq!(scoped["count"], 1, "{scoped}");
+    assert_eq!(scoped["hits"][0]["title"], json!("alpha doc"), "{scoped}");
+
+    let unscoped_search = call(&e, "memory.search", json!({ "query": "shared" })).expect("search");
+    assert_eq!(
+        unscoped_search["count"], 2,
+        "no project filter must see both docs: {unscoped_search}"
+    );
+
+    let list_scoped = call(&e, "memory.list", json!({ "project": "alpha" })).expect("list");
+    assert_eq!(list_scoped["count"], 1, "{list_scoped}");
+    assert_eq!(list_scoped["total"], 1, "{list_scoped}");
+
+    let list_all = call(&e, "memory.list", json!({})).expect("list");
+    assert_eq!(list_all["total"], 2, "{list_all}");
+}
+
+// ---- #135: memory.update ----------------------------------------------------
+
+/// `memory.update` replaces fields in place, bumps `_rev`, and — the same
+/// optimistic-concurrency shape `task.modify` uses — a stale `expected_rev`
+/// is a `conflict` naming both revs rather than a silent overwrite.
+#[test]
+fn update_replaces_fields_in_place_and_a_stale_expected_rev_conflicts() {
+    let e = engine();
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "runbook", "body": "v1 of the deploy steps" }),
+    )
+    .expect("add");
+    let id = added["id"].as_str().unwrap().to_string();
+
+    let updated = call(
+        &e,
+        "memory.update",
+        json!({ "id": id, "body": "v2 of the deploy steps", "expected_rev": 0 }),
+    )
+    .expect("update");
+    assert_eq!(updated["_rev"], 1, "{updated}");
+    assert_eq!(
+        updated["title"],
+        json!("runbook"),
+        "title untouched: {updated}"
+    );
+
+    let fetched = call(&e, "memory.get", json!({ "id": id })).expect("get");
+    assert_eq!(fetched["body"], json!("v2 of the deploy steps"));
+    assert_eq!(fetched["_rev"], 1);
+
+    // A stale expected_rev (still 0, but the doc is now at 1) conflicts and
+    // writes nothing.
+    let conflict = call(
+        &e,
+        "memory.update",
+        json!({ "id": id, "body": "v3, a lost race", "expected_rev": 0 }),
+    )
+    .expect_err("stale expected_rev must conflict");
+    assert_eq!(conflict.code, ErrorCode::Conflict, "{}", conflict.message);
+    assert_eq!(conflict.data.as_ref().unwrap()["current"], json!(1));
+
+    let still_v2 = call(&e, "memory.get", json!({ "id": id })).expect("get");
+    assert_eq!(
+        still_v2["body"],
+        json!("v2 of the deploy steps"),
+        "a refused conflict must not have written anything"
+    );
+
+    // Retrying with the current rev succeeds.
+    let retried = call(
+        &e,
+        "memory.update",
+        json!({ "id": id, "body": "v3, retried correctly", "expected_rev": 1 }),
+    )
+    .expect("update with the fresh rev");
+    assert_eq!(retried["_rev"], 2, "{retried}");
+}
