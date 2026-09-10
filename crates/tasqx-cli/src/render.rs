@@ -33,10 +33,21 @@ use crate::AGENDA_MAX_DAYS;
 /// For a field that is expected to hold ONE line (a title, a source, a search
 /// snippet), a stray newline is itself part of what this guards against — it
 /// is how a hostile field would forge a second line of fake CLI output — so it
-/// is dropped along with every other control byte. A field that is legitimately
-/// multiple lines wants [`san_multiline`] instead.
+/// is neutralised. A field that is legitimately multiple lines wants
+/// [`san_multiline`] instead.
+///
+/// TAB and newline are replaced with a single visible space rather than
+/// dropped outright: deleting them welds the text on either side into one
+/// word (`"a\tb"` -> `"ab"`, `"line1\nline2"` -> `"line1line2"`), which reads
+/// as a single, different value rather than the two the field actually held —
+/// actively misleading, not merely cosmetic (audit #229 item 11). Every other
+/// control byte (escape, bell, backspace, C1) has no legitimate content
+/// reading and is still dropped outright.
 pub fn san(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    s.chars()
+        .map(|c| if c == '\t' || c == '\n' { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 /// Same guard as [`san`], for text that is legitimately more than one line — a
@@ -3011,15 +3022,17 @@ mod tests {
     #[test]
     fn san_strips_control_and_escape_bytes() {
         // A title carrying a screen-clear + OSC title-set + cursor move: every
-        // control byte is removed, printable text survives.
+        // control byte is removed (tab replaced with a space — see
+        // `san_replaces_tab_with_a_space_instead_of_deleting_it` — everything
+        // else dropped outright), printable text survives.
         let malicious = "\x1b[2Jpwned\x1b]0;evil\x07\x08 ok\ttab";
         let clean = san(malicious);
         assert!(!clean.contains('\x1b'), "escape byte leaked: {clean:?}");
         assert!(!clean.contains('\x07') && !clean.contains('\x08'));
         assert!(!clean.contains('\t'), "a raw tab expands in any terminal and shifts every column to its right on that row — the misalignment D51 exists to end (D19/#234 item 10)");
         assert_eq!(
-            clean, "[2Jpwned]0;evil oktab",
-            "printable kept, tab dropped"
+            clean, "[2Jpwned]0;evil ok tab",
+            "printable kept, tab replaced with a visible space (#229 item 11)"
         );
     }
 
@@ -3027,16 +3040,41 @@ mod tests {
     /// D19): a raw TAB in a title survives `san` and expands to the next
     /// 8-column stop in any real terminal, shifting every column to the
     /// RIGHT of it on that one row — the exact misalignment D51 exists to
-    /// end, reintroduced by the one control byte `san` still let through.
-    /// `html::esc` keeps tab deliberately (D19: "legitimate document
+    /// end. `html::esc` keeps tab deliberately (D19: "legitimate document
     /// whitespace" — a `<table>` cell has no fixed-width grid to break), so
     /// this is a `render::san`-only fix, not a second D19 sanitizer standard.
+    ///
+    /// Dropping the tab outright (a prior fix's behaviour) is its own bug:
+    /// `"a\tb"` became `"ab"`, silently welding two words together — audit
+    /// #229 item 11 caught this as a regression on the rebased tree. The
+    /// Direction was explicit: map TAB (and newline, see the sibling test
+    /// below) to a single visible separator space, not delete it.
     #[test]
-    fn san_strips_tab_which_would_misalign_a_terminal_table() {
-        assert_eq!(san("tab\there"), "tabhere");
+    fn san_replaces_tab_with_a_space_instead_of_deleting_it() {
+        assert_eq!(
+            san("tab\there"),
+            "tab here",
+            "a dropped tab welds two words together (#229 item 11), a table's column boundary must stay visible"
+        );
         assert_eq!(
             san("bell\x07 and \x1b]0;PWNED\x07title"),
-            "bell and ]0;PWNEDtitle"
+            "bell and ]0;PWNEDtitle",
+            "other control bytes are still dropped outright, not spaced"
+        );
+    }
+
+    /// #229 item 11: a newline in a single-line field (title, source,
+    /// snippet) was deleted by `san` rather than replaced, so `"line1\nline2"`
+    /// rendered as one welded word `"line1line2"` — actively misleading in
+    /// both `list` and `show`. A newline becomes a visible space instead,
+    /// same treatment as tab, while `san_multiline` (paragraph text) is left
+    /// untouched — it keeps real newlines on purpose.
+    #[test]
+    fn san_replaces_newline_with_a_space_instead_of_deleting_it() {
+        assert_eq!(
+            san("line1\nline2"),
+            "line1 line2",
+            "a deleted newline welds two lines into one misleading word (#229 item 11)"
         );
     }
 
