@@ -1675,6 +1675,7 @@ version = "0.6.0"
 dependencies = [
  "interprocess",
  "jiff",
+ "libc",
  "notify-rust",
  "rusqlite",
  "serde",

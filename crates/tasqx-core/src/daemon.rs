@@ -356,6 +356,41 @@ fn win_pipe_name(raw: &str) -> String {
     format!("tasqx-{base}-{:08x}", h as u32)
 }
 
+/// Check `socket` against the platform's real `sockaddr_un.sun_path` capacity
+/// before handing it to `interprocess`, and fail with the actual and maximum
+/// lengths plus a remedy when it does not fit (#236.3). `interprocess` itself
+/// refuses an over-long path, but its message names the field
+/// (`sun_path`) and not the numbers or what to do about it — exactly the term
+/// that means nothing to someone who has never seen a `sockaddr_un`. The
+/// default socket address is derived from `XDG_RUNTIME_DIR`, which containers,
+/// WSL and sandboxes routinely set to something long, so this is reachable
+/// without the user choosing anything unusual.
+#[cfg(unix)]
+fn check_unix_socket_path_length(socket: &str) -> io::Result<()> {
+    // `sockaddr_un.sun_path` is a fixed-size byte array whose length is a
+    // libc/platform detail (108 on Linux, 104 on the BSDs and macOS) — reading
+    // it off the real struct, as `interprocess` does internally, is what keeps
+    // this check honest on every OS in CI rather than hardcoding one number
+    // that is wrong on the others.
+    let capacity = unsafe { std::mem::zeroed::<libc::sockaddr_un>() }
+        .sun_path
+        .len();
+    // The kernel counts the trailing NUL terminator as part of the path's
+    // storage, so the path's own byte length must leave room for it.
+    let max_len = capacity - 1;
+    let len = socket.len();
+    if len > max_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "socket path exceeds the {max_len}-byte sun_path limit (this path is \
+                 {len}). Choose a shorter --socket path, e.g. under /tmp."
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Bind a blocking listener at `socket`. On Unix a stale socket file left by a
 /// crashed daemon is removed first (DESIGN §2: no custom lockfile, but a dead
 /// path must not wedge a restart).
@@ -374,6 +409,7 @@ fn bind(socket: &str) -> io::Result<Listener> {
         if let Some(parent) = std::path::Path::new(socket).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        check_unix_socket_path_length(socket)?;
         let name = socket.to_fs_name::<GenericFilePath>()?;
         let listener = ListenerOptions::new().name(name).create_sync()?;
         if let Err(error) = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
@@ -3469,6 +3505,39 @@ mod tests {
         let fatal = accept_failure(source);
         assert_eq!(fatal.kind(), io::ErrorKind::ConnectionAborted);
         assert!(fatal.to_string().contains("listener accept failed"));
+    }
+
+    // Unix only: `sun_path` is a Unix domain socket concept, and the message
+    // this guards is produced only on the `#[cfg(unix)]` branch of `bind`.
+    #[cfg(unix)]
+    #[test]
+    fn a_too_long_socket_path_names_the_limit_and_a_remedy() {
+        // XDG_RUNTIME_DIR-derived paths this long are ordinary in containers,
+        // WSL and sandboxes (#236.3) — not a user choosing anything unusual.
+        let dir = std::env::temp_dir().join("tqd-236-3-a-directory-name-long-enough-to-push-the-full-socket-path-well-past-the-usual-sun-path-capacity-on-any-platform");
+        let socket = dir.join("s");
+        let socket = socket.to_string_lossy().into_owned();
+        assert!(
+            socket.len() > 104,
+            "fixture path must exceed even the smallest sun_path capacity (BSD/macOS: 104), got {} bytes",
+            socket.len()
+        );
+
+        let err = bind(&socket).expect_err("a path this long must fail to bind");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&socket.len().to_string()),
+            "message should name the actual path length ({} bytes): {msg}",
+            socket.len()
+        );
+        assert!(
+            msg.contains("sun_path"),
+            "message should still name the cause: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("shorter") || msg.to_lowercase().contains("choose"),
+            "message should suggest a remedy, not just name the cause: {msg}"
+        );
     }
 
     #[test]

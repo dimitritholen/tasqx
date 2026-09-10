@@ -680,6 +680,28 @@ pub(crate) fn run_config(
                 text,
             ))
         }
+        ConfigAction::Describe { key } => {
+            let s = config::find(key).ok_or_else(|| unknown_key(key))?;
+            let kind = match s.kind {
+                config::Kind::Str => "string",
+                config::Kind::Bool => "bool",
+                config::Kind::Uint => "unsigned integer",
+                config::Kind::Minutes => "minutes (0 = never/off)",
+            };
+            let text = format!(
+                "{}\n  {}\n  type: {kind}, default: {}\n",
+                s.key, s.summary, s.default
+            );
+            Ok((
+                json!({
+                    "key": s.key,
+                    "summary": s.summary,
+                    "kind": kind,
+                    "default": s.default,
+                }),
+                text,
+            ))
+        }
         ConfigAction::Set { key, value } => set_setting(key, value),
         ConfigAction::Unset { key } => {
             let s = config::find(key).ok_or_else(|| unknown_key(key))?;

@@ -34,3 +34,10 @@ uuid = { version = "1.23.5", features = ["v7", "v5"] }
 # Interprocess exposes no named-pipe I/O timeouts. CancelIoEx lets the bounded
 # connection watchdog interrupt blocking reads/writes on shutdown or deadline.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO"] }
+
+[target.'cfg(unix)'.dependencies]
+# `libc::sockaddr_un` gives the platform's real `sun_path` capacity (108 on
+# Linux, 104 on the BSDs/macOS) so `bind`'s length check agrees with the
+# kernel it is about to ask, rather than guessing a single number that would
+# be wrong on half of CI's three OSes (#236.3).
+libc = "0.2"
