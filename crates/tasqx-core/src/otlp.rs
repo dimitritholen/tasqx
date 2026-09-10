@@ -63,10 +63,11 @@
 //! localhost-bound, and why `otel` measurements are only as trustworthy as the
 //! processes on the machine. Do not expose the port beyond loopback.
 
+use std::collections::HashSet;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -261,6 +262,22 @@ fn dispatch(req: &HttpRequest, engine: &Arc<Mutex<Engine>>) -> (u16, &'static st
     if path != "/v1/logs" && path != "/v1/metrics" {
         return (404, "not found");
     }
+    // #236.6: `http/protobuf` is OTel's default protocol — what an exporter
+    // sends if it follows generic OpenTelemetry docs rather than tasqx's own
+    // (which says JSON). This receiver is JSON-only and always was; a body
+    // declared `application/x-protobuf` can never parse as JSON, so today
+    // that already 400s — this only replaces the bare "invalid json" with the
+    // one diagnostic that actually gets a misconfigured exporter fixed. Any
+    // OTHER declared content type (including none) is unchanged: version
+    // tolerance for the JSON shape itself is still the prime directive.
+    if req.content_type.as_deref() == Some("application/x-protobuf") {
+        log_rejected_content_type_once("application/x-protobuf");
+        return (
+            415,
+            "this receiver accepts OTLP/HTTP+JSON; set \
+             OTEL_EXPORTER_OTLP_PROTOCOL=http/json",
+        );
+    }
     // A body that is not valid JSON is a genuine client error: 400. A body that
     // is valid JSON but an unknown shape yields zero samples and still succeeds
     // (version tolerance) — an old/new tool schema must not read as a failure.
@@ -279,6 +296,31 @@ fn dispatch(req: &HttpRequest, engine: &Arc<Mutex<Engine>>) -> (u16, &'static st
     (200, PARTIAL_SUCCESS)
 }
 
+/// Content types this receiver has already logged a 415 rejection for, so a
+/// retry-storming exporter (the exact failure mode being diagnosed) produces
+/// one stderr line, not one per request. Process-lifetime, like the rest of
+/// this hand-rolled receiver's state — a daemon restart is the natural point
+/// to see the line again, which is also when it is most useful.
+static REJECTED_CONTENT_TYPES_LOGGED: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Log a misconfigured-exporter rejection to stderr the first time this
+/// process sees `content_type`, and stay quiet on every repeat — an exporter
+/// that got a 415 typically retries the identical request, and the point is
+/// for an operator's daemon log to show ONE actionable line, not a flood.
+fn log_rejected_content_type_once(content_type: &str) {
+    let mut seen = REJECTED_CONTENT_TYPES_LOGGED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if seen.insert(content_type.to_string()) {
+        eprintln!(
+            "tasqx daemon: OTLP receiver rejected a {content_type} export — \
+             this receiver accepts OTLP/HTTP+JSON only \
+             (set OTEL_EXPORTER_OTLP_PROTOCOL=http/json)"
+        );
+    }
+}
+
 /// Write a minimal HTTP/1.1 response and close. Best-effort: a write error means
 /// the peer already left.
 fn write_response(mut stream: &TcpStream, status: u16, body: &str) {
@@ -288,6 +330,7 @@ fn write_response(mut stream: &TcpStream, status: u16, body: &str) {
         404 => "Not Found",
         405 => "Method Not Allowed",
         413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
         _ => "Error",
     };
     // `Connection: close` keeps the hand-rolled reader single-shot per socket;
@@ -338,11 +381,13 @@ impl<R: Read> Read for DeadlineReader<R> {
 
 // ---- HTTP/1.1 request parsing (hand-rolled, no `http` crate) -----------------
 
-/// A parsed HTTP request: method, request-target, and the raw body.
+/// A parsed HTTP request: method, request-target, the declared content type
+/// (lowercased, parameters like `; charset=…` stripped), and the raw body.
 #[derive(Debug, PartialEq, Eq)]
 struct HttpRequest {
     method: String,
     path: String,
+    content_type: Option<String>,
     body: Vec<u8>,
 }
 
@@ -380,8 +425,11 @@ fn read_http_request<R: BufRead>(
     // Require the HTTP-version token so a bare "POST" line is rejected as malformed.
     parts.next().ok_or(HttpError::BadRequest)?;
 
-    // Headers until the blank line; we only care about Content-Length.
+    // Headers until the blank line; we only care about Content-Length and
+    // Content-Type (#236.6 — the latter only to give a better error message,
+    // never to reject a body it would otherwise have accepted).
     let mut content_length: Option<usize> = None;
+    let mut content_type: Option<String> = None;
     loop {
         let mut line = String::new();
         read_line_capped(reader, &mut line, &mut header_bytes)?;
@@ -393,6 +441,11 @@ fn read_http_request<R: BufRead>(
             if name.trim().eq_ignore_ascii_case("content-length") {
                 let n: usize = value.trim().parse().map_err(|_| HttpError::BadRequest)?;
                 content_length = Some(n);
+            } else if name.trim().eq_ignore_ascii_case("content-type") {
+                // Strip a `; charset=…`-style parameter and normalize case, so
+                // `application/x-protobuf; charset=utf-8` still matches.
+                let base = value.split(';').next().unwrap_or(value).trim();
+                content_type = Some(base.to_ascii_lowercase());
             }
         }
         // A header line with no colon is tolerated (skipped), not fatal.
@@ -414,7 +467,12 @@ fn read_http_request<R: BufRead>(
         // internal fault.
         .map_err(|_| HttpError::BadRequest)?;
 
-    Ok(HttpRequest { method, path, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        content_type,
+        body,
+    })
 }
 
 /// Read one line into `out`, charging its bytes against the header budget.
@@ -880,6 +938,45 @@ mod tests {
         // Version tolerance: a document with none of the expected levels.
         let doc = serde_json::json!({ "somethingElse": 42, "resourceLogs": "not-an-array" });
         assert!(samples_from_otlp_logs(&doc).is_empty());
+    }
+
+    #[test]
+    fn a_declared_protobuf_content_type_is_refused_with_a_415_and_a_hint() {
+        // Audit repro (#236.6): a genuinely JSON body posted with the OTel
+        // default `application/x-protobuf` header used to be parsed and
+        // accepted (200 + `partialSuccess`) purely because nothing looked at
+        // Content-Type — exactly backwards, since a body this shape can only
+        // arrive that way through a misconfigured exporter.
+        let engine = Arc::new(Mutex::new(Engine::open_in_memory().unwrap()));
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            path: "/v1/logs".to_string(),
+            content_type: Some("application/x-protobuf".to_string()),
+            body: b"{}".to_vec(),
+        };
+        let (status, body) = dispatch(&req, &engine);
+        assert_eq!(status, 415, "a declared protobuf body must be refused");
+        assert!(
+            body.contains("OTLP/HTTP+JSON"),
+            "the message should say what this receiver accepts: {body}"
+        );
+        assert!(
+            body.contains("OTEL_EXPORTER_OTLP_PROTOCOL=http/json"),
+            "the message should say how to fix the exporter: {body}"
+        );
+    }
+
+    #[test]
+    fn a_declared_json_content_type_is_unaffected() {
+        let engine = Arc::new(Mutex::new(Engine::open_in_memory().unwrap()));
+        let req = HttpRequest {
+            method: "POST".to_string(),
+            path: "/v1/logs".to_string(),
+            content_type: Some("application/json".to_string()),
+            body: b"{}".to_vec(),
+        };
+        let (status, _) = dispatch(&req, &engine);
+        assert_eq!(status, 200, "a JSON declaration must parse as always");
     }
 
     // ---- end-to-end over a real socket ----
