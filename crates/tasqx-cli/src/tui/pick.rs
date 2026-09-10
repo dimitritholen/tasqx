@@ -136,6 +136,15 @@ pub struct App {
     matches: Vec<usize>,
     /// Position within `matches`, NOT within `rows`.
     cursor: usize,
+    /// How many rows `render` last had to draw into — the PageUp/PageDown
+    /// step. Fed back by the loop exactly the way [`crate::tui::dashboard::App`]
+    /// learns its own geometry from the outside (`observe`): `App` never
+    /// touches a `Frame`, so it cannot compute this itself, and a screenful is
+    /// the terminal's answer, not a constant this module gets to guess at.
+    /// Defaulted rather than `Option`-wrapped so the first frame — before the
+    /// loop has drawn once and called [`App::observe`] — still has a usable
+    /// (if approximate) page size instead of a no-op PageDown.
+    visible: usize,
 }
 
 impl App {
@@ -146,7 +155,13 @@ impl App {
             query: String::new(),
             matches,
             cursor: 0,
+            visible: 10,
         }
+    }
+
+    /// Record how many rows the last frame actually drew, for PageUp/PageDown.
+    pub fn observe(&mut self, visible: usize) {
+        self.visible = visible.max(1);
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -198,6 +213,27 @@ impl App {
                     self.step(-1);
                     None
                 }
+                // The other half of ctrl-n/ctrl-p's Emacs convention: a query
+                // line offers ctrl-u (clear the line) and ctrl-w (delete the
+                // word behind the cursor) as a set, not two of four.
+                KeyCode::Char('u') => {
+                    self.query.clear();
+                    self.refilter();
+                    None
+                }
+                KeyCode::Char('w') => {
+                    // Trim trailing whitespace, then the word behind it — the
+                    // same two-pass shape a shell's ctrl-w uses, so `"foo "`
+                    // becomes `""` in one press rather than needing two.
+                    let trimmed = self.query.trim_end();
+                    let cut = trimmed
+                        .rfind(char::is_whitespace)
+                        .map(|i| i + 1)
+                        .unwrap_or(0);
+                    self.query.truncate(cut);
+                    self.refilter();
+                    None
+                }
                 _ => None,
             };
         }
@@ -208,6 +244,26 @@ impl App {
             }
             KeyCode::Down => {
                 self.step(1);
+                None
+            }
+            // A screenful at a time — the dashboard has g/G for the same gap;
+            // the picker had no page-wise movement at all, so the only way to
+            // reach the bottom of a long list was to hold Down or type enough
+            // of a query to narrow it.
+            KeyCode::PageUp => {
+                self.step(-(self.visible as isize));
+                None
+            }
+            KeyCode::PageDown => {
+                self.step(self.visible as isize);
+                None
+            }
+            KeyCode::Home => {
+                self.cursor = 0;
+                None
+            }
+            KeyCode::End => {
+                self.cursor = self.matches.len().saturating_sub(1);
                 None
             }
             // Esc clears a query before it closes the screen, the same
@@ -742,6 +798,76 @@ mod tests {
             a.on_key(ctrl('c')),
             Some(Action::Cancel),
             "ctrl-c must leave even with a query in progress"
+        );
+    }
+
+    /// PageUp/PageDown move a screenful — `observe` is how the loop tells the
+    /// state machine how big that is, since `App` never touches a `Frame`
+    /// itself — and Home/End jump to the ends. None of the four did anything
+    /// before this: with 44 rows and 20 visible, the only way to the bottom of
+    /// the list was to hold Down or type enough of a query to narrow it.
+    #[test]
+    fn page_and_home_end_move_by_a_screenful_or_to_the_ends() {
+        let mut a = app(); // 4 rows: 42, 43, 47, 55
+        a.observe(2);
+
+        assert!(a.on_key(press(KeyCode::PageDown)).is_none());
+        assert_eq!(
+            a.selected().map(|r| r.short_id),
+            Some(47),
+            "PageDown must move by the observed screenful (2), not one row"
+        );
+        assert!(a.on_key(press(KeyCode::PageDown)).is_none());
+        assert_eq!(
+            a.selected().map(|r| r.short_id),
+            Some(55),
+            "PageDown must clamp at the last row rather than wrap or underflow"
+        );
+        assert!(a.on_key(press(KeyCode::PageUp)).is_none());
+        assert_eq!(a.selected().map(|r| r.short_id), Some(43));
+
+        assert!(a.on_key(press(KeyCode::Home)).is_none());
+        assert_eq!(
+            a.selected().map(|r| r.short_id),
+            Some(42),
+            "Home must jump straight to the first row"
+        );
+        assert!(a.on_key(press(KeyCode::End)).is_none());
+        assert_eq!(
+            a.selected().map(|r| r.short_id),
+            Some(55),
+            "End must jump straight to the last row"
+        );
+    }
+
+    /// Ctrl-N/Ctrl-P are the readline spelling for moving; Ctrl-U (clear the
+    /// line) and Ctrl-W (delete the word behind the cursor) are the readline
+    /// spelling for editing it, and a screen that answers one half of the
+    /// convention and silently drops the other is its own trap — someone who
+    /// discovers Ctrl-P works has every reason to expect Ctrl-W does too.
+    #[test]
+    fn ctrl_u_and_ctrl_w_edit_the_query_the_readline_way() {
+        let mut a = app();
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+
+        typed(&mut a, "publish api docs");
+        assert_eq!(a.query, "publish api docs");
+
+        assert!(a.on_key(ctrl('w')).is_none());
+        assert_eq!(a.query, "publish api ", "ctrl-w deletes one trailing word");
+
+        assert!(a.on_key(ctrl('w')).is_none());
+        assert_eq!(
+            a.query, "publish ",
+            "ctrl-w must also eat the space it just exposed, not stop on it"
+        );
+
+        assert!(a.on_key(ctrl('u')).is_none());
+        assert!(a.query.is_empty(), "ctrl-u clears the whole line");
+        assert_eq!(
+            a.matches().len(),
+            a.rows().len(),
+            "clearing the query must refilter back to everything"
         );
     }
 
