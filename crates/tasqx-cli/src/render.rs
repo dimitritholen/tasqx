@@ -2288,11 +2288,31 @@ pub fn next_task(ctx: &Ctx, result: &Value) -> String {
     }
 }
 
-/// Urgency breakdown (`tasqx why`), computed from the task.get fields via the
-/// same D1 formula the engine uses — so ranking is never a black box.
+/// Urgency breakdown (`tasqx why`).
+///
+/// #150: reads the `urgency_breakdown` the engine returns for a `task.get
+/// {explain: true}` call — the same numbers `--json` carries, one clock read
+/// for both surfaces — falling back to recomputing via the D1 formula only
+/// when the field is absent (a caller that fetched the task without
+/// `explain`, e.g. an older daemon on the wire).
 pub fn why(ctx: &Ctx, result: &Value) -> String {
     use tasqx_core::{urgency, Priority};
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+
+    if let Some(b) = result.get("urgency_breakdown").and_then(Value::as_object) {
+        let parts: Vec<(&'static str, f64)> = [
+            ("priority", "priority"),
+            ("due_proximity", "due_proximity"),
+            ("age", "age"),
+        ]
+        .iter()
+        .filter_map(|(name, key)| b.get(*key).and_then(Value::as_f64).map(|v| (*name, v)))
+        .collect();
+        if !parts.is_empty() {
+            return why_rows(ctx, sid, &parts);
+        }
+    }
+
     let prio = result
         .get("priority")
         .and_then(Value::as_str)

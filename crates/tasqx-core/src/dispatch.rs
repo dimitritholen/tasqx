@@ -67,7 +67,7 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ),
     (
         "task.get",
-        &["ref", "annotations_limit", "annotations_offset"],
+        &["ref", "annotations_limit", "annotations_offset", "explain"],
         false,
     ),
     // task.start/task.done also take the #12 correlation params: they are
