@@ -120,10 +120,12 @@ impl Engine {
         // refused the same string on `task.modify`; `add` never did.
         let explicit_project = opt_str_nonempty(p, "project")?;
         let priority = match opt_str_nonempty(p, "priority")? {
-            Some(s) => Some(
-                Priority::parse(&s)
-                    .ok_or_else(|| ApiError::bad_request(format!("invalid priority: {s}")))?,
-            ),
+            Some(s) => Some(Priority::parse(&s).ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "invalid priority: {s} (expected one of: {})",
+                    Priority::accepted()
+                ))
+            })?),
             None => None,
         };
         let now_ts = Timestamp::now();
@@ -672,6 +674,26 @@ impl Engine {
 
     // ---- task.modify ---------------------------------------------------------
 
+    /// `task.modify`'s `set` map is a bare `object` in the MCP schema — the
+    /// one place among the closed vocabularies D34 covers (`status:`, sort
+    /// keys, `task.get`'s params) with no schema to consult, so a caller who
+    /// misspells a key had to go look. This is the accepted set, named in the
+    /// same order the `match` below tests the keys, so `field not modifiable`
+    /// can print it instead of leaving the caller to guess a second time.
+    /// `modifiable_fields_lists_every_match_arm` below fails if the two drift.
+    const MODIFIABLE_FIELDS: &[&str] = &[
+        "title",
+        "priority",
+        "project",
+        "due",
+        "scheduled",
+        "wait",
+        "estimate",
+        "recurrence",
+        "remind",
+        "status",
+    ];
+
     /// `task.modify` — set fields on a task. Params: `ref`, `set` (a non-empty
     /// object), `expected_rev`.
     ///
@@ -764,7 +786,10 @@ impl Engine {
                             .as_str()
                             .ok_or_else(|| ApiError::bad_request("priority must be a string"))?;
                         let pr = Priority::parse(s).ok_or_else(|| {
-                            ApiError::bad_request(format!("invalid priority: {s}"))
+                            ApiError::bad_request(format!(
+                                "invalid priority: {s} (expected one of: {})",
+                                Priority::accepted()
+                            ))
                         })?;
                         priority = Some(pr);
                         assignments.push(("priority", Value::String(pr.as_str().to_string())));
@@ -861,7 +886,8 @@ impl Engine {
                 }
                 other => {
                     return Err(ApiError::bad_request(format!(
-                        "field not modifiable: {other}"
+                        "field not modifiable: {other} (modifiable: {})",
+                        Self::MODIFIABLE_FIELDS.join(", ")
                     )));
                 }
             }
@@ -1183,15 +1209,27 @@ impl Engine {
         if offset > 0 {
             tasks.drain(..offset.min(tasks.len()));
         }
-        if let Some(limit) = opt_u64(p, "limit")? {
+        let limit = opt_u64(p, "limit")?;
+        if let Some(limit) = limit {
             tasks.truncate(limit as usize);
         }
         // Nullable, never absent: a key that comes and goes makes every client
         // branch on presence, and this one would flip on the last page of
         // every walk (D63's rule for `annotations_next_offset`).
-        let next_offset = match offset + tasks.len() {
-            reached if reached < total => json!(reached),
-            _ => Value::Null,
+        //
+        // `limit: 0` is the one width `offset + tasks.len()` cannot describe:
+        // it returns to the exact offset the caller just sent, so a pager
+        // walking `while next_offset != null: offset = next_offset` would spin
+        // forever with `total` still outstanding. Zero rows requested can
+        // never advance the walk, so it answers `null` — "nothing more will
+        // ever come from this call shape" — the same as reaching the end.
+        let next_offset = if limit == Some(0) {
+            Value::Null
+        } else {
+            match offset + tasks.len() {
+                reached if reached < total => json!(reached),
+                _ => Value::Null,
+            }
         };
 
         // Field projection (whole row when `fields` absent). Validated above,
@@ -1770,6 +1808,25 @@ mod tests {
         assert_eq!(err.code, crate::error::ErrorCode::BadRequest);
     }
 
+    /// `limit: 0` must not answer `next_offset` equal to the offset just
+    /// requested — a naive pager that loops `while next_offset != null` on
+    /// that shape never terminates, because the same offset comes back
+    /// forever while `total` stays outstanding.
+    #[test]
+    fn task_list_limit_zero_does_not_loop_a_pager() {
+        let e = seeded();
+        let out = e.task_list(&json!({ "limit": 0 })).unwrap();
+        assert_eq!(out["count"], 0);
+        assert!(out["total"].as_u64().unwrap() > 0);
+        assert_eq!(
+            out["next_offset"],
+            Value::Null,
+            "limit:0 returned an empty page but pointed the caller right back \
+             at the offset they just sent, so the documented pager loop \
+             `while next_offset != null: offset = next_offset` never ends"
+        );
+    }
+
     #[test]
     fn task_list_never_touches_the_annotations_table() {
         let e = seeded();
@@ -1926,5 +1983,54 @@ mod tests {
             best = Some(best.map_or(elapsed, |b: std::time::Duration| b.min(elapsed)));
         }
         println!("task.list over {task_count} annotated tasks: {best:?} (best of 5)");
+    }
+
+    /// D34's rule ("a closed vocabulary names its accepted set") already held
+    /// for `status:`, sort keys and `task.get`'s params. `task.add`'s
+    /// `priority` was one of the three that did not: it named nothing an
+    /// agent could retry against, unlike the CLI's own `--priority`, which
+    /// already prints `[possible values: H, M, L]`.
+    #[test]
+    fn task_add_invalid_priority_names_the_accepted_set() {
+        let e = Engine::open_in_memory().unwrap();
+        let err = e
+            .task_add(&json!({ "title": "x", "priority": "URGENT" }))
+            .unwrap_err();
+        assert!(
+            err.message.contains('H') && err.message.contains('M') && err.message.contains('L'),
+            "expected the accepted set (H, M, L) in the refusal, got {:?}",
+            err.message
+        );
+    }
+
+    /// Same gap, the `task.modify` arm.
+    #[test]
+    fn task_modify_invalid_priority_names_the_accepted_set() {
+        let e = seeded();
+        let err = e
+            .task_modify(&json!({ "ref": 1, "set": { "priority": "URGENT" } }))
+            .unwrap_err();
+        assert!(
+            err.message.contains('H') && err.message.contains('M') && err.message.contains('L'),
+            "expected the accepted set (H, M, L) in the refusal, got {:?}",
+            err.message
+        );
+    }
+
+    /// `task.modify`'s `set` map is a bare `object` in the MCP schema — the
+    /// one closed vocabulary in this tool with no schema an agent can read
+    /// ahead of the call — so the refusal is the caller's only source for the
+    /// accepted keys.
+    #[test]
+    fn task_modify_unmodifiable_field_names_the_modifiable_set() {
+        let e = seeded();
+        let err = e
+            .task_modify(&json!({ "ref": 1, "set": { "nosuchfield": "x" } }))
+            .unwrap_err();
+        assert!(
+            err.message.contains("title") && err.message.contains("priority"),
+            "expected the modifiable field list in the refusal, got {:?}",
+            err.message
+        );
     }
 }
