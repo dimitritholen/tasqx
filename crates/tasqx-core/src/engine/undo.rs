@@ -232,6 +232,13 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          from the file it came from.",
     ),
     (
+        "memory.update",
+        "The event records the doc's NEW title/source/project/rev, not what it replaced, so \
+         there is nothing in the log to restore the previous text from — the same asymmetry \
+         `memory.add` already has for a `memory.import` replace, one verb over. \
+         `tasqx memory update` again, with the old text, is the way back.",
+    ),
+    (
         "undo",
         "There is no redo. Undoing an undo would put the store back into the state you just \
          chose to leave, and since `undo` only ever reaches the newest event, the pair would \

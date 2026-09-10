@@ -350,7 +350,8 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
 /// already holds annotation rows the brand-new index has never seen, and
 /// external-content FTS5 reads its content table only when told to. Rebuilding
 /// unconditionally would rescan every body on every open, so it runs only when
-/// this call actually created the index.
+/// this call actually created the index — or, since #128, actually changed the
+/// tokenizer.
 fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
     // One transaction around gate + DDL + rebuild (review finding): the gate
     // below is "annotations_fts exists", and the CREATE that makes it exist
@@ -368,6 +369,42 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
         )
         .map(|n| n > 0)?;
 
+    // #128: stemming, via SQLite FTS5's built-in porter tokenizer layered on
+    // the default unicode61 one, so "review"/"reviewing"/"reviewed" match
+    // each other without needing `raw:true`. A virtual table's module
+    // arguments (its `tokenize=` clause) cannot be ALTERed — the only route
+    // is dropping and recreating it, the same move
+    // `add_dependency_foreign_keys_if_missing` makes for a constraint SQLite
+    // has no ALTER for either. Checked against `sqlite_master.sql` rather
+    // than assumed, so a store already on porter (including every fresh one
+    // created by the CREATE below) is left alone.
+    let docs_fts_sql: Option<String> = tx
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='docs_fts'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let annotations_fts_sql: Option<String> = tx
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='annotations_fts'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let docs_needs_porter = docs_fts_sql
+        .as_deref()
+        .is_some_and(|sql| !sql.contains("porter"));
+    let annotations_needs_porter = annotations_fts_sql
+        .as_deref()
+        .is_some_and(|sql| !sql.contains("porter"));
+    if docs_needs_porter {
+        tx.execute_batch("DROP TABLE docs_fts;")?;
+    }
+    if annotations_needs_porter {
+        tx.execute_batch("DROP TABLE annotations_fts;")?;
+    }
+
     tx.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS docs (
@@ -381,8 +418,11 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
 
         -- External-content FTS: the index stores no second copy of the text;
         -- rows are joined back by rowid. Triggers are the only writers.
+        -- `tokenize='porter unicode61'` (#128) stems each term through the
+        -- unicode61 tokenizer before matching, so a plain AND-of-terms query
+        -- still requires every word — just its STEM, not its exact spelling.
         CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
-            title, body, content='docs', content_rowid='rowid'
+            title, body, content='docs', content_rowid='rowid', tokenize='porter unicode61'
         );
         CREATE TRIGGER IF NOT EXISTS docs_fts_ai AFTER INSERT ON docs BEGIN
             INSERT INTO docs_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
@@ -398,7 +438,7 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
         END;
 
         CREATE VIRTUAL TABLE IF NOT EXISTS annotations_fts USING fts5(
-            body, content='annotations', content_rowid='rowid'
+            body, content='annotations', content_rowid='rowid', tokenize='porter unicode61'
         );
         CREATE TRIGGER IF NOT EXISTS annotations_fts_ai AFTER INSERT ON annotations BEGIN
             INSERT INTO annotations_fts(rowid, body) VALUES (new.rowid, new.body);
@@ -415,11 +455,20 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
         "#,
     )?;
 
-    if !fts_existed {
-        tx.execute_batch(
-            "INSERT INTO annotations_fts(annotations_fts) VALUES('rebuild');
-             INSERT INTO docs_fts(docs_fts) VALUES('rebuild');",
-        )?;
+    // #134: optional project scoping, additive and nullable — a doc with no
+    // project stays global rather than being forced onto a default.
+    // #135: `rev` for `memory.update`'s optimistic-concurrency guard, the
+    // exact shape `task.modify`'s `expected_rev` already uses. Both are
+    // additive columns, so existing rows read back as unscoped/rev-0 rather
+    // than breaking.
+    add_column_if_missing(&tx, "docs", "project", "TEXT")?;
+    add_column_if_missing(&tx, "docs", "rev", "INTEGER NOT NULL DEFAULT 0")?;
+
+    if !fts_existed || docs_needs_porter {
+        tx.execute_batch("INSERT INTO docs_fts(docs_fts) VALUES('rebuild');")?;
+    }
+    if !fts_existed || annotations_needs_porter {
+        tx.execute_batch("INSERT INTO annotations_fts(annotations_fts) VALUES('rebuild');")?;
     }
     tx.commit()?;
     Ok(())
@@ -1101,6 +1150,120 @@ mod tests {
         assert_eq!(
             n, 1,
             "upgrading an existing store must create idx_events_op"
+        );
+    }
+
+    /// #128: a store built before the porter tokenizer landed has `docs_fts`
+    /// and `annotations_fts` without `tokenize='porter unicode61'` — opening
+    /// it must drop + recreate both indexes onto the new tokenizer AND
+    /// rebuild them from the content tables that are the only thing
+    /// migrated, since a virtual table's module arguments cannot be ALTERed.
+    /// Simulated by hand-building the pre-#128 shape (the exact DDL this
+    /// migration replaced) and inserting a row through it directly — the
+    /// migration path this exercises runs on a real upgrade, where the row
+    /// already exists before the binary that knows about porter ever opens
+    /// the file.
+    #[test]
+    fn migration_adds_the_porter_tokenizer_to_a_legacy_fts5_index_and_rebuilds_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        // The pre-#128 memory schema: no `tokenize=`, so unicode61's default
+        // exact-token matching is all a query gets.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE docs (
+                id       TEXT PRIMARY KEY,
+                source   TEXT,
+                title    TEXT NOT NULL,
+                body     TEXT NOT NULL,
+                created  TEXT NOT NULL,
+                modified TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE docs_fts USING fts5(
+                title, body, content='docs', content_rowid='rowid'
+            );
+            CREATE TRIGGER docs_fts_ai AFTER INSERT ON docs BEGIN
+                INSERT INTO docs_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
+            END;
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, short_id INTEGER NOT NULL UNIQUE, title TEXT NOT NULL,
+                status TEXT NOT NULL, priority TEXT, project TEXT, due TEXT, scheduled TEXT,
+                wait TEXT, estimate TEXT, recurrence TEXT, urgency REAL NOT NULL DEFAULT 0,
+                active_since TEXT, tracked_seconds INTEGER NOT NULL DEFAULT 0,
+                rev INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL, modified TEXT NOT NULL,
+                completed TEXT
+            );
+            CREATE TABLE annotations (
+                id TEXT PRIMARY KEY, task_id TEXT NOT NULL, body TEXT NOT NULL, created TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE annotations_fts USING fts5(
+                body, content='annotations', content_rowid='rowid'
+            );
+            CREATE TRIGGER annotations_fts_ai AFTER INSERT ON annotations BEGIN
+                INSERT INTO annotations_fts(rowid, body) VALUES (new.rowid, new.body);
+            END;
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO docs (id, source, title, body, created, modified) \
+             VALUES ('d1', NULL, 'PR checklist', 'review the diff before merging', 't', 't')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='docs_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("porter"),
+            "docs_fts must be recreated onto the porter tokenizer: {sql}"
+        );
+        let ann_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='annotations_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            ann_sql.contains("porter"),
+            "annotations_fts must be recreated onto the porter tokenizer: {ann_sql}"
+        );
+
+        // The pre-existing row must still be searchable at all (the rebuild
+        // actually ran), and now by STEM, not just exact spelling.
+        let stemmed_hit: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'reviewing'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stemmed_hit, 1,
+            "a doc migrated from a pre-porter index must be found by a stemmed query"
+        );
+
+        // Re-running the migration on an already-porter store must be a no-op
+        // that does not choke on its own idempotence guard.
+        migrate(&conn).unwrap();
+        let sql_again: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='docs_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            sql, sql_again,
+            "a second migrate() must not touch a store already on porter"
         );
     }
 

@@ -271,9 +271,10 @@ impl Engine {
 
     /// Every memory doc row, id-ordered (creation order, since UUIDv7). D41.
     fn export_docs(&self) -> Result<Vec<Value>, ApiError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, source, title, body, created, modified FROM docs ORDER BY id")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source, title, body, created, modified, project, rev \
+             FROM docs ORDER BY id",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok(json!({
                 "id": r.get::<_, String>(0)?,
@@ -282,6 +283,8 @@ impl Engine {
                 "body": r.get::<_, String>(3)?,
                 "created": r.get::<_, String>(4)?,
                 "modified": r.get::<_, String>(5)?,
+                "project": r.get::<_, Option<String>>(6)?,
+                "_rev": r.get::<_, i64>(7)?,
             }))
         })?;
         let mut out = Vec::new();
@@ -594,13 +597,19 @@ impl Engine {
                 let source = opt_str_nonempty(dv, "source")?;
                 let created = opt_str_nonempty(dv, "created")?.unwrap_or_else(now);
                 let modified = opt_str_nonempty(dv, "modified")?.unwrap_or_else(now);
+                // #134/#135: additive, so a legacy export (or hand-written
+                // import) carrying neither key still imports — an unscoped
+                // doc at rev 0, exactly what a fresh `memory.add` would mint.
+                let project = opt_str_nonempty(dv, "project")?;
+                let rev = opt_i64(dv, "_rev")?.unwrap_or(0);
                 tx.execute(
-                    "INSERT INTO docs (id, source, title, body, created, modified) \
-                     VALUES (?1,?2,?3,?4,?5,?6) \
+                    "INSERT INTO docs (id, source, title, body, project, rev, created, modified) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
                      ON CONFLICT(id) DO UPDATE SET \
                      source=excluded.source, title=excluded.title, body=excluded.body, \
+                     project=excluded.project, rev=excluded.rev, \
                      created=excluded.created, modified=excluded.modified",
-                    params![did, source, title, body, created, modified],
+                    params![did, source, title, body, project, rev, created, modified],
                 )?;
                 insert_event(
                     &tx,

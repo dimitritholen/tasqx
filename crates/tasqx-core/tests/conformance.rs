@@ -433,6 +433,9 @@ const DOC_EXPORT_ROW: &[Field] = &[
     req("body", Ty::Str),
     req("created", Ty::Str),
     req("modified", Ty::Str),
+    // #134/#135: additive, so a pre-#134 export/get still typechecks.
+    nul("project", Ty::Str),
+    req("_rev", Ty::Int),
 ];
 
 const EVENT_ROW: &[Field] = &[
@@ -734,11 +737,17 @@ const R_DEPENDENCY_ADD: Shape = &[&[
 const R_MEMORY_ADD: Shape = &[&[
     req("id", Ty::Str),
     req("title", Ty::Str),
+    // #134: additive, nullable — a doc with no `project` stays unscoped.
+    nul("project", Ty::Str),
     req("created", Ty::Str),
 ]];
 
 const R_MEMORY_SEARCH: Shape = &[&[
     req("count", Ty::Int),
+    // #132: every row the MATCH found before `limit` truncated, and the same
+    // comparison already done as a boolean for a caller that wants only that.
+    req("total", Ty::Int),
+    req("has_more", Ty::Bool),
     req_of("hits", Ty::Array, &[MEMORY_HIT_ROW]),
     // The FTS5 expression this search actually ran (D69), so `count: 0` can be
     // told apart from a store that holds nothing on the subject.
@@ -747,10 +756,41 @@ const R_MEMORY_SEARCH: Shape = &[&[
 
 const R_MEMORY_REMOVE: Shape = &[&[req("id", Ty::Str), req("removed", Ty::Bool)]];
 
-/// One doc, whole. The same six columns `store.export` emits per doc, because
+/// One doc, whole. The same eight columns `store.export` emits per doc, because
 /// they are the same row — a per-document read and a whole-store dump that
 /// disagreed about what a document IS would be two answers to one question.
 const R_MEMORY_GET: Shape = &[DOC_EXPORT_ROW];
+
+/// #133: one row of `memory.list` — recency metadata plus a short preview, not
+/// the full body (a browse page of whole bodies is the thing `memory.search`'s
+/// own budget reasoning already ruled out for search hits, one method over).
+const MEMORY_LIST_ROW: &[Field] = &[
+    req("id", Ty::Str),
+    req("title", Ty::Str),
+    nul("source", Ty::Str),
+    nul("project", Ty::Str),
+    req("created", Ty::Str),
+    req("modified", Ty::Str),
+    req("_rev", Ty::Int),
+    req("body_preview", Ty::Str),
+    req("body_truncated", Ty::Bool),
+];
+
+const R_MEMORY_LIST: Shape = &[&[
+    req("count", Ty::Int),
+    req("total", Ty::Int),
+    nul("next_offset", Ty::Int),
+    req_of("docs", Ty::Array, &[MEMORY_LIST_ROW]),
+]];
+
+const R_MEMORY_UPDATE: Shape = &[&[
+    req("id", Ty::Str),
+    req("title", Ty::Str),
+    nul("source", Ty::Str),
+    nul("project", Ty::Str),
+    req("_rev", Ty::Int),
+    req("modified", Ty::Str),
+]];
 
 const IMPORTED_DOC_ROW: &[Field] = &[
     req("id", Ty::Str),
@@ -1385,6 +1425,27 @@ fn cases() -> Vec<Case> {
                 ]})
             },
             R_MEMORY_IMPORT,
+        ),
+        case(
+            "memory.list",
+            "a page of docs, newest-modified first",
+            |e| {
+                e.memory_add(&json!({ "title": "one", "body": "first" }))
+                    .expect("doc");
+                json!({ "limit": 10, "offset": 0 })
+            },
+            R_MEMORY_LIST,
+        ),
+        case(
+            "memory.update",
+            "an existing doc, correcting its body in place",
+            |e| {
+                let added = e
+                    .memory_add(&json!({ "title": "the freeze", "body": "v1 is stable" }))
+                    .expect("doc");
+                json!({ "id": added["id"], "body": "v1 is stable, corrected" })
+            },
+            R_MEMORY_UPDATE,
         ),
         case(
             "report.summary",
