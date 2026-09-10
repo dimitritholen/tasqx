@@ -79,12 +79,85 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
         .map(|r| r.title.clone())
         .unwrap_or_default();
 
+    // Snapshotted BEFORE the write: `task.start` auto-stops whichever task is
+    // currently active (D6) and its own answer says nothing about it (#75) —
+    // silently, on the screen most likely to end a running timer by accident,
+    // which is what #205 is filed against. This is the CLI-side stand-in
+    // until #75 lands and the engine reports it directly; excluding
+    // `short_id` itself covers the idempotent case (choosing the task that is
+    // already running stops nothing).
+    let before_active = be.call("task.list", &json!({ "filter": "status:active" }))?;
+    let displaced = active_before(&before_active, short_id);
+
     let result = be.call(
         "task.start",
         &json!({ "ref": short_id.to_string(), "keep": false }),
     )?;
-    let text = picked_summary(ctx, short_id, &title, &result);
+    // The exact instant the engine used to close the displaced interval AND
+    // to open this one — `task.start` runs both updates in one transaction
+    // against one `now()` (engine/task.rs) — so the elapsed time computed
+    // from it is the real tracked total, not a client-clock guess at how
+    // long the round trip took.
+    let started_at = result
+        .get("interval_started")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut text = String::new();
+    for (id, since) in &displaced {
+        if let Some(secs) = elapsed_seconds(since, started_at) {
+            text.push_str(&displaced_summary(ctx, *id, secs));
+        }
+    }
+    text.push_str(&picked_summary(ctx, short_id, &title, &result));
     Ok((pick_result(short_id, &title, result), text))
+}
+
+/// Whichever tasks `status:active` reported BEFORE `task.start` ran, as
+/// `(short_id, active_since)` — everything `elapsed_seconds` needs and
+/// nothing `displaced_summary` doesn't use, extracted so both are testable
+/// without a `Backend`. Excludes `keep_short_id`: starting an already-active
+/// task is idempotent in the engine (task.rs:257) and stops nothing, so it
+/// must not be reported as stopped.
+pub(crate) fn active_before(listed: &Value, keep_short_id: i64) -> Vec<(i64, String)> {
+    listed
+        .get("tasks")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|t| {
+            let id = t.get("short_id").and_then(Value::as_i64)?;
+            if id == keep_short_id {
+                return None;
+            }
+            let since = t.get("active_since").and_then(Value::as_str)?;
+            Some((id, since.to_string()))
+        })
+        .collect()
+}
+
+/// Whole seconds between two RFC 3339 instants, floored at zero. `None` when
+/// either fails to parse, which a caller treats as "say nothing" rather than
+/// guessing — a wrong duration in a data-safety confirmation is worse than a
+/// missing one.
+pub(crate) fn elapsed_seconds(from: &str, to: &str) -> Option<i64> {
+    let from: jiff::Timestamp = from.parse().ok()?;
+    let to: jiff::Timestamp = to.parse().ok()?;
+    Some((to.as_second() - from.as_second()).max(0))
+}
+
+/// The scrollback line for a task `task.start` auto-stopped (D6) to make room
+/// for the one just chosen — printed ABOVE `picked_summary`'s "Started" line
+/// (`run_pick`), so a session that ended a running timer says so before it
+/// says what it started instead. #205's finding is that this line was
+/// missing entirely: 2h23 of tracked time could vanish from the picker with
+/// no word of it on screen or after.
+pub(crate) fn displaced_summary(ctx: &Ctx, short_id: i64, elapsed_secs: i64) -> String {
+    format!(
+        "{} #{short_id}  ·  tracked {}\n",
+        ctx.paint("timer.active", "Stopped"),
+        tui::dashboard::panels::dur_compact(elapsed_secs)
+    )
 }
 
 /// An empty candidate set is a refusal, not an empty screen.
@@ -140,6 +213,10 @@ pub(crate) fn pick_rows(result: &Value) -> Vec<tui::pick::Row> {
                             .join(" ")
                     })
                     .unwrap_or_default(),
+                // `status` is a default `task.list` field (`task_to_json`
+                // always includes it, D70's gate is `depends_on` only), so
+                // this reads it for free rather than issuing a second call.
+                field(t, "status") == "active",
             )
         })
         .collect()

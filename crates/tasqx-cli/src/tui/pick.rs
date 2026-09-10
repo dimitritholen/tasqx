@@ -58,6 +58,12 @@ pub struct Row {
     /// happened in the store and this screen must not re-derive it.
     pub urgency: String,
     pub tags: String,
+    /// Whether `task.list` reported this task's status as `active` — the one
+    /// task, at most, with an open timer. Drawn distinctly (#205) because
+    /// starting a DIFFERENT row auto-stops it (D6) with no other warning on
+    /// this screen, and the row that is about to lose its running timer is
+    /// exactly the thing a chooser bound to a hotkey must not hide.
+    pub active: bool,
     /// The searchable fields, lowercased and kept SEPARATE: the id, the title,
     /// the project and the tag list. A term matches this row when it is a
     /// subsequence of any ONE of them.
@@ -84,6 +90,7 @@ impl Row {
         priority: &str,
         urgency: &str,
         tags: &str,
+        active: bool,
     ) -> Self {
         let title = render::san(title);
         let project = render::san(project);
@@ -103,17 +110,44 @@ impl Row {
             priority: render::san(priority),
             urgency: render::san(urgency),
             tags,
+            active,
             fields,
         }
     }
 
-    /// Does every term of an already-lowercased query match this row?
-    fn matches(&self, terms: &[&str]) -> bool {
-        terms
-            .iter()
-            .all(|t| self.fields.iter().any(|f| is_subsequence(f, t)))
+    /// How well does this row match every term of an already-lowercased
+    /// query? `None` when some term matches no field at all (the row is not a
+    /// candidate); `Some(score)` otherwise, higher is better (D55 amendment,
+    /// #203).
+    ///
+    /// Each term picks its OWN best-scoring field independently — the AND is
+    /// still "every term matches something", exactly as the old boolean
+    /// `matches` read it, just with "something" now graded rather than
+    /// binary. A row where "api" hits the title and "test" only hits the tags
+    /// is exactly as valid a candidate as before; only the ORDER among
+    /// candidates is new information.
+    fn score(&self, terms: &[&str]) -> Option<i64> {
+        let mut total = 0i64;
+        for t in terms {
+            let best = self
+                .fields
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, f)| score_subsequence(f, t).map(|s| s + FIELD_WEIGHT[idx]))
+                .max()?;
+            total += best;
+        }
+        Some(total)
     }
 }
+
+/// Per-field bonus added on top of a term's match score, in `fields`' own
+/// order (id, title, project, tags). The suggested fix this ships (audit
+/// #203) is explicit that a query should favour "the thing with a name" —
+/// title or id — over incidental metadata, so a query that happens to also
+/// scan as a subsequence of some unrelated task's tags does not outrank the
+/// task actually named by what was typed.
+const FIELD_WEIGHT: [i64; 4] = [250, 250, 50, 50];
 
 /// An intent for the caller to carry out. `App` performs nothing itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -268,9 +302,24 @@ impl App {
         let anchor = self.matches.get(self.cursor).copied();
         let needle = self.query.to_lowercase();
         let terms: Vec<&str> = needle.split_whitespace().collect();
-        self.matches = (0..self.rows.len())
-            .filter(|i| self.rows[*i].matches(&terms))
-            .collect();
+        if terms.is_empty() {
+            // No query: every row is a candidate, in the order `task.list`
+            // handed to `App::new` — there is nothing here for a score to
+            // improve on, and re-sorting an unfiltered list by an arbitrary
+            // match score against an empty needle would replace one
+            // meaningless order with another.
+            self.matches = (0..self.rows.len()).collect();
+        } else {
+            let mut scored: Vec<(usize, i64)> = (0..self.rows.len())
+                .filter_map(|i| self.rows[i].score(&terms).map(|s| (i, s)))
+                .collect();
+            // Stable sort, descending score: ties keep their ORIGINAL
+            // relative order, which is `task.list`'s `-urgency` sort — so
+            // urgency is the tiebreak for free, exactly as #203 asks, with no
+            // second key to compute or keep in sync with the caller's sort.
+            scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+            self.matches = scored.into_iter().map(|(i, _)| i).collect();
+        }
         self.cursor = anchor
             .and_then(|row| self.matches.iter().position(|i| *i == row))
             .unwrap_or(0)
@@ -278,8 +327,10 @@ impl App {
     }
 }
 
-/// Are `needle`'s characters present in `haystack`, in order but not
-/// necessarily adjacent? Both must already be lowercased.
+/// How well does `needle`'s characters fit inside `haystack`, in order but
+/// not necessarily adjacent? Both must already be lowercased. `None` when
+/// `needle` is not a subsequence of `haystack` at all; `Some(score)`
+/// otherwise, higher for a tighter, earlier-starting run (#203).
 ///
 /// A subsequence rather than a substring, which is what makes the query worth
 /// having: `wac` finds "Write API conformance tests" without the user
@@ -288,9 +339,40 @@ impl App {
 /// subsequence matches and not one match against a literal space — a space is
 /// in no field, so a literal reading would make the query unusable the moment
 /// the user typed one.
-fn is_subsequence(haystack: &str, needle: &str) -> bool {
-    let mut hay = haystack.chars();
-    needle.chars().all(|c| hay.any(|h| h == c))
+///
+/// The match itself is found greedily (earliest possible character each
+/// step), which is not always the tightest span a subsequence could occupy —
+/// only good enough to RANK matches against each other, which is all a
+/// typeahead needs. Existence (does it match at all) is unaffected by the
+/// greedy choice; only the score of an already-matching row could, in a rare
+/// case, be a little pessimistic.
+fn score_subsequence(haystack: &str, needle: &str) -> Option<i64> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let hay: Vec<char> = haystack.chars().collect();
+    let mut cursor = 0usize;
+    let mut first = None;
+    let mut last = 0usize;
+    for c in needle.chars() {
+        while cursor < hay.len() && hay[cursor] != c {
+            cursor += 1;
+        }
+        if cursor >= hay.len() {
+            return None;
+        }
+        first.get_or_insert(cursor);
+        last = cursor;
+        cursor += 1;
+    }
+    let first = first.unwrap_or(0);
+    let needle_len = needle.chars().count() as i64;
+    let span = (last - first + 1) as i64;
+    // Characters inside the match that the needle did NOT ask for: zero for
+    // "api" hitting a literal "api" substring, large for the same three
+    // letters scattered across an 80-character title.
+    let gaps = span - needle_len;
+    Some(1_000 - gaps * 10 - first as i64)
 }
 
 // ============================================================================
@@ -312,6 +394,12 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
     .areas(area);
 
     let marker = if caps.unicode { "▸" } else { ">" };
+    // #205: the dashboard's NOW panel already uses `▶` for "this task has an
+    // open timer" — the same glyph here, in its own column, so the fact
+    // survives independently of where the CURSOR (`▸`, above) happens to be.
+    // Enter on any OTHER row auto-stops whichever task carries this mark
+    // (D6), with no other warning on this screen.
+    let running = if caps.unicode { "▶" } else { ">" };
     let rule = if caps.unicode { "─" } else { "-" };
     // A block, not a real cursor: `with_terminal` hides the terminal cursor on
     // the way in, so the query line has to draw its own or the user cannot see
@@ -393,6 +481,12 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         .max()
         .unwrap_or(0)
         .min(44);
+    // PROJECT has no per-frame max like `title_w` — its budget is this fixed
+    // cell count, cut two cells short so `pad` always has a two-cell gap to
+    // add before TAGS rather than sometimes having none (#202's other half:
+    // `pad` never truncates, so a project name at or past this width used to
+    // run straight into the tag list with no separator at all).
+    const PROJECT_W: usize = 14;
 
     // The window. `n` stays the index into the FULL match list — it is what the
     // cursor is compared against and what indexes `ids` — so the skip/take pair
@@ -416,20 +510,37 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
                 sty("accent"),
             ),
             Span::styled(
+                if row.active {
+                    format!("{running} ")
+                } else {
+                    "  ".to_string()
+                },
+                sty("timer.active"),
+            ),
+            Span::styled(
                 render::pad(&ids[n], id_w + 2),
                 if at { sty("accent") } else { sty("muted") },
             ),
             Span::styled(render::pad(&row.urgency, urg_w + 2), sty("muted")),
             Span::styled(render::pad(&row.priority, 3), sty(&prio_role)),
             Span::styled(
-                render::pad(&row.title, title_w + 2),
+                render::pad(
+                    &render::truncate(&row.title, title_w, caps.unicode),
+                    title_w + 2,
+                ),
                 if at {
                     sty("accent")
                 } else {
                     ratatui::style::Style::default()
                 },
             ),
-            Span::styled(render::pad(&row.project, 14), sty("project")),
+            Span::styled(
+                render::pad(
+                    &render::truncate(&row.project, PROJECT_W.saturating_sub(2), caps.unicode),
+                    PROJECT_W,
+                ),
+                sty("project"),
+            ),
             Span::styled(row.tags.as_str(), sty("tag")),
         ]));
     }
@@ -476,8 +587,17 @@ mod tests {
                 "H",
                 "11.8",
                 "release api",
+                false,
             ),
-            Row::new(43, "Publish API docs", "work.tasqx", "M", "6.0", "docs"),
+            Row::new(
+                43,
+                "Publish API docs",
+                "work.tasqx",
+                "M",
+                "6.0",
+                "docs",
+                false,
+            ),
             Row::new(
                 47,
                 "Write API conformance tests",
@@ -485,8 +605,17 @@ mod tests {
                 "M",
                 "9.4",
                 "api test",
+                false,
             ),
-            Row::new(55, "Draft README quickstart", "home", "L", "4.2", "docs"),
+            Row::new(
+                55,
+                "Draft README quickstart",
+                "home",
+                "L",
+                "4.2",
+                "docs",
+                false,
+            ),
         ])
     }
 
@@ -622,7 +751,13 @@ mod tests {
 
         let mut c = app();
         typed(&mut c, "API");
-        assert_eq!(ids(&c), vec![42, 43, 47], "matching is case-insensitive");
+        let mut got_c = ids(&c);
+        got_c.sort_unstable();
+        assert_eq!(
+            got_c,
+            vec![42, 43, 47],
+            "matching is case-insensitive (ranking decides the ORDER, tested separately)"
+        );
 
         // The haystack is more than the title: id, project and tags are all
         // things a user reaches for.
@@ -632,6 +767,56 @@ mod tests {
         let mut e = app();
         typed(&mut e, "home");
         assert_eq!(ids(&e), vec![55], "the project must be searchable");
+    }
+
+    /// #203: no ranking meant `matches` kept the ORIGINAL list order (the
+    /// order `task.list` handed to `App::new`) for every query, so a three- or
+    /// four-character query narrowed the set without ever promoting the task
+    /// it actually found. A picker that ships under the alias `fzf` has to
+    /// put the best match on the cursor row regardless of where the candidate
+    /// sat before the query, or the "fast path" is abandoning the picker.
+    ///
+    /// #10 sits FIRST in the row order (as if `task.list` returned it at the
+    /// top by urgency) and only matches "mem" as a scattered subsequence
+    /// spread across the whole title; #90 sits SECOND and matches it as one
+    /// contiguous run at a word boundary. The unranked code drew #10 above
+    /// #90 because that was the input order; ranking must reverse it.
+    #[test]
+    fn ranking_promotes_the_contiguous_match_over_a_scattered_one_regardless_of_input_order() {
+        // `ids()` reads `App::matches()`, which `refilter` rebuilds from
+        // scratch against the CURRENT query on every keystroke — unlike
+        // `selected()`, it carries no memory of which task the cursor was
+        // anchored to a keystroke ago, so it is the direct way to assert on
+        // the ranking itself without the identity-preserving anchor (D55,
+        // "the cursor follows the task, not the index") deciding the answer
+        // instead.
+        let mut a = App::new(vec![
+            Row::new(
+                10,
+                "Random unrelated meeting notes for email marketing",
+                "work",
+                "H",
+                "9.9",
+                "misc",
+                false,
+            ),
+            Row::new(
+                90,
+                "Fix the memory leak in the parser",
+                "work",
+                "L",
+                "2.0",
+                "bugfix",
+                false,
+            ),
+        ]);
+        typed(&mut a, "mem");
+        assert_eq!(
+            ids(&a),
+            vec![90, 10],
+            "the tight, contiguous match on #90 must rank above the scattered \
+             one on #10 that only happens to sit first in the input order"
+        );
     }
 
     /// Narrowing must keep the highlight on the task it was already on. The
@@ -645,18 +830,25 @@ mod tests {
         a.on_key(press(KeyCode::Down));
         assert_eq!(a.selected().map(|r| r.short_id), Some(47));
 
-        // A query that drops the rows ABOVE the highlighted one, so the task's
-        // POSITION changes: a naive clamp keeps index 2 and lands on #55, which
-        // is the whole failure. A query that only trims the tail would leave
-        // the index accidentally right and prove nothing.
+        // A query that changes the highlighted task's RANKED position, not
+        // just its presence: `test` ranks #55 above #47 (#203 — #55's title
+        // is a tighter, earlier-starting match), so #47 moves from rank 0 in
+        // the unfiltered order to rank 1 here. The identity lookup has to
+        // re-find it at its NEW position; a version that forgot to re-rank,
+        // or that clamped the old cursor instead of re-anchoring it, is what
+        // the second half of this test (below) catches outright.
         typed(&mut a, "test");
-        assert_eq!(ids(&a), vec![47, 55]);
+        assert_eq!(ids(&a), vec![55, 47]);
         assert_eq!(
             a.selected().map(|r| r.short_id),
             Some(47),
             "the highlight followed the index instead of the task"
         );
-        assert_eq!(a.cursor(), 0, "the anchored task moved up the list");
+        assert_eq!(
+            a.cursor(),
+            1,
+            "the anchored task must sit at its ranked position"
+        );
 
         // And when the highlighted task falls out of the set, the cursor must
         // land inside the new one rather than past its end.
@@ -677,15 +869,16 @@ mod tests {
     #[test]
     fn enter_chooses_the_task_under_the_cursor() {
         let mut a = app();
-        // `test` keeps rows 2 and 3, so cursor 1 is #55 in the narrowed list
-        // and #43 in the unfiltered one — the two readings disagree, which is
-        // the only kind of fixture that can catch this.
+        // `test` keeps #47 and #55, ranked (#203) with #55 first. Cursor 1 is
+        // #47 in this ranked list and #43 in the unfiltered row order — the
+        // two readings disagree, which is the only kind of fixture that can
+        // catch a caller that read the wrong index.
         typed(&mut a, "test");
-        assert_eq!(ids(&a), vec![47, 55]);
+        assert_eq!(ids(&a), vec![55, 47]);
         a.on_key(press(KeyCode::Down));
         assert_eq!(
             a.on_key(press(KeyCode::Enter)),
-            Some(Action::Choose { short_id: 55 }),
+            Some(Action::Choose { short_id: 47 }),
             "enter must name the highlighted row of the narrowed list"
         );
     }
@@ -753,7 +946,10 @@ mod tests {
     fn esc_clears_the_query_first_and_only_then_quits() {
         let mut a = app();
         typed(&mut a, "api");
-        assert_eq!(ids(&a), vec![42, 43, 47]);
+        // Ranked (#203), not the input order — the exact ranking is what
+        // `ranking_promotes_…` pins; this test only needs a query that keeps
+        // some rows narrowed and then restores all four on a clear.
+        assert_eq!(ids(&a), vec![47, 43, 42]);
 
         assert!(
             a.on_key(press(KeyCode::Esc)).is_none(),
@@ -780,7 +976,9 @@ mod tests {
         assert!(ids(&a).is_empty());
         a.on_key(press(KeyCode::Backspace));
         assert_eq!(a.query, "api");
-        assert_eq!(ids(&a), vec![42, 43, 47], "the list did not widen back");
+        // Ranked (#203); the point of this assertion is that all three come
+        // back, not the order they come back in.
+        assert_eq!(ids(&a), vec![47, 43, 42], "the list did not widen back");
     }
 
     /// Windows crossterm emits Press AND Release for every keystroke. Without
@@ -815,6 +1013,7 @@ mod tests {
             "H",
             "1.0",
             "tag\u{9b}",
+            false,
         );
         for field in [&row.title, &row.project, &row.tags] {
             assert!(
@@ -894,6 +1093,70 @@ mod tests {
         );
     }
 
+    /// #205: the running task must be visually distinct from every other row,
+    /// with or without the cursor on it — Enter on a DIFFERENT row auto-stops
+    /// it (D6) and this screen is the one place that side effect had no
+    /// warning anywhere on screen or after. The dashboard's NOW panel already
+    /// draws `▶` for exactly this fact; `pick` must draw the same glyph on
+    /// whichever row is active, independent of the `▸` cursor marker.
+    #[test]
+    fn the_running_task_is_marked_independently_of_the_cursor() {
+        let a = App::new(vec![
+            Row::new(
+                42,
+                "Ship the freeze",
+                "work.tasqx",
+                "H",
+                "11.8",
+                "api",
+                false,
+            ),
+            Row::new(
+                43,
+                "Publish API docs",
+                "work.tasqx",
+                "M",
+                "6.0",
+                "docs",
+                true,
+            ),
+        ]);
+        // Cursor starts on row 0 (#42), which is NOT the running task — the
+        // running marker has to show up on #43 regardless.
+        let text = all_text(&draw(&a, 100, 12));
+        let row42 = text.lines().find(|l| l.contains("#42")).expect("row drawn");
+        let row43 = text.lines().find(|l| l.contains("#43")).expect("row drawn");
+        assert!(
+            row43.contains('▶'),
+            "the active task must carry the running marker: {row43:?}"
+        );
+        assert!(
+            !row42.contains('▶'),
+            "a task that is not running must not carry the marker: {row42:?}"
+        );
+
+        // And the ASCII degradation the rest of this screen already follows
+        // (`▸`/`>`, `─`/`-`, `▊`/`_`): `▶` becomes `>` on a terminal with no
+        // Unicode, same as every other glyph here.
+        let ascii = Caps {
+            depth: ColorDepth::Ansi16,
+            ansi: true,
+            unicode: false,
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        term.draw(|f| render(&a, &theme::load("nord", None), &ascii, f))
+            .unwrap();
+        let ascii_text = all_text(term.backend().buffer());
+        let ascii_row43 = ascii_text
+            .lines()
+            .find(|l| l.contains("#43"))
+            .expect("row drawn");
+        assert!(
+            ascii_row43.contains('>'),
+            "the ASCII running marker is missing: {ascii_row43:?}"
+        );
+    }
+
     /// The query the user typed has to be ON SCREEN. A picker that filters
     /// invisibly looks broken the moment a keystroke is dropped or doubled,
     /// and the counter is what separates "no match" from "empty store".
@@ -944,7 +1207,10 @@ mod tests {
         let text = all_text(term.backend().buffer());
 
         assert!(
-            !text.contains('▸') && !text.contains('─') && !text.contains('▊'),
+            !text.contains('▸')
+                && !text.contains('─')
+                && !text.contains('▊')
+                && !text.contains('▶'),
             "Unicode leaked into ASCII mode:\n{text}"
         );
         assert!(
@@ -953,8 +1219,93 @@ mod tests {
             "no ASCII caret on the query line:\n{text}"
         );
         assert!(
-            text.lines().any(|l| l.starts_with("> #42")),
+            text.lines().any(|l| {
+                // "> " (cursor) then the running-task column (blank here,
+                // since no fixture row is active) before the id.
+                l.strip_prefix("> ")
+                    .is_some_and(|rest| rest.trim_start().starts_with("#42"))
+            }),
             "no ASCII marker on the highlighted row:\n{text}"
+        );
+    }
+
+    /// #202: an over-wide title must be cut with an ellipsis, not glued to
+    /// PROJECT. `title_w` was capped at 44 so ALL rows keep their alignment,
+    /// but the cap only bounded the column WIDTH used for padding — the title
+    /// text itself still went through `render::pad`, which never truncates —
+    /// so a title past the cap ran straight into PROJECT with no separator at
+    /// all, on the very row the cap exists to protect.
+    #[test]
+    fn an_over_wide_title_is_truncated_with_a_visible_gap_before_project() {
+        let long_title =
+            "VH-STD-001 ratificatie: Owner invullen, D39 STS-vraag, effective date (RC 28-7)";
+        let a = App::new(vec![Row::new(
+            9,
+            long_title,
+            "qore-architecture",
+            "H",
+            "18.5",
+            "pr-55 vh-std",
+            false,
+        )]);
+        let text = all_text(&draw(&a, 200, 12));
+        let row = text.lines().find(|l| l.contains('9')).expect("row drawn");
+        assert!(
+            row.contains('…') || row.contains("..."),
+            "an over-wide title must be truncated with an ellipsis: {row:?}"
+        );
+        assert!(
+            !row.contains("(RC 28-7)qore-architecture"),
+            "the title ran straight into PROJECT with no gap: {row:?}"
+        );
+    }
+
+    /// #202's second half: PROJECT has the same `pad`-never-truncates hole —
+    /// its budget is a hardcoded 14 cells with no truncation either, so a
+    /// project name past that width (real ones routinely are) runs straight
+    /// into TAGS with no separator, the same invisible-field failure one
+    /// column over.
+    #[test]
+    fn an_over_wide_project_is_truncated_with_a_visible_gap_before_tags() {
+        let a = App::new(vec![Row::new(
+            9,
+            "short title",
+            "qore-architecture", // 18 cells, over any budget under ~16
+            "H",
+            "18.5",
+            "pr-55 vh-std",
+            false,
+        )]);
+        let text = all_text(&draw(&a, 200, 12));
+        let row = text.lines().find(|l| l.contains('9')).expect("row drawn");
+        assert!(
+            !row.contains("qore-architecturepr-55"),
+            "PROJECT ran straight into TAGS with no gap: {row:?}"
+        );
+    }
+
+    /// #202 at a narrow terminal: the observed failure was not just a missing
+    /// ellipsis but PROJECT vanishing entirely, because the untruncated title
+    /// pushed it past the frame edge where ratatui silently clips the whole
+    /// `Line`. Bounding the title to its cap must keep PROJECT on screen.
+    #[test]
+    fn a_narrow_terminal_still_shows_project_after_an_over_wide_title() {
+        let long_title =
+            "VH-STD-001 ratificatie: Owner invullen, D39 STS-vraag, effective date (RC 28-7)";
+        let a = App::new(vec![Row::new(
+            9,
+            long_title,
+            "qore-arch",
+            "H",
+            "18.5",
+            "vh-std",
+            false,
+        )]);
+        let text = all_text(&draw(&a, 80, 12));
+        let row = text.lines().find(|l| l.contains('9')).expect("row drawn");
+        assert!(
+            row.contains("qore-arch"),
+            "PROJECT was pushed off the 80-col frame by an untruncated title: {row:?}"
         );
     }
 
