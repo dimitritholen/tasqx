@@ -2619,8 +2619,14 @@ fn page_themes() -> String {
         "Wrote self-contained HTML report → review.html",
     ));
     s.push_str(&p(
-        "Without <code>--out</code> it writes to stdout. Every panel is a pure read of the core API: \
-         throughput, burndown, completed this week, overdue, per-project, now-actionable, top tags.",
+        "Without <code>--out</code> it writes to stdout. The page reads in decision order — an \
+         assessment line, what needs attention (in progress, overdue, due within 7 days), what is \
+         actionable now, then weekly throughput, the open backlog, token spend, the per-project \
+         table, completed this week and top tags — and every panel is a pure read of the core API. \
+         A search box and clickable project and tag chips filter the task lists in place, the table \
+         sorts by any column, and every task id opens a detail panel with its dates, dependencies \
+         and newest annotations. One small inline script does that; the page renders fully \
+         without it.",
     ));
     s.push_str(&note(
         "Both HTML surfaces hold the same line: no CDN, no web fonts, no remote images, no \
