@@ -660,6 +660,32 @@ const NO_LOOKUP_VAR: &str = "TASQX_NO_COMPLETE_LOOKUP";
 /// to fit underneath this rather than the other way round.
 const LOOKUP_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// Overrides [`LOOKUP_BUDGET`], in whole milliseconds. Test scaffolding, not a
+/// switch, and named in `docs.rs`'s exception list as such.
+///
+/// `tests/completion.rs` drives the shipped binary as a subprocess and asks it
+/// WHAT it offers. The budget answers a different question and has its own
+/// guard, [`tests::a_lookup_that_blows_the_budget_yields_nothing_promptly`],
+/// which measures the clock directly. Without this seam every content test also
+/// races the machine it runs on: a cold SQLite open on a loaded CI runner
+/// overruns 150 ms, and losing that race prints zero candidates at exit 0 —
+/// which is indistinguishable from a completer that is broken. That is not a
+/// hypothetical failure mode. It reddened CI on two platforms at once, in two
+/// different tests, while the same suite was green locally, and the assertion
+/// message said only `got []`.
+///
+/// An unparseable or absent value means the shipped budget, so a typo in the
+/// fixture cannot quietly grant an unbounded one.
+const BUDGET_VAR: &str = "TASQX_COMPLETE_BUDGET_MS";
+
+/// [`LOOKUP_BUDGET`], or what [`BUDGET_VAR`] says instead.
+fn budget() -> std::time::Duration {
+    std::env::var(BUDGET_VAR)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(LOOKUP_BUDGET, std::time::Duration::from_millis)
+}
+
 /// Run `f` against a read-only view of the user's store, or answer `None`.
 ///
 /// `None` is the answer for every failure without exception — the escape hatch,
@@ -683,7 +709,7 @@ where
     if std::env::var_os(NO_LOOKUP_VAR).is_some_and(|v| !v.is_empty()) {
         return None;
     }
-    guarded(move || {
+    guarded(budget(), move || {
         let mut backend = read_only_backend()?;
         f(&mut backend)
     })
@@ -727,15 +753,16 @@ fn local_backend_at(path: &std::path::Path) -> Option<crate::Backend> {
 }
 
 /// Run `work` under the two guarantees the callback path cannot do without: it
-/// returns within [`LOOKUP_BUDGET`], and a panic inside it neither escapes nor
-/// reaches stderr.
+/// returns within `budget`, and a panic inside it neither escapes nor reaches
+/// stderr.
 ///
 /// Separate from [`lookup`] because these are the properties that must hold for
 /// ANY provider, including ones that never touch a store, and because a test can
 /// then drive a slow or panicking closure without needing a database.
-/// Deliberately reads no environment: [`lookup`] owns the escape hatch, so this
-/// function's behaviour is a pure function of its argument and the tests that
-/// assert `None` here cannot be made vacuous by a stray variable.
+/// Deliberately reads no environment: [`lookup`] owns both the escape hatch and
+/// [`BUDGET_VAR`], so this function's behaviour is a pure function of its
+/// arguments and the tests that assert `None` here — or that assert how long
+/// they waited — cannot be made vacuous by a stray variable.
 ///
 /// # The detached thread, and why the exception is acceptable HERE
 ///
@@ -766,7 +793,10 @@ fn local_backend_at(path: &std::path::Path) -> Option<crate::Backend> {
 /// test here does. It is named rather than papered over because the alternative
 /// — never restoring the hook — silently swallows every assertion message in
 /// this crate's test binary, which is a far worse trade.
-fn guarded<T>(work: impl FnOnce() -> Option<T> + Send + 'static) -> Option<T>
+fn guarded<T>(
+    budget: std::time::Duration,
+    work: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T>
 where
     T: Send + 'static,
 {
@@ -788,7 +818,7 @@ where
         // reason the timeout path needs no cooperation from this thread.
         let _ = tx.send(produced);
     });
-    let produced = rx.recv_timeout(LOOKUP_BUDGET).ok().flatten();
+    let produced = rx.recv_timeout(budget).ok().flatten();
     drop(silence);
     produced
 }
@@ -1119,10 +1149,10 @@ mod tests {
     /// three mean anything.
     #[test]
     fn a_lookup_that_finishes_inside_the_budget_hands_its_value_back() {
-        assert_eq!(guarded(|| Some(7u32)), Some(7));
+        assert_eq!(guarded(LOOKUP_BUDGET, || Some(7u32)), Some(7));
         // And a provider that legitimately found nothing is not a failure — it
         // must be indistinguishable from one, since both are "no candidates".
-        assert_eq!(guarded(|| Option::<u32>::None), None);
+        assert_eq!(guarded(LOOKUP_BUDGET, || Option::<u32>::None), None);
     }
 
     /// A provider that blows the budget produces nothing, and — the half that
@@ -1137,7 +1167,7 @@ mod tests {
     #[test]
     fn a_lookup_that_blows_the_budget_yields_nothing_promptly() {
         let started = std::time::Instant::now();
-        let got = guarded(|| {
+        let got = guarded(LOOKUP_BUDGET, || {
             std::thread::sleep(LOOKUP_BUDGET * 20);
             Some(7u32)
         });
@@ -1157,7 +1187,9 @@ mod tests {
     #[test]
     fn a_panicking_lookup_yields_nothing() {
         assert_eq!(
-            guarded(|| -> Option<u32> { panic!("a provider blew up") }),
+            guarded(LOOKUP_BUDGET, || -> Option<u32> {
+                panic!("a provider blew up")
+            }),
             None
         );
     }
@@ -1192,7 +1224,10 @@ mod tests {
         const MESSAGE: &str = "a-provider-blew-up-and-must-not-be-printed";
 
         if std::env::var_os(CHILD).is_some() {
-            assert_eq!(guarded(|| -> Option<u32> { panic!("{MESSAGE}") }), None);
+            assert_eq!(
+                guarded(LOOKUP_BUDGET, || -> Option<u32> { panic!("{MESSAGE}") }),
+                None
+            );
             return;
         }
 

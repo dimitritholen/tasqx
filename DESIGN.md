@@ -2358,3 +2358,40 @@ stopped naming.
 (`table.label` in all five built-ins), `serve.rs` (the bounded-frame guard and its chrome
 budget), `docs.rs` (every `tasqx list` sample, the agenda sample, and the quickstart's count
 guard), §3, §8 and §11 above.
+
+### D118 — The completion suite gets a lookup budget it can widen; the shipped budget does not move (CI red on two platforms)
+
+**Decision:** `complete.rs`'s `LOOKUP_BUDGET` stays at 150 ms, and `lookup` reads
+`$TASQX_COMPLETE_BUDGET_MS` in front of it. `tests/completion.rs` sets that variable to ten
+seconds on every callback it drives, and `guarded` takes the budget as an ARGUMENT rather
+than reading the environment, so the guard that measures the budget against the clock cannot
+be made vacuous by a stray value.
+
+**Why:** the budget is a latency promise and the suite was silently enforcing it as one. A
+lookup that overruns is answered with zero candidates at exit 0 — deliberately, since a Tab
+press must never print an error over a half-typed command line — and that is byte-identical
+to a completer that has stopped working. So every content assertion in the file was also a
+stopwatch against whatever machine it ran on, and when a loaded runner lost the race the
+only evidence was `got []`. It cost a red CI on ubuntu and windows in the same run, failing
+two DIFFERENT tests, while the suite was green locally and the commits under suspicion had
+touched neither completion nor storage. Reproduced by shrinking the constant to 1 ms: ten of
+thirty-five tests fail, including both of CI's. Verified by shrinking it again with the seam
+in place: all thirty-five pass.
+
+**Rejected:** widening the shipped budget (it is sized against the human threshold, not
+against a CI runner, and a Tab press that answers in a second is the stall it exists to
+prevent); retrying the assertion (a real regression would still pass on some attempt, which
+is the guard deleting itself); a `config.toml` setting (unreachable — reading the config
+means opening the store's neighbourhood, which is the work the budget bounds).
+
+**Its blind spot, named rather than assumed:** the new
+`the_lookup_budget_is_honoured_and_its_absence_is_what_prints_nothing` catches the variable
+going unread and a `> 0` filter swallowing the starved half — both watched fail — and cannot
+catch the UNIT, because zero is zero in every unit and a widened budget only gets wider.
+Catching that needs an assertion about elapsed time, which is the stopwatch this decision
+removes.
+
+**Where:** `crates/tasqx-cli/src/complete.rs` (`BUDGET_VAR`, `budget`, `guarded`'s new
+parameter), `docs.rs`'s `every_env_var_is_either_a_registered_setting_or_a_named_exception`
+list, `crates/tasqx-cli/tests/completion.rs`. Not documented as a switch and not on the
+wiki's Shell-Completion page: it is test scaffolding, like `TASQX_PANIC_PROBE_CHILD`.
