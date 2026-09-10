@@ -2812,8 +2812,13 @@ pub fn next_task(ctx: &Ctx, result: &Value) -> String {
     }
 }
 
-/// Urgency breakdown (`tasqx why`), computed from the task.get fields via the
-/// same D1 formula the engine uses — so ranking is never a black box.
+/// Urgency breakdown (`tasqx why`).
+///
+/// #150: reads the `urgency_breakdown` the engine returns for a `task.get
+/// {explain: true}` call — the same numbers `--json` carries, one clock read
+/// for both surfaces — falling back to recomputing via the D1 formula only
+/// when the field is absent (a caller that fetched the task without
+/// `explain`, e.g. an older daemon on the wire).
 ///
 /// The breakdown alone answers "why is the number 18.0" and says nothing
 /// about whether `next` will ever hand this task out — `@working` excludes
@@ -2823,13 +2828,34 @@ pub fn next_task(ctx: &Ctx, result: &Value) -> String {
 pub fn why(ctx: &Ctx, result: &Value) -> String {
     use tasqx_core::{urgency, Priority};
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let prio = result
-        .get("priority")
-        .and_then(Value::as_str)
-        .and_then(Priority::parse);
-    let due = result.get("due").and_then(Value::as_str);
-    let created = result.get("created").and_then(Value::as_str).unwrap_or("");
-    let mut out = why_rows(ctx, sid, &urgency::breakdown(prio, due, created));
+
+    let from_breakdown_field = result
+        .get("urgency_breakdown")
+        .and_then(Value::as_object)
+        .map(|b| {
+            [
+                ("priority", "priority"),
+                ("due_proximity", "due_proximity"),
+                ("age", "age"),
+            ]
+            .iter()
+            .filter_map(|(name, key)| b.get(*key).and_then(Value::as_f64).map(|v| (*name, v)))
+            .collect::<Vec<(&'static str, f64)>>()
+        })
+        .filter(|parts| !parts.is_empty());
+
+    let mut out = match from_breakdown_field {
+        Some(parts) => why_rows(ctx, sid, &parts),
+        None => {
+            let prio = result
+                .get("priority")
+                .and_then(Value::as_str)
+                .and_then(Priority::parse);
+            let due = result.get("due").and_then(Value::as_str);
+            let created = result.get("created").and_then(Value::as_str).unwrap_or("");
+            why_rows(ctx, sid, &urgency::breakdown(prio, due, created))
+        }
+    };
     if result
         .get("blocked")
         .and_then(Value::as_bool)

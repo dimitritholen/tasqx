@@ -161,10 +161,14 @@ const METHODS: [(&str, &str, &str); 33] = [
     ),
     (
         "task.get",
-        "<code>ref</code>, <code>annotations_limit?</code>, <code>annotations_offset?</code>",
+        "<code>ref</code>, <code>annotations_limit?</code>, <code>annotations_offset?</code>, \
+         <code>explain?</code>",
         "Full detail incl. annotations, deps, <code>blocked</code>. A limit takes the newest \
          annotations; <code>annotations_total</code> and <code>annotations_next_offset</code> \
-         say what was left out.",
+         say what was left out. <code>explain: true</code> adds <code>urgency_breakdown</code> \
+         (<code>priority</code>, <code>due_proximity</code>, <code>age</code>, <code>total</code>) \
+         — the terms <code>urgency</code> sums (D1); the plumbing <code>tasqx why --json</code> \
+         uses (#150).",
     ),
     (
         "task.start",
