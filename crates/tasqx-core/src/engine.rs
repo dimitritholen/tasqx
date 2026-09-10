@@ -1648,7 +1648,7 @@ mod tests {
         }
     }
 
-    /// #186 (audit-2026-09, D96): tracked time could not be corrected on any
+    /// #186 (audit-2026-09, D98): tracked time could not be corrected on any
     /// surface. `task.modify {"set":{"tracked":"PT2H30M"}}` answered
     /// `bad_request: field not modifiable: tracked`, `modify --help` carried
     /// no `--tracked` flag, and `tracked` was absent from `--clear`'s closed

@@ -72,7 +72,7 @@ pub struct ParsedAdd {
     /// Raw estimate (unparsed), e.g. `4h` — the caller resolves it to ISO-8601.
     pub estimate: Option<String>,
     /// Raw tracked-time correction (unparsed), e.g. `2h30m` — `modify`-only
-    /// (D96): there is no inline sugar for it, so this is always exactly
+    /// (D98): there is no inline sugar for it, so this is always exactly
     /// [`AddFlags::tracked`] passed through, never filled by the scanner
     /// below.
     pub tracked: Option<String>,
@@ -122,7 +122,7 @@ pub struct AddFlags {
     pub repeat: Option<String>,
     pub remind: Option<String>,
     pub estimate: Option<String>,
-    /// `modify`-only (D96); `add` always passes `None`. See
+    /// `modify`-only (D98); `add` always passes `None`. See
     /// [`ParsedAdd::tracked`].
     pub tracked: Option<String>,
 }

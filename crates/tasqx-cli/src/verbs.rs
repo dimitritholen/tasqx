@@ -215,7 +215,7 @@ pub(crate) fn run_modify(
             Value::String(datetime::parse_duration(&e)?),
         );
     }
-    // `parsed.tracked` is always `flags.tracked` verbatim (D96): a correction
+    // `parsed.tracked` is always `flags.tracked` verbatim (D98): a correction
     // is meaningful only on an existing task, so it has no inline sugar and
     // `run_add` always passes `None`.
     if let Some(t) = parsed.tracked {
