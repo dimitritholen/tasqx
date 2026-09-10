@@ -3930,6 +3930,52 @@ fn memory_get_is_an_alias_of_memory_show() {
     );
 }
 
+/// `memory update` printed `(rev 0)` unconditionally: `Engine::memory_update`
+/// answers the bumped revision under the key `_rev` (matching `memory.get`
+/// and `memory.search`), but the CLI's format string read `result["rev"]`,
+/// a key that is never present, so `.unwrap_or(0)` silently papered over the
+/// miss every single call. Two updates in a row must print two different
+/// revs — `1` then `2` — not `0` twice.
+#[test]
+fn memory_update_prints_the_actual_bumped_rev_not_a_hardcoded_zero() {
+    let dir = fresh_config_dir("memory-update-rev-text");
+    let add = bin("memory-update-rev-text", &dir)
+        .args(["memory", "add", "T", "v1"])
+        .output()
+        .expect("run memory add");
+    let stdout = String::from_utf8_lossy(&add.stdout).to_string();
+    let id = stdout
+        .strip_prefix("Stored ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("expected `Stored <id>  ·  <title>`, got: {stdout}"))
+        .to_string();
+
+    let update1 = bin("memory-update-rev-text", &dir)
+        .args(["memory", "update", &id, "--body", "v2"])
+        .output()
+        .expect("run memory update");
+    assert!(
+        update1.status.success(),
+        "memory update failed: {}",
+        String::from_utf8_lossy(&update1.stderr)
+    );
+    let text1 = String::from_utf8_lossy(&update1.stdout).to_string();
+    assert!(
+        text1.contains("(rev 1)"),
+        "first update must report the doc at rev 1, got: {text1}"
+    );
+
+    let update2 = bin("memory-update-rev-text", &dir)
+        .args(["memory", "update", &id, "--body", "v3"])
+        .output()
+        .expect("run memory update");
+    let text2 = String::from_utf8_lossy(&update2.stdout).to_string();
+    assert!(
+        text2.contains("(rev 2)"),
+        "second update must report the doc at rev 2, not stuck at 0: {text2}"
+    );
+}
+
 /// #229 item 8: a store the engine cannot open (`TASQX_DB` pointing at an
 /// unwritable path) printed `error: cannot open store ...` at exit 1 — a bare
 /// `error:` prefix with no bracketed code, which DESIGN.md reserves for

@@ -834,6 +834,57 @@ fn project_scopes_search_and_list_without_leaking_unscoped_docs() {
     assert_eq!(list_all["total"], 2, "{list_all}");
 }
 
+/// The doc-side arm above filters on `d.project`, a column on `docs` itself.
+/// The annotation arm filters on `t.project` — the project of the TASK the
+/// annotation belongs to, since annotations carry no `project` column of
+/// their own. A guard that only ever exercised the doc arm would miss a
+/// broken `AND t.project = :project` clause entirely.
+#[test]
+fn project_scopes_search_over_annotations_by_their_tasks_project() {
+    let e = engine();
+    e.project_create(&json!({ "name": "alpha" }))
+        .expect("create alpha project");
+    e.project_create(&json!({ "name": "beta" }))
+        .expect("create beta project");
+
+    let alpha_task = e
+        .task_add(&json!({ "title": "alpha task", "project": "alpha" }))
+        .expect("add alpha task");
+    e.annotation_add(&json!({
+        "ref": alpha_task["short_id"],
+        "body": "shared keyword in alpha"
+    }))
+    .expect("annotate alpha task");
+
+    let beta_task = e
+        .task_add(&json!({ "title": "beta task", "project": "beta" }))
+        .expect("add beta task");
+    e.annotation_add(&json!({
+        "ref": beta_task["short_id"],
+        "body": "shared keyword in beta"
+    }))
+    .expect("annotate beta task");
+
+    let scoped = call(
+        &e,
+        "memory.search",
+        json!({ "query": "shared", "project": "alpha" }),
+    )
+    .expect("search");
+    assert_eq!(
+        scoped["count"], 1,
+        "only the alpha task's annotation should match: {scoped}"
+    );
+    assert_eq!(scoped["hits"][0]["kind"], json!("annotation"), "{scoped}");
+    assert_eq!(scoped["hits"][0]["title"], json!("alpha task"), "{scoped}");
+
+    let unscoped = call(&e, "memory.search", json!({ "query": "shared" })).expect("search");
+    assert_eq!(
+        unscoped["count"], 2,
+        "no project filter must see both annotations: {unscoped}"
+    );
+}
+
 // ---- #135: memory.update ----------------------------------------------------
 
 /// `memory.update` replaces fields in place, bumps `_rev`, and — the same

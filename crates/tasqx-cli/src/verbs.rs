@@ -879,7 +879,7 @@ pub(crate) fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome 
                 "Updated {}  ·  {}  (rev {})\n",
                 render::san(result["id"].as_str().unwrap_or("?")),
                 render::san(result["title"].as_str().unwrap_or("?")),
-                result["rev"].as_i64().unwrap_or(0)
+                result["_rev"].as_i64().unwrap_or(0)
             );
             Ok((result, text))
         }
