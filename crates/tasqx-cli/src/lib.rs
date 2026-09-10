@@ -1563,6 +1563,25 @@ mod tests {
         assert!(rows[1].project.is_empty() && rows[1].tags.is_empty());
     }
 
+    /// #205: the running task has to be identifiable from the `task.list`
+    /// answer alone, with no second call — `status` is a default field
+    /// (`task_to_json` always includes it; only `depends_on` is gated behind
+    /// `fields`, D70), so `pick_rows` reads it directly rather than issuing a
+    /// `task.get` per row to ask "is this the one with an open timer".
+    #[test]
+    fn pick_rows_mark_the_task_task_list_reports_as_active() {
+        let listed = json!({ "tasks": [
+            { "short_id": 42, "title": "Running now", "status": "active" },
+            { "short_id": 7, "title": "Not running", "status": "pending" },
+        ]});
+        let rows = pick_rows(&listed);
+        assert!(rows[0].active, "status:active must mark the row active");
+        assert!(
+            !rows[1].active,
+            "a pending task must not be marked as the running one"
+        );
+    }
+
     /// An empty `task.list` answer must produce no rows, which is what makes
     /// `run_pick` refuse instead of opening an alt screen whose only available
     /// action is leaving it.
@@ -1634,6 +1653,117 @@ mod tests {
             "the timer line must survive too: {text}"
         );
         assert!(text.ends_with('\n'), "{text:?}");
+    }
+
+    /// #205: the task `task.start` is about to auto-stop (D6) has to be found
+    /// BEFORE the write runs — `task.start`'s own answer says nothing about
+    /// it (#75) — and the task being chosen must never appear in that list:
+    /// starting an already-active task is idempotent in the engine (nothing
+    /// stops), so reporting it as "stopped" would be a confirmation that lies.
+    #[test]
+    fn active_before_excludes_the_task_about_to_be_started() {
+        let listed = json!({ "tasks": [
+            { "short_id": 122, "active_since": "2026-09-09T09:00:00Z" },
+            { "short_id": 128, "active_since": "2026-09-09T10:00:00Z" },
+        ]});
+        assert_eq!(
+            active_before(&listed, 128),
+            vec![(122, "2026-09-09T09:00:00Z".to_string())],
+            "#128 is the one being started — it must not name itself as stopped"
+        );
+        assert!(
+            active_before(&json!({ "tasks": [] }), 128).is_empty(),
+            "nothing running is the common case and must report nothing"
+        );
+    }
+
+    /// The elapsed time in the confirmation has to be the exact duration the
+    /// engine itself closed the interval over — `active_since` (read moments
+    /// before `task.start`) to `interval_started` (that same call's own
+    /// answer, the identical instant `task.start` used to stop the OTHER
+    /// task) — not a second, client-side clock reading.
+    #[test]
+    fn elapsed_seconds_reads_two_rfc3339_instants() {
+        assert_eq!(
+            elapsed_seconds("2026-09-09T09:00:00Z", "2026-09-09T11:23:21Z"),
+            Some(2 * 3600 + 23 * 60 + 21)
+        );
+        assert_eq!(
+            elapsed_seconds("not-a-timestamp", "2026-09-09T11:23:21Z"),
+            None,
+            "an unparseable instant must say nothing rather than guess"
+        );
+    }
+
+    /// The stop line has to name WHICH task it stopped and for how long — a
+    /// bare "Stopped" is the same invisible-field failure the rest of this
+    /// screen keeps fixing, just for a fact the user cannot get back later.
+    #[test]
+    fn displaced_summary_names_the_stopped_task_and_its_tracked_time() {
+        let text = displaced_summary(&plain_ctx(), 122, 2 * 3600 + 23 * 60 + 21);
+        assert!(text.contains("Stopped"), "{text}");
+        assert!(text.contains("#122"), "{text}");
+        assert!(text.contains("2h23"), "{text}");
+        assert!(text.ends_with('\n'), "{text:?}");
+    }
+
+    /// The end-to-end shape #205 asks for: a running task auto-stopped by a
+    /// pick has to be named ABOVE the started task, not silently folded away.
+    /// `run_pick` itself needs a real terminal and a `Backend`, so this
+    /// composes the same three pure pieces it calls, in the same order.
+    #[test]
+    fn the_confirmation_names_the_stopped_task_above_the_started_one() {
+        let before_active = json!({ "tasks": [
+            { "short_id": 122, "active_since": "2026-09-09T09:00:00Z" },
+        ]});
+        let displaced = active_before(&before_active, 128);
+        let started = json!({ "id": "uuid", "interval_started": "2026-09-09T11:23:21Z" });
+        let started_at = started["interval_started"].as_str().unwrap();
+
+        let mut text = String::new();
+        for (id, since) in &displaced {
+            let secs =
+                elapsed_seconds(since, started_at).expect("both instants here are valid RFC 3339");
+            text.push_str(&displaced_summary(&plain_ctx(), *id, secs));
+        }
+        text.push_str(&picked_summary(&plain_ctx(), 128, "Next task", &started));
+
+        assert!(text.contains("Stopped"), "{text}");
+        assert!(text.contains("#122"), "{text}");
+        assert!(text.contains("2h23"), "{text}");
+        assert!(text.contains("Started task"), "{text}");
+        assert!(text.contains("#128"), "{text}");
+        assert!(
+            text.find("Stopped").unwrap() < text.find("Started task").unwrap(),
+            "the stop line must print ABOVE the start line: {text}"
+        );
+    }
+
+    /// The common case — nothing was running — must be byte-for-byte the OLD
+    /// summary. #205's fix must not print an empty "Stopped" line, or a
+    /// header naming nothing, when `active_before` finds no candidate.
+    #[test]
+    fn no_displaced_task_means_no_stop_line_at_all() {
+        let displaced = active_before(&json!({ "tasks": [] }), 128);
+        assert!(displaced.is_empty());
+        let started = json!({ "id": "uuid", "interval_started": "2026-08-03T10:00:00Z" });
+        let mut text = String::new();
+        for (id, since) in &displaced {
+            let secs = elapsed_seconds(since, "2026-08-03T10:00:00Z").unwrap();
+            text.push_str(&displaced_summary(&plain_ctx(), *id, secs));
+        }
+        text.push_str(&picked_summary(
+            &plain_ctx(),
+            128,
+            "Ship the freeze",
+            &started,
+        ));
+        assert!(!text.contains("Stopped"), "{text}");
+        assert_eq!(
+            text,
+            picked_summary(&plain_ctx(), 128, "Ship the freeze", &started),
+            "identical to the pre-#205 summary when nothing was displaced"
+        );
     }
 
     /// `--json` must carry the identity of the task that was picked. The method
