@@ -5186,6 +5186,101 @@ mod tests {
         );
     }
 
+    /// The house style's Contract table is BUILT from the renderer, then
+    /// looked for in the doc.
+    ///
+    /// `docs/terminal-style.md` is what anyone touching a screen reads first,
+    /// and a guide describing a screen the binary no longer prints is worse
+    /// than no guide — it is a wrong answer carrying the repo's authority. So
+    /// the rows are generated here and asserted present there, which catches
+    /// the drift in BOTH directions: a glyph the code stopped drawing, and a
+    /// glyph the doc stopped naming. Checking only "every glyph the code emits
+    /// appears somewhere in the doc" was tried first and let the Contract
+    /// table go stale while the prose above it still happened to quote the
+    /// right character.
+    ///
+    /// `include_str!` reaches outside `src/` on purpose, the same way
+    /// `doc_gate_tests` in `tasqx-core` embeds `.github/workflows/ci.yml`:
+    /// moving or renaming the file is then a compile error rather than a
+    /// silent orphaning.
+    #[test]
+    fn the_house_style_doc_still_describes_the_screens() {
+        const DOC: &str = include_str!("../../../docs/terminal-style.md");
+
+        let task = |status: &str, blocked: bool| {
+            json!({ "short_id": 1, "urgency": 1.0, "priority": "M", "title": "t",
+                    "project": "p", "due": "", "tags": [], "status": status,
+                    "blocked": blocked })
+        };
+        let rail = |status: &str, blocked: bool, unicode: bool| {
+            rail_marker(&task(status, blocked), unicode)
+                .expect("a rail glyph")
+                .1
+                .to_string()
+        };
+
+        // Every glyph the gauge can emit, swept across its range, split into
+        // the three roles the doc names them by.
+        let full = urgency_meter(1.0).0.chars().next().expect("a full cell");
+        let track = urgency_meter(0.0).1.chars().next().expect("a track cell");
+        let mut remainder: Vec<char> = Vec::new();
+        for step in 0..=100 {
+            let (bar, tail) = urgency_meter(f64::from(step) / 100.0);
+            assert_eq!(
+                bar.chars().count() + tail.chars().count(),
+                4,
+                "the gauge is not 4 cells wide at {step}%"
+            );
+            for c in bar.chars().chain(tail.chars()) {
+                if c != full && c != track && !remainder.contains(&c) {
+                    remainder.push(c);
+                }
+            }
+        }
+        remainder.sort_unstable();
+        let remainder: String = remainder
+            .iter()
+            .map(|c| format!("`{c}`"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        for row in [
+            format!(
+                "| rail, running | `{}` (`{}` without Unicode) |",
+                rail("active", false, true),
+                rail("active", false, false)
+            ),
+            format!(
+                "| rail, blocked | `{}` (`{}` without Unicode) |",
+                rail("pending", true, true),
+                rail("pending", true, false)
+            ),
+            format!("| gauge, full cell | `{full}` |"),
+            format!("| gauge, track | `{track}` |"),
+            format!("| gauge, remainder | {remainder} |"),
+            "| gauge width | 4 cells |".to_string(),
+            "| column-header role | `table.label` |".to_string(),
+        ] {
+            assert!(
+                DOC.contains(&row),
+                "docs/terminal-style.md's Contract table is missing the row the \
+                 renderer produces:\n{row}"
+            );
+        }
+
+        assert!(
+            theme::default_theme()
+                .role_names()
+                .iter()
+                .any(|r| r == "table.label"),
+            "the doc names a theme role no built-in defines"
+        );
+        assert!(
+            DOC.contains(&plural_tasks(1)) && DOC.contains("N tasks"),
+            "the doc lost the count spelling"
+        );
+    }
+
     /// The gauge separates the pair the reader is actually ranking.
     ///
     /// The first mock drew whole cells only, and 17.9 and 15.8 against a top of

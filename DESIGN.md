@@ -2317,6 +2317,13 @@ A fourth mock, the ledger with the gauge, was picked over the plain one on a sec
 that is where the resolution problem in (c) was found and fixed, and it is the argument for
 mocking in pixels rather than in prose.
 
+**Written down:** `docs/terminal-style.md` carries the thirteen rules, plus the
+render-and-look loop that found them, as a working reference, so the screens that have not been restyled yet — `show`, `report`, `next`,
+the dashboard, `pick` — inherit the reasoning rather than the diff. Its Contract table
+is generated from the renderer by `the_house_style_doc_still_describes_the_screens`,
+which fails in both directions: a glyph the code stopped drawing, and a glyph the doc
+stopped naming.
+
 **Where:** `crates/tasqx-cli/src/render.rs` (`due_cell`, `rail_marker`, `status_marker`,
 `urgency_meter`, `table_summary`, `plural_tasks`, `when_cell`, `TaskCols`), `theme.rs`
 (`table.label` in all five built-ins), `serve.rs` (the bounded-frame guard and its chrome
