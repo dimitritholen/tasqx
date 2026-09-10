@@ -929,27 +929,42 @@ fn the_slot_is_sized_for_its_tallest_member() {
     // Six projects against one token row: PROJECTS is much the taller member,
     // so a slot sized from any other member — or from whichever happens to be
     // showing — would come out short.
+    // Every project holds an open task. PROJECTS is sized from the projects
+    // with WORK in them (a dashboard answers "what now", and an idle project
+    // does not participate), so a fixture of idle ones would make the tallest
+    // member two rows and the rest of this test vacuous.
+    let names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
     let d = build_with(
-        task_list(vec![task_row(1, "one")]),
+        task_list(
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let mut t = task_row(i as i64 + 1, "one");
+                    t["project"] = json!(*p);
+                    t
+                })
+                .collect(),
+        ),
         summary(vec![group("a", "PT1H", "PT0S", [0, 0, 0, 0])]),
-        project_list(vec![
-            project("a", true, false),
-            project("b", false, false),
-            project("c", false, false),
-            project("d", false, false),
-            project("e", false, false),
-            project("f", false, false),
-        ]),
+        project_list(
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, p)| project(p, i == 0, false))
+                .collect(),
+        ),
     );
     let members = PanelId::SLOT_MEMBERS.to_vec();
     let tall = demand(&d, &members, PanelId::Projects);
-    // Read off the model, not written down: the panel also carries a row for
-    // the project the task names but the project list does not, and a literal
-    // here would be asserting my count of the fixture rather than the rule.
+    // Read off the model, not written down: a literal here would be asserting
+    // my count of the fixture rather than the rule.
+    let live = d.projects.rows.iter().filter(|r| r.open > 0).count();
     assert_eq!(
         tall as usize,
-        d.projects.rows.len(),
-        "PROJECTS wants one row per row it holds"
+        live + usize::from(live < d.projects.rows.len()),
+        "PROJECTS wants a row per project with work, plus the line accounting \
+         for the ones without"
     );
     assert!(
         demand(&d, &members, PanelId::Tokens) < tall
@@ -965,13 +980,64 @@ fn the_slot_is_sized_for_its_tallest_member() {
         "the slot's demand is the tallest member's, not the shortest or the current one"
     );
 
+    // Tall enough that nothing is competing. The slot is LAST in the raise
+    // order, and rows are handed out in strict priority now, so on a cramped
+    // screen it correctly sits at its floor while the task panels fill — which
+    // would satisfy this assertion for the wrong reason if the terminal were
+    // short. The subject here is the slot's SIZE, not who wins a squeeze.
     let screen =
-        layout(80, 30, &all_panels(), &|id| demand(&d, &members, id)).expect("above the floor");
+        layout(80, 60, &all_panels(), &|id| demand(&d, &members, id)).expect("above the floor");
     let slot = screen
         .placement(PanelId::Slot)
-        .expect("80x30 uses the slot on the one-column rung");
+        .expect("the one-column rung uses the slot");
     let (_, _, _, body) = slot.body();
     assert_eq!(body, tall, "and the layout gives it those rows");
+}
+
+/// A squeeze is settled by the raise order, not shared out equally.
+///
+/// The allocator used to hand out leftover rows one at a time, cycling through
+/// `RAISE_ORDER` until nobody could take another. That is monotonic, which is
+/// what it was written for, but it is not a priority: everyone grew together
+/// and the order only decided who took the last odd row. Measured at 120x40 on
+/// a real store, NEXT UP stopped at fifteen of its twenty-four tasks with
+/// `…9 more` while RECENT — history, and last in the order — held seventeen
+/// rows in the same column.
+#[test]
+fn a_column_too_small_for_both_fills_the_higher_priority_panel_first() {
+    // NEXT UP and RECENT in one column, each with more content than the column
+    // can hold. NEXT UP comes first in RAISE_ORDER.
+    let members = [PanelId::Next, PanelId::Recent];
+    let want = |id: PanelId| -> u16 {
+        match id {
+            PanelId::Next => 20,
+            PanelId::Recent => 20,
+            _ => 1,
+        }
+    };
+    let budget = 14u16;
+    let placed = fit(&members, budget, 0, 40, &want);
+
+    let body = |id: PanelId| -> u16 {
+        placed
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.body().3)
+            .unwrap_or(0)
+    };
+    let (next, recent) = (body(PanelId::Next), body(PanelId::Recent));
+    assert!(
+        next > recent,
+        "the panel the screen exists for got {next} rows and history got {recent}"
+    );
+    assert_eq!(
+        next + recent + 2,
+        budget,
+        "every row in the budget should be spent: {next} + {recent} + 2 titles"
+    );
+    // RECENT is not starved to nothing — it keeps its floor, which is what
+    // stops the priority from turning into "one panel takes the column".
+    assert!(recent >= floor_body(PanelId::Recent), "{recent}");
 }
 
 /// A taller terminal never shows LESS of any panel.

@@ -1173,15 +1173,41 @@ pub fn layout(
 /// only where there is not room for its three members separately.
 fn column_table(rung: Rung) -> Vec<Vec<PanelId>> {
     match rung {
+        // RECENT sits with the small panels, not under NEXT UP.
+        //
+        // Column one holds the panel that answers the screen's question, and it
+        // was sharing with the one that answers what already happened — so NEXT
+        // UP truncated at fifteen of twenty-four tasks while the first column,
+        // holding a card, a blocked row, a project list and a token total, had
+        // twenty-three rows of nothing under it. Whichever panel is last in
+        // `RAISE_ORDER` is the one that should be absorbing a column's slack,
+        // and that is RECENT.
+        // Two columns on every wide rung, not three.
+        //
+        // Three columns divided 120 cells into forty, and forty cells is where
+        // a task title stops being a title: NEXT UP truncated every row it drew
+        // while a third of the screen sat blank INSIDE the other two columns.
+        // Widening the terminal did not fix it — at 160 the same three columns
+        // held the same content and left the same holes — because the shortage
+        // was never width. A store has one running card, whatever is blocked,
+        // whatever is overdue and one token total to put somewhere, and those
+        // do not fill a column between them at any width.
+        //
+        // So: one column for the panel that answers the screen's question, one
+        // for everything else. RECENT goes last, where it absorbs whatever the
+        // panels above it did not want — it is the only one with more content
+        // than any screen can hold, and the only one nobody opens the screen
+        // for.
         Rung::Xl | Rung::L => vec![
             vec![
                 PanelId::Now,
                 PanelId::Blocked,
+                PanelId::Due,
+                PanelId::Burndown,
                 PanelId::Projects,
                 PanelId::Tokens,
             ],
             vec![PanelId::Next, PanelId::Recent],
-            vec![PanelId::Due, PanelId::Burndown],
         ],
         Rung::M => vec![
             vec![PanelId::Now, PanelId::Next, PanelId::Blocked],
@@ -1233,10 +1259,15 @@ const RAISE_ORDER: [PanelId; 9] = [
     PanelId::Next,
     PanelId::Now,
     PanelId::Due,
-    PanelId::Recent,
     PanelId::Blocked,
-    PanelId::Burndown,
     PanelId::Projects,
+    PanelId::Burndown,
+    // RECENT is history. It used to sit fourth, ahead of what is blocked, what
+    // is in flight and where the work is going — so on a wide terminal the
+    // second-largest thing on a "what now" screen was a list of what had
+    // already happened, cancelled and done rows included. It still earns rows
+    // before the slot and the token totals; it stops outranking the present.
+    PanelId::Recent,
     PanelId::Tokens,
     PanelId::Slot,
 ];
@@ -1281,19 +1312,31 @@ pub fn demand(dash: &Dashboard, slot_members: &[PanelId], id: PanelId) -> u16 {
                 1
             }
         }
-        // Spark, axis, and the row `burndown_body` uses for the clipped-window
-        // warning. A wider window means a longer sparkline, never a taller one.
+        // A step line reads better the taller it is — the shape IS the answer,
+        // and eight rows is where a swing stops being a texture and becomes a
+        // slope (`chart::BURNDOWN_ROWS`). The sparkline this replaced could not
+        // use height at all, and the ceiling said so: "a wider window means a
+        // longer sparkline, never a taller one". It does now.
+        //
+        // Ten is the plot plus the row `burndown_body` spends on the axis
+        // footer, plus one more when the window was clipped. A ceiling, not a
+        // floor: `fit` only ever hands over rows a neighbour is not asking for.
         PanelId::Burndown => {
-            if dash.burndown.truncated {
-                3
-            } else {
-                2
-            }
+            let plot = u16::try_from(crate::chart::BURNDOWN_ROWS).unwrap_or(8);
+            plot + 1 + u16::from(dash.burndown.truncated)
         }
         PanelId::Next => n(dash.next.rows.len()),
         PanelId::Blocked => n(dash.blocked.rows.len()),
         PanelId::Recent => n(dash.recent.rows.len()),
-        PanelId::Projects => n(dash.projects.rows.len()),
+        // Only the projects with work in them, plus the line that accounts for
+        // the rest. A dashboard answers "what now", and a project with nothing
+        // open does not participate in that question — on a real store fourteen
+        // of twenty said `0 open`, and the panel was handed a row for each of
+        // them while NEXT UP, one column over, truncated every title it drew.
+        PanelId::Projects => {
+            let live = dash.projects.rows.iter().filter(|r| r.open > 0).count();
+            n(live) + u16::from(live < dash.projects.rows.len())
+        }
         PanelId::Tokens => n(dash.tokens.rows.len()),
         PanelId::Due => {
             let d = &dash.due;
@@ -1631,54 +1674,62 @@ fn fit(
                 .filter(|id| !RAISE_ORDER.contains(id)),
         )
         .collect();
-    while leftover > 0 {
-        let mut spent = false;
-        for id in &order {
-            if leftover == 0 {
-                break;
-            }
-            let have = rows[id];
-            // A panel takes rows until it is Full; a grower then keeps taking
-            // them until it runs out of CONTENT.
-            //
-            // Without the second half a grower took rows forever. At 120x40
-            // against a store with two blocked tasks, BLOCKED was handed a
-            // twelve-row box holding two lines, DUE swallowed the rest of its
-            // column, and BURNDOWN — whose neighbour had nothing left to show —
-            // was left on its floor of two. A third of the screen was blank
-            // INSIDE panels while the panel that could have used the space was
-            // squeezed.
-            //
-            // Capping at demand moves that slack to the bottom of the column,
-            // outside every panel, and lets it reach whichever panel in the
-            // column still has something to put there.
-            //
-            // The floor, not `full`, is the other bound. `Detail` reads as a
-            // richness setting but only [`panels::now_body`] branches on it —
-            // every other builder is handed a height and fills it — so raising
-            // a two-item list to `Full` buys nothing but blank rows. NOW keeps
-            // its three by demanding them, which is where that belongs: it is a
-            // property of the card, not of the ladder.
-            // `grows` is the CEILING, not a switch: every panel takes what it
-            // has content for and at least its floor, and a non-grower simply
-            // stops at `full`. TOKENS saying "no token spend attributed yet" is
-            // one line, and it used to be given three because it was a
-            // non-grower and non-growers took `full` unconditionally.
-            let s = spec(*id);
-            let want = demand(*id).max(floor_body(*id));
-            let want = if s.grows { want } else { want.min(s.full) };
-            if have >= want {
-                continue;
-            }
-            *rows.get_mut(id).expect("seeded above") = have + 1;
-            leftover -= 1;
-            spent = true;
-        }
-        // Nobody could take one: stop rather than spin. The rows stay unspent,
-        // which shows as a gap only when every panel in the column is capped.
-        if !spent {
+    // Strict priority, not a round robin.
+    //
+    // This loop used to cycle: one row to NEXT UP, one to RECENT, one to NEXT
+    // UP, and so on until both were capped. That is monotonic, which is what it
+    // was written for — but it is not a PRIORITY, and `RAISE_ORDER`'s own doc
+    // claims to be one ("what a reader wants more of first"). Sharing equally
+    // only lets the order decide who takes the last odd row. Measured at 120x40
+    // on a real store: NEXT UP stopped at fifteen of its twenty-four tasks with
+    // `…9 more`, while RECENT — history, and last in the order — was handed
+    // seventeen rows in the same column.
+    //
+    // Draining one panel to its ceiling before starting the next keeps the
+    // monotonicity (a row added to the budget still only ever ADDS to some
+    // panel, so none can lose one) and makes the order mean what it says.
+    for id in &order {
+        if leftover == 0 {
             break;
         }
+        let have = rows[id];
+        // A panel takes rows until it is Full; a grower then keeps taking
+        // them until it runs out of CONTENT.
+        //
+        // Without the second half a grower took rows forever. At 120x40
+        // against a store with two blocked tasks, BLOCKED was handed a
+        // twelve-row box holding two lines, DUE swallowed the rest of its
+        // column, and BURNDOWN — whose neighbour had nothing left to show —
+        // was left on its floor of two. A third of the screen was blank
+        // INSIDE panels while the panel that could have used the space was
+        // squeezed.
+        //
+        // Capping at demand moves that slack to the bottom of the column,
+        // outside every panel, and lets it reach whichever panel in the
+        // column still has something to put there.
+        //
+        // The floor, not `full`, is the other bound. `Detail` reads as a
+        // richness setting but only [`panels::now_body`] branches on it —
+        // every other builder is handed a height and fills it — so raising
+        // a two-item list to `Full` buys nothing but blank rows. NOW keeps
+        // its three by demanding them, which is where that belongs: it is a
+        // property of the card, not of the ladder.
+        // `grows` is the CEILING, not a switch: every panel takes what it
+        // has content for and at least its floor, and a non-grower simply
+        // stops at `full`. TOKENS saying "no token spend attributed yet" is
+        // one line, and it used to be given three because it was a
+        // non-grower and non-growers took `full` unconditionally.
+        let s = spec(*id);
+        let want = demand(*id).max(floor_body(*id));
+        let want = if s.grows { want } else { want.min(s.full) };
+        if have >= want {
+            continue;
+        }
+        // Everything it can use, or everything that is left. Rows nobody can
+        // use stay unspent and show as a gap at the bottom of the column.
+        let take = (want - have).min(leftover);
+        *rows.get_mut(id).expect("seeded above") = have + take;
+        leftover -= take;
     }
 
     let mut out = Vec::with_capacity(live.len());

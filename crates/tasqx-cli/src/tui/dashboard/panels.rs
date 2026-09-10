@@ -511,8 +511,9 @@ fn projects_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'
         return empty("no projects yet — tasqx init <name>", s, w as u16, unicode);
     }
     let visible = height as usize;
-    let (start, room, _) = window(cursor.row, rows.len(), visible);
-    rows.iter()
+    let (start, room, hidden) = window(cursor.row, rows.len(), visible);
+    let mut out: Vec<Line<'static>> = rows
+        .iter()
         .enumerate()
         .skip(start)
         .take(room)
@@ -550,7 +551,32 @@ fn projects_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'
                 ),
             ])
         })
-        .collect()
+        .collect();
+
+    // What is off the bottom, and how much of it is worth scrolling to. The
+    // panel is sized to the projects with work in them (`model::demand`), so on
+    // a real store the rows below the fold are mostly the ones saying `0 open`
+    // — and "…14 more" would send a reader after fourteen rows of nothing. It
+    // says which kind of nothing instead. They stay reachable with `j`: a row
+    // the cursor can land on and the panel will not name is the invisible-field
+    // failure, and counting them is not the same as hiding them.
+    if hidden > 0 {
+        let idle = rows
+            .iter()
+            .skip(start + room)
+            .filter(|r| r.open == 0)
+            .count();
+        let text = if idle == hidden {
+            format!("…{hidden} more, nothing open")
+        } else {
+            format!("…{hidden} more")
+        };
+        out.push(Line::from(Span::styled(
+            render::truncate(&text, w, unicode),
+            s.muted,
+        )));
+    }
+    out
 }
 
 /// The BURNDOWN panel: the same step line the standalone `tasqx chart
