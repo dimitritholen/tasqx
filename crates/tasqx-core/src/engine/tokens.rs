@@ -233,13 +233,44 @@ fn idempotency_extra(key: &str) -> String {
 
 /// The four-bucket object the recompute report speaks — the same four keys as
 /// a measurement row, never a blended total (D48).
-fn buckets(input: i64, output: i64, cache_read: i64, cache_creation: i64) -> Value {
+pub(super) fn buckets(input: i64, output: i64, cache_read: i64, cache_creation: i64) -> Value {
     json!({
         "input_tokens": input,
         "output_tokens": output,
         "cache_read_tokens": cache_read,
         "cache_creation_tokens": cache_creation,
     })
+}
+
+/// Sum one task's raw measurements (the shape [`measurement_from_row`]
+/// returns) into a [`crate::tokens::TokenTotals`] — the roll-up `task.list`'s
+/// `tokens` field and `-tokens` sort key both need (#215), and the same shape
+/// `report.summary` already sums across many tasks. Saturating, like every
+/// other roll-up here.
+pub(super) fn measurement_totals(measurements: &[Value]) -> crate::tokens::TokenTotals {
+    let mut totals = crate::tokens::TokenTotals::default();
+    for m in measurements {
+        let get = |k: &str| m.get(k).and_then(Value::as_i64).unwrap_or(0) as u64;
+        totals.input = totals.input.saturating_add(get("input_tokens"));
+        totals.output = totals.output.saturating_add(get("output_tokens"));
+        totals.cache_read = totals.cache_read.saturating_add(get("cache_read_tokens"));
+        totals.cache_creation = totals
+            .cache_creation
+            .saturating_add(get("cache_creation_tokens"));
+    }
+    totals
+}
+
+/// Render a rolled-up [`crate::tokens::TokenTotals`] as the same four-bucket
+/// object [`buckets`] renders for the recompute report — never a blended
+/// total (D48). This is `task.list`'s `tokens` projection field.
+pub(super) fn bucket_json(totals: &crate::tokens::TokenTotals) -> Value {
+    buckets(
+        totals.input as i64,
+        totals.output as i64,
+        totals.cache_read as i64,
+        totals.cache_creation as i64,
+    )
 }
 
 impl Engine {

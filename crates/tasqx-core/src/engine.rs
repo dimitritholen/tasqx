@@ -96,8 +96,14 @@ pub const SUMMARY_METRICS: [&str; 8] = [
 /// halves are fixed by having one list: `parse_sort` validates against it, its
 /// rejection message is built from it, and the MCP schema and the HTML guide
 /// render their key lists from it.
-pub const SORT_KEYS: [&str; 7] = [
-    "urgency", "short_id", "priority", "due", "created", "modified", "title",
+///
+/// `tokens` (#215) ranks by the saturating sum of a task's four measurement
+/// buckets. That sum is never itself reported on any surface — D48/D50 forbid
+/// a blended `tokens_total` output — it exists here only to produce a total
+/// order for "most expensive first", the same way `priority` sorts by a rank
+/// nobody reads back as a number.
+pub const SORT_KEYS: [&str; 8] = [
+    "urgency", "short_id", "priority", "due", "created", "modified", "title", "tokens",
 ];
 
 /// The keys `task.list`'s `fields` param may name. Sorted, since it is read off
@@ -138,7 +144,7 @@ pub static TASK_FIELDS: LazyLock<Vec<String>> = LazyLock::new(|| {
         modified: String::new(),
         completed: None,
     };
-    match list_row_json(&probe, &[], false, Some(&[])) {
+    match list_row_json(&probe, &[], false, Some(&[]), Some(&Value::Null)) {
         Value::Object(m) => m.keys().cloned().collect(),
         // Unreachable: `task_to_json` builds an object literal.
         _ => Vec::new(),
@@ -967,7 +973,13 @@ pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
 /// than two lines in the loop so [`TASK_FIELDS`] can be read off the very
 /// object the loop projects — one call site's keys, not a second list that has
 /// to be remembered.
-fn list_row_json(t: &Task, tags: &[String], blocked: bool, depends_on: Option<&[i64]>) -> Value {
+fn list_row_json(
+    t: &Task,
+    tags: &[String],
+    blocked: bool,
+    depends_on: Option<&[i64]>,
+    tokens: Option<&Value>,
+) -> Value {
     let mut v = task_to_json(t, tags);
     v["blocked"] = json!(blocked);
     // Emitted only when the caller projected it (D70). It is a name
@@ -979,6 +991,15 @@ fn list_row_json(t: &Task, tags: &[String], blocked: bool, depends_on: Option<&[
     // `status_unrecognized`.
     if let Some(d) = depends_on {
         v["depends_on"] = json!(d);
+    }
+    // Same gate, same reason, for the roll-up #215 added: a task's own
+    // measurements are already read only when `parts.tokens` is set, and this
+    // is that read's one consumer besides `report.summary`. The value is the
+    // four-bucket object `engine::tokens::bucket_json` renders — never a
+    // blended total (D48) — so a caller sees exactly what a measurement row
+    // shows, summed.
+    if let Some(tk) = tokens {
+        v["tokens"] = tk.clone();
     }
     v
 }
@@ -1067,6 +1088,16 @@ pub(super) fn fields_want_depends_on(fields: Option<&Vec<String>>) -> bool {
     fields.is_some_and(|keys| keys.iter().any(|k| k == "depends_on"))
 }
 
+/// Whether a parsed `fields` projection asks for the `tokens` roll-up (#215).
+///
+/// Same shape and same reason as [`fields_want_depends_on`]: the snapshot
+/// loader must fetch the measurements to compute it, and the projection loop
+/// must emit them, with `SnapshotParts::tokens` as the one gate both consult
+/// so they cannot disagree about whether the row promises the field.
+pub(super) fn fields_want_tokens(fields: Option<&Vec<String>>) -> bool {
+    fields.is_some_and(|keys| keys.iter().any(|k| k == "tokens"))
+}
+
 fn parse_fields(p: &Value) -> Result<Option<Vec<String>>, ApiError> {
     // D32: the array-ness and the string-ness of every entry are the typed
     // layer's job now; only the *name* check is specific to this param.
@@ -1094,7 +1125,13 @@ fn priority_rank(p: Option<Priority>) -> i32 {
     }
 }
 
-fn compare_by(a: &Task, b: &Task, keys: &[SortKey]) -> std::cmp::Ordering {
+fn compare_by(
+    a: &Task,
+    b: &Task,
+    a_tokens: u64,
+    b_tokens: u64,
+    keys: &[SortKey],
+) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     for k in keys {
         let ord = match k.key.as_str() {
@@ -1105,6 +1142,10 @@ fn compare_by(a: &Task, b: &Task, keys: &[SortKey]) -> std::cmp::Ordering {
             "created" => a.created.cmp(&b.created),
             "modified" => a.modified.cmp(&b.modified),
             "title" => a.title.cmp(&b.title),
+            // #215: a total order for "most expensive first" over the
+            // saturating sum of a task's four measurement buckets. The sum
+            // itself is never reported (D48/D50) — only used to rank here.
+            "tokens" => a_tokens.cmp(&b_tokens),
             // Unreachable via the API: `parse_sort` rejects anything not in
             // SORT_KEYS. It stays as a total match rather than a panic because
             // this is a read path, and a test drives every published key
@@ -1187,14 +1228,14 @@ mod tests {
                     key: (*key).to_string(),
                     desc,
                 }];
-                let ord = compare_by(&a, &b, &keys);
+                let ord = compare_by(&a, &b, 0, 0, &keys);
                 assert_ne!(
                     ord,
                     Ordering::Equal,
                     "sort key `{key}` (desc={desc}) leaves #1 and #2 unordered"
                 );
                 assert_eq!(
-                    compare_by(&b, &a, &keys),
+                    compare_by(&b, &a, 0, 0, &keys),
                     ord.reverse(),
                     "sort key `{key}` (desc={desc}) is not antisymmetric"
                 );
@@ -1208,7 +1249,7 @@ mod tests {
                 key: "urgency".to_string(),
                 desc,
             }];
-            assert_eq!(compare_by(&a, &b, &keys), Ordering::Less);
+            assert_eq!(compare_by(&a, &b, 0, 0, &keys), Ordering::Less);
         }
     }
 
@@ -1240,6 +1281,48 @@ mod tests {
              was not: {}",
             err.message
         );
+    }
+
+    /// #215: `tokens` ranks by the sum of the four buckets, independent of
+    /// every other field — the `-tokens` sort key itself, isolated from
+    /// `task_list`'s snapshot plumbing.
+    #[test]
+    fn compare_by_tokens_ranks_by_the_saturating_sum() {
+        use std::cmp::Ordering;
+
+        let a = Task {
+            id: "a".to_string(),
+            short_id: 1,
+            title: "cheap".to_string(),
+            status: Status::Pending,
+            status_raw: None,
+            priority: None,
+            project: None,
+            due: None,
+            scheduled: None,
+            wait: None,
+            estimate: None,
+            recurrence: None,
+            remind: None,
+            urgency: 0.0,
+            active_since: None,
+            tracked_seconds: 0,
+            rev: 1,
+            created: "2026-08-30T12:00:00Z".to_string(),
+            modified: "2026-08-30T12:00:00Z".to_string(),
+            completed: None,
+        };
+        let mut b = a.clone();
+        b.id = "b".to_string();
+        b.short_id = 2;
+
+        let keys = vec![SortKey {
+            key: "tokens".to_string(),
+            desc: true,
+        }];
+        // b spent more: descending `-tokens` must put b first.
+        assert_eq!(compare_by(&a, &b, 15, 3_300, &keys), Ordering::Greater);
+        assert_eq!(compare_by(&b, &a, 3_300, 15, &keys), Ordering::Less);
     }
 
     use crate::error::ErrorCode;
