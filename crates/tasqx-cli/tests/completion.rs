@@ -44,6 +44,30 @@ use std::process::Command;
 /// user's shell.
 const VAR: &str = "TASQX_COMPLETE";
 
+/// The lookup budget, widened for every callback this file drives, and the
+/// reason it has to be.
+///
+/// `complete.rs` gives a Tab press 150 ms to resolve a socket, open the store
+/// and run a provider, because past a couple hundred milliseconds a shell
+/// appears to have hung. That is a latency promise, it is a real one, and
+/// `a_lookup_that_blows_the_budget_yields_nothing_promptly` measures it against
+/// the clock. This file asks a different question — what does the shipped
+/// binary OFFER — and it asks it of a freshly built subprocess opening a
+/// freshly written SQLite file on whatever machine happens to be running it.
+///
+/// Left on the shipped budget, every test here is also a stopwatch, and the way
+/// it loses is silent: a lookup that overruns yields zero candidates at exit 0,
+/// which is byte-for-byte what a completer that has stopped working produces.
+/// CI proved the point on two platforms in one run, failing two different tests
+/// while this suite was green on the developer's machine, and the only evidence
+/// either failure offered was `got []`.
+///
+/// Ten seconds is not a budget anyone should ship; it is the absence of one,
+/// which is exactly what these assertions want.
+const BUDGET: &str = "TASQX_COMPLETE_BUDGET_MS";
+/// Long enough that a cold open on a loaded runner cannot lose the race.
+const GENEROUS: &str = "10000";
+
 /// The binary, one-shot and in-process.
 ///
 /// `--no-daemon` for the same reason `tests/help.rs` gives: `open_backend`
@@ -78,6 +102,7 @@ fn every_supported_shell_emits_a_registration_naming_the_binary() {
     for shell in SHELLS {
         let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
             .env(VAR, shell)
+            .env(BUDGET, GENEROUS)
             .output()
             .unwrap_or_else(|e| panic!("run the binary with TASQX_COMPLETE={shell}: {e}"));
 
@@ -152,6 +177,7 @@ fn an_unrecognised_shell_name_lets_the_command_run() {
 
     let added = Command::new(env!("CARGO_BIN_EXE_tasqx"))
         .env(VAR, "nushell")
+        .env(BUDGET, GENEROUS)
         .env("TASQX_DB", &db)
         .args(["--no-daemon", "add", "--", "a real task"])
         .output()
@@ -201,6 +227,7 @@ fn an_unrecognised_shell_name_does_not_suppress_a_read_either() {
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
             .env(VAR, "nushell")
+            .env(BUDGET, GENEROUS)
             .env("TASQX_DB", &db)
             .args(args)
             .output()
@@ -229,6 +256,7 @@ fn every_recognised_shell_is_still_served_as_a_callback() {
     for shell in SHELLS {
         let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
             .env(VAR, shell)
+            .env(BUDGET, GENEROUS)
             .env("_CLAP_COMPLETE_INDEX", "1")
             .args(["--", "tasqx", "lis"])
             .output()
@@ -324,6 +352,7 @@ fn a_recognised_shell_name_with_a_separator_still_drops_the_command() {
 
     let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
         .env(VAR, "bash")
+        .env(BUDGET, GENEROUS)
         .env("TASQX_DB", &db)
         .args(["--no-daemon", "add", "--", "a real task"])
         .output()
@@ -360,6 +389,7 @@ fn a_recognised_shell_name_with_a_separator_still_drops_the_command() {
 fn a_shell_path_is_recognised_the_way_clap_recognises_it() {
     let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
         .env(VAR, "/usr/bin/bash")
+        .env(BUDGET, GENEROUS)
         .env("_CLAP_COMPLETE_INDEX", "1")
         .env("_CLAP_IFS", SEP.to_string())
         .args(["--", "tasqx", "lis"])
@@ -384,6 +414,7 @@ fn a_shell_path_is_recognised_the_way_clap_recognises_it() {
 fn complete_bash(cursor: usize, words: &[&str]) -> std::process::Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     c.env(VAR, "bash")
+        .env(BUDGET, GENEROUS)
         .env("_CLAP_COMPLETE_INDEX", cursor.to_string())
         // The registration sets `IFS=$'\013'` and forwards it as `_CLAP_IFS`,
         // and the separator between candidates is read back out of that
@@ -564,6 +595,7 @@ fn a_path_arg_completes_real_filenames() {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     let out = c
         .env(VAR, "bash")
+        .env(BUDGET, GENEROUS)
         .env("_CLAP_COMPLETE_INDEX", "3")
         .env("_CLAP_IFS", SEP.to_string())
         // `complete_path` resolves a relative partial word against the working
@@ -634,6 +666,7 @@ fn a_seeded_store_completes_its_task_ids_with_their_titles() {
 
     let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
         .env(VAR, "zsh")
+        .env(BUDGET, GENEROUS)
         .env("TASQX_DB", &db)
         .env("TASQX_SOCK", &socket)
         .env("_CLAP_COMPLETE_INDEX", "2")
@@ -745,6 +778,7 @@ fn complete_bash_in(
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     let out = c
         .env(VAR, "bash")
+        .env(BUDGET, GENEROUS)
         .env("TASQX_DB", db)
         .env("TASQX_SOCK", socket)
         .env("_CLAP_COMPLETE_INDEX", cursor.to_string())
@@ -1105,6 +1139,7 @@ fn the_escape_hatch_turns_off_values_and_leaves_the_structure() {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     let out = c
         .env(VAR, "bash")
+        .env(BUDGET, GENEROUS)
         .env("TASQX_DB", &db)
         .env("TASQX_SOCK", &socket)
         .env("TASQX_NO_COMPLETE_LOOKUP", "1")
@@ -1123,6 +1158,7 @@ fn the_escape_hatch_turns_off_values_and_leaves_the_structure() {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     let structural = c
         .env(VAR, "bash")
+        .env(BUDGET, GENEROUS)
         .env("TASQX_DB", &db)
         .env("TASQX_SOCK", &socket)
         .env("TASQX_NO_COMPLETE_LOOKUP", "1")
@@ -1135,6 +1171,77 @@ fn the_escape_hatch_turns_off_values_and_leaves_the_structure() {
         candidates(&structural).iter().any(|c| c == "list"),
         "the escape hatch must disable VALUE lookups only, got {:?}",
         candidates(&structural)
+    );
+
+    let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
+}
+
+/// [`BUDGET`] is honoured, in both directions, against one store and one set of
+/// words.
+///
+/// Without this, [`BUDGET`] could stop being read — renamed, dropped in a
+/// refactor of `lookup`, parsed into the wrong unit — and nothing here would
+/// say so. The suite would simply go back to racing the machine it runs on, and
+/// the failure that returns is the one this variable was added for: a lookup
+/// that overruns prints zero candidates at exit 0, so the first evidence would
+/// again be an unreproducible `got []` on somebody else's runner.
+///
+/// The narrow half asks for **zero** milliseconds rather than a small number,
+/// and the difference is the whole reason this test is not itself a stopwatch:
+/// `recv_timeout` with a zero duration cannot wait, so the empty answer is a
+/// property of the code rather than of how fast the disk was. A one-millisecond
+/// budget would assert that an open is slower than a millisecond, which is a
+/// thing about the machine.
+///
+/// # What it cannot see
+///
+/// The UNIT. Measured, not assumed: swapping `from_millis` for `from_secs` in
+/// `budget()` leaves this test green, because zero is zero in every unit and a
+/// widened budget only gets wider. Catching that needs an assertion about how
+/// long something took, which is the stopwatch this variable exists to get out
+/// of the suite, so it is named here rather than bought at that price. The two
+/// drifts it does catch were both watched fail: the call site reverting to the
+/// constant, and a `> 0` filter swallowing the starved half.
+#[test]
+fn the_lookup_budget_is_honoured_and_its_absence_is_what_prints_nothing() {
+    let (db, socket) = seeded_values("budget");
+    let words = ["tasqx", "add", "x", "--project", ""];
+
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
+    let starved = c
+        .env(VAR, "bash")
+        .env(BUDGET, "0")
+        .env("TASQX_DB", &db)
+        .env("TASQX_SOCK", &socket)
+        .env("_CLAP_COMPLETE_INDEX", "4")
+        .env("_CLAP_IFS", SEP.to_string())
+        .arg("--")
+        .args(words)
+        .output()
+        .expect("run the callback on a budget of nothing");
+    assert_eq!(
+        starved.status.code(),
+        Some(0),
+        "a blown budget is not an error and must never be spelled as one"
+    );
+    assert!(
+        starved.stderr.is_empty(),
+        "a blown budget must stay off the user's command line, got {:?}",
+        String::from_utf8_lossy(&starved.stderr)
+    );
+    assert!(
+        !candidates(&starved).iter().any(|c| c == SEEDED_PROJECT),
+        "a zero budget cannot have reached the store, got {:?}",
+        candidates(&starved)
+    );
+
+    // The same call the rest of this file makes, so the assertion above is
+    // shown to be about the budget and not about the fixture.
+    assert!(
+        complete_bash_in(&db, &socket, 4, &words)
+            .iter()
+            .any(|c| c == SEEDED_PROJECT),
+        "the widened budget must reach the same store the starved one could not"
     );
 
     let _ = std::fs::remove_dir_all(db.parent().expect("fixture dir"));
@@ -1203,6 +1310,7 @@ fn a_callback_against_an_absent_store_creates_nothing() {
         let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
         let out = c
             .env(VAR, "bash")
+            .env(BUDGET, GENEROUS)
             .env("TASQX_DB", &db)
             .env("TASQX_SOCK", &socket)
             .env("_CLAP_COMPLETE_INDEX", "2")
@@ -1373,6 +1481,7 @@ fn a_callback_against_a_live_store_leaves_it_byte_identical_and_unmigrated() {
     let mut c = Command::new(env!("CARGO_BIN_EXE_tasqx"));
     let out = c
         .env(VAR, "bash")
+        .env(BUDGET, GENEROUS)
         .env("TASQX_DB", &db)
         .env("TASQX_SOCK", &socket)
         .env("_CLAP_COMPLETE_INDEX", "2")
@@ -1562,6 +1671,7 @@ fn the_at_shapes_are_quoted_for_the_one_shell_that_eats_them() {
     let complete_in = |shell: &str, words: &[&str], cursor: usize| -> Vec<String> {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_tasqx"));
         cmd.env(VAR, shell)
+            .env(BUDGET, GENEROUS)
             .env("TASQX_DB", &db)
             .env("TASQX_SOCK", &socket)
             .env("_CLAP_COMPLETE_INDEX", cursor.to_string());

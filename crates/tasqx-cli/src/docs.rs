@@ -3576,6 +3576,15 @@ mod tests {
             // registry, which is a different question.
             "TASQX_COMPLETE",
             "TASQX_NO_COMPLETE_LOOKUP",
+            // Test scaffolding of the same kind as TASQX_PANIC_PROBE_CHILD
+            // below, and for a related reason: the completion suite drives the
+            // shipped binary and asks what it OFFERS, while the lookup budget
+            // is a latency property with its own guard. Left alone, the content
+            // tests race the machine, and losing that race is spelled as zero
+            // candidates at exit 0 — the same output as a broken completer.
+            // Documenting it as a switch would invite a user to lengthen the
+            // budget, which is the stall it exists to prevent.
+            "TASQX_COMPLETE_BUDGET_MS",
             // Test scaffolding, not a switch: `complete.rs`'s panic-silencing
             // guard re-runs itself as a child process and this is how the child
             // knows which side of the fork it is on. Named here rather than
