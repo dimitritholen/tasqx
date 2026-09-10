@@ -4,9 +4,15 @@ Research, design spec, framework evaluation and a proposed decision entry for th
 reporting page. Written alongside a field test of the new token accounting, which
 generated the data every screenshot and number in here is drawn from.
 
-**Status:** design only. Nothing in `crates/tasqx-cli/src/html.rs` has been
-changed. The prototype lives in `docs/reporting-redesign-prototype.py` and renders
-`docs/reporting-redesign-prototype.html` from real store data.
+**Status:** the decision landed as D48; slices 1–2 (no blended token total)
+shipped with it, and slices 3 and 5 — the structural guard and the page with
+its interaction layer — shipped as **D116**, which records what the built page
+does where it departs from §4 (decision-order sections, four header tiles,
+search and filters on top of the §6 budget). Slices 4 (theme-derived chart
+palette, §4 "Colour") and 6 (API delta D-2/D-3, §5) are open. The prototype
+lives in `docs/reporting-redesign-prototype.py` and renders
+`docs/reporting-redesign-prototype.html` from real store data; the shipped
+generator is `crates/tasqx-cli/src/html.rs`.
 
 ---
 
