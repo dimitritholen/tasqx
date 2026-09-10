@@ -92,6 +92,24 @@ pub enum Parser {
     Copilot,
 }
 
+/// The client name half of a `client` string, with any trailing version
+/// dropped — `"claude-code 2.1.263"` and `"claude-code"` both answer
+/// `"claude-code"`. Only the async attribution path (log-parse and OTLP) is
+/// affected: `task.done`'s self-report already stores whatever bare `tool`
+/// string a caller sends, unversioned. Without this every client PATCH
+/// release minted a new value in `token_usage.tool` — `"claude-code"`,
+/// `"claude-code 2.1"`, `"claude-code 2.1.263"` all named the same client —
+/// which made `GROUP BY tool` useless for the one question it exists to
+/// answer ("how much did each client cost"), because the group never
+/// stabilised across a version bump. The version is not recorded anywhere
+/// else here; the finding that named this also asked for a `group_by: tool`
+/// axis on `report.summary`, which is a materially larger, differently
+/// shaped change (an aggregation over `token_usage` rows rather than task
+/// columns) left for its own ticket.
+fn normalize_tool_name(client: &str) -> String {
+    client.split_whitespace().next().unwrap_or("").to_string()
+}
+
 /// Pick the parser for a client/tool string by lowercased substring, so
 /// `"claude-code"`, `"Claude Code"` and `"claude"` all resolve. Returns `None`
 /// for a tool tasqx has no parser for (e.g. Cursor), which the caller turns into
@@ -453,7 +471,7 @@ pub fn compute_attribution(
     pa: &PendingAttribution,
     now: Timestamp,
 ) -> Result<AttributionResult, ApiError> {
-    let tool = pa.client.clone().unwrap_or_default();
+    let tool = normalize_tool_name(&pa.client.clone().unwrap_or_default());
 
     // A completion that already self-reported its spend (#13) is the
     // authoritative measurement for this task — a `token_usage` row was written
@@ -485,11 +503,12 @@ pub fn compute_attribution(
             &pa.consumed_sample_ids,
         );
         if totals.total() > 0 {
-            let otel_tool = pa
-                .client
-                .clone()
-                .or_else(|| pa.otel_tool.clone())
-                .unwrap_or_default();
+            let otel_tool = normalize_tool_name(
+                &pa.client
+                    .clone()
+                    .or_else(|| pa.otel_tool.clone())
+                    .unwrap_or_default(),
+            );
             return Ok(AttributionResult {
                 totals,
                 samples: n,
@@ -1568,6 +1587,42 @@ mod tests {
         assert!(!r.found);
         assert_eq!(r.samples, 0);
         assert_eq!(r.tool, "cursor");
+    }
+
+    /// Every client-version patch used to mint a new `token_usage.tool` value
+    /// (`"claude-code"`, `"claude-code 2.1"`, `"claude-code 2.1.263"` all named
+    /// the same client), which made a `GROUP BY tool` never stabilise across a
+    /// version bump — the one axis the field exists to support. The version is
+    /// still real information (`parser_for` below still needs the raw
+    /// `pa.client` to pick a parser), so this only asserts what lands in the
+    /// stored `tool` field.
+    #[test]
+    fn compute_attribution_strips_the_version_off_a_versioned_client_string() {
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            // No parser for "cursor", so this terminates through the same
+            // early zero-sample marker `a_client_with_no_parser_terminates_
+            // with_a_zero_sample_result` uses above — no transcript I/O, just
+            // enough of the function to see what `tool` the client string
+            // produced. `parser_for` itself still sees the untouched
+            // `pa.client`, so this is not testing parser selection.
+            client: Some("cursor 2.1.263".into()),
+            transcript_path: None,
+            session_id: None,
+            otel_samples: Vec::new(),
+            otel_tool: None,
+            self_reported: false,
+            foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
+        };
+        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
+        assert_eq!(
+            r.tool, "cursor",
+            "the stored tool must not carry the client's version suffix"
+        );
     }
 
     #[test]

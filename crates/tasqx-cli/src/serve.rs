@@ -418,19 +418,14 @@ pub(crate) fn api_stdin_hint(stdin_is_tty: bool) -> Option<&'static str> {
 }
 
 /// The stdio one-shot transport.
+///
+/// Reads the envelope BEFORE opening the store, on purpose: opening the
+/// store first meant a store-open failure fired before the request had even
+/// been read, so the one response shape a multiplexed caller most needs to
+/// correlate — the one that fires when the whole store is unreachable — was
+/// also the one that could never carry the request `id`.
 pub(crate) fn run_api() {
     note_ambient_socket_if_unused("api");
-    let engine = match open_engine() {
-        Ok(e) => e,
-        Err(msg) => {
-            let env = json!({
-                "tasqx": "1", "ok": false,
-                "error": { "code": "internal", "message": msg }
-            });
-            emit(&format!("{env}\n"));
-            exit(1);
-        }
-    };
 
     if let Some(hint) = api_stdin_hint(std::io::stdin().is_terminal()) {
         eprintln!("{hint}");
@@ -445,6 +440,19 @@ pub(crate) fn run_api() {
         emit(&format!("{env}\n"));
         exit(2);
     }
+
+    let engine = match open_engine() {
+        Ok(e) => e,
+        Err(msg) => {
+            let id = tasqx_core::dispatch::peek_envelope_id(&input);
+            let env = tasqx_core::dispatch::error_envelope(
+                id,
+                &tasqx_core::error::ApiError::internal(msg),
+            );
+            emit(&format!("{env}\n"));
+            exit(1);
+        }
+    };
 
     let response = handle_envelope(&engine, &input);
     // The manual (`tasqx manual json-api`) promises "exit codes mirror the

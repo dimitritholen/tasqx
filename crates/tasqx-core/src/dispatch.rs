@@ -265,7 +265,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "core.capabilities" => engine.capabilities(),
         "otlp.status" => engine.otlp_status(),
         other => Err(ApiError::bad_request(format!(
-            "unknown method: {other} — see core.capabilities for the method list"
+            "unknown method: {other} — call core.capabilities for the method list"
         ))),
     }
 }
@@ -332,7 +332,28 @@ fn success_envelope(id: Value, result: Value) -> Value {
     Value::Object(m)
 }
 
-fn error_envelope(id: Value, err: &ApiError) -> Value {
+/// Read just the `id` out of a raw envelope string, without dispatching it.
+///
+/// Exists for the one failure path that happens before an `Engine` even
+/// exists — the store itself is unreachable — where a multiplexed caller
+/// (the daemon protocol, or any batching wrapper) most needs the `id` to
+/// correlate the response with the in-flight request that died, and cannot
+/// get one any other way because the whole engine construction that would
+/// normally answer it never ran. Unparseable input answers `Value::Null`,
+/// the same "no correlation available" fact `handle_envelope` already
+/// answers for a malformed envelope.
+pub fn peek_envelope_id(input: &str) -> Value {
+    serde_json::from_str::<ApiRequest>(input)
+        .ok()
+        .and_then(|r| r.id)
+        .unwrap_or(Value::Null)
+}
+
+/// Build an error response envelope. `pub` so a caller failing before
+/// `handle_envelope` runs at all — store-open, which happens before the
+/// engine exists to hand to `handle_envelope` — still answers in the one
+/// envelope shape every surface shares, `id` included.
+pub fn error_envelope(id: Value, err: &ApiError) -> Value {
     let mut m = Map::new();
     m.insert("tasqx".into(), Value::String(API_VERSION.into()));
     if !id.is_null() {
@@ -570,5 +591,20 @@ mod tests {
         // read a single field from — the whole request ignored, not one key.
         let e = check_params("task.list", &json!([1, 2])).unwrap_err();
         assert!(e.message.contains("must be an object"), "{}", e.message);
+    }
+
+    /// The three other closed vocabularies this dispatch layer refuses
+    /// against (`status:`, sort keys, `task.get`'s params) all name their
+    /// accepted set (D34). `unknown method` used to be the one that did not,
+    /// leaving an agent with nowhere to look up the real method list.
+    #[test]
+    fn an_unknown_method_points_at_core_capabilities() {
+        let engine = Engine::open_in_memory().unwrap();
+        let err = dispatch(&engine, "task.frobnicate", &json!({})).unwrap_err();
+        assert!(
+            err.message.contains("core.capabilities"),
+            "expected a pointer to core.capabilities, got {:?}",
+            err.message
+        );
     }
 }

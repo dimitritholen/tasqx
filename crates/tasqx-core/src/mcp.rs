@@ -646,7 +646,13 @@ fn build_tool_specs() -> Vec<ToolSpec> {
             schema: json!({
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string" },
+                    "title": {
+                        "type": "string",
+                        "description": "Stored verbatim — this server does not parse the \
+                            CLI's inline sugar (`+tag`, `project:`, `due:`, `!prio`). A title \
+                            like \"fix it +bug due:friday\" is saved with those characters in \
+                            it; use the `tags`/`project`/`due`/`priority` fields below instead."
+                    },
                     "project": { "type": "string" },
                     "priority": {
                         "type": "string",
