@@ -215,6 +215,16 @@ pub(crate) fn run_modify(
             Value::String(datetime::parse_duration(&e)?),
         );
     }
+    // `parsed.tracked` is always `flags.tracked` verbatim (D96): a correction
+    // is meaningful only on an existing task, so it has no inline sugar and
+    // `run_add` always passes `None`.
+    if let Some(t) = parsed.tracked {
+        guard_set_and_clear(&set, "tracked", &t)?;
+        set.insert(
+            "tracked".into(),
+            Value::String(datetime::parse_duration(&t)?),
+        );
+    }
 
     if set.is_empty() && parsed.tags.is_empty() {
         return Err(ApiError::bad_request(

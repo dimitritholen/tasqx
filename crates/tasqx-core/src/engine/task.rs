@@ -887,6 +887,11 @@ impl Engine {
         // D23: the project this modify moves the task into, if any (None for an
         // unchanged or cleared project). Validated inside the write tx below.
         let mut project_target: Option<String> = None;
+        // D96: a `tracked` correction, resolved to whole seconds. Kept apart
+        // from `assignments` because `tracked_seconds` is an INTEGER column —
+        // `update_column` below only knows TEXT and NULL, the shape every
+        // other whitelisted field stores its value as.
+        let mut new_tracked_seconds: Option<i64> = None;
 
         for (k, v) in set {
             match k.as_str() {
@@ -962,6 +967,31 @@ impl Engine {
                     assignments.push(("wait", norm));
                 }
                 "estimate" => assignments.push(("estimate", nullable_duration(v, "estimate")?)),
+                "tracked" => {
+                    // D96: the audit's "tracked time can never be corrected"
+                    // gap — a timer left running overnight banks hours onto a
+                    // task with no way back once anything else is logged
+                    // (`undo` reaches only the immediately preceding event).
+                    // Same duration grammar `estimate` takes, but resolved to
+                    // seconds rather than stored as the ISO string itself: the
+                    // column is `tracked_seconds`, read back as arithmetic
+                    // everywhere (`report.summary`'s `tracked_total`,
+                    // `task.stop`'s running total), not as text. `null`
+                    // clears it to zero — there is no "never tracked" state
+                    // distinct from `PT0S`, so a cleared task reads exactly
+                    // like one that was never timed.
+                    new_tracked_seconds = Some(if v.is_null() {
+                        0
+                    } else {
+                        let s = v.as_str().ok_or_else(|| {
+                            ApiError::bad_request("tracked must be a string or null")
+                        })?;
+                        let iso = datetime::parse_duration(s)?;
+                        duration_secs(&iso).ok_or_else(|| {
+                            ApiError::bad_request(format!("tracked duration out of range: {s}"))
+                        })?
+                    });
+                }
                 "recurrence" => {
                     // Set a rule (validated + normalized) or clear it with null
                     // — the sanctioned "stop recurring" path (DESIGN §10, D2).
@@ -1052,6 +1082,16 @@ impl Engine {
         for (col, val) in &assignments {
             update_column(&tx, &task.id, col, val)?;
         }
+        // D98: an explicit correction, applied before the cancel branch below
+        // reads a base to add the closing interval onto — so `tracked` and
+        // `status:cancelled` in the same call compose (correct, then close)
+        // rather than one silently overwriting the other.
+        if let Some(secs) = new_tracked_seconds {
+            tx.execute(
+                "UPDATE tasks SET tracked_seconds=?1 WHERE id=?2",
+                params![secs, task.id],
+            )?;
+        }
         // tasqx audit #174 (D69 gap): `assignments` already holds the RESOLVED
         // form of every field this call named — `due:"friday"` as its ISO
         // instant, `estimate:"90m"` as `PT90M` — because that is what
@@ -1070,9 +1110,10 @@ impl Engine {
         // and clears active_since, exactly as task.stop/task.done would.
         if cancelling && task.status == Status::Active {
             let elapsed = seconds_between(&task.active_since, &ts);
+            let base = new_tracked_seconds.unwrap_or(task.tracked_seconds);
             tx.execute(
                 "UPDATE tasks SET active_since=NULL, tracked_seconds=?1 WHERE id=?2",
-                params![task.tracked_seconds + elapsed, task.id],
+                params![base + elapsed, task.id],
             )?;
         }
         tx.execute(
