@@ -966,7 +966,10 @@ fn a_shell_quoted_filter_value_reaches_the_parser_whole() {
     // nothing precisely because both predicates are read and ANDed.
     let s = ok(&["list", "+api", "status:done"]);
     assert!(
-        s.contains("No tasks."),
+        // Finding #4 (audit-2026-09): the empty-result line now quotes the
+        // filter back (D55's rule, extended from `pick` to `list`), so the
+        // needle is the message's own opening rather than the whole sentence.
+        s.contains("No tasks match"),
         "a multi-element filter must stay multi-token: {s}"
     );
     let s = ok(&["list", "+api", "status:pending"]);
@@ -1038,7 +1041,9 @@ fn an_invalid_priority_sugar_token_is_refused_not_dropped() {
     // the typo, and not one silently missing the priority that was asked for.
     let s = String::from_utf8_lossy(&run(&["list"]).stdout).to_string();
     assert!(
-        s.contains("No tasks."),
+        // Finding #4 (audit-2026-09): a bare `list` echoes its default filter
+        // (`@working`) in the empty-result line, same as any other filter.
+        s.contains("No tasks match"),
         "a refused add must store nothing: {s}"
     );
 

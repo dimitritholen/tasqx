@@ -1185,6 +1185,9 @@ mod tests {
         let started: Value = commands::TaskStarted {
             id: "task-id".to_string(),
             interval_started: Some("2026-07-20T12:00:00Z".to_string()),
+            short_id: 42,
+            title: "the title".to_string(),
+            already_running: false,
         }
         .into();
         assert_eq!(
@@ -1193,6 +1196,9 @@ mod tests {
                 "id": "task-id",
                 "status": "active",
                 "interval_started": "2026-07-20T12:00:00Z",
+                "short_id": 42,
+                "title": "the title",
+                "already_running": false,
             })
         );
 

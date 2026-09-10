@@ -278,7 +278,10 @@ pub(crate) fn run_list(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
     };
     let params = json!({ "filter": filter_str, "sort": ["-urgency"] });
     let result = be.call("task.list", &params)?;
-    let text = render::task_table(ctx, &result, jiff::Timestamp::now());
+    // Finding #4 (audit-2026-09): an empty result said only "No tasks.",
+    // giving no way to tell "nothing pending" from "this filter excludes
+    // everything" — the same distinction D55 already drew for `pick`.
+    let text = render::task_table_filtered(ctx, &result, jiff::Timestamp::now(), Some(&filter_str));
     Ok((result, text))
 }
 
@@ -552,7 +555,7 @@ pub(crate) fn run_projects(be: &mut Backend, ctx: &Ctx, all: bool) -> CmdOutcome
 /// Build the `report.summary` params from the CLI's positional args plus the
 /// `--all` flag. Split out of [`run_report`] so the CLI→core contract can be
 /// asserted without standing up a backend.
-pub(crate) fn report_params(args: &[String], all: bool) -> Value {
+pub(crate) fn report_params(args: &[String], all: bool) -> Result<Value, ApiError> {
     // First token, if a known group_by keyword, selects grouping; the rest is
     // the filter. Otherwise everything is the filter (group_by defaults).
     let mut group_by = tasqx_core::engine::SUMMARY_GROUP_BY[0].to_string();
@@ -565,6 +568,19 @@ pub(crate) fn report_params(args: &[String], all: bool) -> Value {
         if tasqx_core::engine::SUMMARY_GROUP_BY.contains(&first.as_str()) {
             group_by = first.clone();
             rest = &args[1..];
+        } else if !first.chars().any(|c| ":+-@".contains(c)) {
+            // Finding #11 (audit-2026-09): a bare word carrying no filter
+            // sigil is a group_by ATTEMPT, not a filter term that happens to
+            // be spelled wrong — `tasqx report tags` used to fall straight
+            // into the filter parser and get back a wall of filter grammar
+            // that never mentions grouping at all. Diagnose it here, naming
+            // the three real axes, before the filter parser ever sees it. A
+            // token that DOES look like filter syntax (`project:x`, `+api`,
+            // `-tag`, `@working`) still falls through unchanged.
+            return Err(ApiError::bad_request(format!(
+                "unknown group_by {first:?} (expected {})",
+                tasqx_core::engine::SUMMARY_GROUP_BY.join(", ")
+            )));
         }
     }
     // Same reasoning as `group_by` above, and the same constant pattern:
@@ -584,11 +600,11 @@ pub(crate) fn report_params(args: &[String], all: bool) -> Value {
     if all {
         params["all"] = Value::Bool(true);
     }
-    params
+    Ok(params)
 }
 
 pub(crate) fn run_report(be: &mut Backend, ctx: &Ctx, args: Vec<String>, all: bool) -> CmdOutcome {
-    let params = report_params(&args, all);
+    let params = report_params(&args, all)?;
     let group_by = params["group_by"]
         .as_str()
         .unwrap_or(tasqx_core::engine::SUMMARY_GROUP_BY[0])
@@ -986,7 +1002,7 @@ pub(crate) fn run_html_report(
     args: Vec<String>,
     out: Option<String>,
 ) -> CmdOutcome {
-    let params = report_params(&args, false);
+    let params = report_params(&args, false)?;
     let doc = html::generate(engine, &ctx.theme, &params)?;
     match out {
         Some(path) => {

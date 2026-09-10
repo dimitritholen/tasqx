@@ -466,7 +466,15 @@ fn every_other_tool_still_returns_exactly_one_block() {
 /// Keys `task_detail` deliberately does not render, each with its reason.
 /// Adding to this list is a decision; leaving a key off it and out of the view
 /// is the accident this test exists to prevent.
-const OMITTED: &[(&str, &str)] = &[("id", "the UUID; short_id is the handle users type")];
+const OMITTED: &[(&str, &str)] = &[
+    ("id", "the UUID; short_id is the handle users type"),
+    (
+        "unmet_blockers",
+        "a narrowing of `depends_on` to the unresolved ones, added for `tasqx why` \
+         (audit-2026-09 #8); the card already shows the full list via `depends_on` \
+         and the `blocked` flag",
+    ),
+];
 
 /// How one key proves it reached the view.
 ///
