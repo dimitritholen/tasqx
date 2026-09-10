@@ -1083,6 +1083,12 @@ pub(super) enum TokensAction {
 #[derive(Subcommand)]
 pub(super) enum McpAction {
     /// Run the MCP stdio server: newline-delimited JSON-RPC 2.0 on stdin/stdout.
+    #[command(
+        after_help = "NOTE  --socket and --theme are listed above because they are \
+        global flags, but neither is honoured here: `mcp serve` hosts MCP over stdio against \
+        an in-process engine, so --socket is refused (DESIGN.md D73) and --theme is never \
+        read (this server never renders).\n"
+    )]
     Serve {
         /// Operator-selected capability scope for this stdio process.
         #[arg(long, default_value = "read", value_parser = ["read", "write"])]

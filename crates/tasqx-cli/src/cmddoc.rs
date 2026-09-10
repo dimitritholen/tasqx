@@ -566,6 +566,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "A filter scopes BOTH output modes — the HTML page and the terminal table \
              answer the same question.",
             "Cancelled tasks are not counted, unless you pass `--all` or your filter names a status.",
+            "--socket is refused with `--html` (DESIGN.md D73): the HTML page renders from a direct local read of the store, never through a daemon.",
         ],
         see_also: &["chart", "list", "why"],
         topic: Topic::Reports,
@@ -581,7 +582,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex("tasqx chart heatmap --year"),
             ex("tasqx chart burndown --days 30"),
         ],
-        notes: &[],
+        notes: &["--socket is refused here rather than honoured (DESIGN.md D73): charts render from a direct local read of the store, never through a daemon."],
         see_also: &["report"],
         topic: Topic::Reports,
     },
@@ -708,7 +709,10 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         examples: &[
             ex_norun("tasqx api <<< '{\"tasqx\":\"1\",\"id\":\"1\",\"method\":\"task.list\",\"params\":{}}'", "call any method"),
         ],
-        notes: &["The stdio one-shot transport; the envelope key is `\"tasqx\":\"1\"`."],
+        notes: &[
+            "The stdio one-shot transport; the envelope key is `\"tasqx\":\"1\"`.",
+            "--socket is refused here rather than honoured (DESIGN.md D73): `api` runs against an in-process engine, never a daemon. --theme is likewise never read — there is nothing here to render.",
+        ],
         see_also: &["mcp", "daemon", "export"],
         topic: Topic::JsonApi,
     },
