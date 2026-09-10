@@ -3233,6 +3233,38 @@ mod tests {
         );
     }
 
+    /// #76.3: `otlp.enabled = true` persisted with no complaint even when no
+    /// daemon was reachable to act on it — the receiver only binds inside
+    /// `tasqx daemon`, so the config alone does nothing. `otlp_daemon_warning`
+    /// is the pure decision `set_setting` prints on stderr; this pins it
+    /// directly rather than through a spawned binary, since no test in this
+    /// process runs a real daemon for it to find.
+    #[test]
+    fn otlp_daemon_warning_fires_only_for_enabling_with_no_daemon_reachable() {
+        // Setting it true with nothing listening on the resolved socket: warn,
+        // and name both the key/value and why it matters.
+        let w = otlp_daemon_warning("otlp.enabled", "true")
+            .expect("no daemon is running in this test process");
+        assert!(w.contains("otlp.enabled"), "{w}");
+        assert!(
+            w.contains("tasqx daemon"),
+            "must say where the receiver actually binds: {w}"
+        );
+
+        // Turning it OFF needs no daemon and gets no warning.
+        assert_eq!(
+            otlp_daemon_warning("otlp.enabled", "false"),
+            None,
+            "disabling otlp needs no daemon and must stay silent"
+        );
+        // An unrelated key's value must never trip this check.
+        assert_eq!(
+            otlp_daemon_warning("tokens.enabled", "true"),
+            None,
+            "the check is scoped to otlp.enabled, not every boolean setting"
+        );
+    }
+
     /// `config get` on a key nobody registered must say so and list the valid
     /// ones. Today an unknown key in config.toml is read by nothing and
     /// reported by nothing, so a typo looks like it worked.

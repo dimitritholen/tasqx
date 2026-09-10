@@ -467,9 +467,39 @@ pub(crate) fn set_setting(key: &str, value: &str) -> CmdOutcome {
     if let Some(p) = theme_pointer(s.key) {
         text.push_str(&format!("{p}\n"));
     }
+    if let Some(w) = otlp_daemon_warning(s.key, value) {
+        eprintln!("{w}");
+    }
     Ok((
         json!({ "key": s.key, "value": value, "path": path.to_string_lossy() }),
         text,
+    ))
+}
+
+/// #76.3: `otlp.enabled = true` used to persist with no complaint even when no
+/// daemon was running to act on it. The receiver only binds inside `tasqx
+/// daemon` (`serve.rs`: `config_otlp_enabled().then(config_otlp_port)`), so a
+/// store with the flag on and no daemon looked, from `config get`, identical
+/// to one actually receiving — the flag was true either way. Surfaced at
+/// set-time rather than left for `config get` to explain later, since that is
+/// when the mistake is cheapest to notice and correct.
+///
+/// Liveness is checked the same way [`open_backend`] decides whether to route
+/// a command through a daemon at all: a live connection to the resolved
+/// socket. `--socket`/`$TASQX_SOCK` are not in scope here (`config set` takes
+/// no socket flag), so this reads the same default/env resolution the
+/// daemon-routing path uses when neither is passed.
+pub(crate) fn otlp_daemon_warning(key: &str, value: &str) -> Option<String> {
+    if key != "otlp.enabled" || value != "true" {
+        return None;
+    }
+    let target = resolve_socket(None);
+    if daemon::try_connect(&target).is_some() {
+        return None;
+    }
+    Some(format!(
+        "warning: otlp.enabled = true, but no daemon is reachable at {target}; the OTLP/HTTP \
+         receiver only binds inside `tasqx daemon`, so nothing will listen until one is running"
     ))
 }
 
