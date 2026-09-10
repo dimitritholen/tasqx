@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, ToSpan};
+use jiff::Timestamp;
 use serde_json::Value;
 
 use crate::chart;
@@ -138,12 +138,30 @@ pub struct Task {
     pub active_since: Option<Timestamp>,
     pub estimate_secs: Option<i64>,
     pub tracked_secs: i64,
+    /// Tracked time PLUS the interval still running, on the one task whose
+    /// timer is going; `None` on every other row.
+    ///
+    /// The NOW card carried this and NOW is gone (D80). The number is not: a
+    /// row marked `▶` with no elapsed beside it answers "which one" and drops
+    /// "for how long", which is the half a reader glancing at the screen is
+    /// usually after. Computed in the builder, where `now` is — a renderer that
+    /// read the clock would disagree with the row above it across a redraw.
+    pub running_secs: Option<i64>,
+    /// Sanitised at construction like every other display string, and spelled
+    /// `+tag` at draw time — the one spelling `list`'s filter grammar accepts
+    /// (#228.16), so a tag read off this screen can be pasted into a query.
+    tags: Vec<String>,
 }
 
 impl Task {
     /// Sanitised title. The only way to read it.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// The tags, already sanitised. The only way to read them.
+    pub fn tags(&self) -> &[String] {
+        &self.tags
     }
 
     /// Sanitised project name, `None` for the project-less bucket.
@@ -178,6 +196,17 @@ impl Task {
                 .and_then(Prio::parse),
             urgency: v.get("urgency").and_then(Value::as_f64).unwrap_or(0.0),
             status: Status::parse(v.get("status").and_then(Value::as_str).unwrap_or("")),
+            running_secs: None,
+            tags: v
+                .get("tags")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(render::san)
+                        .collect()
+                })
+                .unwrap_or_default(),
             blocked: v.get("blocked").and_then(Value::as_bool).unwrap_or(false),
             due: v
                 .get("due")
@@ -234,73 +263,164 @@ impl StatusBar {
     }
 }
 
-/// The running timer, or nothing.
-#[derive(Clone, Debug)]
-pub struct NowCard {
-    pub task: Task,
-    /// Seconds since the timer started, derived from the injected `now`.
-    ///
-    /// The instant itself stays on `task.active_since`; carrying it twice would
-    /// be two answers to one question the moment a refresh replaced one of them.
-    pub elapsed_secs: i64,
-}
-
-impl NowCard {
-    /// Time on this task including the interval still running.
-    ///
-    /// The open interval is deliberately NOT folded into `tracked` by the core,
-    /// and `render.rs` records why: an active task must say the clock is still
-    /// running, or its tracked total reads as the final answer when it is only
-    /// the total so far.
-    pub fn total_secs(&self) -> i64 {
-        self.task.tracked_secs.saturating_add(self.elapsed_secs)
-    }
-}
-
-/// What to pick up next: the working set, by urgency.
+/// The one task list, grouped by project.
+///
+/// D80's ruling, and the reason it is one: NOW, NEXT UP, DUE, BLOCKED and
+/// RECENT were five panels over the same rows, so the same task could be drawn
+/// three times on one screen while the panel that answers "what now" truncated
+/// at fifteen of twenty-four. They fold in as a marker, a column and a sort.
 #[derive(Clone, Debug, Default)]
-pub struct NextUp {
-    pub rows: Vec<Task>,
+pub struct Tasks {
+    pub groups: Vec<TaskGroup>,
     /// The ramp denominator, computed the way `render` computes it so the
     /// dashboard and `tasqx list` shade the same task the same colour.
     pub max_urgency: f64,
+    /// Every row across every group, so a panel can size itself without
+    /// walking them.
+    pub total: usize,
+    pub sort: Sort,
 }
 
-/// Deadlines, bucketed by calendar date.
-#[derive(Clone, Debug, Default)]
-pub struct Due {
-    pub overdue: Vec<Task>,
-    pub today: Vec<Task>,
-    pub tomorrow: Vec<Task>,
-    pub week: Vec<Task>,
+/// One project's tasks, and the two counts its heading carries.
+#[derive(Clone, Debug)]
+pub struct TaskGroup {
+    project: Option<String>,
+    pub overdue: usize,
+    pub rows: Vec<Task>,
 }
 
-impl Due {
-    pub fn is_empty(&self) -> bool {
-        self.overdue.is_empty()
-            && self.today.is_empty()
-            && self.tomorrow.is_empty()
-            && self.week.is_empty()
+impl TaskGroup {
+    /// Sanitised project name, `None` for the project-less bucket.
+    pub fn project(&self) -> Option<&str> {
+        self.project.as_deref()
     }
 }
 
-/// Work that is standing still — invisible on every other default surface,
-/// because `@working` excludes blocked tasks.
-#[derive(Clone, Debug, Default)]
-pub struct Blocked {
-    pub rows: Vec<Task>,
+/// What the list is ordered by. `RECENT` was a panel; it is this.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Sort {
+    /// Hottest first — the question the screen exists to answer.
+    #[default]
+    Urgency,
+    /// Soonest deadline first, undated last.
+    Due,
+    /// Most recently touched first. What RECENT drew, without a panel.
+    Touched,
 }
 
-/// Recently touched tasks, newest first.
+impl Sort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Urgency => "urgency",
+            Sort::Due => "due",
+            Sort::Touched => "touched",
+        }
+    }
+
+    /// The next one `s` cycles to.
+    pub fn next(self) -> Sort {
+        match self {
+            Sort::Urgency => Sort::Due,
+            Sort::Due => Sort::Touched,
+            Sort::Touched => Sort::Urgency,
+        }
+    }
+}
+
+/// Group `rows` by project and order both the groups and the rows in them.
 ///
-/// Unfiltered by status on purpose: a task finished four minutes ago is exactly
-/// what this panel answers. Its blind spot is documented rather than papered
-/// over — `token.add` does not bump `modified`, so tasks whose only recent
-/// activity is attributed AI spend do not appear. The rows are absent, not
-/// approximate, which is why there is no hedge in the panel.
-#[derive(Clone, Debug, Default)]
-pub struct Recent {
-    pub rows: Vec<Task>,
+/// Groups are ordered by their hottest task, not alphabetically: the list is
+/// read from the top, and a project whose most urgent row is a 0.1 does not
+/// belong above one holding an 18.5 because its name starts earlier.
+///
+/// Under `Sort::Touched` the grouping is DROPPED — "what did I touch last" is a
+/// question about the store, not about a project, and grouping it would sort
+/// the answer away from the top of the screen.
+pub fn group_tasks(rows: Vec<Task>, today: Date, sort: Sort) -> Tasks {
+    // Which rows belong in the list is a property of the ORDER it is in.
+    //
+    // Under urgency and due it is open work: a finished task has no urgency to
+    // rank and no deadline left to meet. Under `touched` it is everything —
+    // that ordering is what RECENT was a panel for, and RECENT's whole point
+    // was that "a task finished four minutes ago is exactly what this answers".
+    // Dropping closed rows there would fold the panel in and lose the question
+    // it existed to answer.
+    let mut rows: Vec<Task> = match sort {
+        Sort::Touched => rows,
+        _ => rows.into_iter().filter(|t| t.status.is_open()).collect(),
+    };
+    let max_urgency = rows
+        .iter()
+        .map(|t| t.urgency)
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
+    let total = rows.len();
+    let overdue_of = |t: &Task| t.due_date().is_some_and(|d| d < today);
+
+    let order = |a: &Task, b: &Task| match sort {
+        Sort::Urgency => b
+            .urgency
+            .partial_cmp(&a.urgency)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.short_id.cmp(&b.short_id)),
+        // Undated last rather than first: `None` sorts before `Some` by
+        // default, which would open the list with every task that has no
+        // deadline at all under a heading about deadlines.
+        Sort::Due => a
+            .due
+            .is_none()
+            .cmp(&b.due.is_none())
+            .then(a.due.cmp(&b.due))
+            .then(a.short_id.cmp(&b.short_id)),
+        Sort::Touched => b
+            .modified
+            .cmp(&a.modified)
+            .then(a.short_id.cmp(&b.short_id)),
+    };
+    rows.sort_by(order);
+
+    if sort == Sort::Touched {
+        let overdue = rows.iter().filter(|t| overdue_of(t)).count();
+        return Tasks {
+            groups: vec![TaskGroup {
+                project: None,
+                overdue,
+                rows,
+            }],
+            max_urgency,
+            total,
+            sort,
+        };
+    }
+
+    let mut groups: Vec<TaskGroup> = Vec::new();
+    for t in rows {
+        let key = t.project().map(str::to_string);
+        match groups.iter_mut().find(|g| g.project == key) {
+            Some(g) => g.rows.push(t),
+            None => groups.push(TaskGroup {
+                project: key,
+                overdue: 0,
+                rows: vec![t],
+            }),
+        }
+    }
+    for g in &mut groups {
+        g.overdue = g.rows.iter().filter(|t| overdue_of(t)).count();
+    }
+    // The first row of each group is its hottest (or soonest), so the groups
+    // are already comparable by it.
+    groups.sort_by(|a, b| match (a.rows.first(), b.rows.first()) {
+        (Some(x), Some(y)) => order(x, y),
+        _ => std::cmp::Ordering::Equal,
+    });
+
+    Tasks {
+        groups,
+        max_urgency,
+        total,
+        sort,
+    }
 }
 
 /// One project's roll-up.
@@ -399,14 +519,11 @@ pub struct Dashboard {
     /// buckets it is drawing whenever a redraw straddles midnight.
     pub today: Date,
     pub status: StatusBar,
-    pub now: Option<NowCard>,
-    pub next: NextUp,
-    pub due: Due,
-    pub blocked: Blocked,
-    pub recent: Recent,
     pub projects: Projects,
     pub burndown: Burndown,
     pub tokens: Tokens,
+    /// The one task list D80 folds NOW, NEXT UP, DUE, BLOCKED and RECENT into.
+    pub tasks: Tasks,
 }
 
 // ============================================================================
@@ -454,6 +571,13 @@ pub struct Sources<'a> {
 /// itself could not be tested at a fixed instant — the rule `datetime.rs` states
 /// and `remind.rs` follows.
 pub fn build(src: Sources<'_>, now: Timestamp, today: Date) -> Dashboard {
+    build_sorted(src, now, today, Sort::default())
+}
+
+/// [`build`] with the list order the reader last chose, which `r` and the
+/// auto-refresh have to carry across a rebuild — a refresh that silently reset
+/// the sort would be the screen undoing a keypress.
+pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -> Dashboard {
     let Sources {
         tasks,
         summary,
@@ -466,65 +590,30 @@ pub fn build(src: Sources<'_>, now: Timestamp, today: Date) -> Dashboard {
         .filter_map(Task::from_json)
         .collect();
 
-    // ---- NOW: the newest running timer -----------------------------------
-    let now_card = all
-        .iter()
-        .filter(|t| t.active_since.is_some())
-        .max_by_key(|t| t.active_since)
-        .map(|t| {
-            let started = t.active_since.expect("filtered on is_some");
-            NowCard {
-                task: t.clone(),
-                // Saturating, and signed on purpose: a store written by a
-                // machine whose clock has since moved back would otherwise
-                // produce a negative elapsed that formats as nonsense.
-                elapsed_secs: (now.as_second() - started.as_second()).max(0),
-            }
-        });
-
-    // ---- NEXT UP: the working set ----------------------------------------
-    let mut next_rows: Vec<Task> = all
-        .iter()
-        .filter(|t| t.status.is_open() && !t.blocked && t.status != Status::Backlog)
-        .cloned()
-        .collect();
-    next_rows.sort_by(|a, b| b.urgency.total_cmp(&a.urgency));
-    let max_urgency = next_rows
-        .iter()
-        .map(|t| t.urgency)
-        .fold(0.0_f64, f64::max)
-        .max(1.0);
-
-    // ---- DUE: bucketed on the calendar ------------------------------------
-    let mut due = Due::default();
-    let tomorrow = today.saturating_add(1.days());
-    let week_end = today.saturating_add(7.days());
-    let mut dated: Vec<&Task> = all
-        .iter()
-        .filter(|t| t.status.is_open() && t.due.is_some())
-        .collect();
-    dated.sort_by_key(|t| t.due);
-    for t in dated {
-        let Some(d) = t.due_date() else { continue };
-        if d < today {
-            due.overdue.push(t.clone());
-        } else if d == today {
-            due.today.push(t.clone());
-        } else if d == tomorrow {
-            due.tomorrow.push(t.clone());
-        } else if d <= week_end {
-            due.week.push(t.clone());
+    // ---- the one list -----------------------------------------------------
+    //
+    // NOW, NEXT UP, DUE, BLOCKED and RECENT each built their own Vec over these
+    // same rows, and each cloned. One grouped list replaces all five (D80);
+    // what they selected on is on the row — `active_since`, `blocked`, `due`,
+    // `modified` — so the marker, the column and the sort read it directly.
+    let mut rows: Vec<Task> = all.clone();
+    for t in &mut rows {
+        if let Some(started) = t.active_since {
+            // Saturating, and signed on purpose: a store written by a machine
+            // whose clock has since moved back would otherwise produce a
+            // negative elapsed that formats as nonsense.
+            let elapsed = (now.as_second() - started.as_second()).max(0);
+            t.running_secs = Some(t.tracked_secs + elapsed);
         }
     }
-
-    // ---- BLOCKED ----------------------------------------------------------
-    let blocked = Blocked {
-        rows: all
-            .iter()
-            .filter(|t| t.status.is_open() && t.blocked)
-            .cloned()
-            .collect(),
-    };
+    let overdue_now = rows
+        .iter()
+        .filter(|t| t.status.is_open() && t.due_date().is_some_and(|d| d < today))
+        .count();
+    let blocked_now = rows
+        .iter()
+        .filter(|t| t.status.is_open() && t.blocked)
+        .count();
 
     // ---- PROJECTS + TOKENS: one summary, joined to the snapshot ----------
     let (projects_panel, tokens_panel) = build_projects_and_tokens(&all, summary, projects, today);
@@ -557,35 +646,21 @@ pub fn build(src: Sources<'_>, now: Timestamp, today: Date) -> Dashboard {
             .map(render::san),
         open: all.iter().filter(|t| t.status.is_open()).count(),
         active: all.iter().filter(|t| t.active_since.is_some()).count(),
-        // Taken FROM the panels, never recounted, so the header cannot
-        // disagree with the body it sits above.
-        overdue: due.overdue.len(),
-        blocked: blocked.rows.len(),
+        // Counted from the SAME rows the list draws, so the header cannot
+        // disagree with the body under it — the rule that used to be "taken
+        // from the panels", now that there is one panel to take them from.
+        overdue: overdue_now,
+        blocked: blocked_now,
         done_week: all
             .iter()
             .filter(|t| t.completed.is_some_and(|c| c.as_second() >= week_ago))
             .count(),
     };
 
-    // ---- RECENT -----------------------------------------------------------
-    // Built LAST, so the one panel that wants every row takes the snapshot by
-    // move: as a clone this was the largest per-refresh allocation — every
-    // Task with all its strings, every five seconds under auto-refresh.
-    let mut recent_rows: Vec<Task> = all;
-    recent_rows.sort_by_key(|t| std::cmp::Reverse(t.modified));
-    let recent = Recent { rows: recent_rows };
-
     Dashboard {
         today,
         status,
-        now: now_card,
-        next: NextUp {
-            rows: next_rows,
-            max_urgency,
-        },
-        due,
-        blocked,
-        recent,
+        tasks: group_tasks(rows, today, sort),
         projects: projects_panel,
         burndown,
         tokens: tokens_panel,
@@ -758,11 +833,11 @@ fn build_projects_and_tokens(
 /// The panels, in the order they are numbered on screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum PanelId {
-    Now,
-    Next,
-    Due,
-    Blocked,
-    Recent,
+    /// The one task list (D80). NOW, NEXT UP, DUE, BLOCKED and RECENT were
+    /// five panels over the same rows — a task could be drawn three times on
+    /// one screen while the panel answering "what now" truncated at fifteen of
+    /// twenty-four — and they fold in here as a marker, a column and a sort.
+    Tasks,
     Projects,
     Burndown,
     Tokens,
@@ -778,8 +853,26 @@ pub enum PanelId {
 /// (`the_panel_vocabulary_round_trips`), the shape `docs.rs` already uses
 /// against clap. `Slot` is absent on purpose: it is a layout artefact, not a
 /// panel anyone can ask for.
-pub const PANEL_NAMES: &[&str] = &[
-    "now", "next", "due", "blocked", "recent", "projects", "burndown", "tokens",
+pub const PANEL_NAMES: &[&str] = &["tasks", "projects", "burndown", "tokens"];
+
+/// The panel names D80 retired, and the panel each now means.
+///
+/// A config that says `dashboard.panels = "now,next,due"` was written against a
+/// screen that existed; rejecting it as five unknown words would be the tool
+/// telling a reader their setting is wrong when what happened is that it moved.
+/// They all resolve to `tasks`, which is where their rows went.
+pub const RETIRED_PANEL_NAMES: [&str; 5] = ["now", "next", "due", "blocked", "recent"];
+
+/// Every word `dashboard.panels` accepts: the panels, plus the names D80
+/// retired.
+///
+/// Separate from [`PANEL_NAMES`] because the two answer different questions.
+/// `PANEL_NAMES` is what the setting OFFERS — what `config list` prints and
+/// what a reader should type. This is what it TOLERATES, so a file written
+/// against the eight-panel screen still validates instead of being refused
+/// word by word for naming panels that used to exist.
+pub const ACCEPTED_PANEL_NAMES: [&str; 9] = [
+    "tasks", "projects", "burndown", "tokens", "now", "next", "due", "blocked", "recent",
 ];
 
 impl PanelId {
@@ -787,11 +880,7 @@ impl PanelId {
     /// `Slot` has none — nothing configures it.
     pub fn slug(self) -> Option<&'static str> {
         Some(match self {
-            PanelId::Now => "now",
-            PanelId::Next => "next",
-            PanelId::Due => "due",
-            PanelId::Blocked => "blocked",
-            PanelId::Recent => "recent",
+            PanelId::Tasks => "tasks",
             PanelId::Projects => "projects",
             PanelId::Burndown => "burndown",
             PanelId::Tokens => "tokens",
@@ -801,31 +890,35 @@ impl PanelId {
 
     /// The panel a config value names, or `None` for a word that is not one.
     pub fn from_slug(s: &str) -> Option<PanelId> {
-        [
-            PanelId::Now,
-            PanelId::Next,
-            PanelId::Due,
-            PanelId::Blocked,
-            PanelId::Recent,
-            PanelId::Projects,
-            PanelId::Burndown,
-            PanelId::Tokens,
-        ]
-        .into_iter()
-        .find(|p| p.slug() == Some(s))
+        if RETIRED_PANEL_NAMES.contains(&s) {
+            return Some(PanelId::Tasks);
+        }
+        // Walked over `PANEL_NAMES` rather than a second list of the same
+        // panels written out here — that pair is exactly the drift
+        // `the_panel_vocabulary_round_trips` exists to catch, and the cheapest
+        // way to pass it is not to have the pair.
+        PANEL_NAMES
+            .iter()
+            .find(|name| **name == s)
+            .and_then(|name| {
+                [
+                    PanelId::Tasks,
+                    PanelId::Projects,
+                    PanelId::Burndown,
+                    PanelId::Tokens,
+                ]
+                .into_iter()
+                .find(|p| p.slug() == Some(*name))
+            })
     }
 
     /// The digit that focuses (or, in the slot, places) this panel.
     pub fn digit(self) -> Option<u8> {
         Some(match self {
-            PanelId::Now => 1,
-            PanelId::Next => 2,
-            PanelId::Due => 3,
-            PanelId::Blocked => 4,
-            PanelId::Recent => 5,
-            PanelId::Projects => 6,
-            PanelId::Burndown => 7,
-            PanelId::Tokens => 8,
+            PanelId::Tasks => 1,
+            PanelId::Projects => 2,
+            PanelId::Burndown => 3,
+            PanelId::Tokens => 4,
             PanelId::Slot => return None,
         })
     }
@@ -835,11 +928,7 @@ impl PanelId {
 
     pub fn title(self) -> &'static str {
         match self {
-            PanelId::Now => "NOW",
-            PanelId::Next => "NEXT UP",
-            PanelId::Due => "DUE",
-            PanelId::Blocked => "BLOCKED",
-            PanelId::Recent => "RECENT",
+            PanelId::Tasks => "TASKS",
             PanelId::Projects => "PROJECTS",
             PanelId::Burndown => "BURNDOWN",
             PanelId::Tokens => "TOKENS",
@@ -871,38 +960,13 @@ struct Spec {
     grows: bool,
 }
 
-const SPECS: [Spec; 9] = [
+const SPECS: [Spec; 5] = [
     Spec {
-        id: PanelId::Now,
+        // The list. It is the screen, so it takes rows until it runs out of
+        // tasks and it never stops at a level: `Detail` reads as a richness
+        // setting, and this panel has exactly one richness.
+        id: PanelId::Tasks,
         full: 3,
-        compact: Some(2),
-        oneline: Some(1),
-        grows: false,
-    },
-    Spec {
-        id: PanelId::Next,
-        full: 4,
-        compact: Some(2),
-        oneline: Some(1),
-        grows: true,
-    },
-    Spec {
-        id: PanelId::Due,
-        full: 5,
-        compact: Some(2),
-        oneline: Some(1),
-        grows: true,
-    },
-    Spec {
-        id: PanelId::Blocked,
-        full: 3,
-        compact: Some(2),
-        oneline: Some(1),
-        grows: true,
-    },
-    Spec {
-        id: PanelId::Recent,
-        full: 4,
         compact: Some(2),
         oneline: Some(1),
         grows: true,
@@ -914,15 +978,10 @@ const SPECS: [Spec; 9] = [
         oneline: Some(1),
         grows: true,
     },
-    // No one-line burndown: a sparkline needs an axis to mean anything. Three
-    // is the whole panel — spark, axis, and the row the "window clipped"
-    // warning uses. `full: 5` with `compact: 3` promised space `burndown_body`
-    // never fills, and the fit dutifully handed it over: two lines of chart in
-    // a five-row box.
     Spec {
         id: PanelId::Burndown,
         full: 3,
-        compact: None,
+        compact: Some(2),
         oneline: None,
         grows: true,
     },
@@ -931,15 +990,13 @@ const SPECS: [Spec; 9] = [
         full: 3,
         compact: Some(2),
         oneline: Some(1),
-        grows: false,
+        grows: true,
     },
-    // The slot is all-or-nothing, and the number is the tallest Full among its
-    // members (Projects, Burndown and Tokens are three each) rather than a
-    // round six. Six outlived the burndown spec it was sized against, and on
-    // the one-column rung it spent three blank rows that NEXT UP and RECENT
-    // were being truncated for. `demand` grows it past three whenever the
-    // occupant has more rows to show.
     Spec {
+        // No level below `full`. The slot holds a chart or a table, and either
+        // of those in one line is neither — so below three rows it is omitted
+        // rather than shrunk, which is the fit's own rule for a panel that
+        // cannot be drawn whole.
         id: PanelId::Slot,
         full: 3,
         compact: None,
@@ -1156,7 +1213,7 @@ pub fn layout(
     Some(Screen {
         columns,
         status: Placement {
-            id: PanelId::Now, // the status bar is not a panel; `id` is unused
+            id: PanelId::Tasks, // the status bar is not a panel; `id` is unused
             detail: Detail::OneLine,
             x: 0,
             y: 0,
@@ -1173,61 +1230,30 @@ pub fn layout(
 /// only where there is not room for its three members separately.
 fn column_table(rung: Rung) -> Vec<Vec<PanelId>> {
     match rung {
-        // RECENT sits with the small panels, not under NEXT UP.
-        //
-        // Column one holds the panel that answers the screen's question, and it
-        // was sharing with the one that answers what already happened — so NEXT
-        // UP truncated at fifteen of twenty-four tasks while the first column,
-        // holding a card, a blocked row, a project list and a token total, had
-        // twenty-three rows of nothing under it. Whichever panel is last in
-        // `RAISE_ORDER` is the one that should be absorbing a column's slack,
-        // and that is RECENT.
         // Two columns on every wide rung, not three.
         //
         // Three columns divided 120 cells into forty, and forty cells is where
-        // a task title stops being a title: NEXT UP truncated every row it drew
-        // while a third of the screen sat blank INSIDE the other two columns.
-        // Widening the terminal did not fix it — at 160 the same three columns
-        // held the same content and left the same holes — because the shortage
-        // was never width. A store has one running card, whatever is blocked,
-        // whatever is overdue and one token total to put somewhere, and those
-        // do not fill a column between them at any width.
+        // a task title stops being a title. Widening the terminal did not fix
+        // it — at 160 the same three columns held the same content and left the
+        // same holes — because the shortage was never width.
         //
-        // So: one column for the panel that answers the screen's question, one
-        // for everything else. RECENT goes last, where it absorbs whatever the
-        // panels above it did not want — it is the only one with more content
-        // than any screen can hold, and the only one nobody opens the screen
-        // for.
+        // The list gets a column to itself; everything that gives it context —
+        // where the work is, how it is burning down, what it has cost — shares
+        // the other. That is the mockup's arrangement (`docs/specs/
+        // 2026-09-02-dashboard-redesign-mockup.html`) and D80's.
         Rung::Xl | Rung::L => vec![
-            vec![
-                PanelId::Now,
-                PanelId::Blocked,
-                PanelId::Due,
-                PanelId::Burndown,
-                PanelId::Projects,
-                PanelId::Tokens,
-            ],
-            vec![PanelId::Next, PanelId::Recent],
+            vec![PanelId::Projects, PanelId::Burndown, PanelId::Tokens],
+            vec![PanelId::Tasks],
         ],
-        Rung::M => vec![
-            vec![PanelId::Now, PanelId::Next, PanelId::Blocked],
-            vec![PanelId::Due, PanelId::Recent, PanelId::Slot],
-        ],
-        Rung::S => vec![vec![
-            PanelId::Now,
-            PanelId::Next,
-            PanelId::Due,
-            PanelId::Blocked,
-            PanelId::Slot,
-            PanelId::Recent,
-        ]],
-        Rung::Xs => vec![vec![
-            PanelId::Now,
-            PanelId::Next,
-            PanelId::Due,
-            PanelId::Blocked,
-            PanelId::Recent,
-        ]],
+        // Under 120 a context column would starve the list, so all three
+        // analytics panels fold into the slot — which is what the slot is for,
+        // and drawing PROJECTS both beside the slot and inside it would be the
+        // same panel twice.
+        Rung::M => vec![vec![PanelId::Slot], vec![PanelId::Tasks]],
+        Rung::S => vec![vec![PanelId::Tasks, PanelId::Slot]],
+        // The floor: nothing but the list. Every other panel is context, and
+        // context is what you drop first.
+        Rung::Xs => vec![vec![PanelId::Tasks]],
     }
 }
 
@@ -1255,19 +1281,12 @@ pub(crate) const RUNG_MIN_WIDTH: [(Rung, u16); 5] = [
 /// Not the display order: this is what a reader wants *more* of first. NEXT UP
 /// earns rows before RECENT does, because choosing what to do next is the
 /// question the screen exists to answer.
-const RAISE_ORDER: [PanelId; 9] = [
-    PanelId::Next,
-    PanelId::Now,
-    PanelId::Due,
-    PanelId::Blocked,
+const RAISE_ORDER: [PanelId; 5] = [
+    // The list first, and by a distance: it is the question the screen exists
+    // to answer, and everything under it is context for it.
+    PanelId::Tasks,
     PanelId::Projects,
     PanelId::Burndown,
-    // RECENT is history. It used to sit fourth, ahead of what is blocked, what
-    // is in flight and where the work is going — so on a wide terminal the
-    // second-largest thing on a "what now" screen was a list of what had
-    // already happened, cancelled and done rows included. It still earns rows
-    // before the slot and the token totals; it stops outranking the present.
-    PanelId::Recent,
     PanelId::Tokens,
     PanelId::Slot,
 ];
@@ -1305,44 +1324,36 @@ pub fn demand(dash: &Dashboard, slot_members: &[PanelId], id: PanelId) -> u16 {
         // how much there is to list — except when there is no task, where
         // `now_body` has one sentence and asking for three rows leaves two
         // blank at the top of the first screen anyone ever sees.
-        PanelId::Now => {
-            if dash.now.is_some() {
-                spec(id).full
+        // Every task, plus a heading per group. An over-estimate where it
+        // cannot be exact, per this function's own rule: a row too many is a
+        // blank line, a row too few hides a task behind a `…1 more` the space
+        // was there for.
+        PanelId::Tasks => {
+            let headings = if dash.tasks.sort == Sort::Touched {
+                0
             } else {
-                1
-            }
+                dash.tasks.groups.len()
+            };
+            n(dash.tasks.total + headings)
         }
         // A step line reads better the taller it is — the shape IS the answer,
         // and eight rows is where a swing stops being a texture and becomes a
         // slope (`chart::BURNDOWN_ROWS`). The sparkline this replaced could not
         // use height at all, and the ceiling said so: "a wider window means a
         // longer sparkline, never a taller one". It does now.
-        //
-        // Ten is the plot plus the row `burndown_body` spends on the axis
-        // footer, plus one more when the window was clipped. A ceiling, not a
-        // floor: `fit` only ever hands over rows a neighbour is not asking for.
         PanelId::Burndown => {
             let plot = u16::try_from(crate::chart::BURNDOWN_ROWS).unwrap_or(8);
             plot + 1 + u16::from(dash.burndown.truncated)
         }
-        PanelId::Next => n(dash.next.rows.len()),
-        PanelId::Blocked => n(dash.blocked.rows.len()),
-        PanelId::Recent => n(dash.recent.rows.len()),
         // Only the projects with work in them, plus the line that accounts for
         // the rest. A dashboard answers "what now", and a project with nothing
         // open does not participate in that question — on a real store fourteen
-        // of twenty said `0 open`, and the panel was handed a row for each of
-        // them while NEXT UP, one column over, truncated every title it drew.
+        // of twenty said `0 open`, and the panel was handed a row for each.
         PanelId::Projects => {
             let live = dash.projects.rows.iter().filter(|r| r.open > 0).count();
             n(live) + u16::from(live < dash.projects.rows.len())
         }
         PanelId::Tokens => n(dash.tokens.rows.len()),
-        PanelId::Due => {
-            let d = &dash.due;
-            let bucket = |rows: &Vec<Task>| if rows.is_empty() { 0 } else { rows.len() + 1 };
-            n(bucket(&d.overdue) + bucket(&d.today) + bucket(&d.tomorrow) + bucket(&d.week))
-        }
         PanelId::Slot => slot_members
             .iter()
             .map(|m| demand(dash, &[], *m))
@@ -1368,20 +1379,13 @@ pub fn demand(dash: &Dashboard, slot_members: &[PanelId], id: PanelId) -> u16 {
 /// integer that nothing read.
 pub fn row_count(dash: &Dashboard, id: PanelId) -> usize {
     match id {
+        PanelId::Tasks => dash.tasks.total,
         // #228.13: NOW is the one row a reader looks at most — the task
         // actively running — and it drew no cursor at all, so it was the
         // only row-bearing panel Enter never reached. It carries at most one
         // row (the running task, if any), which is exactly what a cursor of
         // 0/1 already expresses without a new code path.
-        PanelId::Now => usize::from(dash.now.is_some()),
-        PanelId::Next => dash.next.rows.len(),
-        PanelId::Blocked => dash.blocked.rows.len(),
-        PanelId::Recent => dash.recent.rows.len(),
         PanelId::Projects => dash.projects.rows.len(),
-        PanelId::Due => {
-            let d = &dash.due;
-            d.overdue.len() + d.today.len() + d.tomorrow.len() + d.week.len()
-        }
         _ => 0,
     }
 }
@@ -1549,21 +1553,9 @@ impl TaskDetail {
 /// one. [`project_at`] is `⏎`'s answer there instead (#204).
 pub fn row_at(dash: &Dashboard, id: PanelId, idx: usize) -> Option<&Task> {
     match id {
-        PanelId::Now if idx == 0 => dash.now.as_ref().map(|c| &c.task),
-        PanelId::Next => dash.next.rows.get(idx),
-        PanelId::Blocked => dash.blocked.rows.get(idx),
-        PanelId::Recent => dash.recent.rows.get(idx),
-        PanelId::Due => {
-            let d = &dash.due;
-            let mut n = idx;
-            for rows in [&d.overdue, &d.today, &d.tomorrow, &d.week] {
-                if n < rows.len() {
-                    return rows.get(n);
-                }
-                n -= rows.len();
-            }
-            None
-        }
+        // Group headings are not rows: the cursor walks the tasks, and the
+        // headings between them are drawn, not landed on.
+        PanelId::Tasks => dash.tasks.groups.iter().flat_map(|g| &g.rows).nth(idx),
         _ => None,
     }
 }

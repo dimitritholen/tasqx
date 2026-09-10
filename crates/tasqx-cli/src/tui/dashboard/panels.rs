@@ -19,7 +19,10 @@ use crate::theme::{Caps, Theme};
 use crate::tokens;
 use crate::tui::{first_visible, rt_style};
 
-use super::model::{Dashboard, Detail, PanelId, StatusBar, Task};
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
+
+use super::model::{Dashboard, Detail, PanelId, Prio, Sort, StatusBar, Task, TaskGroup};
 
 /// Where the reader is in this panel, and whether this panel is the one they
 /// are reading.
@@ -56,12 +59,6 @@ fn cursor_cell(at: bool, s: &Styles, unicode: bool) -> Span<'static> {
     Span::styled(glyph, if at { s.accent } else { s.muted })
 }
 
-/// `01:23:07` — a running clock.
-pub fn hms(secs: i64) -> String {
-    let s = secs.max(0);
-    format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
-}
-
 /// `4h`, `6h12`, `45m`, `30s` — a duration at a glance.
 ///
 /// Deliberately not `humanize_secs` from core's markdown module: that one
@@ -81,39 +78,6 @@ pub fn dur_compact(secs: i64) -> String {
     } else {
         format!("{s}s")
     }
-}
-
-/// `-2d`, `6h`, `17:00` — how a deadline reads relative to now.
-pub fn when_cell(task: &Task, today: jiff::civil::Date) -> String {
-    let Some(d) = task.due_date() else {
-        return String::new();
-    };
-    let days = (d - today).get_days();
-    match days {
-        0 => {
-            // Midnight is the store's spelling of "no time given", so a
-            // date-only due must not claim to be due at 00:00.
-            let t = task.due.map(|t| t.to_zoned(jiff::tz::TimeZone::UTC));
-            match t {
-                Some(z) if z.hour() != 0 || z.minute() != 0 => {
-                    format!("{:02}:{:02}", z.hour(), z.minute())
-                }
-                _ => "today".to_string(),
-            }
-        }
-        d if d < 0 => format!("{}d", d),
-        d => format!("+{d}d"),
-    }
-}
-
-/// Pad `s` to `cells`, measuring in cells.
-/// Pad to `cells`, never truncating — [`render::pad`] under a local name.
-///
-/// A thin wrapper rather than a second implementation: this module is entirely
-/// cell arithmetic, and the file it lives beside already carries the one
-/// function whose doc explains why `format!("{s:<n}")` is wrong here.
-fn pad(s: &str, cells: usize) -> String {
-    render::pad(s, cells)
 }
 
 /// Right-align `right` against `left` inside `cells`, cutting `left` if needed.
@@ -190,7 +154,11 @@ impl PanelCtx<'_> {
 #[allow(clippy::too_many_arguments)]
 pub fn body(
     id: PanelId,
-    detail: Detail,
+    // Unused since D80: every body is handed a height and fills it, and the
+    // one builder that branched on the level (`now_body`) folded into TASKS.
+    // Kept in the signature because `layout` still computes a level and the
+    // caller still has one to pass; dropping it there is a separate change.
+    _detail: Detail,
     dash: &Dashboard,
     width: u16,
     height: u16,
@@ -206,11 +174,7 @@ pub fn body(
         caps,
     };
     let mut lines = match id {
-        PanelId::Now => now_body(dash, detail, &ctx),
-        PanelId::Next => next_body(dash, &ctx, cursor),
-        PanelId::Due => due_body(dash, &ctx, cursor),
-        PanelId::Blocked => blocked_body(dash, &ctx, cursor),
-        PanelId::Recent => recent_body(dash, &ctx, cursor),
+        PanelId::Tasks => tasks_body(dash, &ctx, cursor),
         PanelId::Projects => projects_body(dash, &ctx, cursor),
         PanelId::Burndown => burndown_body(dash, &ctx),
         PanelId::Tokens => tokens_body(dash, &ctx),
@@ -218,48 +182,6 @@ pub fn body(
     };
     lines.truncate(height as usize);
     lines
-}
-
-fn now_body(dash: &Dashboard, detail: Detail, ctx: &PanelCtx) -> Vec<Line<'static>> {
-    let (s, w, unicode) = (&ctx.s, ctx.w, ctx.unicode());
-    let Some(card) = &dash.now else {
-        return empty("no timer running · p to pick one", s, w as u16, unicode);
-    };
-    let marker = if unicode { "▶" } else { ">" };
-    let head = Line::from(vec![
-        Span::styled(format!("{marker} "), s.active),
-        Span::styled(format!("#{} ", card.task.short_id), s.accent),
-        Span::styled(
-            render::truncate(card.task.title(), w.saturating_sub(6), unicode),
-            s.plain,
-        ),
-    ]);
-    if detail == Detail::OneLine {
-        return vec![head];
-    }
-    let proj = card.task.project().unwrap_or("—").to_string();
-    let clock = hms(card.elapsed_secs);
-    let second = Line::from(Span::styled(
-        split_row(&format!("  {proj}"), &clock, w, unicode),
-        s.project,
-    ));
-    if detail == Detail::Compact {
-        return vec![head, second];
-    }
-    let est = card
-        .task
-        .estimate_secs
-        .map(|e| format!("est {}", dur_compact(e)))
-        .unwrap_or_else(|| "no estimate".to_string());
-    let third = Line::from(Span::styled(
-        render::truncate(
-            &format!("  {est} · tracked {}", dur_compact(card.total_secs())),
-            w,
-            unicode,
-        ),
-        s.muted,
-    ));
-    vec![head, second, third]
 }
 
 /// `(first line, lines to draw, lines still hidden below)` for a list panel,
@@ -307,15 +229,6 @@ fn window(cursor: usize, len: usize, visible: usize) -> (usize, usize, usize) {
     (start, drawn, len - start - drawn)
 }
 
-/// The id column is sized from EVERY row the panel can scroll to, not from the
-/// screenful being drawn — otherwise the columns re-align on every `j` press.
-fn id_width(rows: &[Task]) -> usize {
-    rows.iter()
-        .map(|t| render::width(&format!("#{}", t.short_id)))
-        .max()
-        .unwrap_or(3)
-}
-
 fn more_line(hidden: usize, s: &Styles, w: usize, unicode: bool) -> Option<Line<'static>> {
     (hidden > 0).then(|| {
         Line::from(Span::styled(
@@ -325,183 +238,241 @@ fn more_line(hidden: usize, s: &Styles, w: usize, unicode: bool) -> Option<Line<
     })
 }
 
-fn next_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
+/// The TASKS panel: one list, grouped by project, in the same idiom `tasqx
+/// list` draws (D117).
+///
+/// Five panels folded in here. The running timer and anything blocked are the
+/// LEFT RAIL — `▶` and `⊘`, the two states a reader needs before any other, in
+/// the column the eye crosses first. The deadline is a right-hand column
+/// carrying the same calendar words `due_cell` writes. What was RECENT is a
+/// sort, cycled with `s`.
+///
+/// The row is `list`'s: rail, id, priority and the urgency gauge, title, tags.
+/// Two screens drawing the same rows two different ways is what the house style
+/// exists to stop, and the dashboard was the screen still doing it.
+fn tasks_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
     let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
-    let (theme, caps) = (ctx.theme, ctx.caps);
-    let rows = &dash.next.rows;
-    if rows.is_empty() {
+    let t = &dash.tasks;
+    if t.total == 0 {
         return empty(
-            "nothing actionable — all done, blocked or waiting",
+            "nothing open — everything is done or waiting",
             s,
             w as u16,
             unicode,
         );
     }
-    let idw = id_width(rows);
-    let visible = height as usize;
-    let mut out = Vec::new();
-    let (start, room, hidden) = window(cursor.row, rows.len(), visible);
-    // `n` stays the index into the FULL row list — it is what the cursor is
-    // compared against — so the skip/take pair goes after the `enumerate`,
-    // never before it. `pick` records the same ordering trap.
-    for (n, t) in rows.iter().enumerate().skip(start).take(room) {
-        let at = cursor.shown && n == cursor.row;
-        let urg = format!("{:>4.1}", t.urgency);
-        let prio = t.priority.map(|p| p.as_str()).unwrap_or("-");
-        let head = format!("  {} {urg} {prio} ", pad(&format!("#{}", t.short_id), idw));
-        let rest = w.saturating_sub(render::width(&head));
-        // The ramp, over the same denominator `render` uses, so the dashboard
-        // and `tasqx list` shade the same task the same colour. `ramp_style`
-        // and NOT `role("urgency.ramp")`: the ramp is a sibling field of the
-        // role map, so that lookup compiles, runs, and silently returns an
-        // unstyled Style on every theme — a typo with no symptom.
-        let ramp = rt_style(theme.ramp_style(t.urgency / dash.next.max_urgency), caps);
-        // Priority has its own role per level, and `Prio::parse` admits nothing
-        // but H/M/L, so the formatted name can never miss.
-        let prio_style = t
-            .priority
-            .map(|p| rt_style(theme.role(&format!("priority.{}", p.as_str())), caps))
-            .unwrap_or(s.muted);
-        out.push(Line::from(vec![
-            cursor_cell(at, s, unicode),
-            Span::styled(pad(&format!("#{}", t.short_id), idw), s.accent),
-            Span::styled(format!(" {urg} "), ramp),
-            Span::styled(format!("{prio} "), prio_style),
-            Span::styled(render::truncate(t.title(), rest, unicode), s.plain),
-        ]));
-    }
-    if let Some(l) = more_line(hidden, s, w, unicode) {
-        out.push(l);
-    }
-    out
-}
 
-fn due_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
-    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
-    let d = &dash.due;
-    if d.is_empty() {
-        return empty("no deadlines this week", s, w as u16, unicode);
-    }
-    let today = dash.today;
-    let mut out = Vec::new();
-    let buckets: [(&str, &Vec<Task>, RtStyle); 4] = [
-        ("OVERDUE", &d.overdue, s.overdue),
-        ("TODAY", &d.today, s.warn),
-        ("TOMORROW", &d.tomorrow, s.muted),
-        ("THIS WEEK", &d.week, s.muted),
-    ];
-    // The cursor counts TASKS and the viewport is placed in LINES, so the one
-    // thing this panel owes the rest of the screen is the map between them. It
-    // is kept here, in the loop that builds the lines, rather than recomputed
-    // from the bucket lengths somewhere else — a second derivation of the same
-    // number is the drift this codebase keeps paying for.
-    let mut cursor_line = 0;
-    let mut row = 0usize;
-    for (name, rows, style) in buckets {
-        if rows.is_empty() {
+    // The drawn body is headings and rows interleaved, but the CURSOR walks
+    // rows only, so the window is computed over rows and the headings are laid
+    // in around whatever it chose.
+    //
+    // Headings are dropped entirely when they would cost more than they say. A
+    // panel with one row of space spent it on `▍ work — 5 open` and drew no
+    // task at all, which is a heading for nothing: the group's whole meaning is
+    // the rows under it. Half the panel is the line — below that the rows win,
+    // and the project is still on every row's own group when the panel grows.
+    let headings = t.sort != Sort::Touched && height as usize > t.groups.len() * 2;
+    let reserved = if headings { t.groups.len() } else { 0 };
+    let visible_rows = (height as usize).saturating_sub(reserved).max(1);
+    let (start, room, hidden) = window(cursor.row, t.total, visible_rows);
+
+    let id_w = t
+        .groups
+        .iter()
+        .flat_map(|g| &g.rows)
+        .map(|task| render::width(&format!("#{}", task.short_id)))
+        .max()
+        .unwrap_or(3);
+    let gauge_w = if unicode { 5 } else { 0 };
+    // cursor(2) + rail(2) + id + gap + priority(1) + space + gauge
+    // + urgency(4) + gap
+    let head_w = 2 + 2 + id_w + 2 + 2 + gauge_w + 4 + 2;
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut idx = 0usize; // the row index the cursor is expressed in
+    for g in &t.groups {
+        let first = idx;
+        let last = idx + g.rows.len();
+        idx = last;
+        // A group entirely above or below the window contributes nothing —
+        // not even its heading, which would otherwise announce a project whose
+        // rows are all off screen.
+        if last <= start || first >= start + room {
             continue;
         }
-        out.push(Line::from(Span::styled(
-            render::truncate(&format!("{name}  {}", rows.len()), w, unicode),
-            style,
-        )));
-        for t in rows {
-            if row == cursor.row {
-                cursor_line = out.len();
+        if headings {
+            out.push(group_heading(g, s, w, unicode));
+        }
+        for (n, task) in g.rows.iter().enumerate() {
+            let at = first + n;
+            if at < start || at >= start + room {
+                continue;
             }
-            let when = when_cell(t, today);
-            out.push(Line::from(vec![
-                cursor_cell(cursor.shown && row == cursor.row, s, unicode),
-                Span::styled(
-                    split_row(
-                        &format!("#{} {}", t.short_id, t.title()),
-                        &when,
-                        w.saturating_sub(2),
-                        unicode,
-                    ),
-                    s.plain,
-                ),
-            ]));
-            row += 1;
+            out.push(task_line(
+                task,
+                at == cursor.row && cursor.shown,
+                t.max_urgency,
+                dash.today,
+                ctx,
+                id_w,
+                head_w,
+            ));
         }
     }
-    let visible = height as usize;
-    if out.len() > visible {
-        // Keep one row for the marker, so DUE says what it is hiding. Every
-        // other list panel does; this one silently truncated, and on a short
-        // window that meant the tasks due today — the panel's whole point —
-        // vanished with nothing to say they existed.
-        let (start, room, hidden) = window(cursor_line, out.len(), visible);
-        out = out.into_iter().skip(start).take(room).collect();
-        if let Some(l) = more_line(hidden, s, w, unicode) {
-            out.push(l);
-        }
+    if let Some(line) = more_line(hidden, s, w, unicode) {
+        out.push(line);
     }
     out
 }
 
-fn blocked_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
-    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
-    let rows = &dash.blocked.rows;
-    if rows.is_empty() {
-        return empty("nothing is blocked", s, w as u16, unicode);
+/// `▍ fin-9695 — 5 open · 1 overdue`, the heading over one project's rows.
+///
+/// The same shape `agenda` gives a day heading, and for the same reason: a
+/// group that is not announced is a change of subject the reader has to infer
+/// from the rows themselves.
+fn group_heading(g: &TaskGroup, s: &Styles, w: usize, unicode: bool) -> Line<'static> {
+    let bar = if unicode { "▍" } else { "|" };
+    let name = g.project().unwrap_or("(no project)").to_string();
+    let mut tail = format!(" — {} open", g.rows.len());
+    if g.overdue > 0 {
+        tail.push_str(&format!(" · {} overdue", g.overdue));
     }
-    let visible = height as usize;
-    let (start, room, hidden) = window(cursor.row, rows.len(), visible);
-    let mut out: Vec<Line<'static>> = rows
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(room)
-        .map(|(n, t)| {
-            Line::from(vec![
-                cursor_cell(cursor.shown && n == cursor.row, s, unicode),
-                Span::styled(format!("#{} ", t.short_id), s.danger),
-                Span::styled(
-                    render::truncate(t.title(), w.saturating_sub(8), unicode),
-                    s.plain,
-                ),
-            ])
-        })
-        .collect();
-    if let Some(l) = more_line(hidden, s, w, unicode) {
-        out.push(l);
-    }
-    out
+    Line::from(vec![
+        // Two cells of nothing, so the heading starts where the cursor column
+        // does and the bar sits above the rail rather than beside it.
+        Span::styled("  ".to_string(), s.muted),
+        Span::styled(format!("{bar} "), s.muted),
+        Span::styled(
+            render::truncate(&name, w.saturating_sub(render::width(&tail) + 2), unicode),
+            s.project,
+        ),
+        Span::styled(tail, if g.overdue > 0 { s.overdue } else { s.muted }),
+    ])
 }
 
-fn recent_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {
-    let (s, w, height, unicode) = (&ctx.s, ctx.w, ctx.height, ctx.unicode());
-    let rows = &dash.recent.rows;
-    if rows.is_empty() {
-        return empty("nothing has changed yet", s, w as u16, unicode);
+/// One task row, in `tasqx list`'s layout.
+#[allow(clippy::too_many_arguments)]
+fn task_line(
+    t: &Task,
+    on_cursor: bool,
+    max_urgency: f64,
+    today: Date,
+    ctx: &PanelCtx,
+    id_w: usize,
+    head_w: usize,
+) -> Line<'static> {
+    let (s, w, unicode) = (&ctx.s, ctx.w, ctx.unicode());
+
+    // The rail: what is running and what is stuck, before anything else.
+    // Blocked outranks the timer — a task can be blocked while its own timer
+    // runs, and the thing that stops you working is the one to say first.
+    let (rail, rail_style) = if t.blocked {
+        (if unicode { "⊘" } else { "B" }, s.danger)
+    } else if t.active_since.is_some() {
+        // `*` rather than `>`: the cursor column two cells to the left draws
+        // `>` without Unicode, and the same glyph twice on one row is the
+        // ambiguity the rail exists to remove.
+        (if unicode { "▶" } else { "*" }, s.active)
+    } else {
+        (" ", s.plain)
+    };
+
+    let prio = t
+        .priority
+        .map_or("-".to_string(), |p| p.as_str().to_string());
+    let prio_style = match t.priority {
+        Some(Prio::H) => s.danger,
+        Some(Prio::M) => s.warn,
+        _ => s.muted,
+    };
+    let gauge = if unicode {
+        let (bar, track) = render::urgency_meter(t.urgency / max_urgency);
+        Some((bar, track))
+    } else {
+        None
+    };
+
+    // Midnight of the dashboard's own `today`, not the wall clock: the screen
+    // has one instant every relative cell is measured against, and a renderer
+    // that read the clock itself would disagree with the row above it whenever
+    // a redraw straddled midnight.
+    let midnight = today
+        .to_zoned(TimeZone::UTC)
+        .map(|z| z.timestamp())
+        .unwrap_or_else(|_| jiff::Timestamp::UNIX_EPOCH);
+    let due = t
+        .due
+        .map(|d| render::due_cell(d, midnight))
+        .unwrap_or_default();
+    let overdue = t.due_date().is_some_and(|d| d < today);
+    // Capped the way `TaskCols::MAX_TAGS` caps it in `list`: the tail of a tag
+    // list identifies far less than its head, and every cell it takes comes off
+    // the title, which is the column the row is read for.
+    let tags = render::truncate(
+        &t.tags()
+            .iter()
+            .map(|g| format!("+{g}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        28,
+        unicode,
+    );
+
+    // What is left for the title once the fixed columns are taken out. The
+    // trailing ones are dropped rather than squeezed: a two-cell tag column
+    // says nothing, and the row it truncates is the one being read.
+    let tail_w = render::width(&due)
+        + if tags.is_empty() {
+            0
+        } else {
+            render::width(&tags) + 2
+        };
+    let title_w = w.saturating_sub(head_w + tail_w + 2).max(10);
+
+    let mut spans = vec![
+        // The cursor keeps its own column, reserved on every row whether it is
+        // drawn or not — a marker that only occupies space when it is showing
+        // shifts every row beside it as the reader moves.
+        cursor_cell(on_cursor, s, unicode),
+        Span::styled(format!("{rail} "), rail_style),
+        Span::styled(
+            format!("{:>id_w$}  ", format!("#{}", t.short_id)),
+            if on_cursor { s.accent } else { s.muted },
+        ),
+        Span::styled(format!("{prio} "), prio_style),
+    ];
+    if let Some((bar, track)) = gauge {
+        let ramp = rt_style(ctx.theme.ramp_style(t.urgency / max_urgency), ctx.caps);
+        spans.push(Span::styled(bar, ramp));
+        spans.push(Span::styled(track, s.muted));
+        spans.push(Span::styled(" ".to_string(), s.plain));
     }
-    let visible = height as usize;
-    let (start, room, hidden) = window(cursor.row, rows.len(), visible);
-    let mut out: Vec<Line<'static>> = rows
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(room)
-        .map(|(n, t)| {
-            let status = t.status.as_str().to_string();
-            let head = format!("#{} ", t.short_id);
-            let rest = w.saturating_sub(render::width(&head) + render::width(&status) + 3);
-            Line::from(vec![
-                cursor_cell(cursor.shown && n == cursor.row, s, unicode),
-                Span::styled(head, s.accent),
-                Span::styled(
-                    pad(&render::truncate(t.title(), rest, unicode), rest),
-                    s.plain,
-                ),
-                Span::styled(status, if t.status.is_open() { s.plain } else { s.muted }),
-            ])
-        })
-        .collect();
-    if let Some(l) = more_line(hidden, s, w, unicode) {
-        out.push(l);
+    // The figure takes the ramp, exactly as `list` paints it — the two screens
+    // shading the same task differently is what the shared denominator exists
+    // to prevent.
+    spans.push(Span::styled(
+        format!("{:>4}  ", format!("{:.1}", t.urgency)),
+        rt_style(ctx.theme.ramp_style(t.urgency / max_urgency), ctx.caps),
+    ));
+    spans.push(Span::styled(
+        render::pad(&render::truncate(t.title(), title_w, unicode), title_w),
+        if on_cursor { s.accent } else { s.plain },
+    ));
+    if !tags.is_empty() {
+        spans.push(Span::styled(format!("  {tags}"), s.project));
     }
-    out
+    // The running task shows how long it has been running, where every other
+    // row shows its deadline. That is the NOW card's number, kept when the card
+    // went: `▶` alone says which task and not for how long.
+    if let Some(secs) = t.running_secs {
+        spans.push(Span::styled(format!(" {}", dur_compact(secs)), s.active));
+    } else if !due.is_empty() {
+        spans.push(Span::styled(
+            format!(" {due}"),
+            if overdue { s.overdue } else { s.muted },
+        ));
+    }
+    Line::from(spans)
 }
 
 fn projects_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'static>> {

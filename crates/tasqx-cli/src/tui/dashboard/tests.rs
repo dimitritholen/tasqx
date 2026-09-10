@@ -137,13 +137,14 @@ fn deadline_heavy() -> Dashboard {
     )
 }
 
+/// Every task row the list holds, in draw order — what the cursor walks.
+fn task_rows(d: &Dashboard) -> Vec<&model::Task> {
+    d.tasks.groups.iter().flat_map(|g| &g.rows).collect()
+}
+
 fn all_panels() -> Vec<PanelId> {
     vec![
-        PanelId::Now,
-        PanelId::Next,
-        PanelId::Due,
-        PanelId::Blocked,
-        PanelId::Recent,
+        PanelId::Tasks,
         PanelId::Projects,
         PanelId::Burndown,
         PanelId::Tokens,
@@ -504,7 +505,7 @@ fn a_digit_places_its_panel_into_the_analytics_slot() {
     a.observe(&placed, screen.has_slot());
     assert!(screen.has_slot(), "80x24 uses the slot");
 
-    a.on_key(key(KeyCode::Char('6')));
+    a.on_key(key(KeyCode::Char('2')));
     assert_eq!(a.slot(), PanelId::Projects);
     let buf = draw_at(&a, 80, 24, &caps());
     assert!(
@@ -513,7 +514,7 @@ fn a_digit_places_its_panel_into_the_analytics_slot() {
         all_text(&buf)
     );
 
-    a.on_key(key(KeyCode::Char('7')));
+    a.on_key(key(KeyCode::Char('3')));
     assert_eq!(a.slot(), PanelId::Burndown);
     let buf = draw_at(&a, 80, 24, &caps());
     let text = all_text(&buf);
@@ -535,7 +536,7 @@ fn a_digit_for_an_unreachable_panel_reports_instead_of_moving_focus() {
     assert!(!screen.has_slot(), "the XS rung has no slot");
 
     let before = a.focus();
-    assert_eq!(a.on_key(key(KeyCode::Char('7'))), None);
+    assert_eq!(a.on_key(key(KeyCode::Char('3'))), None);
     assert_eq!(a.focus(), before, "focus must not move to a hidden panel");
 
     // The reason is the SIZE, and the footer has to say so: BURNDOWN is
@@ -558,7 +559,12 @@ fn a_digit_for_an_unreachable_panel_reports_instead_of_moving_focus() {
 /// until they found a key that changed it.
 #[test]
 fn the_slot_opens_on_a_configured_member_not_a_hard_coded_one() {
-    let order = vec![PanelId::Now, PanelId::Next, PanelId::Due, PanelId::Projects];
+    let order = vec![
+        PanelId::Tasks,
+        PanelId::Tasks,
+        PanelId::Tasks,
+        PanelId::Projects,
+    ];
     let a = App::new(dash(), order, 7, true);
     assert_eq!(
         a.slot(),
@@ -584,7 +590,12 @@ fn the_slot_opens_on_a_configured_member_not_a_hard_coded_one() {
 /// panel nobody configured; only the setting is.
 #[test]
 fn a_digit_for_an_unconfigured_panel_neither_places_it_nor_blames_the_size() {
-    let order = vec![PanelId::Now, PanelId::Next, PanelId::Due, PanelId::Projects];
+    let order = vec![
+        PanelId::Tasks,
+        PanelId::Tasks,
+        PanelId::Tasks,
+        PanelId::Projects,
+    ];
     let mut a = App::new(dash(), order, 7, true);
     let screen = a.screen(80, 24).unwrap();
     let placed: Vec<PanelId> = screen.panels.iter().map(|p| p.id).collect();
@@ -595,7 +606,7 @@ fn a_digit_for_an_unconfigured_panel_neither_places_it_nor_blames_the_size() {
     );
 
     let before = a.focus();
-    assert_eq!(a.on_key(key(KeyCode::Char('7'))), None);
+    assert_eq!(a.on_key(key(KeyCode::Char('3'))), None);
     assert_eq!(
         a.focus(),
         before,
@@ -633,13 +644,13 @@ fn a_digit_for_an_unconfigured_panel_neither_places_it_nor_blames_the_size() {
 #[test]
 fn tab_visits_only_reachable_panels_and_wraps() {
     let mut a = app();
-    a.observe(&[PanelId::Now, PanelId::Next], false);
+    a.observe(&[PanelId::Tasks, PanelId::Tasks], false);
     a.on_key(key(KeyCode::Tab));
-    assert_eq!(a.focus(), PanelId::Next);
+    assert_eq!(a.focus(), PanelId::Tasks);
     a.on_key(key(KeyCode::Tab));
-    assert_eq!(a.focus(), PanelId::Now, "Tab wraps");
+    assert_eq!(a.focus(), PanelId::Tasks, "Tab wraps");
     a.on_key(key(KeyCode::BackTab));
-    assert_eq!(a.focus(), PanelId::Next, "BackTab walks the other way");
+    assert_eq!(a.focus(), PanelId::Tasks, "BackTab walks the other way");
 }
 
 /// `k` at the top must not underflow. A panic here happens inside a raw-mode
@@ -648,24 +659,24 @@ fn tab_visits_only_reachable_panels_and_wraps() {
 fn the_cursor_clamps_at_both_ends_without_underflowing() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('2')));
-    assert_eq!(a.cursor_of(PanelId::Next), 0);
+    a.on_key(key(KeyCode::Char('1')));
+    assert_eq!(a.cursor_of(PanelId::Tasks), 0);
     a.on_key(key(KeyCode::Char('k')));
-    assert_eq!(a.cursor_of(PanelId::Next), 0, "k at the top is a no-op");
+    assert_eq!(a.cursor_of(PanelId::Tasks), 0, "k at the top is a no-op");
 
     for _ in 0..50 {
         a.on_key(key(KeyCode::Char('j')));
     }
-    let rows = a.dash().next.rows.len();
+    let rows = task_rows(a.dash()).len();
     assert_eq!(
-        a.cursor_of(PanelId::Next),
+        a.cursor_of(PanelId::Tasks),
         rows.saturating_sub(1),
         "j clamps to the last row"
     );
     a.on_key(key(KeyCode::Char('g')));
-    assert_eq!(a.cursor_of(PanelId::Next), 0);
+    assert_eq!(a.cursor_of(PanelId::Tasks), 0);
     a.on_key(key(KeyCode::Char('G')));
-    assert_eq!(a.cursor_of(PanelId::Next), rows.saturating_sub(1));
+    assert_eq!(a.cursor_of(PanelId::Tasks), rows.saturating_sub(1));
 }
 
 /// Something on the screen must say WHICH row the reader is on.
@@ -680,7 +691,7 @@ fn the_cursor_clamps_at_both_ends_without_underflowing() {
 fn the_cursor_marks_the_row_the_reader_is_on() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('2')));
+    a.on_key(key(KeyCode::Char('1')));
     a.on_key(key(KeyCode::Char('j')));
     a.on_key(key(KeyCode::Char('j')));
 
@@ -688,7 +699,7 @@ fn the_cursor_marks_the_row_the_reader_is_on() {
     let buf = draw_at(&a, w, h, &caps());
     let screen = a.screen(w, h).unwrap();
     let p = screen
-        .placement(PanelId::Next)
+        .placement(PanelId::Tasks)
         .expect("NEXT UP has its own rectangle at 160x44");
     let r = interior(p);
     let body = cell_text(&buf, r.x, r.y, r.width, r.height);
@@ -704,7 +715,7 @@ fn the_cursor_marks_the_row_the_reader_is_on() {
     );
     // The row it sits on has to be the row the state machine says, or the
     // marker is decoration: the row→line mapping is the thing under test.
-    let id = format!("#{}", a.dash().next.rows[2].short_id);
+    let id = format!("#{}", task_rows(a.dash())[2].short_id);
     assert!(
         marked[0].contains(&id),
         "two `j` from the top is row 3, {id}, but the cursor is on:\n{}",
@@ -723,15 +734,18 @@ fn the_cursor_marks_the_row_the_reader_is_on() {
 fn the_due_cursor_steps_through_tasks_and_never_onto_a_bucket_name() {
     let mut a = App::new(deadline_heavy(), all_panels(), 7, true);
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('3')));
+    a.on_key(key(KeyCode::Char('1')));
+
+    // The order is the LIST's, not the fixture's: `j` walks the rows as drawn.
+    let want: Vec<i64> = task_rows(a.dash()).iter().map(|t| t.short_id).collect();
 
     let (w, h) = (160, 44);
-    for expected in 1..=8u16 {
+    for expected in want {
         let buf = draw_at(&a, w, h, &caps());
         let screen = a.screen(w, h).unwrap();
         let p = screen
-            .placement(PanelId::Due)
-            .expect("DUE has its own rectangle at 160x44");
+            .placement(PanelId::Tasks)
+            .expect("TASKS has its own rectangle at 160x44");
         let r = interior(p);
         let body = cell_text(&buf, r.x, r.y, r.width, r.height);
         let marked: Vec<&str> = body
@@ -748,7 +762,11 @@ fn the_due_cursor_steps_through_tasks_and_never_onto_a_bucket_name() {
             "the {expected}th `j` must land on #{expected}, not on:\n{}",
             marked[0]
         );
-        for name in ["OVERDUE", "TODAY", "TOMORROW", "THIS WEEK", "more"] {
+        // A group heading is drawn, not landed on. It opens with `▍` where a
+        // row opens with an id, which is the difference the cursor must
+        // respect — DUE's bucket names were the original hazard and the
+        // per-project headings are the same one.
+        for name in ["▍", "more"] {
             assert!(
                 !marked[0].contains(name),
                 "the cursor landed on {name:?}, which is not a task:\n{}",
@@ -759,7 +777,7 @@ fn the_due_cursor_steps_through_tasks_and_never_onto_a_bucket_name() {
     }
     // And `j` at the last task stays there rather than walking into the lines
     // below it.
-    assert_eq!(a.cursor_of(PanelId::Due), 7, "j clamps at the last TASK");
+    assert_eq!(a.cursor_of(PanelId::Tasks), 7, "j clamps at the last TASK");
 
     // Twelve lines fit at 160x44, so the loop above never made the panel
     // scroll. The map from rows to lines is only load-bearing when it does:
@@ -767,7 +785,7 @@ fn the_due_cursor_steps_through_tasks_and_never_onto_a_bucket_name() {
     // line for every bucket name above the cursor.
     for row in [0usize, 3, 7] {
         let body = panels::body(
-            PanelId::Due,
+            PanelId::Tasks,
             model::Detail::Full,
             a.dash(),
             60,
@@ -788,12 +806,12 @@ fn the_due_cursor_steps_through_tasks_and_never_onto_a_bucket_name() {
         assert_eq!(
             marked.len(),
             1,
-            "row {row} is not on a scrolling DUE panel at all:\n{text}"
+            "row {row} is not on a scrolling panel at all:\n{text}"
         );
+        let want = task_rows(a.dash())[row].short_id;
         assert!(
-            marked[0].contains(&format!("#{}", row + 1)),
-            "row {row} is task #{}, but the cursor is on:\n{}",
-            row + 1,
+            marked[0].contains(&format!("#{want}")),
+            "row {row} is task #{want}, but the cursor is on:\n{}",
             marked[0]
         );
     }
@@ -810,13 +828,7 @@ fn the_due_cursor_steps_through_tasks_and_never_onto_a_bucket_name() {
 #[test]
 fn every_panel_with_a_cursor_draws_it() {
     let (w, h) = (160, 44);
-    for (digit, id) in [
-        ('2', PanelId::Next),
-        ('3', PanelId::Due),
-        ('4', PanelId::Blocked),
-        ('5', PanelId::Recent),
-        ('6', PanelId::Projects),
-    ] {
+    for (digit, id) in [('1', PanelId::Tasks), ('2', PanelId::Projects)] {
         let mut a = app();
         a.observe(&all_panels(), false);
         a.on_key(key(KeyCode::Char(digit)));
@@ -850,12 +862,12 @@ fn every_panel_with_a_cursor_draws_it() {
 fn the_viewport_follows_the_cursor_to_a_row_below_the_fold() {
     let a = app();
     let d = a.dash();
-    let rows = d.recent.rows.len();
+    let rows = task_rows(d).len();
     assert!(rows >= 4, "the fixture must overflow a 3-row viewport");
     let last = rows - 1;
 
     let body = panels::body(
-        PanelId::Recent,
+        PanelId::Tasks,
         model::Detail::Full,
         d,
         60,
@@ -872,7 +884,7 @@ fn the_viewport_follows_the_cursor_to_a_row_below_the_fold() {
         .map(|l| l.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    let id = format!("#{}", d.recent.rows[last].short_id);
+    let id = format!("#{}", task_rows(d)[last].short_id);
     assert!(
         text.contains(&id),
         "the last row, {id}, was not scrolled into view:\n{text}"
@@ -896,13 +908,13 @@ fn the_viewport_follows_the_cursor_to_a_row_below_the_fold() {
 fn an_unfocused_panel_reserves_the_cursor_column_without_drawing_it() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('2')));
+    a.on_key(key(KeyCode::Char('1')));
 
     let d = a.dash();
     let th = theme::load("nord", None);
     let render_one = |shown: bool| {
         panels::body(
-            PanelId::Blocked,
+            PanelId::Tasks,
             model::Detail::Full,
             d,
             60,
@@ -956,7 +968,7 @@ fn the_cursor_is_a_glyph_so_it_survives_ascii_and_no_color() {
     let a = app();
     let d = a.dash();
     let body = panels::body(
-        PanelId::Recent,
+        PanelId::Tasks,
         model::Detail::Full,
         d,
         60,
@@ -983,7 +995,7 @@ fn the_cursor_is_a_glyph_so_it_survives_ascii_and_no_color() {
         "and no Unicode glyph on a terminal that cannot draw one:\n{text}"
     );
     assert!(
-        marked[0].contains(&format!("#{}", d.recent.rows[1].short_id)),
+        marked[0].contains(&format!("#{}", task_rows(d)[1].short_id)),
         "the ASCII cursor is on the wrong row:\n{}",
         marked[0]
     );
@@ -998,15 +1010,15 @@ fn the_cursor_is_a_glyph_so_it_survives_ascii_and_no_color() {
 fn the_cursor_is_clamped_to_data_that_shrank_under_it() {
     let mut a = App::new(deadline_heavy(), all_panels(), 7, true);
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('3')));
+    a.on_key(key(KeyCode::Char('1')));
     a.on_key(key(KeyCode::Char('G')));
-    assert_eq!(a.cursor_of(PanelId::Due), 7, "G ends on the last task");
+    assert_eq!(a.cursor_of(PanelId::Tasks), 7, "G ends on the last task");
 
     a.replace(dash());
-    let rows = model::row_count(a.dash(), PanelId::Due);
+    let rows = model::row_count(a.dash(), PanelId::Tasks);
     assert!(rows > 0 && rows < 8, "the second fixture must be shorter");
     assert_eq!(
-        a.cursor_of(PanelId::Due),
+        a.cursor_of(PanelId::Tasks),
         rows - 1,
         "the cursor must come back inside the list it now points into"
     );
@@ -1052,7 +1064,7 @@ fn the_intents_the_loop_has_to_act_on_are_returned_not_swallowed() {
 fn l_and_p_from_the_projects_panel_carry_the_row_under_the_cursor() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('6'))); // PROJECTS is digit 6
+    a.on_key(key(KeyCode::Char('2'))); // PROJECTS is digit 2
     assert_eq!(a.focus, PanelId::Projects);
 
     assert_eq!(
@@ -1073,12 +1085,12 @@ fn l_and_p_from_the_projects_panel_carry_the_row_under_the_cursor() {
 fn a_refresh_keeps_focus_and_cursor() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('2')));
+    a.on_key(key(KeyCode::Char('1')));
     a.on_key(key(KeyCode::Char('j')));
-    let (f, s) = (a.focus(), a.cursor_of(PanelId::Next));
+    let (f, s) = (a.focus(), a.cursor_of(PanelId::Tasks));
     a.replace(dash());
     assert_eq!(a.focus(), f);
-    assert_eq!(a.cursor_of(PanelId::Next), s);
+    assert_eq!(a.cursor_of(PanelId::Tasks), s);
 }
 
 /// #228.9: a refresh must keep the cursor ON THE SAME TASK, not merely at the
@@ -1121,11 +1133,11 @@ fn a_refresh_keeps_the_cursor_on_the_same_task_not_the_same_row_index() {
     // #1, #2, #3, #4, #5. The cursor lands on #3, at index 2.
     let mut a = App::new(build_with(&[1, 2, 3, 4, 5]), all_panels(), 7, true);
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('2'))); // focus NEXT UP
+    a.on_key(key(KeyCode::Char('1'))); // focus TASKS
     a.on_key(key(KeyCode::Char('j')));
     a.on_key(key(KeyCode::Char('j')));
     assert_eq!(
-        model::row_at(a.dash(), PanelId::Next, a.cursor_of(PanelId::Next)).map(|t| t.short_id),
+        model::row_at(a.dash(), PanelId::Tasks, a.cursor_of(PanelId::Tasks)).map(|t| t.short_id),
         Some(3),
         "the cursor must start on #3"
     );
@@ -1134,7 +1146,7 @@ fn a_refresh_keeps_the_cursor_on_the_same_task_not_the_same_row_index() {
     // rows shift up one, so the OLD index 2 now names #4, not #3.
     a.replace(build_with(&[2, 3, 4, 5]));
     let after =
-        model::row_at(a.dash(), PanelId::Next, a.cursor_of(PanelId::Next)).map(|t| t.short_id);
+        model::row_at(a.dash(), PanelId::Tasks, a.cursor_of(PanelId::Tasks)).map(|t| t.short_id);
     assert_eq!(
         after,
         Some(3),
@@ -1149,7 +1161,7 @@ fn a_refresh_keeps_the_cursor_on_the_same_task_not_the_same_row_index() {
 fn every_binding_is_documented_in_the_help_overlay() {
     let documented: String = KEYS.iter().map(|k| k.keys).collect::<Vec<_>>().join(" ");
     for probe in [
-        "1-8", "tab", "j / k", "g / G", "r", "R", "w", "p", "l", "?", "q", "ctrl-c",
+        "1-4", "tab", "j / k", "g / G", "r", "R", "w", "p", "l", "?", "q", "ctrl-c",
     ] {
         assert!(
             documented.contains(probe),
@@ -1183,8 +1195,9 @@ fn the_due_panel_measures_against_the_models_today() {
     let text = all_text(&draw_at(&a, 96, 28, &caps()));
     // The fixture's overdue task is due 2026-07-01 against a `today` of
     // 2026-08-05: 35 days ago.
+    // `35d ago`, the house style's spelling (D117 rule 3), not `-35d`.
     assert!(
-        text.contains("-35d"),
+        text.contains("35d ago"),
         "the overdue task must read as 35 days late:\n{text}"
     );
     assert!(
@@ -1202,9 +1215,9 @@ fn the_due_panel_measures_against_the_models_today() {
 fn enter_asks_the_loop_for_the_row_under_the_cursor() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('2')));
+    a.on_key(key(KeyCode::Char('1')));
     a.on_key(key(KeyCode::Char('j')));
-    let want = a.dash().next.rows[1].short_id;
+    let want = task_rows(a.dash())[1].short_id;
     assert_eq!(
         a.on_key(key(KeyCode::Enter)),
         Some(Action::Detail(want)),
@@ -1212,23 +1225,25 @@ fn enter_asks_the_loop_for_the_row_under_the_cursor() {
     );
 }
 
-/// `row_at` walks DUE's buckets in the order `due_body` draws them, and refuses
+/// `row_at` walks the groups in the order `tasks_body` draws them, and refuses
 /// where a row is not a task.
 ///
 /// One map, resolved here and drawn there. A second walk that agreed today is
-/// the shape that opens the wrong task the first time a bucket empties.
+/// the shape that opens the wrong task the first time a group empties — which
+/// is the same hazard DUE's buckets had, one fold later.
 #[test]
 fn row_at_resolves_a_row_to_the_task_the_reader_can_see() {
     let d = deadline_heavy();
-    for (idx, expect) in (0..8).map(|i| (i, i as i64 + 1)) {
+    let want: Vec<i64> = task_rows(&d).iter().map(|t| t.short_id).collect();
+    for (idx, expect) in want.iter().enumerate() {
         assert_eq!(
-            model::row_at(&d, PanelId::Due, idx).map(|t| t.short_id),
-            Some(expect),
-            "DUE row {idx} is not #{expect}"
+            model::row_at(&d, PanelId::Tasks, idx).map(|t| t.short_id),
+            Some(*expect),
+            "row {idx} is not #{expect}"
         );
     }
     assert!(
-        model::row_at(&d, PanelId::Due, 8).is_none(),
+        model::row_at(&d, PanelId::Tasks, 8).is_none(),
         "past the last task there is nothing to open"
     );
     assert!(
@@ -1256,7 +1271,7 @@ fn row_at_resolves_a_row_to_the_task_the_reader_can_see() {
 fn enter_on_a_panel_without_rows_names_the_refusal() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('7')));
+    a.on_key(key(KeyCode::Char('3')));
     assert_eq!(a.on_key(key(KeyCode::Enter)), None);
     assert!(
         a.status_line().contains("BURNDOWN"),
@@ -1265,21 +1280,32 @@ fn enter_on_a_panel_without_rows_names_the_refusal() {
     );
 }
 
-/// #228.13: Enter on NEXT UP, DUE, BLOCKED and RECENT opens the focused row's
-/// detail; NOW — the one panel showing the task actively running, and the row
-/// looked at most — did nothing, because it carried no cursor at all.
+/// #228.13: the running task is reachable with Enter like any other row.
+///
+/// It used to be the one row that was not. NOW was its own panel, carried no
+/// cursor, and so was the only row-bearing thing on the screen Enter could not
+/// open — the row looked at most, and the one it did nothing on. D80 folded the
+/// card into the list, which settles it by construction: the running task is a
+/// row, marked `▶`, and Enter opens rows.
 #[test]
-fn enter_on_now_opens_the_running_tasks_detail() {
+fn enter_reaches_the_running_task_like_any_other_row() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('1'))); // NOW is panel 1
-    assert_eq!(a.focus(), PanelId::Now);
+    a.on_key(key(KeyCode::Char('1')));
+    assert_eq!(a.focus(), PanelId::Tasks);
 
-    let action = a.on_key(key(KeyCode::Enter));
+    let running = task_rows(a.dash())
+        .iter()
+        .position(|t| t.active_since.is_some())
+        .expect("the fixture has a running task");
+    for _ in 0..running {
+        a.on_key(key(KeyCode::Char('j')));
+    }
+    let id = task_rows(a.dash())[running].short_id;
     assert_eq!(
-        action,
-        Some(Action::Detail(1)),
-        "Enter on NOW must open the running task's detail, not do nothing"
+        a.on_key(key(KeyCode::Enter)),
+        Some(Action::Detail(id)),
+        "Enter on the running row must open its detail"
     );
 }
 
@@ -1356,7 +1382,7 @@ fn blocked_card() -> model::TaskDetail {
 fn the_detail_overlay_answers_why_a_task_is_blocked() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('4')));
+    a.on_key(key(KeyCode::Char('1')));
     a.show_detail(blocked_card());
 
     let text = all_text(&draw_at(&a, 120, 32, &caps()));
@@ -1501,13 +1527,13 @@ fn the_panel_vocabulary_round_trips() {
 fn a_panel_whose_rows_all_fit_does_not_scroll() {
     let a = app();
     let d = a.dash();
-    let rows = d.next.rows.len();
+    let rows = task_rows(d).len();
     assert!(rows >= 2, "the fixture must have rows to scroll");
 
     // A viewport with room to spare: every row is drawn from index 0 wherever
     // the cursor is.
     let tall = panels::body(
-        PanelId::Next,
+        PanelId::Tasks,
         model::Detail::Full,
         d,
         60,
@@ -1524,7 +1550,7 @@ fn a_panel_whose_rows_all_fit_does_not_scroll() {
         .map(|l| l.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    for t in &d.next.rows {
+    for t in task_rows(d) {
         assert!(
             text.contains(&format!("#{}", t.short_id)),
             "#{} scrolled out of a panel it fits in:\n{text}",
@@ -1538,12 +1564,12 @@ fn a_panel_whose_rows_all_fit_does_not_scroll() {
 fn scrolling_to_the_end_leaves_no_blank_rows() {
     let a = app();
     let d = a.dash();
-    let rows = d.recent.rows.len();
+    let rows = task_rows(d).len();
     assert!(rows >= 4, "the fixture must overflow a small viewport");
 
     let visible = 3u16;
     let body = panels::body(
-        PanelId::Recent,
+        PanelId::Tasks,
         model::Detail::Full,
         d,
         60,
@@ -1636,11 +1662,11 @@ fn the_help_overlay_never_hides_its_own_close_instructions() {
 fn a_single_row_panel_spends_its_row_on_data() {
     let a = app();
     let d = a.dash();
-    assert!(d.recent.rows.len() > 1, "the fixture must overflow one row");
+    assert!(task_rows(d).len() > 1, "the fixture must overflow one row");
 
     for scroll in [0, 1, 99] {
         let body = panels::body(
-            PanelId::Recent,
+            PanelId::Tasks,
             model::Detail::OneLine,
             d,
             60,
@@ -1685,7 +1711,7 @@ fn an_open_overlay_is_modal_and_no_key_reaches_behind_it() {
     // Every key the screen answers to, plus a few it does not.
     const KEYS_SWEPT: [KeyCode; 20] = [
         KeyCode::Char('1'),
-        KeyCode::Char('8'),
+        KeyCode::Char('4'),
         KeyCode::Tab,
         KeyCode::BackTab,
         KeyCode::Char('j'),
@@ -1703,7 +1729,7 @@ fn an_open_overlay_is_modal_and_no_key_reaches_behind_it() {
         KeyCode::Esc,
         KeyCode::Char('z'),
         KeyCode::Down,
-        KeyCode::Char('3'),
+        KeyCode::Char('1'),
     ];
 
     for modal in ["help", "detail"] {
@@ -1726,7 +1752,7 @@ fn an_open_overlay_is_modal_and_no_key_reaches_behind_it() {
 
             let (focus, scroll, window, auto) = (
                 a.focus(),
-                a.cursor_of(PanelId::Next),
+                a.cursor_of(PanelId::Tasks),
                 a.window_days(),
                 a.auto_refresh(),
             );
@@ -1753,7 +1779,7 @@ fn an_open_overlay_is_modal_and_no_key_reaches_behind_it() {
                 "{modal}: {k:?} moved focus from behind the overlay"
             );
             assert_eq!(
-                a.cursor_of(PanelId::Next),
+                a.cursor_of(PanelId::Tasks),
                 scroll,
                 "{modal}: {k:?} scrolled from behind it"
             );
@@ -1828,17 +1854,17 @@ fn an_empty_panel_says_so_rather_than_drawing_nothing() {
     );
     let a = App::new(empty, all_panels(), 7, true);
     let text = all_text(&draw_at(&a, 96, 28, &caps()));
+    // One list, one sentence. The five panels this replaced each had their own
+    // ("no timer running", "nothing actionable", "nothing is blocked"), which
+    // on an empty store filled the screen with three ways of saying the same
+    // thing.
     assert!(
-        text.contains("no timer running"),
-        "NOW must say it is empty:\n{text}"
+        text.contains("nothing open"),
+        "TASKS must say it is empty:\n{text}"
     );
     assert!(
-        text.contains("nothing actionable"),
-        "NEXT UP must say it is empty:\n{text}"
-    );
-    assert!(
-        text.contains("nothing is blocked"),
-        "BLOCKED must say it is empty:\n{text}"
+        text.contains("no projects yet"),
+        "PROJECTS must say it is empty:\n{text}"
     );
 }
 
@@ -1875,25 +1901,37 @@ fn the_help_overlay_and_the_key_handler_agree() {
     }
 
     // TWO starting states, because a key is allowed to be a no-op in the state
-    // it already describes: `2` cannot move a focus that is already on panel 2,
+    // it already describes: `1` cannot move a focus that is already on panel 1,
     // and `g` cannot scroll a panel already at the top. The question is whether
     // the screen answers to the key AT ALL, so it is asked from a state where
     // the key has somewhere to go.
-    let prepared = |scrolled: bool| {
+    //
+    // THREE of them, and each exists because a different key has nowhere to go
+    // without it. Focus opens on panel one, so `1` only moves from a state
+    // focused elsewhere. `k` only moves a cursor that is not already at the
+    // top, and the only panel in this fixture with rows to spare is the list —
+    // which is panel one. No single state satisfies both.
+    let prepared = |state: u8| {
         let mut a = app();
         let screen = a.screen(120, 40).unwrap();
         let placed: Vec<PanelId> = screen.panels.iter().map(|p| p.id).collect();
         a.observe(&placed, screen.has_slot());
-        if scrolled {
-            a.on_key(key(KeyCode::Char('2')));
-            a.on_key(key(KeyCode::Char('j')));
+        match state {
+            1 => {
+                a.on_key(key(KeyCode::Char('2')));
+            }
+            2 => {
+                a.on_key(key(KeyCode::Char('j')));
+                a.on_key(key(KeyCode::Char('j')));
+            }
+            _ => {}
         }
         a
     };
 
     let moves = |code: KeyCode| -> bool {
-        [false, true].into_iter().any(|scrolled| {
-            let mut a = prepared(scrolled);
+        (0u8..=2).any(|state| {
+            let mut a = prepared(state);
             let before = snapshot(&a);
             let action = a.on_key(key(code));
             action.is_some() || snapshot(&a) != before
@@ -1901,7 +1939,7 @@ fn the_help_overlay_and_the_key_handler_agree() {
     };
 
     // --- what the overlay promises ------------------------------------------
-    // Tokens are split on `/`; a one-character token is that key, `1-8` is the
+    // Tokens are split on `/`; a one-character token is that key, `1-4` is the
     // range it reads as, and the named ones are spelled out because they are
     // not `Char` at all.
     let mut advertised: Vec<char> = Vec::new();
@@ -1909,7 +1947,7 @@ fn the_help_overlay_and_the_key_handler_agree() {
     for k in KEYS {
         for tok in k.keys.split('/').map(str::trim) {
             match tok {
-                "1-8" => advertised.extend('1'..='8'),
+                "1-4" => advertised.extend('1'..='4'),
                 "tab" | "S-tab" | "esc" | "ctrl-c" | "enter" => named += 1,
                 t if t.chars().count() == 1 => advertised.push(t.chars().next().unwrap()),
                 t => panic!("unreadable key label {t:?} in KEYS — teach this test its shape"),
@@ -1971,43 +2009,37 @@ fn jumping_to_the_bottom_reaches_it_on_a_panel_with_section_headers() {
     a.observe(&placed, screen.has_slot());
 
     // The fixture must actually have more body lines than tasks, or this
-    // proves nothing about the mismatch.
-    let lines = model::demand(a.dash(), &[], PanelId::Due);
-    let tasks = {
-        let d = &a.dash().due;
-        d.overdue.len() + d.today.len() + d.tomorrow.len() + d.week.len()
-    };
+    // proves nothing about the mismatch. DUE's bucket names were the original
+    // cause; the list's per-project group headings are the same hazard, which
+    // is why this test survived the fold that removed DUE.
+    let lines = model::demand(a.dash(), &[], PanelId::Tasks);
+    let tasks = a.dash().tasks.total;
     assert!(
         lines as usize > tasks,
-        "DUE must have bucket headers for this test to mean anything: \
+        "TASKS must have group headings for this test to mean anything: \
          {lines} lines for {tasks} tasks"
     );
 
-    a.on_key(key(KeyCode::Char('3')));
-    assert_eq!(a.focus(), PanelId::Due);
+    a.on_key(key(KeyCode::Char('1')));
+    assert_eq!(a.focus(), PanelId::Tasks);
     a.on_key(key(KeyCode::Char('G')));
 
-    // Read DUE's OWN rectangle, not the screen. NEXT UP and RECENT list the
-    // same tasks, so a whole-buffer search finds the last deadline whatever
-    // DUE is showing — which is how this assertion first passed against a
-    // scroll that stopped four lines short.
+    // Read the panel's OWN rectangle, not the screen: a whole-buffer search
+    // can find a title drawn somewhere else entirely, which is how this
+    // assertion first passed against a scroll that stopped four lines short.
     let laid_out = a.screen(w, h).unwrap();
-    let due = laid_out
-        .placement(PanelId::Due)
-        .expect("DUE is placed at this size");
+    let tasks_panel = laid_out
+        .placement(PanelId::Tasks)
+        .expect("TASKS is placed at this size");
     let buf = draw_at(&a, w, h, &caps());
-    let (bx, by, bw, bh) = due.body();
+    let (bx, by, bw, bh) = tasks_panel.body();
     let panel = cell_text(&buf, bx, by, bw, bh);
 
-    let last = a
-        .dash()
-        .due
-        .week
-        .last()
-        .expect("the fixture's last bucket is THIS WEEK");
+    let binding = task_rows(a.dash());
+    let last = binding.last().expect("the fixture has rows");
     assert!(
         panel.contains(last.title()),
-        "G must reach the last deadline ({}) inside DUE itself:\n{panel}",
+        "G must reach the last row ({}) inside the panel itself:\n{panel}",
         last.title()
     );
     assert!(
@@ -2068,7 +2100,7 @@ fn a_project_name_is_measured_against_its_summary_in_cells_not_bytes() {
     );
 
     let mut a = App::new(d, vec![PanelId::Projects], 7, true);
-    a.on_key(key(KeyCode::Char('6')));
+    a.on_key(key(KeyCode::Char('2')));
     let (w, h) = (100u16, 24u16);
     let laid_out = a.screen(w, h).unwrap();
     // Its own rectangle where there is room, the analytics slot where there is
@@ -2288,7 +2320,7 @@ fn the_header_does_not_pair_a_project_name_with_store_wide_counts() {
 fn enter_on_projects_asks_the_loop_to_list_that_project() {
     let mut a = app();
     a.observe(&all_panels(), false);
-    a.on_key(key(KeyCode::Char('6')));
+    a.on_key(key(KeyCode::Char('2')));
     assert_eq!(
         a.on_key(key(KeyCode::Enter)),
         Some(Action::ListProject("work".to_string())),

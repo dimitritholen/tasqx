@@ -856,7 +856,11 @@ fn rail_marker(t: &Value, unicode: bool) -> Option<(&'static str, &'static str)>
         return Some(("danger", if unicode { "⊘" } else { "B" }));
     }
     if s(t, "status") == "active" {
-        return Some(("timer.active", if unicode { "▶" } else { ">" }));
+        // `*`, not `>`. Without Unicode `>` is the CURSOR — `pick` and the
+        // dashboard both reserve it for the row the reader is on — and a state
+        // marker that draws as the cursor is two meanings on one glyph, on the
+        // exact terminal that has no colour left to tell them apart.
+        return Some(("timer.active", if unicode { "▶" } else { "*" }));
     }
     None
 }
@@ -904,7 +908,7 @@ fn status_marker(t: &Value) -> Option<(&'static str, String)> {
 /// the scan down the column, not for reading a value off. Without Unicode there
 /// is no glyph set that degrades honestly here, so the gauge is not drawn at
 /// all — the caller checks `caps.unicode` and the cell falls back to the number.
-fn urgency_meter(ramp: f64) -> (String, String) {
+pub(crate) fn urgency_meter(ramp: f64) -> (String, String) {
     /// The remainder glyphs, all SHORTER than the `▄` a full cell draws.
     const PART: [char; 3] = ['▂', '▃', '▄'];
     const CELLS: usize = 4;
@@ -958,7 +962,7 @@ fn month_abbrev(m: i8) -> String {
 /// and only when the store holds one: a date typed without a time resolves to
 /// 00:00 UTC (`datetime.rs`), so midnight is precisely the store's spelling of
 /// "no time given", which is how [`when_cell`] already reads it.
-fn due_cell(due: Timestamp, now: Timestamp) -> String {
+pub(crate) fn due_cell(due: Timestamp, now: Timestamp) -> String {
     let z = due.to_zoned(TimeZone::UTC);
     let day = z.date();
     let today = now.to_zoned(TimeZone::UTC).date();
@@ -5177,7 +5181,7 @@ mod tests {
         ], "count": 3 });
         let out = task_table(&ctx, &result, Timestamp::now());
         let rows: Vec<&str> = rows_of(&out).take(3).collect();
-        assert!(rows[0].starts_with('>'), "no timer glyph: {:?}", rows[0]);
+        assert!(rows[0].starts_with('*'), "no timer glyph: {:?}", rows[0]);
         assert!(rows[1].starts_with('B'), "no blocked glyph: {:?}", rows[1]);
         assert!(
             rows[2].starts_with("  "),
