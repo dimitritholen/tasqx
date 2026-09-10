@@ -511,15 +511,23 @@ struct TaskRow {
     due: String,
     overdue: bool,
     tags: String,
-    /// The role/text pair for the STATUS marker column (`None` when the row is
-    /// open, unblocked and not the one running task — see [`status_marker`]).
+    /// The role/glyph pair for the left rail (`None` on an ordinary row —
+    /// see [`rail_marker`]).
+    rail: Option<(&'static str, &'static str)>,
+    /// The role/text pair for the STATUS marker column (`None` when the row's
+    /// status is ordinary open work — see [`status_marker`]).
     marker: Option<(&'static str, String)>,
 }
 
 /// The width of every column of one table, in cells. A `0` means the column is
 /// ABSENT — not empty-but-drawn — and neither its header nor its gap is emitted.
 struct TaskCols {
+    /// The left rail: `0` when no visible row has a state to show, else
+    /// [`TaskCols::RAIL`] — glyph plus the one space that keeps it off a
+    /// four-digit id.
+    rail: usize,
     id: usize,
+    /// The whole urgency cell, priority letter included: `H 17.9`.
     urg: usize,
     title: usize,
     marker: usize,
@@ -537,8 +545,17 @@ impl TaskCols {
     const MIN_TITLE: usize = 20;
     const MIN_PROJECT: usize = 8;
     const MIN_TAGS: usize = 8;
-    /// A cut date must still show the date: `2026-07-20…` is 11 cells.
-    const MIN_DUE: usize = 11;
+    /// A cut date must still read as a date. [`due_cell`] spells the longest
+    /// one `tomorrow 23:59`; `tomorrow` alone is the shortest prefix of that
+    /// which is still an answer.
+    const MIN_DUE: usize = 8;
+    /// The rail's own width: one glyph and one space. Not a column that
+    /// shrinks — there is nothing between one cell and none.
+    const RAIL: usize = 2;
+    /// The priority letter and the space between it and the urgency number.
+    /// `P` used to be a column of its own, which cost a cell of gap on either
+    /// side to say something about the number two columns over.
+    const PRIO: usize = 2;
     /// `cancelled` is the longest word this column ever holds; a cut STATUS
     /// still has to stay a word (or the header `STATUS` itself), not a single
     /// ambiguous letter.
@@ -557,7 +574,7 @@ impl TaskCols {
 
     /// Everything left of `TASK`, plus the gap that follows it.
     fn head_width(&self) -> usize {
-        self.id + GAP + self.urg + GAP + 1 + GAP
+        self.rail + self.id + GAP + self.urg + GAP
     }
 
     /// The whole row, gaps included, absent columns costing nothing.
@@ -610,12 +627,23 @@ impl TaskCols {
             .unwrap_or(0);
 
         let mut c = TaskCols {
+            // Droppable like `DUE` and for the same reason (D51): a store with
+            // nothing blocked and no timer running would otherwise indent
+            // every row by two cells to hold a column that can never say
+            // anything.
+            rail: if rows.iter().any(|r| r.rail.is_some()) {
+                Self::RAIL
+            } else {
+                0
+            },
             // The id column keeps a floor of 4 rather than sizing to its digits:
             // ids grow monotonically, and a table that shifted left by a cell
             // the day the store passed #999 would look like the bug this
             // function fixes.
             id: max_of(|r| &r.sid).max(4),
-            urg: max_of(|r| &r.urg).max(width("URG")),
+            // `r.urg` is the number alone; the cell it is measured for also
+            // holds the priority letter in front of it.
+            urg: (max_of(|r| &r.urg) + Self::PRIO).max(width("URG")),
             title: sized(max_of(|r| &r.title), "TASK").max(width("TASK")),
             marker: sized(marker_content, "STATUS"),
             project: sized(max_of(|r| &r.project), "PROJECT"),
@@ -672,12 +700,17 @@ impl TaskCols {
         if c.total() > budget {
             c.project = 0;
         }
-        // STATUS goes last: on a store where at least one row is blocked,
-        // active, or otherwise not open, that fact is the reason to open the
-        // table at all, and TAGS/DUE/PROJECT are ordinary data by comparison.
+        // STATUS goes last: on a store where at least one row is not open
+        // work, that fact is the reason to open the table at all, and
+        // TAGS/DUE/PROJECT are ordinary data by comparison.
         if c.total() > budget {
             c.marker = 0;
         }
+        // The rail is never dropped. It costs two cells, it carries the two
+        // facts a reader most needs off a narrow terminal (what is running,
+        // what is stuck), and there is no smaller version of it to fall back
+        // to — which is exactly the position STATUS used to be in when it
+        // still held them, and lost.
         c
     }
 }
@@ -713,10 +746,13 @@ fn join_cells(cells: Vec<String>) -> String {
 /// The header line for a fitted table. `when_label` must be the same string the
 /// widths were fitted with — see [`TaskCols::fit`].
 fn header_line(c: &TaskCols, when_label: &str) -> String {
+    // The rail has no label — a two-cell column cannot hold one, and the two
+    // glyphs it draws are the kind a reader learns once. It is prefixed to the
+    // id cell rather than joined as a column of its own, so `join_cells` does
+    // not put a GAP between the glyph and the number it belongs to.
     let mut head = vec![
-        rpad("ID", c.id),
+        format!("{}{}", " ".repeat(c.rail), rpad("ID", c.id)),
         rpad("URG", c.urg),
-        "P".to_string(),
         pad("TASK", c.title),
     ];
     for (w, label) in [
@@ -740,11 +776,23 @@ fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
         "L" => "priority.L",
         _ => "muted",
     };
-    let urg_plain = rpad(&r.urg, c.urg);
-    let mut line = vec![
-        rpad(&r.sid, c.id),
-        ctx.theme.ramp_style(r.ramp).paint(&urg_plain, &ctx.caps),
+    // The number is padded to whatever the cell has left once the priority
+    // letter and its space are taken out, so `H 17.9` and `L  1.8` end on the
+    // same cell and the column reads as one number, not two.
+    let urg_plain = rpad(&r.urg, c.urg.saturating_sub(TaskCols::PRIO));
+    let urg = format!(
+        "{} {}",
         cell(ctx, Some(prio_role), &r.prio, 1),
+        ctx.theme.ramp_style(r.ramp).paint(&urg_plain, &ctx.caps)
+    );
+    let rail = match (c.rail, r.rail) {
+        (0, _) => String::new(),
+        (w, Some((role, glyph))) => cell(ctx, Some(role), glyph, w),
+        (w, None) => " ".repeat(w),
+    };
+    let mut line = vec![
+        format!("{rail}{}", rpad(&r.sid, c.id)),
+        urg,
         cell(ctx, None, &r.title, c.title),
     ];
     if c.marker > 0 {
@@ -769,41 +817,129 @@ fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
     join_cells(line)
 }
 
-/// The STATUS marker for one row of the shared list/agenda table: the
-/// per-task facts D51's fixed column set never gave a cell to — `blocked`,
-/// `active`, and any status that isn't plain open work (`done`, `cancelled`,
-/// `backlog`, or text this build could not parse).
+/// The LEFT-RAIL glyph for one row: the two states that stop the reader or
+/// occupy them, put in the one column the eye crosses before any other.
+///
+/// Split out of [`status_marker`], which used to carry these two alongside the
+/// word statuses in a `STATUS` column drawn to the RIGHT of the title. Audit
+/// finding #147 is what that cost: the running task — the single piece of
+/// state a work block depends on — sat past a 72-cell title where nothing
+/// draws the eye, and on a narrow terminal [`TaskCols::fit`] would drop the
+/// column holding it outright. A rail cannot be dropped and cannot be scrolled
+/// past.
+///
+/// Blocked outranks `active`, the same priority [`rail_role`] gives the `show`
+/// card's rail (D78): it is the fact that stops the reader working, and a task
+/// can be blocked while its own timer runs.
+///
+/// The two glyphs differ from each other in SHAPE, not only in role. `NO_COLOR`
+/// (§8's degradation table) keeps emphasis and drops every hue, so a rail that
+/// said "red bar or green bar" would say nothing at all to the reader who most
+/// needs the terminal to behave.
+fn rail_marker(t: &Value, unicode: bool) -> Option<(&'static str, &'static str)> {
+    if t.get("blocked").and_then(Value::as_bool).unwrap_or(false) {
+        return Some(("danger", if unicode { "⊘" } else { "B" }));
+    }
+    if s(t, "status") == "active" {
+        return Some(("timer.active", if unicode { "▶" } else { ">" }));
+    }
+    None
+}
+
+/// The STATUS marker for one row of the shared list/agenda table: the statuses
+/// D51's fixed column set never gave a cell to — `done`, `cancelled`,
+/// `backlog`, or text this build could not parse.
 ///
 /// `tasqx list project:x` and `tasqx agenda` both send whatever the caller's
 /// filter matched — literally, D27/D28's contract for a read — so a closed or
 /// unrecognized-status row reaches this renderer indistinguishable from open
-/// work unless it carries its own cell. Blocked outranks every status, the
-/// same priority [`rail_role`] gives the `show` card's rail (D78): it is the
-/// fact that stops the reader working, and a task can be blocked while still
-/// `pending`. `None` is the ordinary row — open, unblocked, not the one timer
-/// running — and is what makes the column droppable exactly like an empty
-/// `DUE` (D51): [`TaskCols::fit`] sizes it to zero when every row answers
-/// `None`.
-fn status_marker(t: &Value, unicode: bool) -> Option<(&'static str, String)> {
-    if t.get("blocked").and_then(Value::as_bool).unwrap_or(false) {
-        return Some(("danger", (if unicode { "⊘" } else { "B" }).to_string()));
-    }
+/// work unless it carries its own cell. What it holds is a WORD, which is why
+/// `blocked` and `active` left for [`rail_marker`]: a column sized to
+/// `cancelled` is the wrong shape for a one-cell state glyph, and the two
+/// facts are read at different moments. `None` is the ordinary row and is what
+/// makes the column droppable exactly like an empty `DUE` (D51):
+/// [`TaskCols::fit`] sizes it to zero when every row answers `None`.
+fn status_marker(t: &Value) -> Option<(&'static str, String)> {
     if status_is_unrecognized(t) {
         // `status` already carries the raw text here (`Task::status_text`),
         // so there is nothing to look up — just show what the store holds.
         return Some(("warn", s(t, "status")));
     }
     let status = s(t, "status");
-    if status == "active" {
-        return Some((
-            "timer.active",
-            (if unicode { "▶" } else { ">" }).to_string(),
-        ));
-    }
     if !status_is_open(&status) {
         return Some(("muted", status));
     }
     None
+}
+
+/// `Sep`, `Jan` — the month as a `DUE` cell abbreviates it. Only ever fed
+/// `Date::month`, whose range is 1..=12; anything else would be a jiff bug, and
+/// falling back to the number keeps a date on screen either way.
+fn month_abbrev(m: i8) -> String {
+    const NAMES: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    NAMES
+        .get((m - 1).max(0) as usize)
+        .map_or_else(|| m.to_string(), ToString::to_string)
+}
+
+/// The `DUE` cell: the deadline as a reader dates it, not as the store spells
+/// it.
+///
+/// [`task_row`] used to hand `s(t, "due")` — an RFC-3339 instant — straight to
+/// the cell, so a dated row spent twenty cells on `2026-09-11T00:00:00Z` while
+/// `TASK`, the column the row is actually read for, truncated at eighteen
+/// characters on an 80-cell terminal. The `show` card has humanized the same
+/// field since D78 (`markdown::fmt_instant`, "in 4 hours"), so the table was
+/// the view disagreeing with the rest of the CLI rather than the one missing a
+/// capability.
+///
+/// CALENDAR days, not elapsed hours, and that is the difference from
+/// `fmt_instant`: a deadline at 09:00 tomorrow is "tomorrow" to the person
+/// reading it, and "in 14 hours" hands them the arithmetic this cell exists to
+/// do. The vocabulary is [`day_heading`]'s, so `list` and `agenda` name the
+/// same day the same way.
+///
+/// Inside the next week the weekday alone identifies the day — there is
+/// exactly one Sunday in any six-day window — so the date is not spelled out
+/// until it stops being unambiguous. The clock is printed for today and
+/// tomorrow only, the two days on which "when today" is still a live question,
+/// and only when the store holds one: a date typed without a time resolves to
+/// 00:00 UTC (`datetime.rs`), so midnight is precisely the store's spelling of
+/// "no time given", which is how [`when_cell`] already reads it.
+fn due_cell(due: Timestamp, now: Timestamp) -> String {
+    let z = due.to_zoned(TimeZone::UTC);
+    let day = z.date();
+    let today = now.to_zoned(TimeZone::UTC).date();
+    let days = day
+        .since((Unit::Day, today))
+        .map_or(0, |s| s.get_days())
+        .into();
+
+    let t = z.time();
+    let clock = if t.hour() == 0 && t.minute() == 0 {
+        String::new()
+    } else {
+        format!(" {:02}:{:02}", t.hour(), t.minute())
+    };
+
+    match days {
+        0i64 => format!("today{clock}"),
+        1 => format!("tomorrow{clock}"),
+        -1 => "yesterday".to_string(),
+        d if d < -1 => format!("{}d ago", -d),
+        d if d < 7 => weekday_abbrev(day).to_string(),
+        _ if day.year() == today.year() => {
+            format!("{} {}", day.day(), month_abbrev(day.month()))
+        }
+        _ => format!(
+            "{} {} {:02}",
+            day.day(),
+            month_abbrev(day.month()),
+            day.year().rem_euclid(100)
+        ),
+    }
 }
 
 /// Measure one `task.list` row into the cells the layout will be computed from.
@@ -826,7 +962,14 @@ fn task_row(t: &Value, max_urg: f64, now: Timestamp, unicode: bool) -> TaskRow {
             .to_string(),
         title: s(t, "title"),
         project: s(t, "project"),
-        due: s(t, "due"),
+        // Unparseable falls back to itself, the policy `field_ts` already
+        // states and `markdown::fmt_instant` already follows: a stamp this
+        // build cannot read is still a stamp the reader may recognize, and
+        // printing nothing would hide a field the store plainly holds.
+        due: match field_ts(t, "due") {
+            Some(d) => due_cell(d, now),
+            None => s(t, "due"),
+        },
         overdue: field_ts(t, "due").map(|d| d < now).unwrap_or(false)
             && status_is_open(&s(t, "status")),
         // #228.16: rendered bare (`cardtag`), the one filter spelling that
@@ -847,7 +990,8 @@ fn task_row(t: &Value, max_urg: f64, now: Timestamp, unicode: bool) -> TaskRow {
                     .join(" "))
             })
             .unwrap_or_default(),
-        marker: status_marker(t, unicode),
+        rail: rail_marker(t, unicode),
+        marker: status_marker(t),
     }
 }
 
@@ -869,6 +1013,107 @@ fn field_ts(t: &Value, key: &str) -> Option<Timestamp> {
     t.get(key)
         .and_then(Value::as_str)
         .and_then(|v| v.parse::<Timestamp>().ok())
+}
+
+/// `1 task` / `9 tasks`. The `N task(s)` this replaces was the reader being
+/// handed a `match` the writer would not make.
+fn plural_tasks(n: i64) -> String {
+    if n == 1 {
+        "1 task".to_string()
+    } else {
+        format!("{n} tasks")
+    }
+}
+
+/// The line a table opens with: what was asked for, and what the answer holds
+/// beyond its own size.
+///
+/// It replaces the `N task(s)` trailer, which was the least useful summary
+/// available — a reader who has the rows in front of them can count them, and
+/// what they cannot see at a glance is how much of the list is late, due
+/// before the day is out, running, or stuck behind something else. Those four
+/// are counted over the rows ON SCREEN, which is why a bounded result
+/// (`serve::bound_to_viewport`, `--limit`) names both numbers: `count` is the
+/// store's answer and stays true, and a fact counted over twenty rows must not
+/// be read as a claim about forty-four.
+///
+/// Only non-zero facts are printed. A line that says `0 overdue · 0 blocked`
+/// trains the reader to skip it, and then it is not there on the day it says
+/// something.
+fn list_summary(
+    ctx: &Ctx,
+    tasks: &[Value],
+    rows: &[TaskRow],
+    count: i64,
+    filter: Option<&str>,
+    now: Timestamp,
+) -> String {
+    let mut parts = vec![ctx.paint("card.strong", &plural_tasks(count))];
+    if count > rows.len() as i64 {
+        parts.push(ctx.paint("muted", &format!("{} shown", rows.len())));
+    }
+
+    let overdue = rows.iter().filter(|r| r.overdue).count();
+    if overdue > 0 {
+        parts.push(ctx.paint("overdue", &format!("{overdue} overdue")));
+    }
+
+    // "Due today" is the rest of THIS day, so a row already past its deadline
+    // is late rather than upcoming and is counted once, above. `due_cell`
+    // spells both of them `today …`, which is the point: the cell says which
+    // day, and this line says which side of now.
+    let today = now.to_zoned(TimeZone::UTC).date();
+    let due_today = tasks
+        .iter()
+        .filter(|t| {
+            field_ts(t, "due").is_some_and(|d| {
+                d >= now
+                    && d.to_zoned(TimeZone::UTC).date() == today
+                    && status_is_open(&s(t, "status"))
+            })
+        })
+        .count();
+    if due_today > 0 {
+        parts.push(ctx.paint("warn", &format!("{due_today} due today")));
+    }
+
+    // Named by id, not counted. There is normally one timer, and "1 running"
+    // makes the reader run a second command to learn which — the question the
+    // line exists to answer.
+    let running: Vec<String> = tasks
+        .iter()
+        .filter(|t| s(t, "status") == "active")
+        .map(|t| {
+            format!(
+                "#{}",
+                t.get("short_id").and_then(Value::as_i64).unwrap_or(0)
+            )
+        })
+        .collect();
+    if !running.is_empty() {
+        parts.push(ctx.paint("timer.active", &format!("{} running", running.join(" "))));
+    }
+
+    let blocked = tasks
+        .iter()
+        .filter(|t| t.get("blocked").and_then(Value::as_bool).unwrap_or(false))
+        .count();
+    if blocked > 0 {
+        parts.push(ctx.paint("muted", &format!("{blocked} blocked")));
+    }
+
+    let facts = parts.join(&format!(" {} ", ctx.paint("muted", ctx.mid())));
+    match filter {
+        // The filter is echoed on every run, not only on an empty result:
+        // `tasqx list` defaults to `@working` (`verbs::list`), and a reader
+        // who cannot see which question was asked cannot tell a short answer
+        // from a narrow one.
+        Some(f) => format!(
+            "{}   {facts}",
+            ctx.paint("muted", &truncate(f, ctx.cols / 3, ctx.caps.unicode))
+        ),
+        None => facts,
+    }
 }
 
 /// Render a `task.list` result as an aligned, themed table.
@@ -931,25 +1176,31 @@ pub fn task_table_filtered(
     // overflowing something.
     let rule_len = c.total().min(ctx.cols);
 
+    let count = result
+        .get("count")
+        .and_then(Value::as_i64)
+        .unwrap_or(tasks.len() as i64);
+
+    // Summary, blank, header, rule — four lines of chrome, the same four the
+    // header/rule/rule/trailer shape cost, so `serve::watch_repaint`'s row
+    // budget is unchanged by the move.
     let mut out = String::new();
-    out.push_str(&ctx.paint("header", &header_line(&c, "DUE")));
+    out.push_str(&list_summary(ctx, tasks, &rows, count, filter, now));
     out.push('\n');
-    out.push_str(&ctx.hrule(rule_len));
+    out.push('\n');
+    out.push_str(&ctx.paint("table.label", &header_line(&c, "DUE")));
+    out.push('\n');
+    // ONE rule, under the header, where it separates the labels from the data.
+    // The table used to be bracketed by two, which were the heaviest ink on
+    // the screen and closed off a block the blank line and the summary already
+    // bound.
+    out.push_str(&ctx.paint("muted", &ctx.hrule(rule_len)));
     out.push('\n');
 
     for r in &rows {
         out.push_str(&row_line(ctx, &c, r));
         out.push('\n');
     }
-
-    let count = result
-        .get("count")
-        .and_then(Value::as_i64)
-        .unwrap_or(tasks.len() as i64);
-    out.push_str(&ctx.hrule(rule_len));
-    out.push('\n');
-    out.push_str(&ctx.paint("muted", &format!("{count} task(s)")));
-    out.push('\n');
 
     for note in store_health_notes(tasks) {
         out.push_str(&ctx.paint("warn", &note));
@@ -1380,7 +1631,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
         let c = TaskCols::fit(&rows, ctx.cols, "WHEN");
         let rule_len = c.total().min(ctx.cols);
 
-        out.push_str(&ctx.paint("header", &header_line(&c, "WHEN")));
+        out.push_str(&ctx.paint("table.label", &header_line(&c, "WHEN")));
         out.push('\n');
         out.push_str(&ctx.hrule(rule_len));
         out.push('\n');
@@ -1422,8 +1673,8 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
         out.push_str(&ctx.paint(
             "muted",
             &format!(
-                "{} task(s) · through {} (+{}d)",
-                a.entries.len(),
+                "{} · through {} (+{}d)",
+                plural_tasks(a.entries.len() as i64),
                 a.through,
                 a.days
             ),
@@ -1431,7 +1682,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
     } else {
         out.push_str(&ctx.paint(
             "muted",
-            &format!("{} task(s), all overdue", a.entries.len()),
+            &format!("{}, all overdue", plural_tasks(a.entries.len() as i64)),
         ));
     }
     out.push('\n');
@@ -4593,6 +4844,28 @@ mod tests {
         unicode_width::UnicodeWidthStr::width(s)
     }
 
+    /// How many lines of chrome a `task_table` draws before its first row:
+    /// summary, blank, header, rule.
+    ///
+    /// A constant rather than a `skip(4)` written out at each call site. These
+    /// tests are about a COLUMN — how wide it is, whether it is drawn at all —
+    /// and every one of them that spelled its own row offset had to be edited
+    /// when the summary line moved in front of the header, none of them for a
+    /// reason to do with what they assert.
+    const CHROME: usize = 4;
+
+    /// The `ID … TAGS` label line of a rendered table.
+    fn header_of(text: &str) -> &str {
+        text.lines().nth(CHROME - 2).expect("header line")
+    }
+
+    /// The data rows of a rendered table. Not trailer-aware on purpose — the
+    /// health notes print flush against the last row, so a caller that cares
+    /// takes exactly as many rows as it put in.
+    fn rows_of(text: &str) -> impl Iterator<Item = &str> {
+        text.lines().skip(CHROME)
+    }
+
     /// A terminal column is a grid of CELLS. `format!("{s:<36}")` pads by CHAR
     /// COUNT, so one CJK title or one emoji shifted every column to its right
     /// and the table stopped being a table.
@@ -4620,7 +4893,7 @@ mod tests {
             &json!({ "tasks": tasks, "count": tasks.len() }),
             Timestamp::now(),
         );
-        let rows: Vec<&str> = out.lines().skip(2).take(AWKWARD.len()).collect();
+        let rows: Vec<&str> = rows_of(&out).take(AWKWARD.len()).collect();
         assert_eq!(
             rows.len(),
             AWKWARD.len(),
@@ -4660,7 +4933,7 @@ mod tests {
                 &json!({ "tasks": tasks, "count": tasks.len() }),
                 Timestamp::now(),
             );
-            let rows: Vec<&str> = out.lines().skip(2).take(AWKWARD.len()).collect();
+            let rows: Vec<&str> = rows_of(&out).take(AWKWARD.len()).collect();
             let want = cells(rows[0]);
             for (row, v) in rows.iter().zip(AWKWARD) {
                 assert_eq!(cells(row), want, "{field}={v:?} broke alignment: {row:?}");
@@ -4690,6 +4963,206 @@ mod tests {
         );
     }
 
+    // ---- what the list screen says without being read closely --------------
+
+    /// `due_cell`'s whole vocabulary, dated from one fixed instant.
+    ///
+    /// The table is the assertion: every branch is one line, so a branch added
+    /// without a spelling — or a spelling changed without a reason — is visible
+    /// as a diff on this list rather than as a cell nobody looked at.
+    #[test]
+    fn the_due_cell_dates_a_deadline_the_way_a_reader_would() {
+        // A Thursday, mid-afternoon: far enough into the day that "today" and
+        // "already today" are both reachable from it.
+        let now: Timestamp = "2026-09-10T15:00:00Z".parse().unwrap();
+        for (iso, want) in [
+            ("2026-09-10T23:59:00Z", "today 23:59"),
+            ("2026-09-10T09:00:00Z", "today 09:00"),
+            ("2026-09-10T00:00:00Z", "today"),
+            ("2026-09-11T00:00:00Z", "tomorrow"),
+            ("2026-09-11T09:00:00Z", "tomorrow 09:00"),
+            ("2026-09-09T00:00:00Z", "yesterday"),
+            ("2026-09-08T00:00:00Z", "2d ago"),
+            ("2026-07-29T00:00:00Z", "43d ago"),
+            // Inside the week the weekday is the whole answer: there is
+            // exactly one Sunday between here and next Thursday.
+            ("2026-09-13T00:00:00Z", "Sun"),
+            ("2026-09-16T09:00:00Z", "Wed"),
+            // Past it, the day needs naming; the year only when it changes.
+            ("2026-09-17T00:00:00Z", "17 Sep"),
+            ("2026-11-04T00:00:00Z", "4 Nov"),
+            ("2027-01-04T00:00:00Z", "4 Jan 27"),
+        ] {
+            let at: Timestamp = iso.parse().unwrap();
+            assert_eq!(due_cell(at, now), want, "{iso}");
+        }
+    }
+
+    /// The `DUE` column holds a date a reader can act on, not the instant the
+    /// store happens to keep.
+    ///
+    /// `task_row` used to pass `s(t, "due")` through untouched, so this column
+    /// spent twenty cells per row on `2026-09-11T00:00:00Z` — while `TASK`, the
+    /// column the row is read for, was the one `TaskCols::fit` cut to its floor
+    /// on an 80-cell terminal. The assertion is on the SHAPE of the stamp
+    /// rather than on the word, so it holds whatever [`due_cell`]'s vocabulary
+    /// grows into.
+    #[test]
+    fn the_due_column_no_longer_prints_the_stored_instant() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let now: Timestamp = "2026-09-10T15:00:00Z".parse().unwrap();
+        let out = task_table(
+            &ctx,
+            &json!({ "tasks": [
+                task_json(1, "ship it", "work", "2026-09-11T00:00:00Z", &["t"]),
+            ], "count": 1 }),
+            now,
+        );
+        assert!(
+            !out.contains("T00:00:00Z"),
+            "the RFC-3339 instant is still in the table: {out:?}"
+        );
+        assert!(out.contains("tomorrow"), "{out:?}");
+    }
+
+    /// A `due` this build cannot parse is printed as it stands rather than
+    /// dropped — the policy `field_ts` already states for the overdue test, and
+    /// the one `markdown::fmt_instant` follows on the `show` card. A cell that
+    /// went blank instead would hide a field the store plainly holds, which is
+    /// the invisible-field failure D36 exists to prevent.
+    #[test]
+    fn an_unreadable_due_falls_back_to_itself() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = task_table(
+            &ctx,
+            &json!({ "tasks": [
+                task_json(1, "ship it", "work", "next tuesday-ish", &["t"]),
+            ], "count": 1 }),
+            Timestamp::now(),
+        );
+        assert!(
+            out.contains("next tuesday-ish"),
+            "an unparseable due vanished from the table: {out:?}"
+        );
+    }
+
+    /// The running task and the blocked one are marked in the left rail, and
+    /// the rail survives the terminal that drops every other optional column.
+    ///
+    /// Audit finding #147: nothing in `tasqx list` marked the one running
+    /// timer — the single piece of state a work block depends on. `STATUS` did
+    /// carry it, to the RIGHT of a title that can run 72 cells, and
+    /// `TaskCols::fit` drops that column outright on a narrow terminal. So the
+    /// assertion is made at 40 cells: a rail that only shows up when there is
+    /// room for it is the bug moving the glyph was meant to fix.
+    #[test]
+    fn the_rail_marks_the_running_and_the_blocked_row_at_any_width() {
+        let mut ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        ctx.cols = 40;
+        let result = json!({ "tasks": [
+            { "short_id": 1, "urgency": 9.0, "priority": "H", "title": "running one",
+              "project": "work", "due": "", "tags": [], "status": "active" },
+            { "short_id": 2, "urgency": 8.0, "priority": "H", "title": "stuck one",
+              "project": "work", "due": "", "tags": [], "status": "pending", "blocked": true },
+            { "short_id": 3, "urgency": 7.0, "priority": "M", "title": "ordinary one",
+              "project": "work", "due": "", "tags": [], "status": "pending" },
+        ], "count": 3 });
+        let out = task_table(&ctx, &result, Timestamp::now());
+        let rows: Vec<&str> = rows_of(&out).take(3).collect();
+        assert!(rows[0].starts_with('>'), "no timer glyph: {:?}", rows[0]);
+        assert!(rows[1].starts_with('B'), "no blocked glyph: {:?}", rows[1]);
+        assert!(
+            rows[2].starts_with("  "),
+            "an ordinary row grew a rail: {:?}",
+            rows[2]
+        );
+    }
+
+    /// A store with nothing running and nothing blocked pays nothing for the
+    /// rail — D51's rule for `DUE`, applied to the column left of the ids.
+    #[test]
+    fn a_store_with_no_state_to_show_is_not_indented_by_the_rail() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = task_table(
+            &ctx,
+            &json!({ "tasks": [task_json(1, "ordinary", "work", "", &[])], "count": 1 }),
+            Timestamp::now(),
+        );
+        assert!(
+            header_of(&out).starts_with("  ID"),
+            "an unused rail still indented the table: {:?}",
+            header_of(&out)
+        );
+    }
+
+    /// The summary line answers the questions a count cannot.
+    ///
+    /// `N task(s)` was the whole trailer: a reader with the rows in front of
+    /// them can count them, and what they cannot see at a glance is how much of
+    /// the list is late, due before the day is out, running, or stuck.
+    #[test]
+    fn the_summary_names_what_the_rows_do_not_show_at_a_glance() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let now: Timestamp = "2026-09-10T15:00:00Z".parse().unwrap();
+        let result = json!({ "tasks": [
+            { "short_id": 1, "urgency": 9.0, "priority": "H", "title": "late one",
+              "project": "work", "due": "2026-09-08T00:00:00Z", "tags": [], "status": "pending" },
+            { "short_id": 2, "urgency": 8.0, "priority": "H", "title": "today one",
+              "project": "work", "due": "2026-09-10T23:00:00Z", "tags": [], "status": "active" },
+            { "short_id": 3, "urgency": 7.0, "priority": "M", "title": "stuck one",
+              "project": "work", "due": "", "tags": [], "status": "pending", "blocked": true },
+        ], "count": 3 });
+        let table = task_table(&ctx, &result, now);
+        let summary = table.lines().next().unwrap();
+        for want in [
+            "3 tasks",
+            "1 overdue",
+            "1 due today",
+            "#2 running",
+            "1 blocked",
+        ] {
+            assert!(summary.contains(want), "{want:?} missing from {summary:?}");
+        }
+        assert!(
+            !summary.contains("task(s)"),
+            "the programmer's plural survived: {summary:?}"
+        );
+    }
+
+    /// A fact that is zero is not printed. A line that always said `0 overdue`
+    /// would train the reader to skip it, and then it is not there on the day
+    /// it says something.
+    #[test]
+    fn the_summary_prints_only_the_facts_that_are_true() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = task_table(
+            &ctx,
+            &json!({ "tasks": [task_json(1, "ordinary", "work", "", &[])], "count": 1 }),
+            Timestamp::now(),
+        );
+        let summary = out.lines().next().unwrap();
+        assert_eq!(summary.trim(), "1 task", "{summary:?}");
+    }
+
+    /// `list` echoes the filter it answered, on every run rather than only on
+    /// an empty result: `tasqx list` defaults to `@working` (`verbs::list`),
+    /// and a reader who cannot see which question was asked cannot tell a short
+    /// answer from a narrow one.
+    #[test]
+    fn the_summary_names_the_filter_that_produced_it() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = task_table_filtered(
+            &ctx,
+            &json!({ "tasks": [task_json(1, "ordinary", "work", "", &[])], "count": 1 }),
+            Timestamp::now(),
+            Some("project:raid +design"),
+        );
+        assert!(
+            out.lines().next().unwrap().contains("project:raid +design"),
+            "{out:?}"
+        );
+    }
+
     /// One row of table JSON, so a layout test can vary the one field it is about.
     fn task_json(id: i64, title: &str, project: &str, due: &str, tags: &[&str]) -> Value {
         json!({ "short_id": id, "urgency": 5.0, "priority": "M", "title": title,
@@ -4716,13 +5189,7 @@ mod tests {
             task_json(1, long, "raid.game", "", &["design"]),
         ], "count": 1 });
 
-        let head = |t: &Value| {
-            task_table(&ctx, t, Timestamp::now())
-                .lines()
-                .next()
-                .unwrap()
-                .to_string()
-        };
+        let head = |t: &Value| header_of(&task_table(&ctx, t, Timestamp::now())).to_string();
         assert!(head(&with_due).contains("DUE"), "{}", head(&with_due));
         assert!(
             !head(&without_due).contains("DUE"),
@@ -4730,11 +5197,8 @@ mod tests {
             head(&without_due)
         );
         // And the title survives whole once the dead column is gone.
-        let row = task_table(&ctx, &without_due, Timestamp::now())
-            .lines()
-            .nth(2)
-            .unwrap()
-            .to_string();
+        let table = task_table(&ctx, &without_due, Timestamp::now());
+        let row = rows_of(&table).next().unwrap().to_string();
         assert!(
             row.contains(long),
             "the title was truncated with room to spare: {row:?}"

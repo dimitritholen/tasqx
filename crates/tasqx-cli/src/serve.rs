@@ -670,7 +670,7 @@ mod tests {
     /// The fix: `bound_to_viewport` ahead of `render::task_table` keeps the
     /// frame inside the pane AND keeps the row the pane exists to show — #1,
     /// the hottest — rather than whatever the tail happens to be, while the
-    /// trailer keeps naming the true size of the working set.
+    /// summary keeps naming the true size of the working set.
     #[test]
     fn bound_to_viewport_keeps_the_frame_inside_the_pane_and_the_hottest_row_in_it() {
         let result = working_set(44);
@@ -690,8 +690,16 @@ mod tests {
             "the coldest task must be the one trimmed, not #1: {text}"
         );
         assert!(
-            text.contains("44 task(s)"),
-            "the trailer must still name the true total: {text}"
+            text.contains("44 tasks"),
+            "the summary must still name the true total: {text}"
+        );
+        // And must not let the two numbers be confused for one. Every other
+        // fact on that line is counted over the rows ON SCREEN, so a summary
+        // that said "44 tasks - 1 overdue" over a trimmed frame would be
+        // attributing a count of twenty to a set of forty-four.
+        assert!(
+            text.contains("20 shown"),
+            "a trimmed frame must say how many of the total it is showing: {text}"
         );
     }
 

@@ -894,18 +894,26 @@ fn page_install() -> String {
     ));
     s.push_str(&snippet(
         "tasqx list",
-        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
-         -----------------------------------------------------------------------------------------\n\
-         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
-         \x20  3  12.0  -  Renew the TLS cert           work.tasqx  2026-07-15T00:00:00Z  ops\n\
-         \x20  2  11.5  -  Write the user guide         work.tasqx  2026-07-17T00:00:00Z  docs\n\
-         -----------------------------------------------------------------------------------------\n\
-         3 task(s)",
+        "@working   3 tasks\n\
+         \n\
+         \x20 ID     URG  TASK                         PROJECT     DUE       TAGS\n\
+         ------------------------------------------------------------------------------\n\
+         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
+         \x20  3  - 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
+         \x20  2  - 11.5  Write the user guide         work.tasqx  Fri       +docs",
     ));
 
     s.push_str(&p(
-        "That <code>URG</code> column is urgency — a computed score, not something you set. \
-         <code>tasqx next</code> is the \"what now\" button: the single hottest unblocked task.",
+        "The line above the table says which filter answered and what the answer holds beyond \
+         its own size — how much of it is late, due before the day is out, running, or blocked. \
+         The <code>DUE</code> cells are dated from Tuesday 14 July 2026, the day this page's \
+         narrative runs on: a deadline inside the coming week is named by its weekday, one \
+         further out by its date, and today and tomorrow carry a clock when the store holds one.",
+    ));
+    s.push_str(&p(
+        "That <code>URG</code> column is urgency — a computed score, not something you set. The \
+         letter in front of it is the priority you did set. <code>tasqx next</code> is the \
+         \"what now\" button: the single hottest unblocked task.",
     ));
     s.push_str(&snippet(
         "tasqx next",
@@ -1137,11 +1145,11 @@ fn page_commands() -> String {
     )));
     s.push_str(&snippet(
         "tasqx list \"project:work.tasqx +api\"",
-        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
-         -----------------------------------------------------------------------------------------\n\
-         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
-         -----------------------------------------------------------------------------------------\n\
-         1 task(s)",
+        "project:work.tasqx +api   1 task\n\
+         \n\
+         \x20 ID     URG  TASK                         PROJECT     DUE  TAGS\n\
+         -------------------------------------------------------------------------\n\
+         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri  +api +release",
     ));
 
     // ---- agenda
@@ -1154,19 +1162,19 @@ fn page_commands() -> String {
     ));
     s.push_str(&snippet(
         "tasqx agenda",
-        "\x20 ID   URG  P  TASK                             PROJECT     WHEN            TAGS\n\
-         ---------------------------------------------------------------------------------------\n\
+        "\x20 ID     URG  TASK                             PROJECT     WHEN            TAGS\n\
+         ----------------------------------------------------------------------------------------\n\
          Overdue\n\
-         \x20  3  18.0  H  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  bug\n\
+         \x20  3  H 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  +bug\n\
          Today · Mon 2026-08-03\n\
-         \x20  2  12.0  -  Write API conformance tests      work.tasqx  due 12:00       api\n\
-         \x20  1  18.0  H  Ship the v1 JSON API freeze      work.tasqx  due 17:00       api release\n\
+         \x20  2  - 12.0  Write API conformance tests      work.tasqx  due 12:00       +api\n\
+         \x20  1  H 18.0  Ship the v1 JSON API freeze      work.tasqx  due 17:00       +api +release\n\
          Tomorrow · Tue 2026-08-04\n\
-         \x20  4   0.0  -  Quarterly deps audit             work.tasqx  sched\n\
+         \x20  4  -  0.0  Quarterly deps audit             work.tasqx  sched\n\
          Thu 2026-08-06\n\
-         \x20  5  10.1  -  Publish the API docs             work.tasqx  due\n\
-         ---------------------------------------------------------------------------------------\n\
-         5 task(s) · through 2026-08-17 (+14d)\n\
+         \x20  5  - 10.1  Publish the API docs             work.tasqx  due\n\
+         ----------------------------------------------------------------------------------------\n\
+         5 tasks · through 2026-08-17 (+14d)\n\
          1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them\n\
          1 further out — `tasqx agenda --days 90` reaches the furthest",
     ));
@@ -1289,13 +1297,13 @@ fn page_commands() -> String {
     ));
     s.push_str(&snippet(
         "tasqx list",
-        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
-         -----------------------------------------------------------------------------------------\n\
-         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
-         \x20  3  12.0  -  Renew the TLS cert           work.tasqx  2026-07-15T00:00:00Z  ops\n\
-         \x20  4  12.0  -  Water the plants             home        2026-07-16T00:00:00Z\n\
-         -----------------------------------------------------------------------------------------\n\
-         3 task(s)",
+        "@working   3 tasks\n\
+         \n\
+         \x20 ID     URG  TASK                         PROJECT     DUE       TAGS\n\
+         ------------------------------------------------------------------------------\n\
+         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
+         \x20  3  - 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
+         \x20  4  - 12.0  Water the plants             home        Thu",
     ));
     s.push_str(&snippet(
         "tasqx undep 2 1",
@@ -1534,12 +1542,12 @@ fn page_filters() -> String {
     ));
     s.push_str(&snippet(
         "tasqx list \"(+api or +ops) and status:pending\"",
-        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
-         -----------------------------------------------------------------------------------------\n\
-         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
-         \x20  3  12.0  -  Renew the TLS cert           work.tasqx  2026-07-15T00:00:00Z  ops\n\
-         -----------------------------------------------------------------------------------------\n\
-         2 task(s)",
+        "(+api or +ops) and status:pending   2 tasks\n\
+         \n\
+         \x20 ID     URG  TASK                         PROJECT     DUE       TAGS\n\
+         ------------------------------------------------------------------------------\n\
+         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
+         \x20  3  - 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops",
     ));
 
     s.push_str(&h3("Two behaviours worth knowing"));
@@ -2003,14 +2011,14 @@ fn page_daemon() -> String {
     ));
     s.push_str(&snippet(
         "tasqx watch --socket tasqx-docsdemo | cat\n# ... meanwhile, in another shell:\n#   tasqx --socket tasqx-docsdemo add \"Wire up the docs page ...\"\n#   tasqx --socket tasqx-docsdemo done 3",
-        "\x20 ID   URG  P  TASK                         PROJECT     DUE                   TAGS\n\
-         -----------------------------------------------------------------------------------------\n\
-         \x20  1  17.5  H  Ship the v1 JSON API freeze  work.tasqx  2026-07-17T00:00:00Z  api release\n\
-         \x20  3  12.0  -  Renew the TLS cert           work.tasqx  2026-07-15T00:00:00Z  ops\n\
-         \x20  5   9.7  -  Water the plants             home        2026-07-19T00:00:00Z\n\
-         \x20  2   8.9  -  Write the user guide         work.tasqx  2026-07-20T00:00:00Z  docs\n\
-         -----------------------------------------------------------------------------------------\n\
-         4 task(s)\n\
+        "4 tasks\n\
+         \n\
+         \x20 ID     URG  TASK                         PROJECT     DUE       TAGS\n\
+         ------------------------------------------------------------------------------\n\
+         \x20  1  H 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
+         \x20  3  - 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
+         \x20  5  -  9.7  Water the plants             home        Sun\n\
+         \x20  2  -  8.9  Write the user guide         work.tasqx  Mon       +docs\n\
          task.changed op=add short_id=6\n\
          task.changed op=done short_id=3",
     ));
@@ -4177,10 +4185,21 @@ mod tests {
                 "working-set row {row:?} shows a task no documented command creates"
             );
         }
-        // …and the count line must agree with the rows shown.
+        // …and the summary line the table OPENS with must agree with the rows
+        // under it. It is the first line rather than the last since the
+        // trailer moved to the top of the table; the count reads `1 task` /
+        // `N tasks`, which is what `render::plural_tasks` prints.
+        let want = if rows.len() == 1 {
+            "1 task".to_string()
+        } else {
+            format!("{} tasks", rows.len())
+        };
         assert!(
-            table.contains(&format!("{} task(s)", rows.len())),
-            "the table shows {} rows but its count line disagrees:\n{table}",
+            table
+                .lines()
+                .next()
+                .is_some_and(|first| first.contains(&want)),
+            "the table shows {} rows but its summary line disagrees:\n{table}",
             rows.len()
         );
         assert_eq!(
