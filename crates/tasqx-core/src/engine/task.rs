@@ -513,13 +513,17 @@ impl Engine {
         let now_ts =
             parse_ts(ts).ok_or_else(|| ApiError::internal("completion timestamp unparseable"))?;
 
-        // Anchor on the current due, else the scheduled, else `now`.
+        // Anchor on the current due, else the scheduled, else midnight UTC of
+        // the completion day. NOT the raw `now_ts`: every other date this tool
+        // stores is a clean midnight or clock minute, and anchoring on the
+        // unrounded completion instant carried its nanoseconds into the spawned
+        // due forever, drifting a little further each cycle (audit #231.2).
         let anchor = template
             .due
             .as_deref()
             .or(template.scheduled.as_deref())
             .and_then(parse_ts)
-            .unwrap_or(now_ts);
+            .unwrap_or_else(|| datetime::day_start_utc(now_ts));
         let next = recur::next_after(&rule, anchor, now_ts)?;
         let delta = next.as_second() - anchor.as_second();
 
@@ -1802,6 +1806,29 @@ mod tests {
 
         let out = e.task_list(&json!({ "sort": ["short_id"] })).unwrap();
         assert_eq!(out["count"], 2);
+    }
+
+    /// A recurring task with neither `due` nor `scheduled` used to anchor its
+    /// spawn on the raw completion `Timestamp` — nanosecond precision, drifting
+    /// a little further every cycle, and truncated unreadably in the DUE
+    /// column (audit #231.2: `2026-09-12T10:43:05.798165338Z`). Every other
+    /// date the store produces is a clean midnight or clock minute; the spawn
+    /// must land on the same kind of boundary — midnight UTC of the completion
+    /// day, advanced by the rule — not on whatever instant `task.done` happened
+    /// to run at.
+    #[test]
+    fn recurrence_with_no_due_spawns_on_a_clean_date_boundary() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "rec", "recurrence": "every 3 days" }))
+            .unwrap();
+        let done = e.task_done(&json!({ "ref": 1 })).unwrap();
+        let due = done["spawned"]["due"]
+            .as_str()
+            .expect("the spawn must carry a due");
+        assert!(
+            due.ends_with("T00:00:00Z"),
+            "spawned due is not a clean midnight boundary: {due}"
+        );
     }
 
     /// A storage fault on the `short_id` read must SURFACE, not silently vanish
