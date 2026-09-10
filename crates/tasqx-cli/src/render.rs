@@ -1343,11 +1343,25 @@ fn detail_rows(ctx: &Ctx, result: &Value) -> Vec<DetailRow> {
                     .filter_map(|m| m.get(key).and_then(Value::as_u64))
                     .fold(0u64, u64::saturating_add)
             };
+            // #217: the sum above blends every measurement's counts together
+            // with no way back to which row contributed what, so the WORST
+            // confidence across them is appended — the one fact a reader
+            // needs to know before budgeting against this total. Silent when
+            // every measurement is `high`: a marker on the common case would
+            // train the reader to stop noticing it.
+            let worst_confidence = tokens
+                .iter()
+                .filter_map(|m| m.get("confidence").and_then(Value::as_str))
+                .min_by_key(|c| tasqx_core::tokens::confidence_rank(c));
+            let confidence_suffix = match worst_confidence {
+                Some(c) if c != tasqx_core::tokens::CONFIDENCE_HIGH => format!(" [{c} confidence]"),
+                _ => String::new(),
+            };
             row(
                 "tokens",
                 DetailField::Tokens,
                 format!(
-                    "in {} · out {} · cacheR {} · cacheW {}",
+                    "in {} · out {} · cacheR {} · cacheW {}{confidence_suffix}",
                     sum("input_tokens"),
                     sum("output_tokens"),
                     sum("cache_read_tokens"),
@@ -2136,7 +2150,16 @@ pub fn report(ctx: &Ctx, result: &Value, group_by: &str) -> String {
             .get("tracked_total")
             .and_then(Value::as_str)
             .unwrap_or("-");
-        let tokens = crate::tokens::dominant_cell(g);
+        // #217: `report.summary` names the group's WORST confidence in
+        // `tokens_confidence` (D50's trust hierarchy). Silent when it is
+        // `high`, or absent — a marker on the common case teaches the reader
+        // to stop noticing it.
+        let tokens = match g.get("tokens_confidence").and_then(Value::as_str) {
+            Some(c) if c != tasqx_core::tokens::CONFIDENCE_HIGH => {
+                format!("{} ~{c}", crate::tokens::dominant_cell(g))
+            }
+            _ => crate::tokens::dominant_cell(g),
+        };
         let overdue_cell = format!("{overdue:>7}");
         let overdue_p = if overdue > 0 {
             ctx.paint("warn", &overdue_cell)
@@ -2740,6 +2763,54 @@ mod tests {
             labels >= 15,
             "the parity scan saw only {labels} labels — full_task stopped \
              exercising the conditional rows and this guard is checking little"
+        );
+    }
+
+    /// #217: `task.get`'s `tokens` array carries `confidence` per measurement
+    /// (the field MCP's markdown table already renders), but `tasqx show`
+    /// summed the four buckets and printed nothing else — a task whose only
+    /// measurement was a low-confidence discovery-pass guess read exactly
+    /// like one a verified `otel` correlation produced. The worst confidence
+    /// across the task's measurements must show on this line.
+    #[test]
+    fn show_marks_a_low_confidence_token_measurement() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let t = json!({
+            "short_id": 109, "title": "t", "status": "pending", "urgency": 1.0,
+            "tokens": [{"input_tokens": 10, "output_tokens": 0,
+                        "cache_read_tokens": 0, "cache_creation_tokens": 0,
+                        "confidence": "low"}],
+        });
+        let out = task_detail(&ctx, &t);
+        let line = out
+            .lines()
+            .find(|l| l.contains("tokens"))
+            .expect("tokens row");
+        assert!(
+            line.contains("low"),
+            "the low confidence never reached the tokens line: {line:?}"
+        );
+    }
+
+    /// A high-confidence-only task must NOT get a confidence marker at all —
+    /// the whole point is that the flag distinguishes the two.
+    #[test]
+    fn show_does_not_mark_a_fully_high_confidence_measurement() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let t = json!({
+            "short_id": 1, "title": "t", "status": "pending", "urgency": 1.0,
+            "tokens": [{"input_tokens": 10, "output_tokens": 0,
+                        "cache_read_tokens": 0, "cache_creation_tokens": 0,
+                        "confidence": "high"}],
+        });
+        let out = task_detail(&ctx, &t);
+        let line = out
+            .lines()
+            .find(|l| l.contains("tokens"))
+            .expect("tokens row");
+        assert!(
+            !line.contains("high") && !line.contains("low") && !line.contains("medium"),
+            "an unwarranted confidence marker appeared: {line:?}"
         );
     }
 
@@ -3358,6 +3429,31 @@ mod tests {
         assert!(
             !row.contains("13900820") && !row.contains("13.9M"),
             "the blended total reached the terminal: {row:?}"
+        );
+    }
+
+    /// #217: `report.summary` carries a `tokens_confidence` field alongside
+    /// the four buckets — the group's worst measurement — but the terminal
+    /// table only ever named the dominant bucket, so a project whose entire
+    /// spend came from a low-confidence discovery pass read identically to
+    /// one built from verified `otel` correlations.
+    #[test]
+    fn report_marks_a_low_confidence_group() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = report(
+            &ctx,
+            &json!({ "groups": [
+                { "project": "P", "count": 1, "est_total": "PT1H", "overdue": 0,
+                  "tracked_total": "PT2H", "tokens_in": 100, "tokens_out": 0,
+                  "tokens_cache_read": 0, "tokens_cache_creation": 0,
+                  "tokens_confidence": "low" }
+            ] }),
+            "project",
+        );
+        let row = out.lines().nth(1).unwrap();
+        assert!(
+            row.contains("low"),
+            "the group's low confidence never reached the terminal row: {row:?}"
         );
     }
 
