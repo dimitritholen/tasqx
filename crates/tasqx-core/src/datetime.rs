@@ -279,6 +279,18 @@ pub fn parse_duration(input: &str) -> Result<String, ApiError> {
             "could not parse duration: {raw:?} (try e.g. 4h, 90m, 1h30m, 2d, 1w, or ISO PT4H)"
         ))
     };
+    let not_positive =
+        || ApiError::bad_request("an estimate must be greater than zero".to_string());
+
+    // A leading `-` is a range problem, not a spelling problem: the string
+    // parses fine, it is just outside the accepted range. Caught here, before
+    // the digit/unit scan, so `-1h` gets the range message instead of tripping
+    // the scanner's "no digit before a unit" branch.
+    if let Some(rest) = raw.strip_prefix('-') {
+        if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return Err(not_positive());
+        }
+    }
 
     // Already ISO-8601: validate via the same reader every consumer uses.
     if raw.starts_with('P') || raw.starts_with('p') {
@@ -318,6 +330,12 @@ pub fn parse_duration(input: &str) -> Result<String, ApiError> {
             "h" | "hr" | "hrs" | "hour" | "hours" => acc(&mut hours)?,
             "m" | "min" | "mins" | "minute" | "minutes" => acc(&mut mins)?,
             "s" | "sec" | "secs" | "second" | "seconds" => acc(&mut secs)?,
+            "y" | "yr" | "yrs" | "year" | "years" => {
+                return Err(ApiError::bad_request(
+                    "years are not a supported duration unit — write a day or week count instead"
+                        .to_string(),
+                ));
+            }
             _ => return Err(bad()),
         }
         num.clear();
@@ -338,6 +356,10 @@ pub fn parse_duration(input: &str) -> Result<String, ApiError> {
             }
             unit.push(c);
             saw = true;
+        } else if c == '.' {
+            return Err(ApiError::bad_request(
+                "fractions are not supported — write 1h30m instead of 1.5h".to_string(),
+            ));
         } else {
             return Err(bad());
         }
@@ -371,7 +393,7 @@ pub fn parse_duration(input: &str) -> Result<String, ApiError> {
     // Everything parsed but summed to nothing (`0h`): a zero estimate is not a
     // typo worth guessing at, but it is not a duration either.
     if out == "P" {
-        return Err(bad());
+        return Err(not_positive());
     }
     // Read the result back through the reader every consumer (`report`, urgency)
     // uses. The ISO branch above has always done this; the human branch never
@@ -577,6 +599,34 @@ mod tests {
     fn duration_rejects_junk() {
         for bad in ["", "soon", "4x", "h4", "4", "-4h", "PT", "P4X"] {
             assert!(parse_duration(bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
+
+    /// Finding #1 (audit-2026-09): "could not parse duration" was fired for
+    /// values that parsed fine and were rejected for range/unit reasons —
+    /// `0m`/`-1h` (not > 0), `1.5h` (fractions unsupported), `1y` (no
+    /// calendar-year unit). Each needs its own diagnosis, not the parse-failure
+    /// message, mirroring `recurrence interval must be >= 1`.
+    #[test]
+    fn duration_range_and_unit_errors_are_distinct_from_parse_failure() {
+        for zero_or_negative in ["0m", "-1h", "0h0m"] {
+            let err = parse_duration(zero_or_negative).unwrap_err().to_string();
+            assert!(
+                err.contains("greater than zero"),
+                "{zero_or_negative:?} -> {err:?} should name the range problem, not 'could not parse'"
+            );
+        }
+        let err = parse_duration("1.5h").unwrap_err().to_string();
+        assert!(
+            err.contains("fraction"),
+            "1.5h -> {err:?} should name the fraction, not 'could not parse'"
+        );
+        for years in ["1y", "2yr", "3years"] {
+            let err = parse_duration(years).unwrap_err().to_string();
+            assert!(
+                err.contains("year"),
+                "{years:?} -> {err:?} should name the unsupported unit, not 'could not parse'"
+            );
         }
     }
 
