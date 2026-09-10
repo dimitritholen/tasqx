@@ -1294,6 +1294,20 @@ fn one_quoting_rule_spans_the_write_and_read_sides() {
         s.contains("t2"),
         "the advised spelling must round trip: {s}"
     );
+
+    // A whole `project:` token that names an unknown project with embedded
+    // quotes and spaces gets the plain (non-cut) not_found message — but the
+    // `tasqx init …` hint inside it used to interpolate the name raw, so
+    // pasting it verbatim handed clap `My "Big" Project` as three arguments
+    // instead of one and failed with an unrelated usage error. The hint must
+    // be shell-quoted the way the cut-name branch above already is.
+    let out = run(&["add", "quoted", r#"project:"My \"Small\" Project""#]);
+    assert_eq!(out.status.code(), Some(4), "still a not_found");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains(r#"tasqx init 'My "Small" Project'"#),
+        "the hint must be a single shell-safe argument: {err}"
+    );
 }
 
 /// `tasqx report <filter> --html` IGNORED its filter entirely.
