@@ -1000,9 +1000,13 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
         // user goes on typing, which put the one silent token in the grammar a
         // single keystroke away from Enter.
         if v.is_empty() {
-            return Err(format!(
-                "unknown filter token {tok:?} (expected {TOKEN_SHAPES})"
-            ));
+            // The token IS recognised — `project:` is one of `TOKEN_SHAPES` —
+            // so "unknown filter token" contradicts the message's own list.
+            // The fault is the missing value, and saying so is the only
+            // repair an agent can retry into something that actually parses.
+            return Err("`project:` needs a value — e.g. project:finly-next, or \
+                 project:\"tasqx review 2026-09\" when it contains a space"
+                .to_string());
         }
         return Ok(Pred::Project(v.to_string()));
     }
@@ -2022,6 +2026,25 @@ mod tests {
             Filter::parse(&format!("project:{}", quote("")), anchor()).is_err(),
             "an empty project name cannot exist, so `project:\"\"` must be \
              refused rather than matching nothing at exit 0"
+        );
+    }
+
+    /// `project:` with no value at all must not be refused as an "unknown
+    /// filter token" — that message then lists `project:` itself among the
+    /// tokens it claims not to recognise, a contradiction that leaves an
+    /// agent with no repair that converges (re-sending `project:` fails
+    /// identically). The real fault is the missing value, so the message
+    /// must say that instead.
+    #[test]
+    fn bare_project_colon_names_the_missing_value_not_an_unknown_token() {
+        let err = Filter::parse("project:", anchor()).unwrap_err();
+        assert!(
+            !err.contains("unknown filter token"),
+            "the token is recognised (it's `project:`); the value is missing: {err:?}"
+        );
+        assert!(
+            err.contains("project:") && err.to_lowercase().contains("needs a value"),
+            "expected a message naming `project:` and that it needs a value, got {err:?}"
         );
     }
 
