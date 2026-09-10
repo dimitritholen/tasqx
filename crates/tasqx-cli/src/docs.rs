@@ -233,9 +233,11 @@ const METHODS: [(&str, &str, &str); 32] = [
         "token.add",
         "<code>ref</code>, <code>tool</code>, <code>source</code>, <code>confidence</code>, \
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
-         <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>",
+         <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>, \
+         <code>idempotency_key?</code>",
         "<code>{short_id, measurement}</code>. Records AI token spend; never bumps \
-         <code>_rev</code>.",
+         <code>_rev</code>. A repeated <code>idempotency_key</code> on the same task \
+         returns the measurement it already banked, unchanged.",
     ),
     (
         "dependency.add",

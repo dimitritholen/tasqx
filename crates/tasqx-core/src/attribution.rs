@@ -38,6 +38,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 use crate::engine::Engine;
@@ -188,7 +189,7 @@ pub fn totals_in_window_excluding(
     done: &str,
     foreign: &[(String, String)],
 ) -> (TokenTotals, usize, usize) {
-    let (totals, counted, contested, _) =
+    let (totals, counted, contested, _, _) =
         totals_in_window_refusing(samples, start, done, foreign, &HashSet::new());
     (totals, counted, contested)
 }
@@ -207,16 +208,20 @@ pub fn totals_in_window_excluding(
 /// where the identity half stops, not a case the parsers rule out.
 ///
 /// The fourth return is the ids of the samples actually summed, so the caller
-/// can persist which samples this measurement consumed.
+/// can persist which samples this measurement consumed. The fifth (#213) is
+/// the model every counted sample agreed on — `Some` only when at least one
+/// counted sample named a model and none named a *different* one, `None` on
+/// disagreement or silence — so a measurement can be priced without ever
+/// claiming a model none of its evidence actually stated.
 pub fn totals_in_window_refusing(
     samples: &[UsageSample],
     start: &str,
     done: &str,
     foreign: &[(String, String)],
     consumed: &HashSet<String>,
-) -> (TokenTotals, usize, usize, Vec<String>) {
+) -> (TokenTotals, usize, usize, Vec<String>, Option<String>) {
     let Some((lo, hi)) = parse_window(start, done) else {
-        return (TokenTotals::default(), 0, 0, Vec::new());
+        return (TokenTotals::default(), 0, 0, Vec::new(), None);
     };
     let foreign: Vec<(Timestamp, Timestamp)> = foreign
         .iter()
@@ -227,6 +232,8 @@ pub fn totals_in_window_refusing(
     let mut counted = 0;
     let mut contested = 0;
     let mut counted_ids = Vec::new();
+    let mut model: Option<String> = None;
+    let mut model_disagrees = false;
     for s in samples {
         let Ok(ts) = s.ts.parse::<Timestamp>() else {
             continue;
@@ -243,9 +250,19 @@ pub fn totals_in_window_refusing(
             if let Some(id) = &s.id {
                 counted_ids.push(id.clone());
             }
+            if let Some(m) = &s.model {
+                match &model {
+                    None => model = Some(m.clone()),
+                    Some(existing) if existing == m => {}
+                    Some(_) => model_disagrees = true,
+                }
+            }
         }
     }
-    (totals, counted, contested, counted_ids)
+    if model_disagrees {
+        model = None;
+    }
+    (totals, counted, contested, counted_ids, model)
 }
 
 /// The confidence to stamp on a measurement, per the module's confidence rule.
@@ -390,6 +407,11 @@ pub struct AttributionResult {
     /// so later ticks can refuse these samples by identity, whatever their
     /// re-parsed stamps then say. Empty when no counted sample had an id.
     pub sample_ids: Vec<String>,
+    /// The model every counted sample agreed on (#213) — `None` when no
+    /// counted sample named one, or when they disagreed. A model is the one
+    /// field that can ever turn four counts into money, and it must never be
+    /// claimed beyond what the evidence actually said.
+    pub model: Option<String>,
 }
 
 impl AttributionResult {
@@ -405,6 +427,7 @@ impl AttributionResult {
             confidence: CONFIDENCE_LOW,
             found: false,
             sample_ids: Vec::new(),
+            model: None,
         }
     }
 }
@@ -454,7 +477,7 @@ pub fn compute_attribution(
     // two tasks with overlapping windows over one session would double-count
     // identically to the log-parse case. Contested telemetry banks for no one.
     if !pa.otel_samples.is_empty() {
-        let (totals, n, contested, sample_ids) = totals_in_window_refusing(
+        let (totals, n, contested, sample_ids, model) = totals_in_window_refusing(
             &pa.otel_samples,
             &pa.window_start,
             &pa.window_end,
@@ -475,6 +498,7 @@ pub fn compute_attribution(
                 confidence: CONFIDENCE_HIGH,
                 found: true,
                 sample_ids,
+                model,
             });
         }
         // D50 symmetry: telemetry whose every in-window sample is claimed by
@@ -541,7 +565,7 @@ pub fn compute_attribution(
         _ => (discover_samples(parser, pa), false, false),
     };
 
-    let (totals, n, contested, sample_ids) = totals_in_window_refusing(
+    let (totals, n, contested, sample_ids, model) = totals_in_window_refusing(
         &samples,
         &pa.window_start,
         &pa.window_end,
@@ -599,6 +623,7 @@ pub fn compute_attribution(
         confidence: confidence_for(transcript_parsed, session_correlated),
         found,
         sample_ids,
+        model,
     })
 }
 
@@ -692,6 +717,7 @@ pub fn attribute_one(
         "ref": pa.short_id,
         "source": result.source,
         "tool": result.tool,
+        "model": result.model,
         "confidence": result.confidence,
         "samples": result.samples,
         "sample_ids": result.sample_ids,
@@ -722,6 +748,15 @@ struct DoneInfo {
     /// comparison of the raw path let two spellings of one file bank the same
     /// spend twice.
     canon_path: Option<PathBuf>,
+    /// True for an entry synthesized from a currently-ACTIVE task's open
+    /// interval rather than a `done` event (#207). Such an entry has no real
+    /// completion — [`completed`](Self::completed) holds the scan's own `now`,
+    /// standing in for "not over yet" — and exists *only* to make the task's
+    /// still-running window visible to [`WindowScan::foreign_windows_for`].
+    /// [`pending_attributions`] skips these: there is no `done` to attribute,
+    /// and a window with no known end is exactly the case D50's contest rule
+    /// must see, not one it can resolve.
+    open: bool,
 }
 
 /// Whether two completions draw their samples from the same source: the same
@@ -915,6 +950,72 @@ fn correlated_done_scan(engine: &Engine) -> Result<HashMap<String, DoneInfo>, Ap
                     self_reported,
                     attributed: is_attributed,
                     canon_path: None,
+                    open: false,
+                },
+            );
+        }
+    }
+
+    // 3. Currently-ACTIVE tasks with no `done` event yet, but carrying
+    //    correlation on their current interval (#207). `start parent / start
+    //    child --keep / done child` is the ordinary shape of agent work on a
+    //    ticket with sub-tasks, and the parent's window has no end yet only
+    //    because it has not finished — that is precisely the condition D50's
+    //    contest rule exists for, not an escape from it. A task already
+    //    present above (an unattributed `done` from an earlier reopen cycle)
+    //    keeps that entry: layering an open window over a stale closed one is
+    //    an edge case wider than #207's repro, and the closed entry is at
+    //    least as safe a foreign window as none at all.
+    {
+        let mut stmt = conn.prepare("SELECT id FROM tasks WHERE status = 'active'")?;
+        let active_ids: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let now = Timestamp::now().to_string();
+        for task_id in active_ids {
+            if correlated.contains_key(&task_id) {
+                continue;
+            }
+            // The current open interval's `start` event — the latest one, in
+            // case the task was stopped and restarted while pending earlier.
+            let row = conn
+                .query_row(
+                    "SELECT payload FROM events WHERE entity_id = ?1 AND op = 'start' \
+                     ORDER BY rowid DESC LIMIT 1",
+                    params![task_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()?;
+            let Some(payload) = row else { continue };
+            let v = payload
+                .as_deref()
+                .and_then(|p| serde_json::from_str::<Value>(p).ok())
+                .unwrap_or(Value::Null);
+            let field = |k: &str| {
+                v.get(k)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
+            let client = field("client");
+            let transcript_path = field("transcript_path");
+            let session_id = field("session_id");
+            // Same rule as a `done`: no correlation key, no entry — a plain
+            // `tasqx start` shares no sample source with anything.
+            if client.is_none() && transcript_path.is_none() && session_id.is_none() {
+                continue;
+            }
+            correlated.insert(
+                task_id,
+                DoneInfo {
+                    completed: now.clone(),
+                    client,
+                    transcript_path,
+                    session_id,
+                    self_reported: false,
+                    attributed: false,
+                    canon_path: None,
+                    open: true,
                 },
             );
         }
@@ -1126,7 +1227,12 @@ pub(crate) fn recompute_measurement(
         .filter(|s| !s.is_empty())
         .is_some_and(|sid| parser.session_matches(file, sid));
     let foreign = scan.foreign_windows_for(task_id);
-    let (totals, counted, mut contested, sample_ids) =
+    // The model agreement (#213) is not carried here: `tokens.recompute` only
+    // ever re-derives log-parse rows, whose write path
+    // (`Engine::recompute_replace`) predates this field and is out of this
+    // fix's scope — the live attribution path (`attribute_one`) is where the
+    // audited defect was observed.
+    let (totals, counted, mut contested, sample_ids, _model) =
         totals_in_window_refusing(&samples, window_start, window_end, &foreign, claims);
     // The other half of the contest count: a sample whose CURRENT stamp sits
     // outside this task's window is invisible to the window sum above, but
@@ -1192,7 +1298,10 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
 
     let mut out = Vec::new();
     for (task_id, info) in scan.correlated.iter() {
-        if info.attributed {
+        // An `open` entry (#207) exists only to make a still-active task's
+        // window visible to `foreign_windows_for`; it has no `done` to
+        // attribute and must never become a candidate itself.
+        if info.attributed || info.open {
             continue;
         }
         // A candidate with no task row is impossible (the done event references

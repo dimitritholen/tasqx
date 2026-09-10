@@ -28,7 +28,7 @@ notify-rust = { version = "4", optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-uuid = { version = "1.23.5", features = ["v7"] }
+uuid = { version = "1.23.5", features = ["v7", "v5"] }
 
 [target.'cfg(windows)'.dependencies]
 # Interprocess exposes no named-pipe I/O timeouts. CancelIoEx lets the bounded
