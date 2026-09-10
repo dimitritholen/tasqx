@@ -1162,6 +1162,17 @@ pub(super) enum ConfigAction {
         /// Setting key, e.g. `theme.name`.
         key: String,
     },
+    /// Print one setting's description, units and default (#236.2).
+    ///
+    /// `config get`'s stdout is deliberately the bare value alone — scripts
+    /// run `$(tasqx config get daemon.idle_timeout)` — so the units a value
+    /// like that one is measured in have nowhere to surface on that path.
+    /// This is the other path: a question answered on demand, not a column
+    /// squeezed onto every row of `config list`.
+    Describe {
+        /// Setting key, e.g. `daemon.idle_timeout`.
+        key: String,
+    },
     /// Set a setting in `config.toml`.
     Set {
         /// Setting key, e.g. `theme.name`.

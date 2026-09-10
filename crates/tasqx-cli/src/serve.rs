@@ -18,13 +18,18 @@ pub(crate) fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
         }
     };
 
-    // Ctrl-C flips the shutdown flag; `serve` then unwinds its accept loop and
-    // removes the Unix socket file (a no-op for Windows named pipes).
+    // Ctrl-C (SIGINT) OR a plain `kill` (SIGTERM — what systemd `stop`,
+    // `docker stop` and supervisord send) flips the shutdown flag; `serve`
+    // then unwinds its accept loop and removes the Unix socket file (a no-op
+    // for Windows named pipes). The `termination` feature on `ctrlc` (Cargo.toml)
+    // is what makes SIGTERM reach this handler on Unix — without it, only
+    // SIGINT did, so an operator who is not watching a terminal killed the
+    // daemon silently and left a stale socket behind (#236.1).
     let shutdown = Arc::new(AtomicBool::new(false));
     {
         let sd = shutdown.clone();
         if let Err(e) = ctrlc::set_handler(move || sd.store(true, Ordering::SeqCst)) {
-            eprintln!("tasqx daemon: could not install Ctrl-C handler: {e}");
+            eprintln!("tasqx daemon: could not install signal handler: {e}");
         }
     }
 
@@ -81,12 +86,48 @@ pub(crate) fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
     }
 }
 
+/// The reconnect backoff `run_watch` uses once a subscribed connection dies
+/// mid-session (#236.5): starts short so a daemon restart (an upgrade, a
+/// crash) is barely noticed, and caps so a pane left open for a day polls at
+/// a sane rate rather than spinning.
+const WATCH_RECONNECT_INITIAL_DELAY: Duration = Duration::from_millis(200);
+const WATCH_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(10);
+
+/// Block until a new subscribed connection to `socket` is up, retrying with
+/// exponential backoff and a visible status line — the pane is meant to be
+/// left open for a day, so a daemon restart, an upgrade, or
+/// `daemon.idle_timeout` firing must not kill the view permanently (#236.5).
+/// Returns only on success; the only way out otherwise is the user asking
+/// (Ctrl-C / SIGTERM, which end the process the same way they always have —
+/// this loop installs no handler of its own and simply gets interrupted).
+fn watch_reconnect(socket: &str) -> daemon::Conn {
+    let mut delay = WATCH_RECONNECT_INITIAL_DELAY;
+    loop {
+        if let Some(mut conn) = daemon::try_connect(socket) {
+            if conn.subscribe().is_ok() {
+                eprintln!("tasqx watch: reconnected to {socket}");
+                return conn;
+            }
+        }
+        eprintln!(
+            "tasqx watch: daemon unreachable at {socket}; reconnecting in {:.1}s…",
+            delay.as_secs_f64()
+        );
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(WATCH_RECONNECT_MAX_DELAY);
+    }
+}
+
 /// `tasqx watch [filter]`: subscribe to a daemon and re-render on every push.
 /// On a TTY it draws into the alternate screen, bounded to what the terminal
 /// can actually show — the top of the `-urgency`-sorted list, never whatever
 /// tail a too-tall frame happened to leave behind once it scrolled (#206); on
 /// a pipe it streams one line per event (DESIGN.md §6a). It never auto-spawns
-/// a daemon — it hints instead.
+/// a daemon — it hints instead on the very first connect. Once subscribed, a
+/// connection that later dies (daemon restart, crash, idle-timeout exit) is
+/// retried with backoff rather than ending the session (#236.5) — the last
+/// frame stays on screen, with a `reconnecting…` status line on stderr, until
+/// a new daemon answers.
 pub(crate) fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[String], ctx: &Ctx) {
     if no_daemon {
         eprintln!("tasqx watch: --no-daemon is set, but watch requires a running daemon");
@@ -121,13 +162,19 @@ pub(crate) fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[St
     // of those returns. `exit` runs no destructors, and a `watch` left in the
     // alternate screen is exactly the stuck pane a live view must never leave
     // behind.
-    let code = watch_session(&mut conn, &filter_str, ctx, tty);
+    let code = watch_session(&mut conn, &socket, &filter_str, ctx, tty);
     exit(code);
 }
 
 /// The subscribe-and-repaint loop, factored out of `run_watch` so its TTY
 /// path can hold a [`WatchScreen`] guard across every exit — see `run_watch`.
-fn watch_session(conn: &mut daemon::Conn, filter_str: &str, ctx: &Ctx, tty: bool) -> i32 {
+fn watch_session(
+    conn: &mut daemon::Conn,
+    socket: &str,
+    filter_str: &str,
+    ctx: &Ctx,
+    tty: bool,
+) -> i32 {
     let _screen = if tty {
         match WatchScreen::enter() {
             Ok(s) => Some(s),
@@ -150,7 +197,8 @@ fn watch_session(conn: &mut daemon::Conn, filter_str: &str, ctx: &Ctx, tty: bool
         }
     }
 
-    // Live loop: block on the next frame; on each change, refresh.
+    // Live loop: block on the next frame; on each change, refresh. A dead
+    // connection reconnects in place rather than ending the process.
     loop {
         match conn.next_frame() {
             Ok(Some(daemon::Frame::Event(evt))) => {
@@ -189,13 +237,19 @@ fn watch_session(conn: &mut daemon::Conn, filter_str: &str, ctx: &Ctx, tty: bool
             }
             // A stray response (none expected here) is harmless; ignore it.
             Ok(Some(daemon::Frame::Response(_))) => {}
-            Ok(None) => {
-                eprintln!("tasqx watch: daemon closed the connection");
-                return 1;
-            }
-            Err(e) => {
-                eprintln!("tasqx watch: read error: {e}");
-                return 1;
+            Ok(None) | Err(_) => {
+                eprintln!("tasqx watch: connection lost; reconnecting…");
+                *conn = watch_reconnect(socket);
+                // The working set may have moved while disconnected; a fresh
+                // full repaint is the only way to know it is current again.
+                match watch_render(conn, filter_str, ctx, tty, None) {
+                    Ok(true) => {}
+                    Ok(false) => return 0,
+                    Err(e) => {
+                        eprintln!("tasqx watch: {e}");
+                        return 1;
+                    }
+                }
             }
         }
     }
