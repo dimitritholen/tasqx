@@ -81,12 +81,12 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 23 tools present, each with an inputSchema.
+    // 3. tools/list — all 24 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 23, "expected 23 tools");
+    assert_eq!(tools.len(), 24, "expected 24 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
@@ -104,6 +104,7 @@ fn full_protocol_sequence() {
         "tasqx_tag_task",
         "tasqx_untag_task",
         "tasqx_annotate_task",
+        "tasqx_remove_annotation",
         "tasqx_add_dependency",
         "tasqx_remove_dependency",
         "tasqx_add_memory",

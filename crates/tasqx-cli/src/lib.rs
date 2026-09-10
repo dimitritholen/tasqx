@@ -883,6 +883,10 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),
         Some(Command::Undo) => run_undo(&mut backend, &ctx),
         Some(Command::Annotate { r#ref, text }) => run_annotate(&mut backend, &ctx, r#ref, text),
+        Some(Command::Unannotate {
+            r#ref,
+            annotation_id,
+        }) => run_unannotate(&mut backend, &ctx, r#ref, annotation_id),
         Some(Command::Tag { r#ref, tags }) => run_tag(&mut backend, &ctx, "tag.add", r#ref, &tags),
         Some(Command::Untag { r#ref, tags }) => {
             run_tag(&mut backend, &ctx, "tag.remove", r#ref, &tags)

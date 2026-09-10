@@ -2414,6 +2414,24 @@ pub fn annotated(ctx: &Ctx, result: &Value) -> String {
     )
 }
 
+/// `tasqx unannotate` (D113). No body to print — the whole point is that it is
+/// gone — so the line names the id that was scrubbed and confirms it is
+/// permanent, the one thing about this call a user cannot learn by trying.
+pub fn annotation_removed(ctx: &Ctx, result: &Value) -> String {
+    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let id = result
+        .get("removed")
+        .and_then(|r| r.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    format!(
+        "{}: annotation {} removed — the text is gone from the store, and `undo` does not cover \
+         it\n",
+        ctx.paint("accent", &format!("#{sid}")),
+        ctx.paint("muted", id)
+    )
+}
+
 /// `tasqx undo`.
 ///
 /// Names the operation AND the task AND what came back, because "undone" on its

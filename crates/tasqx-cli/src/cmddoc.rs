@@ -465,8 +465,37 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         summary: "Attach a timestamped note to a task.",
         usage: "tasqx annotate <ref> <text…>",
         examples: &[ex_norun_plain("tasqx annotate 1 Called the plumber, waiting on a quote")],
-        notes: &[],
-        see_also: &["show", "modify"],
+        notes: &[
+            "Wrote something you shouldn't have? `tasqx unannotate <ref> <annotation-id>` \
+             scrubs it — there is no other way back.",
+        ],
+        see_also: &["show", "modify", "unannotate"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
+        verb: "unannotate",
+        aliases: &[],
+        method: "annotation.remove",
+        summary: "Permanently scrub one annotation's text, by id.",
+        usage: "tasqx unannotate <ref> <annotation-id>",
+        examples: &[ex_norun_plain(
+            "tasqx unannotate 1 018f2f7e-...",
+        )],
+        notes: &[
+            "A HARD delete (D113): the text is overwritten in the store, not merely hidden — \
+             use it to take back a secret, a customer name, or a wrong root cause pasted into \
+             a note by mistake. This also redacts the original `annotate` event's own body, \
+             so `tasqx chart` (`event.list`) and `tasqx export` stop showing it too — not \
+             only `tasqx show`.",
+            "The annotation's id is not printed by `tasqx show` — read it from `tasqx show \
+             <ref> --json` (the `annotations[].id` field) or a prior `tasqx annotate` \
+             response.",
+            "`tasqx undo` does NOT cover this: the body is already gone from the log by the \
+             time the removal event exists, so there is nothing left to restore.",
+            "An unknown id, or one already removed, exits 4 (not_found) rather than answering \
+             ok for nothing.",
+        ],
+        see_also: &["annotate", "show", "undo"],
         topic: Topic::Capturing,
     },
     CmdDoc {

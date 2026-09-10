@@ -204,6 +204,148 @@ impl Engine {
         }))
     }
 
+    // ---- annotation.remove ----------------------------------------------------
+
+    /// `annotation.remove` — tombstone one annotation by id (D113). Params:
+    /// `ref`, `annotation_id`.
+    ///
+    /// **This is a scrub, not a soft-delete-and-hide.** The row named by
+    /// `annotation_id` stays — `id`, `task_id`, `created` and the new `removed`
+    /// timestamp are the audit trail that a note existed and when it went — but
+    /// `body` is overwritten with `""` in the same statement, and the FTS5
+    /// trigger re-indexes the empty string so `memory.search` cannot go on
+    /// finding text that is no longer in the file. The alternative — flip a
+    /// `removed` flag and leave `body` alone — would satisfy every reader that
+    /// filters on the flag while leaving a secret sitting in the `.db` file for
+    /// anything that reads the table directly (`store.export`, a hex editor, a
+    /// backup). D113's threat model is exactly a caller who pasted one, so the
+    /// text has to actually leave, not merely become invisible to this API.
+    ///
+    /// **The removal event never carries the body.** Recording what was removed
+    /// in the `annotation.remove` event's payload would recreate, in the
+    /// append-only event log, the exact leak this method exists to close — so
+    /// the payload is `{"id": …}` and nothing else, and the response echoes
+    /// only the id and the timestamp, never the text.
+    ///
+    /// An unknown id, or one already removed, is `not_found`: there is nothing
+    /// left to remove either way, and conflating "never existed" with "already
+    /// scrubbed" would make a caller unable to tell a typo from a job already
+    /// done — the same reasoning `tag.remove` applies to a tag the task never
+    /// had.
+    pub fn annotation_remove(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
+        let annotation_id = req_str(p, "annotation_id")?;
+
+        let ts = now();
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_on(&tx, p)?;
+
+        let existing: Option<Option<String>> = tx
+            .query_row(
+                "SELECT removed FROM annotations WHERE id = ?1 AND task_id = ?2",
+                params![annotation_id, task.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let Some(removed) = existing else {
+            return Err(ApiError::not_found(
+                format!(
+                    "#{} has no annotation with id {annotation_id} — check the id \
+                     `task.get` (or `tasqx show {}`) reports for it; nothing was removed.",
+                    task.short_id, task.short_id
+                ),
+                None,
+            ));
+        };
+        if removed.is_some() {
+            return Err(ApiError::not_found(
+                format!(
+                    "annotation {annotation_id} on #{} was already removed — its body is \
+                     already gone from the store; nothing further to remove.",
+                    task.short_id
+                ),
+                None,
+            ));
+        }
+
+        tx.execute(
+            "UPDATE annotations SET body = '', removed = ?1 WHERE id = ?2",
+            params![ts, annotation_id],
+        )?;
+        tx.execute(
+            "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
+            params![task.rev + 1, ts, task.id],
+        )?;
+
+        // D113's own text used to promise this in part (2) and contradict it in
+        // part (1): the `annotations` row and its FTS index are scrubbed above,
+        // but until now the ORIGINAL `annotation.add` event — append-only,
+        // readable forever via `event.list` and `store.export` — still carried
+        // the full plaintext body. That is the exact leak the finding named:
+        // a secret pasted into a note, "removed", still sitting in the file.
+        //
+        // This is a narrow, deliberate exception to append-only, not a second
+        // precedent: ONLY the `annotation.add` event's own `body` field is
+        // redacted, ONLY here, in the SAME transaction as the tombstone, and
+        // ONLY for the annotation `annotation_remove` has just established is
+        // being removed — so a live annotation's `add` event is never touched
+        // by this code path (it only runs once removal is already underway).
+        // `id` is kept so `event.list` still shows which note this record was
+        // for, and `undo`'s `revert_annotation_add` never reads this payload's
+        // `body` at all (it re-reads `annotations.body` fresh, and by this
+        // point `annotation.remove` is the newest event, which refuses `undo`
+        // by name — see D54/D113(3) — so the redacted payload is never even a
+        // candidate for restoration).
+        // A task can carry more than one `annotation.add` event, so this scans
+        // by task and matches on the payload's own `id`, tolerantly (a
+        // malformed payload is skipped, never a hard failure — matching how
+        // event payloads are read elsewhere, `commands.rs`).
+        let mut stmt = tx.prepare(
+            "SELECT id, payload FROM events \
+             WHERE op = 'annotation.add' AND entity_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![task.id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        let mut redact_event_id = None;
+        for row in rows {
+            let (event_id, payload) = row?;
+            let Some(payload) = payload else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&payload) else {
+                continue;
+            };
+            if opt_str(&v, "id").ok().flatten().as_deref() == Some(annotation_id.as_str()) {
+                redact_event_id = Some(event_id);
+                break;
+            }
+        }
+        drop(stmt);
+        if let Some(event_id) = redact_event_id {
+            tx.execute(
+                "UPDATE events SET payload = ?1 WHERE id = ?2",
+                params![
+                    json!({ "id": annotation_id, "body": null, "redacted": true }).to_string(),
+                    event_id,
+                ],
+            )?;
+        }
+
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "annotation.remove",
+            &json!({ "id": annotation_id }),
+        )?;
+        tx.commit()?;
+
+        Ok(json!({
+            "short_id": task.short_id,
+            "removed": { "id": annotation_id, "removed": ts },
+        }))
+    }
+
     // ---- dependency.add ------------------------------------------------------
 
     /// `dependency.add` — record that `ref` is blocked by `depends_on`. Both are

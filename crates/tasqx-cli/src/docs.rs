@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 39] = [
+const VERBS: [(&str, &str, &str); 40] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -96,6 +96,7 @@ const VERBS: [(&str, &str, &str); 39] = [
     ("reopen", "—", "task.reopen"),
     ("undo", "<code>u</code>", "event.revert"),
     ("annotate", "<code>note</code>", "annotation.add"),
+    ("unannotate", "—", "annotation.remove"),
     ("tag", "—", "tag.add"),
     ("untag", "—", "tag.remove"),
     ("dep", "—", "dependency.add"),
@@ -120,7 +121,7 @@ const VERBS: [(&str, &str, &str); 39] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 36] = [
+const METHODS: [(&str, &str, &str); 37] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -236,6 +237,14 @@ const METHODS: [(&str, &str, &str); 36] = [
         "annotation.add",
         "<code>ref</code>, <code>body</code>",
         "The annotation.",
+    ),
+    (
+        "annotation.remove",
+        "<code>ref</code>, <code>annotation_id</code>",
+        "<code>{short_id, removed}</code>. Scrubs the annotation's body in the store (D113) — \
+         a hard delete, not a hide — and <code>removed</code> names only the id and the \
+         instant, never the text. An unknown or already-removed id is \
+         <code>not_found</code>; <code>event.revert</code> does not cover this op.",
     ),
     (
         "token.add",
@@ -440,7 +449,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 9] = [
 /// free-prose rows nothing compared, which is the same shape the verb table was
 /// in before the drift guards: a tool could be added, renamed, or moved across
 /// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 23] = [
+const MCP_TOOLS: [(&str, bool, &str); 24] = [
     (
         "tasqx_list_tasks",
         false,
@@ -493,6 +502,12 @@ const MCP_TOOLS: [(&str, bool, &str); 23] = [
         "tasqx_annotate_task",
         true,
         "Attach a note (markdown-friendly).",
+    ),
+    (
+        "tasqx_remove_annotation",
+        true,
+        "Scrub one annotation's text by id — a hard delete, permanent, and outside \
+         <code>undo</code> (D113).",
     ),
     ("tasqx_add_dependency", true, "Block one task on another."),
     (

@@ -103,3 +103,23 @@ tasqx annotate 42 Called the plumber, waiting on a quote
 Annotations show up in `tasqx show`, and they're searchable: the
 [memory system](Memory.md) indexes them alongside your knowledge documents, so
 "what did we decide about the plumber" is one `tasqx memory search` away.
+
+## tasqx unannotate
+
+Permanently scrub one annotation's text, by id:
+
+```console
+tasqx unannotate 42 018f2f7e-1234-7abc-9def-0123456789ab
+```
+
+This is a **hard delete**, not a hide: the text is overwritten in the store,
+not merely removed from what tasqx shows you — use it to take back a secret, a
+customer name, or a wrong root cause pasted into a note by mistake. What stays
+behind is a tombstone (the id and when it was removed), for audit, with no
+text in it.
+
+The annotation's id isn't printed by `tasqx show` — read it from `tasqx show
+42 --json` (each row under `annotations[].id`) or from a prior `tasqx
+annotate` response. `tasqx undo` does **not** cover this: by the time the
+removal is recorded, there is nothing left in the log to restore. An unknown
+id, or one already removed, exits 4 rather than silently doing nothing.

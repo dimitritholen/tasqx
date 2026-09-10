@@ -941,7 +941,10 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                 by default — proof the store kept it verbatim — but you \
                 already hold every byte you sent, so pass `include_body: \
                 false` to get `{id, created, body_bytes}` instead on a long \
-                note.",
+                note. Wrote something you should not have — a token, a \
+                customer name, a wrong root cause? `tasqx_remove_annotation` \
+                takes the `id` this response returns and scrubs it; there is \
+                otherwise no way to take an annotation back.",
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -957,6 +960,42 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     }
                 },
                 "required": ["ref", "body"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_remove_annotation",
+            method: "annotation.remove",
+            write: true,
+            destructive: true,
+            idempotent: true,
+            // D113. Stated for the same reason `tasqx_remove_memory`'s
+            // description states its own permanence: it is the one property of
+            // this tool a caller cannot learn by trying.
+            description: "Permanently scrub one annotation's text by id — the \
+                id `tasqx_annotate_task` or `tasqx_get_task` reports for it. \
+                Unlike every other write on this server, this is a HARD delete: \
+                the body is overwritten in the store, not merely hidden, so a \
+                secret pasted into a note by mistake is actually gone from the \
+                file, not just gone from what tasqx shows you — this covers \
+                `event.list` and `store.export` too, by redacting the original \
+                `annotation.add` event's own body field in the same \
+                transaction (D113), not only the `annotations` row. A \
+                tombstone (the id and when it was removed) stays for audit, \
+                with no text in it. `tasqx undo` does NOT cover this — there \
+                is nothing left in the log to restore — so double-check the id \
+                before calling. An unknown or already-removed id is \
+                `not_found`.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "annotation_id": {
+                        "type": "string",
+                        "description": "The annotation's id, as tasqx_annotate_task or \
+                            tasqx_get_task reports it."
+                    }
+                },
+                "required": ["ref", "annotation_id"]
             }),
         },
         ToolSpec {
