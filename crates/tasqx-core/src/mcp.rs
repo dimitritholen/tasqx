@@ -517,6 +517,14 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                              only `count` — `tracked_total`, `overdue` and the token buckets are \
                              NOT included unless named here, unlike `tasqx report`, which shows \
                              every metric by default."
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Window `tracked_total` and the token buckets to what happened at or after this instant — a task tracking time or logging a measurement — rather than the task's lifetime total. Independent of `filter`'s `completed.after:`/`completed.before:`, which selects tasks by completion date instead (D97). Same date grammar as `due`/`completed` (relative words, offsets, RFC3339)."
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "The other end of `since`'s window: excludes anything at or after this instant. `since`/`until` together window WHEN the spend happened, e.g. \"what did this project cost this week\" — the fix for a report that used to answer that question by task completion date and silently missed spend on tasks that hadn't closed."
                     }
                 }
             }),

@@ -289,10 +289,15 @@ const METHODS: [(&str, &str, &str); 32] = [
     ),
     (
         "report.summary",
-        "<code>group_by?</code>, <code>filter?</code>, <code>metrics?</code>, <code>all?</code>",
-        "<code>{groups, generated, filter, all}</code>. <code>group_by</code> defaults to \
-         <code>project</code>; the result echoes the scope it applied, so a total cannot be read \
-         against the wrong period.",
+        "<code>group_by?</code>, <code>filter?</code>, <code>metrics?</code>, <code>all?</code>, \
+         <code>since?</code>, <code>until?</code>",
+        "<code>{groups, generated, filter, all, since, until}</code>. <code>group_by</code> \
+         defaults to <code>project</code>; the result echoes the scope it applied, so a total \
+         cannot be read against the wrong period. <code>since</code>/<code>until</code> \
+         (D97) window <code>tracked_total</code> and the token buckets by WHEN the time or \
+         spend happened — a different axis from <code>filter</code>'s \
+         <code>completed.after:</code>/<code>completed.before:</code>, which selects tasks by \
+         completion date; both are <code>null</code> unless the caller sets them.",
     ),
     (
         "store.export",

@@ -704,6 +704,37 @@ pub(super) enum Command {
         /// exactly the silent omission D24 exists to stop.
         #[arg(long, conflicts_with = "html")]
         all: bool,
+        /// Window `tracked_total`/the token buckets to work done or spend
+        /// measured at or after this instant, instead of each task's lifetime
+        /// total — same date grammar as `--due` (D97).
+        ///
+        /// A different axis from `completed.after:` in the filter DSL above:
+        /// that selects tasks by completion date, this bounds WHEN the tracked
+        /// time or token measurement itself landed, regardless of whether or
+        /// when its task completed.
+        ///
+        /// Rejected alongside `--html`, same as `--all` above and for the same
+        /// reason: the HTML page builds its own scope and has no windowed path
+        /// yet.
+        ///
+        /// `allow_hyphen_values` for the same reason as `--due` above: a
+        /// signed relative offset (`--since -7d`) is a leading-hyphen value.
+        #[arg(
+            long,
+            value_name = "WHEN",
+            allow_hyphen_values = true,
+            conflicts_with = "html"
+        )]
+        since: Option<String>,
+        /// The other end of `--since`'s window: excludes anything at or after
+        /// this instant.
+        #[arg(
+            long,
+            value_name = "WHEN",
+            allow_hyphen_values = true,
+            conflicts_with = "html"
+        )]
+        until: Option<String>,
         /// Show the four token buckets (cache read/write, in, out) as their
         /// own columns instead of the single largest-bucket cell (#212,
         /// D48a) — comma-separated, from the same vocabulary
