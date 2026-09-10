@@ -9,6 +9,14 @@
 //! time-of-day resolves to **00:00:00** (start of day); a bare time resolves to
 //! **today**, or **tomorrow** if that time has already passed at `now`.
 //!
+//! **Period-end keywords are the exception:** `today`, `eod` / `end of day`,
+//! `eow` / `end of week`, `eom` / `end of month` and `eoy` / `end of year` name
+//! a whole period rather than the instant it starts, so with no trailing time
+//! they resolve to that period's **last second** (`23:59:59`), not midnight —
+//! `due:today` typed at noon must not already be overdue. A literal day
+//! reference (`tomorrow`, `friday`, an absolute date) still resolves to
+//! midnight, per D53's "days are UTC days" grouping rule.
+//!
 //! Accepted forms (all case-insensitive):
 //!  * absolute — `2026-07-20`, `2026-07-20T17:00`, `2026-07-20 17:00`, and any
 //!    full RFC3339 (`2026-07-20T17:00:00+02:00`);
@@ -17,7 +25,8 @@
 //!    resolves to +7), optional leading `next` (a synonym — same upcoming day);
 //!  * offsets — `in 3 days`, `in 2 weeks`, `in 1 month`, and the short `3d`,
 //!    `2w`, `1mo`, `1y`, each optionally signed (`+3d`, `-1d` = yesterday);
-//!  * `eom` / `end of month`, `eow` / `end of week` (ISO week ends Sunday);
+//!  * `eod` / `end of day`, `eom` / `end of month`, `eow` / `end of week` (ISO
+//!    week ends Sunday), `eoy` / `end of year` — see the period-end note above;
 //!  * an optional trailing time on any of the above — `friday 17:00`,
 //!    `tomorrow 9am`, `monday 5pm`;
 //!  * an optional *leading* filler word — `at 6pm`, `on friday`, `by monday
@@ -104,7 +113,17 @@ pub fn parse_when(input: &str, now: Timestamp) -> Result<String, ApiError> {
         resolve_date(&tokens, today).ok_or_else(|| unparseable(raw))?
     };
 
-    let t = time.unwrap_or_else(midnight);
+    // Period-end keywords (`today`, `eod`, `eow`, `eom`, `eoy`) name a deadline
+    // that lasts the whole period, not the instant it starts: `due:today` typed
+    // at noon must not already be overdue. Absent an explicit trailing time,
+    // they resolve to the last second of the period rather than midnight; an
+    // absolute date (`2026-07-20`) or a relative day (`tomorrow`) still resolves
+    // to midnight, matching D53's "days are UTC days" grouping rule.
+    let t = if !bare_time && time.is_none() && is_period_end(&tokens) {
+        end_of_day()
+    } else {
+        time.unwrap_or_else(midnight)
+    };
     let out = finish(DateTime::from_parts(date, t), raw)?;
 
     // A bare time already past today rolls forward to tomorrow.
@@ -204,16 +223,46 @@ pub fn day_start_utc(ts: Timestamp) -> Timestamp {
         .timestamp()
 }
 
+/// The last second of a day — what a period-end keyword resolves to instead of
+/// midnight, so a deadline lasts the period rather than expiring at its start.
+fn end_of_day() -> Time {
+    Time::new(23, 59, 59, 0).expect("23:59:59 is a valid time")
+}
+
+/// Whether `tokens` spells one of the period-end keywords (`today`, `eod`,
+/// `eow`, `eom`, `eoy`, and their `end of <period>` long forms). These name a
+/// whole day/week/month/year, not the instant it begins, so [`parse_when`]
+/// anchors them to the period's last second rather than midnight — unlike a
+/// literal day reference (`tomorrow`, an absolute date), which keeps midnight.
+fn is_period_end(tokens: &[&str]) -> bool {
+    matches!(
+        tokens,
+        ["today"]
+            | ["eod"]
+            | ["end", "of", "day"]
+            | ["eow"]
+            | ["end", "of", "week"]
+            | ["eom"]
+            | ["end", "of", "month"]
+            | ["eoy"]
+            | ["end", "of", "year"]
+    )
+}
+
 /// Resolve the date portion (no time) from the keyword tokens.
 fn resolve_date(tokens: &[&str], today: Date) -> Option<Date> {
     match tokens {
         ["today"] | ["now"] => Some(today),
         ["tomorrow"] | ["tmr"] => today.tomorrow().ok(),
         ["yesterday"] => today.yesterday().ok(),
+        ["eod"] => Some(today),
+        ["end", "of", "day"] => Some(today),
         ["eom"] => Some(today.last_of_month()),
         ["end", "of", "month"] => Some(today.last_of_month()),
         ["eow"] => Some(end_of_week(today)),
         ["end", "of", "week"] => Some(end_of_week(today)),
+        ["eoy"] => Some(today.last_of_year()),
+        ["end", "of", "year"] => Some(today.last_of_year()),
         // `in N <unit>`
         ["in", n, unit] => {
             let n: i64 = n.parse().ok()?;
@@ -609,10 +658,36 @@ mod tests {
 
     #[test]
     fn relative_words() {
-        assert_eq!(p("today"), "2026-07-15T00:00:00Z");
+        // `today` is a period-end keyword (see below): it resolves to the last
+        // second of the day, not its first. `tomorrow`/`yesterday` are literal
+        // day references and keep midnight.
+        assert_eq!(p("today"), "2026-07-15T23:59:59Z");
         assert_eq!(p("tomorrow"), "2026-07-16T00:00:00Z");
         assert_eq!(p("yesterday"), "2026-07-14T00:00:00Z");
         assert_eq!(p("TOMORROW"), "2026-07-16T00:00:00Z"); // case-insensitive
+    }
+
+    /// `due:today` typed at noon must not already be overdue (audit #231.1):
+    /// the old start-of-day anchor made the most-typed form of the most-typed
+    /// field wrong for up to 24 hours. Same for `eod`/`eow`/`eom`/`eoy` — a
+    /// deadline names the whole period, not the instant it begins. An explicit
+    /// trailing time still wins over the period-end default.
+    #[test]
+    fn period_end_keywords_resolve_to_end_of_period() {
+        // now is Wed 2026-07-15T12:00:00Z.
+        assert_eq!(p("today"), "2026-07-15T23:59:59Z");
+        assert_eq!(p("eod"), "2026-07-15T23:59:59Z");
+        assert_eq!(p("end of day"), "2026-07-15T23:59:59Z");
+        assert_eq!(p("eow"), "2026-07-19T23:59:59Z");
+        assert_eq!(p("end of week"), "2026-07-19T23:59:59Z");
+        assert_eq!(p("eom"), "2026-07-31T23:59:59Z");
+        assert_eq!(p("end of month"), "2026-07-31T23:59:59Z");
+        assert_eq!(p("eoy"), "2026-12-31T23:59:59Z");
+        assert_eq!(p("end of year"), "2026-12-31T23:59:59Z");
+        assert_eq!(p("EOM"), "2026-07-31T23:59:59Z"); // case-insensitive
+                                                      // An explicit trailing time overrides the period-end default.
+        assert_eq!(p("today 9am"), "2026-07-15T09:00:00Z");
+        assert_eq!(p("eom 17:00"), "2026-07-31T17:00:00Z");
     }
 
     #[test]
@@ -637,10 +712,13 @@ mod tests {
 
     #[test]
     fn end_of_month_and_week() {
-        assert_eq!(p("eom"), "2026-07-31T00:00:00Z");
-        assert_eq!(p("end of month"), "2026-07-31T00:00:00Z");
+        // These land on the calendar day covered by `period_end_keywords_…`
+        // above (which pins the 23:59:59 time); this test just re-confirms the
+        // *date* math (correct day of month / correct Sunday).
+        assert_eq!(p("eom")[..10], *"2026-07-31");
+        assert_eq!(p("end of month")[..10], *"2026-07-31");
         // 2026-07-15 is Wed; ISO end of week (Sunday) is 2026-07-19.
-        assert_eq!(p("eow"), "2026-07-19T00:00:00Z");
+        assert_eq!(p("eow")[..10], *"2026-07-19");
     }
 
     #[test]
