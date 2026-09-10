@@ -864,15 +864,18 @@ fn page_install() -> String {
          \x20 priority         6.00\n\
          \x20 due_proximity   11.46\n\
          \x20 age             -0.00\n\
-         \x20 = total          17.5",
+         \x20 = total         17.46",
     ));
 
     s.push_str(&h3("Work it, finish it"));
     s.push_str(&snippet(
         "tasqx start 1\ntasqx stop 1\ntasqx done 1",
-        "Started task  ·  timer running (since 2026-07-16T08:51:09.6070293Z)\n\
-         Stopped  ·  interval PT0S  ·  tracked PT0S\n\
-         Done  ·  completed 2026-07-16T08:51:10.0430255Z",
+        "Started  ·  timer running (since 2026-07-16T08:51:09.6070293Z)\n\
+         \x20 #1  Ship the v1 JSON API freeze\n\
+         Stopped  ·  interval 0s  ·  tracked 0s\n\
+         \x20 #1  Ship the v1 JSON API freeze\n\
+         Done  ·  completed 2026-07-16T08:51:10.0430255Z\n\
+         \x20 #1  Ship the v1 JSON API freeze",
     ));
 
     s.push_str(&h3("Where to go next"));

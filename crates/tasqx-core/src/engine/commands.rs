@@ -158,6 +158,18 @@ impl SelfReport {
 pub(super) struct TaskStarted {
     pub(super) id: String,
     pub(super) interval_started: Option<String>,
+    /// Finding #3 (audit-2026-09): `start`/`stop`/`done` confirmed an action
+    /// without saying which task it acted on, so `tasqx start 144` when the
+    /// user meant `145` printed a success line identical to the correct one.
+    /// Carried here so the CLI can echo `#id title`.
+    pub(super) short_id: i64,
+    pub(super) title: String,
+    /// Finding #9 (audit-2026-09): a re-`start` on an already-active task is
+    /// correctly idempotent (D6) but answered the identical "Started task"
+    /// line as a genuine start, which read as a heart-attack-inducing reset of
+    /// the timer to a human re-running a lost command. True on the idempotent
+    /// re-start path only.
+    pub(super) already_running: bool,
 }
 
 impl From<TaskStarted> for Value {
@@ -166,6 +178,9 @@ impl From<TaskStarted> for Value {
             "id": result.id,
             "status": "active",
             "interval_started": result.interval_started,
+            "short_id": result.short_id,
+            "title": result.title,
+            "already_running": result.already_running,
         })
     }
 }
@@ -179,11 +194,20 @@ pub(super) struct TaskStopped {
     /// used to hold `interval`'s value under this name, which made `stop`'s
     /// own `tracked` disagree with the following `task.get`'s).
     pub(super) tracked: String,
+    /// See [`TaskStarted::short_id`] / [`TaskStarted::title`] (finding #3).
+    pub(super) short_id: i64,
+    pub(super) title: String,
 }
 
 impl From<TaskStopped> for Value {
     fn from(result: TaskStopped) -> Self {
-        json!({ "status": "pending", "interval": result.interval, "tracked": result.tracked })
+        json!({
+            "status": "pending",
+            "interval": result.interval,
+            "tracked": result.tracked,
+            "short_id": result.short_id,
+            "title": result.title,
+        })
     }
 }
 

@@ -346,7 +346,10 @@ pub(crate) fn run_list(
         params["fields"] = json!(fields);
     }
     let result = be.call("task.list", &params)?;
-    let text = render::task_table(ctx, &result, jiff::Timestamp::now());
+    // Finding #4 (audit-2026-09): an empty result said only "No tasks.",
+    // giving no way to tell "nothing pending" from "this filter excludes
+    // everything" — the same distinction D55 already drew for `pick`.
+    let text = render::task_table_filtered(ctx, &result, jiff::Timestamp::now(), Some(&filter_str));
     Ok((result, text))
 }
 
@@ -673,6 +676,19 @@ pub(crate) fn report_params(
         if tasqx_core::engine::SUMMARY_GROUP_BY.contains(&first.as_str()) {
             group_by = first.clone();
             rest = &args[1..];
+        } else if !first.chars().any(|c| ":+-@".contains(c)) {
+            // Finding #11 (audit-2026-09): a bare word carrying no filter
+            // sigil is a group_by ATTEMPT, not a filter term that happens to
+            // be spelled wrong — `tasqx report tags` used to fall straight
+            // into the filter parser and get back a wall of filter grammar
+            // that never mentions grouping at all. Diagnose it here, naming
+            // the three real axes, before the filter parser ever sees it. A
+            // token that DOES look like filter syntax (`project:x`, `+api`,
+            // `-tag`, `@working`) still falls through unchanged.
+            return Err(ApiError::bad_request(format!(
+                "unknown group_by {first:?} (expected {})",
+                tasqx_core::engine::SUMMARY_GROUP_BY.join(", ")
+            )));
         }
     }
     // Same reasoning as `group_by` above, and the same constant pattern:

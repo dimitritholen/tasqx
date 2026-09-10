@@ -123,6 +123,20 @@ pub(crate) fn open_backend(socket_flag: Option<&str>, no_daemon: bool) -> Result
                 socket: target,
             });
         }
+        // Finding #14 (audit-2026-09): an explicitly named `--socket` that
+        // turns out unreachable used to fall back to in-process silently, exit
+        // 0 — but `--socket`'s own `--help` promises single-writer routing
+        // "when a daemon is reachable", and a caller who passed the flag
+        // stated an intention the fallback then quietly broke. The env-var and
+        // default-discovery paths stay silent on purpose (D74 already covers
+        // them via `report_daemon_retirement`, and neither is a stated
+        // intention the way an explicit flag is).
+        if socket_flag.is_some() {
+            eprintln!(
+                "tasqx: warning: no daemon at {target}; this command ran in-process instead \
+                 (single-writer routing did not happen)"
+            );
+        }
         // The connect failed and this command is about to address a different
         // store than the last one did, if a daemon recently retired here. Say
         // so once (D74). Deliberately not on the `--no-daemon` path: there the
