@@ -369,9 +369,14 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         } else {
             row.value.as_str()
         };
-        // A store-homed row is dimmed so "shown but not editable here" reads
-        // before the user presses Enter on it, not only after.
-        let value_style = if row.setting.home == Home::Store {
+        // A store-homed row, or one with nothing `begin_edit` can do with
+        // Enter (no bool to toggle, no closed choice set to pick from — the
+        // free-form Toml scalars like `otlp.port`), is dimmed so "shown but
+        // not editable here" reads before the user presses Enter on it, not
+        // only after (the muted `Line` returned by `begin_edit` on that press).
+        let has_inline_editor = row.setting.home != Home::Store
+            && (row.setting.kind == Kind::Bool || !row.choices.is_empty());
+        let value_style = if !has_inline_editor {
             sty("muted")
         } else if selected {
             sty("accent")
@@ -692,6 +697,44 @@ mod tests {
             a.status.is_empty(),
             "Up must clear it too, not only Down: {}",
             a.status
+        );
+    }
+
+    /// `otlp.port` and `daemon.idle_timeout` are `Toml`-homed with an empty
+    /// candidate list — no bool to toggle, no picker to open — so pressing
+    /// Enter on either only reports "no inline editor for … — use `tasqx
+    /// config set`" AFTER the keystroke. Before that, they were drawn exactly
+    /// like an editable numeric row, so the only way to learn which quarter of
+    /// the registry declines Enter was to press it on every row.
+    ///
+    /// The store-homed row already gets this treatment (previous test); a row
+    /// with no closed choice set and nothing to toggle must get it too.
+    #[test]
+    fn a_row_with_no_inline_editor_is_dimmed_before_enter_is_pressed() {
+        let a = app();
+        let i = a
+            .rows
+            .iter()
+            .position(|r| r.setting.key == "otlp.port")
+            .expect("otlp.port is in the registry");
+        assert!(
+            a.rows[i].choices.is_empty() && a.rows[i].setting.kind != Kind::Bool,
+            "otlp.port must be the no-picker, no-toggle case this test means to cover"
+        );
+
+        let th = theme::load("nord", None);
+        let buf = draw(&a);
+        let y = row_of(&buf, "otlp.port");
+        let line = line_at(&buf, y);
+        let value_x =
+            line.find(a.rows[i].value.as_str())
+                .unwrap_or_else(|| panic!("value not on its own row: {line:?}")) as u16;
+
+        let muted_fg = rt_style(th.role("muted"), &caps()).fg.unwrap();
+        assert_eq!(
+            buf[(value_x, y)].fg,
+            muted_fg,
+            "a setting with no inline editor must be dimmed before Enter is ever pressed: {line:?}"
         );
     }
 

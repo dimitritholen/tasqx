@@ -1029,12 +1029,42 @@ fn cycling_the_window_asks_for_a_refresh() {
 #[test]
 fn the_intents_the_loop_has_to_act_on_are_returned_not_swallowed() {
     let mut a = app();
-    assert_eq!(a.on_key(key(KeyCode::Char('p'))), Some(Action::Pick));
-    assert_eq!(a.on_key(key(KeyCode::Char('l'))), Some(Action::List));
+    // `Now` has no natural scope, so both intents carry an empty filter.
+    assert_eq!(
+        a.on_key(key(KeyCode::Char('p'))),
+        Some(Action::Pick(vec![]))
+    );
+    assert_eq!(
+        a.on_key(key(KeyCode::Char('l'))),
+        Some(Action::List(vec![]))
+    );
     assert_eq!(a.on_key(key(KeyCode::Char('r'))), Some(Action::Refresh));
     // R toggles locally and must NOT ask the loop to do anything.
     assert_eq!(a.on_key(key(KeyCode::Char('R'))), None);
     assert!(!a.auto_refresh());
+}
+
+/// `l` and `p` from the PROJECTS panel used to throw the cursor's project away
+/// and answer for the whole store — the plumbing exists on both sides (`list`
+/// takes the filter DSL, `pick` takes exactly this filter from the command
+/// line), so the cursor's project must ride along.
+#[test]
+fn l_and_p_from_the_projects_panel_carry_the_row_under_the_cursor() {
+    let mut a = app();
+    a.observe(&all_panels(), false);
+    a.on_key(key(KeyCode::Char('6'))); // PROJECTS is digit 6
+    assert_eq!(a.focus, PanelId::Projects);
+
+    assert_eq!(
+        a.on_key(key(KeyCode::Char('l'))),
+        Some(Action::List(vec!["project:\"work\"".to_string()])),
+        "l from PROJECTS must scope to the row under the cursor"
+    );
+    assert_eq!(
+        a.on_key(key(KeyCode::Char('p'))),
+        Some(Action::Pick(vec!["project:\"work\"".to_string()])),
+        "p from PROJECTS must scope to the row under the cursor"
+    );
 }
 
 /// Cursor and focus survive a refresh; a screen that jumped to the top on every
@@ -1566,6 +1596,32 @@ fn the_help_overlay_is_bordered_and_shows_every_binding_whole() {
             "help truncates {:?}'s description — {:?} is not shown whole:\n{text}",
             k.keys,
             k.help
+        );
+    }
+}
+
+/// At the documented floor (56x14, `model::MIN_WIDTH`/`MIN_HEIGHT`) the help
+/// overlay used to run out of rows before it reached the lines that say how
+/// to close it — `q / esc close`, `ctrl-c close, always` and the modal's own
+/// `any key closes this` were the ones cut, because a top-anchored `Paragraph`
+/// simply draws as many of its lines as fit and drops the rest. `?` is what a
+/// reader presses when they are lost, and the one window this answered by
+/// hiding the exit was 14 rows up to 17 — a tmux split, not a hypothetical.
+#[test]
+fn the_help_overlay_never_hides_its_own_close_instructions() {
+    use model::{MIN_HEIGHT, MIN_WIDTH};
+
+    for h in [MIN_HEIGHT, MIN_HEIGHT + 2, MIN_HEIGHT + 4, 30] {
+        let mut a = app();
+        a.on_key(key(KeyCode::Char('?')));
+        let text = all_text(&draw_at(&a, MIN_WIDTH.max(70), h, &caps()));
+        assert!(
+            text.contains("close, always"),
+            "at {MIN_WIDTH}x{h} the close instructions must survive: {text}"
+        );
+        assert!(
+            text.contains("any key closes this"),
+            "at {MIN_WIDTH}x{h} the modal's own closing line must survive: {text}"
         );
     }
 }

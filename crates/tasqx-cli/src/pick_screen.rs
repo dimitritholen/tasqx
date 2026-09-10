@@ -238,6 +238,13 @@ pub(crate) fn pick_loop(
     use ratatui::crossterm::event::{self, Event};
 
     loop {
+        // PageUp/PageDown need to know a screenful — `App` never touches a
+        // `Frame` to learn it itself. The body loses 4 rows to the header,
+        // query line, rule and footer (see `render`'s own `Layout::vertical`),
+        // and re-reading it every iteration means a resize between key
+        // presses changes the page size along with everything else on screen.
+        let visible = term.size()?.height.saturating_sub(4).max(1) as usize;
+        app.observe(visible);
         term.draw(|f| tui::pick::render(app, theme, &caps, f))?;
         // Resize and paste events just redraw; only keys are decisions.
         let Event::Key(key) = event::read()? else {
