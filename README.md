@@ -185,10 +185,10 @@ Any other MCP client takes the same shape:
 }
 ```
 
-Twenty tools, one verb each. Six reads: `list_tasks`, `get_task`, `summary`,
-`list_projects`, `search_memory`, `get_memory`. Fourteen writes: `add_task`,
-`modify_task`, `complete_task`, `reopen_task`, `start_timer`, `stop_timer`,
-`tag_task`, `untag_task`, `annotate_task`, `add_dependency`,
+Twenty-one tools, one verb each. Six reads: `list_tasks`, `get_task`, `summary`,
+`list_projects`, `search_memory`, `get_memory`. Fifteen writes: `add_task`,
+`modify_task`, `complete_task`, `reopen_task`, `cancel_task`, `start_timer`,
+`stop_timer`, `tag_task`, `untag_task`, `annotate_task`, `add_dependency`,
 `remove_dependency`, `add_memory`, `remove_memory`, `create_project`
 (all prefixed `tasqx_`).
 

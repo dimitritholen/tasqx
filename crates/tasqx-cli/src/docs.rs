@@ -417,7 +417,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 9] = [
 /// free-prose rows nothing compared, which is the same shape the verb table was
 /// in before the drift guards: a tool could be added, renamed, or moved across
 /// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 20] = [
+const MCP_TOOLS: [(&str, bool, &str); 21] = [
     (
         "tasqx_list_tasks",
         false,
@@ -451,6 +451,11 @@ const MCP_TOOLS: [(&str, bool, &str); 20] = [
         "tasqx_reopen_task",
         true,
         "Reopen a done or cancelled task; clears the completion timestamp.",
+    ),
+    (
+        "tasqx_cancel_task",
+        true,
+        "Cancel a task; returns any tasks newly unblocked (D114).",
     ),
     ("tasqx_start_timer", true, "Start the timer."),
     ("tasqx_stop_timer", true, "Stop the timer."),

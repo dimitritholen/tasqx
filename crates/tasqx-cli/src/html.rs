@@ -471,8 +471,15 @@ impl<'a> Report<'a> {
                     .unwrap_or("PT0S"),
             );
             let overdue = g.get("overdue").and_then(Value::as_i64).unwrap_or(0);
+            // #129: this used to be `class="warn"`, styled with `--warn`
+            // (a pale gold, even after the #163 contrast fix) and no
+            // weight — a different color and weight from the header's
+            // overdue tile (`--danger`, bold), so the same signal read as
+            // urgent up top and as a footnote down here. `.overdue-flag`
+            // reuses the header's own treatment so a non-zero cell reads
+            // as loudly as the count it agrees with.
             let od = if overdue > 0 {
-                format!("<td class=\"warn\">{overdue}</td>")
+                format!("<td class=\"overdue-flag\">{overdue}</td>")
             } else {
                 "<td class=\"muted\">0</td>".to_string()
             };
@@ -670,6 +677,7 @@ impl<'a> Report<'a> {
              section > h2 {{ font-size: 1.05rem; margin: 0 0 0.15rem; letter-spacing: -0.01em; }}\n\
              section > .sub {{ color: var(--muted); font-size: 0.85rem; margin: 0 0 0.9rem; }}\n\
              .muted {{ color: var(--muted); }} .warn {{ color: var(--warn); }}\n\
+             .overdue-flag {{ color: var(--danger); font-weight: 700; }}\n\
              figure {{ margin: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 0.9rem; overflow-x: auto; }}\n\
              figure svg {{ display: block; width: 100%; height: auto; }}\n\
              ul.tasklist {{ list-style: none; margin: 0; padding: 0; }}\n\
@@ -1348,6 +1356,61 @@ mod tests {
             );
             assert!(doc.contains(&expected), "missing tile {label}: {doc}");
         }
+    }
+
+    /// #129: the header's overdue tile is `--danger` (red) and bold
+    /// (`.stat.flag .n`); the By-project table's OVERDUE column used
+    /// `--warn`, a pale gold even after #163's contrast fix, at ordinary
+    /// weight — the same signal read as urgent up top and as a footnote in
+    /// the table. A non-zero cell must now carry the header's own treatment
+    /// (`.overdue-flag`, `--danger`, bold); a zero cell must stay the plain
+    /// `muted` styling zero already had.
+    #[test]
+    fn overdue_table_cells_match_the_headers_warning_treatment() {
+        let summary = json!({
+            "groups": [
+                { "project": "loud", "count": 1, "est_total": "PT0S",
+                  "tracked_total": "PT0S", "overdue": 3 },
+                { "project": "quiet", "count": 1, "est_total": "PT0S",
+                  "tracked_total": "PT0S", "overdue": 0 }
+            ],
+            "generated": "2026-07-15T12:00:00Z"
+        });
+        let export = json!({ "tasks": [] });
+        let actionable = json!({ "tasks": [] });
+        let events = json!({ "events": [] });
+        let th = theme::builtin("nord").unwrap();
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let doc = Report {
+            theme: &th,
+            group_by: "project",
+            filter: None,
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        }
+        .render();
+
+        assert!(
+            doc.contains("<td class=\"overdue-flag\">3</td>"),
+            "a non-zero overdue cell must carry the header's warning treatment: {doc}"
+        );
+        assert!(
+            doc.contains("<td class=\"muted\">0</td>"),
+            "a zero overdue cell must stay neutral: {doc}"
+        );
+        assert!(
+            !doc.contains("<td class=\"warn\">"),
+            "the low-contrast `.warn` class must no longer be used for the overdue cell: {doc}"
+        );
+        assert!(
+            doc.contains(".overdue-flag")
+                && doc.contains("var(--danger)")
+                && doc.contains("font-weight: 700"),
+            "the CSS must give `.overdue-flag` the header's own color and weight: {doc}"
+        );
     }
 
     /// #217: `report.summary` carries `tokens_confidence` (D50's trust
