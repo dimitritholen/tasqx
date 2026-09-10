@@ -2712,17 +2712,33 @@ mod tests {
     #[test]
     fn a_burndown_filter_failure_is_reported_rather_than_drawn_as_empty() {
         let e = tasqx_core::Engine::open_in_memory().unwrap();
-        // No such project: task.list still parses the filter fine, so this
-        // asserts the honest empty case stays empty and Ok...
-        let (members, _) = burndown_members(&e, &Some("nope".to_string())).expect("parses");
+        // A LIVE project with no tasks in it: `task.list` still parses and
+        // validates the filter fine, so this asserts the honest empty case
+        // stays empty and Ok — D109 only sharpened the UNKNOWN-name case
+        // below, not this one.
+        e.project_create(&json!({ "name": "empty-project" }))
+            .unwrap();
+        let (members, _) =
+            burndown_members(&e, &Some("empty-project".to_string())).expect("parses");
         assert!(
             members.is_empty(),
-            "an unknown project is legitimately empty, not an error"
+            "a live project with no open work is legitimately empty, not an error"
         );
 
-        // ...while a filter that cannot parse must come back as Err. `"` alone
-        // is unterminable: quoting it is fine, but this bypasses `quote` to
-        // simulate any future composition bug reaching `task.list`.
+        // An unknown project name is now its OWN propagated error (D109):
+        // `project:nope` in a filter is `not_found`, naming it, the same
+        // guarantee `task.add --project`/`task.modify --project` already give
+        // (D23) — no longer a silent empty burndown for what is, in fact, a
+        // typo.
+        let unknown = burndown_members(&e, &Some("nope".to_string()))
+            .expect_err("an unknown project name must propagate as an error, not an empty chart");
+        assert_eq!(unknown.code, tasqx_core::ErrorCode::NotFound);
+        assert!(unknown.message.contains("nope"), "{}", unknown.message);
+
+        // ...and a filter that cannot parse AT ALL must still come back as
+        // Err. `"` alone is unterminable: quoting it is fine, but this
+        // bypasses `quote` to simulate any future composition bug reaching
+        // `task.list`.
         let bad = dispatch(
             &e,
             "task.list",

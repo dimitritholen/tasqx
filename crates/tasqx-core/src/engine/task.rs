@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// How many tasks [`Engine::task_list`] returns when the caller names no
+/// `limit` at all (D110).
+///
+/// Matches [`crate::mcp`]'s own `LIST_PAGE` — same number, same reasoning —
+/// but this is now the ONE place the default is decided. `mcp.rs`'s transport
+/// used to be the only surface bounding an unbounded `task.list`, which meant
+/// the CLI and `tasqx api` — a shell one-liner and the ambient socket, not an
+/// exotic path — answered the entire store on every unfiltered read: measured
+/// at 10,000 tasks, 4.55 MB and roughly 1.1M tokens for one response, with no
+/// elision and nothing saying anything had been left out. That is D63's
+/// `task.get` failure again, one relation over, on the two surfaces the fix
+/// never reached.
+pub const DEFAULT_TASK_LIST_LIMIT: u64 = 100;
+
+/// The ceiling an explicitly-named `limit` is clamped to (D110), on D43's
+/// precedent ("a user-supplied count is bounded where it is parsed"). Without
+/// it `limit: 999999999` asked for the default page's protection to be turned
+/// off by naming a number instead of omitting the field — the same escape a
+/// clamp closes elsewhere in this file's neighbourhood.
+pub const MAX_TASK_LIST_LIMIT: u64 = 10_000;
+
 /// Which optional side tables a bulk snapshot load should read.
 ///
 /// The bulk loader exists so no reader drifts back to point queries, but
@@ -1441,6 +1462,7 @@ impl Engine {
         // resolve against this one instant.
         let now_ts = Timestamp::now();
         let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
+        validate_filter_projects(self.conn(), &filter)?;
 
         // Fetch all rows, then evaluate the filter in Rust: the §12-D8 grammar
         // (or/parens) and instant `due` comparison are evaluated on the loaded
@@ -1543,10 +1565,19 @@ impl Engine {
         if offset > 0 {
             tasks.drain(..offset.min(tasks.len()));
         }
-        let limit = opt_u64(p, "limit")?;
-        if let Some(limit) = limit {
-            tasks.truncate(limit as usize);
-        }
+        // D110: a caller naming no `limit` gets [`DEFAULT_TASK_LIST_LIMIT`],
+        // not the whole store — the same protection `mcp.rs`'s transport gave
+        // only its own callers, now uniform across the CLI, `tasqx api` and
+        // MCP (whose own default-insertion still runs first and so never
+        // observes this fallback, but shares the same number by construction).
+        // An explicit `limit` is clamped to [`MAX_TASK_LIST_LIMIT`] rather than
+        // honoured as named, so a caller cannot opt back into an unbounded
+        // response just by spelling a large number instead of omitting the
+        // field.
+        let limit = opt_u64(p, "limit")?
+            .unwrap_or(DEFAULT_TASK_LIST_LIMIT)
+            .min(MAX_TASK_LIST_LIMIT);
+        tasks.truncate(limit as usize);
         // Nullable, never absent: a key that comes and goes makes every client
         // branch on presence, and this one would flip on the last page of
         // every walk (D63's rule for `annotations_next_offset`).
@@ -1557,7 +1588,7 @@ impl Engine {
         // forever with `total` still outstanding. Zero rows requested can
         // never advance the walk, so it answers `null` — "nothing more will
         // ever come from this call shape" — the same as reaching the end.
-        let next_offset = if limit == Some(0) {
+        let next_offset = if limit == 0 {
             Value::Null
         } else {
             match offset + tasks.len() {
@@ -2339,6 +2370,115 @@ mod tests {
              at the offset they just sent, so the documented pager loop \
              `while next_offset != null: offset = next_offset` never ends"
         );
+    }
+
+    /// D110: `task.list` over a caller who names no `limit` at all no longer
+    /// answers the whole store — measured at 10,000 tasks, 4.55 MB and
+    /// roughly 1.1M tokens for one response, with nothing saying anything was
+    /// left out. The default now lives in the engine (D63/D70's placement,
+    /// transport-only, is superseded), so `task.list` directly — the path
+    /// `api`/the CLI drive — is bounded exactly like the MCP transport
+    /// already bounded its own callers.
+    #[test]
+    fn task_list_with_no_limit_named_gets_the_engine_default_page() {
+        let e = Engine::open_in_memory().unwrap();
+        for i in 0..(DEFAULT_TASK_LIST_LIMIT + 20) {
+            e.task_add(&json!({ "title": format!("task {i}") }))
+                .unwrap();
+        }
+        let out = e.task_list(&json!({})).unwrap();
+        assert_eq!(
+            out["count"].as_u64().unwrap(),
+            DEFAULT_TASK_LIST_LIMIT,
+            "an absent `limit` must page at the engine default, not answer every row"
+        );
+        assert_eq!(
+            out["total"].as_u64().unwrap(),
+            DEFAULT_TASK_LIST_LIMIT + 20,
+            "`total` still counts every matching row, so the caller can tell a page from the store"
+        );
+        assert_eq!(
+            out["next_offset"],
+            json!(DEFAULT_TASK_LIST_LIMIT),
+            "next_offset must name where the rest of the store starts"
+        );
+    }
+
+    /// D110's other half: a caller who NAMES a `limit` past
+    /// [`MAX_TASK_LIST_LIMIT`] is clamped rather than honoured, on D43's
+    /// precedent — otherwise `limit: 999999999` is the escape hatch that
+    /// turns the default page's protection back off just by spelling a
+    /// number instead of omitting the field.
+    #[test]
+    fn task_list_clamps_an_absurdly_large_named_limit() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "one task" })).unwrap();
+        let out = e.task_list(&json!({ "limit": 999_999_999_u64 })).unwrap();
+        assert_eq!(
+            out["count"],
+            json!(1),
+            "one task in the store is still one row back"
+        );
+
+        // The clamp itself: a limit above the ceiling never truncates BELOW
+        // what the store actually holds when the store is small, so prove it
+        // against a page bigger than the ceiling instead.
+        for i in 0..(MAX_TASK_LIST_LIMIT + 5) {
+            e.task_add(&json!({ "title": format!("t{i}") })).unwrap();
+        }
+        let out = e.task_list(&json!({ "limit": 999_999_999_u64 })).unwrap();
+        assert_eq!(
+            out["count"].as_u64().unwrap(),
+            MAX_TASK_LIST_LIMIT,
+            "a named limit past the ceiling must be clamped to it, not honoured whole"
+        );
+    }
+
+    /// An explicit `limit` UNDER the default page is still honoured exactly —
+    /// D110 only changes the ABSENT case, never second-guesses a caller who
+    /// named a smaller number on purpose.
+    #[test]
+    fn task_list_honours_an_explicit_limit_under_the_default() {
+        let e = seeded();
+        let out = e.task_list(&json!({ "limit": 1 })).unwrap();
+        assert_eq!(out["count"], json!(1));
+    }
+
+    /// D109: `project:` in a filter used to answer `No tasks.` at exit 0 for
+    /// BOTH an unknown name and a right name typed in the wrong case, the
+    /// same silence `status:pendign` answered before D34. A `project:` value
+    /// naming nothing in the live projects table is now `not_found`, on the
+    /// write side's own exact-match strictness (D23).
+    #[test]
+    fn task_list_refuses_a_project_filter_naming_no_live_project() {
+        let e = Engine::open_in_memory().unwrap();
+        e.project_create(&json!({ "name": "FIN-9695" })).unwrap();
+        e.task_add(&json!({ "title": "t", "project": "FIN-9695" }))
+            .unwrap();
+
+        // Wrong case: the project exists, but not spelled this way.
+        let err = e
+            .task_list(&json!({ "filter": "project:fin-9695" }))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(err.message.contains("fin-9695"), "{}", err.message);
+
+        // Genuinely unknown name.
+        let err = e
+            .task_list(&json!({ "filter": "project:nope-does-not-exist" }))
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(
+            err.message.contains("nope-does-not-exist"),
+            "{}",
+            err.message
+        );
+
+        // The exact, correctly-cased name still matches, as always.
+        let out = e
+            .task_list(&json!({ "filter": "project:FIN-9695" }))
+            .unwrap();
+        assert_eq!(out["count"], json!(1));
     }
 
     #[test]
