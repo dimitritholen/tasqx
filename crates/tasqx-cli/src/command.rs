@@ -124,8 +124,6 @@ fn scope_parser() -> PossibleValuesParser {
 /// permanent. So the clientless form is not a weaker measurement, it is a silent
 /// refusal to measure that also poisons the task against a later, correct
 /// attempt — the D33 shape: a value that changes nothing must not answer `ok`.
-/// `--prompt-id` is exempt: it is pure correlation metadata and drives no parser
-/// selection.
 #[derive(Args, Clone, Default)]
 pub(super) struct CorrelationArgs {
     /// Calling tool as "<name> <version>", e.g. "claude-code 2.1". Selects the
@@ -137,10 +135,6 @@ pub(super) struct CorrelationArgs {
     /// Requires --client.
     #[arg(long, value_name = "ID", requires = "client")]
     pub(super) session_id: Option<String>,
-
-    /// Id of the prompt/turn driving this call.
-    #[arg(long, value_name = "ID")]
-    pub(super) prompt_id: Option<String>,
 
     /// Absolute path to the session transcript the tokens will be found in.
     /// Requires --client.

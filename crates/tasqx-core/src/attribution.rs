@@ -430,6 +430,13 @@ pub struct AttributionResult {
     /// field that can ever turn four counts into money, and it must never be
     /// claimed beyond what the evidence actually said.
     pub model: Option<String>,
+    /// D111: set when the OTLP buffer ALSO held a non-empty in-window result
+    /// for this task but log-parse won anyway (the more complete source, D50
+    /// precedent) — the OTLP total that was passed over, so the disagreement
+    /// is visible on the measurement rather than silently discarded. `None`
+    /// in the ordinary case: no OTLP data, or OTLP was the only source with
+    /// data (unchanged from before D111).
+    pub otel_disagreement: Option<u64>,
 }
 
 impl AttributionResult {
@@ -446,6 +453,7 @@ impl AttributionResult {
             found: false,
             sample_ids: Vec::new(),
             model: None,
+            otel_disagreement: None,
         }
     }
 }
@@ -483,17 +491,18 @@ pub fn compute_attribution(
         return Ok(AttributionResult::empty(tool));
     }
 
-    // Prefer buffered OTLP telemetry (#18) when it correlated to this task's
-    // session and lands in the window: it is per-request, timestamped, and needs
-    // no file I/O. Because we return here, a task measured from telemetry is
-    // never ALSO log-parsed — one source per task, so no double-count. The buffer
-    // was matched by `session_id` during the pending-set build, so a hit is a
-    // verified correlation => HIGH confidence. This runs even for a client tasqx
-    // has no transcript parser for (telemetry needs none).
+    // Buffered OTLP telemetry (#18) is per-request, timestamped, and needs no
+    // file I/O, so it is measured first. The D50 refusal applies here too:
+    // OTLP samples are keyed by session, so two tasks with overlapping windows
+    // over one session would double-count identically to the log-parse case.
+    // Contested telemetry banks for no one.
     //
-    // The D50 refusal applies here too: OTLP samples are keyed by session, so
-    // two tasks with overlapping windows over one session would double-count
-    // identically to the log-parse case. Contested telemetry banks for no one.
+    // D111: a non-empty OTLP result no longer returns immediately. It used to
+    // — "non-empty" was standing in for "complete", which it is not: a single
+    // stray buffered sample outranked a full transcript for the same window.
+    // The result is stashed instead, and log-parse below still runs; the two
+    // are reconciled once both are known (see the tail of this function).
+    let mut otel_result: Option<AttributionResult> = None; // taken (not cloned) below
     if !pa.otel_samples.is_empty() {
         let (totals, n, contested, sample_ids, model) = totals_in_window_refusing(
             &pa.otel_samples,
@@ -509,7 +518,7 @@ pub fn compute_attribution(
                     .or_else(|| pa.otel_tool.clone())
                     .unwrap_or_default(),
             );
-            return Ok(AttributionResult {
+            otel_result = Some(AttributionResult {
                 totals,
                 samples: n,
                 tool: otel_tool,
@@ -518,14 +527,15 @@ pub fn compute_attribution(
                 found: true,
                 sample_ids,
                 model,
+                otel_disagreement: None,
             });
-        }
-        // D50 symmetry: telemetry whose every in-window sample is claimed by
-        // another task's window is contested, banked for no one — and stays
-        // TRANSIENT on the shared give-up deadline, exactly like a contested
-        // transcript. Falling through here would reach the terminal empty
-        // paths and turn the contest into a permanent zero.
-        if n == 0 && contested > 0 && !transcript_gave_up(now, &pa.window_end) {
+        } else if n == 0 && contested > 0 && !transcript_gave_up(now, &pa.window_end) {
+            // D50 symmetry: telemetry whose every in-window sample is claimed
+            // by another task's window is contested, banked for no one — and
+            // stays TRANSIENT on the shared give-up deadline, exactly like a
+            // contested transcript. Falling through here would reach the
+            // terminal empty paths and turn the contest into a permanent
+            // zero.
             return Err(ApiError::internal(format!(
                 "otlp usage in window is contested: session {}",
                 pa.session_id.as_deref().unwrap_or_default()
@@ -533,9 +543,33 @@ pub fn compute_attribution(
         }
     }
 
-    // No client, or a client tasqx has no parser for: terminate with a marker.
+    // No NAMED transcript to compare against: without an explicit
+    // `transcript_path`, log-parse falls back to `discover_samples`'s root
+    // scan, which the module documents as a heuristic, non-deterministic
+    // guess (`recompute_measurement`'s doc: "a root scan is not re-runnable
+    // deterministically"). D111's "log-parse is the more complete source"
+    // reasoning rests on comparing OTLP against a KNOWN, correlated
+    // transcript (#79/D50's precedent, and the ticket's own repro: "a
+    // complete transcript exists for the same window") — it does not extend
+    // to preferring an unscoped filesystem scan over a session-verified OTLP
+    // buffer. So a non-empty OTLP result still wins immediately, exactly as
+    // before D111, whenever there is no explicit path to compare it to.
+    if pa
+        .transcript_path
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        if let Some(otel) = otel_result.take() {
+            return Ok(otel);
+        }
+    }
+
+    // No client, or a client tasqx has no parser for: log-parse cannot run at
+    // all, so OTLP — if it found anything — is the only source with data and
+    // still wins (D111 only changes the case where both sources have data).
     let Some(parser) = pa.client.as_deref().and_then(parser_for) else {
-        return Ok(AttributionResult::empty(tool));
+        return Ok(otel_result.unwrap_or_else(|| AttributionResult::empty(tool)));
     };
 
     let (samples, transcript_parsed, session_correlated) = match pa.transcript_path.as_deref() {
@@ -548,7 +582,7 @@ pub fn compute_attribution(
                 // only until the completion is old enough that the file is
                 // never coming, then terminate so the task leaves the queue.
                 if transcript_gave_up(now, &pa.window_end) {
-                    return Ok(AttributionResult::empty(tool));
+                    return Ok(otel_result.unwrap_or_else(|| AttributionResult::empty(tool)));
                 }
                 return Err(ApiError::internal(format!(
                     "transcript not available yet: {path}"
@@ -566,7 +600,7 @@ pub fn compute_attribution(
                 // life of the daemon while the task never terminates.
                 Err(e) => {
                     if transcript_gave_up(now, &pa.window_end) {
-                        return Ok(AttributionResult::empty(tool));
+                        return Ok(otel_result.unwrap_or_else(|| AttributionResult::empty(tool)));
                     }
                     return Err(e);
                 }
@@ -634,7 +668,7 @@ pub fn compute_attribution(
         )));
     }
 
-    Ok(AttributionResult {
+    let log_parse_result = AttributionResult {
         totals,
         samples: n,
         tool,
@@ -643,7 +677,23 @@ pub fn compute_attribution(
         found,
         sample_ids,
         model,
-    })
+        otel_disagreement: None,
+    };
+
+    // D111: log-parse is the more complete source (D50 precedent — see #79),
+    // so it wins whenever it found anything, even though OTLP also found
+    // something for this window. The OTLP total is not silently discarded:
+    // it rides along as `otel_disagreement` so the daemon can surface it.
+    // When log-parse found nothing — contested, empty, or gave up — OTLP is
+    // the only source left standing and still wins, exactly as before D111.
+    match otel_result {
+        Some(otel) if log_parse_result.found => Ok(AttributionResult {
+            otel_disagreement: Some(otel.totals.total()),
+            ..log_parse_result
+        }),
+        Some(otel) if !log_parse_result.found => Ok(otel),
+        _ => Ok(log_parse_result),
+    }
 }
 
 /// Whether an unusable explicit transcript — absent, or present but unreadable —
@@ -2193,18 +2243,36 @@ mod tests {
     }
 
     #[test]
-    fn buffered_otel_is_preferred_over_a_transcript_and_never_double_counted() {
-        // A transcript path is present AND buffered OTLP samples correlated by
-        // session. OTEL must win: source `otel`, HIGH confidence, and the numbers
-        // come from the buffer — the transcript is never even read (its path here
-        // does not exist, which would be a transient error on the log-parse path).
+    fn buffered_otel_wins_only_once_log_parse_conclusively_has_nothing() {
+        // D111: a non-empty OTLP result no longer wins the instant it is found —
+        // it is compared against log-parse. Here log-parse genuinely has nothing
+        // (a real, readable transcript with no in-window sample), so once the
+        // give-up deadline passes and log-parse terminates empty, OTEL is the
+        // only source left and still wins: source `otel`, HIGH confidence, the
+        // numbers come from the buffer, and `otel_disagreement` is unset (there
+        // was nothing to disagree with).
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attrib-otel-wins-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess.jsonl");
+        // A real sample, but well OUTSIDE this task's window — log-parse reads
+        // the file fine and finds nothing to count.
+        let content = r#"{"timestamp":"2026-07-24T02:00:00.000Z","message":{"id":"z","usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        std::fs::write(&path, content).unwrap();
+
         let pa = PendingAttribution {
             task_id: "t".into(),
             short_id: 1,
             window_start: "2026-07-24T10:00:00Z".into(),
             window_end: "2026-07-24T11:00:00Z".into(),
             client: Some("claude-code".into()),
-            transcript_path: Some("/no/such/transcript.jsonl".into()),
+            transcript_path: Some(path.to_string_lossy().into_owned()),
             session_id: Some("sess-1".into()),
             otel_samples: vec![
                 sample("2026-07-24T10:15:00Z", 100, 200),
@@ -2215,9 +2283,14 @@ mod tests {
             foreign_windows: vec![],
             consumed_sample_ids: HashSet::new(),
         };
-        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
+        // Past TRANSCRIPT_GIVE_UP_SECS past window_end, so the empty log-parse
+        // read terminates instead of retrying transiently.
+        let r = compute_attribution(&pa, ts("2026-07-26T12:00:00Z")).unwrap();
         assert!(r.found);
-        assert_eq!(r.source, SOURCE_OTEL, "telemetry outranks log-parse");
+        assert_eq!(
+            r.source, SOURCE_OTEL,
+            "log-parse conclusively found nothing, so telemetry is the only source"
+        );
         assert_eq!(
             r.confidence, CONFIDENCE_HIGH,
             "session-matched buffer is high"
@@ -2225,6 +2298,94 @@ mod tests {
         assert_eq!(r.samples, 1, "only the in-window telemetry sample counts");
         assert_eq!(r.totals.input, 100);
         assert_eq!(r.totals.output, 200);
+        assert_eq!(
+            r.otel_disagreement, None,
+            "log-parse never produced a competing number"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_transcript_not_yet_flushed_is_retried_rather_than_falling_back_to_otel_early() {
+        // D111 does not change the transient-retry contract: an explicit
+        // transcript that has not appeared yet is unknown, not "conclusively
+        // nothing" — a non-empty OTLP buffer does not short-circuit the retry,
+        // or the file's eventual (possibly larger, possibly disagreeing) reading
+        // would never get the chance to win.
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some("/no/such/transcript.jsonl".into()),
+            session_id: Some("sess-1".into()),
+            otel_samples: vec![sample("2026-07-24T10:15:00Z", 100, 200)],
+            otel_tool: Some("claude-code".into()),
+            self_reported: false,
+            foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
+        };
+        let err = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap_err();
+        assert!(
+            err.message.contains("not available yet"),
+            "still retries rather than banking otel early: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn log_parse_wins_over_a_disagreeing_otel_buffer_and_says_so() {
+        // D111's actual defect: both sources have data for the same window. The
+        // transcript is the more complete source and wins; the OTLP total it
+        // outranked is recorded on the result rather than discarded.
+        let dir = std::env::temp_dir().join(format!(
+            "tasqx-attrib-disagree-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess.jsonl");
+        let content = r#"{"timestamp":"2026-07-24T10:15:00.000Z","message":{"id":"a","usage":{"input_tokens":1000,"output_tokens":2000}}}"#;
+        std::fs::write(&path, content).unwrap();
+
+        let pa = PendingAttribution {
+            task_id: "t".into(),
+            short_id: 1,
+            window_start: "2026-07-24T10:00:00Z".into(),
+            window_end: "2026-07-24T11:00:00Z".into(),
+            client: Some("claude-code".into()),
+            transcript_path: Some(path.to_string_lossy().into_owned()),
+            // Deliberately unverifiable against the transcript, so the win is
+            // decided by completeness, not by which source has higher confidence.
+            session_id: Some("sess-1".into()),
+            // A single stray OTLP sample: far less than the transcript's full
+            // record of the same turn.
+            otel_samples: vec![sample("2026-07-24T10:16:00Z", 1, 1)],
+            otel_tool: Some("claude-code".into()),
+            self_reported: false,
+            foreign_windows: vec![],
+            consumed_sample_ids: HashSet::new(),
+        };
+        let r = compute_attribution(&pa, ts("2026-07-24T11:05:00Z")).unwrap();
+        assert!(r.found);
+        assert_eq!(
+            r.source, SOURCE_LOG_PARSE,
+            "the more complete source wins, not whichever answered first"
+        );
+        assert_eq!(r.totals.input, 1000);
+        assert_eq!(r.totals.output, 2000);
+        assert_eq!(
+            r.otel_disagreement,
+            Some(2),
+            "the overridden OTLP total (1 + 1) is surfaced, not discarded"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

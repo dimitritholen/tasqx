@@ -2,7 +2,8 @@
 //!
 //! The defect these cover was invisible to every existing test because it lived
 //! in the one layer they skip. `task.start` and `task.done` have accepted
-//! `client` / `session_id` / `prompt_id` / `transcript_path` since #12, the MCP
+//! `client` / `session_id` / `transcript_path` since #12 (D112 removed the
+//! fourth, `prompt_id`, which no code ever read), the MCP
 //! server sends them, and the API-level tests pass — but the CLI never offered a
 //! way to type them, so every CLI-completed task fell out of the attribution
 //! engine's candidate set — its scan over the `done` events skips every one
@@ -97,8 +98,6 @@ fn start_and_done_record_the_correlation_they_were_given() {
             "claude-code 2.1",
             "--session-id",
             "sess-abc",
-            "--prompt-id",
-            "turn-7",
             "--transcript-path",
             "/tmp/does-not-need-to-exist.jsonl",
         ])
@@ -109,7 +108,6 @@ fn start_and_done_record_the_correlation_they_were_given() {
     let start = latest_payload(&cfg, &db, "start");
     assert_eq!(start["client"], "claude-code 2.1");
     assert_eq!(start["session_id"], "sess-abc");
-    assert_eq!(start["prompt_id"], "turn-7");
     assert_eq!(
         start["transcript_path"],
         "/tmp/does-not-need-to-exist.jsonl"
@@ -153,7 +151,7 @@ fn a_flagless_completion_sends_no_correlation_keys_at_all() {
     // skip — and it would make this the one command whose wire shape changed for
     // users who never asked for token accounting.
     let done = latest_payload(&cfg, &db, "done");
-    for key in ["client", "session_id", "prompt_id", "transcript_path"] {
+    for key in ["client", "session_id", "transcript_path"] {
         assert!(
             done.get(key).is_none(),
             "flagless done must not send {key}, got {done:#?}"
@@ -200,15 +198,4 @@ fn correlation_without_a_client_is_refused_before_it_reaches_the_store() {
         .expect("show");
     let shown: serde_json::Value = serde_json::from_slice(&out.stdout).expect("show JSON");
     assert_eq!(shown["status"], "pending");
-
-    // `--prompt-id` is exempt: it selects no parser, so it cannot cause the
-    // silent-zero outcome the other two do.
-    assert!(
-        bin(&cfg, &db)
-            .args(["start", "1", "--prompt-id", "turn-1"])
-            .status()
-            .expect("start")
-            .success(),
-        "--prompt-id alone is legitimate correlation metadata"
-    );
 }
