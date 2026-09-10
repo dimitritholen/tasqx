@@ -82,8 +82,11 @@ pub(crate) fn run_daemon(socket_flag: Option<&str>, db: Option<&str>) {
 }
 
 /// `tasqx watch [filter]`: subscribe to a daemon and re-render on every push.
-/// On a TTY it clears + reprints the working set; on a pipe it streams one line
-/// per event (DESIGN.md §6a). It never auto-spawns a daemon — it hints instead.
+/// On a TTY it draws into the alternate screen, bounded to what the terminal
+/// can actually show — the top of the `-urgency`-sorted list, never whatever
+/// tail a too-tall frame happened to leave behind once it scrolled (#206); on
+/// a pipe it streams one line per event (DESIGN.md §6a). It never auto-spawns
+/// a daemon — it hints instead.
 pub(crate) fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[String], ctx: &Ctx) {
     if no_daemon {
         eprintln!("tasqx watch: --no-daemon is set, but watch requires a running daemon");
@@ -112,10 +115,39 @@ pub(crate) fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[St
     };
     let tty = std::io::stdout().is_terminal();
 
+    // #206: everything below returns an exit code instead of calling `exit`
+    // directly, so the TTY path's `WatchScreen` guard is still on the stack
+    // — and therefore still able to leave the alternate screen — at every one
+    // of those returns. `exit` runs no destructors, and a `watch` left in the
+    // alternate screen is exactly the stuck pane a live view must never leave
+    // behind.
+    let code = watch_session(&mut conn, &filter_str, ctx, tty);
+    exit(code);
+}
+
+/// The subscribe-and-repaint loop, factored out of `run_watch` so its TTY
+/// path can hold a [`WatchScreen`] guard across every exit — see `run_watch`.
+fn watch_session(conn: &mut daemon::Conn, filter_str: &str, ctx: &Ctx, tty: bool) -> i32 {
+    let _screen = if tty {
+        match WatchScreen::enter() {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("tasqx watch: could not enter the alternate screen: {e}");
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
+
     // Initial paint.
-    if let Err(e) = watch_render(&mut conn, &filter_str, ctx, tty) {
-        eprintln!("tasqx watch: {e}");
-        exit(1);
+    match watch_render(conn, filter_str, ctx, tty, None) {
+        Ok(true) => {}
+        Ok(false) => return 0,
+        Err(e) => {
+            eprintln!("tasqx watch: {e}");
+            return 1;
+        }
     }
 
     // Live loop: block on the next frame; on each change, refresh.
@@ -123,26 +155,35 @@ pub(crate) fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[St
         match conn.next_frame() {
             Ok(Some(daemon::Frame::Event(evt))) => {
                 if tty {
-                    // The repaint makes the count not load-bearing here — the
-                    // whole working set is redrawn — but 372 silently absorbed
-                    // events are still worth one line an operator can see
-                    // (#249). stderr, so it survives the screen clear.
-                    if let Some(d) = evt.pointer("/data/dropped").and_then(Value::as_i64) {
-                        eprintln!(
-                            "tasqx watch: {d} event(s) dropped while this view was not \
-                             keeping up; the repaint is current"
-                        );
-                    }
-                    if let Err(e) = watch_render(&mut conn, &filter_str, ctx, true) {
-                        eprintln!("tasqx watch: {e}");
-                        exit(1);
+                    // Folded into the SAME frame as a note line, rather than a
+                    // separate `eprintln!` ahead of it (the previous design):
+                    // that relied on the note surviving in the plain screen's
+                    // scrollback once the repaint scrolled past it (#249), and
+                    // the alternate screen this path now draws into has no
+                    // such scrollback for it to land in.
+                    let note = evt
+                        .pointer("/data/dropped")
+                        .and_then(Value::as_i64)
+                        .map(|d| {
+                            format!(
+                                "{d} event(s) dropped while this view was not keeping up; \
+                             the repaint is current"
+                            )
+                        });
+                    match watch_render(conn, filter_str, ctx, true, note.as_deref()) {
+                        Ok(true) => {}
+                        Ok(false) => return 0,
+                        Err(e) => {
+                            eprintln!("tasqx watch: {e}");
+                            return 1;
+                        }
                     }
                 } else {
                     let data = evt.get("data").cloned().unwrap_or(Value::Null);
                     if !emit_open(&format!("{}\n", watch_stream_line(&data))) {
                         // `watch | head`: the reader left, so the stream is
                         // over — cleanly, not as a BrokenPipe panic.
-                        exit(0);
+                        return 0;
                     }
                 }
             }
@@ -150,14 +191,85 @@ pub(crate) fn run_watch(socket_flag: Option<&str>, no_daemon: bool, filter: &[St
             Ok(Some(daemon::Frame::Response(_))) => {}
             Ok(None) => {
                 eprintln!("tasqx watch: daemon closed the connection");
-                exit(1);
+                return 1;
             }
             Err(e) => {
                 eprintln!("tasqx watch: read error: {e}");
-                exit(1);
+                return 1;
             }
         }
     }
+}
+
+/// RAII entry into the alternate screen for `watch`'s TTY path (#206).
+///
+/// Deliberately thin, the way `tui::with_terminal` is kept thin: no
+/// decisions, no rendering, just the enter/leave calls — everything either
+/// one touches (the panic hook, the restore latch, the escape sequences) is
+/// already tested in `tui.rs`, reused rather than duplicated here.
+///
+/// Unlike `tui::with_terminal`, this never calls `enable_raw_mode`: `watch`
+/// reads nothing from stdin, so raw mode would only turn OFF Ctrl-C's normal
+/// SIGINT delivery for no benefit — worse, it would turn `watch`'s usual way
+/// out into a hang. A `ctrlc` handler covers that interrupt instead (mirroring
+/// `run_daemon`'s), restoring the screen before exiting, since the OS's
+/// default SIGINT action — like `std::process::exit` — runs no `Drop` either.
+struct WatchScreen;
+
+impl WatchScreen {
+    fn enter() -> std::io::Result<Self> {
+        tui::install_panic_hook();
+        ratatui::crossterm::execute!(
+            std::io::stdout(),
+            ratatui::crossterm::terminal::EnterAlternateScreen,
+            ratatui::crossterm::cursor::Hide
+        )?;
+        tui::IN_RAW_MODE.store(true, Ordering::SeqCst);
+        // Best-effort: if a handler is already installed (unusual — nothing
+        // else in this process sets one before `watch` runs), Ctrl-C falls
+        // back to the OS default and the panic-hook/Drop paths below still
+        // cover every other exit.
+        let _ = ctrlc::set_handler(|| {
+            tui::restore_once(&tui::IN_RAW_MODE, &mut std::io::stdout());
+            exit(0);
+        });
+        Ok(WatchScreen)
+    }
+}
+
+impl Drop for WatchScreen {
+    fn drop(&mut self) {
+        tui::restore_once(&tui::IN_RAW_MODE, &mut std::io::stdout());
+    }
+}
+
+/// Trim `result`'s `tasks` array — already sorted hottest-urgency-first by
+/// the caller's `sort:["-urgency"]` — to the `rows` a pane can actually draw
+/// above `chrome` lines of header/rule(s)/trailer, keeping the FRONT of the
+/// list. `count`/`total` are left untouched, so the trailer `render::
+/// task_table` prints still names the true size of the working set even when
+/// fewer rows than that are on screen.
+///
+/// This is #206's fix: on a 24-row pane over 44 tasks, printing all of them
+/// let the terminal's own scroll carry the hottest rows — #9, #1, #2 in the
+/// field report — off the top, leaving only the coldest tail visible. Never
+/// truncates to nothing: a pane too short even for its own chrome still shows
+/// one row rather than "No tasks." on a store that plainly has some.
+fn bound_to_viewport(mut result: Value, rows: u16, chrome: usize) -> Value {
+    let Some(tasks) = result.get_mut("tasks").and_then(Value::as_array_mut) else {
+        return result;
+    };
+    let available = (rows as usize).saturating_sub(chrome).max(1);
+    if tasks.len() > available {
+        tasks.truncate(available);
+    }
+    result
+}
+
+/// Style one status note as a frame line (see `watch_session`'s comment on
+/// why this is folded into the frame rather than printed ahead of it).
+fn note_line(ctx: &Ctx, note: &str) -> String {
+    ctx.paint("warn", note)
 }
 
 /// One non-TTY `watch` line per push: `op=` plus whichever attribution fields
@@ -185,12 +297,22 @@ pub(crate) fn watch_stream_line(data: &Value) -> String {
 
 /// Fetch the working set over the socket and (re)paint it, reusing render.rs so
 /// themes + degradation behave exactly as in the one-shot list view.
+///
+/// `note`, when given, is a status line (e.g. #249's dropped-event count)
+/// folded into the top of the TTY frame — see `watch_session`.
+///
+/// Returns `Ok(false)` when the reader closed the pipe/terminal mid-write,
+/// instead of calling `exit` the way this used to: the TTY path now runs
+/// inside a `WatchScreen` alternate-screen guard (#206), and `exit` skips
+/// every `Drop`, so `watch_session` — where that guard is actually in scope —
+/// is the one place allowed to end the process.
 pub(crate) fn watch_render(
     conn: &mut daemon::Conn,
     filter: &str,
     ctx: &Ctx,
     tty: bool,
-) -> Result<(), String> {
+    note: Option<&str>,
+) -> Result<bool, String> {
     let params = json!({ "filter": filter, "sort": ["-urgency"] });
     let mut env = conn
         .request("task.list", &params)
@@ -202,22 +324,37 @@ pub(crate) fn watch_render(
         ));
     }
     // Taken, not cloned — this repaints the whole working set on every push.
-    let result = env
+    let mut result = env
         .as_object_mut()
         .and_then(|o| o.remove("result"))
         .unwrap_or(Value::Null);
-    let text = render::task_table(ctx, &result, jiff::Timestamp::now());
+
+    // #206: a side pane is short. Bound the row list to what THIS terminal
+    // can actually show before rendering, so the frame draws the top of the
+    // already-`-urgency`-sorted list — never whatever tail a too-tall frame
+    // used to be left showing once the terminal scrolled past the rest of
+    // it. A `size()` failure (rare, and no worse than the old unbounded
+    // behaviour) just skips the trim for this one frame.
+    if tty {
+        if let Ok((_, rows)) = ratatui::crossterm::terminal::size() {
+            let chrome = if note.is_some() { 5 } else { 4 };
+            result = bound_to_viewport(result, rows, chrome);
+        }
+    }
+
+    let mut text = render::task_table(ctx, &result, jiff::Timestamp::now());
+    if let Some(n) = note {
+        text = format!("{}\n{text}", note_line(ctx, n));
+    }
     let painted = if tty {
-        // Clear screen + cursor home, then reprint the fresh working set.
+        // Clear screen + cursor home, then reprint the fresh (bounded) frame
+        // — inside the alternate screen `WatchScreen::enter` opened, so this
+        // never touches the scrollback the shell prompt lives in.
         format!("\x1b[2J\x1b[H{text}")
     } else {
         text
     };
-    if !emit_open(&painted) {
-        // The reader closed the pipe; there is nobody left to paint for.
-        exit(0);
-    }
-    Ok(())
+    Ok(emit_open(&painted))
 }
 
 /// #184: probe for a live daemon on the ambient `$TASQX_SOCK` and, when one
@@ -420,5 +557,93 @@ pub(crate) fn mcp_stdio_loop(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme;
+
+    /// A `-urgency`-sorted working set of `n` tasks, exactly the shape
+    /// `watch_render`'s `task.list` call gets back: `short_id` 1 is the
+    /// hottest (highest `urgency`), `n` the coldest.
+    fn working_set(n: i64) -> Value {
+        let tasks: Vec<Value> = (1..=n)
+            .map(|id| {
+                json!({
+                    "short_id": id, "urgency": (n - id) as f64, "priority": "M",
+                    "title": format!("task {id}"), "project": "work", "due": "",
+                    "tags": [], "status": "pending"
+                })
+            })
+            .collect();
+        json!({ "count": n, "total": n, "next_offset": Value::Null, "tasks": tasks })
+    }
+
+    fn plain_ctx() -> Ctx {
+        Ctx::new(theme::default_theme(), Caps::PLAIN)
+    }
+
+    /// The fix: `bound_to_viewport` ahead of `render::task_table` keeps the
+    /// frame inside the pane AND keeps the row the pane exists to show — #1,
+    /// the hottest — rather than whatever the tail happens to be, while the
+    /// trailer keeps naming the true size of the working set.
+    #[test]
+    fn bound_to_viewport_keeps_the_frame_inside_the_pane_and_the_hottest_row_in_it() {
+        let result = working_set(44);
+        let bounded = bound_to_viewport(result, 24, 4);
+        let text = render::task_table(&plain_ctx(), &bounded, jiff::Timestamp::now());
+        let lines = text.lines().count();
+        assert!(
+            lines <= 24,
+            "bounded frame is still {lines} lines on a 24-row pane"
+        );
+        assert!(
+            text.contains("task 1"),
+            "the hottest task must survive the trim: {text}"
+        );
+        assert!(
+            !text.contains("task 44"),
+            "the coldest task must be the one trimmed, not #1: {text}"
+        );
+        assert!(
+            text.contains("44 task(s)"),
+            "the trailer must still name the true total: {text}"
+        );
+    }
+
+    #[test]
+    fn bound_to_viewport_is_a_no_op_once_everything_already_fits() {
+        let result = working_set(5);
+        let bounded = bound_to_viewport(result, 24, 4);
+        assert_eq!(bounded["tasks"].as_array().unwrap().len(), 5);
+        assert_eq!(bounded["count"], 5);
+    }
+
+    /// A pane too short to show even one row's chrome must still show ONE
+    /// row rather than nothing — `bound_to_viewport` never truncates to 0.
+    #[test]
+    fn bound_to_viewport_never_empties_a_nonempty_list() {
+        let result = working_set(10);
+        let bounded = bound_to_viewport(result, 2, 4);
+        assert_eq!(bounded["tasks"].as_array().unwrap().len(), 1);
+    }
+
+    /// The dropped-events note (#249) is folded into the frame itself now
+    /// that the TTY path draws into the alternate screen (#206) — a
+    /// screen with no reliable scrollback for a preceding `eprintln!` to
+    /// survive in, unlike the plain-scrollback screen the old design relied
+    /// on. `note_line` is the pure half of that: it must carry the exact
+    /// count through, styled, so a viewer sees it in the very frame it
+    /// describes rather than losing it to a redraw with no history.
+    #[test]
+    fn note_line_carries_the_dropped_count_into_the_frame() {
+        let ctx = plain_ctx();
+        let line = note_line(
+            &ctx,
+            "3 event(s) dropped while this view was not keeping up; the repaint is current",
+        );
+        assert!(line.contains("3 event(s) dropped"));
     }
 }
