@@ -1616,7 +1616,7 @@ fn the_help_overlay_never_hides_its_own_close_instructions() {
         a.on_key(key(KeyCode::Char('?')));
         let text = all_text(&draw_at(&a, MIN_WIDTH.max(70), h, &caps()));
         assert!(
-            text.contains("close, always"),
+            text.contains("close (esc leaves the picker)"),
             "at {MIN_WIDTH}x{h} the close instructions must survive: {text}"
         );
         assert!(

@@ -21,7 +21,7 @@ use serde_json::{json, Map, Value};
 
 use crate::dispatch::dispatch;
 use crate::engine::{
-    Engine, MEMORY_SCOPES, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS, TASK_FIELDS,
+    shell_quote, Engine, MEMORY_SCOPES, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS, TASK_FIELDS,
 };
 use crate::types::Priority;
 
@@ -1747,7 +1747,7 @@ fn mcp_surface_message(message: String, data: Option<&Value>) -> String {
         }
     }
     if let Some(name) = data.and_then(|d| d.get("name")).and_then(Value::as_str) {
-        let cli_clause = format!("(create it with `tasqx init {name}`)");
+        let cli_clause = format!("(create it with `tasqx init {}`)", shell_quote(name));
         if out.contains(&cli_clause) {
             out = out.replace(
                 &cli_clause,

@@ -584,7 +584,7 @@ fn ref_param(p: &Value) -> Result<&Value, ApiError> {
 /// quotes. Any embedded single quote closes the quoting, escapes itself with
 /// `\'`, then reopens it — the standard trick, since a single-quoted string
 /// cannot contain a literal single quote.
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
