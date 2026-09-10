@@ -2728,7 +2728,10 @@ fn the_task_table_stays_aligned_when_a_title_is_not_ascii() {
 
     let out = run(&["list"]);
     let stdout = String::from_utf8(out.stdout).expect("UTF-8");
-    let rows: Vec<&str> = stdout.lines().skip(2).take(titles.len()).collect();
+    // Summary, blank, header, rule — the four lines `render::task_table`
+    // draws before its first row.
+    const CHROME: usize = 4;
+    let rows: Vec<&str> = stdout.lines().skip(CHROME).take(titles.len()).collect();
     assert_eq!(
         rows.len(),
         titles.len(),
@@ -2748,7 +2751,7 @@ fn the_task_table_stays_aligned_when_a_title_is_not_ascii() {
             row.width()
         );
     }
-    let header = stdout.lines().next().expect("header");
+    let header = stdout.lines().nth(CHROME - 2).expect("header");
     let project_col = header.find("PROJECT").expect("PROJECT header");
     let project_col = header[..project_col].width();
     for (row, title) in rows.iter().zip(titles) {
