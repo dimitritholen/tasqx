@@ -1,9 +1,10 @@
 //! Self-contained HTML report (DESIGN.md §8).
 //!
 //! One file: inline `<style>`, inline SVG charts, a system-font stack — zero
-//! external requests (no CDN, no remote fonts/images/scripts). Dark/light via
-//! `prefers-color-scheme` over CSS custom properties whose palette is derived
-//! from the active tasqx theme, so terminal and web match. All data comes from
+//! external requests (no CDN, no remote fonts/images/scripts). Light by
+//! default, dark by a switch in the header, over CSS custom properties whose
+//! palette is derived from the active tasqx theme, so terminal and web match.
+//! All data comes from
 //! pure core reads (`report.summary`, `task.list`, `store.export`, `event.list`).
 
 use std::collections::{HashMap, HashSet};
@@ -126,6 +127,22 @@ const SCRIPT: &str = r##"(function () {
   if (location.hash) land();
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && location.hash.indexOf('#task-') === 0) location.hash = '#top';
+  });
+
+  // Light is the default; dark is the reader's choice, kept per browser.
+  var theme = document.getElementById('theme'), root = document.documentElement;
+  function setTheme(t) {
+    if (t === 'dark') { root.setAttribute('data-theme', 'dark'); } else { root.removeAttribute('data-theme'); }
+    theme.textContent = t === 'dark' ? 'Light mode' : 'Dark mode';
+    theme.setAttribute('aria-pressed', t === 'dark' ? 'true' : 'false');
+  }
+  var stored = null;
+  try { stored = localStorage.getItem('tasqx-theme'); } catch (err) {}
+  setTheme(stored);
+  theme.addEventListener('click', function () {
+    var t = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    setTheme(t);
+    try { localStorage.setItem('tasqx-theme', t); } catch (err) {}
   });
 })();"##;
 
@@ -706,11 +723,22 @@ impl<'a> Report<'a> {
                  <div class=\"scope\">{scope} · Snapshot as of <span title=\"{utc}\">{local}</span></div>\
                </div>\
                <div class=\"stats\">{}{}{}{}</div>\
+               <button id=\"theme\" class=\"linkbtn\" aria-pressed=\"false\">Dark mode</button>\
              </header>",
-            stat(&open.to_string(), "open now"),
-            stat(&done.to_string(), "done · last 7 days"),
-            stat(&signed(backlog_delta), "backlog · 30 days"),
-            stat_flag(&attention.to_string(), "needs attention", attention > 0),
+            tile(&open.to_string(), "open now", "Now actionable", false),
+            tile(
+                &done.to_string(),
+                "done · last 7 days",
+                "Completed this week",
+                false
+            ),
+            tile(&signed(backlog_delta), "backlog · 30 days", "Open backlog", false),
+            tile(
+                &attention.to_string(),
+                "needs attention",
+                "Needs attention",
+                attention > 0
+            ),
             scope = esc(&self.scope_label()),
             utc = esc(self.now),
             local = esc(&pretty_local_ts(self.now)),
@@ -1105,12 +1133,16 @@ impl<'a> Report<'a> {
              --accent: {accent_l};\n--warn: {warn_l};\n--danger: {danger_l};\n\
              --bg: #ffffff;\n--fg: #1a1d23;\n--muted: #6b7280;\n--card: #f6f7f9;\n--line: #e3e6ea;\n\
              }}\n\
-             @media (prefers-color-scheme: dark) {{\n:root {{\n\
+             /* Light whatever the OS prefers; dark is the reader's choice,\n\
+                made with the header switch and kept per browser. */\n\
+             :root {{ color-scheme: light; }}\n\
+             :root[data-theme=\"dark\"] {{\n\
+             color-scheme: dark;\n\
              --accent: {accent_d};\n--warn: {warn_d};\n--danger: {danger_d};\n\
              --bg: {bg_dark};\n--fg: {fg_dark};\n--muted: {muted_dark};\n\
              --card: color-mix(in srgb, {bg_dark} 82%, #ffffff 18%);\n\
              --line: color-mix(in srgb, {bg_dark} 60%, #ffffff 40%);\n\
-             }}\n}}\n\
+             }}\n\
              * {{ box-sizing: border-box; }}\n\
              body {{ margin: 0; background: var(--bg); color: var(--fg);\n\
              font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n\
@@ -1133,6 +1165,12 @@ impl<'a> Report<'a> {
              font-family: ui-monospace, monospace; }}\n\
              .stat .l {{ font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }}\n\
              .stat.flag .n {{ color: var(--danger); }}\n\
+             a.stat {{ color: inherit; text-decoration: none; border-radius: 6px; }}\n\
+             a.stat:hover .l, a.stat:focus-visible .l {{ color: var(--accent); }}\n\
+             a.stat:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 4px; }}\n\
+             #theme {{ flex: 0 0 auto; }}\n\
+             /* A tile jump must land below the pinned header, not under it. */\n\
+             section {{ scroll-margin-top: 5.5rem; }}\n\
              .lede {{ max-width: 72ch; font-size: 1.05rem; margin: 0.5rem 0 0; }}\n\
              section {{ margin-top: 2.4rem; }}\n\
              section > h2 {{ font-size: 1.15rem; margin: 0 0 0.15rem; letter-spacing: -0.01em; }}\n\
@@ -1442,13 +1480,30 @@ fn title_case(s: &str) -> String {
     }
 }
 
+/// A section carries an id derived from its title (`Needs attention` →
+/// `s-needs-attention`) so the header tiles can point at it.
 fn section(title: &str, sub: &str, body: &str) -> String {
     format!(
-        "<section><h2>{}</h2><p class=\"sub\">{}</p>{}</section>",
+        "<section id=\"{}\"><h2>{}</h2><p class=\"sub\">{}</p>{}</section>",
+        section_id(title),
         esc(title),
         esc(sub),
         body
     )
+}
+
+fn section_id(title: &str) -> String {
+    let slug: String = title
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("s-{}", slug.trim_matches('-'))
 }
 
 fn stat(n: &str, label: &str) -> String {
@@ -1458,10 +1513,13 @@ fn stat(n: &str, label: &str) -> String {
         esc(label)
     )
 }
-fn stat_flag(n: &str, label: &str, flag: bool) -> String {
+/// A header tile: the same shape as `stat`, as a link to the section that
+/// holds its number — a tile saying "1 needs attention" invites a click.
+fn tile(n: &str, label: &str, target: &str, flag: bool) -> String {
     let cls = if flag { "stat flag" } else { "stat" };
     format!(
-        "<div class=\"{cls}\"><div class=\"n\">{}</div><div class=\"l\">{}</div></div>",
+        "<a class=\"{cls}\" href=\"#{}\"><div class=\"n\">{}</div><div class=\"l\">{}</div></a>",
+        section_id(target),
         esc(n),
         esc(label)
     )
@@ -2501,8 +2559,12 @@ mod tests {
         let doc = render_with("nord");
         assert!(doc.contains(":root {"), "light scheme root vars");
         assert!(
-            doc.contains("@media (prefers-color-scheme: dark)"),
-            "dark scheme media query"
+            doc.contains(":root[data-theme=\"dark\"] {"),
+            "dark scheme block, selected by the switch: {doc}"
+        );
+        assert!(
+            !doc.contains("prefers-color-scheme"),
+            "light is the default whatever the OS says; dark is the reader's choice: {doc}"
         );
         // Palette tokens present for both schemes (light default + dark override).
         assert!(
@@ -2663,8 +2725,8 @@ mod tests {
         for name in theme::BUILTINS {
             let doc = render_with(name);
             let dark_at = doc
-                .find("@media (prefers-color-scheme: dark)")
-                .unwrap_or_else(|| panic!("{name}: no dark media block: {doc}"));
+                .find(":root[data-theme=\"dark\"]")
+                .unwrap_or_else(|| panic!("{name}: no dark block: {doc}"));
             // The LIGHT scheme's declarations come first in `:root {}`, before
             // the dark block; searching only that prefix cannot pick up the
             // dark-block redefinition of the same property by accident.
@@ -2917,8 +2979,8 @@ mod tests {
         for name in theme::BUILTINS {
             let doc = render_with(name);
             let dark_at = doc
-                .find("@media (prefers-color-scheme: dark)")
-                .unwrap_or_else(|| panic!("{name}: no dark media block: {doc}"));
+                .find(":root[data-theme=\"dark\"]")
+                .unwrap_or_else(|| panic!("{name}: no dark block: {doc}"));
             let dark_css = &doc[dark_at..];
             let pick = |role: &str| {
                 let at = dark_css
@@ -3267,6 +3329,55 @@ mod tests {
         assert_eq!(
             ids_after(&doc, "href=\"#task-"),
             ids_after(&doc, "<article class=\"detail\" id=\"task-")
+        );
+    }
+
+    /// A header tile saying "1 needs attention" invites a click; each tile
+    /// links to the section that holds its number, and the target exists.
+    #[test]
+    fn header_tiles_link_to_the_sections_that_hold_their_numbers() {
+        let doc = render_with("nord");
+        let header_end = doc.find("</header>").unwrap();
+        let header = &doc[..header_end];
+        for (label, target) in [
+            ("open now", "s-now-actionable"),
+            ("done · last 7 days", "s-completed-this-week"),
+            ("backlog · 30 days", "s-open-backlog"),
+            ("needs attention", "s-needs-attention"),
+        ] {
+            assert!(
+                header.contains(&format!("href=\"#{target}\"")),
+                "tile {label:?} must link to #{target}: {header}"
+            );
+            assert!(
+                doc.contains(&format!("<section id=\"{target}\">")),
+                "#{target} must exist on the page: {doc}"
+            );
+            assert!(
+                header.contains(&format!("<div class=\"l\">{label}</div></a>")),
+                "tile {label:?} must be the anchor itself: {header}"
+            );
+        }
+    }
+
+    /// Light and dark are both on every page, light by default whatever the
+    /// OS prefers; the switch in the header flips `data-theme` on the root
+    /// and the choice is kept per browser.
+    #[test]
+    fn the_header_carries_a_theme_switch_that_flips_the_root_attribute() {
+        let doc = render_with("nord");
+        assert!(
+            doc.contains("<button id=\"theme\""),
+            "no theme switch in the header: {doc}"
+        );
+        assert!(
+            SCRIPT.contains("setAttribute('data-theme', 'dark')")
+                && SCRIPT.contains("localStorage"),
+            "the script must set the root attribute and remember the choice"
+        );
+        assert!(
+            doc.contains("color-scheme: dark"),
+            "form controls must follow the chosen scheme: {doc}"
         );
     }
 
