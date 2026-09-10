@@ -772,9 +772,11 @@ fn execute(cli: Cli) -> Exit {
             correlation,
         }) => run_start(&mut backend, &ctx, r#ref, keep, &correlation),
         Some(Command::Stop { r#ref }) => run_stop(&mut backend, &ctx, r#ref),
-        Some(Command::Done { r#ref, correlation }) => {
-            run_done(&mut backend, &ctx, r#ref, &correlation)
-        }
+        Some(Command::Done {
+            r#ref,
+            correlation,
+            self_report,
+        }) => run_done(&mut backend, &ctx, r#ref, &correlation, &self_report),
         Some(Command::Show { r#ref }) => run_show(&mut backend, &ctx, r#ref),
         Some(Command::Cancel { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.cancel", r#ref),
         Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),

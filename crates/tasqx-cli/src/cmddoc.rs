@@ -365,18 +365,32 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &["d", "x", "complete"],
         method: "task.done",
         summary: "Complete a task.",
-        usage: "tasqx done <ref> [--client TOOL] [--session-id ID] [--prompt-id ID] [--transcript-path PATH]",
+        usage: "tasqx done <ref> [--client TOOL] [--session-id ID] [--prompt-id ID] \
+                [--transcript-path PATH] [--tool TOOL] [--model MODEL] \
+                [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] \
+                [--cache-creation-tokens N]",
         examples: &[
             ex_norun("tasqx done 1", "completes; spawns the next recurrence if any"),
             ex_norun(
                 "tasqx done 1 --client 'claude-code 2.1' --session-id $SID",
                 "close the interval an agent opened with the same ids",
             ),
+            ex_norun(
+                "tasqx done 1 --tool claude-code --model claude-opus-5 \
+                 --input-tokens 4200 --output-tokens 900",
+                "self-report the turn's spend — the primary measurement channel (D50)",
+            ),
         ],
         notes: &[
             "The correlation flags carry the same meaning as on `start`, and are \
              recorded per occurrence: a task can start and finish many times, and \
              attribution pairs the two events of one interval.",
+            "--tool/--model and the four *-tokens flags are the self-report channel \
+             (D50/D65): any present token count records a measurement, attributed to \
+             --tool (or --client if --tool is omitted). --tool/--model alone, with no \
+             count, still land on the completion event. Skip all of them and the \
+             response carries a tokens_hint explaining what was not recorded — printed \
+             under the Done line.",
         ],
         see_also: &["cancel", "reopen", "start"],
         topic: Topic::Capturing,
