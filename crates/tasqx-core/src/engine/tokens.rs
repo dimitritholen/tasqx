@@ -14,7 +14,7 @@ use crate::attribution::{consumed_sample_ids_by_task, recompute_measurement, Win
 use crate::otlp::OtlpSample;
 use crate::tokens::{
     require_confidence, require_source, CONFIDENCE_HIGH, CONFIDENCE_LOW, SOURCE_LOG_PARSE,
-    SOURCE_SELF_REPORT,
+    SOURCE_OTEL, SOURCE_SELF_REPORT,
 };
 
 /// How long a buffered OTLP sample is kept before opportunistic pruning (#18).
@@ -702,6 +702,43 @@ impl Engine {
         Ok((samples, tool))
     }
 
+    /// `otlp.status` (#222): the only surface that answers "is telemetry
+    /// reaching tasqx" — before this, the answer required opening the SQLite
+    /// file directly. `received` is every buffered row still inside the
+    /// `OTLP_RETENTION_SECS` window; `attributed` is how many of those turned
+    /// into a `source=otel` measurement; `orphaned` is the rest — rows nothing
+    /// will ever attribute (no session id, a contested window, or a task that
+    /// never completed) and that the retention prune is the only thing that
+    /// will eventually clear. `last_seen` is the newest sample's timestamp, or
+    /// `None` on an empty buffer, so a misconfigured exporter that stopped
+    /// sending is visible as a stale clock rather than silence indistinguishable
+    /// from "never configured".
+    ///
+    /// `orphaned` is `received.saturating_sub(attributed)` rather than a second
+    /// query some other way to reconcile the two counts: `otlp_samples` and
+    /// `token_usage` are never joined (a sample carries no `task_id`, see the
+    /// schema comment in storage.rs), so there is no query that could count
+    /// "this specific sample was attributed" — only how many of each exist.
+    pub fn otlp_status(&self) -> Result<Value, ApiError> {
+        let received: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM otlp_samples", [], |r| r.get(0))?;
+        let attributed: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM token_usage WHERE source = ?1",
+            params![SOURCE_OTEL],
+            |r| r.get(0),
+        )?;
+        let last_seen: Option<String> =
+            self.conn
+                .query_row("SELECT MAX(ts) FROM otlp_samples", [], |r| r.get(0))?;
+        Ok(json!({
+            "received": received,
+            "attributed": attributed,
+            "orphaned": received.saturating_sub(attributed),
+            "last_seen": last_seen,
+        }))
+    }
+
     // ---- tokens.recompute (D50 Decision 3: one-shot history repair) ----------
 
     /// Re-run log-parse attribution over the stored windows under the D50
@@ -1324,5 +1361,80 @@ mod tests {
             closed < write_loop,
             "the per-task IMMEDIATE writes need the read transaction gone first"
         );
+    }
+
+    // ---- otlp.status (#222) ---------------------------------------------
+
+    #[test]
+    fn otlp_status_reports_received_attributed_orphaned_and_last_seen() {
+        use crate::engine::Engine;
+        use crate::otlp::OtlpSample;
+        use crate::tokens::{UsageSample, SOURCE_OTEL};
+        use serde_json::json;
+
+        let e = Engine::open_in_memory().unwrap();
+
+        // Two buffered OTLP samples, one attributable, one destined to be an
+        // orphan (its session never completes a task).
+        e.otlp_ingest(&[
+            OtlpSample {
+                tool: "claude-code".to_string(),
+                session_id: Some("sess-a".to_string()),
+                sample: UsageSample {
+                    id: None,
+                    ts: "2026-07-24T10:00:00Z".to_string(),
+                    model: Some("claude-opus-4-8".to_string()),
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                },
+            },
+            OtlpSample {
+                tool: "claude-code".to_string(),
+                session_id: Some("sess-orphan".to_string()),
+                sample: UsageSample {
+                    id: None,
+                    ts: "2026-07-24T11:00:00Z".to_string(),
+                    model: None,
+                    input_tokens: 20,
+                    output_tokens: 5,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                },
+            },
+        ])
+        .expect("ingest");
+
+        // Empty buffer answers zeroes and a null clock, not an error.
+        let empty = Engine::open_in_memory().unwrap().otlp_status().unwrap();
+        assert_eq!(empty["received"], 0);
+        assert_eq!(empty["attributed"], 0);
+        assert_eq!(empty["orphaned"], 0);
+        assert!(empty["last_seen"].is_null());
+
+        let before = e.otlp_status().expect("otlp.status");
+        assert_eq!(before["received"], 2);
+        assert_eq!(before["attributed"], 0);
+        assert_eq!(before["orphaned"], 2);
+        assert_eq!(before["last_seen"], "2026-07-24T11:00:00Z");
+
+        // Recording one `source=otel` measurement (what attribution does when
+        // it banks a claim) moves exactly one sample from orphaned to
+        // attributed, without changing how many were received.
+        e.token_add(&json!({
+            "ref": e.task_add(&json!({"title": "t"})).unwrap()["short_id"],
+            "tool": "claude-code",
+            "source": SOURCE_OTEL,
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "confidence": "high",
+        }))
+        .expect("token.add");
+
+        let after = e.otlp_status().expect("otlp.status");
+        assert_eq!(after["received"], 2);
+        assert_eq!(after["attributed"], 1);
+        assert_eq!(after["orphaned"], 1);
     }
 }
