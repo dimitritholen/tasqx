@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# Render a full-screen tasqx screen (dashboard, pick, settings) to a PNG.
+# The pty half of the loop in docs/terminal-style.md §14.
+#
+#   scripts/snap-tui.sh <name> <cols> <rows> -- <tasqx args...>
+#
+#   scripts/snap-tui.sh dash 120 40 --
+#   scripts/snap-tui.sh dash-narrow 80 24 --
+#   scripts/snap-tui.sh pick 120 40 -- pick
+#   KEYS="]j j" scripts/snap-tui.sh dash-scoped 120 40 --
+#
+# Env:
+#   TASQX     binary to drive (default: the tasqx on PATH)
+#   TASQX_DB  store to read (MANDATORY for a dev build — see CLAUDE.md)
+#   THEME     passed through as --theme
+#   KEYS      space-separated keys to send before capturing, e.g. "] j"
+#   SETTLE    seconds to wait for the first paint (default 2)
+#   OUT       output directory (default: target/snaps)
+#
+# These screens enter the alternate screen and draw with cursor addressing, so
+# the pipe-into-freeze path cannot reach them: freeze renders a stream, it does
+# not emulate a terminal. tmux does emulate one, so we let it hold the screen
+# and ask it what is on there — `capture-pane -e` returns the cells WITH their
+# SGR, which is exactly the ANSI freeze wants.
+set -euo pipefail
+
+if [ "$#" -lt 4 ] || [ "$4" != "--" ]; then
+    sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+fi
+
+name=$1
+cols=$2
+rows=$3
+shift 4
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+out=${OUT:-$root/target/snaps}
+mkdir -p "$out"
+ansi=$(mktemp)
+svg="$out/$name-${cols}x${rows}.svg"
+png="$out/$name-${cols}x${rows}.png"
+session="tasqx-snap-$$"
+
+cleanup() {
+    tmux kill-session -t "$session" 2>/dev/null || true
+    rm -f "$ansi"
+}
+trap cleanup EXIT
+
+# `-x`/`-y` size the pane rather than the outer terminal, which is what the
+# screen reads. Without them a detached session gets tmux's 80x24 default and
+# every width test measures the same screen.
+tmux new-session -d -s "$session" -x "$cols" -y "$rows" \
+    "TASQX_DB='${TASQX_DB:-}' ${TASQX:-tasqx} ${THEME:+--theme $THEME} $* ; sleep 300"
+
+sleep "${SETTLE:-2}"
+
+for key in ${KEYS:-}; do
+    tmux send-keys -t "$session" "$key"
+    sleep 0.4
+done
+
+tmux capture-pane -p -e -t "$session" >"$ansi"
+
+# Trailing blank rows are the pane's, not the screen's: a chart that fills 18
+# of 40 rows would otherwise render with 22 rows of empty PNG under it.
+sed -i -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' "$ansi"
+
+freeze --output "$svg" --window=false --padding 14 <"$ansi" >/dev/null
+
+w=$(grep -om1 'width="[0-9.]*"' "$svg" | grep -o '[0-9.]*' | cut -d. -f1)
+h=$(grep -om1 'height="[0-9.]*"' "$svg" | grep -o '[0-9.]*' | cut -d. -f1)
+google-chrome --headless --disable-gpu --no-sandbox --hide-scrollbars \
+    --force-device-scale-factor=2 --window-size="$((w + 2)),$((h + 2))" \
+    --screenshot="$png" "file://$svg" >/dev/null 2>&1
+
+rm -f "$svg"
+echo "$png"
