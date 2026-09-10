@@ -1158,6 +1158,203 @@ fn svg_wrap(w: f64, h: f64, inner: &str, theme: &Theme, prefix: &str) -> String 
     )
 }
 
+/// Structural self-containment check over a rendered document (D48b).
+///
+/// Walks the markup and judges attribute values, `<style>` bodies and
+/// `<script>` bodies only. Text nodes are never inspected: task titles and
+/// annotation bodies reach the page, and real ones already quote
+/// `https://`, `@import` and `pushState` as prose.
+#[cfg(test)]
+pub(crate) mod guard {
+    const BANNED_TAGS: &[&str] = &["link", "iframe", "object", "embed", "base"];
+    const FETCHING_ATTRS: &[&str] = &[
+        "src",
+        "srcset",
+        "poster",
+        "action",
+        "formaction",
+        "ping",
+        "data",
+    ];
+    /// What the one inline script may not reach for: the network, the History
+    /// API (a `SecurityError` on `file://`), and dynamic code.
+    const SCRIPT_BANS: &[&str] = &[
+        "fetch(",
+        "XMLHttpRequest",
+        "WebSocket",
+        "EventSource",
+        "importScripts",
+        "import(",
+        "pushState",
+        "replaceState",
+        "eval(",
+        "new Function",
+    ];
+
+    struct Tag {
+        name: String,
+        closing: bool,
+        attrs: Vec<(String, String)>,
+        /// Byte offset just past the closing `>`.
+        end: usize,
+    }
+
+    pub(crate) fn violations(doc: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut scripts = 0usize;
+        let mut rest = doc;
+        while let Some(lt) = rest.find('<') {
+            rest = &rest[lt..];
+            if let Some(after) = rest.strip_prefix("<!--") {
+                rest = after.find("-->").map_or("", |i| &after[i + 3..]);
+                continue;
+            }
+            let Some(tag) = parse_tag(rest) else {
+                rest = &rest[1..];
+                continue;
+            };
+            rest = &rest[tag.end..];
+            if tag.closing {
+                continue;
+            }
+            let name = tag.name.as_str();
+            if BANNED_TAGS.contains(&name) {
+                out.push(format!("<{name}> fetches or frames off-file content"));
+            }
+            for (attr, value) in &tag.attrs {
+                let attr = attr.as_str();
+                if attr == "href" || attr == "xlink:href" {
+                    if !value.starts_with('#') || value.len() < 2 {
+                        out.push(format!(
+                            "<{name} {attr}=\"{value}\"> is not an in-page anchor"
+                        ));
+                    }
+                } else if FETCHING_ATTRS.contains(&attr) {
+                    out.push(format!(
+                        "<{name} {attr}=\"{value}\"> loads an external resource"
+                    ));
+                } else if attr.starts_with("on") {
+                    out.push(format!("<{name} {attr}> is an inline event handler"));
+                } else if attr == "style" {
+                    css_violations(value, &format!("<{name} style>"), &mut out);
+                }
+            }
+            match name {
+                "style" => {
+                    let (body, next) = raw_body(rest, "</style>");
+                    css_violations(body, "<style>", &mut out);
+                    rest = next;
+                }
+                "script" => {
+                    scripts += 1;
+                    let (body, next) = raw_body(rest, "</script>");
+                    for ban in SCRIPT_BANS {
+                        if body.contains(ban) {
+                            out.push(format!("<script> uses `{ban}`"));
+                        }
+                    }
+                    rest = next;
+                }
+                _ => {}
+            }
+        }
+        if scripts > 1 {
+            out.push(format!("{scripts} <script> elements; the budget is one"));
+        }
+        out
+    }
+
+    fn css_violations(css: &str, at: &str, out: &mut Vec<String>) {
+        if css.contains("@import") {
+            out.push(format!("{at} contains @import"));
+        }
+        for (i, _) in css.match_indices("url(") {
+            let target = css[i + 4..].trim_start_matches([' ', '\t', '\n', '"', '\'']);
+            if !target.starts_with('#') {
+                out.push(format!("{at} contains url() to something off-file"));
+            }
+        }
+    }
+
+    /// The raw body of a `<style>`/`<script>` element and what follows its
+    /// closing tag. Raw text may hold a bare `<`, so it is skipped as one
+    /// span rather than parsed for tags.
+    fn raw_body<'a>(rest: &'a str, close: &str) -> (&'a str, &'a str) {
+        match rest.find(close) {
+            Some(i) => (&rest[..i], &rest[i + close.len()..]),
+            None => (rest, ""),
+        }
+    }
+
+    /// `s` starts at `<`. `None` for a `<` that opens no element
+    /// (`<!doctype`, a stray bracket), which the caller steps over.
+    fn parse_tag(s: &str) -> Option<Tag> {
+        let b = s.as_bytes();
+        let mut i = 1;
+        let closing = b.get(i) == Some(&b'/');
+        if closing {
+            i += 1;
+        }
+        let name_start = i;
+        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b':' || b[i] == b'-') {
+            i += 1;
+        }
+        if i == name_start {
+            return None;
+        }
+        let name = s[name_start..i].to_ascii_lowercase();
+        let mut attrs = Vec::new();
+        loop {
+            while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == b'/') {
+                i += 1;
+            }
+            if i >= b.len() {
+                return None;
+            }
+            if b[i] == b'>' {
+                return Some(Tag {
+                    name,
+                    closing,
+                    attrs,
+                    end: i + 1,
+                });
+            }
+            let attr_start = i;
+            while i < b.len() && !b[i].is_ascii_whitespace() && !matches!(b[i], b'=' | b'>' | b'/')
+            {
+                i += 1;
+            }
+            let attr = s[attr_start..i].to_ascii_lowercase();
+            while i < b.len() && b[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let mut value = String::new();
+            if b.get(i) == Some(&b'=') {
+                i += 1;
+                while i < b.len() && b[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if let Some(&q) = b.get(i).filter(|q| **q == b'"' || **q == b'\'') {
+                    i += 1;
+                    let v_start = i;
+                    while i < b.len() && b[i] != q {
+                        i += 1;
+                    }
+                    value = s[v_start..i].to_string();
+                    i += 1;
+                } else {
+                    let v_start = i;
+                    while i < b.len() && !b[i].is_ascii_whitespace() && b[i] != b'>' {
+                        i += 1;
+                    }
+                    value = s[v_start..i].to_string();
+                }
+            }
+            attrs.push((attr, value));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1176,7 +1373,11 @@ mod tests {
                 { "id": "018f-a", "short_id": 42, "title": "Ship <the> v1 & freeze",
                   "status": "done", "project": "work.tasqx", "tags": ["release", "api"],
                   "completed": "2026-07-14T09:00:00Z", "due": null, "urgency": 11.8 },
-                { "id": "018f-b", "short_id": 43, "title": "Overdue thing",
+                // The title quotes, as prose, every string the self-containment
+                // guard bans in markup: a substring scan over the document
+                // fails on this row; the structural guard must not.
+                { "id": "018f-b", "short_id": 43,
+                  "title": "Overdue thing: see https://example.com, no @import, no url(x), never pushState or fetch(",
                   "status": "pending", "project": "work.tasqx", "tags": ["api"],
                   "due": "2020-01-01T00:00:00Z", "urgency": 9.0 }
             ]
@@ -1464,20 +1665,67 @@ mod tests {
         );
     }
 
+    /// D48b: judged structurally, over attribute values and `<style>`/`<script>`
+    /// bodies. The fixture's overdue title quotes `https://`, `@import`, `url(`,
+    /// `pushState` and `fetch(` as prose, which the substring scan this
+    /// replaced failed on — a guard that fails on prose is one that gets
+    /// weakened by whoever hits it next.
     #[test]
     fn report_is_self_contained() {
         let doc = render_with("nord");
-        // No external requests of any kind.
-        assert!(!doc.contains("http://"), "contains http://");
-        assert!(!doc.contains("https://"), "contains https://");
-        assert!(!doc.contains("src="), "contains src=");
-        assert!(!doc.contains("href="), "contains href=");
-        assert!(!doc.contains("<script"), "contains <script");
+        let found = guard::violations(&doc);
+        assert!(found.is_empty(), "{found:#?}");
         // Parses as one document.
         assert!(doc.starts_with("<!doctype html>"));
         assert!(doc.trim_end().ends_with("</html>"));
         assert_eq!(doc.matches("<html").count(), 1);
         assert_eq!(doc.matches("</html>").count(), 1);
+    }
+
+    /// The guard's own contract: silent on prose, and it bites on every drift
+    /// class D48b names — each one injected here, so a rule that stops firing
+    /// is a red test rather than a quiet gap.
+    #[test]
+    fn self_containment_guard_judges_markup_not_prose() {
+        let prose = "<p>https://x.example @import url(x.png) pushState fetch( &lt;script&gt; src=</p>\
+                     <style>.a { fill: url(#ramp); }</style>\
+                     <svg><defs><linearGradient id=\"ramp\"/></defs><rect fill=\"url(#ramp)\"/></svg>\
+                     <a href=\"#task-1\">t</a>\
+                     <script>window.addEventListener('hashchange', () => { if (a < b) {} });</script>";
+        assert_eq!(guard::violations(prose), Vec::<String>::new());
+
+        let drifts = [
+            ("<link rel=\"stylesheet\" href=\"x.css\">", "a <link>"),
+            ("<a href=\"https://x.example\">x</a>", "an external href"),
+            ("<a href=\"#\">x</a>", "an empty anchor"),
+            ("<img src=\"x.png\">", "a src="),
+            ("<style>@import url(x.css);</style>", "a CSS @import"),
+            (
+                "<style>.a { background: url(x.png); }</style>",
+                "a CSS url()",
+            ),
+            (
+                "<div style=\"background: url('x.png')\"></div>",
+                "a url() in a style attribute",
+            ),
+            ("<script>fetch('x')</script>", "fetch in the script"),
+            (
+                "<script>history.pushState({}, '')</script>",
+                "pushState in the script",
+            ),
+            ("<script>1</script><script>2</script>", "a second script"),
+            (
+                "<button onclick=\"go()\">x</button>",
+                "an inline event handler",
+            ),
+            ("<iframe></iframe>", "an <iframe>"),
+        ];
+        for (markup, what) in drifts {
+            assert!(
+                !guard::violations(markup).is_empty(),
+                "the guard missed {what}: {markup}"
+            );
+        }
     }
 
     #[test]
