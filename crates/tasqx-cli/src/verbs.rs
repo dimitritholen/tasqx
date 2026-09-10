@@ -65,12 +65,26 @@ pub(crate) fn cut_project_name(parsed: &sugar::ParsedAdd) -> Option<String> {
         .flatten()
 }
 
+/// #228.15: `import -` reads canonical JSON from stdin; `add -` used to see no
+/// such convention and file a task literally titled "-", silently swallowing
+/// whatever was piped in. `-` means stdin everywhere else in this binary, and
+/// `add` has no bulk path of its own for a caller to reach for instead, so a
+/// bare `-` is refused here rather than accepted as a title one character
+/// long — pointing at the surface that already owns bulk input, rather than
+/// teaching `add` a second, partial one (a canonical-JSON round trip already
+/// covers the batch case via `tasqx export | tasqx import -`).
+const ADD_DASH_IS_NOT_A_TITLE: &str = "`add` does not read stdin; `-` would become a task titled \
+     \"-\". Pipe canonical JSON into `tasqx import -` instead (see `tasqx import --help`).";
+
 pub(crate) fn run_add(
     be: &mut Backend,
     ctx: &Ctx,
     title: Vec<String>,
     flags: sugar::AddFlags,
 ) -> CmdOutcome {
+    if title == ["-"] {
+        return Err(ApiError::bad_request(ADD_DASH_IS_NOT_A_TITLE));
+    }
     // argv goes in unjoined: the shell's argument boundaries are information the
     // parser needs (see `sugar::parse_add`), and joining destroys them.
     let parsed = sugar::parse_add(&title, flags)?;
