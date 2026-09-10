@@ -220,8 +220,53 @@ pub(crate) fn watch_render(
     Ok(())
 }
 
+/// #184: probe for a live daemon on the ambient `$TASQX_SOCK` and, when one
+/// answers with `$TASQX_DB` unset, print [`ambient_socket_note`] on stderr
+/// before this verb opens its own in-process store. Shared by [`run_api`] and
+/// [`run_mcp_serve`] — the two verbs D73 keeps off the socket entirely — so
+/// the wiring cannot drift between them the way the gap itself did.
+///
+/// The cheap checks (is `$TASQX_SOCK` even set, is `$TASQX_DB` even unset) run
+/// before the probe connection, so the common case — no ambient socket, or an
+/// operator who already set `$TASQX_DB` — never dials out at all.
+fn note_ambient_socket_if_unused(verb: &str) {
+    let sock = std::env::var("TASQX_SOCK").ok().filter(|s| !s.is_empty());
+    let tasqx_db_set = std::env::var("TASQX_DB").is_ok_and(|v| !v.is_empty());
+    let Some(socket) = &sock else { return };
+    if tasqx_db_set {
+        return;
+    }
+    let mut conn = daemon::try_connect(socket);
+    let daemon_store = conn.as_mut().and_then(|c| {
+        let env = c.request("core.capabilities", &json!({})).ok()?;
+        if env.get("ok") != Some(&Value::Bool(true)) {
+            return None;
+        }
+        env.get("result")?
+            .get("store")?
+            .as_str()
+            .map(str::to_string)
+    });
+    let daemon_reachable = conn.is_some();
+    drop(conn);
+    let local = db_path_read_only()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|e| format!("(no store path: {e})"));
+    if let Some(note) = ambient_socket_note(
+        verb,
+        Some(socket),
+        tasqx_db_set,
+        daemon_reachable,
+        daemon_store.as_deref(),
+        &local,
+    ) {
+        eprintln!("{note}");
+    }
+}
+
 /// The stdio one-shot transport.
 pub(crate) fn run_api() {
+    note_ambient_socket_if_unused("api");
     let engine = match open_engine() {
         Ok(e) => e,
         Err(msg) => {
@@ -285,6 +330,7 @@ pub(crate) fn run_mcp(action: &McpAction) {
 /// credential. Diagnostics go to stderr only, while stdout carries nothing but
 /// newline-delimited JSON-RPC responses.
 pub(crate) fn run_mcp_serve(scope: Scope) {
+    note_ambient_socket_if_unused("mcp serve");
     let engine = match open_engine() {
         Ok(e) => e,
         Err(msg) => {

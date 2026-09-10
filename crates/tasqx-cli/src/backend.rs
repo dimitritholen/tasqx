@@ -266,6 +266,72 @@ pub(crate) fn store_location(
     }
 }
 
+/// #184: decide whether `api`/`mcp serve` should note an ambient `$TASQX_SOCK`
+/// they are never going to route through. Pure — every fact about the world is
+/// passed in — so the decision is unit-testable without a socket, a process or
+/// a real store; the caller ([`crate::serve::note_ambient_socket_if_unused`])
+/// owns the env reads and the probe connection.
+///
+/// D73 keeps `$TASQX_SOCK` ambient (never refused) on these verbs: an exported
+/// variable is not a per-command routing request, and refusing it would break
+/// every `mcp serve` an MCP host launches into an environment that happens to
+/// export it. That ruling stands — this adds visibility, not a refusal. Left
+/// completely silent, though, an ambient value naming a *live* daemon, with
+/// `$TASQX_DB` unset, reproduces the exact wrong-store trap D73's flag
+/// refusal exists to prevent: the verb opens the platform default store
+/// in-process while a daemon it could see answers a different one, and
+/// nothing said so (#184's Observed section: 25 tasks on the daemon, `total:
+/// 0` from `api`, stderr empty, a brand-new store file on disk). The note
+/// fires only when there is a live divergent store to warn about — a stale or
+/// absent `$TASQX_SOCK`, an explicit `$TASQX_DB`, or a daemon that turns out
+/// to answer from the exact file this verb would open anyway, stays quiet.
+pub(crate) fn ambient_socket_note(
+    verb: &str,
+    tasqx_sock: Option<&str>,
+    tasqx_db_set: bool,
+    daemon_reachable: bool,
+    daemon_store: Option<&str>,
+    local_store: &str,
+) -> Option<String> {
+    let socket = tasqx_sock.filter(|s| !s.is_empty())?;
+    if tasqx_db_set || !daemon_reachable {
+        return None;
+    }
+    // When the daemon can name its store (D74) and it is the very file this
+    // verb resolves by default, there is nothing divergent to warn about:
+    // opening it in-process answers from the right data, just without the
+    // daemon's single-writer coordination. A reviewer caught the first
+    // version of this fix firing here anyway — "opened X — the daemon there
+    // answers from X" with identical paths — which is the precondition the
+    // task's own Verification annotation names ("daemon serving a
+    // non-default store") and this branch had never checked.
+    if daemon_store.is_some_and(|s| same_store(s, local_store)) {
+        return None;
+    }
+    let owns = daemon_store
+        .map(|s| format!(" — the daemon there answers from {s}"))
+        .unwrap_or_default();
+    Some(format!(
+        "tasqx: note: $TASQX_SOCK names a daemon at {socket}, but `{verb}` opens an \
+         in-process store and never routes through it (DESIGN.md D73); $TASQX_DB is not \
+         set, so it just opened {local_store}{owns}. Set $TASQX_DB to work on the daemon's \
+         own store, or address the daemon directly."
+    ))
+}
+
+/// Do these two store paths name the same file? Canonicalized when both exist
+/// on disk (the ordinary case: the daemon has already opened its store, so a
+/// symlink or a relative-vs-absolute spelling still compares equal); a plain
+/// string comparison otherwise, since a brand-new default store this verb has
+/// not opened yet cannot be canonicalized at all. Used only to decide whether
+/// [`ambient_socket_note`] has a divergence to report — never to open a file.
+fn same_store(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
+}
+
 pub(crate) fn db_path() -> Result<PathBuf, String> {
     db_path_resolved(true)
 }
