@@ -1113,6 +1113,9 @@ fn cases() -> Vec<Case> {
             "#150: `explain: true` adds the urgency_breakdown the default read omits",
             |e| {
                 rich_task(e);
+                plain_task(e);
+                e.dependency_add(&json!({ "ref": 1, "depends_on": 2 }))
+                    .expect("dep");
                 e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
                     .expect("annotate");
                 e.token_add(&self_report(1)).expect("token");
