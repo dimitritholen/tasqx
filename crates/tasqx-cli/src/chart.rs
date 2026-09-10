@@ -68,6 +68,13 @@ impl WeekBucket {
     pub fn label(&self) -> String {
         format!("W{:02}", self.iso_week)
     }
+    /// The Monday this ISO week starts on — an axis label a reader can place
+    /// on a calendar, where `label()`'s `W37` is the bucket key.
+    pub fn start(&self) -> Option<Date> {
+        jiff::civil::ISOWeekDate::new(self.iso_year, self.iso_week, jiff::civil::Weekday::Monday)
+            .ok()
+            .map(|w| w.date())
+    }
     pub fn net(&self) -> i64 {
         self.added as i64 - self.done as i64
     }
