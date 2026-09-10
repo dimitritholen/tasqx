@@ -237,10 +237,15 @@ impl Engine {
                 target.short_id, task.short_id
             )));
         }
-        tx.execute(
+        // Finding #9 (audit-2026-09): `dep` on an already-existing edge
+        // answered exactly the same line as `dep` on a new one, so a caller
+        // re-running the command after losing scrollback could not tell
+        // whether anything happened. `INSERT OR IGNORE`'s own row count is
+        // free evidence of which happened — no second query needed.
+        let inserted = tx.execute(
             "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
             params![task.id, target.id],
-        )?;
+        )? > 0;
         tx.execute(
             "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
             params![task.rev + 1, ts, task.id],
@@ -265,6 +270,10 @@ impl Engine {
             "short_id": task.short_id,
             "depends_on": depends_on,
             "blocked": blocked,
+            // Finding #9 (audit-2026-09): false on an edge that already
+            // existed, so the CLI can say "already depends on" instead of
+            // "now depends on" for a request that changed nothing.
+            "inserted": inserted,
         }))
     }
 
@@ -318,6 +327,30 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Finding #9 (audit-2026-09): `dep` on an edge that already existed
+    /// answered exactly the same line as `dep` on a brand new one, so a
+    /// caller re-running the command could not tell whether anything
+    /// happened. `inserted` must say which.
+    #[test]
+    fn re_adding_an_existing_dependency_says_it_was_not_inserted() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "dependent" })).unwrap();
+        e.task_add(&json!({ "title": "blocker" })).unwrap();
+
+        let first = e
+            .dependency_add(&json!({ "ref": 1, "depends_on": 2 }))
+            .unwrap();
+        assert_eq!(first["inserted"], json!(true));
+
+        let second = e
+            .dependency_add(&json!({ "ref": 1, "depends_on": 2 }))
+            .unwrap();
+        assert_eq!(second["inserted"], json!(false));
+        assert_eq!(second["depends_on"], first["depends_on"]);
+    }
+
     /// Both dependency handlers answer with "the resulting state", so their
     /// response reads must run INSIDE the mutation's transaction — the rule
     /// `tag_add` states and keeps for the tag pair. Read after `commit()`, a

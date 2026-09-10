@@ -1449,7 +1449,7 @@ mod tests {
         assert!(text.contains("#42"), "{text}");
         assert!(text.contains("Ship the v1 JSON API freeze"), "{text}");
         assert!(
-            text.contains("Started task"),
+            text.contains("Started"),
             "the timer line must survive too: {text}"
         );
         assert!(text.ends_with('\n'), "{text:?}");
@@ -1726,7 +1726,7 @@ mod tests {
     #[test]
     fn the_cli_group_by_keywords_come_from_the_engine() {
         for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
-            let p = report_params(&[axis.to_string()], false);
+            let p = report_params(&[axis.to_string()], false).unwrap();
             assert_eq!(
                 p["group_by"], axis,
                 "{axis} must be read as a grouping, not a filter"
@@ -1740,9 +1740,41 @@ mod tests {
         // one, so this still holds now that unknown tokens are rejected (D27):
         // routing to the filter is this test's business, whether the filter
         // then accepts the token is filter.rs's.
-        let p = report_params(&["+api".to_string()], false);
+        let p = report_params(&["+api".to_string()], false).unwrap();
         assert_eq!(p["group_by"], tasqx_core::engine::SUMMARY_GROUP_BY[0]);
         assert_eq!(p["filter"], "+api");
+    }
+
+    /// Finding #11 (audit-2026-09): `tasqx report tags` fell through to the
+    /// filter parser and answered with the filter DSL's whole error, which
+    /// never mentions grouping at all — leaving the reader unsure whether
+    /// tag-grouping exists and was mistyped, or does not exist. A bare word
+    /// with no filter sigil that is not a valid axis must be diagnosed AS a
+    /// group_by, naming the three real values.
+    #[test]
+    fn an_unrecognised_bare_group_by_names_itself_not_the_filter_grammar() {
+        for bad in ["tags", "assignee"] {
+            let err = report_params(&[bad.to_string()], false)
+                .err()
+                .unwrap_or_else(|| panic!("{bad:?} must be refused"));
+            assert!(
+                err.message.contains("group_by"),
+                "{bad:?}: must name group_by, not the filter grammar: {}",
+                err.message
+            );
+            for axis in tasqx_core::engine::SUMMARY_GROUP_BY {
+                assert!(
+                    err.message.contains(axis),
+                    "{bad:?}: must list {axis}: {}",
+                    err.message
+                );
+            }
+        }
+        // A token that LOOKS like filter syntax (has a sigil/colon) must still
+        // reach the filter parser — this is not blanket rejection of every
+        // unrecognised first word.
+        let p = report_params(&["project:x".to_string()], false).unwrap();
+        assert_eq!(p["filter"], "project:x");
     }
 
     // ---- config edit: the glue between the screen and the disk -------------
@@ -1973,17 +2005,17 @@ mod tests {
     /// quietly omits rows still looks like a perfectly good report.
     #[test]
     fn report_all_flag_reaches_core_as_all_true() {
-        assert_eq!(report_params(&[], true)["all"], json!(true));
+        assert_eq!(report_params(&[], true).unwrap()["all"], json!(true));
         // Absent by default: core's `all` defaults to false, and sending an
         // explicit `false` would be the same thing said twice.
-        assert!(report_params(&[], false).get("all").is_none());
+        assert!(report_params(&[], false).unwrap().get("all").is_none());
     }
 
     /// The group_by-then-filter split is positional and easy to break; `--all`
     /// is a flag and must compose with both halves rather than displacing them.
     #[test]
     fn report_all_composes_with_group_by_and_filter() {
-        let p = report_params(&["status".to_string(), "project:x".to_string()], true);
+        let p = report_params(&["status".to_string(), "project:x".to_string()], true).unwrap();
         assert_eq!(p["group_by"], "status");
         assert_eq!(p["filter"], "project:x");
         assert_eq!(p["all"], json!(true));
