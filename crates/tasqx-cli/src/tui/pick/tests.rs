@@ -572,11 +572,28 @@ fn every_key_in_the_tables_does_something() {
         }
         a
     };
+    // A search kept, with the cursor off the ends so j and k both move.
+    let filtered = || {
+        let mut a = setup(Mode::Search);
+        a.on_key(press(KeyCode::Enter));
+        a
+    };
+    let fits = || {
+        let mut a = setup(Mode::List);
+        a.on_key(press(KeyCode::Enter));
+        a.set_detail(
+            43,
+            Ok(task(43, "Publish API docs", "work.tasqx", "M", 6.0, &[])),
+        );
+        a
+    };
     type State<'a> = (&'a str, &'a [Key], &'a dyn Fn() -> App);
-    let tables: [State; 5] = [
+    let tables: [State; 7] = [
         ("list", LIST_KEYS, &|| setup(Mode::List)),
+        ("list with a search kept", LIST_FILTERED_KEYS, &filtered),
         ("search", SEARCH_KEYS, &|| setup(Mode::Search)),
         ("card", DETAIL_KEYS, &|| setup(Mode::Detail)),
+        ("card that fits", DETAIL_FIT_KEYS, &fits),
         ("empty list", LIST_EMPTY_KEYS, &|| empty(false)),
         ("empty search", SEARCH_EMPTY_KEYS, &|| empty(true)),
     ];
@@ -632,7 +649,7 @@ fn the_rows_are_lists_rows_cell_for_cell() {
         blocked,
         task(64, "Tidy", "home", "-", 0.2, &[]),
     ];
-    for w in [60u16, 80, 100, 140] {
+    for w in [40u16, 60, 80, 100, 140] {
         let a = app_of(tasks.clone());
         let buf = draw(&a, w, 16);
         let ctx = Ctx::new(theme::load("nord", None), caps()).with_cols(w as usize - LEAD);
@@ -651,6 +668,17 @@ fn the_rows_are_lists_rows_cell_for_cell() {
             .collect();
         for (i, want) in printed.iter().enumerate() {
             let got: String = line_at(&buf, 2 + i as u16).chars().skip(LEAD).collect();
+            // Past `list`'s floors (40 columns) `list`'s own row overflows its
+            // budget; the screen shows that same row cut once at its edge, so
+            // the expectation is `list`'s row through the same cut.
+            let want = tui::fit_spans(
+                vec![ratatui::text::Span::raw(want.trim_end().to_string())],
+                w as usize - LEAD,
+                true,
+            )
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect::<String>();
             assert_eq!(got.trim_end(), want.trim_end(), "row {i} at {w} columns");
         }
     }
@@ -1289,6 +1317,68 @@ fn an_empty_list_bar_names_only_live_keys() {
 /// from. Its word on the bar must be true in both.
 #[test]
 fn q_is_called_what_it_does_from_either_door() {
-    let q = LIST_KEYS.iter().find(|k| k.keys == "q").unwrap();
-    assert_ne!(q.footer.as_ref().unwrap().word, "quit");
+    // Found by what the bar prints, since Esc shares `q`'s row when there is
+    // no search to clear (`q / esc`).
+    for table in [LIST_KEYS, LIST_FILTERED_KEYS, LIST_EMPTY_KEYS] {
+        let q = table
+            .iter()
+            .filter_map(|k| k.footer.as_ref())
+            .find(|h| h.keys == "q")
+            .expect("every list table names q");
+        assert_eq!(q.word, "leave");
+    }
+}
+
+// ---- found by review round 2 ------------------------------------------------
+
+/// The §8 sample in DESIGN.md says it was captured from the binary; its key
+/// bar must be the one the screen draws from its own table in that state (a
+/// search kept, 88 columns), or the doc is describing a screen that is gone.
+#[test]
+fn the_design_sample_shows_the_bar_the_screen_draws() {
+    const DESIGN: &str = include_str!("../../../../../DESIGN.md");
+    let sample = DESIGN
+        .split("**10 — Task browser")
+        .nth(1)
+        .and_then(|s| s.split("```console").nth(1))
+        .and_then(|s| s.split("```").next())
+        .expect("DESIGN.md §8 has the task browser sample");
+    let bar = sample
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap()
+        .trim_end();
+    let mut a = app();
+    search(&mut a, "api");
+    a.on_key(press(KeyCode::Enter));
+    a.observe(88, 12);
+    assert_eq!(line_at(&draw(&a, 88, 12), 11), bar);
+}
+
+/// A card that fits the screen has nothing to scroll: the bar names only
+/// `s` and the way back (D62: only live keys).
+#[test]
+fn a_card_that_fits_offers_no_scrolling_keys() {
+    let a = app_with_card();
+    let bar = line_at(&draw(&a, 100, 24), 23);
+    for dead in ["scroll", "page", "ends"] {
+        assert!(
+            !bar.contains(dead),
+            "{dead:?} offered on a card that fits: {bar}"
+        );
+    }
+    assert!(bar.contains("s start") && bar.contains("esc back"), "{bar}");
+}
+
+/// With no search kept, Esc leaves, so the bar may not call it `clear`.
+#[test]
+fn esc_is_not_called_clear_when_there_is_nothing_to_clear() {
+    let mut a = app();
+    let bar = line_at(&draw(&a, 100, 24), 23);
+    assert!(!bar.contains("esc clear"), "{bar}");
+    search(&mut a, "api");
+    a.on_key(press(KeyCode::Enter));
+    let bar = line_at(&draw(&a, 100, 24), 23);
+    assert!(bar.contains("esc clear"), "{bar}");
 }

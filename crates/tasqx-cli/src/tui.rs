@@ -536,6 +536,119 @@ pub(crate) fn fit_spans(
     out
 }
 
+/// A search on a screen's header line: `filter   / query▏   N of M match`,
+/// the same on every screen that has one (`pick`, the memory browser).
+pub(crate) struct SearchLine<'a> {
+    /// The question the list answers (`pick`'s filter); empty when the
+    /// screen has none.
+    pub filter: &'a str,
+    pub query: &'a str,
+    /// Whether the query is being typed, which is what draws the caret.
+    pub searching: bool,
+    pub kept: usize,
+    pub total: usize,
+}
+
+/// The spans of a [`SearchLine`] in `room` cells, fitted the way `list`'s
+/// summary is: the count is a number and never gives way (rule 2), the
+/// filter drops first when the line is too long, and then the query loses
+/// its HEAD, keeping the end the reader is typing at. One function for both
+/// screens (D123): they had two, and the memory browser's still cut the count.
+pub(crate) fn search_spans(
+    line: &SearchLine,
+    room: usize,
+    accent: ratatui::style::Style,
+    muted: ratatui::style::Style,
+    unicode: bool,
+) -> Vec<ratatui::text::Span<'static>> {
+    use crate::render::width;
+    use ratatui::text::Span;
+    let count = format!("{} of {} match", line.kept, line.total);
+    let caret = match (line.searching, unicode) {
+        (false, _) => "",
+        (true, true) => "▏",
+        (true, false) => "_",
+    };
+    let room = room.saturating_sub(3 + width(&count));
+    let query_w = 2 + width(line.query) + width(caret);
+    let mut spans = Vec::new();
+    if !line.filter.is_empty() && width(line.filter) + 3 + query_w <= room {
+        spans.push(Span::styled(line.filter.to_string(), muted));
+        spans.push(Span::raw("   "));
+    }
+    spans.push(Span::styled(
+        "/ ",
+        if line.searching { accent } else { muted },
+    ));
+    let query_room = room.saturating_sub(2 + width(caret));
+    spans.push(Span::raw(tail_fit(line.query, query_room, unicode)));
+    if line.searching {
+        spans.push(Span::styled(caret, accent));
+    }
+    spans.push(Span::raw("   "));
+    spans.push(Span::styled(count, muted));
+    spans
+}
+
+/// The END of `text` in at most `cells` cells, an ellipsis standing for what
+/// was cut from the front: the part of a query the reader is typing at.
+pub(crate) fn tail_fit(text: &str, cells: usize, unicode: bool) -> String {
+    use crate::render::width;
+    if width(text) <= cells {
+        return text.to_string();
+    }
+    let dots = if unicode { "…" } else { "..." };
+    let keep = cells.saturating_sub(width(dots));
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 0;
+    for c in text.chars().rev() {
+        let cw = width(&c.to_string());
+        if used + cw > keep {
+            break;
+        }
+        used += cw;
+        tail.push(c);
+    }
+    tail.reverse();
+    format!("{dots}{}", tail.into_iter().collect::<String>())
+}
+
+/// A screen's bottom row: a cell of margin, the hints `keys` can fit, and —
+/// when `position` (first line shown, lines shown, lines in all) says there is
+/// more than one screenful — where the reader is, right-aligned. The position
+/// is a number, so it is measured FIRST and the hints give way to it; the two
+/// screens that scroll a body (`pick`'s card, the memory browser's doc) share
+/// this rather than each appending it after the hints had taken the row.
+pub(crate) fn key_bar(
+    keys: &[Key],
+    width: u16,
+    position: Option<(usize, usize, usize)>,
+    accent: ratatui::style::Style,
+    muted: ratatui::style::Style,
+    unicode: bool,
+) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::text::Span;
+    let pos = match position {
+        Some((scroll, rows, total)) if total > rows => {
+            let dash = if unicode { "–" } else { "-" };
+            let to = (scroll + rows).min(total);
+            format!("{}{dash}{to} of {total} ", scroll + 1)
+        }
+        _ => String::new(),
+    };
+    let pos_w = crate::render::width(&pos);
+    let room = (width as usize).saturating_sub(1 + pos_w);
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(footer_spans(keys, room as u16, accent, muted, unicode));
+    if !pos.is_empty() {
+        let used: usize = spans.iter().map(|s| crate::render::width(&s.content)).sum();
+        let gap = (width as usize).saturating_sub(used + pos_w);
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.push(Span::styled(pos, muted));
+    }
+    spans
+}
+
 // ============================================================================
 // The key bar: one table drives the footer and the help (D62)
 // ============================================================================

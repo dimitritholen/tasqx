@@ -578,10 +578,10 @@ $ tasqx pick                           # then: / api enter
        ID          URG  TASK                           PROJECT  DUE             TAGS
  ▸     56  M ▄▂▁▁  4.2  Add OpenAPI examples for eve…  api                      +docs
        48  H ▄▄▄▄ 18.1  Renew the TLS certificate fo…  infra    2d ago          +ops
-       51  H ▄▄▄▄ 16.1  Rate-limit the /search endpo…  api      Mon             +perf
-       57  M ▄▄▁▁  6.6  Accessibility pass on the si…  website  23 Sep          +a11y
+       51  H ▄▄▄▄ 16.2  Rate-limit the /search endpo…  api      Mon             +perf
+       57  M ▄▄▁▁  6.7  Accessibility pass on the si…  website  23 Sep          +a11y
 
- j/k move   / search   enter open   s start   g/G ends   esc clear   q quit
+ j/k move   / search   enter open   s start   g/G ends   esc clear   q leave
 ```
 Each row is the row `tasqx list` prints, drawn by `list`'s own renderer. Without a
 search the header carries `list`'s summary instead (`14 tasks · 2 overdue · #49
@@ -1658,7 +1658,7 @@ This is the third appearance of the bug class D14 exists to prevent, and the sec
 
 The verb also ignores `dashboard.enabled`. That setting is the escape hatch a breaking change owes its users, and what it protects is the meaning of a BARE `tasqx`; typing the verb is not a breaking change to anything.
 
-**Read-only, with one write path that already existed.** `p` opens `pick` as a second `Screen` inside the *same* `with_terminal`, and `⏎` there starts a task through the `task.start` D55 already ships and tests (D123 moved that to `s`; `⏎` there reads the task's card). No `d`, no `s`, no edit. A viewer needs no confirmations, no `expected_rev` story and no undo conversation, and `q` is unconditionally safe — which is the property that makes a screen worth opening on a reflex. `pick` is not embedded as a panel: its query line consumes every printable key, so inside a dashboard `j` would be motion in one panel and a letter in another, the precise ambiguity `pick` cites as its reason for not binding `j`/`k` to navigation. (Since D123 `pick` binds `j`/`k` and keeps its query behind `/`; it is still its own screen, not a panel.)
+**Read-only, with one write path that already existed.** `p` opens `pick` as a second `Screen` inside the *same* `with_terminal`, and `⏎` there starts a task through the `task.start` D55 already ships and tests (D123 moved that to `s`; `⏎` there reads the task's card). The dashboard's own keys add no `d`, no `s`, no edit. A viewer needs no confirmations, no `expected_rev` story and no undo conversation, and `q` is unconditionally safe — which is the property that makes a screen worth opening on a reflex. `pick` is not embedded as a panel: its query line consumes every printable key, so inside a dashboard `j` would be motion in one panel and a letter in another, the precise ambiguity `pick` cites as its reason for not binding `j`/`k` to navigation. (Since D123 `pick` binds `j`/`k` and keeps its query behind `/`; it is still its own screen, not a panel.)
 
 ### D59 — A burndown a screen redraws must be bounded and must count `reopen`, so `event.list` gains `from` and `chart::burndown` loses its flagged simplification
 
@@ -2882,7 +2882,9 @@ search bar, foreign escapes dropped whole, and `dim` dropped under `NO_COLOR`. T
 guard was made to bite by re-injecting its drift. Among the drifts: a budget of the
 screen's own, the old `N/M` counter, bright colours read as dark by the seam, an
 unsanitised title, a card at its own width, the old dashboard help, and a cursor reset on
-refilter. A review round then found the card test blind to a card drawn a cell off
+refilter. A second review round found the §8 sample's key bar out of date, so a test now reads that
+bar out of this file and compares it with the one the screen draws in that state. A
+review round before it found the card test blind to a card drawn a cell off
 (it now sits a fixture on `show`'s pairing edge and checks that the edge is there), and
 the dashboard's two changes untested (pulled into `after_pick`, both watched fail). An
 adversarial review found eighteen defects, the ones this entry's (b), (c),
@@ -2897,9 +2899,10 @@ left the test vacuous, which is D121's lesson.
 **Left standing, deliberately:**
 
 - **The cursor lead costs three cells.** At 60 columns the browser lays out what `list`
-  would at 57, so DUE drops where `list` still keeps it. From 63 columns DUE is back, cut
-  the way `list` cuts it at 60 (`today 1…`), and whole from about 70. The header still
-  carries the overdue count.
+  would at 57. The rule is exact: at width `w` the browser lays out what `list` lays out at
+  `w − 3`, so DUE drops, and comes back cut, three columns later than it does in `list`.
+  Re-derive a store's widths by running `COLUMNS=<w-3> tasqx list` beside `pick` at `w`.
+  The header still carries the overdue count.
 - **`s` means two things across one hop.** On the shipped dashboard `s` cycles the sort
   order, and in `pick`, one key away, it starts a task. D80's planned row actions give
   the dashboard `s` = start, which would settle it. Until then the `pick` key bar says
@@ -2913,6 +2916,12 @@ left the test vacuous, which is D121's lesson.
   day words until it is reopened.
 - **An empty working set is still a refusal**, not an empty screen (D55).
 - **Editing and completing in place** stay deferred (§11a).
+- **The memory browser's bar** still offers its scroll keys on a doc that fits and calls
+  Esc `clear` with no search, because its key tables are its own. `pick`'s now switch per
+  state (`LIST_FILTERED_KEYS`, `DETAIL_FIT_KEYS`). The search line and the scroll position
+  are shared, `tui::search_spans` and `tui::key_bar`, so the memory browser's search count
+  no longer gives way either, and it is `muted` there now rather than `table.label`
+  (rule 12).
 - **`scripts/snap.sh` and `snap-tui.sh` refuse without `TASQX_DB`** and add `--no-daemon`
   themselves, since `KEYS=s` against the real store would now start a task. They are
   scripts, so that is checked by running them, not by the suite.
