@@ -483,8 +483,9 @@ fn body(ctx: &Ctx, src: &str) -> String {
 
 /// A topic's two-column table: the term whole (it is what gets typed), the
 /// definition wrapped in whatever `columns::fit` leaves it, or stacked under
-/// its term where that is narrower than `STACK_BELOW` or than a piece of a
-/// definition that cannot break.
+/// its term where that is narrower than `STACK_BELOW`, narrower than a piece
+/// of a definition that cannot break, or too narrow for a kept code line
+/// that would fit stacked.
 fn table(ctx: &Ctx, rows: &[(&str, &str)]) -> String {
     let term_w = rows.iter().map(|(t, _)| width(t)).max().unwrap_or(0);
     let text_w = rows.iter().map(|(_, d)| width(d)).max().unwrap_or(0);
@@ -503,7 +504,17 @@ fn table(ctx: &Ctx, rows: &[(&str, &str)]) -> String {
         .map(|piece| width(&piece))
         .max()
         .unwrap_or(0);
-    if w[1] < STACK_BELOW.min(text_w) || widest_piece > w[1] {
+    // A code line continuing a row is kept as written. Where it does not fit
+    // beside its term but would fit under it, the table stacks: left in the
+    // definition column, it ran past a terminal that could have held it.
+    let kept_fits_only_stacked =
+        rows.iter()
+            .filter(|(term, _)| term.is_empty())
+            .any(|(_, text)| {
+                INDENT + w[0] + GAP + width(text) > ctx.cols
+                    && INDENT + HANG + width(text) <= ctx.cols
+            });
+    if w[1] < STACK_BELOW.min(text_w) || widest_piece > w[1] || kept_fits_only_stacked {
         let under = " ".repeat(INDENT + HANG);
         let width_left = ctx.cols.min(MEASURE).saturating_sub(INDENT + HANG);
         for (term, text) in rows {
@@ -623,9 +634,9 @@ clock.
 
   Relative days\t`today`, `tomorrow`, `yesterday`, `now`, `eom` (end of month), `eow` (end of week).
   Weekday names\t`monday`..`sunday` or `mon`..`sat` — the next occurrence, today included if it IS that day.
-  Counted spans\t`in 1 day`, `in 3 days`, `in 2 weeks`, `in 3 months` — days, weeks and months only; `in 2 hours` is not in this family and is rejected.
+  Counted spans\t`in 1 day`, `\"in 3 days\"`, `in 2 weeks`, `in 3 months` — days, weeks and months only; `in 2 hours` is not in this family and is rejected.
   Signed offsets\t`-1d`, `+3d`, `3d` (no sign defaults to future).
-  Times\t`17:00`, `5pm`, attached to a day with a space — `tomorrow 17:00`, `friday 9am` — or a full instant — `2026-09-09 17:00`, `2026-09-09T17:00:00+02:00` (an explicit offset is honoured and converted to UTC on the way in).
+  Times\t`17:00`, `5pm`, attached to a day with a space — `\"tomorrow 17:00\"`, `\"friday 9am\"` — or a full instant — `\"2026-09-09 17:00\"`, `2026-09-09T17:00:00+02:00` (an explicit offset is honoured and converted to UTC on the way in).
 
 Four date fields carry meaning:
   due\twhen it's due
@@ -856,6 +867,7 @@ want the closed ones, and a menu that hid them would look like
 an answer.
 
 BEFORE YOU SWITCH IT ON
+
 The variable is TASQX_COMPLETE, deliberately not the generic
 COMPLETE that clap tools usually take. The protocol cannot tell
 a callback from a real command: with a recognised shell name in
@@ -1165,9 +1177,10 @@ mod tests {
 
     /// House style rule 2, over the whole manual: nothing runs past the
     /// terminal, at any width from `Ctx::MIN_COLS` to `Ctx::MAX_COLS`, except
-    /// a line a reader copies: an example command, an indented code line of a
+    /// a line a reader copies (an example command, an indented code line of a
     /// topic, one usage piece that cannot break, or a line that is one whole
-    /// inline code span. Those are never
+    /// inline code span) that is wider than the terminal less the stacked
+    /// indent, so that no layout could have held it. Those are never
     /// wrapped or cut, since a command that has been cut is a different
     /// command (rule 2's "a number never gives way", for commands).
     ///
@@ -1179,10 +1192,16 @@ mod tests {
         for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
             for (name, page) in every_page(&at(cols)) {
                 for line in page.lines() {
-                    if render::width(line) > cols
-                        && !copied.iter().any(|c| c == line.trim())
-                        && !a_whole_code_span(line)
-                    {
+                    // Copied, and wider than the line even at the deepest
+                    // indent a copied line is given (a stacked table's):
+                    // then no layout could hold it, and it may overflow. A
+                    // copied line left fifteen cells in where stacking would
+                    // have fitted it is a layout fault, not an exemption.
+                    let copyable =
+                        copied.iter().any(|c| c == line.trim()) || a_whole_code_span(line);
+                    let unholdable =
+                        render::width(line.trim()) > cols.saturating_sub(INDENT + HANG);
+                    if render::width(line) > cols && !(copyable && unholdable) {
                         over.push(format!("{name} @{cols}: {line}"));
                     }
                 }
@@ -1552,22 +1571,19 @@ mod tests {
         }
     }
 
-    /// A date a reader types is written as code, once: never split across
-    /// lines at any width, and never both backticked and double-quoted, which
-    /// printed `` `"in 3 days"` `` as double punctuation.
+    /// A date a reader types is code, quotes and all where main quoted it
+    /// (`"friday 9am"`: a value with a space must reach tasqx quoted, which
+    /// the capturing examples spell `due:"friday 9am"`), and is never split
+    /// across lines at any width.
     #[test]
     fn typed_date_literals_are_never_split() {
         for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
             let page = topic_section(&at(cols), Topic::Dates);
-            assert!(
-                !page.contains("`\""),
-                "double punctuation at {cols}:\n{page}"
-            );
             for literal in [
-                "`in 3 days`",
-                "`tomorrow 17:00`",
-                "`friday 9am`",
-                "`2026-09-09 17:00`",
+                "`\"in 3 days\"`",
+                "`\"tomorrow 17:00\"`",
+                "`\"friday 9am\"`",
+                "`\"2026-09-09 17:00\"`",
             ] {
                 assert!(
                     page.lines().any(|l| l.contains(literal)),
@@ -1652,8 +1668,9 @@ mod tests {
     /// so a test of roles passed while TASQX MANUAL, TOPICS and COMMANDS were
     /// three identical bold lines in capitals.
     ///
-    /// Also: a section heading is flush over what it heads; no row carries
-    /// paint of its own; a topic's title keeps its own case.
+    /// Also: a section heading is set apart from what it heads without
+    /// colour, flush over indented content or a blank line ahead of prose;
+    /// no row carries paint of its own; a topic's title keeps its own case.
     ///
     /// Rewritten twice from this change's first cut, which asserted `header`
     /// on every heading; the intent (a heading is painted as one and keeps a
@@ -1714,9 +1731,20 @@ mod tests {
                         title_sgr,
                         "{theme}: {section} is drawn exactly like the title {title}"
                     );
+                    // Set apart without colour (rule 7): flush over content
+                    // that is indented, or a blank line ahead of prose at the
+                    // heading's own margin.
+                    let next = lines[at + 1];
+                    let set_apart = if next.trim().is_empty() {
+                        lines
+                            .get(at + 2)
+                            .is_some_and(|l| !l.is_empty() && !l.starts_with(' '))
+                    } else {
+                        next.starts_with("  ")
+                    };
                     assert!(
-                        !lines[at + 1].trim().is_empty(),
-                        "{theme}: {section} is not flush over what it heads"
+                        set_apart,
+                        "{theme}: {section} is not set apart from what it heads:\n{page}"
                     );
                 }
             }
