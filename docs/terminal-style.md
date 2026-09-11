@@ -45,13 +45,14 @@ for, where its floor is, and whether it may go. Three rules come with it:
 - **Data is cut only where the terminal cannot hold it.** A wrapped row breaks
   every column at once, so a name or a value gets an ellipsis first, and the
   column that says where something came from goes before the data does.
-- **A record is not a table.** Its name stays, where it came from goes first,
-  the handle that opens it never goes, and the line under it is cut to the
-  width. `memory search` is the record (D123): title, source and handle on one
-  line, the words that matched under it.
+- **A record is not a table.** Each record is fitted to itself. Its name
+  stays, where it came from goes first, the handle that opens it never goes,
+  and the line under it is cut to the width. `memory search` is the record
+  (D123): title, source and handle on one line, the handle on the next where
+  the two cannot share one, the words that matched under them.
 
-After a drop the survivors get the freed cells back (D123), and a memory
-title's floor is what the terminal can give it beside the id or handle, never
+After a drop the survivors get the freed cells back (D123), and `memory
+list`'s title floor is what the terminal can give it beside the id, never
 below twelve cells, so every other column goes before the title gives way.
 
 ## 3. Dates are calendar days — not instants, not elapsed hours
@@ -99,8 +100,10 @@ A table of choices has one state worth a rail: which one is in effect.
 `projects` marks the default and `theme list` the active theme with `*`, the
 way `git branch` marks the branch that is checked out. It replaced a
 seven-cell DEFAULT column holding one `*`, and nine cells of `← active`. The
-same glyph is the running marker without Unicode, and the two never meet: no
-screen that draws this rail draws a task.
+same glyph is the running marker without Unicode, which is the two-meanings
+case this rule argues against. `DESIGN.md` D123(d) rules that it stands: the
+argument is about one screen, and no screen draws both, since these tables
+never show a task and a task table has no row in effect.
 
 ## 5. A modifier belongs in the cell it modifies
 
@@ -173,6 +176,12 @@ It sits above the header, where a wrap would put a line between the labels and
 the rows they name. Facts are dropped from the right until the line fits —
 which is why they are built in falling order of what a reader loses by not
 seeing them. Dropping says less; truncating mid-word says something else.
+
+Every line of facts fits by this one rule (`render::keep_ranked`, D123(e)).
+`next` and `add`'s echo print their facts in reading order but rank them by
+what a reader loses (the urgency cell, the deadline, a running timer, then the
+project and the tags). The first fact in rank that does not fit ends the line,
+so nothing less important survives it.
 
 ## 10. Facts counted over the rows on screen say so
 

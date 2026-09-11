@@ -3321,8 +3321,8 @@ fn theme_show_paints_a_sample_and_leaves_the_name_readable() {
 }
 
 /// #346: `theme show` says what each role IS, not seventeen times `sample
-/// text`. The role name is painted in its own role, which makes it the
-/// sample, and beside it sit the colour and the emphasis in words.
+/// text`. Each row names the role, draws a sample in it, and gives its
+/// colour and its emphasis in words.
 ///
 /// Under `NO_COLOR` and in `mono` the old preview was the same grey bar on
 /// every row, so it said nothing on exactly the terminals where a theme author
