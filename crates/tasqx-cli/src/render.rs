@@ -100,10 +100,21 @@ fn store_is_empty(result: &Value) -> bool {
 /// verbs (`list`, `next`, `projects`, `report`, `agenda`) used to give a
 /// brand-new store five different dead ends, none naming a way forward, on
 /// literally the first command a new user runs.
-fn onboarding_hint() -> String {
-    "No tasks yet.\n  tasqx init <project> creates one, tasqx add \"…\" captures your first \
-     task, tasqx manual explains the rest.\n"
-        .to_string()
+/// Wrapped to the terminal with its indent kept (#346): as one line it ran to
+/// 100 cells under `next`, `agenda`, `list`, `projects` and `report`. The
+/// commands are quoted the way every other note quotes one, which is also
+/// what keeps each of them on one line.
+fn onboarding_hint(ctx: &Ctx) -> String {
+    format!(
+        "No tasks yet.\n{}",
+        prose(
+            ctx,
+            None,
+            "`tasqx init <project>` creates one, `tasqx add \"…\"` captures your first \
+             task, `tasqx manual` explains the rest.",
+            "  ",
+        )
+    )
 }
 
 fn s(v: &Value, key: &str) -> String {
@@ -685,33 +696,6 @@ impl TaskCols {
     }
 }
 
-/// The first line of a record, meaning its name and then a parenthetical saying
-/// what it is and where it came from, fitted to `cols` (#352).
-///
-/// `memory list` and `memory search` printed this line and the snippet under it
-/// at whatever length they came, so a source path wrapped the record on any
-/// narrow terminal. The name is what a record is recognised by, so the
-/// parenthetical gives way first. It is cut while a readable piece of it
-/// survives and dropped below that, and a name longer than the terminal is
-/// cut last.
-pub(crate) fn record_head(name: &str, meta: &str, cols: usize, unicode: bool) -> String {
-    /// Less of the parenthetical than this is noise: drop it instead.
-    const MIN_META: usize = 12;
-    let room = cols.saturating_sub(width(name) + 4);
-    if room >= width(meta) {
-        format!("{name}  ({meta})")
-    } else if room >= MIN_META {
-        format!("{name}  ({})", truncate(meta, room, unicode))
-    } else {
-        truncate(name, cols, unicode)
-    }
-}
-
-/// An indented line under a record, cut to the terminal rather than wrapped.
-pub(crate) fn record_line(text: &str, cols: usize, unicode: bool) -> String {
-    format!("  {}", truncate(text, cols.saturating_sub(2), unicode))
-}
-
 /// Right-align `s` in `w` CELLS. The `{:>w$}` this replaces pads by char count.
 fn rpad(s: &str, w: usize) -> String {
     format!("{}{}", " ".repeat(w.saturating_sub(width(s))), s)
@@ -1072,6 +1056,17 @@ pub(crate) fn doc_summary(body: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The floor of a table's leading column when everything beside it but a
+/// fixed column (the memory tables' id) may go: as much of what it asks for as
+/// the terminal can give it beside that column. The fitter shrinks the widest
+/// column first, so with a low floor the title, the one column a row is read
+/// for, was cut to meet a snippet or a project name that the fitter could have
+/// dropped instead (#346 review; rule 1, D120(c)). Both memory tables fit
+/// their titles by this one rule.
+fn lead_floor(asked: usize, cols: usize, fixed: usize) -> usize {
+    asked.min(cols.saturating_sub(fixed + columns::GAP))
+}
+
 /// `tasqx memory list` off a terminal: one line per doc under a header (D121).
 ///
 /// It used to print three lines per doc, the title with its source in
@@ -1117,12 +1112,13 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             content.max(width(label))
         }
     };
+    let (title_w, id_w) = (widest(|r| &r.title, "TITLE"), widest(|r| &r.id, "ID"));
     let w = columns::fit(
         &[
-            Column::shrinks(widest(|r| &r.title, "TITLE"), 12),
+            Column::shrinks(title_w, lead_floor(title_w, ctx.cols, id_w)),
             Column::drops(widest(|r| &r.project, "PROJECT"), 8),
             Column::drops(widest(|r| &r.updated, "UPDATED"), 7),
-            Column::fixed(widest(|r| &r.id, "ID")),
+            Column::fixed(id_w),
         ],
         ctx.cols,
     );
@@ -1138,11 +1134,14 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     };
 
     let shown = docs.len() as u64;
-    let mut summary = format!("{total} {}", if total == 1 { "doc" } else { "docs" });
+    let mut parts = vec![(
+        "card.strong",
+        format!("{total} {}", if total == 1 { "doc" } else { "docs" }),
+    )];
     if shown < total {
-        summary.push_str(&format!(" {} {shown} shown", ctx.mid()));
+        parts.push(("muted", format!("{shown} shown")));
     }
-    let mut out = format!("{}\n\n", ctx.paint("table.label", &summary));
+    let mut out = format!("{}\n\n", summary_line(ctx, None, parts));
     out.push_str(&ctx.paint(
         "table.label",
         &line([
@@ -1160,6 +1159,196 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             (Some("muted"), &r.updated),
             (Some("muted"), &r.id),
         ]));
+        out.push('\n');
+    }
+    out
+}
+
+/// `tasqx memory search`: [`memory_table`]'s shape for a `memory.search`
+/// result (#346, D121(f)).
+///
+/// It printed three lines per hit (the title with `(doc · source)`, the
+/// snippet, and `id <uuid>` on a line of its own), every one at the same
+/// weight, and closed on `N hit(s)`. Now the summary names the query and what
+/// it found, and each hit is one line: the title carries it, and the matching
+/// words, where it came from and the id recede. The id is never dropped, for
+/// the reason `memory_table` gives. The match gives cells first, being the
+/// widest, and SOURCE goes before it does, because data outlasts where it came
+/// from (D120(c)). An annotation's source is its task (`task:#55`), which is
+/// how a reader tells it from a doc.
+///
+/// A hit carries no timestamp and no project, so this table has no UPDATED
+/// and no PROJECT column: the JSON is frozen (D56), and a column no row can
+/// fill is not drawn (D51).
+pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str) -> String {
+    let empty = Vec::new();
+    let hits = result
+        .get("hits")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let count = hits.len() as u64;
+    let total = result
+        .get("total")
+        .and_then(Value::as_u64)
+        .unwrap_or(count)
+        .max(count);
+
+    let mut parts = vec![(
+        "card.strong",
+        format!("{total} {}", if total == 1 { "hit" } else { "hits" }),
+    )];
+    if count < total {
+        parts.push(("muted", format!("{count} shown")));
+    }
+    let mut out = summary_line(ctx, Some(&san(query)), parts);
+    out.push('\n');
+
+    if !hits.is_empty() {
+        struct Row {
+            title: String,
+            snippet: String,
+            source: String,
+            id: String,
+        }
+        let rows: Vec<Row> = hits
+            .iter()
+            .map(|h| Row {
+                title: s(h, "title"),
+                // The engine's snippet keeps the body's line breaks, which a
+                // one-line cell cannot.
+                snippet: s(h, "snippet")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                source: s(h, "source"),
+                id: s(h, "id"),
+            })
+            .collect();
+        let widest = |f: fn(&Row) -> &str, label: &str| {
+            let content = rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
+            if content == 0 {
+                0
+            } else {
+                content.max(width(label))
+            }
+        };
+        // The title gives way last (`lead_floor`). A match under twenty
+        // cells is a fragment, and a path cut in the middle names no file, so
+        // SOURCE is whole or gone, and it goes before MATCH, data outlasting
+        // where it came from (D120(c)).
+        let (title_w, id_w) = (widest(|r| &r.title, "TITLE"), widest(|r| &r.id, "ID"));
+        let source_w = widest(|r| &r.source, "SOURCE");
+        let w = columns::fit(
+            &[
+                Column::shrinks(title_w, lead_floor(title_w, ctx.cols, id_w)),
+                Column::drops(widest(|r| &r.snippet, "MATCH"), 20),
+                Column::drops(source_w, source_w),
+                Column::fixed(id_w),
+            ],
+            ctx.cols,
+        );
+        let line = |cells: [(Option<&str>, &str); 4]| {
+            join_cells(
+                cells
+                    .iter()
+                    .zip(&w)
+                    .filter(|(_, w)| **w > 0)
+                    .map(|((role, text), w)| cell(ctx, *role, text, *w))
+                    .collect(),
+            )
+        };
+        out.push('\n');
+        out.push_str(&ctx.paint(
+            "table.label",
+            &line([
+                (None, "TITLE"),
+                (None, "MATCH"),
+                (None, "SOURCE"),
+                (None, "ID"),
+            ]),
+        ));
+        out.push('\n');
+        for r in &rows {
+            out.push_str(&line([
+                (None, &r.title),
+                (Some("muted"), &r.snippet),
+                (Some("muted"), &r.source),
+                (Some("muted"), &r.id),
+            ]));
+            out.push('\n');
+        }
+    }
+
+    // Prose after the table stands off it by a blank line (rule 7), and wraps
+    // rather than running past the terminal.
+    let mut notes: Vec<(Option<&str>, String)> = Vec::new();
+    if count < total {
+        notes.push((Some("muted"), format!("--limit {total} shows every hit")));
+    }
+    // On a miss, name the expression that produced it (D69). Every word of a
+    // plain query is a required phrase, so a question typed as a sentence
+    // comes back exactly as empty as a subject nobody ever wrote down, and the
+    // two need different next moves.
+    if count == 0 {
+        if let Some(matched) = result.get("matched").and_then(Value::as_str) {
+            // At the terminal's own weight: on a miss it is the only thing
+            // on screen that says what to do next.
+            notes.push((None, format!("every term was required: {}", san(matched))));
+        }
+    }
+    if !notes.is_empty() {
+        out.push('\n');
+        for (role, note) in notes {
+            out.push_str(&prose(ctx, role, &note, ""));
+        }
+    }
+    out
+}
+
+/// A note printed under a screen, wrapped at words to the terminal and
+/// painted in `role`, each line prefixed with `indent` (#346).
+///
+/// The prose under `agenda`, `next`, `report` and `memory search` used to be
+/// printed at whatever length it was written, and the longest of them, the
+/// onboarding hint, ran to 100 cells: a 60-column terminal broke it mid-word.
+/// Every such note goes through here, so none of them can come to wrap on its
+/// own again.
+///
+/// A command quoted in backticks is one word to the wrap: split across two
+/// lines it is a command nobody can paste, and these notes exist to hand the
+/// reader one.
+pub(crate) fn prose(ctx: &Ctx, role: Option<&str>, text: &str, indent: &str) -> String {
+    /// Stands in for a space inside a quoted span while the line is wrapped. A
+    /// private-use character, so `split_whitespace` cannot see it and no note
+    /// can contain it.
+    const HELD: char = '\u{E000}';
+    // Only PAIRED backticks open and close a span. A stray one (raw store
+    // text, a query as typed) would otherwise hold the rest of the note as
+    // one word, and the note would run past the terminal it exists to fit.
+    let mut toggles = text.matches('`').count() / 2 * 2;
+    let mut quoted = false;
+    let held: String = text
+        .chars()
+        .map(|c| {
+            if c == '`' && toggles > 0 {
+                toggles -= 1;
+                quoted = !quoted;
+            }
+            if quoted && c == ' ' {
+                HELD
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut out = String::new();
+    for line in wrap_words(&held, ctx.cols.saturating_sub(width(indent))) {
+        let line = line.replace(HELD, " ");
+        out.push_str(indent);
+        match role {
+            Some(r) => out.push_str(&ctx.paint(r, &line)),
+            None => out.push_str(&line),
+        }
         out.push('\n');
     }
     out
@@ -1338,14 +1527,23 @@ pub(crate) fn table_summary(
     if blocked > 0 {
         parts.push(("muted", format!("{blocked} blocked")));
     }
+    summary_line(ctx, label, parts)
+}
 
-    // The line has to FIT. It sits above the table now, where a wrap would put
-    // a second line between the header and the rows it labels — the old
-    // `N task(s)` trailer could overflow harmlessly, and this cannot. Facts are
-    // dropped from the RIGHT until it does, which is why they were pushed in
-    // falling order of what a reader loses by not seeing them: the count, what
-    // is late, what is due today, what is running, what is stuck. Dropping says
-    // less; truncating mid-word would say something else.
+/// The summary line every table opens with: what was asked (`label`), then the
+/// facts, each `(role, text)`, in falling order of what a reader loses by not
+/// seeing them. `list`, `agenda`, `memory list` and `memory search` all go
+/// through this one function, so a summary fits, drops and paints the same way
+/// on each of them (#346).
+///
+/// The line has to FIT. It sits above the table, where a wrap would put a
+/// second line between the header and the rows it labels — the old `N task(s)`
+/// trailer could overflow harmlessly, and this cannot. Facts are dropped from
+/// the RIGHT until it does, which is why callers push them in falling order:
+/// for `list` the count, what is late, what is due today, what is running,
+/// what is stuck. Dropping says less; truncating mid-word would say something
+/// else.
+fn summary_line(ctx: &Ctx, label: Option<&str>, mut parts: Vec<(&str, String)>) -> String {
     let head = label.map_or(0, |l| {
         width(&truncate(l, ctx.cols / 2, ctx.caps.unicode)) + 3
     });
@@ -1417,7 +1615,7 @@ pub fn task_table_filtered(
         // whether a filter was named; a filter that matched nothing on a
         // non-empty store gets to see the filter it excluded everything with.
         return if store_is_empty(result) {
-            onboarding_hint()
+            onboarding_hint(ctx)
         } else {
             match filter {
                 Some(f) => format!("No tasks match `{f}`.\n"),
@@ -1461,8 +1659,7 @@ pub fn task_table_filtered(
         out.push('\n');
     }
     for note in notes {
-        out.push_str(&ctx.paint("warn", &note));
-        out.push('\n');
+        out.push_str(&prose(ctx, Some("warn"), &note, ""));
     }
     out
 }
@@ -1969,7 +2166,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
         // end as `list`'s and `next`'s — append the getting-started hint rather
         // than leaving that one line alone on the screen.
         if a.store_empty {
-            out.push_str(&onboarding_hint());
+            out.push_str(&onboarding_hint(ctx));
         }
     }
     // Same blank line as `task_table`'s, and for the same reason: prose that
@@ -1979,16 +2176,14 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
         out.push('\n');
     }
     for note in omissions {
-        out.push_str(&ctx.paint("muted", &note));
-        out.push('\n');
+        out.push_str(&prose(ctx, Some("muted"), &note, ""));
     }
     // Last, and in `warn` rather than `muted`, because these are not this
     // view's own omissions: they are damage in the store that this layout —
     // like `list`'s, which it shares — cannot show in a cell. See
     // `store_health_notes` for why both views read one implementation.
     for note in &a.health {
-        out.push_str(&ctx.paint("warn", note));
-        out.push('\n');
+        out.push_str(&prose(ctx, Some("warn"), note, ""));
     }
     out
 }
@@ -2621,21 +2816,49 @@ pub fn task_added_card(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
         ));
     }
 
-    let mut used = 0usize;
-    let mut line = String::new();
-    for (plain, painted) in facts {
-        let need = width(&plain) + if line.is_empty() { 0 } else { 3 };
-        if used + need > avail {
-            break;
-        }
-        if !line.is_empty() {
-            line.push_str("   ");
-        }
-        line.push_str(&painted);
-        used += need;
-    }
-    out.push_str(&format!("{rail} {line}\n"));
+    // Ranked in the order they print: the echo's facts already run from what
+    // the reader typed to lose least to most.
+    let ranked = facts
+        .into_iter()
+        .enumerate()
+        .map(|(i, (plain, painted))| (i as u8, plain, painted))
+        .collect();
+    out.push_str(&format!("{rail} {}\n", fit_facts(ranked, avail)));
     out
+}
+
+/// A line of facts, three cells apart, fitted to `avail` cells. Each fact is
+/// `(rank, plain text for measuring, painted text)` and is taken whole or not
+/// at all, so a narrow terminal drops facts rather than cutting one. Facts
+/// are considered by rank, lowest first, and one that does not fit is skipped
+/// rather than ending the line; the survivors print in their given order.
+/// `add`'s echo and `next` both fit their facts here (#346), which is how they
+/// cannot drift apart.
+///
+/// The rank is what a reader loses without the fact, which is not always
+/// where it sits: `next` prints the project before the deadline, and the
+/// first cut, which took facts left to right and stopped at the first that
+/// did not fit, let a long project name push the deadline off the line.
+fn fit_facts(facts: Vec<(u8, String, String)>, avail: usize) -> String {
+    let mut order: Vec<usize> = (0..facts.len()).collect();
+    order.sort_by_key(|&i| facts[i].0);
+    let mut keep = vec![false; facts.len()];
+    let mut used = 0usize;
+    for i in order {
+        let gap = if used == 0 { 0 } else { 3 };
+        let need = width(&facts[i].1) + gap;
+        if used + need <= avail {
+            keep[i] = true;
+            used += need;
+        }
+    }
+    facts
+        .into_iter()
+        .zip(keep)
+        .filter(|(_, k)| *k)
+        .map(|((_, _, painted), _)| painted)
+        .collect::<Vec<_>>()
+        .join("   ")
 }
 
 // The `show` card: the status-colored left rail (the C variant that
@@ -3269,37 +3492,31 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
         .unwrap_or(&empty);
     if projects.is_empty() {
         return if store_is_empty(result) {
-            onboarding_hint()
+            onboarding_hint(ctx)
         } else {
             "No projects.\n".to_string()
         };
     }
-    // D21: the leading column is the default marker. `projects` is THE read
-    // surface for "where does a bare `tasqx add` land?" — a fact that drove
-    // behavior while being shown nowhere.
+    // D21: `projects` is THE read surface for "where does a bare `tasqx add`
+    // land?" — a fact that drove behavior while being shown nowhere. #346
+    // moved the mark from a seven-cell DEFAULT column into the rail.
     struct Row {
-        default: &'static str,
+        default: bool,
         name: String,
-        archived: &'static str,
+        archived: bool,
         desc: String,
     }
+    let flag = |p: &Value, key: &str| p.get(key).and_then(Value::as_bool).unwrap_or(false);
     let rows: Vec<Row> = projects
         .iter()
         .map(|p| Row {
-            default: if p.get("default").and_then(Value::as_bool).unwrap_or(false) {
-                "*"
-            } else {
-                ""
-            },
+            default: flag(p, "default"),
             name: s(p, "name"),
-            archived: if p.get("archived").and_then(Value::as_bool).unwrap_or(false) {
-                "yes"
-            } else {
-                "no"
-            },
+            archived: flag(p, "archived"),
             desc: san(p.get("description").and_then(Value::as_str).unwrap_or("")),
         })
         .collect();
+    let rail = CurrentRail::over(rows.iter().map(|r| r.default));
 
     // Laid out on `columns::fit` like `list` (#352). It used to be
     // `format!("{:<7}  {:<24}  {:<9}  {}")`: a project name past 24 cells
@@ -3308,10 +3525,13 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
     // with it. The name gives way before it would wrap, down to a floor that
     // still tells projects apart. DESCRIPTION gives first, being the widest,
     // and is the first to go. A store where no project has one gets no
-    // column for it (D51).
+    // column for it (D51), and the same goes for STATUS, which says
+    // `archived` on the rows it is true of (#346). It was an ARCHIVED column
+    // that, without `--all`, could only ever say `no`, on every row.
     const MIN_PROJECT: usize = 12;
     const MAX_PROJECT: usize = 32;
     const MIN_DESC: usize = 12;
+    const ARCHIVED: &str = "archived";
     let desc_w = rows.iter().map(|r| width(&r.desc)).max().unwrap_or(0);
     let name_w = rows
         .iter()
@@ -3320,11 +3540,15 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
         .unwrap_or(0)
         .max(width("PROJECT"))
         .min(MAX_PROJECT);
+    let status_w = if rows.iter().any(|r| r.archived) {
+        width(ARCHIVED).max(width("STATUS"))
+    } else {
+        0
+    };
     let w = columns::fit(
         &[
-            Column::fixed(width("DEFAULT")),
             Column::shrinks(name_w, MIN_PROJECT.min(name_w)),
-            Column::drops(width("ARCHIVED"), width("ARCHIVED")),
+            Column::drops(status_w, status_w),
             Column::drops(
                 if desc_w == 0 {
                     0
@@ -3334,9 +3558,9 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
                 MIN_DESC,
             ),
         ],
-        ctx.cols,
+        ctx.cols.saturating_sub(rail.width()),
     );
-    let row = |cells: [(Option<&str>, &str); 4]| {
+    let row = |cells: [(Option<&str>, &str); 3]| {
         join_cells(
             cells
                 .iter()
@@ -3347,26 +3571,72 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
         )
     };
 
-    let mut out = ctx.paint(
-        "table.label",
-        &row([
-            (None, "DEFAULT"),
-            (None, "PROJECT"),
-            (None, "ARCHIVED"),
-            (None, "DESCRIPTION"),
-        ]),
+    let mut out = format!(
+        "{}{}",
+        rail.cell(ctx, false),
+        ctx.paint(
+            "table.label",
+            &row([(None, "PROJECT"), (None, "STATUS"), (None, "DESCRIPTION")]),
+        )
     );
     out.push('\n');
     for r in &rows {
+        out.push_str(&rail.cell(ctx, r.default));
         out.push_str(&row([
-            (None, r.default),
             (Some("project"), &r.name),
-            (None, r.archived),
+            (Some("muted"), if r.archived { ARCHIVED } else { "" }),
             (None, &r.desc),
         ]));
         out.push('\n');
     }
     out
+}
+
+/// The rail that marks the one row in a table of choices that is in effect:
+/// `projects`' default and `theme list`'s active theme (#346). `*`, the way
+/// `git branch` marks the branch that is checked out.
+///
+/// It is `docs/terminal-style.md` rule 4 applied to a table that is not a task
+/// table: two cells at the far left, never dropped by the width fit, and not
+/// drawn at all when no row carries it. `projects` spent a seven-cell DEFAULT
+/// column on one `*`, and `theme list` nine cells of `← active` on one row.
+///
+/// `*` is also the running marker in `list` without Unicode. The two never
+/// meet: no screen that draws this rail draws a task, and `list` has no row
+/// that is "the one in effect".
+pub(crate) struct CurrentRail {
+    drawn: bool,
+}
+
+impl CurrentRail {
+    /// The glyph the rail draws on the row in effect.
+    pub(crate) const MARK: &'static str = "*";
+
+    /// A rail for these rows, drawn only when one of them is in effect.
+    pub(crate) fn over(current: impl IntoIterator<Item = bool>) -> Self {
+        Self {
+            drawn: current.into_iter().any(|c| c),
+        }
+    }
+
+    /// The cells the rail takes from the row: two, or none.
+    pub(crate) fn width(&self) -> usize {
+        if self.drawn {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// The rail's cell on one row, padding included. The padding sits outside
+    /// the paint, so a row still trims cleanly.
+    pub(crate) fn cell(&self, ctx: &Ctx, current: bool) -> String {
+        match (self.drawn, current) {
+            (false, _) => String::new(),
+            (true, true) => format!("{} ", ctx.paint("accent", Self::MARK)),
+            (true, false) => "  ".to_string(),
+        }
+    }
 }
 
 /// `"—"` (the HTML/dashboard "nothing" glyph, via `html::humanize_iso`)
@@ -3405,7 +3675,7 @@ pub fn report(
         .unwrap_or(&empty);
     if groups.is_empty() {
         return if store_is_empty(result) {
-            onboarding_hint()
+            onboarding_hint(ctx)
         } else {
             "No matching tasks.\n".to_string()
         };
@@ -3598,32 +3868,46 @@ pub fn report(
         &line(pad(&header_label, w[0]), plain(labels)),
     );
     out.push('\n');
-    for r in rows {
-        // OVERDUE is `warn` when there is any and `muted` when there is none.
-        let overdue_role = if r.overdue > 0 { "warn" } else { "muted" };
-        let cells = r
-            .cells
+    // OVERDUE is `warn` when there is any and `muted` when there is none, on
+    // the TOTAL row as on every other.
+    let with_overdue = |overdue: i64, cells: Vec<String>| {
+        let role = if overdue > 0 { "warn" } else { "muted" };
+        cells
             .into_iter()
             .enumerate()
-            .map(|(n, c)| ((n == 2).then_some(overdue_role), c))
-            .collect();
+            .map(|(n, c)| ((n == 2).then_some(role), c))
+            .collect::<Vec<_>>()
+    };
+    for r in rows {
+        let cells = with_overdue(r.overdue, r.cells);
         out.push_str(&line(cell(ctx, Some("project"), &r.key, w[0]), cells));
         out.push('\n');
     }
-    out.push_str(&ctx.paint(
-        "header",
-        &line(cell(ctx, None, "TOTAL", w[0]), plain(total_cells)),
+    // Set off by a blank line (rule 7): in `mono` and under NO_COLOR the
+    // dim label alone did not tell TOTAL from a group named in capitals.
+    out.push('\n');
+    // A row with a label, not a title (#346, `docs/terminal-style.md`
+    // rule 12). The whole line was painted `header`, the role for `TASQX
+    // MANUAL` and a task's own name, so the sums shouted over the rows they
+    // sum. `TOTAL` is structure and takes the column labels' role; the
+    // figures print as every other row's do.
+    out.push_str(&line(
+        cell(ctx, Some("table.label"), "TOTAL", w[0]),
+        with_overdue(total_overdue, total_cells),
     ));
     out.push('\n');
 
-    // Footnotes — printed only when they have something to say, and wrapped
-    // at words to the terminal: the legend is one 171-cell sentence, which a
-    // narrow terminal otherwise broke mid-word on its own (#352).
-    let footnote = |out: &mut String, text: &str| {
-        for line in wrap_words(text, ctx.cols) {
-            out.push_str(&ctx.paint("muted", &line));
+    // Footnotes — printed only when they have something to say, set off from
+    // the table by a blank line (rule 7: a note flush against the last row
+    // reads as a row whose columns broke), and wrapped at words to the
+    // terminal: the legend is one 171-cell sentence, which a narrow terminal
+    // otherwise broke mid-word on its own (#352).
+    let mut first_note = true;
+    let mut footnote = |out: &mut String, text: &str| {
+        if std::mem::take(&mut first_note) {
             out.push('\n');
         }
+        out.push_str(&prose(ctx, Some("muted"), text, ""));
     };
     if any_tokens && !show_all_tokens {
         // #212 (D48a, challenges-design — see the commit and the report for
@@ -3646,7 +3930,11 @@ pub fn report(
         // already incurred on it, which this line stops being silent about).
         footnote(
             &mut out,
-            &format!("{excluded} cancelled task(s) excluded; --all includes their spend."),
+            &if excluded == 1 {
+                "1 cancelled task excluded; --all includes its spend.".to_string()
+            } else {
+                format!("{excluded} cancelled tasks excluded; --all includes their spend.")
+            },
         );
     }
     out
@@ -3808,7 +4096,7 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         .unwrap_or(&empty);
     let Some(t) = tasks.first() else {
         return if store_is_empty(result) {
-            onboarding_hint()
+            onboarding_hint(ctx)
         } else {
             "Nothing actionable — you're clear.\n".to_string()
         };
@@ -3826,11 +4114,19 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     // counted: a hand-counted indent drew the facts one column short of it.
     let label = "next  ";
     let pad = " ".repeat(width(label) + 2);
+    // Fitted to the terminal (#346): the title is cut where the width ends,
+    // as `add`'s echo cuts it, and the facts go through `fit_facts`.
+    let id = format!("#{sid}");
+    let title = truncate(
+        &s(t, "title"),
+        ctx.cols.saturating_sub(width(&pad) + width(&id) + 2),
+        ctx.caps.unicode,
+    );
     let mut out = format!(
         "{}  {}  {}\n",
         ctx.paint("table.label", label),
-        ctx.paint("card.label", &format!("#{sid}")),
-        ctx.paint("card.strong", &s(t, "title"))
+        ctx.paint("card.label", &id),
+        ctx.paint("card.strong", &title)
     );
     let prio = t.get("priority").and_then(Value::as_str).unwrap_or("-");
     let prio_role = match prio {
@@ -3840,43 +4136,54 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         _ => "muted",
     };
     let ramp = ctx.theme.ramp_style(urgency_scale(urg));
-    let mut facts = vec![if ctx.caps.unicode {
+    // Ranked by what the reader loses without each (`fit_facts`): the
+    // urgency cell and the deadline say why this task, the running timer what
+    // state it is in (the command line below says so too), the project and
+    // the tags only where it lives.
+    let mut facts: Vec<(u8, String, String)> = vec![if ctx.caps.unicode {
         let (bar, track) = urgency_meter(urgency_scale(urg));
-        format!(
-            "{} {}{} {}",
-            ctx.paint(prio_role, prio),
-            ramp.paint(&bar, &ctx.caps),
-            ctx.paint("muted", &track),
-            ramp.paint(&format!("{urg:.1}"), &ctx.caps)
+        (
+            0,
+            format!("{prio} {bar}{track} {urg:.1}"),
+            format!(
+                "{} {}{} {}",
+                ctx.paint(prio_role, prio),
+                ramp.paint(&bar, &ctx.caps),
+                ctx.paint("muted", &track),
+                ramp.paint(&format!("{urg:.1}"), &ctx.caps)
+            ),
         )
     } else {
-        format!(
-            "{} {}",
-            ctx.paint(prio_role, prio),
-            ramp.paint(&format!("{urg:.1}"), &ctx.caps)
+        (
+            0,
+            format!("{prio} {urg:.1}"),
+            format!(
+                "{} {}",
+                ctx.paint(prio_role, prio),
+                ramp.paint(&format!("{urg:.1}"), &ctx.caps)
+            ),
         )
     }];
     let proj = s(t, "project");
     if !proj.is_empty() {
-        facts.push(ctx.paint("project", &proj));
+        facts.push((3, proj.clone(), ctx.paint("project", &proj)));
     }
     if let Some(due) = field_ts(t, "due") {
         let cell = format!("due {}", due_cell(due, now));
-        facts.push(if due < now {
+        let painted = if due < now {
             ctx.paint("overdue", &cell)
         } else {
-            cell
-        });
+            cell.clone()
+        };
+        facts.push((1, cell, painted));
     }
     if s(t, "status") == "active" {
         let since = field_ts(t, "active_since").map(|at| due_cell(at, now));
-        facts.push(ctx.paint(
-            "timer.active",
-            &match since {
-                Some(when) => format!("already running, since {when}"),
-                None => "already running".to_string(),
-            },
-        ));
+        let text = match since {
+            Some(when) => format!("already running, since {when}"),
+            None => "already running".to_string(),
+        };
+        facts.push((2, text.clone(), ctx.paint("timer.active", &text)));
     }
     if let Some(tags) = t.get("tags").and_then(Value::as_array) {
         let names: Vec<String> = tags
@@ -3885,10 +4192,14 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             .map(|g| format!("+{}", san(g)))
             .collect();
         if !names.is_empty() {
-            facts.push(ctx.paint("tag", &names.join(" ")));
+            let joined = names.join(" ");
+            facts.push((4, joined.clone(), ctx.paint("tag", &joined)));
         }
     }
-    out.push_str(&format!("{pad}{}\n", facts.join("   ")));
+    out.push_str(&format!(
+        "{pad}{}\n",
+        fit_facts(facts, ctx.cols.saturating_sub(width(&pad)))
+    ));
     let start = if s(t, "status") == "active" {
         format!("tasqx done {sid}")
     } else {
@@ -5494,10 +5805,6 @@ mod tests {
                 ]
             }),
         );
-        assert!(
-            out.contains("DEFAULT"),
-            "no default column on the projects table: {out:?}"
-        );
         let work_line = out.lines().find(|l| l.contains("work")).expect("work row");
         let other_line = out
             .lines()
@@ -5511,6 +5818,282 @@ mod tests {
             !other_line.contains('*'),
             "a non-default row is marked: {other_line:?}"
         );
+    }
+
+    /// #346: the default is marked in a two-cell rail, the way `git branch`
+    /// marks the checked-out branch, and archived is a word on the rows it is
+    /// true of (`docs/terminal-style.md` rules 2 and 4).
+    ///
+    /// The table spent a seven-cell DEFAULT column on one `*`, and an
+    /// eight-cell ARCHIVED column that, without `--all`, could only ever say
+    /// `no` on every row.
+    #[test]
+    fn project_table_spends_a_rail_on_the_default_and_a_word_on_archived() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let row = |name: &str, default: bool, archived: bool| json!({ "name": name, "archived": archived, "default": default, "description": "" });
+        let out = project_table(
+            &ctx,
+            &json!({ "projects": [row("home", false, false), row("work", true, false)] }),
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "  PROJECT", "{out}");
+        assert_eq!(lines[1], "  home", "{out}");
+        assert_eq!(lines[2], "* work", "{out}");
+
+        let out = project_table(
+            &ctx,
+            &json!({ "projects": [row("old", false, true), row("work", true, false)] }),
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "  PROJECT  STATUS", "{out}");
+        assert_eq!(lines[1], "  old      archived", "{out}");
+        assert_eq!(lines[2], "* work", "{out}");
+        assert!(!out.contains(" no"), "{out}");
+    }
+
+    /// #346: the TOTAL row is a row with a label, not a title. It was painted
+    /// in `header`, the role for `TASQX MANUAL` and a task's own name, so the
+    /// sums competed with the rows they sum (`docs/terminal-style.md`
+    /// rule 12). The label takes `table.label` like the column labels, and the
+    /// figures print at the terminal's own foreground.
+    #[test]
+    fn report_total_row_is_labelled_not_titled() {
+        let ctx = Ctx::new(
+            theme::default_theme(),
+            Caps {
+                depth: theme::ColorDepth::Truecolor,
+                ansi: true,
+                unicode: true,
+            },
+        );
+        let groups = json!({ "groups": [
+            { "project": "a", "count": 3, "est_total": "PT1H", "overdue": 1, "tracked_total": "PT0S" },
+            { "project": "b", "count": 5, "est_total": "PT2H", "overdue": 0, "tracked_total": "PT0S" },
+        ] });
+        let out = report(&ctx, &groups, "project", None);
+        let total = out.lines().find(|l| l.contains("TOTAL")).expect("TOTAL");
+        let header_sgr = ctx.paint("header", "\u{0}");
+        let header_sgr = header_sgr.split('\u{0}').next().expect("an SGR prefix");
+        assert!(!header_sgr.is_empty(), "the test ctx paints nothing");
+        assert!(
+            !total.contains(header_sgr),
+            "TOTAL is still painted as a title: {total:?}"
+        );
+        assert!(
+            total.contains(&ctx.paint("table.label", "TOTAL")),
+            "the TOTAL label is not a table label: {total:?}"
+        );
+        assert!(total.contains(" 8 "), "the count total: {total:?}");
+        // Separated by whitespace, not by weight alone (rule 7): in `mono`
+        // and under NO_COLOR a dim label is all that told TOTAL from a group
+        // named in capitals.
+        let lines: Vec<&str> = out.lines().collect();
+        let at = lines.iter().position(|l| l.contains("TOTAL")).unwrap();
+        assert_eq!(lines[at - 1], "", "TOTAL runs flush under the rows: {out}");
+    }
+
+    /// #346: prose after the table gets a blank line (rule 7), and counts are
+    /// spelled `1 cancelled task` / `2 cancelled tasks`, never `task(s)`
+    /// (rule 8).
+    #[test]
+    fn report_footnotes_stand_off_the_table_and_count_in_words() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let groups = |n: i64| {
+            json!({ "tokens_excluded_cancelled_tasks": n, "groups": [
+                { "project": "a", "count": 3, "est_total": "PT1H", "overdue": 0, "tracked_total": "PT0S" },
+            ] })
+        };
+        let out = report(&ctx, &groups(1), "project", None);
+        let lines: Vec<&str> = out.lines().collect();
+        let total = lines.iter().position(|l| l.contains("TOTAL")).unwrap();
+        assert_eq!(lines[total + 1], "", "no air between table and note: {out}");
+        assert!(
+            lines[total + 2].starts_with("1 cancelled task excluded"),
+            "{out}"
+        );
+        let out = report(&ctx, &groups(2), "project", None);
+        assert!(out.contains("2 cancelled tasks excluded"), "{out}");
+        assert!(!out.contains("task(s)"), "{out}");
+    }
+
+    /// #346: the prose `next`, `agenda`, `projects` and `report` print wraps at
+    /// words to the terminal. The onboarding hint was one 100-cell line and the
+    /// agenda's undated note 95, so a 60-column terminal broke both mid-word.
+    #[test]
+    fn prose_under_a_screen_wraps_at_the_terminal_width() {
+        use unicode_width::UnicodeWidthStr;
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(60);
+        let empty = json!({ "tasks": [], "projects": [], "groups": [], "store_empty": true });
+        let payload = agenda_payload(vec![
+            dated(1, "on a day", "2026-08-05T00:00:00Z", ""),
+            dated(2, "no dates at all", "", ""),
+            dated(3, "far out", "2026-12-24T00:00:00Z", ""),
+        ]);
+        let mut over = Vec::new();
+        for (name, out) in [
+            ("next", next_task(&ctx, &empty, anchor())),
+            ("projects", project_table(&ctx, &empty)),
+            ("report", report(&ctx, &empty, "project", None)),
+            ("agenda", agenda_text(&ctx, &agenda_of(&payload, 14))),
+        ] {
+            assert!(!out.trim().is_empty(), "{name} printed nothing");
+            for l in out.lines().filter(|l| l.width() > 60) {
+                over.push(format!("{name} ({}): {l}", l.width()));
+            }
+        }
+        assert!(over.is_empty(), "wider than 60:\n{}", over.join("\n"));
+    }
+
+    /// #346: a command quoted in a note is not broken across two lines. The
+    /// first wrap of the agenda's undated note at 80 columns ended one line on
+    /// `` `tasqx `` and began the next on `` list` shows them ``, which is a
+    /// command a reader cannot paste.
+    #[test]
+    fn prose_never_breaks_a_quoted_command() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(80);
+        let note = "7 undated — no due or scheduled date, so nothing puts them on a day; \
+                    `tasqx list` shows them";
+        let out = prose(&ctx, None, note, "");
+        assert!(out.lines().count() > 1, "the fixture must wrap: {out:?}");
+        for l in out.lines() {
+            assert_eq!(
+                l.matches('`').count() % 2,
+                0,
+                "a quoted command was split: {out:?}"
+            );
+        }
+        assert_eq!(
+            out.split_whitespace().collect::<Vec<_>>().join(" "),
+            note,
+            "the words changed: {out:?}"
+        );
+    }
+
+    /// #346: `next` fits the terminal. Its title is cut to the width, and its
+    /// facts are taken whole or not at all, by the same rule `add`'s echo
+    /// follows. Which facts survive goes by what the reader loses without
+    /// them, not by where they sit on the line: the urgency cell and the
+    /// deadline say why this task, the project only where. The first cut took
+    /// facts left to right and stopped at the first that did not fit, so a
+    /// long project name pushed the deadline off the line (review of #346).
+    #[test]
+    fn next_fits_a_narrow_terminal_and_keeps_the_facts_that_say_why() {
+        use unicode_width::UnicodeWidthStr;
+        let ctx = Ctx::new(theme::default_theme(), card_caps()).with_cols(60);
+        let mut t = task_json(
+            48,
+            "Renew the TLS certificate for api.example.dev before it lapses on the weekend",
+            "infrastructure-platform-team",
+            "2026-08-01T00:00:00Z",
+            &["ops", "security", "certificates"],
+        );
+        t["priority"] = json!("H");
+        t["urgency"] = json!(18.1);
+        t["status"] = json!("active");
+        let out = next_task(&ctx, &json!({ "tasks": [t] }), anchor());
+        for l in out.lines() {
+            assert!(l.width() <= 60, "{} cells at 60: {l:?}\n{out}", l.width());
+        }
+        assert!(
+            out.lines().next().is_some_and(|l| l.contains("#48  Renew")),
+            "{out}"
+        );
+        let facts = out.lines().nth(1).expect("a facts line");
+        assert!(facts.contains("18.1"), "{out}");
+        assert!(facts.contains("due "), "the deadline gave way: {out}");
+        assert!(
+            !facts.contains("infrastructure"),
+            "a fact was cut rather than dropped, or kept over the deadline: {facts:?}"
+        );
+        // The running state is still on screen when its fact is not: the
+        // command line offers `done`, not `start`.
+        assert!(out.contains("tasqx done 48"), "{out}");
+    }
+
+    /// #346 review: a memory title gives way only once the columns beside it
+    /// have gone. Widest-first shrinking cut `Cut build time under five
+    /// minutes` to 22 cells at 100 columns while a 20-cell match fragment and
+    /// the source printed beside it, and `memory list` cut titles to 13 cells
+    /// at 60 to keep PROJECT. The title's floor is now what the terminal can
+    /// give it beside the id, in both tables.
+    #[test]
+    fn a_memory_title_gives_way_only_after_the_columns_beside_it() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(100);
+        let hit = |title: &str, source: &str| {
+            json!({ "id": "01a0903d-243b-7842-8f5c-184005a2d8f2", "kind": "doc",
+                    "title": title, "source": source,
+                    "snippet": "Blocked on the release of the new runner image; revisit after the infra release train" })
+        };
+        let out = memory_hits(
+            &ctx,
+            &json!({ "count": 2, "total": 2, "hits": [
+                hit("Cut build time under five minutes", "task:#55"),
+                hit("release-process", "docs/release.md"),
+            ] }),
+            "release",
+        );
+        assert!(
+            out.contains("Cut build time under five minutes"),
+            "the title was cut while other columns kept room: {out}"
+        );
+        assert!(!out.contains("SOURCE"), "{out}");
+
+        let ctx = ctx.with_cols(60);
+        let doc = |title: &str| {
+            json!({ "id": "01a0903c-c020-70e3-8c9a-7f625ab84c91", "title": title,
+                    "project": "website", "modified": "2026-08-01T00:00:00Z" })
+        };
+        let out = memory_table(
+            &ctx,
+            &json!({ "total": 2, "docs": [doc("pricing-page-decisions"), doc("dentist")] }),
+            anchor(),
+        );
+        assert!(
+            out.contains("pricing-page-decisions"),
+            "the title was cut to keep PROJECT: {out}"
+        );
+        assert!(!out.contains("PROJECT"), "{out}");
+    }
+
+    /// #346 review: a stray backtick does not turn the rest of a note into one
+    /// word. The unrecognized-status note embeds raw store text and the miss
+    /// hint the query as typed, so either can carry one.
+    #[test]
+    fn prose_holds_only_paired_backticks() {
+        use unicode_width::UnicodeWidthStr;
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(60);
+        let note = "every term was required: \"it`s\" and then enough further words \
+                    that the note cannot fit on one sixty-column line";
+        let out = prose(&ctx, None, note, "");
+        for l in out.lines() {
+            assert!(l.width() <= 60, "{} cells: {l:?}\n{out}", l.width());
+        }
+    }
+
+    /// #346 review: on a miss the D69 hint is the only thing on the screen
+    /// that says what to do next, so it is not painted in the dimmest role.
+    #[test]
+    fn a_search_miss_does_not_dim_its_hint() {
+        let ctx = Ctx::new(
+            theme::default_theme(),
+            Caps {
+                depth: theme::ColorDepth::Truecolor,
+                ansi: true,
+                unicode: true,
+            },
+        );
+        let out = memory_hits(
+            &ctx,
+            &json!({ "count": 0, "total": 0, "hits": [], "matched": "\"zebra\"" }),
+            "zebra",
+        );
+        let hint = out
+            .lines()
+            .find(|l| l.contains("every term was required"))
+            .unwrap_or_else(|| panic!("no hint: {out:?}"));
+        let muted = ctx.paint("muted", "\u{0}");
+        let muted = muted.split('\u{0}').next().expect("an SGR prefix");
+        assert!(!hint.contains(muted), "the hint is muted: {hint:?}");
     }
 
     /// Finding #3 (audit-2026-09): `start`/`stop`/`done` confirmed an action
@@ -5961,6 +6544,10 @@ mod tests {
                 "| rail, blocked | `{}` (`{}` without Unicode) |",
                 rail("pending", true, true),
                 rail("pending", true, false)
+            ),
+            format!(
+                "| rail, the one in effect | `{}` (`projects`, `theme list`) |",
+                CurrentRail::MARK
             ),
             format!("| gauge, full cell | `{full}` |"),
             format!("| gauge, track | `{track}` |"),
@@ -7564,7 +8151,13 @@ mod tests {
             2,
             "the fixture must trip both notes: {notes:?}"
         );
+        // Compared with the line breaks folded into spaces: both views wrap
+        // their notes to the terminal (#346), so a note longer than the width
+        // is the same words over two lines, and agreement is about the words.
+        let fold = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let (list, agenda) = (fold(&list), fold(&agenda));
         for note in &notes {
+            let note = fold(note);
             assert!(
                 list.contains(note.as_str()),
                 "`list` dropped a store-health note:\n{list}"

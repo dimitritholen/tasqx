@@ -309,25 +309,27 @@ pub(crate) fn idle_timeout_from_minutes(value: &str) -> Option<Duration> {
 pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
     match action {
         ThemeAction::List => {
-            let mut text = String::new();
-            text.push_str(&format!("{}\n", ctx.paint("header", "Built-in themes")));
-            for name in theme::BUILTINS {
-                let marker = if name == ctx.theme.name {
-                    " ← active"
-                } else {
-                    ""
-                };
-                text.push_str(&format!("  {}{}\n", name, ctx.paint("muted", marker)));
+            use crate::columns::{self, Column};
+            use render::CurrentRail;
+
+            struct Row {
+                name: String,
+                user: bool,
+                broken: bool,
             }
+            let mut rows: Vec<Row> = theme::BUILTINS
+                .iter()
+                .map(|name| Row {
+                    name: (*name).to_string(),
+                    user: false,
+                    broken: false,
+                })
+                .collect();
             let mut user_block = Value::Null;
-            if let Some(dir) = themes_dir() {
+            let dir = themes_dir();
+            if let Some(dir) = &dir {
                 let user = user_theme_names();
                 if !user.is_empty() {
-                    text.push_str(&format!("{}\n", ctx.paint("header", "User themes")));
-                    text.push_str(&format!(
-                        "  {}\n",
-                        ctx.paint("muted", &dir.to_string_lossy())
-                    ));
                     // Load-and-validate each file rather than merely listing
                     // its stem (#193, completing D46): a `.toml` that cannot
                     // be parsed used to be offered exactly like a working
@@ -337,23 +339,99 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                     // name.
                     let mut broken = Vec::new();
                     for name in &user {
-                        if theme::load_reporting(name, Some(&dir))
+                        let bad = theme::load_reporting(name, Some(dir))
                             .file
                             .rejection()
-                            .is_some()
-                        {
-                            text.push_str(&format!(
-                                "  {name} {}\n",
-                                ctx.paint("danger", "(parse error)")
-                            ));
+                            .is_some();
+                        if bad {
                             broken.push(name.clone());
-                        } else {
-                            text.push_str(&format!("  {name}\n"));
                         }
+                        rows.push(Row {
+                            name: name.clone(),
+                            user: true,
+                            broken: bad,
+                        });
                     }
                     user_block =
                         json!({ "dir": dir.to_string_lossy(), "names": user, "broken": broken });
                 }
+            }
+
+            // A table since #346, on the house style's terms: the active theme
+            // is marked in the rail (rule 4) rather than by nine cells of
+            // `← active`, the header is a `table.label` rather than a
+            // `Built-in themes` painted as a title (rule 12), and FROM and
+            // STATUS are drawn only when some row has something to put in
+            // them (D51). The directory user themes come from is said once,
+            // under the table, rather than on every row that came from it.
+            // The LAST row of that name that loads: a user file named like a
+            // built-in is the one `theme::load` uses, and user rows come after
+            // the built-ins.
+            let active = rows
+                .iter()
+                .rposition(|r| r.name == ctx.theme.name && !r.broken);
+            let rail = CurrentRail::over([active.is_some()]);
+            let any_user = rows.iter().any(|r| r.user);
+            let any_broken = rows.iter().any(|r| r.broken);
+            let name_w = rows
+                .iter()
+                .map(|r| render::width(&r.name))
+                .max()
+                .unwrap_or(0)
+                .max(render::width("THEME"));
+            let from_w = if any_user {
+                render::width("built-in")
+            } else {
+                0
+            };
+            let status_w = if any_broken {
+                render::width("parse error")
+            } else {
+                0
+            };
+            let w = columns::fit(
+                &[
+                    Column::shrinks(name_w, name_w.min(12)),
+                    Column::drops(from_w, from_w),
+                    Column::drops(status_w, status_w),
+                ],
+                ctx.cols.saturating_sub(rail.width()),
+            );
+            let line = |cells: [(Option<&str>, &str); 3]| {
+                render::join_cells(
+                    cells
+                        .iter()
+                        .zip(&w)
+                        .filter(|(_, w)| **w > 0)
+                        .map(|((role, text), w)| render::cell(ctx, *role, text, *w))
+                        .collect(),
+                )
+            };
+            let mut text = format!(
+                "{}{}\n",
+                rail.cell(ctx, false),
+                ctx.paint(
+                    "table.label",
+                    &line([(None, "THEME"), (None, "FROM"), (None, "STATUS")])
+                )
+            );
+            for (i, r) in rows.iter().enumerate() {
+                text.push_str(&rail.cell(ctx, active == Some(i)));
+                text.push_str(&line([
+                    (None, &r.name),
+                    (Some("muted"), if r.user { "user" } else { "built-in" }),
+                    (Some("danger"), if r.broken { "parse error" } else { "" }),
+                ]));
+                text.push('\n');
+            }
+            if let (true, Some(dir)) = (any_user, &dir) {
+                text.push('\n');
+                text.push_str(&render::prose(
+                    ctx,
+                    Some("muted"),
+                    &format!("user themes are read from {}", dir.to_string_lossy()),
+                    "",
+                ));
             }
             Ok((
                 json!({ "active": ctx.theme.name, "builtin": theme::BUILTINS, "user": user_block }),
@@ -397,28 +475,57 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
             };
             // Block glyphs are Unicode; degrade the swatch to ASCII on the plain/
             // legacy path so `theme show | cat` never emits mojibake.
-            let swatch = if preview.caps.unicode {
-                "████"
-            } else {
-                "####"
-            };
             let bar = if preview.caps.unicode { "█" } else { "#" };
             let mut text = String::new();
             text.push_str(&format!(
-                "{}\n",
+                "{}\n\n",
                 preview.paint("header", &format!("Theme: {}", preview.theme.name))
             ));
-            // The resolved role→colour map, built from the SAME `role_names` walk
-            // that prints the swatches, so the two views of one theme cannot come
-            // to differ about which roles it defines.
+            // One row per role, since #346: the role's NAME painted in the
+            // role, which makes the name its own sample, then its colour and
+            // its emphasis in words. It printed `████ sample text` seventeen
+            // times, and under NO_COLOR and in `mono` every one of those was
+            // the same grey bar, so the preview said nothing on exactly the
+            // terminals where a theme author most needs to know what a role
+            // does. The hex and the words say it on every terminal.
+            //
+            // The resolved role→colour map is built from the SAME `role_names`
+            // walk that prints the rows, so the two views of one theme cannot
+            // come to differ about which roles it defines.
+            let names = preview.theme.role_names();
+            let role_w = names
+                .iter()
+                .map(|r| render::width(r))
+                .chain([render::width("urgency.ramp"), render::width("ROLE")])
+                .max()
+                .unwrap_or(0);
+            let gap = " ".repeat(crate::columns::GAP);
+            text.push_str(&preview.paint(
+                "table.label",
+                &format!("{:<role_w$}{gap}{:<7}{gap}STYLE", "ROLE", "COLOUR"),
+            ));
+            text.push('\n');
             let mut roles = serde_json::Map::new();
-            for role in preview.theme.role_names() {
-                let sample =
-                    preview
-                        .theme
-                        .paint(&role, &format!("{swatch} sample text"), &preview.caps);
-                text.push_str(&format!("  {:<14} {sample}\n", role));
+            for role in names {
                 let st = preview.theme.role(&role);
+                let colour = st.fg.map_or_else(|| "-".to_string(), |c| c.hex());
+                let emphasis = [
+                    (st.bold, "bold"),
+                    (st.dim, "dim"),
+                    (st.underline, "underline"),
+                ]
+                .iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, word)| *word)
+                .collect::<Vec<_>>()
+                .join(" ");
+                let row = render::join_cells(vec![
+                    render::cell(&preview, Some(&role), &role, role_w),
+                    render::cell(&preview, Some("muted"), &colour, 7),
+                    preview.paint("muted", &emphasis),
+                ]);
+                text.push_str(&row);
+                text.push('\n');
                 roles.insert(
                     role.clone(),
                     json!({
@@ -450,7 +557,7 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                 })
                 .collect::<Vec<_>>()
                 .join("  ");
-            let head = format!("  {:<14} ", "urgency.ramp");
+            let head = format!("{:<role_w$}{gap}", "urgency.ramp");
             // Measured unpainted: the escapes are not cells.
             let strip_w = starts
                 .iter()

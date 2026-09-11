@@ -9,8 +9,10 @@ and 140 columns. None of them were visible to a fully green test suite, and two
 of them — the gauge's resolution and its inverted ranking — could not have been
 found any other way. §14 is the loop that makes that cheap.
 
-`list`, `agenda`, the dashboard, the memory browser, `pick`, `show`, `next`,
-`why`, `add`'s echo and `tasqx manual` carry the style. `report` does not yet.
+`list`, `agenda`, the dashboard, the memory browser, `memory search`,
+`pick`, `show`, `next`, `why`, `add`'s echo, `projects`, `report`,
+`theme list`, `theme show` and `tasqx manual` carry the style.
+`config list`, `tokens recompute` and the write echoes do not yet.
 The manual, the one screen that is mostly prose, adds conventions of its own
 (a prose measure, two heading levels, copied code never split); they are
 written down in `crates/tasqx-cli/src/manual.rs`'s module doc, and named by
@@ -35,7 +37,7 @@ would say in half the space.
 Every table is fitted by one function, `columns::fit` (`DESIGN.md` D120), and
 gives way in one order: cells come off the widest column above its floor, then
 droppable columns go from the right. A table only decides what each column asks
-for, where its floor is, and whether it may go. Three rules come with it:
+for, where its floor is, and whether it may go. Two rules come with it:
 
 - **A number never gives way.** Cut, it is a different number; dropped, it may
   be the one the reader asked for by name. The key column shrinks instead, and
@@ -43,8 +45,12 @@ for, where its floor is, and whether it may go. Three rules come with it:
 - **Data is cut only where the terminal cannot hold it.** A wrapped row breaks
   every column at once, so a name or a value gets an ellipsis first, and the
   column that says where something came from goes before the data does.
-- **A record is not a table.** Its name stays, its parenthetical goes first,
-  and the line under it is cut to the width.
+
+The tables of things a reader picks one of (`memory list`, `memory search`) put
+the title's floor at what the terminal can give it beside the id, so every
+other column goes before the title gives way. They were records until D121 and
+#346, a name with a parenthetical and a snippet under it; nothing on a read
+screen prints one now.
 
 ## 3. Dates are calendar days — not instants, not elapsed hours
 
@@ -86,6 +92,13 @@ who most needs the terminal to behave.
 This is what the old arrangement cost: the running timer — the single piece of
 state a work block depends on — sat to the RIGHT of a title that can run 72
 cells, in a column `TaskCols::fit` drops on a narrow terminal.
+
+A table of choices has one state worth a rail: which one is in effect.
+`projects` marks the default and `theme list` the active theme with `*`, the
+way `git branch` marks the branch that is checked out. It replaced a
+seven-cell DEFAULT column holding one `*`, and nine cells of `← active`. The
+same glyph is the running marker without Unicode, and the two never meet: no
+screen that draws this rail draws a task.
 
 ## 5. A modifier belongs in the cell it modifies
 
@@ -242,6 +255,7 @@ leaving a guide describing a screen that no longer exists.
 |---|---|
 | rail, running | `▶` (`*` without Unicode) |
 | rail, blocked | `⊘` (`B` without Unicode) |
+| rail, the one in effect | `*` (`projects`, `theme list`) |
 | gauge, full cell | `▄` |
 | gauge, track | `▁` |
 | gauge, remainder | `▂` `▃` |
@@ -252,9 +266,9 @@ leaving a guide describing a screen that no longer exists.
 
 ## Where it is not carried yet
 
-- `report` — not judged as an image. `report`, `projects`, `config list` and
-  the memory records fit the width (D120) and take `table.label`, but nothing
-  else about them has been restyled.
+- `config list` and `tokens recompute` — not judged as images. `config list`
+  fits the width (D120) and takes `table.label`; `tokens recompute` still
+  counts `N task(s)`.
 - The write echoes (`start`, `done`, `modify`, …), family C (#348).
 - The dashboard carries it. The disagreement its spec had with rule 4 (`⛔` for
   blocked where this file says `⊘`) is settled in favour of `⊘`, which is what

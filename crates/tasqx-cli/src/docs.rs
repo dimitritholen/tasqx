@@ -1336,7 +1336,9 @@ fn page_commands() -> String {
     s.push_str(&h3("projects"));
     s.push_str(&p(
         "Lists projects created with <code>init</code>. Add <code>--all</code> to include archived \
-         ones. The <code>*</code> marks the <a href=\"#use\">default project</a>. Every project a \
+         ones, which say so in a <code>STATUS</code> column. The <code>*</code> at the left edge \
+         marks the <a href=\"#use\">default project</a>, the way <code>git branch</code> marks \
+         the branch that is checked out. Every project a \
          task can be in is on this list: naming a project no <code>init</code> created is \
          <code>not_found</code> (exit 4) and naming an archived one is <code>conflict</code> \
          (exit 5), on <code>add</code> and <code>modify</code> alike — a typo'd \
@@ -1345,8 +1347,8 @@ fn page_commands() -> String {
     ));
     s.push_str(&snippet(
         "tasqx projects",
-        "DEFAULT  PROJECT                   ARCHIVED   DESCRIPTION\n\
-         *        work.tasqx                no         The tasqx project itself",
+        "\x20 PROJECT     DESCRIPTION\n\
+         * work.tasqx  The tasqx project itself",
     ));
 
     // ---- use
@@ -1402,9 +1404,9 @@ fn page_commands() -> String {
     ));
     s.push_str(&snippet(
         "tasqx projects --all",
-        "DEFAULT  PROJECT                   ARCHIVED   DESCRIPTION\n\
-         \x20        prive.klussen             yes\n\
-         *        work.tasqx                no         The tasqx project itself",
+        "\x20 PROJECT        STATUS    DESCRIPTION\n\
+         \x20 prive.klussen  archived\n\
+         * work.tasqx               The tasqx project itself",
     ));
     s.push_str(&p(
         "\u{201c}No write may name it\u{201d} includes <code>archive</code> itself. Retiring a \
@@ -2520,11 +2522,12 @@ fn page_themes() -> String {
     s.push_str(&p("Five built-ins. Resolution order: <code>--theme</code>, <code>$TASQX_THEME</code>, <code>config.toml</code>, default."));
     s.push_str(&snippet(
         "tasqx theme list",
-        "Built-in themes\n  nord ← active\n  gruvbox\n  dracula\n  solarized\n  mono",
+        "\x20 THEME\n* nord\n  gruvbox\n  dracula\n  solarized\n  mono",
     ));
     s.push_str(&p(
-        "<code>tasqx theme show [name]</code> previews every role plus the urgency ramp's bands, \
-         rendered at your terminal's <em>real</em> capability. Set one permanently:",
+        "The <code>*</code> marks the theme in effect. <code>tasqx theme show [name]</code> \
+         previews every role, its name drawn in that role beside its colour and emphasis, plus \
+         the urgency ramp's bands, rendered at your terminal's <em>real</em> capability. Set one permanently:",
     ));
     s.push_str(&pre_plain("# config.toml\n[theme]\nname = \"gruvbox\""));
     s.push_str(&p(

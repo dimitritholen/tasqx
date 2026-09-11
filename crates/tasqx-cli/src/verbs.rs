@@ -796,39 +796,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
                 params["raw"] = json!(true);
             }
             let result = be.call("memory.search", &params)?;
-            let mut text = String::new();
-            for hit in result["hits"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
-                let title = render::san(hit["title"].as_str().unwrap_or(""));
-                let kind = render::san(hit["kind"].as_str().unwrap_or("?"));
-                let src = render::san(hit["source"].as_str().unwrap_or("—"));
-                let snip = render::san(hit["snippet"].as_str().unwrap_or(""));
-                let id = render::san(hit["id"].as_str().unwrap_or("?"));
-                let (cols, uni) = (ctx.cols, ctx.caps.unicode);
-                text.push_str(&format!(
-                    "{}\n{}\n  id {id}\n",
-                    render::record_head(&title, &format!("{kind} · {src}"), cols, uni),
-                    render::record_line(&snip, cols, uni),
-                ));
-            }
-            let count = result["count"].as_u64().unwrap_or(0);
-            let total = result["total"].as_u64().unwrap_or(count);
-            text.push_str(&format!("{count} hit(s)"));
-            if total > count {
-                text.push_str(&format!(" of {total} — raise --limit for the rest"));
-            }
-            text.push('\n');
-            // On a miss, name the expression that produced it (D69). Every
-            // word of a plain query is a required phrase, so a question typed
-            // as a sentence comes back exactly as empty as a subject nobody
-            // ever wrote down — and the two need different next moves.
-            if count == 0 {
-                if let Some(matched) = result["matched"].as_str() {
-                    text.push_str(&format!(
-                        "  every term was required: {}\n",
-                        render::san(matched)
-                    ));
-                }
-            }
+            let text = render::memory_hits(ctx, &result, &query.join(" "));
             Ok((result, text))
         }
         MemoryAction::Show { id } => {

@@ -1,8 +1,9 @@
 //! Fitting a row of columns to the width of the terminal.
 //!
 //! One algorithm for every table the CLI prints (#352). `render::TaskCols`
-//! sizes `list` and `agenda` with it, and `projects`, `config list` and
-//! `report` are laid out on it. Before this only the task table read the
+//! sizes `list` and `agenda` with it, and `projects`, `config list`,
+//! `report`, `memory list`, `memory search` and `theme list` are laid out on
+//! it. Before this only the task table read the
 //! terminal's width. The other three hand-rolled their widths beside it and
 //! wrapped, and a wrapped row destroys the alignment of every column at once.
 //!
@@ -102,12 +103,42 @@ pub(crate) fn total(widths: &[usize]) -> usize {
 ///   positional, so a reader can predict which column goes without reading
 ///   this function.
 ///
+/// Once a column has been dropped, the shrink pass runs again from what the
+/// survivors asked for, so the cells the drop freed go back to the columns
+/// that gave them, by the same widest-first rule (#346). Keeping the floors
+/// instead cut `memory list`'s titles to twelve cells beside ten empty ones.
+///
 /// A row that still does not fit after both passes overflows. The floors are
 /// where a column stops meaning anything, and a table of columns that mean
 /// nothing is not the better answer.
 pub(crate) fn fit(cols: &[Column], budget: usize) -> Vec<usize> {
     let mut w: Vec<usize> = cols.iter().map(|c| c.width).collect();
-    let mut over = total(&w).saturating_sub(budget);
+    shrink(cols, &mut w, budget);
+    let mut dropped = false;
+    for i in (0..cols.len()).rev() {
+        if total(&w) <= budget {
+            break;
+        }
+        if cols[i].droppable && w[i] > 0 {
+            w[i] = 0;
+            dropped = true;
+        }
+    }
+    if dropped {
+        for (wi, c) in w.iter_mut().zip(cols) {
+            if *wi > 0 {
+                *wi = c.width;
+            }
+        }
+        shrink(cols, &mut w, budget);
+    }
+    w
+}
+
+/// The shrink pass: over `budget`, one cell at a time off whichever present
+/// column is widest above its floor.
+fn shrink(cols: &[Column], w: &mut [usize], budget: usize) {
+    let mut over = total(w).saturating_sub(budget);
     while over > 0 {
         // `max_by_key` keeps the LAST of equal maxima, so after the rank a
         // tie goes right.
@@ -120,15 +151,6 @@ pub(crate) fn fit(cols: &[Column], budget: usize) -> Vec<usize> {
         w[widest] -= 1;
         over -= 1;
     }
-    for i in (0..cols.len()).rev() {
-        if total(&w) <= budget {
-            break;
-        }
-        if cols[i].droppable {
-            w[i] = 0;
-        }
-    }
-    w
 }
 
 #[cfg(test)]
@@ -195,6 +217,27 @@ mod tests {
         // 10+8+6+8 + 3 gaps = 38.
         assert_eq!(fit(&cols, 28), vec![10, 8, 6, 0]);
         assert_eq!(fit(&cols, 18), vec![10, 0, 6, 0]);
+    }
+
+    /// A dropped column's cells go back to the columns that gave them (#346).
+    ///
+    /// The fitter shrank every column to its floor before it dropped one, and
+    /// kept the floors after the drop had made room. At 60 columns `memory
+    /// list` cut every title to twelve cells (`release-p...`) beside ten
+    /// empty ones: data cut where the terminal could hold it, which D120(c)
+    /// rules out.
+    #[test]
+    fn cells_freed_by_a_drop_go_back_to_the_columns_that_gave_them() {
+        let cols = [
+            Column::shrinks(30, 10),
+            Column::drops(40, 30),
+            Column::fixed(20),
+        ];
+        // At every floor: 10 + 30 + 20 + 2 gaps = 64 > 50, so the middle goes,
+        // and the first gets back what the row can now hold: 50 - 20 - 2.
+        assert_eq!(fit(&cols, 50), vec![28, 0, 20]);
+        // Never more than it asked for.
+        assert_eq!(fit(&cols, 60), vec![30, 0, 20]);
     }
 
     /// Nothing left to give: the row overflows rather than cutting a column

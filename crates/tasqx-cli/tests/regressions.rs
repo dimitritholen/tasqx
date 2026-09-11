@@ -2938,6 +2938,12 @@ fn every_table_fits_a_sixty_column_terminal() {
         &["report"],
         &["memory", "list"],
         &["memory", "search", "memory"],
+        &["theme", "list"],
+        &["theme", "show"],
+        // Not tables, but the prose under them ran past 60 (#346): the
+        // agenda's undated note is the one this store produces.
+        &["agenda"],
+        &["next"],
     ] {
         let out = run(args);
         assert!(out.status.success(), "`tasqx {}` failed", args.join(" "));
@@ -3020,6 +3026,232 @@ fn memory_list_off_a_terminal_is_one_line_per_doc() {
     );
     assert!(!text.contains("doc(s)"), "the old trailer: {text}");
     assert!(!text.contains("---"), "frontmatter leaked: {text}");
+}
+
+/// #346: `memory search` off a terminal is `memory list`'s table (D121(f)):
+/// the query and what it found on one line, a header, then one line per hit
+/// with its id on the row it names.
+///
+/// It printed three lines per hit (the title with `(doc · source)`, the
+/// snippet, and `id <uuid>` on a line of its own), every line at the same
+/// weight, and closed on `N hit(s)`. A grep for a title found a line without
+/// the handle `memory show` takes.
+#[test]
+fn memory_search_off_a_terminal_is_one_line_per_hit() {
+    let dir = fresh_config_dir("memory-search-table");
+    let run = |args: &[&str]| {
+        bin("memory-search-table", &dir)
+            .env("COLUMNS", "120")
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let mut ids = Vec::new();
+    for (title, body) in [
+        ("Deploy checklist", "Run the smoke tests before the deploy."),
+        (
+            "Release notes style",
+            "Write them for users, not for the deploy log.",
+        ),
+        ("Unrelated", "Nothing to see."),
+    ] {
+        let out = run(&["--json", "memory", "add", "--", title, body]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        ids.push(v["id"].as_str().expect("an id").to_string());
+    }
+
+    let out = run(&["memory", "search", "deploy"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[0].contains("deploy") && lines[0].contains("2 hits"),
+        "the summary must name the query and what it found: {text}"
+    );
+    let header = lines
+        .iter()
+        .position(|l| l.contains("TITLE") && l.contains("ID"))
+        .unwrap_or_else(|| panic!("no header: {text}"));
+    for (title, id) in [
+        ("Deploy checklist", &ids[0]),
+        ("Release notes style", &ids[1]),
+    ] {
+        let row = lines[header + 1..]
+            .iter()
+            .find(|l| l.contains(title))
+            .unwrap_or_else(|| panic!("no row for {title}: {text}"));
+        assert!(
+            row.contains(id.as_str()),
+            "the id is not on the row: {row:?}"
+        );
+    }
+    assert_eq!(
+        lines.len(),
+        header + 3,
+        "one line per hit and nothing more: {text}"
+    );
+    assert!(!text.contains("hit(s)"), "the old trailer: {text}");
+
+    // Bounded: both numbers, and the exact flag that shows the rest (rule 10).
+    let out = run(&["memory", "search", "--limit", "1", "deploy"]);
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        text.lines()
+            .next()
+            .is_some_and(|l| l.contains("2 hits") && l.contains("1 shown")),
+        "a bounded search must name both numbers: {text}"
+    );
+    assert!(
+        text.contains("--limit 2"),
+        "the flag that shows every hit is not named: {text}"
+    );
+
+    // A miss still names the expression that produced it (D69).
+    let out = run(&["memory", "search", "zebra"]);
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        text.contains("0 hits") && text.contains("every term was required"),
+        "{text}"
+    );
+}
+
+/// #346: `theme list` is a table. The active theme is marked in a rail, the
+/// way `git branch` marks the checked-out one, and the column header is a
+/// `table.label`, not a `header`.
+///
+/// It printed `Built-in themes` in the `header` role, a group label painted
+/// as a title (`docs/terminal-style.md` rule 12), and spent nine cells of
+/// `← active` on one row.
+#[test]
+fn theme_list_marks_the_active_theme_in_a_rail() {
+    let dir = fresh_config_dir("theme-list-table");
+    std::fs::create_dir_all(dir.join("themes")).unwrap();
+    std::fs::write(
+        dir.join("themes").join("broken.toml"),
+        "name = \"broken\"\n[roles\n",
+    )
+    .unwrap();
+    let out = bin("theme-list-table", &dir)
+        .env("COLUMNS", "100")
+        .args(["--theme", "gruvbox", "theme", "list"])
+        .output()
+        .expect("run tasqx");
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[0].contains("THEME"),
+        "the table opens on its header: {text}"
+    );
+    let row = |name: &str| {
+        lines
+            .iter()
+            .find(|l| l.get(2..).is_some_and(|rest| rest.starts_with(name)))
+            .unwrap_or_else(|| panic!("no row for {name}: {text}"))
+    };
+    assert!(
+        row("gruvbox").starts_with("* "),
+        "the active theme is not marked in the rail: {text}"
+    );
+    assert!(row("nord").starts_with("  "), "{text}");
+    assert!(!text.contains("← active"), "{text}");
+    assert!(!text.contains("Built-in themes"), "{text}");
+    let broken = row("broken");
+    assert!(
+        broken.contains("user") && broken.contains("parse error"),
+        "a user theme says it is one and that it does not load: {broken:?}"
+    );
+    // Where user themes come from is said once, not on every row.
+    assert!(
+        text.contains(&*dir.join("themes").to_string_lossy()),
+        "the user theme directory is not named: {text}"
+    );
+}
+
+/// #346 review: a user file named like a built-in is the theme in effect
+/// (`theme::load` prefers the file), so the rail marks that row and not the
+/// built-in it shadows.
+#[test]
+fn theme_list_marks_the_user_file_that_shadows_a_builtin() {
+    let dir = fresh_config_dir("theme-list-shadow");
+    std::fs::create_dir_all(dir.join("themes")).unwrap();
+    std::fs::write(
+        dir.join("themes").join("nord.toml"),
+        "name = \"nord\"\nextends = \"nord\"\n",
+    )
+    .unwrap();
+    let out = bin("theme-list-shadow", &dir)
+        .env("COLUMNS", "100")
+        .args(["--theme", "nord", "theme", "list"])
+        .output()
+        .expect("run tasqx");
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    let nords: Vec<&str> = text
+        .lines()
+        .filter(|l| l.get(2..).is_some_and(|rest| rest.starts_with("nord ")))
+        .collect();
+    assert_eq!(nords.len(), 2, "{text}");
+    assert!(
+        nords
+            .iter()
+            .any(|l| l.starts_with("* ") && l.contains("user")),
+        "the file in effect is not the marked row: {text}"
+    );
+    assert!(
+        nords
+            .iter()
+            .any(|l| l.starts_with("  ") && l.contains("built-in")),
+        "the shadowed built-in is marked: {text}"
+    );
+}
+
+/// #346: `theme show` says what each role IS, not seventeen times `sample
+/// text`. The role name is painted in its own role, which makes it the
+/// sample, and beside it sit the colour and the emphasis in words.
+///
+/// Under `NO_COLOR` and in `mono` the old preview was the same grey bar on
+/// every row, so it said nothing on exactly the terminals where a theme author
+/// most needs to know what a role does.
+#[test]
+fn theme_show_names_each_roles_colour_and_emphasis() {
+    let dir = fresh_config_dir("theme-show-table");
+    let show = |theme: &str| {
+        let out = bin("theme-show-table", &dir)
+            .env("COLUMNS", "100")
+            .args(["theme", "show", theme])
+            .output()
+            .expect("run tasqx");
+        String::from_utf8(out.stdout).expect("UTF-8")
+    };
+    let nord = show("nord");
+    assert!(!nord.contains("sample text"), "{nord}");
+    assert!(
+        nord.lines()
+            .any(|l| l.contains("ROLE") && l.contains("COLOUR")),
+        "no header: {nord}"
+    );
+    let accent = nord
+        .lines()
+        .find(|l| l.trim_start().starts_with("accent"))
+        .unwrap_or_else(|| panic!("no accent row: {nord}"));
+    assert!(
+        accent.contains("#88c0d0"),
+        "the accent row does not name its colour: {accent:?}"
+    );
+
+    let mono = show("mono");
+    let header = mono
+        .lines()
+        .find(|l| l.trim_start().starts_with("header"))
+        .unwrap_or_else(|| panic!("no header row: {mono}"));
+    assert!(
+        header.contains("bold"),
+        "mono's roles differ only in emphasis, so the row must say which: {header:?}"
+    );
 }
 
 /// D119's `theme show` ramp line fits the terminal it is printed on.
