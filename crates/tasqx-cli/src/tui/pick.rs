@@ -43,7 +43,7 @@ use tasqx_core::markdown::TimeFormat;
 
 use crate::render::{self, TaskCols, TaskRow};
 use crate::theme::{Caps, Ctx, Theme};
-use crate::tui::{self, first_visible, footer_spans, fuzzy, rt_style, Hint, Key};
+use crate::tui::{self, first_visible, fuzzy, rt_style, Hint, Key};
 
 /// A margin, the cursor glyph and a space: the memory browser's lead.
 const LEAD: usize = 3;
@@ -495,8 +495,10 @@ impl App {
 // The key tables
 // ============================================================================
 
-/// The list's keys. The footer is drawn from this, lowest rank first, so the
-/// way out ranks first of all: at any width the bar says how to leave.
+/// The list's keys with no search kept. The footer is drawn from this, lowest
+/// rank first, so the way out ranks first of all: at any width the bar says
+/// how to leave. Esc leaves here, so it rides on `q`'s row rather than being
+/// called `clear` with nothing to clear.
 pub const LIST_KEYS: &[Key] = &[
     Key {
         keys: "j / k",
@@ -544,8 +546,67 @@ pub const LIST_KEYS: &[Key] = &[
         }),
     },
     Key {
+        keys: "q / esc",
+        // "leave", not "quit": opened from the dashboard, `q` goes back to it.
+        help: "leave, starting nothing (back to the dashboard, when opened from it)",
+        footer: Some(Hint {
+            keys: "q",
+            word: "leave",
+            rank: 0,
+        }),
+    },
+];
+
+/// The list's keys with a search kept: Esc clears it first.
+pub const LIST_FILTERED_KEYS: &[Key] = &[
+    Key {
+        keys: "j / k",
+        help: "move down / up (the arrows too)",
+        footer: Some(Hint {
+            keys: "j/k",
+            word: "move",
+            rank: 2,
+        }),
+    },
+    Key {
+        keys: "/",
+        help: "change the search",
+        footer: Some(Hint {
+            keys: "/",
+            word: "search",
+            rank: 1,
+        }),
+    },
+    Key {
+        keys: "enter",
+        help: "read the task under the cursor",
+        footer: Some(Hint {
+            keys: "enter",
+            word: "open",
+            rank: 1,
+        }),
+    },
+    Key {
+        keys: "s",
+        help: "start the task under the cursor, and leave",
+        footer: Some(Hint {
+            keys: "s",
+            word: "start",
+            rank: 1,
+        }),
+    },
+    Key {
+        keys: "g / G",
+        help: "first / last task",
+        footer: Some(Hint {
+            keys: "g/G",
+            word: "ends",
+            rank: 4,
+        }),
+    },
+    Key {
         keys: "esc",
-        help: "clear the search; with none, leave",
+        help: "clear the search",
         footer: Some(Hint {
             keys: "esc",
             word: "clear",
@@ -554,7 +615,6 @@ pub const LIST_KEYS: &[Key] = &[
     },
     Key {
         keys: "q",
-        // "leave", not "quit": opened from the dashboard, `q` goes back to it.
         help: "leave, starting nothing (back to the dashboard, when opened from it)",
         footer: Some(Hint {
             keys: "q",
@@ -699,17 +759,42 @@ pub const DETAIL_KEYS: &[Key] = &[
     },
 ];
 
-/// The table for the state the screen is in. A list or a search with nothing
-/// in it has a table of its own, so the bar never offers a key that has
-/// nothing to act on.
+/// The card's keys when it fits the screen: nothing to scroll.
+pub const DETAIL_FIT_KEYS: &[Key] = &[
+    Key {
+        keys: "s",
+        help: "start this task, and leave",
+        footer: Some(Hint {
+            keys: "s",
+            word: "start",
+            rank: 1,
+        }),
+    },
+    Key {
+        keys: "esc / q",
+        help: "back to the list",
+        footer: Some(Hint {
+            keys: "esc",
+            word: "back",
+            rank: 0,
+        }),
+    },
+];
+
+/// The table for the state the screen is in. Each state that has keys with
+/// nothing to act on — nothing listed, no search to clear, a card with
+/// nothing to scroll — has a table of its own, so the bar only names live
+/// keys (D62).
 fn keys_for(app: &App) -> &'static [Key] {
     let empty = app.matches.is_empty();
-    match (app.mode, empty) {
-        (Mode::List, false) => LIST_KEYS,
-        (Mode::List, true) => LIST_EMPTY_KEYS,
-        (Mode::Search, false) => SEARCH_KEYS,
-        (Mode::Search, true) => SEARCH_EMPTY_KEYS,
-        (Mode::Detail, _) => DETAIL_KEYS,
+    match app.mode {
+        Mode::List if empty => LIST_EMPTY_KEYS,
+        Mode::List if !app.query.is_empty() => LIST_FILTERED_KEYS,
+        Mode::List => LIST_KEYS,
+        Mode::Search if empty => SEARCH_EMPTY_KEYS,
+        Mode::Search => SEARCH_KEYS,
+        Mode::Detail if app.card().len() > app.detail_rows() => DETAIL_KEYS,
+        Mode::Detail => DETAIL_FIT_KEYS,
     }
 }
 
@@ -753,33 +838,20 @@ pub fn render(app: &App, frame: &mut Frame) {
         frame.render_widget(Paragraph::new(Line::from(spans)), foot);
         return;
     }
-    // Where the card is, as a number: measured FIRST and set aside, so the
-    // hints give way to it rather than it to them (a number never gives way).
-    let mut pos = String::new();
-    if app.mode == Mode::Detail {
-        let total = app.card().len();
-        let rows = app.detail_rows();
-        if total > rows {
-            let from = app.scroll + 1;
-            let to = (app.scroll + rows).min(total);
-            let dash = if app.caps.unicode { "–" } else { "-" };
-            pos = format!("{from}{dash}{to} of {total} ");
-        }
-    }
-    let room = (area.width as usize).saturating_sub(1 + render::width(&pos));
-    spans.extend(footer_spans(
+    // Where the card is, when it is longer than the screen: `tui::key_bar`
+    // measures that number first, so the hints give way to it.
+    let position = (app.mode == Mode::Detail).then(|| {
+        let card = app.card().len();
+        (app.scroll, app.detail_rows(), card)
+    });
+    let spans = tui::key_bar(
         keys_for(app),
-        room as u16,
+        area.width,
+        position,
         sty("accent"),
         sty("muted"),
         app.caps.unicode,
-    ));
-    if !pos.is_empty() {
-        let used: usize = spans.iter().map(|s| render::width(&s.content)).sum();
-        let gap = (area.width as usize).saturating_sub(used + render::width(&pos));
-        spans.push(Span::raw(" ".repeat(gap)));
-        spans.push(Span::styled(pos, sty("muted")));
-    }
+    );
     frame.render_widget(Paragraph::new(Line::from(spans)), foot);
 }
 
@@ -818,39 +890,20 @@ fn draw_list(
     ];
     let lead_w = 1 + 4 + 3;
     if app.mode == Mode::Search || !app.query.is_empty() {
-        let searching = app.mode == Mode::Search;
-        // Fitted like `list`'s summary: the count is a number and never gives
-        // way (rule 2), the filter goes first when the line is too long, and
-        // then the query loses its HEAD, keeping the end the reader is typing
-        // at. At 40 columns the count used to be cut to `1`.
-        let count = format!("{} of {} match", app.matches.len(), app.rows.len());
-        let caret = if searching {
-            if unicode {
-                "▏"
-            } else {
-                "_"
-            }
-        } else {
-            ""
-        };
-        let room = w.saturating_sub(lead_w + 3 + render::width(&count));
-        let query_w = 2 + render::width(&app.query) + render::width(caret);
-        let filter_w = render::width(&app.filter) + 3;
-        if filter_w + query_w <= room {
-            head.push(Span::styled(app.filter.clone(), sty("muted")));
-            head.push(Span::raw("   "));
-        }
-        head.push(Span::styled(
-            "/ ",
-            sty(if searching { "accent" } else { "muted" }),
+        // The memory browser's search line too: one function fits both.
+        head.extend(tui::search_spans(
+            &tui::SearchLine {
+                filter: &app.filter,
+                query: &app.query,
+                searching: app.mode == Mode::Search,
+                kept: app.matches.len(),
+                total: app.rows.len(),
+            },
+            w.saturating_sub(lead_w),
+            sty("accent"),
+            sty("muted"),
+            unicode,
         ));
-        let query_room = room.saturating_sub(2 + render::width(caret));
-        head.push(Span::raw(tail_fit(&app.query, query_room, unicode)));
-        if searching {
-            head.push(Span::styled(caret, sty("accent")));
-        }
-        head.push(Span::raw("   "));
-        head.push(Span::styled(count, sty("muted")));
     } else {
         let tasks: Vec<&Value> = app.rows.iter().map(|r| &r.task).collect();
         let summary = render::table_summary(
@@ -927,28 +980,6 @@ fn draw_list(
         let spans = tui::fit_spans(spans, w, unicode);
         line_at(frame, area, top + (n - first) as u16, spans);
     }
-}
-
-/// The END of `text` in at most `cells` cells, an ellipsis standing for what
-/// was cut from the front: the part of a query the reader is typing at.
-fn tail_fit(text: &str, cells: usize, unicode: bool) -> String {
-    if render::width(text) <= cells {
-        return text.to_string();
-    }
-    let dots = if unicode { "…" } else { "..." };
-    let keep = cells.saturating_sub(render::width(dots));
-    let mut tail: Vec<char> = Vec::new();
-    let mut used = 0;
-    for c in text.chars().rev() {
-        let cw = render::width(&c.to_string());
-        if used + cw > keep {
-            break;
-        }
-        used += cw;
-        tail.push(c);
-    }
-    tail.reverse();
-    format!("{dots}{}", tail.into_iter().collect::<String>())
 }
 
 fn draw_detail(app: &App, frame: &mut Frame, area: Rect) {

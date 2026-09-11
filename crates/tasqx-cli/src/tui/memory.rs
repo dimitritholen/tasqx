@@ -25,7 +25,7 @@ use ratatui::Frame;
 use crate::columns::{self, Column};
 use crate::render;
 use crate::theme::{Caps, Theme};
-use crate::tui::{first_visible, footer_spans, fuzzy, rt_style, Hint, Key};
+use crate::tui::{self, first_visible, fuzzy, rt_style, Hint, Key};
 
 /// Below this the screen is not drawn and `memory list` prints its table.
 pub const MIN_WIDTH: u16 = 48;
@@ -786,28 +786,20 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         height: 1,
         ..area
     };
-    let mut spans = vec![Span::raw(" ")];
-    spans.extend(footer_spans(
+    // Where the reader is in a long doc: `tui::key_bar` measures it first,
+    // so the hints give way to it (the one bar `pick`'s card uses too).
+    let position = (app.mode == Mode::Detail).then(|| {
+        let total = app.body_lines(app.detail_width()).len();
+        (app.scroll, app.detail_rows(), total)
+    });
+    let spans = tui::key_bar(
         keys_for(app.mode),
-        area.width.saturating_sub(1),
+        area.width,
+        position,
         sty("accent"),
         sty("muted"),
         app.unicode,
-    ));
-    if app.mode == Mode::Detail {
-        let total = app.body_lines(app.detail_width()).len();
-        let rows = app.detail_rows();
-        if total > rows {
-            let used: usize = spans.iter().map(|s| render::width(&s.content)).sum();
-            let from = app.scroll + 1;
-            let to = (app.scroll + rows).min(total);
-            let dash = if app.unicode { "–" } else { "-" };
-            let pos = format!("{from}{dash}{to} of {total} ");
-            let gap = (area.width as usize).saturating_sub(used + render::width(&pos));
-            spans.push(Span::raw(" ".repeat(gap)));
-            spans.push(Span::styled(pos, sty("muted")));
-        }
-    }
+    );
     frame.render_widget(Paragraph::new(Line::from(spans)), foot);
 }
 
@@ -876,21 +868,20 @@ fn draw_list(app: &App, sty: &dyn Fn(&str) -> RtStyle, frame: &mut Frame, area: 
         Span::raw("   "),
     ];
     if app.mode == Mode::Search || !app.query.is_empty() {
-        let searching = app.mode == Mode::Search;
-        head.push(Span::styled(
-            "/ ".to_string(),
-            sty(if searching { "accent" } else { "muted" }),
-        ));
-        head.push(Span::raw(app.query.clone()));
-        if searching {
-            head.push(Span::styled(
-                if app.unicode { "▏" } else { "_" }.to_string(),
-                sty("accent"),
-            ));
-        }
-        head.push(Span::styled(
-            format!("   {} of {total} match", app.matches.len()),
-            sty("table.label"),
+        // `pick`'s search line too: one function fits both, and the count
+        // never gives way (D123).
+        head.extend(tui::search_spans(
+            &tui::SearchLine {
+                filter: "",
+                query: &app.query,
+                searching: app.mode == Mode::Search,
+                kept: app.matches.len(),
+                total,
+            },
+            w.saturating_sub(1 + 6 + 3),
+            sty("accent"),
+            sty("muted"),
+            app.unicode,
         ));
     } else {
         let mut projects: Vec<&str> = app
@@ -1201,6 +1192,34 @@ mod tests {
             .map(|y| row(buf, y))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The count on the search line is a number and never gives way (rule 2),
+    /// on this screen as on `pick`: one function fits both (D123).
+    #[test]
+    fn the_search_count_stays_whole_on_a_narrow_terminal() {
+        let mut a = app();
+        a.observe(MIN_WIDTH, 12);
+        a.on_key(press(KeyCode::Char('/')));
+        typed(&mut a, "deploy checklist smoke tests");
+        let head = row(&draw(&a, MIN_WIDTH, 12), 0);
+        let n = a.matches.len();
+        assert!(head.contains(&format!("{n} of 4 match")), "{head}");
+    }
+
+    /// The body's position is a number too, and the hints give way to it.
+    #[test]
+    fn the_body_position_stays_whole_on_a_narrow_terminal() {
+        let mut a = app();
+        let long: String = (0..40).map(|n| format!("paragraph {n}\n\n")).collect();
+        a.set_body("a", &long);
+        a.on_key(press(KeyCode::Enter));
+        // 44 columns: narrow enough that the doc's four hints and its
+        // position cannot both fit, which is the competition this is about.
+        a.observe(44, 12);
+        let bar = row(&draw(&a, 44, 12), 11);
+        let total = a.body_lines(a.detail_width()).len();
+        assert!(bar.trim_end().ends_with(&format!("of {total}")), "{bar}");
     }
 
     #[test]

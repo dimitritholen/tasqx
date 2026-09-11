@@ -1258,6 +1258,10 @@ fn page_commands() -> String {
     ));
     for (mode, table) in [
         ("In the list", crate::tui::pick::LIST_KEYS),
+        (
+            "In the list, with a search kept",
+            crate::tui::pick::LIST_FILTERED_KEYS,
+        ),
         ("In the search", crate::tui::pick::SEARCH_KEYS),
         ("On a task's card", crate::tui::pick::DETAIL_KEYS),
     ] {
