@@ -2457,11 +2457,36 @@ fn the_completion_timestamp_reaches_every_human_surface() {
         .expect("the API carries `completed`")
         .to_string();
 
+    // D122: the terminal spells the moment as a calendar day by default
+    // (`today 10:05 (just now)`), so the exact value is asserted where the
+    // reader asked for it, under `detail.time_format = iso`.
+    let show = run(&["show", "1"]);
+    let show_out = String::from_utf8_lossy(&show.stdout);
+    let row = show_out
+        .lines()
+        .find(|l| l.trim_start().starts_with("completed"))
+        .unwrap_or_else(|| panic!("`show` has no completed row: {show_out}"));
+    assert!(
+        row.contains("today"),
+        "the moment is not spelled as a day: {row:?}"
+    );
+    assert!(
+        run(&["config", "set", "detail.time_format", "iso"])
+            .status
+            .success(),
+        "config set"
+    );
     let show = run(&["show", "1"]);
     let show_out = String::from_utf8_lossy(&show.stdout);
     assert!(
         show_out.contains(&ts),
         "`show` must render the `completed` value the API returns ({ts}): {show_out}"
+    );
+    assert!(
+        run(&["config", "set", "detail.time_format", "both"])
+            .status
+            .success(),
+        "config reset"
     );
 
     // A task that was never completed has no such moment, and a detail view
