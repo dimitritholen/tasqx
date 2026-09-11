@@ -451,7 +451,7 @@ fn an_import_with_no_docs_section_says_so_instead_of_printing_the_same_line_as_z
     let (_, b) = store("docstypo", "b");
     let out = ok(&dir, &b, &["import", path.to_str().expect("utf8 path")]);
     assert!(
-        out.contains("0 memory doc(s)"),
+        out.contains("no memory docs"),
         "the doc count must be printed even at zero, not dropped: {out}"
     );
     assert!(
@@ -470,7 +470,7 @@ fn an_import_with_no_docs_section_says_so_instead_of_printing_the_same_line_as_z
         &c,
         &["import", good_path.to_str().expect("utf8 path")],
     );
-    assert!(out.contains("1 memory doc(s)"), "{out}");
+    assert!(out.contains("1 memory doc"), "{out}");
     assert!(
         !out.contains("note: the document carried no `docs` section"),
         "a document that DOES declare `docs` must not get the absence note: {out}"

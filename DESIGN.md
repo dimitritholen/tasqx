@@ -445,16 +445,16 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 
 ```console
 $ tasqx init work.tasqx --desc "Terminal task manager"
-✓ Project work.tasqx created  ·  now your default project
-  tasqx add "…"  drops straight into it.
+work.tasqx
+created   now your default project
 ```
 
 **2 — Add a task (inline NL sugar)**
 
 ```console
 $ tasqx add "Ship the v1 JSON API freeze +release +api project:work.tasqx due:monday 17:00 !high est:4h"
-✓ Added #42  ·  urgency 11.8  ·  due Mon 20 Jul, 17:00  (in 5 days)
-  Ship the v1 JSON API freeze   work.tasqx  +release +api  !H
+▌ #42  Ship the v1 JSON API freeze
+▌ added   H ▄▄▄▃ 11.8   work.tasqx   due Mon   +release +api   est 4h
 ```
 `due:monday 17:00` and `est:4h` are parsed by `jiff` into `2026-07-20T17:00:00+02:00` / `PT4H` before the `task.add` call.
 
@@ -518,27 +518,30 @@ $ tasqx ls status:backlog
 
 ```console
 $ tasqx 42 start
-▶ Started #42  Ship the v1 JSON API freeze
-  timer running · 00:00:04 · press  tasqx stop  when done
+▌ #42  Ship the v1 JSON API freeze
+▶ started   H ▄▄▄▃ 11.8   work.tasqx   due Mon   +release +api   est 4h
 ```
-The `▶` and elapsed clock are green. `task.start` returns `interval_started`; the CLI stores nothing — elapsed is derived on read.
+The `▶` in the rail column says it runs (D123). `task.start` returns `interval_started`; the CLI stores nothing — elapsed is derived on read.
 
 **6 — Stop, with tracked time**
 
 ```console
-$ tasqx stop
-⏸ Stopped #42  ·  tracked 52m  ·  total on this task 3h41m
+$ tasqx stop 42
+▌ #42  Ship the v1 JSON API freeze
+▌ stopped after 52m   tracked 4h of 4h   H ▄▄▄▃ 11.8   work.tasqx   due Mon   +release +api
 ```
-`task.stop` → `{tracked:"PT52M"}`, humanized client-side.
+`task.stop` → `{interval:"PT52M", tracked:"PT3H41M"}`, humanized client-side; the total prints only when it reads differently from the interval (D123).
 
 **7 — Complete, with unblock cascade**
 
 ```console
 $ tasqx 42 done
-✓ Done #42  Ship the v1 JSON API freeze   (3h41m tracked)
-  ↳ now actionable:  #43 Publish API docs   #44 Tag v1.0 release
+▌ #42  Ship the v1 JSON API freeze
+▌ done   tracked 4h of 4h   work.tasqx   due Mon   +release +api
+  #43  unblocked · Publish API docs
+  #44  unblocked · Tag v1.0 release
 ```
-The `↳` line is driven verbatim by `task.done`'s `unblocked:[43,44]` — the CLI turns a data field into a nudge.
+The lines under the card are driven verbatim by `task.done`'s `unblocked:[43,44]` — the CLI turns a data field into a nudge.
 
 **8 — Filter / search**
 
@@ -629,11 +632,12 @@ it. D53.
 
 ```console
 $ tasqx untag 47 blocking
-#47 untagged +blocking   ·   tags: +release +api
+▌ #47  Ship the release
+▌ untagged   +blocking   M ▄▄▃▁ 7.2   work.tasqx   +release +api
 
 $ tasqx undo
-↩ undid tag.remove  ·  #47 Ship the release
-  tags back: +blocking
+▌ #47  Ship the release
+▌ undid untag   +blocking +release +api   M ▄▄▃▁ 7.2   work.tasqx
 ```
 `event.revert` appends the inverse of the **newest** event — the reversed event stays in the log, so
 `tasqx chart` reads "the tag came off, then that was undone". Four operations are undoable; every
@@ -1143,7 +1147,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | **Core** | API v1 declared **stable**; the conformance suite (`crates/tasqx-core/tests/conformance.rs`) is the contract of record — the envelope, the error codes and every method's response shape, with its method floor derived from `dispatch::PARAMS` rather than listed. What it freezes is the **JSON API's shape**; what it does *not* freeze is the MCP **tool schema** — tool names, descriptions and input schemas stay free to move, and `tests/mcp.rs` covers them. The tool *results* are not exempt: `conformance.rs` drives the live `tools/list`, maps each tool to its method and asserts that same frozen result shape, so renaming a response field reddens the MCP half too. Read D56's "excludes MCP" as being about the schema, not the answers. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
 | **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). |
 | **Distribution** | Prebuilt archives for four targets on a tag, plus a `completions/` directory inside each one and a generated Homebrew formula that switches completion on at install time (**D57**, `docs/homebrew-tap.md`). The tap and the Scoop bucket exist (`dimitritholen/homebrew-tasqx`, `dimitritholen/scoop-tasqx`), each filled per release by its generator (`scripts/brew-formula.sh`, `scripts/scoop-manifest.sh`) and merged only after that repo's own CI has installed the result for real; the README leads with them, and a package manager the reader already has outranks the script (**D77**). On top of those archives, `install.sh` and `install.ps1` are the **universal** install route (**D61**, narrowed by D77): a one-liner served raw from `raw.githubusercontent.com` that resolves one host triple, verifies the published `.sha256` and unpacks into a per-user directory, with re-running it as the update path — which is not the self-update D10 forbids, because the binary still never writes to itself. The archives are **not signed**: D10 required notarization and Authenticode, D61 narrows that to deferred, and the consequence ships with the route — on macOS it bypasses Gatekeeper rather than passing it, on Windows it is what SmartScreen is built to interrupt. Signing is scheduled work, not a decided absence. |
-| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report`, `memory list`, `theme list`, `theme show`, and the head line of each `memory search` record — and a number never gives way to make a row fit (**D120**); after a drop the survivors get the freed cells back (**D125**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `projects`, `report`, `theme list` and `theme show` read the same way (#346, under D117 and D120), and `memory search` prints one two-line record per hit whose handle opens it, the id for a doc and the task for an annotation (**D125**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). `pick` is the task browser: `list`'s rows, a `/` search, `show`'s card on Enter and `s` to start (**D124**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
+| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report`, `memory list`, `theme list`, `theme show`, and the head line of each `memory search` record — and a number never gives way to make a row fit (**D120**); after a drop the survivors get the freed cells back (**D125**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `projects`, `report`, `theme list` and `theme show` read the same way (#346, under D117 and D120), and `memory search` prints one two-line record per hit whose handle opens it, the id for a doc and the task for an annotation (**D125**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). Every write echo — `add` and the eighteen verbs after it — is one card in `add`'s voice: the task it named, then what happened and what changed in bold, then `list`'s facts, fitted to the terminal (**D126**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). `pick` is the task browser: `list`'s rows, a `/` search, `show`'s card on Enter and `s` to start (**D124**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
 | **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. Responses are bounded: `task.get` pages its history and drops the duplicate block (D63, D66, D72), still a transport-only bound. `task.list` pages its rows and reports what it withheld (D70) — that page's DEFAULT now lives in the engine itself (**D110**), reachable by `tasqx api`/the CLI too, not only by this transport; MCP's own default-insertion is what still drives its byte-budget bisection over an oversized page. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
 
@@ -3066,3 +3070,115 @@ the commit this work cut from.
 (`fit`), `settings.rs` (`theme show`'s columns, and its COLOUR dropped where no role
 has one), `verbs.rs` (`--raw` reaches the renderer, so the advice can fit the search
 that ran), `docs/terminal-style.md` rules 2, 4 and 9, `tests/regressions.rs`.
+
+### D126 — Every write echo is one card in `add`'s voice, and bold on it means "this write changed it" (task #348)
+
+**Decision:** The eighteen write echoes take `add`'s voice from D122(b): two lines inside
+`show`'s rail. The first is `#N  Title`, the task the command named, in its state after
+the write. The second opens with the outcome word and what changed, in bold, followed by
+`list`'s context in `list`'s order (urgency cell, project, due, tags, est), dropped whole
+from the right. Any other task the write moved gets one line under the card, carrying its
+`▶`/`⊘` in the rail column. Bold on the second line means "this write changed it" and
+nothing else, because under `NO_COLOR` bold is the only emphasis that survives. The plain
+path prints the same words in ASCII and is never fitted, and `--json` does not change.
+One builder draws all of them, `add` included (`render::echo`), and it amends D122(b)
+where `add` changes.
+
+- **(a) The rail column is the one place for state.** Line 2's rail cell is `▶` while the
+  task runs and `⊘` while it is blocked (`*`/`B` without Unicode, at column 0), `▌`
+  otherwise; a line under the card puts its task's glyph in the same column. Only those
+  two glyphs take the slot, so `↩` went, and so did `running again` after an undone stop
+  (rule 11). The rail under `NO_COLOR` no longer says a state by hue alone.
+- **(b) Bold is the outcome and the change.** Unchanged facts are never bold, `add`'s
+  `due` included (D122 painted it `card.strong`). The priority letter drops its role's
+  bold unless the write set the priority. A late deadline keeps `overdue` and the top
+  urgency band keeps its bold figure (rule 6), because those are their own weights. New
+  tags are bold inside the whole set, drawn once; the tags already there are quiet.
+- **(c) No zero, and no urgency on a closed task.** `done` and `cancel` drop the urgency
+  cell, and a zero prints as nothing: `tracked 0s of a 3h estimate` went. The exception
+  is import's `no memory docs`, which #179 requires.
+- **(d) One spelling for a closed interval.** `stopped after 5m` on `stop` and on the line
+  `start` draws for a task it auto-stopped; `tracked 2h of 6h` is added only when it reads
+  differently from the interval. An undone stop says `since today 14:44`: what it puts
+  back is the interval, not a total, so it is not called `tracked`.
+- **(e) The card first.** The task the command named is always the first line under the
+  prompt, and what else moved follows in the order it happened.
+- **(f) `list`'s order, and one fitter.** The change leads and never drops; `list`'s
+  facts drop whole from the right through `columns::fit` (D120), each fact after the
+  first carrying the card's third cell of gap in its width. A change wider than the line
+  continues on the rail under itself rather than be cut. A note (`annotate`) wraps.
+- **(g) A project or a store is not a task.** `init`, `use`, `archive` and `import` draw
+  no rail; the project's name is the first line in the title's role. D21's and D22's
+  facts all survive: whether the default moved, the command that moves it, and the open
+  work an archive leaves (`2 open tasks left in it, 1 overdue`). An archive that cleared
+  the default names `tasqx use <project>` and never drops it.
+- **(h) The cases the mocks did not draw.** A start of a running task says
+  `already running  since today 13:40` with nothing bold. An `undep` that leaves another
+  blocker says `⊘ no longer waits on #51  still blocked by #53 · <title>` and never calls
+  the task free.
+- **(i) stderr, after the card.** `done`'s `tokens_hint` is one line of the terminal's
+  own on stderr (`note: no token counts were self-reported — tasqx done --help names the
+  flags`, the pointer dropped on a narrow terminal); the variant that asks nothing of the
+  reader prints nothing. `lib.rs` queues it and prints it after stdout, so it lands under
+  the card. `export`'s dropped-edge note is plural-correct and fits. `--json` keeps core's
+  hint whole (D56), and `already_running` stays the frozen flag.
+- **(j) Read back.** D56 froze the write results without the facts a card draws, so each
+  verb reads its task back with `task.get` after the write, on both paths, and the titles
+  of the other tasks it moved. A failed read falls back to the write's own result. There
+  is no read before a write.
+
+**Why:** rendered from the demo store, the eighteen echoes were eighteen dialects:
+`Started · timer running (since 2026-09-11T13:42:40.447797449Z)`, `#60  ->  cancelled`,
+`#53 now depends on #50 · depends on: #50 blocked=true`, `Imported 62 task(s)`, and
+`done`'s 190-cell token paragraph. Nine never named their task. None read the width, so
+at 60 columns twelve wrapped. Under `NO_COLOR` they carried no emphasis at all. The audit
+of all thirteen rules is on #348.
+
+**How it was chosen:** three voices were mocked in pixels, each drawing all eighteen at 80
+and 60 columns in colour, `NO_COLOR` and plain: the card (A), a ledger of one aligned line
+per task touched (B), and a diff of `show`'s rows with `was` values (C). An independent
+reviewer picked A, with ten amendments that are (a) to (j) above. The ledger was
+rejected because it would have reopened `add`'s echo a day after it landed, needed a
+fitter beside `columns::fit`, and read as one flat string under `NO_COLOR`. The diff was
+rejected because it had no rail, was the tallest, and its `was` column needed a read
+before the write, which can be wrong under a concurrent writer and which D56's frozen
+results cannot supply.
+
+**Verified:** eleven end-to-end guards (`tests/write_echoes.rs`) were watched fail against
+the original code, ten of them at once and the eleventh after it was made strict enough
+to. Each guard, new and rewritten, was then made to bite by injecting its drift: moved
+lines above the card, a stored duration, an unfitted line, the glyph off the rail, an
+unchanged fact in bold, the urgency cell on a closed task, the old interval spelling, an
+ignored remaining blocker, a rail on a project, the hint back on stdout, D122's fact
+order, a droppable change, a one-line change, a cut note, a fitted plain path, a moved
+task's glyph after its id, the H letter's own bold, a printed zero, the missing blocker
+title, core's reworded covered hint, the silent no-project add, the unnamed untouched
+default, a repeated note clause, the interval called `tracked`, and restored tags drawn
+twice. Two were silent at first. The change-never-drops guard could not fail because
+`Ctx` never lays out narrower than 40 columns, where a one-field change fits once the
+context has gone; it now uses a four-field change. The other was a stale build. The
+renders found what the tests had not: bold consequence lines, a restored tag drawn
+twice by `undo`, an export note one cell wider than 60 columns, and that freeze draws
+bold at normal weight, so `docs/terminal-style.md` §14 now says to judge a bold-bearing
+screen from an HTML render. Tests that encoded the old wording (`Started`, `now
+actionable`, `tag.remove`, `0 memory doc(s)`, `(none)`, `remains`, the h/m/s total, the
+completion instant on `done`, D20's `Added #N`) were rewritten to keep their intent in the
+new spelling. `stop_reports_the_same_tracked_total_show_does` now seeds a two-hour timer
+rather than one from 2020, since at 2,446 days the interval and the total round to the
+same number and the total is then not printed twice.
+
+**Left standing:** `pick`'s scrollback now ends on `start`'s card, but its own line for a
+task it auto-stopped keeps `Stopped #N  ·  tracked 2h23`, above the card; `pick` is not
+carried. `memory import` still says `doc(s)`; it is not one of the eighteen. `next`'s
+facts line is not fitted (#349). The docs pages were regenerated in their own narrative
+frame (Tuesday 14 July 2026), day names translated from a run with the same offsets.
+`undo` choosing the newest event by id, which an import of non-UUIDv7 events defeats, is
+#422.
+
+**Where:** `crates/tasqx-cli/src/render/echo.rs` (new: the card, `Fact`, `fit_facts`,
+`pack`, every echo) and `render/echo/tests.rs`, `render.rs` (the old renderers removed),
+`verbs.rs` (`read_back`, `titles_of`, each verb), `lib.rs` (`note_after_output`),
+`pick_screen.rs`, `docs.rs`, `README.md`, `tests/write_echoes.rs` (new),
+`tests/regressions.rs`, `tests/export_document.rs`, §5's examples and §11 above, and
+`docs/terminal-style.md`.
+
