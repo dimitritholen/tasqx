@@ -37,6 +37,19 @@ cols=$2
 rows=$3
 shift 4
 
+# Refuse rather than render from the real store. An empty TASQX_DB reached the
+# pane as `TASQX_DB=''`, which the binary reads as "use the default store", and
+# a live daemon answers from its own store whatever TASQX_DB says. `pick` STARTS
+# a task on `s`, so KEYS=s against the real store would have written to it.
+if [ -z "${TASQX_DB:-}" ]; then
+    echo "snap-tui.sh: TASQX_DB must name a scratch store (see CLAUDE.md)" >&2
+    exit 2
+fi
+case " $* " in
+    *" --no-daemon "*) ;;
+    *) set -- --no-daemon "$@" ;;
+esac
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=${OUT:-$root/target/snaps}
 mkdir -p "$out"

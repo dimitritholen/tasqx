@@ -497,6 +497,45 @@ pub(crate) fn painted_line(s: &str) -> ratatui::text::Line<'static> {
     Line::from(spans)
 }
 
+/// `spans` cut to `width` cells, the cut marked with an ellipsis in the style of
+/// the span it falls in, so a line wider than the frame is never stopped
+/// mid-word by the frame's own clip (rule 2). A line that fits is untouched.
+pub(crate) fn fit_spans(
+    spans: Vec<ratatui::text::Span<'static>>,
+    width: usize,
+    unicode: bool,
+) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::text::Span;
+    let total: usize = spans.iter().map(|s| crate::render::width(&s.content)).sum();
+    if total <= width {
+        return spans;
+    }
+    let mut out = Vec::new();
+    let mut used = 0;
+    for s in spans {
+        let w = crate::render::width(&s.content);
+        if used + w < width {
+            used += w;
+            out.push(s);
+            continue;
+        }
+        // The span the edge falls in: keep what fits, less a cell for the mark.
+        let cut = crate::render::truncate(s.content.trim_end(), width - used, unicode);
+        let cut = if cut == s.content.trim_end() {
+            // Only padding crossed the edge; the mark still says the row went on.
+            let dots = if unicode { "…" } else { "..." };
+            let room = (width - used).saturating_sub(crate::render::width(dots));
+            let keep: String = cut.chars().take(room).collect();
+            format!("{keep}{dots}")
+        } else {
+            cut
+        };
+        out.push(Span::styled(cut, s.style));
+        break;
+    }
+    out
+}
+
 // ============================================================================
 // The key bar: one table drives the footer and the help (D62)
 // ============================================================================

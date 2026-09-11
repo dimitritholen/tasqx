@@ -563,14 +563,27 @@ fn every_key_in_the_tables_does_something() {
         }
     };
     let state = |a: &App| (a.mode(), a.cursor(), a.query.clone(), a.scroll);
-    for (mode, table) in [
-        (Mode::List, LIST_KEYS),
-        (Mode::Search, SEARCH_KEYS),
-        (Mode::Detail, DETAIL_KEYS),
-    ] {
+    // The empty states: a search that matched nothing, kept and still open.
+    let empty = |open: bool| {
+        let mut a = app();
+        search(&mut a, "zzqx");
+        if !open {
+            a.on_key(press(KeyCode::Enter));
+        }
+        a
+    };
+    type State<'a> = (&'a str, &'a [Key], &'a dyn Fn() -> App);
+    let tables: [State; 5] = [
+        ("list", LIST_KEYS, &|| setup(Mode::List)),
+        ("search", SEARCH_KEYS, &|| setup(Mode::Search)),
+        ("card", DETAIL_KEYS, &|| setup(Mode::Detail)),
+        ("empty list", LIST_EMPTY_KEYS, &|| empty(false)),
+        ("empty search", SEARCH_EMPTY_KEYS, &|| empty(true)),
+    ];
+    for (mode, table, make) in tables {
         for k in table {
             for tok in k.keys.split(" / ") {
-                let mut a = setup(mode);
+                let mut a = make();
                 let before = state(&a);
                 let action = a.on_key(key_of(tok));
                 assert!(
@@ -725,13 +738,13 @@ fn the_key_bar_is_the_bottom_row_in_every_mode() {
     let mut a = app();
     let last = |a: &App| line_at(&draw(a, 100, 24), 23);
     assert!(
-        last(&a).contains("quit") && last(&a).contains("start"),
+        last(&a).contains("leave") && last(&a).contains("start"),
         "{}",
         last(&a)
     );
     a.on_key(press(KeyCode::Char('/')));
     assert!(
-        last(&a).contains("done") && !last(&a).contains("quit"),
+        last(&a).contains("done") && !last(&a).contains("leave"),
         "{}",
         last(&a)
     );
@@ -746,36 +759,64 @@ fn the_key_bar_is_the_bottom_row_in_every_mode() {
 }
 
 /// Enter shows `show`'s card for the task: the same rail and rows `tasqx show`
-/// prints (D122), not a card of this screen's own.
+/// prints (D122), rendered at the screen's width less its one-cell lead and
+/// one-cell margin — to the cell. A card drawn one cell wider or narrower is
+/// caught: the fixtures put a fact exactly on the edge where `show` stops
+/// pairing two facts on a line, and the loop asserts that edge is really
+/// there, so the test cannot go vacuous by the fixture drifting off it.
 #[test]
 fn the_card_is_shows_card() {
-    let mut a = app();
-    a.on_key(press(KeyCode::Enter));
-    // A title long enough to wrap, so a card rendered at any width but this
-    // screen's own wraps it somewhere else and the comparison sees it.
-    let long = "Ship the v1 JSON API freeze once the conformance suite and the migration notes have both landed on main";
-    let mut t = task(42, long, "work.tasqx", "H", 11.8, &["api"]);
-    t["due"] = json!("2026-09-11T17:00:00Z");
-    a.set_detail(42, Ok(t.clone()));
-    let buf = draw(&a, 100, 24);
-    let ctx = Ctx::new(theme::load("nord", None), caps()).with_cols(98);
-    let shown = render::task_detail(&ctx, &t, now());
-    for (i, l) in shown.lines().enumerate().take(6) {
-        let want: String = tui::painted_line(l)
-            .spans
-            .iter()
-            .map(|s| s.content.to_string())
-            .collect();
-        assert_eq!(
-            line_at(&buf, i as u16).get(1..).unwrap_or(""),
-            want.trim_end()
-        );
+    let card_at = |t: &Value, cols: usize| -> Vec<String> {
+        let ctx = Ctx::new(theme::load("nord", None), caps()).with_cols(cols);
+        render::task_detail(&ctx, t, now())
+            .lines()
+            .map(|l| {
+                tui::painted_line(l)
+                    .spans
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    };
+    let (mut narrower, mut wider) = (false, false);
+    for len in 40..70 {
+        let tag = "t".repeat(len);
+        let t = task(42, "Ship", "work.tasqx", "H", 11.8, &[tag.as_str()]);
+        let mut a = app();
+        a.on_key(press(KeyCode::Enter));
+        a.set_detail(42, Ok(t.clone()));
+        let buf = draw(&a, 100, 24);
+        let want = card_at(&t, 98);
+        for (i, l) in want.iter().enumerate() {
+            let got: String = line_at(&buf, i as u16).chars().skip(1).collect();
+            assert_eq!(&got, l, "tag of {len}, line {i}");
+        }
+        narrower |= card_at(&t, 97) != want;
+        wider |= card_at(&t, 99) != want;
     }
-    assert!(all_text(&buf).contains("▌"), "no rail");
+    assert!(
+        narrower && wider,
+        "no fixture sits on the pairing edge, so a one-cell drift would pass"
+    );
+    assert!(
+        all_text(&draw(&app_with_card(), 100, 24)).contains("▌"),
+        "no rail"
+    );
 
     // A task that is gone by the time the key arrives says so on the card.
+    let mut a = app_with_card();
     a.set_detail(42, Err("#42 is gone".into()));
     assert!(all_text(&draw(&a, 100, 24)).contains("#42 is gone"));
+}
+
+fn app_with_card() -> App {
+    let mut a = app();
+    a.on_key(press(KeyCode::Enter));
+    a.set_detail(42, Ok(task(42, "Ship", "w", "H", 11.8, &[])));
+    a
 }
 
 /// A card longer than the screen scrolls, and the bar says where the reader is.
@@ -1034,7 +1075,7 @@ fn at_sixty_columns_every_line_is_fitted_not_clipped() {
     assert!(head.contains("1 overdue"), "{head}");
     // The bar: hints are taken whole or not at all.
     let bar = line_at(&buf, 19);
-    assert!(bar.ends_with("quit"), "{bar}");
+    assert!(bar.ends_with("leave"), "{bar}");
 }
 
 /// The same property through the REAL render on a terminal too short for the
@@ -1173,4 +1214,81 @@ fn the_search_bar_degrades_to_ascii() {
     a.on_key(press(KeyCode::Char('/')));
     let bar = line_at(&draw(&a, 100, 12), 11);
     assert!(bar.is_ascii(), "{bar}");
+}
+
+// ---- found by review round 1 ------------------------------------------------
+
+/// Every mode's bar names the way out at any width the screen draws, down to
+/// 24 columns: at 40 the list's bar used to drop `q` and `esc` whole.
+#[test]
+fn every_bar_names_the_way_out_at_any_width() {
+    for w in 24..=100u16 {
+        let mut a = app();
+        a.observe(w, 12);
+        assert!(line_at(&draw(&a, w, 12), 11).contains("q "), "list at {w}");
+        a.on_key(press(KeyCode::Char('/')));
+        assert!(
+            line_at(&draw(&a, w, 12), 11).contains("enter"),
+            "search at {w}"
+        );
+        a.on_key(press(KeyCode::Enter));
+        a.on_key(press(KeyCode::Enter));
+        a.set_detail(42, Ok(task(42, "Ship", "w", "H", 11.8, &[])));
+        assert!(line_at(&draw(&a, w, 12), 11).contains("esc"), "card at {w}");
+    }
+}
+
+/// Below `list`'s floors a row overflows; the frame must not cut it mid-word.
+/// It is cut to the width with an ellipsis, as every other overlong line is.
+#[test]
+fn a_row_past_its_floors_is_cut_with_an_ellipsis() {
+    let a = app();
+    let buf = draw(&a, 40, 12);
+    for y in 2..7 {
+        let l = line_at(&buf, y);
+        assert!(
+            l.chars().count() < 40 || l.ends_with('…'),
+            "line {y} was clipped by the frame: {l:?}"
+        );
+    }
+}
+
+/// The refusal sentence degrades like every other glyph on the screen.
+#[test]
+fn the_s_refusal_is_ascii_without_unicode() {
+    let mut done = task(70, "Shipped already", "work", "M", 1.0, &[]);
+    done["status"] = json!("done");
+    let mut a = app_with(vec![done], ascii(), "nord");
+    a.on_key(press(KeyCode::Char('s')));
+    let bar = line_at(&draw(&a, 100, 12), 11);
+    assert!(bar.contains("#70") && bar.is_ascii(), "{bar}");
+}
+
+/// With nothing listed, the bar names only keys that still do something
+/// (D62): no enter, no `s`, no moving.
+#[test]
+fn an_empty_list_bar_names_only_live_keys() {
+    let mut a = app();
+    search(&mut a, "zzqx");
+    a.on_key(press(KeyCode::Enter));
+    let bar = line_at(&draw(&a, 100, 12), 11);
+    for dead in ["enter", "s start", "j/k", "g/G"] {
+        assert!(
+            !bar.contains(dead),
+            "{dead:?} offered with nothing listed: {bar}"
+        );
+    }
+    assert!(bar.contains("esc") && bar.contains("q "), "{bar}");
+    // The search line's own bar, with nothing matching, drops its move keys.
+    a.on_key(press(KeyCode::Char('/')));
+    let bar = line_at(&draw(&a, 100, 12), 11);
+    assert!(!bar.contains("move"), "{bar}");
+}
+
+/// `q` leaves `pick`: to the shell, or back to the dashboard it was opened
+/// from. Its word on the bar must be true in both.
+#[test]
+fn q_is_called_what_it_does_from_either_door() {
+    let q = LIST_KEYS.iter().find(|k| k.keys == "q").unwrap();
+    assert_ne!(q.footer.as_ref().unwrap().word, "quit");
 }

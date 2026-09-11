@@ -1669,8 +1669,11 @@ fn the_help_overlay_never_hides_its_own_close_instructions() {
         let mut a = app();
         a.on_key(key(KeyCode::Char('?')));
         let text = all_text(&draw_at(&a, MIN_WIDTH.max(70), h, &caps()));
+        // Read from the table rather than restated, so the wording can move
+        // (D123 renamed the picker) without this test going stale.
+        let ctrl_c = KEYS.iter().find(|k| k.keys == "ctrl-c").unwrap().help;
         assert!(
-            text.contains("close (esc leaves the picker)"),
+            text.contains(ctrl_c),
             "at {MIN_WIDTH}x{h} the close instructions must survive: {text}"
         );
         assert!(

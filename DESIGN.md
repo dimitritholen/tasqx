@@ -2785,8 +2785,12 @@ no screen.
   `g`/`G` jump and the page keys page. `/` opens a fuzzy search on the header line, where
   every letter is a letter. Enter or Esc leaves the search with the filter kept. Esc in
   the list clears the filter and only then leaves, and `q` leaves. The key bar on the
-  bottom row is generated from one table per mode, and a test presses every key it names
-  (D62's rule). On a terminal without Unicode the bar spells its arrows as words.
+  bottom row is generated from one table per state, and a test presses every key it names
+  (D62's rule): with nothing listed the bar drops Enter, `s` and the moving keys, which
+  would do nothing. The way out ranks first in every table, so the bar names it at any
+  width, and `q` is called `leave` because from the dashboard it goes back there. On a
+  terminal without Unicode the bar spells its arrows as words, and the `s` refusal its
+  dash as `-`.
 - **(b) Enter reads, `s` starts.** Enter opens the task's `show` card: `render::task_detail`,
   the renderer `tasqx show` calls (D122), over a `task.get` read made each time the card
   opens, so a failed read is tried again and a card never outlives the list around it.
@@ -2804,7 +2808,12 @@ no screen.
   `N of M match` instead. That count is a number and never gives way: the filter drops
   first, then the query loses its head. The row under the cursor takes `accent` on its id
   and title, and its title is bold as well, so the row is still marked under `NO_COLOR`
-  and `mono`.
+  and `mono`. Below `list`'s floors, where a row overflows, it is cut to the width with
+  an ellipsis rather than by the frame. **One deviation from rule 4, on purpose:** the
+  rail is sized over every candidate, like every other column, so after `/ api` it keeps
+  its two cells even when no row on screen is running or blocked. Sizing it to the
+  matches would move every row two cells sideways as a query crossed the one running
+  task, the reflow the whole-set fit exists to prevent.
 - **(d) One renderer, through one seam.** The printed renderers paint, and
   `tui::painted_line` reads back exactly the SGR `Style::paint` writes, so the frame
   draws the same cells in the same styles. Any other escape is dropped whole. `watch`
@@ -2812,7 +2821,9 @@ no screen.
   built-in theme at every depth. To make the two ends agree, `tui::rt_style` now drops
   `dim` under `NO_COLOR` the way the painter does (#234 item 7). Before, a `mono` screen
   under `NO_COLOR` dimmed what `list` printed plain, and that is true of the dashboard
-  and the memory browser too.
+  and the memory browser too. Rendered under `NO_COLOR` with `mono` at 120×30, each of
+  those two screens carried 27 dim lines in its ANSI before this and none after (freeze
+  draws no dim, so the count is the evidence, beside the before/after images).
 - **(e) One scorer.** D121's whole-term bonus moved into `tui::fuzzy::score_name`, and
   `pick`'s four fields and the memory browser's title and project both rank through it.
 - **(f) The whole candidate set.** `pick` reads every `task.list` page (D110's ceiling
@@ -2823,8 +2834,10 @@ no screen.
   yet), over the working set, or over the project of a PROJECTS row. Enter there reads a
   task. `s` starts it and returns to the dashboard, which prints every start of the
   session when it closes, not only the last. `q` or Esc returns having started nothing.
-  A start the engine still refuses, in a race with another writer, is said on the
-  dashboard's status line rather than ending it. The dashboard's `p` help and its manual
+  A start `task.start` still refuses (a conflict: the task changed under the browser, a
+  race with another writer) is said on the dashboard's status line rather than ending it.
+  Backing out is silent, and any other error still ends the session, as a failed read
+  does everywhere else in that loop. The dashboard's `p` help and its manual
   page say all this, and a test ties that help line to `pick`'s own key table.
 - **(h) The line left in the scrollback is `render::started`.** Since #75, `task.start`
   names the task and what it auto-stopped, and `render::started` prints both. `pick`
@@ -2859,7 +2872,8 @@ And Enter started a timer on a screen people open to look at their tasks, which 
 most expensive mis-aimed keystroke a browser can have.
 
 **Verified:** each changed behaviour has a test, and each was watched fail against the
-code before its change. Those tests are j/k moving, `/` opening the search, Enter not
+code before its change; the dashboard's handling of `pick`'s outcome was pulled into
+`after_pick` so its two changes could have one. Those tests are j/k moving, `/` opening the search, Enter not
 starting, `s` starting, the whole-term bonus, `*` for the ASCII running mark, no rule,
 all 450 of 450 candidates read, the scrollback naming each thing once, `s` refused on a
 done task, the search count and the card position kept whole at 40 and 44 columns, the
@@ -2868,7 +2882,10 @@ search bar, foreign escapes dropped whole, and `dim` dropped under `NO_COLOR`. T
 guard was made to bite by re-injecting its drift. Among the drifts: a budget of the
 screen's own, the old `N/M` counter, bright colours read as dark by the seam, an
 unsanitised title, a card at its own width, the old dashboard help, and a cursor reset on
-refilter. An adversarial review found eighteen defects, the ones this entry's (b), (c),
+refilter. A review round then found the card test blind to a card drawn a cell off
+(it now sits a fixture on `show`'s pairing edge and checks that the edge is there), and
+the dashboard's two changes untested (pulled into `after_pick`, both watched fail). An
+adversarial review found eighteen defects, the ones this entry's (b), (c),
 (d), (g) and (h) now describe among them, and three guards that could not see what they
 claimed. The renders are under `target/restyle-goal/392/`. They found one more thing the
 tests had not: a one-cell right margin cost DUE a column earlier than necessary, so the
@@ -2880,8 +2897,9 @@ left the test vacuous, which is D121's lesson.
 **Left standing, deliberately:**
 
 - **The cursor lead costs three cells.** At 60 columns the browser lays out what `list`
-  would at 57, so DUE drops where `list` still keeps it (from 63 columns `pick` keeps it
-  too). The header still carries the overdue count.
+  would at 57, so DUE drops where `list` still keeps it. From 63 columns DUE is back, cut
+  the way `list` cuts it at 60 (`today 1…`), and whole from about 70. The header still
+  carries the overdue count.
 - **`s` means two things across one hop.** On the shipped dashboard `s` cycles the sort
   order, and in `pick`, one key away, it starts a task. D80's planned row actions give
   the dashboard `s` = start, which would settle it. Until then the `pick` key bar says
@@ -2895,6 +2913,9 @@ left the test vacuous, which is D121's lesson.
   day words until it is reopened.
 - **An empty working set is still a refusal**, not an empty screen (D55).
 - **Editing and completing in place** stay deferred (§11a).
+- **`scripts/snap.sh` and `snap-tui.sh` refuse without `TASQX_DB`** and add `--no-daemon`
+  themselves, since `KEYS=s` against the real store would now start a task. They are
+  scripts, so that is checked by running them, not by the suite.
 
 **Where:** `crates/tasqx-cli/src/tui/pick.rs` (rewritten), `tui/pick/tests.rs` (new), `tui.rs`
 (`painted_line`, `rt_style`'s `NO_COLOR` dim, `footer_spans`' ASCII arrows), `tui/fuzzy.rs`
