@@ -81,10 +81,10 @@ New clap subcommand:
 Manual { topic: Option<String> }   // command name, topic name, or none
 ```
 
-- `tasqx manual` → themed **table of contents**: numbered concept-topics + a compact command index (verb → summary line). Footer points to `tasqx manual <name>` and `tasqx docs`.
+- `tasqx manual` → themed **table of contents**: the concept topics and a compact command index (name → summary line), each group a table fitted to the terminal. Footer points to `tasqx manual <name>` and `tasqx docs`.
 - `tasqx manual <command>` → that command's full section (summary, usage, all examples, notes, see-also), themed.
 - `tasqx manual <topic>` → a concept section. Topics: `getting-started, projects, capturing, dates, filters, reminders, reports, daemon, automation, json-api` (a concise mirror of the HTML guide's pages; the concept prose is short and points to `tasqx docs` for depth).
-- Ambiguity rule: resolve `<name>` first against verbs/aliases, then against topic names; unknown → a `not_found`-style message listing valid names, exit 2 (`bad_request`) — never a silent empty page.
+- Ambiguity rule: a name that is both a verb and a topic (`projects`, `daemon`) opens both pages, topic first; otherwise `<name>` resolves against verbs/aliases and topic names; unknown → a `not_found`-style message listing valid names, exit 2 (`bad_request`) — never a silent empty page.
 - Rendering reuses `theme.rs` (`Ctx`/`Caps`): colored on a truecolor/256/16 TTY, plain under NO_COLOR / when piped / on legacy Windows. No new color logic.
 - Handled early in `main()` like `docs`/`theme`: **no store, no network** — a manual you can read when the store is broken.
 

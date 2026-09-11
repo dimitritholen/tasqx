@@ -11,6 +11,9 @@ found any other way. §14 is the loop that makes that cheap.
 
 `list`, `agenda`, the dashboard, the memory browser, `show`, `next`, `why`,
 `add`'s echo and `tasqx manual` carry the style. `report` and `pick` do not yet.
+The manual, the one screen that is mostly prose, adds conventions of its own
+(a prose measure, two heading levels, copied code never split); they are
+written down in `crates/tasqx-cli/src/manual.rs`'s module doc.
 
 ---
 
