@@ -9,8 +9,8 @@ and 140 columns. None of them were visible to a fully green test suite, and two
 of them — the gauge's resolution and its inverted ranking — could not have been
 found any other way. §14 is the loop that makes that cheap.
 
-`list`, `agenda`, the dashboard, the memory browser, `show`, `next`, `why` and
-`add`'s echo carry the style. `report` and `pick` do not yet.
+`list`, `agenda`, the dashboard, the memory browser, `show`, `next`, `why`,
+`add`'s echo and `tasqx manual` carry the style. `report` and `pick` do not yet.
 
 ---
 

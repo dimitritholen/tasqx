@@ -4,144 +4,494 @@
 //! handful of concept sections. Navigation is the table of contents plus
 //! `tasqx manual <name>`; there is no pager (kept dependency-free and portable).
 //! For the exhaustive browser guide, `tasqx docs`.
+//!
+//! The page follows `docs/terminal-style.md`, plus five conventions of its
+//! own, because it is the one screen that is mostly prose:
+//!
+//! - Prose keeps a measure (`MEASURE`) rather than running to the edge.
+//! - Two levels of heading: the page's title in `header`, a section in
+//!   `accent` and capitals, and no row painted like either.
+//! - What a reader copies (an example, a code line, inline code in
+//!   backticks) is never wrapped or cut: it overflows instead.
+//! - An example's notes sit beside their commands, or under them, decided
+//!   once per block.
+//! - A name that is a topic and a command opens both pages, set apart by two
+//!   blank lines.
 
 use crate::cmddoc::{self, CmdDoc, Topic};
-use crate::render;
+use crate::columns::{self, Column, GAP};
+use crate::render::{pad, truncate, width, wrap_hanging, wrap_pieces};
 use crate::theme::Ctx;
 
+/// Where the text under a heading starts.
+const INDENT: usize = 2;
+/// The widest a line of prose is drawn, indent included. On a 140-column
+/// terminal a paragraph run to the edge is a line the eye loses on its way
+/// back; the source was typed at about this width for the same reason.
+/// Tables of contents and code are not prose and do not take it.
+const MEASURE: usize = 72;
+/// Below this a TOC description or a definition stops saying anything.
+const TEXT_FLOOR: usize = 12;
+/// How far a wrapped usage line, or an example's note that had to move under
+/// its command, sits in from the line it continues.
+const HANG: usize = 4;
+
 pub fn render(ctx: &Ctx, arg: Option<&str>) -> Result<String, String> {
-    match arg {
-        None => Ok(toc(ctx)),
-        Some(name) => {
-            if let Some(d) = cmddoc::find(name) {
-                Ok(command_section(ctx, d))
-            } else if let Some(t) = Topic::ALL.iter().find(|t| t.slug() == name) {
-                Ok(topic_section(ctx, *t))
-            } else {
-                Err(unknown(name))
+    let Some(name) = arg else {
+        return Ok(toc(ctx));
+    };
+    // A name can be a topic AND a command (`projects`, `daemon`). Both pages
+    // print, topic first. The command used to win outright, so the topic page
+    // the table of contents listed under that name could not be opened.
+    let topic = Topic::ALL.iter().find(|t| t.slug() == name).copied();
+    match (topic, cmddoc::find(name)) {
+        (None, None) => Err(unknown(name)),
+        (Some(t), None) => Ok(topic_section(ctx, t)),
+        (None, Some(d)) => Ok(command_section(ctx, d)),
+        // Two pages, set apart by two blank lines where a page's own sections
+        // take one. The command's See also leaves out what the topic's
+        // Commands line has just offered (house style rule 11).
+        (Some(t), Some(d)) => Ok(format!(
+            "{}\n\n{}",
+            topic_section(ctx, t),
+            command_section_after(ctx, d, &topic_verbs(t))
+        )),
+    }
+}
+
+/// A page's title: `header` (house style rule 12), whose bold is what
+/// survives `NO_COLOR` and `mono`.
+fn title(ctx: &Ctx, text: &str) -> String {
+    format!("{}\n", ctx.paint("header", text))
+}
+
+/// A section heading, one step under the page's title: `accent`, as
+/// `agenda`'s day headings are, in capitals, flush over what it heads. Under
+/// `NO_COLOR` the capitals and the blank line ahead of it carry it, and the
+/// title keeps the only bold on the page.
+fn heading(ctx: &Ctx, text: &str) -> String {
+    format!("{}\n", ctx.paint("accent", text))
+}
+
+/// Prose split where it may wrap: at a space, but never inside a backtick
+/// span. Inline code is copied like any other code, and a span split across
+/// two lines pastes as two fragments. A span wider than the line stands alone
+/// and overflows rather than being cut.
+fn prose_pieces(text: &str) -> Vec<String> {
+    let mut pieces: Vec<String> = Vec::new();
+    let mut open = false;
+    for word in text.split_whitespace() {
+        match pieces.last_mut() {
+            Some(last) if open => {
+                last.push(' ');
+                last.push_str(word);
             }
+            _ => pieces.push(word.to_string()),
+        }
+        if word.matches('`').count() % 2 == 1 {
+            open = !open;
         }
     }
+    pieces
+}
+
+/// `text` wrapped at words to `max` cells, inline code kept whole.
+fn wrap_prose(text: &str, max: usize) -> Vec<String> {
+    let pieces = prose_pieces(text);
+    wrap_pieces(pieces.iter().map(|p| (" ", p.as_str())), max)
+}
+
+/// `text` as a paragraph `indent` cells in, wrapped at words to the measure.
+fn prose(ctx: &Ctx, indent: usize, text: &str) -> String {
+    let lead = " ".repeat(indent);
+    wrap_prose(text, ctx.cols.min(MEASURE).saturating_sub(indent))
+        .iter()
+        .map(|line| format!("{lead}{line}\n"))
+        .collect()
 }
 
 fn toc(ctx: &Ctx) -> String {
-    let mut s = String::new();
-    s.push_str(&ctx.paint("header", "TASQX MANUAL"));
-    s.push('\n');
-    s.push_str(&ctx.paint("muted", &ctx.hrule(40)));
-    // Both columns are measured from their own table plus two cells. The verb
-    // column was a literal `{:<9}` — a minimum width that `dashboard` (9) and
-    // `completions` (11) had already outgrown — and the slug column was not
-    // padded at all, so all eleven topic titles began somewhere different. A
-    // wider constant would only move the day it breaks; `render::pad` is the
-    // repo's answer to both halves, and pads in CELLS rather than chars.
-    //
-    // Padded before painting, as the verb column already was: `paint` wraps the
-    // string in escape sequences, and padding after that would count them.
-    s.push_str("\n\nTOPICS\n");
-    let slug_w = Topic::ALL
+    let topics: Vec<(&str, &str)> = Topic::ALL.iter().map(|t| (t.slug(), t.title())).collect();
+    let commands: Vec<(&str, &str)> = cmddoc::COMMAND_REF
         .iter()
-        .map(|t| render::width(t.slug()))
-        .max()
-        .unwrap_or(0)
-        + 2;
-    for (i, t) in Topic::ALL.iter().enumerate() {
-        s.push_str(&format!(
-            "  {:>2}  {}{}\n",
-            i + 1,
-            ctx.paint("accent", &render::pad(t.slug(), slug_w)),
-            ctx.paint("muted", t.title()),
-        ));
-    }
-    s.push_str("\nCOMMANDS\n");
-    let verb_w = cmddoc::COMMAND_REF
-        .iter()
-        .map(|d| render::width(d.verb))
-        .max()
-        .unwrap_or(0)
-        + 2;
-    for d in cmddoc::COMMAND_REF {
-        s.push_str(&format!(
-            "  {}{}\n",
-            ctx.paint("accent", &render::pad(d.verb, verb_w)),
-            d.summary,
-        ));
+        .map(|d| (d.verb, d.summary))
+        .collect();
+    let mut s = title(ctx, "TASQX MANUAL");
+    for (group, rows) in [("TOPICS", &topics), ("COMMANDS", &commands)] {
+        // Each group is fitted on its own. The name is what `tasqx manual
+        // <name>` takes, so it never gives way: cut, it names a different
+        // page. The description takes an ellipsis before its row would wrap
+        // (D120(c)), and only then (rule 2): fitted across both groups,
+        // `getting-started` widened the command column and cut summaries a
+        // 60-column terminal had room for. The whole of a description is one
+        // `tasqx manual <name>` away.
+        //
+        // No paint on a row: `mono` draws `accent` as plain bold, so names in
+        // `accent` weighed as much as the heading over them.
+        let name_w = rows.iter().map(|(n, _)| width(n)).max().unwrap_or(0);
+        let text_w = rows.iter().map(|(_, d)| width(d)).max().unwrap_or(0);
+        let w = columns::fit(
+            &[Column::fixed(name_w), Column::shrinks(text_w, TEXT_FLOOR)],
+            ctx.cols.saturating_sub(INDENT),
+        );
+        s.push('\n');
+        s.push_str(&heading(ctx, group));
+        for (name, text) in rows.iter() {
+            s.push_str(&format!(
+                "{}{}{}{}\n",
+                " ".repeat(INDENT),
+                pad(name, w[0]),
+                " ".repeat(GAP),
+                truncate_prose(text, w[1], ctx.caps.unicode),
+            ));
+        }
     }
     s.push_str(&format!(
-        "\n{} Jump to a topic or command:  {}\n",
+        "\n{} Jump to a topic or command:  tasqx manual <name>\n",
         ctx.arrow(),
-        ctx.paint("accent", "tasqx manual <name>"),
     ));
     s.push_str(&format!(
-        "{} Full browser guide:          {}\n",
+        "{} Full browser guide:          tasqx docs\n",
         ctx.arrow(),
-        ctx.paint("accent", "tasqx docs"),
     ));
     s
+}
+
+/// [`truncate`], but never inside a backtick span: a cut that would land in
+/// one moves back to before the span opens, so a reader never sees half of
+/// something to type, or a lone backtick.
+fn truncate_prose(text: &str, max: usize, unicode: bool) -> String {
+    let cut = truncate(text, max, unicode);
+    let ellipsis = if unicode { "…" } else { "..." };
+    let Some(head) = cut.strip_suffix(ellipsis).filter(|_| cut != text) else {
+        return cut;
+    };
+    match head.rfind('`') {
+        Some(open) if head.matches('`').count() % 2 == 1 => {
+            format!("{}{ellipsis}", head[..open].trim_end())
+        }
+        _ => cut,
+    }
 }
 
 fn command_section(ctx: &Ctx, d: &CmdDoc) -> String {
-    let mut s = String::new();
-    let alias = if d.aliases.is_empty() {
-        String::new()
-    } else {
-        format!("  (aliases: {})", d.aliases.join(", "))
-    };
-    s.push_str(&ctx.paint("header", &format!("tasqx {}", d.verb)));
-    s.push_str(&ctx.paint("muted", &alias));
+    command_section_after(ctx, d, &[])
+}
+
+/// A command's page under another page that has already offered `offered`,
+/// so that its See also does not offer them a second time.
+fn command_section_after(ctx: &Ctx, d: &CmdDoc, offered: &[&str]) -> String {
+    let mut s = ctx.paint("header", &format!("tasqx {}", d.verb));
+    if !d.aliases.is_empty() {
+        let aliases = format!("  (aliases: {})", d.aliases.join(", "));
+        s.push_str(&ctx.paint("muted", &aliases));
+    }
     s.push('\n');
-    s.push_str(&ctx.paint("muted", &format!("API method: {}", d.method)));
-    s.push_str("\n\n");
-    s.push_str(d.summary);
-    s.push_str("\n\n");
-    s.push_str(&ctx.paint("accent", "USAGE"));
-    s.push_str(&format!("\n  {}\n\n", d.usage));
-    s.push_str(&ctx.paint("accent", "EXAMPLES"));
-    s.push('\n');
-    for e in d.examples {
-        s.push_str(&format!("  {}", e.cmd));
-        if let Some(n) = e.note {
-            s.push_str(&ctx.paint("muted", &format!("    {} {}", ctx.mid(), n)));
-        }
+    // `dashboard` answers from four methods, which ran past a narrow terminal.
+    // They break between methods, each continuation starting `+ `, rather
+    // than being cut: a cut list hides a method the page exists to name.
+    let lead = "API method: ";
+    let methods: Vec<String> = d
+        .method
+        .split(" + ")
+        .enumerate()
+        .map(|(i, m)| {
+            if i == 0 {
+                m.to_string()
+            } else {
+                format!("+ {m}")
+            }
+        })
+        .collect();
+    let pieces = methods.iter().map(|m| (" ", m.as_str()));
+    for (i, line) in wrap_pieces(pieces, ctx.cols.saturating_sub(width(lead)))
+        .iter()
+        .enumerate()
+    {
+        let head = if i == 0 {
+            lead.to_string()
+        } else {
+            " ".repeat(width(lead))
+        };
+        s.push_str(&ctx.paint("muted", &format!("{head}{line}")));
         s.push('\n');
     }
+    s.push('\n');
+    s.push_str(&prose(ctx, 0, d.summary));
+
+    s.push('\n');
+    s.push_str(&heading(ctx, "USAGE"));
+    s.push_str(&usage(ctx, d.usage));
+
+    s.push('\n');
+    s.push_str(&heading(ctx, "EXAMPLES"));
+    let lead = " ".repeat(INDENT);
+    let marker = format!("{} ", ctx.mid());
+    // The command is copied, so it prints whole whatever the width. The notes
+    // go beside their commands when every one of them fits there, and under
+    // every command when one does not: decided once for the block, because a
+    // block with a note on either side reads as two layouts.
+    let beside = d.examples.iter().all(|e| {
+        e.note
+            .filter(|n| !n.is_empty())
+            .is_none_or(|n| INDENT + width(e.cmd) + HANG + width(&marker) + width(n) <= ctx.cols)
+    });
+    for e in d.examples {
+        s.push_str(&format!("{lead}{}", e.cmd));
+        let Some(note) = e.note.filter(|n| !n.is_empty()) else {
+            s.push('\n');
+            continue;
+        };
+        if beside {
+            let gap = " ".repeat(HANG);
+            s.push_str(&ctx.paint("muted", &format!("{gap}{marker}{note}")));
+            s.push('\n');
+            continue;
+        }
+        // Under the command, with a wrapped note hung under its own text
+        // rather than under the marker.
+        s.push('\n');
+        let under = " ".repeat(INDENT + HANG);
+        let width_left = ctx.cols.saturating_sub(INDENT + HANG + width(&marker));
+        for (i, line) in wrap_prose(note, width_left).iter().enumerate() {
+            let head = if i == 0 {
+                marker.clone()
+            } else {
+                " ".repeat(width(&marker))
+            };
+            s.push_str(&under);
+            s.push_str(&ctx.paint("muted", &format!("{head}{line}")));
+            s.push('\n');
+        }
+    }
+
+    // The notes are the page's prose, so they read at the foreground and
+    // under a heading of their own; flush under EXAMPLES they read as more
+    // examples. One paragraph each: wrapped, two notes set flush read as one.
     if !d.notes.is_empty() {
         s.push('\n');
-        for n in d.notes {
-            s.push_str(&format!("  {}\n", ctx.paint("muted", n)));
+        s.push_str(&heading(ctx, "NOTES"));
+        for (i, note) in d.notes.iter().enumerate() {
+            if i > 0 {
+                s.push('\n');
+            }
+            s.push_str(&prose(ctx, INDENT, note));
         }
     }
-    if !d.see_also.is_empty() {
-        s.push_str(&format!(
-            "\nSee also: {}\n",
-            d.see_also.join(&format!(" {} ", ctx.mid()))
-        ));
+    let see_also: Vec<&str> = d
+        .see_also
+        .iter()
+        .copied()
+        .filter(|name| !offered.contains(name))
+        .collect();
+    if !see_also.is_empty() {
+        s.push('\n');
+        s.push_str(&follow_on(ctx, "See also:", &see_also));
     }
     s
 }
 
+/// A usage synopsis, whole on one line when it fits, and otherwise broken
+/// between arguments with the rest hung under the first line.
+fn usage(ctx: &Ctx, synopsis: &str) -> String {
+    let lead = " ".repeat(INDENT);
+    if INDENT + width(synopsis) <= ctx.cols {
+        return format!("{lead}{synopsis}\n");
+    }
+    let hang = " ".repeat(INDENT + HANG);
+    wrap_hanging(
+        usage_pieces(synopsis),
+        ctx.cols.saturating_sub(INDENT),
+        ctx.cols.saturating_sub(INDENT + HANG),
+    )
+    .iter()
+    .enumerate()
+    .map(|(i, line)| format!("{}{line}\n", if i == 0 { &lead } else { &hang }))
+    .collect()
+}
+
+/// Where a usage synopsis may break: at a space, or before a `|`, but never
+/// inside an innermost bracket group, so `[--project p]` and `<title…>` stay
+/// whole. A group holding other groups (`<add … |search …>`) may break inside,
+/// between its alternatives and their arguments, or `memory`'s synopsis would
+/// be one unbreakable piece of 260 cells.
+///
+/// Each piece carries what joins it to the one before, for
+/// [`wrap_pieces`]: a space, or nothing before a `|`, which stays on the
+/// piece it introduces.
+fn usage_pieces(synopsis: &str) -> Vec<(&'static str, &str)> {
+    let bytes = synopsis.as_bytes();
+    // The innermost group each byte sits in, and whether each group holds
+    // another. Bytes, because every delimiter here is ASCII; a multi-byte
+    // `…` never matches one.
+    let mut compound: Vec<bool> = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    let mut inside: Vec<Option<usize>> = Vec::with_capacity(bytes.len());
+    for &b in bytes {
+        match b {
+            b'[' | b'<' => {
+                if let Some(&outer) = open.last() {
+                    compound[outer] = true;
+                }
+                inside.push(open.last().copied());
+                open.push(compound.len());
+                compound.push(false);
+            }
+            b']' | b'>' => {
+                open.pop();
+                inside.push(open.last().copied());
+            }
+            _ => inside.push(open.last().copied()),
+        }
+    }
+    let may_break = |i: usize| inside[i].is_none_or(|g| compound[g]);
+
+    let mut pieces = Vec::new();
+    let (mut start, mut joiner) = (0, "");
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b' ' && may_break(i) {
+            if i > start {
+                pieces.push((joiner, &synopsis[start..i]));
+            }
+            (start, joiner) = (i + 1, " ");
+        } else if b == b'|' && may_break(i) && i > start {
+            pieces.push((joiner, &synopsis[start..i]));
+            (start, joiner) = (i, "");
+        }
+    }
+    if start < synopsis.len() {
+        pieces.push((joiner, &synopsis[start..]));
+    }
+    pieces
+}
+
+/// `▸ See also: a · b` under a command, `▸ Commands: a · b` under a topic:
+/// the pages to open next, unpainted as the table of contents' names are (a
+/// row carries no paint of its own), and wrapped under their label.
+fn follow_on(ctx: &Ctx, label: &str, names: &[&str]) -> String {
+    let lead = format!("{} {label} ", ctx.arrow());
+    let hang = width(&lead);
+    let sep = format!(" {} ", ctx.mid());
+    let pieces = names.iter().map(|name| (sep.as_str(), *name));
+    wrap_pieces(pieces, ctx.cols.min(MEASURE).saturating_sub(hang))
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let head = if i == 0 {
+                lead.clone()
+            } else {
+                " ".repeat(hang)
+            };
+            format!("{head}{line}\n")
+        })
+        .collect()
+}
+
 fn topic_section(ctx: &Ctx, t: Topic) -> String {
-    let mut s = String::new();
-    s.push_str(&ctx.paint("header", &t.title().to_uppercase()));
+    // In the topic's own case: a section heading is the one in capitals, so
+    // the two differ even where `mono` draws both bold.
+    let mut s = title(ctx, t.title());
     s.push('\n');
-    s.push_str(&ctx.paint("muted", &ctx.hrule(t.title().len())));
-    s.push_str("\n\n");
-    s.push_str(topic_body(t));
-    s.push('\n');
-    // Which commands belong to this topic, as a follow-on.
-    let verbs: Vec<&str> = cmddoc::COMMAND_REF
+    s.push_str(&body(ctx, topic_body(t)));
+    let verbs = topic_verbs(t);
+    if !verbs.is_empty() {
+        s.push('\n');
+        s.push_str(&follow_on(ctx, "Commands:", &verbs));
+    }
+    s
+}
+
+/// A topic's body, fitted to the terminal rather than to the width its source
+/// happened to be typed at. The source is written in four shapes, told apart
+/// by how a line starts:
+///
+/// - **prose**, at the margin. Consecutive lines are one paragraph, reflowed
+///   to the measure by `wrap_prose`, which keeps inline code whole.
+/// - a **heading**: a margin line with no lowercase letter in it.
+/// - a **row**, `  term\tdefinition`. Consecutive rows are one two-column
+///   table, fitted by `columns::fit`, with the definition wrapped in its own
+///   column: it is prose, and this page is the only copy of it. A row with no
+///   term, `  \ttext`, adds a line to the row above, kept as written.
+/// - **code**: any other indented line, printed as written. A reader copies
+///   it, so it is never wrapped or cut.
+///
+/// A blank line separates blocks and is kept.
+fn body(ctx: &Ctx, src: &str) -> String {
+    let mut out = String::new();
+    let mut para: Vec<&str> = Vec::new();
+    let mut rows: Vec<(&str, &str)> = Vec::new();
+    for line in src.lines() {
+        let row = line.strip_prefix("  ").and_then(|l| l.split_once('\t'));
+        if row.is_none() && !rows.is_empty() {
+            out.push_str(&table(ctx, &rows));
+            rows.clear();
+        }
+        let at_margin = !line.is_empty() && !line.starts_with(' ');
+        let is_heading = at_margin
+            && line.chars().any(char::is_alphabetic)
+            && !line.chars().any(char::is_lowercase);
+        if at_margin && !is_heading {
+            para.push(line);
+            continue;
+        }
+        if !para.is_empty() {
+            out.push_str(&prose(ctx, 0, &para.join(" ")));
+            para.clear();
+        }
+        match row {
+            Some((term, text)) => rows.push((term.trim(), text.trim())),
+            None if is_heading => out.push_str(&heading(ctx, line)),
+            None => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    if !rows.is_empty() {
+        out.push_str(&table(ctx, &rows));
+    }
+    if !para.is_empty() {
+        out.push_str(&prose(ctx, 0, &para.join(" ")));
+    }
+    out
+}
+
+/// A topic's two-column table: the term whole (it is what gets typed), the
+/// definition wrapped in whatever `columns::fit` leaves it.
+fn table(ctx: &Ctx, rows: &[(&str, &str)]) -> String {
+    let term_w = rows.iter().map(|(t, _)| width(t)).max().unwrap_or(0);
+    let text_w = rows.iter().map(|(_, d)| width(d)).max().unwrap_or(0);
+    let w = columns::fit(
+        &[Column::fixed(term_w), Column::shrinks(text_w, TEXT_FLOOR)],
+        ctx.cols.min(MEASURE).saturating_sub(INDENT),
+    );
+    let lead = " ".repeat(INDENT);
+    let hang = " ".repeat(INDENT + w[0] + GAP);
+    let mut out = String::new();
+    for (term, text) in rows {
+        if term.is_empty() {
+            out.push_str(&format!("{hang}{text}\n"));
+            continue;
+        }
+        for (i, line) in wrap_prose(text, w[1]).iter().enumerate() {
+            if i == 0 {
+                let gap = " ".repeat(GAP);
+                out.push_str(&format!("{lead}{}{gap}{line}\n", pad(term, w[0])));
+            } else {
+                out.push_str(&format!("{hang}{line}\n"));
+            }
+        }
+    }
+    out
+}
+
+/// The commands a topic's page offers next.
+fn topic_verbs(t: Topic) -> Vec<&'static str> {
+    cmddoc::COMMAND_REF
         .iter()
         .filter(|d| d.topic == t)
         .map(|d| d.verb)
-        .collect();
-    if !verbs.is_empty() {
-        s.push_str(&format!(
-            "\n{} Commands: {}\n",
-            ctx.arrow(),
-            ctx.paint("accent", &verbs.join(", ")),
-        ));
-    }
-    s
+        .collect()
 }
 
 fn unknown(name: &str) -> String {
@@ -153,6 +503,8 @@ fn unknown(name: &str) -> String {
     )
 }
 
+/// Each topic's text, in the four shapes [`body`] reads: prose at the margin,
+/// a heading in capitals, `  term\tdefinition` rows, and indented code.
 fn topic_body(t: Topic) -> &'static str {
     match t {
         Topic::GettingStarted => {
@@ -160,10 +512,10 @@ fn topic_body(t: Topic) -> &'static str {
 tasqx is a fast, terminal-first, AI-native task manager.
 
 The whole loop is four commands:
-  tasqx init <project>   create a project (just a name)
-  tasqx add <title>      capture a task into the default project
-  tasqx next             see the one thing to do now
-  tasqx done <ref>       complete it
+  tasqx init <project>\tcreate a project (just a name)
+  tasqx add <title>\tcapture a task into the default project
+  tasqx next\tsee the one thing to do now
+  tasqx done <ref>\tcomplete it
 
 A project is just a name in the store — no folder is created.
 The store lives at $TASQX_DB, else your platform data dir.
@@ -176,10 +528,10 @@ Deeper: `tasqx manual capturing` for the add grammar, or
             "\
 A project is just a name in the store — no folder, no path.
 
-  tasqx init <name>      claim a new project name
-  tasqx use <name>       make it the default for bare adds
-  tasqx projects         list them; the default is marked `*`
-  tasqx archive <name>   retire one; --all still lists it
+  tasqx init <name>\tclaim a new project name
+  tasqx use <name>\tmake it the default for bare adds
+  tasqx projects\tlist them; the default is marked `*`
+  tasqx archive <name>\tretire one; --all still lists it
 
 A bare `tasqx add …` lands in the default project. The default
 is claimed only if the store had none yet; archiving the default
@@ -197,19 +549,18 @@ Capture with a title plus inline sugar:
   tasqx add Ship it due:friday +api !high project:work
 
 Inline sugar:
-  +tag            add a tag
-  project:p       (or proj:p) set the project
-  !high           priority (!high / !med / !low)
-  due:…           a due date (natural language)
-  scheduled:…     (or sched:…) when you can start — parks the
-                  task in backlog until then
-  wait:…          hide until this instant — also parks it in
-                  backlog
-  est:4h          (or estimate:4h) an effort estimate
-  repeat:…        a recurrence rule (or every:… / recur:…)
-  remind:…        a reminder offset or time
+  +tag\tadd a tag
+  project:p\t(or proj:p) set the project
+  !high\tpriority (!high / !med / !low)
+  due:…\ta due date (natural language)
+  scheduled:…\t(or sched:…) when you can start — parks the task in backlog until then
+  wait:…\thide until this instant — also parks it in backlog
+  est:4h\t(or estimate:4h) an effort estimate
+  repeat:…\ta recurrence rule (or every:… / recur:…)
+  remind:…\ta reminder offset or time
 
 `tasqx modify <ref>` sets fields; `--clear <field>` removes them.
+
 Lifecycle: start · stop · done · cancel · reopen."
         }
 
@@ -219,24 +570,17 @@ Dates take natural language, and every time below is read and
 stored as UTC — `due:17:00` means 17:00 UTC, not your local
 clock.
 
-Relative days: `today`, `tomorrow`, `yesterday`, `now`, `eom`
-(end of month), `eow` (end of week).
-Weekday names: `monday`..`sunday` or `mon`..`sat` — the next
-occurrence, today included if it IS that day.
-Counted spans: `in 1 day`, \"in 3 days\", `in 2 weeks`,
-`in 3 months` — days, weeks and months only; `in 2 hours` is
-not in this family and is rejected.
-Signed offsets: `-1d`, `+3d`, `3d` (no sign defaults to future).
-Times: `17:00`, `5pm`, attached to a day with a space —
-\"tomorrow 17:00\", \"friday 9am\" — or a full instant —
-\"2026-09-09 17:00\", `2026-09-09T17:00:00+02:00` (an explicit
-offset is honoured and converted to UTC on the way in).
+  Relative days\t`today`, `tomorrow`, `yesterday`, `now`, `eom` (end of month), `eow` (end of week).
+  Weekday names\t`monday`..`sunday` or `mon`..`sat` — the next occurrence, today included if it IS that day.
+  Counted spans\t`in 1 day`, `\"in 3 days\"`, `in 2 weeks`, `in 3 months` — days, weeks and months only; `in 2 hours` is not in this family and is rejected.
+  Signed offsets\t`-1d`, `+3d`, `3d` (no sign defaults to future).
+  Times\t`17:00`, `5pm`, attached to a day with a space — `\"tomorrow 17:00\"`, `\"friday 9am\"` — or a full instant — `\"2026-09-09 17:00\"`, `2026-09-09T17:00:00+02:00` (an explicit offset is honoured and converted to UTC on the way in).
 
 Four date fields carry meaning:
-  due        when it's due
-  scheduled  when you can start
-  wait       hide until this instant
-  remind     when to nudge you
+  due\twhen it's due
+  scheduled\twhen you can start
+  wait\thide until this instant
+  remind\twhen to nudge you
 
 Recurrence forms:
   repeat:\"every 3 days\"
@@ -255,6 +599,7 @@ and tasks past the horizon — and counts both under the table,
 naming the exact `--days` that would reach the furthest one,
 or saying `tasqx list` when it is further out than `--days`
 goes.
+
 Days are UTC days, matching the zone the dates above are stored
 in."
         }
@@ -292,6 +637,7 @@ project:Home Renovation` becomes project `Home`, title \"paint
 Renovation\". Use the quoted spelling on BOTH sides and this
 cannot happen:
   tasqx add \"paint\" project:\"Home Renovation\"
+
 Write `\\\"` for a literal quote and
 `\\\\` for a literal backslash — a name holding a quote needs
 that form on both sides:
@@ -314,14 +660,13 @@ off-by-default `notify-os` build feature."
 
         Topic::Reports => {
             "\
-  tasqx report [group_by]   counts, optionally grouped
-                            (project | status | priority)
-  tasqx report --html       one self-contained HTML file
-  tasqx chart throughput    completions over time
-  tasqx chart heatmap       activity calendar
-  tasqx chart burndown      remaining work over time
-  tasqx why <ref>           explain a task's urgency score
-  tasqx theme list / show   browse and preview themes
+  tasqx report [group_by]\tcounts, optionally grouped (project | status | priority)
+  tasqx report --html\tone self-contained HTML file
+  tasqx chart throughput\tcompletions over time
+  tasqx chart heatmap\tactivity calendar
+  tasqx chart burndown\tremaining work over time
+  tasqx why <ref>\texplain a task's urgency score
+  tasqx theme list / show\tbrowse and preview themes
 
 The TOKENS column names a group's largest bucket with that
 bucket's own count (`cacheR 1.2M`), or `-` when nothing was
@@ -349,12 +694,13 @@ command directly against the store instead.
 receiver in the daemon on 127.0.0.1 (`otlp.port`, default
 4318), capturing an AI tool's own token telemetry live instead
 of parsing its transcript after the fact:
-  Claude Code   CLAUDE_CODE_ENABLE_TELEMETRY=1
-                OTEL_LOGS_EXPORTER=otlp
-                OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-                OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-  Gemini CLI    same two OTEL_EXPORTER_OTLP_* variables
-  Codex         the [otel] table in ~/.codex/config.toml
+  Claude Code\tCLAUDE_CODE_ENABLE_TELEMETRY=1
+  \tOTEL_LOGS_EXPORTER=otlp
+  \tOTEL_EXPORTER_OTLP_PROTOCOL=http/json
+  \tOTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+  Gemini CLI\tsame two OTEL_EXPORTER_OTLP_* variables
+  Codex\tthe [otel] table in ~/.codex/config.toml
+
 The receiver is independent of `tokens.enabled`: self-reported
 counts (`task.done`, `token.add`) work with both settings off."
         }
@@ -363,11 +709,9 @@ counts (`task.done`, `token.add`) work with both settings off."
             "\
 Every surface is a client of the one JSON API.
 
-  tasqx mcp serve            stdio JSON-RPC for AI agents;
-                             read-only by default
-  tasqx mcp serve --scope write
-                             explicitly expose write tools
-  tasqx api                  one JSON envelope in → one out
+  tasqx mcp serve\tstdio JSON-RPC for AI agents; read-only by default
+  tasqx mcp serve --scope write\texplicitly expose write tools
+  tasqx api\tone JSON envelope in → one out
 
 Scope configures this local process; it is not authentication."
         }
@@ -394,22 +738,22 @@ the primary source `tasqx report`'s TOKENS column reads
 Tab completion for bash, zsh, fish, elvish and PowerShell — the
 same five on Linux, macOS and Windows.
 
-  tasqx completions <shell>              print the line
-  tasqx completions --install            edit the startup file
-  tasqx completions <shell> --uninstall  take it back out
+  tasqx completions <shell>\tprint the line
+  tasqx completions --install\tedit the startup file
+  tasqx completions <shell> --uninstall\ttake it back out
 
 The line, and the file it belongs in:
 
-  bash        ~/.bashrc
-              source <(TASQX_COMPLETE=bash tasqx)
-  zsh         ~/.zshrc, AFTER your compinit line
-              source <(TASQX_COMPLETE=zsh tasqx)
-  fish        ~/.config/fish/completions/tasqx.fish
-              TASQX_COMPLETE=fish tasqx | source
-  elvish      ~/.elvish/rc.elv
-              eval (E:TASQX_COMPLETE=elvish tasqx | slurp)
-  powershell  $PROFILE
-              $env:TASQX_COMPLETE = \"powershell\"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\\TASQX_COMPLETE
+  bash\t~/.bashrc
+  \tsource <(TASQX_COMPLETE=bash tasqx)
+  zsh\t~/.zshrc, AFTER your compinit line
+  \tsource <(TASQX_COMPLETE=zsh tasqx)
+  fish\t~/.config/fish/completions/tasqx.fish
+  \tTASQX_COMPLETE=fish tasqx | source
+  elvish\t~/.elvish/rc.elv
+  \teval (E:TASQX_COMPLETE=elvish tasqx | slurp)
+  powershell\t$PROFILE
+  \t$env:TASQX_COMPLETE = \"powershell\"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\\TASQX_COMPLETE
 
 `--install` finds the shell from $SHELL, prints the exact block
 it would add, and asks. A stdin that is not a terminal is a
@@ -462,7 +806,6 @@ want the closed ones, and a menu that hid them would look like
 an answer.
 
 BEFORE YOU SWITCH IT ON
-
 The variable is TASQX_COMPLETE, deliberately not the generic
 COMPLETE that clap tools usually take. The protocol cannot tell
 a callback from a real command: with a recognised shell name in
@@ -489,7 +832,8 @@ complete."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{default_theme, Caps, Ctx};
+    use crate::render;
+    use crate::theme::{default_theme, Caps, ColorDepth, Ctx};
 
     fn plain() -> Ctx {
         Ctx::new(default_theme(), Caps::PLAIN)
@@ -504,71 +848,822 @@ mod tests {
         assert!(s.contains("tasqx manual"), "footer points at itself");
     }
 
-    /// Both TOC columns line up, whatever the longest entry happens to be.
+    /// Plain bytes, Unicode glyphs, laid out for `cols`. What a UTF-8 terminal
+    /// with its colour switched off would draw, so widths can be measured.
+    fn at(cols: usize) -> Ctx {
+        let caps = Caps {
+            depth: ColorDepth::None,
+            ansi: false,
+            unicode: true,
+        };
+        Ctx::new(default_theme(), caps).with_cols(cols)
+    }
+
+    /// `NO_COLOR` on a real terminal: emphasis kept, every hue gone.
+    fn no_color() -> Ctx {
+        let caps = Caps {
+            depth: ColorDepth::None,
+            ansi: true,
+            unicode: true,
+        };
+        Ctx::new(default_theme(), caps)
+    }
+
+    fn colour(cols: usize) -> Ctx {
+        let caps = Caps {
+            depth: ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        };
+        Ctx::new(default_theme(), caps).with_cols(cols)
+    }
+
+    /// The table of contents, every topic and every command page, by name.
+    /// Topics are rendered directly rather than through [`render`], so a topic
+    /// whose name a command shadows is still judged.
+    fn every_page(ctx: &Ctx) -> Vec<(String, String)> {
+        let mut pages = vec![("toc".to_string(), toc(ctx))];
+        for t in Topic::ALL {
+            pages.push((format!("topic {}", t.slug()), topic_section(ctx, t)));
+        }
+        for d in cmddoc::COMMAND_REF {
+            pages.push((format!("command {}", d.verb), command_section(ctx, d)));
+        }
+        pages
+    }
+
+    /// Lines a reader copies, read out of the SOURCE rather than out of the
+    /// renderer's own idea of what is code, so a renderer that misfiles prose
+    /// as code cannot excuse its own overflow: every example command, and every
+    /// indented topic line that is not a table row (a row is `term\tdefinition`;
+    /// a row with no term is a line kept as written).
+    fn copied_lines() -> Vec<String> {
+        let mut copied: Vec<String> = cmddoc::COMMAND_REF
+            .iter()
+            .flat_map(|d| d.examples.iter().map(|e| e.cmd.to_string()))
+            .collect();
+        for t in Topic::ALL {
+            for line in topic_body(t).lines().filter(|l| l.starts_with("  ")) {
+                match line.split_once('\t') {
+                    None => copied.push(line.trim().to_string()),
+                    Some((term, kept)) if term.trim().is_empty() => {
+                        copied.push(kept.trim().to_string())
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        copied
+    }
+
+    /// `s` without its SGR escapes.
+    fn strip(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// A command page's lines after its EXAMPLES heading: where its notes
+    /// are, and where no summary or usage line can be mistaken for one.
+    fn below_examples(page: &str) -> Vec<&str> {
+        page.lines()
+            .skip_while(|l| strip(l).trim() != "EXAMPLES")
+            .skip(1)
+            .collect()
+    }
+
+    /// A line that is one piece: no space outside a backtick span. Inline code
+    /// is copied too, so a span wider than the line stands alone and overflows
+    /// rather than being split.
+    fn unbreakable(line: &str) -> bool {
+        let mut in_span = false;
+        for c in line.trim().chars() {
+            if c == '`' {
+                in_span = !in_span;
+            } else if c.is_whitespace() && !in_span {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The lines under `heading` on `page`, up to the next blank line.
+    fn block_under<'a>(page: &'a str, heading: &str) -> Vec<&'a str> {
+        page.lines()
+            .skip_while(|l| l.trim() != heading)
+            .skip(1)
+            .take_while(|l| !l.trim().is_empty())
+            .collect()
+    }
+
+    /// Each group of the table of contents is a table of its own: a topic's
+    /// title, or a command's summary, starts at one column across its group,
+    /// whatever the longest name happens to be.
     ///
-    /// The COMMANDS column was a literal `{:<9}`, so `completions` (11) and
-    /// `dashboard` (9) pushed their summaries out of line with the other 37;
-    /// TOPICS was not padded at all, so every one of its eleven titles started
-    /// somewhere different. Both are the fixed-width mistake `render::pad`
-    /// exists to end, and both are invisible to a `contains` test — which is
-    /// why `toc_lists_topics_and_commands` passed throughout.
-    ///
-    /// Asserted as "every row in the block agrees", not against a number: a
-    /// hard-coded expected column is the same mistake in the test.
+    /// Rewritten twice. The original, `both_toc_columns_start_their_text_at_one_column`,
+    /// caught the literal `{:<9}` that pushed `completions` out of line and an
+    /// unpadded TOPICS column, and asserted each block agreed with itself;
+    /// that is the intent kept here. The first rewrite demanded one column
+    /// across both groups, which made `getting-started` widen the command
+    /// column and cut summaries a 60-column terminal could hold (rule 2).
     #[test]
-    fn both_toc_columns_start_their_text_at_one_column() {
-        let s = render(&plain(), None).unwrap();
-        let block = |from: &str, to: Option<&str>| -> Vec<String> {
-            let rest = &s[s.find(from).expect("block header") + from.len()..];
-            let rest = match to {
-                Some(end) => &rest[..rest.find(end).expect("block end")],
-                None => rest,
+    fn each_toc_group_is_a_table_whose_descriptions_share_one_column() {
+        for cols in [60, 100, 140] {
+            let s = toc(&at(cols));
+            let rows = |from: &str, to: &str| -> Vec<String> {
+                let rest = &s[s.find(from).expect("group heading") + from.len()..];
+                let rest = rest.find(to).map_or(rest, |end| &rest[..end]);
+                rest.lines()
+                    .filter(|l| l.starts_with("  "))
+                    .map(str::to_string)
+                    .collect()
             };
-            rest.lines()
-                .filter(|l| l.starts_with("  ") && !l.trim().is_empty())
-                .map(str::to_string)
+            let topics = rows("TOPICS\n", "\nCOMMANDS");
+            let commands = rows("COMMANDS\n", "\n\n");
+            assert_eq!(topics.len(), Topic::ALL.len(), "every topic:\n{s}");
+            assert_eq!(
+                commands.len(),
+                cmddoc::COMMAND_REF.len(),
+                "every command:\n{s}"
+            );
+            for group in [&topics, &commands] {
+                let text_x: Vec<usize> = group
+                    .iter()
+                    .map(|l| {
+                        let name = l.split_whitespace().next().expect("a name");
+                        let after = l.find(name).expect("name on its line") + name.len();
+                        after + (l[after..].len() - l[after..].trim_start().len())
+                    })
+                    .collect();
+                assert!(
+                    text_x.windows(2).all(|w| w[0] == w[1]),
+                    "descriptions start at {text_x:?}, not one column, at {cols}:\n{s}"
+                );
+            }
+        }
+    }
+
+    /// House style rule 2: a TOC description is cut only where the terminal
+    /// cannot hold it. Checked against the widest name in the row's own group:
+    /// a cut the terminal had room for is a cut some other column caused.
+    #[test]
+    fn a_toc_description_is_cut_only_where_the_terminal_cannot_hold_it() {
+        let groups: [Vec<(&str, &str)>; 2] = [
+            Topic::ALL.iter().map(|t| (t.slug(), t.title())).collect(),
+            cmddoc::COMMAND_REF
+                .iter()
+                .map(|d| (d.verb, d.summary))
+                .collect(),
+        ];
+        for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
+            let s = toc(&at(cols));
+            // In order, not by name: `projects` and `daemon` are in both groups.
+            let mut rows = s.lines().filter(|l| l.starts_with("  "));
+            for group in &groups {
+                let name_w = group.iter().map(|(n, _)| render::width(n)).max().unwrap();
+                for (name, text) in group {
+                    let row = rows
+                        .next()
+                        .unwrap_or_else(|| panic!("no row for {name} at {cols}:\n{s}"));
+                    assert_eq!(row.split_whitespace().next(), Some(*name), "order:\n{s}");
+                    if row.ends_with('…') {
+                        assert!(
+                            2 + name_w + 2 + render::width(text) > cols,
+                            "{name}'s description is cut at {cols} though its group has \
+                             room for it: {row:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every TOC row leads with something `tasqx manual` opens. The topics
+    /// used to lead with an index number, which it refuses.
+    #[test]
+    fn every_toc_row_leads_with_a_name_the_manual_opens() {
+        let s = toc(&plain());
+        for row in s.lines().filter(|l| l.starts_with("  ")) {
+            let name = row.split_whitespace().next().expect("a name");
+            assert!(
+                render(&plain(), Some(name)).is_ok(),
+                "the TOC row {row:?} leads with {name:?}, which `tasqx manual` does not open"
+            );
+        }
+    }
+
+    /// Every entry the TOC lists opens the page it lists. `projects` and
+    /// `daemon` are a topic AND a command, and the command used to win, so
+    /// two topic pages the TOC advertised could not be reached at all.
+    #[test]
+    fn every_toc_entry_opens_the_page_it_lists() {
+        for t in Topic::ALL {
+            let page = render(&plain(), Some(t.slug())).unwrap();
+            assert!(
+                page.contains(t.title()),
+                "`tasqx manual {}` does not open the {:?} topic:\n{page}",
+                t.slug(),
+                t.title()
+            );
+        }
+        for d in cmddoc::COMMAND_REF {
+            let page = render(&plain(), Some(d.verb)).unwrap();
+            assert!(
+                page.contains(&format!("tasqx {}", d.verb)) && page.contains(d.method),
+                "`tasqx manual {}` does not open its command page:\n{page}",
+                d.verb
+            );
+        }
+    }
+
+    /// House style rule 7: no rules. The TOC drew one under `TASQX MANUAL`
+    /// and every topic drew one under its title.
+    #[test]
+    fn the_manual_draws_no_rules() {
+        for ctx in [plain(), at(100)] {
+            for (name, page) in every_page(&ctx) {
+                for line in page.lines() {
+                    let t = line.trim();
+                    assert!(
+                        !(t.chars().count() >= 3 && t.chars().all(|c| c == '─' || c == '-')),
+                        "{name} draws a rule: {line:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// House style rule 2, over the whole manual: nothing runs past the
+    /// terminal, at any width, except a line a reader copies. Those are never
+    /// wrapped or cut, since a command that has been cut is a different
+    /// command (rule 2's "a number never gives way", for commands).
+    ///
+    /// Collects every violation before failing, so one red run names them all.
+    #[test]
+    fn every_page_fits_the_terminal_except_what_is_copied() {
+        let copied = copied_lines();
+        let mut over = Vec::new();
+        for cols in [60, 80, 100, 140] {
+            for (name, page) in every_page(&at(cols)) {
+                for line in page.lines() {
+                    if render::width(line) > cols
+                        && !copied.iter().any(|c| c == line.trim())
+                        && !unbreakable(line)
+                    {
+                        over.push(format!("{name} @{cols}: {line}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            over.is_empty(),
+            "{} lines run past the terminal:\n{}",
+            over.len(),
+            over.join("\n")
+        );
+    }
+
+    /// Prose keeps a measure on a wide terminal: a topic page, and the notes
+    /// on a command page, never run a line past 72 cells (`MEASURE`). A 200-cell
+    /// line of prose is a line the eye loses on its way back.
+    #[test]
+    fn prose_keeps_its_measure_on_a_wide_terminal() {
+        let ctx = at(Ctx::MAX_COLS);
+        let copied = copied_lines();
+        let mut over = Vec::new();
+        for t in Topic::ALL {
+            for line in topic_section(&ctx, t).lines() {
+                if render::width(line) > 72 && !copied.iter().any(|c| c == line.trim()) {
+                    over.push(format!("topic {}: {line}", t.slug()));
+                }
+            }
+        }
+        for d in cmddoc::COMMAND_REF {
+            let page = command_section(&ctx, d);
+            let notes: Vec<&str> = page
+                .lines()
+                .skip_while(|l| l.trim() != "NOTES")
+                .skip(1)
+                .take_while(|l| !l.trim_start().starts_with(ctx.arrow()))
+                .collect();
+            if !d.notes.is_empty() && notes.is_empty() {
+                over.push(format!("command {}: no NOTES heading", d.verb));
+            }
+            for line in notes {
+                if render::width(line) > 72 {
+                    over.push(format!("command {}: {line}", d.verb));
+                }
+            }
+        }
+        assert!(over.is_empty(), "{}", over.join("\n"));
+    }
+
+    /// What is copied is printed whole, on one line of its own, at every
+    /// width: an example command (its note may follow it, two cells on), and
+    /// every code line a topic carries.
+    #[test]
+    fn what_is_copied_is_printed_whole_on_one_line() {
+        for cols in [60, 80, 140] {
+            let ctx = at(cols);
+            for d in cmddoc::COMMAND_REF {
+                let page = command_section(&ctx, d);
+                for e in d.examples {
+                    assert!(
+                        page.lines().any(|l| l
+                            .trim_start()
+                            .strip_prefix(e.cmd)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with("  "))),
+                        "`{}` is not printed whole at {cols}:\n{page}",
+                        e.cmd
+                    );
+                }
+            }
+            for t in Topic::ALL {
+                let page = topic_section(&ctx, t);
+                for code in topic_body(t).lines().filter(|l| l.starts_with("  ")) {
+                    let code = match code.split_once('\t') {
+                        None => code.trim(),
+                        Some((term, kept)) if term.trim().is_empty() => kept.trim(),
+                        Some(_) => continue,
+                    };
+                    assert!(
+                        page.lines().any(|l| l.trim() == code),
+                        "topic {}: {code:?} is not printed whole at {cols}:\n{page}",
+                        t.slug()
+                    );
+                }
+            }
+        }
+    }
+
+    /// A usage line too long for the terminal breaks BETWEEN arguments: no
+    /// `[--project p]` or `<title…>` is split across two lines, nothing is
+    /// lost, and every line fits.
+    #[test]
+    fn usage_breaks_between_arguments_and_keeps_every_one() {
+        let cols = 60;
+        for d in cmddoc::COMMAND_REF {
+            let page = command_section(&at(cols), d);
+            let lines = block_under(&page, "USAGE");
+            for l in &lines {
+                assert!(
+                    render::width(l) <= cols,
+                    "{}: usage line wider than {cols}: {l:?}",
+                    d.verb
+                );
+            }
+            let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+            let joined = lines
+                .iter()
+                .map(|l| l.trim())
+                .fold(String::new(), |acc, l| {
+                    if acc.is_empty() || l.starts_with('|') {
+                        acc + l
+                    } else {
+                        acc + " " + l
+                    }
+                });
+            assert_eq!(
+                words(&joined),
+                words(d.usage),
+                "{}: the wrapped usage lost or changed something",
+                d.verb
+            );
+            // Every innermost bracket group survives on one line.
+            let b = d.usage.as_bytes();
+            let mut open: Vec<usize> = Vec::new();
+            for (i, c) in b.iter().enumerate() {
+                match c {
+                    b'[' | b'<' => open.push(i),
+                    b']' | b'>' => {
+                        if let Some(start) = open.pop() {
+                            let group = &d.usage[start..=i];
+                            let leaf = !group[1..group.len() - 1].contains(['[', '<']);
+                            if leaf {
+                                assert!(
+                                    lines.iter().any(|l| l.contains(group)),
+                                    "{}: {group:?} was split across lines:\n{}",
+                                    d.verb,
+                                    lines.join("\n")
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// An example whose note does not fit beside it puts the note on the line
+    /// under it, rather than running past the terminal or losing the note.
+    #[test]
+    fn an_example_note_that_does_not_fit_beside_its_command_goes_under_it() {
+        let page = command_section(&at(60), cmddoc::find("add").unwrap());
+        let cmd = r#"tasqx add Call bank due:"friday 9am" --remind -30m"#;
+        let lines: Vec<&str> = page.lines().collect();
+        let at_cmd = lines
+            .iter()
+            .position(|l| l.trim() == cmd)
+            .unwrap_or_else(|| panic!("the command must stand alone on its line:\n{page}"));
+        assert!(
+            lines[at_cmd + 1].contains("reminder 30m before due"),
+            "the note belongs on the line under its command:\n{page}"
+        );
+    }
+
+    /// An example block puts its notes on one side: beside every command, or
+    /// under every one. `dashboard` at 60 columns set one note beside its
+    /// command and the next one under, which reads as two layouts in one block.
+    #[test]
+    fn an_example_block_keeps_its_notes_on_one_side() {
+        for cols in [60, 80, 100, 140] {
+            let ctx = at(cols);
+            for d in cmddoc::COMMAND_REF {
+                let page = command_section(&ctx, d);
+                let block = block_under(&page, "EXAMPLES");
+                let sides: Vec<bool> = d
+                    .examples
+                    .iter()
+                    .filter_map(|e| e.note.filter(|n| !n.is_empty()).map(|n| (e.cmd, n)))
+                    .map(|(cmd, note)| {
+                        let head = note.split_whitespace().next().expect("a word");
+                        let line = block
+                            .iter()
+                            .find(|l| l.trim_start().starts_with(cmd))
+                            .unwrap_or_else(|| panic!("{}: {cmd:?} missing:\n{page}", d.verb));
+                        line[line.find(cmd).unwrap() + cmd.len()..].contains(head)
+                    })
+                    .collect();
+                assert!(
+                    sides.windows(2).all(|w| w[0] == w[1]),
+                    "{} at {cols}: notes beside some commands and under others:\n{page}",
+                    d.verb
+                );
+            }
+        }
+    }
+
+    /// A note moved under its command, and wrapped, hangs its second line
+    /// under its own text rather than under the `·` that marks it.
+    #[test]
+    fn a_displaced_note_hangs_under_its_own_text() {
+        let ctx = at(60);
+        let marker = format!("{} ", ctx.mid());
+        let mut continuations = 0;
+        for d in cmddoc::COMMAND_REF {
+            let page = command_section(&ctx, d);
+            let block = block_under(&page, "EXAMPLES");
+            let mut text_x: Option<usize> = None;
+            for line in block {
+                let body = line.trim_start();
+                let indent = line.len() - body.len();
+                if d.examples.iter().any(|e| body.starts_with(e.cmd)) {
+                    text_x = None;
+                } else if body.starts_with(&marker) {
+                    // In cells: the marker `·` is one cell and two bytes.
+                    text_x = Some(indent + render::width(&marker));
+                } else if let Some(x) = text_x {
+                    continuations += 1;
+                    assert_eq!(
+                        indent, x,
+                        "{}: a wrapped note hangs at {indent}, not under its text at {x}:\n{page}",
+                        d.verb
+                    );
+                }
+            }
+        }
+        assert!(
+            continuations > 0,
+            "fixture: no wrapped note at 60 columns to judge"
+        );
+    }
+
+    /// Inline code is copied like any other code, so a backtick span is
+    /// never split across two lines. Prose wrapped at every space split them:
+    /// `tasqx add` on one line and `-- "a real task"` on the next.
+    ///
+    /// Every width from `Ctx::MIN_COLS` to `Ctx::MAX_COLS`, not a sample: the
+    /// table of contents cut summaries inside a span at 50, 52 and 58 while
+    /// 60, 80, 100 and 140 were clean.
+    #[test]
+    fn inline_code_is_never_split_across_lines() {
+        let mut split = Vec::new();
+        for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
+            for (name, page) in every_page(&at(cols)) {
+                for line in page.lines() {
+                    if line.matches('`').count() % 2 == 1 {
+                        split.push(format!("{name} @{cols}: {line}"));
+                    }
+                }
+            }
+        }
+        assert!(split.is_empty(), "{}", split.join("\n"));
+    }
+
+    /// Where there is room, an example's note sits beside its command.
+    #[test]
+    fn a_note_sits_beside_its_command_when_there_is_room() {
+        let page = command_section(&at(100), cmddoc::find("init").unwrap());
+        assert!(
+            page.lines()
+                .any(|l| l.contains("tasqx init home && tasqx use home")
+                    && l.contains("claim then set default")),
+            "the note belongs beside its command at 100 columns:\n{page}"
+        );
+    }
+
+    /// A usage synopsis that fits prints whole, exactly as written.
+    #[test]
+    fn usage_that_fits_prints_whole() {
+        let cols = 140;
+        for d in cmddoc::COMMAND_REF {
+            if 2 + render::width(d.usage) > cols {
+                continue;
+            }
+            let page = command_section(&at(cols), d);
+            assert_eq!(
+                block_under(&page, "USAGE"),
+                vec![format!("  {}", d.usage)],
+                "{}: a usage that fits is printed whole",
+                d.verb
+            );
+        }
+    }
+
+    /// A wrapped usage fills each line before it breaks: the piece that opens
+    /// a line would not have fitted on the one above. The first line is only
+    /// indented two cells, so it gets the width the hung lines do not.
+    #[test]
+    fn usage_lines_are_filled_before_they_break() {
+        for cols in [60, 80] {
+            for d in cmddoc::COMMAND_REF {
+                let page = command_section(&at(cols), d);
+                let lines = block_under(&page, "USAGE");
+                if lines.len() < 2 {
+                    continue;
+                }
+                let pieces = usage_pieces(d.usage);
+                let mut it = pieces.iter().peekable();
+                let mut above: Option<usize> = None;
+                for line in &lines {
+                    let (joiner, first) = **it.peek().expect("a piece opens every line");
+                    if let Some(w) = above {
+                        assert!(
+                            w + render::width(joiner) + render::width(first) > cols,
+                            "{} at {cols}: {first:?} would have fitted on the line above:\n{}",
+                            d.verb,
+                            lines.join("\n")
+                        );
+                    }
+                    let mut rest = line.trim_start();
+                    let mut opening = true;
+                    while let Some(&&(j, p)) = it.peek() {
+                        let expect = if opening {
+                            p.to_string()
+                        } else {
+                            format!("{j}{p}")
+                        };
+                        let Some(r) = rest.strip_prefix(expect.as_str()) else {
+                            break;
+                        };
+                        rest = r;
+                        opening = false;
+                        it.next();
+                    }
+                    assert!(rest.is_empty(), "{}: unparsed {rest:?}", d.verb);
+                    above = Some(render::width(line));
+                }
+            }
+        }
+    }
+
+    /// A name that is a topic and a command opens both pages: they are set
+    /// apart by more than the blank line that separates a page's own sections,
+    /// and the command's See also does not repeat a name the topic's Commands
+    /// line has just offered (house style rule 11).
+    #[test]
+    fn a_name_that_opens_two_pages_sets_them_apart_and_says_nothing_twice() {
+        let ctx = at(100);
+        let names_on = |page: &str, label: &str| -> Vec<String> {
+            page.lines()
+                .skip_while(|l| !l.contains(label))
+                .take_while(|l| !l.trim().is_empty())
+                .flat_map(|l| {
+                    l.replace(label, "")
+                        .replace(ctx.arrow(), "")
+                        .split(ctx.mid())
+                        .map(|n| n.trim().to_string())
+                        .filter(|n| !n.is_empty())
+                        .collect::<Vec<_>>()
+                })
                 .collect()
         };
+        for name in ["projects", "daemon"] {
+            let page = render(&ctx, Some(name)).unwrap();
+            let seam = format!("\n\n\ntasqx {name}");
+            assert!(
+                page.contains(&seam),
+                "`manual {name}`: the command page must start after two blank lines:\n{page}"
+            );
+            let offered = names_on(&page, "Commands:");
+            let again: Vec<String> = names_on(&page, "See also:")
+                .into_iter()
+                .filter(|n| offered.contains(n))
+                .collect();
+            assert!(
+                again.is_empty(),
+                "`manual {name}` offers {again:?} twice:\n{page}"
+            );
+        }
+    }
 
-        // TOPICS: numbered, so the text column is where the TITLE begins.
-        let topics = block("TOPICS\n", Some("\nCOMMANDS"));
-        assert!(topics.len() > 1, "need several topics to compare:\n{s}");
-        let title_x: Vec<usize> = topics
-            .iter()
-            .map(|l| {
-                let after_num = l.trim_start().split_once(' ').expect("index then slug").1;
-                let slug = after_num.trim_start();
-                let (slug, _) = slug.split_once(' ').expect("slug then title");
-                l.find(slug).expect("slug on its own line")
-                    + slug.len()
-                    + (after_num.trim_start()[slug.len()..].len()
-                        - after_num.trim_start()[slug.len()..].trim_start().len())
-            })
-            .collect();
-        assert!(
-            title_x.windows(2).all(|w| w[0] == w[1]),
-            "topic titles start at {title_x:?}, not one column:\n{s}"
-        );
+    /// A date a reader types is never split across lines, at any width:
+    /// `"tomorrow 17:00"` broken after `"tomorrow` is two things to type.
+    #[test]
+    fn typed_date_literals_are_never_split() {
+        for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
+            let page = topic_section(&at(cols), Topic::Dates);
+            for literal in [
+                "\"in 3 days\"",
+                "\"tomorrow 17:00\"",
+                "\"friday 9am\"",
+                "\"2026-09-09 17:00\"",
+            ] {
+                assert!(
+                    page.lines().any(|l| l.contains(literal)),
+                    "{literal} is split at {cols}:\n{page}"
+                );
+            }
+        }
+    }
 
-        // COMMANDS: verb then summary.
-        let cmds = block("COMMANDS\n", Some("\n\n"));
-        assert_eq!(
-            cmds.len(),
-            cmddoc::COMMAND_REF.len(),
-            "the block must hold every command:\n{s}"
-        );
-        let summary_x: Vec<usize> = cmds
-            .iter()
-            .zip(cmddoc::COMMAND_REF)
-            .map(|(l, d)| {
-                let after = &l[l.find(d.verb).expect("verb on its line") + d.verb.len()..];
-                l.len() - after.trim_start().len()
-            })
-            .collect();
+    /// Each note on a command page is a paragraph of its own. Wrapped, two
+    /// notes set flush against each other read as one.
+    #[test]
+    fn each_note_is_a_paragraph_of_its_own() {
+        let ctx = at(60);
+        for d in cmddoc::COMMAND_REF.iter().filter(|d| d.notes.len() > 1) {
+            let page = command_section(&ctx, d);
+            let lines = below_examples(&page);
+            for n in &d.notes[1..] {
+                let head = n.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
+                let i = lines
+                    .iter()
+                    .position(|l| l.trim_start().starts_with(&head))
+                    .unwrap_or_else(|| panic!("{}: note {head:?} not found:\n{page}", d.verb));
+                assert_eq!(
+                    lines[i - 1].trim(),
+                    "",
+                    "{}: the note starting {head:?} runs on from the one above:\n{page}",
+                    d.verb
+                );
+            }
+        }
+    }
+
+    /// A page has two levels of heading, and they must look it, in every
+    /// built-in theme and without colour.
+    ///
+    /// - The page's title takes `header` (house style rule 12), and a topic's
+    ///   title keeps its own case. A section heading takes `accent`, in
+    ///   capitals, flush over what it heads. When both were `header` and in
+    ///   capitals, `SHELL COMPLETION` and `BEFORE YOU SWITCH IT ON` drew
+    ///   identically, and the section halfway down read as a second page.
+    /// - No row carries paint of its own. `mono` draws `accent` and `header`
+    ///   alike as plain bold, so TOC names and See also names in `accent`
+    ///   were as heavy there as the headings over them, and in colour TOPICS
+    ///   was the very paint of every name under it.
+    /// - Under `NO_COLOR` the title keeps its bold, and a section heading its
+    ///   capitals and the blank line ahead of it.
+    ///
+    /// Rewritten from this change's first cut, which asserted `header` on
+    /// every heading. Its intent (a heading is painted as one, and keeps a
+    /// weight without colour) is kept, and the hierarchy is added.
+    #[test]
+    fn section_headings_sit_one_step_under_the_page_title() {
+        for theme in [default_theme(), crate::theme::builtin("mono").unwrap()] {
+            let caps = Caps {
+                depth: ColorDepth::Truecolor,
+                ansi: true,
+                unicode: true,
+            };
+            let ctx = Ctx::new(theme, caps);
+            let add = command_section(&ctx, cmddoc::find("add").unwrap());
+            let completion = topic_section(&ctx, Topic::Completion);
+            let toc = toc(&ctx);
+            for (page, title) in [
+                (&toc, "TASQX MANUAL"),
+                (&add, "tasqx add"),
+                (&completion, "Shell completion"),
+            ] {
+                // `starts_with`: a command's title shares its line with its
+                // muted aliases.
+                assert!(
+                    page.lines()
+                        .next()
+                        .is_some_and(|l| l.starts_with(&ctx.paint("header", title))),
+                    "{title} is not the page's title:\n{page}"
+                );
+            }
+            for (page, heading) in [
+                (&toc, "TOPICS"),
+                (&toc, "COMMANDS"),
+                (&add, "USAGE"),
+                (&add, "EXAMPLES"),
+                (&add, "NOTES"),
+                (&completion, "BEFORE YOU SWITCH IT ON"),
+            ] {
+                let painted = ctx.paint("accent", heading);
+                let lines: Vec<&str> = page.lines().collect();
+                let at = lines
+                    .iter()
+                    .position(|l| *l == painted)
+                    .unwrap_or_else(|| panic!("{heading} is not a section heading:\n{page}"));
+                assert!(
+                    !lines[at + 1].trim().is_empty(),
+                    "{heading} is not flush over what it heads:\n{page}"
+                );
+            }
+            // Rows: every TOC entry, and every See also / Commands line.
+            let rows = toc
+                .lines()
+                .filter(|l| l.starts_with("  "))
+                .chain(add.lines().filter(|l| l.contains("See also:")))
+                .chain(completion.lines().filter(|l| l.contains("Commands:")));
+            for row in rows {
+                assert!(
+                    !row.contains('\x1b'),
+                    "a row is painted like the headings over it: {row:?}"
+                );
+            }
+        }
+        let plain = no_color();
+        let add = command_section(&plain, cmddoc::find("add").unwrap());
         assert!(
-            summary_x.windows(2).all(|w| w[0] == w[1]),
-            "command summaries start at {summary_x:?}, not one column:\n{s}"
+            add.lines().next().is_some_and(|l| l.contains("\x1b[1")),
+            "the title must keep its bold under NO_COLOR:\n{add}"
         );
+        assert!(
+            add.lines().any(|l| l == "USAGE"),
+            "a section heading must not claim the title's bold under NO_COLOR:\n{add}"
+        );
+    }
+
+    /// House style rule 1: what is read is not dimmed. The TOC dimmed its
+    /// topic titles while printing its command summaries at full weight, and
+    /// every command page dimmed its notes, which are the page's prose.
+    #[test]
+    fn what_is_read_is_not_dimmed() {
+        let ctx = colour(Ctx::MAX_COLS);
+        let toc = toc(&ctx);
+        // In order, not by name: `projects` and `daemon` are a topic AND a
+        // command, so a lookup by name finds the wrong row for one of them.
+        let rows: Vec<&str> = toc.lines().filter(|l| l.starts_with("  ")).collect();
+        let expected: Vec<(&str, &str)> = Topic::ALL
+            .iter()
+            .map(|t| (t.slug(), t.title()))
+            .chain(cmddoc::COMMAND_REF.iter().map(|d| (d.verb, d.summary)))
+            .collect();
+        assert_eq!(rows.len(), expected.len(), "one TOC row per entry:\n{toc}");
+        for (row, (name, text)) in rows.iter().zip(expected) {
+            assert_eq!(
+                strip(row).split_whitespace().next(),
+                Some(name),
+                "TOC rows out of order:\n{toc}"
+            );
+            assert!(
+                row.ends_with(text),
+                "the TOC paints {name:?}'s description instead of leaving it at the \
+                 foreground: {row:?}"
+            );
+        }
+        for d in cmddoc::COMMAND_REF {
+            let page = command_section(&ctx, d);
+            for n in d.notes {
+                let head = n.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
+                let line = below_examples(&page)
+                    .into_iter()
+                    .find(|l| l.contains(&head))
+                    .unwrap_or_else(|| panic!("{}: note {head:?} not found", d.verb));
+                assert!(
+                    !line.contains('\x1b'),
+                    "{}: a note is painted, where it is the page's prose: {line:?}",
+                    d.verb
+                );
+            }
+        }
     }
 
     #[test]

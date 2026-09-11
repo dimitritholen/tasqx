@@ -68,6 +68,7 @@ tasqx ships its own documentation — no internet needed.
 
 The complete guide, in your terminal. `tasqx manual` shows the table of
 contents; `tasqx manual <command>` or `tasqx manual <topic>` opens one section.
+`projects` and `daemon` are both a command and a topic, and open both pages.
 
 ```console
 tasqx manual            # table of contents

@@ -1244,7 +1244,7 @@ mod tests {
     }
 
     /// On a terminal with no Unicode the marker and the rule must degrade to
-    /// ASCII, exactly as `Ctx::hrule`/`Ctx::arrow` already do for printed
+    /// ASCII, exactly as `Ctx::arrow` already does for printed
     /// output. Box-drawing bytes on a legacy Windows console render as mojibake
     /// and misalign every column.
     #[test]

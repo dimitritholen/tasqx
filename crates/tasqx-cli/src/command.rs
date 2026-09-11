@@ -990,7 +990,8 @@ pub(super) enum Command {
     },
     /// Browse the complete manual in your terminal: a themed, navigable guide.
     /// `tasqx manual` prints the table of contents; `tasqx manual <command|topic>`
-    /// opens one section. Needs no store and no network.
+    /// opens that page, or both where a name is a command and a topic
+    /// (`projects`, `daemon`). Needs no store and no network.
     #[command(alias = "man", after_help = crate::cmddoc::after_help("manual"))]
     Manual {
         /// A command (e.g. `init`), an alias, or a topic slug (e.g. `filters`).
