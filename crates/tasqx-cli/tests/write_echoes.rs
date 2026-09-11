@@ -173,6 +173,56 @@ fn seeded(tag: &str) -> Store {
     st
 }
 
+/// An event id above any the clock will mint: UUIDv7 ids open with the
+/// millisecond they were made, and `0fff…` is thousands of years out.
+const NEWEST: &str = "0fffffff-ffff-7fff-bfff-ffffffffffff";
+
+/// A store whose newest event is the one `undo` is to reverse, and nothing
+/// the wall clock decided.
+///
+/// `undo` reverses the event with the highest id (`engine/undo.rs`), and the
+/// ids of writes made by separate processes follow the wall clock. On WSL2
+/// under load that clock was seen to step back 2.4 s mid-test, which put an
+/// `add` above the `untag` written after it: a chain of CLI writes ahead of
+/// an `undo` failed by construction (#422 is the engine half). So the store
+/// is seeded through `import`, which replays events with their own ids, and
+/// the one to reverse carries [`NEWEST`]; `import`'s own bookkeeping events
+/// are minted by the clock and sort below it whatever the clock does.
+fn undo_store(tag: &str, op: &str, title: &str) -> Store {
+    let st = Store::new(tag);
+    let now = jiff::Timestamp::now().to_string();
+    let t1 = "019f0000-0000-7000-8000-0000000000c1";
+    let t2 = "019f0000-0000-7000-8000-0000000000c2";
+    let note = "019f0000-0000-7000-8000-0000000000c3";
+    let payload = match op {
+        "stop" => serde_json::json!({ "tracked": "PT2H" }),
+        "tag.remove" => serde_json::json!({ "tags": ["urgent"] }),
+        "annotation.add" => serde_json::json!({ "id": note }),
+        "dependency.remove" => serde_json::json!({ "depends_on": t2 }),
+        other => panic!("no seed for {other}"),
+    };
+    let doc = serde_json::json!({
+        "projects": [{ "name": "work" }],
+        "tasks": [
+            {
+                "id": t1, "short_id": 1, "title": title, "status": "pending",
+                "project": "work", "tags": ["docs"], "tracked_seconds": 13260,
+                "annotations": [{ "id": note, "body": "call the printer", "created": now }],
+            },
+            { "id": t2, "short_id": 2, "title": "Review the draft", "status": "pending",
+              "project": "work" },
+        ],
+        "events": [{
+            "id": NEWEST, "entity": "task", "entity_id": t1, "op": op,
+            "payload": payload, "ts": now, "actor": "user",
+        }],
+    });
+    let path = st.path().join("undo.json");
+    std::fs::write(&path, doc.to_string()).expect("write undo fixture");
+    st.plain(&["import", path.to_str().expect("utf8 path")]);
+    st
+}
+
 /// An instant (`2026-09-11T…`) or an ISO duration (`PT5M`) anywhere in `s`.
 fn store_spelling(s: &str) -> Option<String> {
     let b = s.as_bytes();
@@ -204,7 +254,6 @@ fn every_task_echo_opens_with_the_task_the_command_named() {
         (vec!["modify", "1", "due:monday"], "#1  Write the report"),
         (vec!["tag", "1", "+urgent"], "#1  Write the report"),
         (vec!["untag", "1", "+urgent"], "#1  Write the report"),
-        (vec!["undo"], "#1  Write the report"),
         (
             vec!["annotate", "2", "call", "the", "printer"],
             "#2  Review the draft",
@@ -236,6 +285,12 @@ fn every_task_echo_opens_with_the_task_the_command_named() {
     let id = ann["annotation"]["id"].as_str().expect("annotation id");
     let out = plain.plain(&["unannotate", "1", id]);
     assert_eq!(out.lines().next(), Some("#1  Write the report"), "{out}");
+
+    // `undo`, on a store whose newest event is the one it reverses.
+    let out = undo_store("opens-undo-plain", "tag.remove", "Write the report").plain(&["undo"]);
+    assert_eq!(out.lines().next(), Some("#1  Write the report"), "{out}");
+    let out = undo_store("opens-undo-term", "tag.remove", "Write the report").term(80, &["undo"]);
+    assert_eq!(out.lines().next(), Some("▌ #1  Write the report"), "{out}");
 }
 
 /// Rule 3: calendar days, not instants, and `5m`, not `PT5M`. `start` said
@@ -250,7 +305,6 @@ fn no_echo_spells_an_instant_or_an_iso_duration() {
         vec!["start", "1"],
         vec!["start", "2"],
         vec!["stop", "2"],
-        vec!["undo"],
         vec!["modify", "1", "due:monday", "est:2h"],
         vec!["done", "2"],
         vec!["start", "1"],
@@ -263,6 +317,17 @@ fn no_echo_spells_an_instant_or_an_iso_duration() {
     let term = st.term(80, &["done", "1"]);
     if let Some(bad) = store_spelling(&term) {
         seen.push(format!("done (terminal): {bad:?}\n{term}"));
+    }
+    for (tag, how) in [("no-iso-undo-plain", false), ("no-iso-undo-term", true)] {
+        let u = undo_store(tag, "stop", "Write the report");
+        let out = if how {
+            u.term(80, &["undo"])
+        } else {
+            u.plain(&["undo"])
+        };
+        if let Some(bad) = store_spelling(&out) {
+            seen.push(format!("undo of a stop: {bad:?}\n{out}"));
+        }
     }
     assert!(seen.is_empty(), "{}", seen.join("\n"));
 }
@@ -316,7 +381,6 @@ fn every_echo_fits_a_sixty_column_terminal() {
             "terminal",
             "screen",
         ],
-        vec!["undo"],
         vec!["done", "1"],
         vec!["reopen", "1"],
         vec!["cancel", "2"],
@@ -325,15 +389,45 @@ fn every_echo_fits_a_sixty_column_terminal() {
         vec!["archive", "a-project-with-a-rather-long-name"],
     ] {
         let out = st.term_raw(60, &args);
-        for stream in [&out.stdout, &out.stderr] {
-            for line in strip(&String::from_utf8_lossy(stream)).lines() {
-                if line.width() > 60 {
-                    over.push(format!("{args:?}: {} cells: {line:?}", line.width()));
-                }
+        overflow(&mut over, &format!("{args:?}"), &out);
+    }
+    // `undo` of each op it reverses, each on a store whose newest event it is.
+    for op in ["stop", "tag.remove", "annotation.add", "dependency.remove"] {
+        let u = undo_store(&format!("fits-60-undo-{op}"), op, long);
+        overflow(&mut over, &format!("undo {op}"), &u.term_raw(60, &["undo"]));
+    }
+    // `import` of a document with neither a `projects` nor a `docs` section,
+    // so both of its notes print: they were 79 and 125 cells.
+    let imp = Store::new("fits-60-import");
+    let doc = imp.path().join("old.json");
+    std::fs::write(
+        &doc,
+        serde_json::json!({ "tasks": [{
+            "id": "019f0000-0000-7000-8000-0000000000d1", "short_id": 1,
+            "title": long, "status": "pending",
+            "project": "a-project-with-a-rather-long-name",
+        }]})
+        .to_string(),
+    )
+    .expect("write import fixture");
+    let out = imp.term_raw(60, &["import", doc.to_str().expect("utf8 path")]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("note:"),
+        "the fixture must make import print its notes"
+    );
+    overflow(&mut over, "import", &out);
+    assert!(over.is_empty(), "{}", over.join("\n"));
+}
+
+/// Every line of a run's stdout and stderr wider than 60 cells.
+fn overflow(over: &mut Vec<String>, what: &str, out: &Output) {
+    for stream in [&out.stdout, &out.stderr] {
+        for line in strip(&String::from_utf8_lossy(stream)).lines() {
+            if line.width() > 60 {
+                over.push(format!("{what}: {} cells: {line:?}", line.width()));
             }
         }
     }
-    assert!(over.is_empty(), "{}", over.join("\n"));
 }
 
 /// Rule 4 (D126, amendment 1): the state glyph sits in the rail column and
@@ -462,7 +556,13 @@ fn a_closed_interval_is_spelled_stopped_after_everywhere() {
     // Seeded through `import` with a timer two hours old (D42's
     // `active_since`/`tracked_seconds`): a real start/stop in a test closes an
     // interval of 0s, and a zero is not a fact, so it would prove nothing.
-    let two_hours_ago = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(2)).to_string();
+    // Two hours and thirty seconds back: the interval reads `2h` to the minute,
+    // and the half minute keeps it there if the clock the binary reads is a
+    // few seconds off the one this test read (WSL2 was seen to step 2.4 s).
+    let two_hours_ago = (jiff::Timestamp::now()
+        - jiff::SignedDuration::from_hours(2)
+        - jiff::SignedDuration::from_secs(30))
+    .to_string();
     let seed = |st: &Store| {
         let fixture = st.path().join("seed.json");
         std::fs::write(
@@ -513,9 +613,10 @@ fn a_closed_interval_is_spelled_stopped_after_everywhere() {
     assert!(line2.starts_with("stopped after 2h   tracked 3h"), "{stop}");
     assert!(!stop.contains("interval"), "{stop}");
 
-    // undo of that stop: `*` says it runs again, and since when. What comes
-    // back is the two-hour interval, not a total, so it is not `tracked`.
-    let undo = st.plain(&["undo"]);
+    // undo of a stop: `*` says it runs again, and since when. What comes back
+    // is the two-hour interval, not a total, so it is not `tracked`. On a
+    // store whose newest event is that stop (see `undo_store`).
+    let undo = undo_store("stopped-after-undo", "stop", "Write the report").plain(&["undo"]);
     let line2 = undo.lines().nth(1).unwrap();
     assert!(line2.starts_with("* undid stop   since "), "{undo}");
     assert!(!line2.contains("tracked"), "{undo}");

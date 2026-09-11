@@ -69,10 +69,9 @@ fn context_drops_whole_from_the_right_and_the_change_never_does() {
         line(&narrow).contains("due tomorrow 17:00"),
         "the change went: {narrow}"
     );
-    assert!(
-        !line(&narrow).contains("rev"),
-        "rev is the first to go: {narrow}"
-    );
+    // `rev` stays: `--expected-rev` needs it (#188), so `list`'s context
+    // gives way instead (review round 1; it used to be the first to go).
+    assert!(line(&narrow).contains("rev 3"), "rev went: {narrow}");
     for l in narrow.lines() {
         assert!(width(l) <= 40, "{} cells: {l:?}", width(l));
     }
@@ -98,7 +97,7 @@ fn context_drops_whole_from_the_right_and_the_change_never_does() {
             assert!(line(&narrow).contains(piece), "{piece} was cut: {narrow}");
         }
     }
-    // The order `list` gives way in: rev, then est, then tags...
+    // The order `list` gives way in: est, then tags, project, urgency.
     let at = |cols: usize| {
         line(&modified(
             &unicode(cols),
@@ -111,13 +110,13 @@ fn context_drops_whole_from_the_right_and_the_change_never_does() {
     let mut seen_gone = Vec::new();
     for cols in (30..=120).rev() {
         let l = at(cols);
-        for f in ["rev 3", "est 4h", "+bug", "mobile", "H ▄"] {
+        for f in ["est 4h", "+bug", "mobile", "H ▄"] {
             if !l.contains(f) && !seen_gone.contains(&f) {
                 seen_gone.push(f);
             }
         }
     }
-    assert_eq!(seen_gone, ["rev 3", "est 4h", "+bug", "mobile", "H ▄"]);
+    assert_eq!(seen_gone, ["est 4h", "+bug", "mobile", "H ▄"]);
 }
 
 /// A change longer than the terminal continues under itself on the rail; it
@@ -300,6 +299,9 @@ fn bold_on_the_second_line_is_the_outcome_and_the_change() {
     let m = line2(modified(&ctx, &t, &set(&[("due", json!("x"))]), &[], now()));
     assert_eq!(bold_runs(&m), ["modified", "due 20 Sep"], "{m:?}");
 
+    // Which tags `tag` added, its result cannot say (it answers with the
+    // whole set), so none is bold (review round 1: `+bug` was bold on a task
+    // that already had it).
     let tg = line2(tag_changed(
         &ctx,
         &json!({}),
@@ -308,7 +310,7 @@ fn bold_on_the_second_line_is_the_outcome_and_the_change() {
         &["urgent".into()],
         now(),
     ));
-    assert_eq!(bold_runs(&tg), ["tagged", "+urgent"], "{tg:?}");
+    assert_eq!(bold_runs(&tg), ["tagged"], "{tg:?}");
 
     let st = line2(stopped(
         &ctx,
@@ -428,7 +430,7 @@ fn the_token_note_tracks_cores_hint_wording() {
     let hint = bare["tokens_hint"]
         .as_str()
         .expect("a bare done carries a hint");
-    let note = tokens_note(hint, 200).expect("and the reader can act on it");
+    let note = tokens_note(hint, 200, true).expect("and the reader can act on it");
     assert!(note.starts_with("note: no token counts"), "{note}");
 
     call(
@@ -443,7 +445,7 @@ fn the_token_note_tracks_cores_hint_wording() {
         hint.starts_with(ALREADY_COVERED),
         "core reworded the covered hint: {hint}"
     );
-    assert_eq!(tokens_note(hint, 200), None);
+    assert_eq!(tokens_note(hint, 200, true), None);
 }
 
 /// Rule 11: the tags an undo brought back are drawn once, inside the task's
@@ -460,4 +462,363 @@ fn undo_names_the_restored_tags_once() {
     let out = undone(&ctx, &result, &t, now());
     assert_eq!(out.matches("+blocking").count(), 1, "{out}");
     assert_eq!(out.matches("+api").count(), 1, "{out}");
+}
+
+// ---- review round 1 ------------------------------------------------------
+
+/// Every echo, painted with `ctx`, from a fixture that is neither late nor in
+/// the top urgency band, so the only bold a line may carry is the write's.
+/// Each entry names the bold runs its lines after the first may carry.
+fn every_echo(ctx: &Ctx) -> Vec<(&'static str, String, Vec<&'static str>)> {
+    let n = now();
+    let mut t = task();
+    t["urgency"] = json!(4.0);
+    t["due"] = json!("2026-09-20T00:00:00Z");
+    t["tags"] = json!(["bug"]);
+    let mut running = t.clone();
+    running["status"] = json!("active");
+    let mut blocked = t.clone();
+    blocked["blocked"] = json!(true);
+    blocked["unmet_blockers"] = json!([{ "short_id": 7, "title": "the blocker" }]);
+    let mut closed = t.clone();
+    closed["status"] = json!("done");
+    let titles: Titles = [(49, "stopped one".to_string()), (52, "waits".to_string())]
+        .into_iter()
+        .collect();
+    let undo = |op: &str, restored: Value| json!({ "reverted": { "op": op }, "short_id": 50, "restored": restored });
+    vec![
+        ("add", added(ctx, &t, n), vec!["added"]),
+        (
+            "start",
+            started(
+                ctx,
+                &json!({ "auto_stopped": [{ "short_id": 49, "tracked": "PT5M" }] }),
+                &running,
+                &titles,
+                n,
+            ),
+            vec!["started"],
+        ),
+        (
+            "start again",
+            started(
+                ctx,
+                &json!({ "already_running": true, "interval_started": "2026-09-11T09:00:00Z" }),
+                &running,
+                &titles,
+                n,
+            ),
+            vec![],
+        ),
+        (
+            "stop",
+            stopped(
+                ctx,
+                &json!({ "interval": "PT5M", "tracked": "PT2H" }),
+                &t,
+                n,
+            ),
+            vec!["stopped after 5m", "tracked 2h of 4h"],
+        ),
+        (
+            "done",
+            done(
+                ctx,
+                &json!({ "tracked": "PT1H", "estimate": "PT4H", "unblocked": [52],
+                         "completed": "2026-09-11T11:30:00Z" }),
+                &closed,
+                &titles,
+                n,
+            ),
+            vec!["done today 11:30"],
+        ),
+        (
+            "cancel",
+            status_changed(
+                ctx,
+                "cancelled",
+                &json!({ "unblocked": [52] }),
+                &closed,
+                &titles,
+                n,
+            ),
+            vec!["cancelled"],
+        ),
+        (
+            "reopen",
+            status_changed(ctx, "reopened", &json!({ "blocked": [52] }), &t, &titles, n),
+            vec!["reopened"],
+        ),
+        (
+            "modify",
+            modified(ctx, &t, &set(&[("due", json!("x"))]), &[], n),
+            vec!["modified", "due 20 Sep"],
+        ),
+        (
+            "tag (which tags were new is unknowable)",
+            tag_changed(ctx, &json!({}), &t, true, &["bug".into()], n),
+            vec!["tagged"],
+        ),
+        (
+            "untag",
+            tag_changed(ctx, &json!({ "removed": ["bug"] }), &t, false, &[], n),
+            vec!["untagged", "+bug"],
+        ),
+        (
+            "dep",
+            dep_changed(ctx, &json!({ "inserted": true }), &blocked, true, "7", n),
+            vec!["blocked by #7"],
+        ),
+        (
+            "dep again",
+            dep_changed(ctx, &json!({ "inserted": false }), &blocked, true, "7", n),
+            vec![],
+        ),
+        (
+            "undep, still blocked",
+            dep_changed(ctx, &json!({ "blocked": true }), &blocked, false, "1", n),
+            vec!["no longer waits on #1"],
+        ),
+        (
+            "annotate",
+            annotated(ctx, &json!({ "annotation": { "body": "a note" } }), &t, n),
+            vec!["annotated"],
+        ),
+        (
+            "unannotate",
+            annotation_removed(ctx, &t, n),
+            vec!["note removed"],
+        ),
+        (
+            "undo stop",
+            undone(
+                ctx,
+                &undo(
+                    "stop",
+                    json!({ "interval_started": "2026-09-11T09:00:00Z" }),
+                ),
+                &running,
+                n,
+            ),
+            vec!["undid stop"],
+        ),
+        (
+            "undo untag",
+            undone(ctx, &undo("tag.remove", json!({ "tags": ["bug"] })), &t, n),
+            vec!["undid untag", "+bug"],
+        ),
+        (
+            "init",
+            project_created(
+                ctx,
+                &json!({ "name": "r", "default": false, "current_default": "w" }),
+            ),
+            vec!["created"],
+        ),
+        (
+            "use",
+            default_switched(ctx, &json!({ "name": "r", "previous": "w" })),
+            vec!["now the default"],
+        ),
+        (
+            "archive",
+            project_archived(
+                ctx,
+                &json!({ "name": "r", "default_cleared": false, "open_tasks": 2 }),
+            ),
+            vec!["archived"],
+        ),
+        (
+            "archive, default cleared",
+            project_archived(ctx, &json!({ "name": "r", "default_cleared": true })),
+            vec!["archived", "it was your default project"],
+        ),
+        (
+            "import",
+            imported(
+                ctx,
+                &json!({ "imported": 3, "projects_imported": 1, "docs_imported": 0 }),
+            ),
+            vec!["imported"],
+        ),
+    ]
+}
+
+/// D123 (b), review round 1: on every line but the title, bold is the outcome
+/// and what the write changed, under NO_COLOR and in `mono`, where roles carry
+/// bold of their own (`danger`, `accent`, `timer.active`). `still blocked by`
+/// was bold because `danger` is; `blocked again`, `unblocked` and a moved
+/// task's `stopped after` were bold in mono; `tag` bolded a tag the task
+/// already had; `done` bolded a total it could not know it had changed.
+#[test]
+fn bold_is_only_the_outcome_and_the_change_on_every_echo() {
+    let mono = Ctx::new(
+        theme::builtin("mono").expect("mono is built in"),
+        Caps {
+            depth: theme::ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        },
+    )
+    .with_cols(160);
+    let mut wrong = Vec::new();
+    for (label, ctx) in [("NO_COLOR", no_color(160)), ("mono", mono)] {
+        for (name, out, want) in every_echo(&ctx) {
+            // The first line is the title (a project's name); `import` has none.
+            let skip = usize::from(name != "import");
+            let got: Vec<String> = out.lines().skip(skip).flat_map(bold_runs).collect();
+            if got != want {
+                wrong.push(format!("{label} {name}: bold {got:?}, want {want:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// D123: the path without Unicode prints the program's own glyphs in ASCII.
+/// It printed `·` and `—`, and only `modify` was checked.
+#[test]
+fn without_unicode_every_echo_is_ascii() {
+    let legacy = Ctx::new(
+        theme::default_theme(),
+        Caps {
+            depth: theme::ColorDepth::Ansi16,
+            ansi: true,
+            unicode: false,
+        },
+    )
+    .with_cols(160);
+    for ctx in [plain(160), legacy] {
+        for (name, out, _) in every_echo(&ctx) {
+            let text: String = out
+                .split('\u{1b}')
+                .enumerate()
+                .map(|(i, s)| {
+                    if i == 0 {
+                        s
+                    } else {
+                        s.split_once('m').map_or(s, |(_, r)| r)
+                    }
+                })
+                .collect();
+            assert!(text.is_ascii(), "{name} is not ASCII:\n{text}");
+        }
+    }
+    assert!(tokens_note("no counts; x", 200, false).unwrap().is_ascii());
+    assert!(export_note(2, 200, false).is_ascii());
+}
+
+/// A terminal that cannot draw Unicode (a legacy Windows console, colour and
+/// no VT glyphs) is still a terminal with a width: the card fits it. The path
+/// used to be chosen by "no Unicode", which sent it the unfitted pipe layout.
+#[test]
+fn a_terminal_without_unicode_still_fits_the_card() {
+    let legacy = Ctx::new(
+        theme::default_theme(),
+        Caps {
+            depth: theme::ColorDepth::Ansi16,
+            ansi: true,
+            unicode: false,
+        },
+    )
+    .with_cols(40);
+    for (name, out, _) in every_echo(&legacy) {
+        for l in out.lines() {
+            let shown: String = l
+                .split('\u{1b}')
+                .enumerate()
+                .map(|(i, s)| {
+                    if i == 0 {
+                        s
+                    } else {
+                        s.split_once('m').map_or(s, |(_, r)| r)
+                    }
+                })
+                .collect();
+            assert!(
+                width(&shown) <= 40,
+                "{name}: {} cells: {shown:?}",
+                width(&shown)
+            );
+        }
+    }
+}
+
+/// Plain has no bold, so it has to say in words what `modify` set; the old
+/// echo listed `due <- … / priority <- M` and the first D123 plain line did
+/// not say which of its facts were the change.
+#[test]
+fn plain_modify_names_what_it_set() {
+    let out = modified(
+        &plain(100),
+        &task(),
+        &set(&[("due", json!("x")), ("priority", json!("H"))]),
+        &["urgent".to_string()],
+        now(),
+    );
+    let l = out.lines().nth(1).unwrap();
+    assert!(
+        l.starts_with("modified   set priority H, due tomorrow 17:00, tags +bug +urgent"),
+        "{out}"
+    );
+}
+
+/// A total is not rounded into a false equality: 3h41m against a 4h estimate
+/// read `tracked 4h of 4h`, which says the estimate is used up.
+#[test]
+fn a_tracked_total_is_not_rounded_into_its_estimate() {
+    let out = stopped(
+        &unicode(120),
+        &json!({ "interval": "PT52M", "tracked": "PT3H41M" }),
+        &task(),
+        now(),
+    );
+    assert!(
+        out.contains("stopped after 52m   tracked 3h41 of 4h"),
+        "{out}"
+    );
+}
+
+/// `rev` is what `--expected-rev` needs (#188), so a narrow terminal keeps it
+/// and lets `list`'s context go first.
+#[test]
+fn modify_keeps_rev_on_a_narrow_terminal() {
+    let out = modified(
+        &unicode(40),
+        &task(),
+        &set(&[("due", json!("x"))]),
+        &[],
+        now(),
+    );
+    assert!(out.lines().nth(1).unwrap().contains("rev 3"), "{out}");
+    for l in out.lines() {
+        assert!(width(l) <= 40, "{} cells: {l:?}", width(l));
+    }
+}
+
+/// `pack` lays a record's facts too (a project is not a task, so no rail): a
+/// line too long continues under the facts, cut nowhere.
+#[test]
+fn a_record_too_long_for_one_line_continues_under_itself() {
+    let out = project_archived(
+        &unicode(40),
+        &json!({ "name": "prive.klussen", "default_cleared": true, "open_tasks": 12,
+                 "open_overdue": 3 }),
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines.len() >= 4, "{out}");
+    for l in &lines {
+        assert!(width(l) <= 40, "{} cells: {l:?}", width(l));
+    }
+    // Wrapped at words where a clause is longer than the room, never cut.
+    let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    for piece in [
+        "12 open tasks left in it, 3 overdue",
+        "it was your default project",
+        "tasqx use <project> sets another",
+    ] {
+        assert!(flat.contains(piece), "{piece} went: {out}");
+    }
+    let indent = " ".repeat(width("archived") + 3);
+    assert!(lines[2..].iter().all(|l| l.starts_with(&indent)), "{out}");
 }

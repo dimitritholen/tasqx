@@ -528,7 +528,7 @@ The `▶` in the rail column says it runs (D123). `task.start` returns `interval
 ```console
 $ tasqx stop 42
 ▌ #42  Ship the v1 JSON API freeze
-▌ stopped after 52m   tracked 4h of 4h   H ▄▄▄▃ 11.8   work.tasqx   due Mon   +release +api
+▌ stopped after 52m   tracked 3h41 of 4h   H ▄▄▄▃ 11.8   work.tasqx   due Mon   +release +api
 ```
 `task.stop` → `{interval:"PT52M", tracked:"PT3H41M"}`, humanized client-side; the total prints only when it reads differently from the interval (D123).
 
@@ -537,7 +537,7 @@ $ tasqx stop 42
 ```console
 $ tasqx 42 done
 ▌ #42  Ship the v1 JSON API freeze
-▌ done   tracked 4h of 4h   work.tasqx   due Mon   +release +api
+▌ done today 17:02   tracked 3h41 of 4h   work.tasqx   due Mon   +release +api
   #43  unblocked · Publish API docs
   #44  unblocked · Tag v1.0 release
 ```
@@ -3079,8 +3079,9 @@ the write. The second opens with the outcome word and what changed, in bold, fol
 `list`'s context in `list`'s order (urgency cell, project, due, tags, est), dropped whole
 from the right. Any other task the write moved gets one line under the card, carrying its
 `▶`/`⊘` in the rail column. Bold on the second line means "this write changed it" and
-nothing else, because under `NO_COLOR` bold is the only emphasis that survives. The plain
-path prints the same words in ASCII and is never fitted, and `--json` does not change.
+nothing else, because under `NO_COLOR` bold is the only emphasis that survives. On a
+terminal the card is fitted to its width; off one (a pipe) the same words print in ASCII,
+never fitted, and `--json` does not change.
 One builder draws all of them, `add` included (`render::echo`), and it amends D122(b)
 where `add` changes.
 
@@ -3090,28 +3091,42 @@ where `add` changes.
   two glyphs take the slot, so `↩` went, and so did `running again` after an undone stop
   (rule 11). The rail under `NO_COLOR` no longer says a state by hue alone.
 - **(b) Bold is the outcome and the change.** Unchanged facts are never bold, `add`'s
-  `due` included (D122 painted it `card.strong`). The priority letter drops its role's
-  bold unless the write set the priority. A late deadline keeps `overdue` and the top
-  urgency band keeps its bold figure (rule 6), because those are their own weights. New
-  tags are bold inside the whole set, drawn once; the tags already there are quiet.
+  `due` included (D122 painted it `card.strong`), and a role's own bold is stripped
+  wherever the write did not change the thing it paints: the priority letter, `danger`'s
+  `still blocked by`, the rail glyphs, and every line for another task the write moved
+  (`mono` bolds `accent` and `timer.active`). A late deadline keeps `overdue` and the top
+  urgency band keeps its bold figure (rule 6), because those are their own weights. Bold
+  is only claimed where the result says what changed: an untag's `removed` and an undone
+  untag's `restored` tags are bold, but `tag` answers with the whole set and cannot say
+  which tags were new, so its set is drawn once and none of it is bold; `done` cannot
+  say whether it closed a timer, so its total is not bold either.
 - **(c) No zero, and no urgency on a closed task.** `done` and `cancel` drop the urgency
   cell, and a zero prints as nothing: `tracked 0s of a 3h estimate` went. The exception
-  is import's `no memory docs`, which #179 requires.
+  is import's `no memory docs`, which #179 requires. `done` names when, as a calendar
+  day (`done today 15:38`): the completion moment reaches the human surface (P1b), and a
+  completion an agent logged is read later than it happened.
 - **(d) One spelling for a closed interval.** `stopped after 5m` on `stop` and on the line
-  `start` draws for a task it auto-stopped; `tracked 2h of 6h` is added only when it reads
-  differently from the interval. An undone stop says `since today 14:44`: what it puts
-  back is the interval, not a total, so it is not called `tracked`.
+  `start` draws for a task it auto-stopped; `tracked 3h41 of 4h` is added only when it
+  reads differently from the interval. Both are spelled by the dashboard's `dur_compact`
+  (`52m`, `3h41`), exact to the minute and never rounded: `duration_value`'s one
+  rounded unit turned 3h41 against a 4h estimate into `tracked 4h of 4h`, the estimate
+  apparently used up. An undone stop says `since today 14:44`: what it puts back is the
+  interval, not a total, so it is not called `tracked`.
 - **(e) The card first.** The task the command named is always the first line under the
   prompt, and what else moved follows in the order it happened.
 - **(f) `list`'s order, and one fitter.** The change leads and never drops; `list`'s
   facts drop whole from the right through `columns::fit` (D120), each fact after the
   first carrying the card's third cell of gap in its width. A change wider than the line
-  continues on the rail under itself rather than be cut. A note (`annotate`) wraps.
+  continues on the rail under itself rather than be cut, and a single clause wider than
+  that is wrapped at words by `wrap_words`. A note (`annotate`) wraps. `modify`'s `rev`
+  comes last and is never dropped, because `--expected-rev` needs it (#188); `list`'s
+  context gives way first.
 - **(g) A project or a store is not a task.** `init`, `use`, `archive` and `import` draw
   no rail; the project's name is the first line in the title's role. D21's and D22's
   facts all survive: whether the default moved, the command that moves it, and the open
   work an archive leaves (`2 open tasks left in it, 1 overdue`). An archive that cleared
-  the default names `tasqx use <project>` and never drops it.
+  the default names `tasqx use <project>` and never drops it. `import` goes through the
+  same builder and its notes wrap to the terminal.
 - **(h) The cases the mocks did not draw.** A start of a running task says
   `already running  since today 13:40` with nothing bold. An `undep` that leaves another
   blocker says `⊘ no longer waits on #51  still blocked by #53 · <title>` and never calls
@@ -3120,12 +3135,20 @@ where `add` changes.
   own on stderr (`note: no token counts were self-reported — tasqx done --help names the
   flags`, the pointer dropped on a narrow terminal); the variant that asks nothing of the
   reader prints nothing. `lib.rs` queues it and prints it after stdout, so it lands under
-  the card. `export`'s dropped-edge note is plural-correct and fits. `--json` keeps core's
-  hint whole (D56), and `already_running` stays the frozen flag.
+  the card. `export`'s dropped-edge note is plural-correct. Both notes are sized, and
+  their glyphs chosen, from stderr (`theme::detect_stderr_cols`, `Caps::detect_stderr`),
+  since stdout is usually a file (`export > slice.json`). `--json` keeps core's hint whole
+  (D56), and `already_running` stays the frozen flag.
 - **(j) Read back.** D56 froze the write results without the facts a card draws, so each
   verb reads its task back with `task.get` after the write, on both paths, and the titles
   of the other tasks it moved. A failed read falls back to the write's own result. There
   is no read before a write.
+- **(k) Terminal or pipe.** The fitted card is for a terminal, which is what has a width,
+  chosen by `caps.ansi || caps.unicode` and not by Unicode alone: a legacy console with
+  colour and no Unicode gets the card fitted, without the rail. Where there is no Unicode
+  the program's own glyphs are ASCII (`*`, `B`, ` - ` for ` · ` and ` — `, `...`,
+  `repeats` for `↻`). Off a terminal there is no bold to mark the change, so `modify` says
+  it in words: `modified   set priority H, due 18 Sep, tags +bug +urgent   mobile ...`.
 
 **Why:** rendered from the demo store, the eighteen echoes were eighteen dialects:
 `Started · timer running (since 2026-09-11T13:42:40.447797449Z)`, `#60  ->  cancelled`,
@@ -3167,6 +3190,25 @@ new spelling. `stop_reports_the_same_tracked_total_show_does` now seeds a two-ho
 rather than one from 2020, since at 2,446 days the interval and the total round to the
 same number and the total is then not printed twice.
 
+**Review round 1** failed the first commit on eight points, fixed in the second: the
+undo steps in `tests/write_echoes.rs` chained live writes ahead of `undo` and flaked by
+construction (they now reverse an event seeded with an id above any the clock mints);
+roles leaked their own bold onto facts the write had not changed (now (b) above, guarded
+across every echo under `NO_COLOR` and `mono`); `import` bypassed the builder and its
+notes ran to 125 cells; the pipe layout was chosen by "no Unicode" and printed `·` and
+`—`; plain `modify` no longer said what it set; totals were rounded into their
+estimate and `rev` was the first fact dropped; two regressions had been weakened (the
+completion moment on `done`, the exact total on `stop`), and are restored; `pack` wrapped
+nothing too wide for a line of its own. The eight new guards and the three restored or
+reshaped ones were each watched fail on the first commit's code, and all seventeen of
+their drifts bite: a role's bold on `still blocked by`, on a moved task's glyph, on
+tags `tag` could not know were new; ` · ` without Unicode; the fitted path chosen by
+Unicode alone; unmarked plain `modify`; a rounded total; a droppable `rev`; an unwrapped
+clause; unwrapped import notes; an undone stop's raw instant and its `running again`;
+the moved lines above the card; `done` without its day. Stderr's width and glyphs
+(`detect_stderr_cols`, `Caps::detect_stderr`) have no guard: telling stderr's terminal
+from stdout's needs a pty, which the test harness does not have.
+
 **Left standing:** `pick`'s scrollback now ends on `start`'s card, but its own line for a
 task it auto-stopped keeps `Stopped #N  ·  tracked 2h23`, above the card; `pick` is not
 carried. `memory import` still says `doc(s)`; it is not one of the eighteen. `next`'s
@@ -3179,6 +3221,5 @@ frame (Tuesday 14 July 2026), day names translated from a run with the same offs
 `pack`, every echo) and `render/echo/tests.rs`, `render.rs` (the old renderers removed),
 `verbs.rs` (`read_back`, `titles_of`, each verb), `lib.rs` (`note_after_output`),
 `pick_screen.rs`, `docs.rs`, `README.md`, `tests/write_echoes.rs` (new),
-`tests/regressions.rs`, `tests/export_document.rs`, §5's examples and §11 above, and
-`docs/terminal-style.md`.
-
+`tests/regressions.rs`, `tests/export_document.rs`, `theme.rs` (`Caps::detect_stderr`,
+`detect_stderr_cols`), §5's examples and §11 above, and `docs/terminal-style.md`.
