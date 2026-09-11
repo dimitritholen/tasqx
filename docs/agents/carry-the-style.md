@@ -139,11 +139,13 @@ These are not suggestions. Each one is a way a night gets lost.
   doc to silence it removes the only thing keeping the guide honest. If the
   contract genuinely should change, change the code and let the guard tell you
   which rows moved.
-- **Never claim a new D-number.** D117 already rules this style; carrying it to
-  another screen is executing a ruling, not making one. Append one sentence to
-  D117's "Written down" paragraph naming the screens now covered.
-- **Never push, never merge, never switch to `main`.** Commits stay on the
-  branch. The morning is when a human decides.
+- **A D-number is for a changed ruling, and only then.** Carrying D117 to
+  another screen executes a ruling and needs none. A task that changes a
+  ruling records the next free D-number in `DESIGN.md` §12, with the ruling,
+  its one-line why and every ruling it amends, then walks the §11 phase tables
+  and every other §12 entry that still describes the old behaviour.
+- **Workers never push, merge or switch to `main`.** Commits stay on the
+  branch, and the coordinator pushes.
 - **A surface you cannot render is not a surface you skip.** Do the code work
   from the rules, and say in the annotation that the visual check did not
   happen. Then it is visible rather than assumed.
@@ -173,8 +175,8 @@ Learned the hard way on the branch that produced the style.
 
 - **`.claude/guard.sh` blocks on substrings.** A command containing the text of
   a dev-build path, or `git` in a shape it cannot verify, is refused whole.
-  Keep shell commands plain and separate: `git add -A`, then `git commit -F
-  <file>` as its own call. Write commit messages to a file rather than passing
+  Keep shell commands plain and separate: `git add` with explicit paths (never
+  `-A`), then `git commit -F <file>` as its own call. Write commit messages to a file rather than passing
   them inline. Avoid command substitution and heredocs in anything git- or
   binary-adjacent.
 - **Driving a dev build needs both `TASQX_DB` pointed at a scratch store and
