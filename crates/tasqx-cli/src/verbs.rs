@@ -573,7 +573,10 @@ pub(crate) fn run_done(
     if let Some(note) = result
         .get("tokens_hint")
         .and_then(Value::as_str)
-        .and_then(|h| render::tokens_note(h, ctx.cols))
+        .and_then(|h| {
+            let unicode = crate::theme::Caps::detect_stderr().unicode;
+            render::tokens_note(h, crate::theme::detect_stderr_cols(), unicode)
+        })
     {
         crate::note_after_output(note);
     }
@@ -1120,9 +1123,11 @@ pub(crate) fn run_export(be: &mut Backend, filter: &[String]) -> CmdOutcome {
         .and_then(Value::as_i64)
         .unwrap_or(0);
     if dropped > 0 {
+        // Sized from stderr, where it goes: stdout is usually a file here.
+        let unicode = crate::theme::Caps::detect_stderr().unicode;
         eprintln!(
             "{}",
-            render::export_note(dropped, crate::theme::detect_cols())
+            render::export_note(dropped, crate::theme::detect_stderr_cols(), unicode)
         );
     }
     // Human output IS the canonical JSON document (git-diffable, greppable).

@@ -24,8 +24,11 @@
 //! nanoseconds, `blocked=true`, `task(s)`, `->`, a title on the second line or
 //! none at all. That is what this replaced, and why there is one builder.
 //!
-//! Off a terminal the same words print in ASCII (`*`/`B` at column 0, no rail)
-//! and are never fitted, because a pipe has no width.
+//! A terminal that cannot draw Unicode (a legacy console) gets the same card
+//! fitted to its width, without the rail and in ASCII (`*`/`B` at column 0,
+//! ` - ` for ` · `). Off a terminal the same words print in ASCII too, and are
+//! never fitted, because a pipe has no width; with no emphasis to mark the
+//! change, `modify` says in words what it set.
 
 use std::collections::HashMap;
 
@@ -34,7 +37,8 @@ use super::{
     status_is_open, truncate, urgency_meter, urgency_scale, width, wrap_words,
 };
 use crate::columns::{self, Column};
-use crate::theme::Ctx;
+use crate::theme::{Ctx, Style};
+use crate::tui::dashboard::panels::dur_compact;
 use jiff::Timestamp;
 use serde_json::Value;
 
@@ -51,6 +55,9 @@ struct Fact {
     /// ` · ` for the detail of the one before, one space for the next member
     /// of the same set.
     sep: &'static str,
+    /// The one style the whole fact is painted in, when it has one, so a fact
+    /// too long for a line can be wrapped and each piece painted alike.
+    style: Option<Style>,
 }
 
 impl Fact {
@@ -59,6 +66,16 @@ impl Fact {
             plain: plain.into(),
             painted: painted.into(),
             sep: GAP_SEP,
+            style: None,
+        }
+    }
+
+    fn styled(ctx: &Ctx, style: Style, text: &str) -> Fact {
+        Fact {
+            plain: text.to_string(),
+            painted: style.paint(text, &ctx.caps),
+            sep: GAP_SEP,
+            style: Some(style),
         }
     }
 
@@ -66,25 +83,62 @@ impl Fact {
     /// blocks this one: `blocked by #50 · Fix the thing`.
     fn detail(ctx: &Ctx, text: &str) -> Fact {
         Fact {
-            plain: text.to_string(),
-            painted: ctx.paint("card.label", text),
-            sep: ATTACH,
+            sep: attach(ctx),
+            ..Fact::role(ctx, "card.label", text)
         }
     }
 
-    /// A fact in one role.
+    /// A fact in one role, and never bold: bold is the write's (D123), and
+    /// several roles carry bold of their own (`danger`, and most of `mono`).
     fn role(ctx: &Ctx, role: &str, text: &str) -> Fact {
-        Fact::new(text, ctx.paint(role, text))
+        Fact::styled(ctx, quiet_style(ctx, role), text)
     }
 
     /// A fact the write changed: its role, made bold.
     fn changed(ctx: &Ctx, role: &str, text: &str) -> Fact {
-        Fact::new(text, bold(ctx, role, text))
+        Fact::styled(ctx, ctx.theme.role(role).bold(), text)
     }
 }
 
-fn bold(ctx: &Ctx, role: &str, text: &str) -> String {
-    ctx.theme.role(role).bold().paint(text, &ctx.caps)
+/// A role's style without its bold.
+fn quiet_style(ctx: &Ctx, role: &str) -> Style {
+    let mut style = ctx.theme.role(role);
+    style.bold = false;
+    style
+}
+
+/// Text in a role, never bold (see [`Fact::role`]).
+fn quiet(ctx: &Ctx, role: &str, text: &str) -> String {
+    quiet_style(ctx, role).paint(text, &ctx.caps)
+}
+
+/// What joins a detail to the fact it details: ` · `, or ` - ` in ASCII.
+fn attach(ctx: &Ctx) -> &'static str {
+    if ctx.caps.unicode {
+        " · "
+    } else {
+        " - "
+    }
+}
+
+/// What introduces the pointer after a note: ` — `, or ` - ` in ASCII.
+fn dash(unicode: bool) -> &'static str {
+    if unicode {
+        " — "
+    } else {
+        " - "
+    }
+}
+
+/// A duration a reader compares against an estimate: `3h41`, `52m`, `4h`.
+/// `dur_compact`, the dashboard's spelling, rather than `duration_value`,
+/// which rounds to one unit and turned 3h41 against a 4h estimate into
+/// `tracked 4h of 4h`. `detail.time_format = iso` still prints the ISO text.
+fn exact_duration(ctx: &Ctx, iso: &str) -> String {
+    if ctx.time_format == tasqx_core::markdown::TimeFormat::Iso {
+        return iso.to_string();
+    }
+    dur_compact(secs(iso))
 }
 
 /// Which of `list`'s facts a card draws after the change. A fact the change
@@ -110,6 +164,7 @@ impl Context {
         recur: false,
         rev: false,
     };
+
     const NONE: Context = Context {
         urgency: false,
         project: false,
@@ -154,6 +209,14 @@ impl<'a> Card<'a> {
 /// The outcome word, bold.
 fn outcome(ctx: &Ctx, text: &str) -> Fact {
     Fact::changed(ctx, "card.strong", text)
+}
+
+/// A card's `#N  Title` line and second line are drawn fitted whenever the
+/// output is a terminal, which is what gives it a width: a pipe has none. Not
+/// "whenever it can draw Unicode", which sent a legacy console the pipe's
+/// unfitted layout.
+fn on_terminal(ctx: &Ctx) -> bool {
+    ctx.caps.ansi || ctx.caps.unicode
 }
 
 fn sid(v: &Value) -> i64 {
@@ -212,7 +275,7 @@ fn urgency_fact(ctx: &Ctx, task: &Value, changed: bool) -> Fact {
         format!(
             "{letter} {}{} {figure}",
             ramp.paint(&bar, &ctx.caps),
-            ctx.paint("muted", &track)
+            quiet(ctx, "muted", &track)
         ),
     )
 }
@@ -243,10 +306,10 @@ fn due_fact(ctx: &Ctx, task: &Value, now: Timestamp, changed: bool) -> Option<Fa
         (false, true) => ctx.paint("card.strong", &plain),
         (true, false) => format!(
             "{} {}",
-            ctx.paint("card.label", "due"),
+            quiet(ctx, "card.label", "due"),
             ctx.paint("overdue", &cell)
         ),
-        (false, false) => format!("{} {cell}", ctx.paint("card.label", "due")),
+        (false, false) => format!("{} {cell}", quiet(ctx, "card.label", "due")),
     };
     Some(Fact::new(plain, painted))
 }
@@ -269,7 +332,7 @@ fn est_fact(ctx: &Ctx, task: &Value, now: Timestamp, changed: bool) -> Option<Fa
     let painted = if changed {
         ctx.paint("card.strong", &plain)
     } else {
-        format!("{} {value}", ctx.paint("card.label", "est"))
+        format!("{} {value}", quiet(ctx, "card.label", "est"))
     };
     Some(Fact::new(plain, painted))
 }
@@ -282,7 +345,7 @@ fn recur_fact(ctx: &Ctx, task: &Value) -> Option<Fact> {
     let mark = if ctx.caps.unicode { "↻" } else { "repeats" };
     Some(Fact::new(
         format!("{mark} {rec}"),
-        format!("{} {rec}", ctx.paint("card.label", mark)),
+        format!("{} {rec}", quiet(ctx, "card.label", mark)),
     ))
 }
 
@@ -307,12 +370,14 @@ fn context_facts(ctx: &Ctx, task: &Value, c: Context, now: Timestamp) -> Vec<Fac
     if c.recur {
         out.extend(recur_fact(ctx, task));
     }
-    if c.rev {
-        if let Some(rev) = task.get("_rev").and_then(Value::as_i64) {
-            out.push(Fact::role(ctx, "card.label", &format!("rev {rev}")));
-        }
-    }
     out
+}
+
+/// `rev N`, which `--expected-rev` needs (#188). Last in `list`'s order, and
+/// never dropped: a narrow terminal lets `list`'s context go first.
+fn rev_fact(ctx: &Ctx, task: &Value, c: Context) -> Option<Fact> {
+    let rev = task.get("_rev").and_then(Value::as_i64).filter(|_| c.rev)?;
+    Some(Fact::role(ctx, "card.label", &format!("rev {rev}")))
 }
 
 // ------------------------------------------------------------------- drawing
@@ -321,9 +386,6 @@ fn context_facts(ctx: &Ctx, task: &Value, c: Context, now: Timestamp) -> Vec<Fac
 /// a fact's own inner spaces (`H ▄▄▄▄ 17.2`, `due Fri`) never read as a gap.
 const FACT_GAP: usize = 3;
 const GAP_SEP: &str = "   ";
-
-/// What joins a detail to the fact it details.
-const ATTACH: &str = " · ";
 
 /// What joins the members of one set (a tag set) that were laid out as facts
 /// of their own so that a long set can continue on the next line.
@@ -338,16 +400,12 @@ fn gap_before(i: usize, f: &Fact) -> usize {
     }
 }
 
-/// Fit the second line's facts into `budget` cells with the one fitter every
-/// table uses (D120). The outcome and the change are fixed; everything else
-/// drops whole from the right. The extra cell a card puts between facts rides
-/// on each fact after the first, so `columns::fit`'s arithmetic stays its own.
-fn fit_facts(fixed: &[Fact], droppable: &[Fact], budget: usize) -> Vec<Fact> {
-    let all: Vec<(&Fact, bool)> = fixed
-        .iter()
-        .map(|f| (f, false))
-        .chain(droppable.iter().map(|f| (f, true)))
-        .collect();
+/// Fit the second line's facts, each marked droppable or not, into `budget`
+/// cells with the one fitter every table uses (D120). The outcome and the
+/// change are fixed; the droppable ones go whole, from the right. The extra
+/// cell a card puts between facts rides on each fact after the first, so
+/// `columns::fit`'s arithmetic stays its own.
+fn fit_facts(all: &[(Fact, bool)], budget: usize) -> Vec<Fact> {
     let cols: Vec<Column> = all
         .iter()
         .enumerate()
@@ -367,7 +425,7 @@ fn fit_facts(fixed: &[Fact], droppable: &[Fact], budget: usize) -> Vec<Fact> {
         })
         .collect();
     let kept = columns::fit(&cols, budget);
-    all.into_iter()
+    all.iter()
         .zip(kept)
         .filter(|(_, w)| *w > 0)
         .map(|((f, _), _)| f.clone())
@@ -375,20 +433,35 @@ fn fit_facts(fixed: &[Fact], droppable: &[Fact], budget: usize) -> Vec<Fact> {
 }
 
 /// Facts laid into lines of at most `budget` cells, greedily and whole; every
-/// line after the first starts `indent` cells in. A fact wider than a line
-/// gets one to itself.
-fn pack(facts: &[Fact], budget: usize, indent: usize) -> Vec<Vec<Fact>> {
+/// line after the first starts `indent` cells in. A fact that will not fit
+/// even a line of its own is wrapped at words by [`wrap_words`], each piece
+/// painted in the fact's style, rather than run past the edge; only a fact of
+/// several styles (none is that long) is left whole.
+fn pack(ctx: &Ctx, facts: &[Fact], budget: usize, indent: usize) -> Vec<Vec<Fact>> {
+    let room = budget.saturating_sub(indent).max(12);
     let mut lines: Vec<Vec<Fact>> = vec![Vec::new()];
     let mut used = 0;
     for f in facts {
         let line = lines.last_mut().expect("never empty");
         let need = gap_before(line.len(), f) + width(&f.plain);
-        if !line.is_empty() && used + need > budget {
-            used = indent + width(&f.plain);
-            lines.push(vec![f.clone()]);
-        } else {
+        if line.is_empty() || used + need <= budget {
             used += need;
             line.push(f.clone());
+            continue;
+        }
+        match f.style {
+            Some(style) if width(&f.plain) > room => {
+                for piece in wrap_words(&f.plain, room) {
+                    let mut p = Fact::styled(ctx, style, &piece);
+                    p.sep = f.sep;
+                    used = indent + width(&piece);
+                    lines.push(vec![p]);
+                }
+            }
+            _ => {
+                used = indent + width(&f.plain);
+                lines.push(vec![f.clone()]);
+            }
         }
     }
     lines
@@ -408,7 +481,7 @@ fn join(facts: &[Fact]) -> String {
 /// The rail cell of a card's second line or of a line under it: `▶`/`⊘` for a
 /// task that is running or blocked, in the rail's colour.
 fn state_glyph(ctx: &Ctx, task: &Value) -> Option<String> {
-    rail_marker(task, ctx.caps.unicode).map(|(role, glyph)| ctx.paint(role, glyph))
+    rail_marker(task, ctx.caps.unicode).map(|(role, glyph)| quiet(ctx, role, glyph))
 }
 
 fn draw(ctx: &Ctx, card: Card, now: Timestamp) -> String {
@@ -416,70 +489,91 @@ fn draw(ctx: &Ctx, card: Card, now: Timestamp) -> String {
     let id = format!("#{}", sid(task));
     let title = s(task, "title");
     let glyph = state_glyph(ctx, task);
-    let mut fixed = vec![card.outcome];
-    fixed.extend(card.lead);
-    let mut droppable = card.detail;
-    droppable.extend(context_facts(ctx, task, card.context, now));
-    let mut out = String::new();
+    let fitted = on_terminal(ctx);
+    let mut facts: Vec<(Fact, bool)> = vec![(card.outcome, false)];
+    facts.extend(card.lead.into_iter().map(|f| (f, false)));
+    facts.extend(card.detail.into_iter().map(|f| (f, true)));
+    facts.extend(
+        context_facts(ctx, task, card.context, now)
+            .into_iter()
+            .map(|f| (f, true)),
+    );
+    facts.extend(rev_fact(ctx, task, card.context).map(|f| (f, false)));
 
-    if !ctx.caps.unicode {
-        // The plain path: the same words, never fitted.
-        out.push_str(format!("{id}  {title}").trim_end());
-        out.push('\n');
-        let lead = glyph.map(|g| format!("{g} ")).unwrap_or_default();
-        let mut facts = fixed;
-        if let Some(w) = &card.words {
-            facts.push(Fact::new(w.clone(), w.clone()));
-        }
-        facts.extend(droppable);
-        out.push_str(&format!("{lead}{}\n", join(&facts)));
-        for line in card.below {
-            out.push_str(&line);
-        }
-        return out;
-    }
-
-    let rail = ctx.paint(rail_role(task), "▌");
-    let budget = ctx.cols.saturating_sub(2).max(20);
-    let title = truncate(&title, budget.saturating_sub(width(&id) + 2), true);
-    out.push_str(&format!(
-        "{rail} {}  {}\n",
-        ctx.paint("card.label", &id),
+    // The rail is drawn where Unicode is; without it the glyph is `*`/`B` at
+    // column 0 and an ordinary line starts at column 0.
+    let (rail, rail_w) = if ctx.caps.unicode {
+        (format!("{} ", quiet(ctx, rail_role(task), "▌")), 2)
+    } else {
+        (String::new(), 0)
+    };
+    let (cell, cell_w) = match glyph {
+        Some(g) => (format!("{g} "), 2),
+        None => (rail.clone(), rail_w),
+    };
+    let budget = if fitted {
+        ctx.cols.saturating_sub(cell_w.max(rail_w)).max(20)
+    } else {
+        usize::MAX
+    };
+    let title = if fitted {
+        truncate(
+            &title,
+            ctx.cols.saturating_sub(rail_w + width(&id) + 2),
+            ctx.caps.unicode,
+        )
+    } else {
+        title
+    };
+    let mut out = format!(
+        "{rail}{}  {}",
+        quiet(ctx, "card.label", &id),
         ctx.paint("card.strong", &title)
-    ));
-    let cell = glyph.unwrap_or_else(|| rail.clone());
+    )
+    .trim_end()
+    .to_string();
+    out.push('\n');
 
+    let continuation = |indent: usize| format!("{rail}{}", " ".repeat(indent));
     if let Some(words) = &card.words {
         // The note is the whole of the change: wrapped under itself, and no
         // context after it, since facts trailing someone's sentence read as
         // part of it.
-        let head = join(&fixed);
+        let head: Vec<Fact> = facts
+            .iter()
+            .filter(|(_, drop)| !drop)
+            .map(|(f, _)| f.clone())
+            .collect();
         let indent = width(
-            &fixed
+            &head
                 .iter()
-                .map(|f| f.plain.clone())
+                .map(|f| f.plain.as_str())
                 .collect::<Vec<_>>()
-                .join("   "),
+                .join(GAP_SEP),
         ) + FACT_GAP;
-        let lines = wrap_words(words, budget.saturating_sub(indent).max(12));
+        let lines = if fitted {
+            wrap_words(words, budget.saturating_sub(indent).max(12))
+        } else {
+            vec![words.clone()]
+        };
         for (i, l) in lines.iter().enumerate() {
             if i == 0 {
-                out.push_str(&format!("{cell} {head}{}{l}\n", " ".repeat(FACT_GAP)));
+                out.push_str(&format!("{cell}{}{GAP_SEP}{l}\n", join(&head)));
             } else {
-                out.push_str(&format!("{rail} {}{l}\n", " ".repeat(indent)));
+                out.push_str(&format!("{}{l}\n", continuation(indent)));
             }
         }
     } else {
-        let kept = fit_facts(&fixed, &droppable, budget);
+        let kept = fit_facts(&facts, budget);
         // A change too long for one line (a long tag set, several fields at
-        // once) continues under itself on the rail rather than be cut, since
-        // the change is what the echo is for.
+        // once) continues under itself rather than be cut, since the change
+        // is what the echo is for.
         let indent = width(&kept[0].plain) + FACT_GAP;
-        for (i, line) in pack(&kept, budget, indent).iter().enumerate() {
+        for (i, line) in pack(ctx, &kept, budget, indent).iter().enumerate() {
             if i == 0 {
-                out.push_str(&format!("{cell} {}\n", join(line)));
+                out.push_str(&format!("{cell}{}\n", join(line)));
             } else {
-                out.push_str(&format!("{rail} {}{}\n", " ".repeat(indent), join(line)));
+                out.push_str(&format!("{}{}\n", continuation(indent), join(line)));
             }
         }
     }
@@ -493,31 +587,32 @@ fn draw(ctx: &Ctx, card: Card, now: Timestamp) -> String {
 /// rail column, then `#N  <what happened> · <title>`, the title cut to fit.
 fn moved(ctx: &Ctx, glyph: Option<(&str, &str)>, id: i64, what: Fact, titles: &Titles) -> String {
     let cell = match glyph {
-        Some((role, g)) => format!("{} ", ctx.paint(role, g)),
+        Some((role, g)) => format!("{} ", quiet(ctx, role, g)),
         None => "  ".to_string(),
     };
     let head = format!("#{id}");
     let title = titles.get(&id).cloned().unwrap_or_default();
     let used = 2 + width(&head) + 2 + width(&what.plain);
+    let sep = attach(ctx);
     let tail = if title.is_empty() {
         String::new()
-    } else if !ctx.caps.unicode {
-        format!(" · {title}")
+    } else if !on_terminal(ctx) {
+        format!("{sep}{title}")
     } else {
-        let room = ctx.cols.saturating_sub(used + 3);
+        let room = ctx.cols.saturating_sub(used + width(sep));
         if room < 8 {
             String::new()
         } else {
-            format!(
-                " {} {}",
-                ctx.paint("card.label", "·"),
-                ctx.paint("card.label", &truncate(&title, room, true))
+            quiet(
+                ctx,
+                "card.label",
+                &format!("{sep}{}", truncate(&title, room, ctx.caps.unicode)),
             )
         }
     };
     format!(
         "{cell}{}  {}{tail}\n",
-        ctx.paint("card.label", &head),
+        quiet(ctx, "card.label", &head),
         what.painted
     )
 }
@@ -583,7 +678,7 @@ pub fn started(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Ti
             let when = due_cell(since, now);
             c.lead.push(Fact::new(
                 format!("since {when}"),
-                format!("{} {when}", ctx.paint("card.label", "since")),
+                format!("{} {when}", quiet(ctx, "card.label", "since")),
             ));
         }
         c
@@ -600,8 +695,8 @@ pub fn started(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Ti
                     // closed, not the task's total (task.rs: `elapsed_iso`).
                     // Not bold: bold is the card's, for what this write
                     // changed on the task it named.
-                    let what = interval_fact(ctx, &s(x, "tracked"), now);
-                    let what = Fact::role(ctx, "timer.active", &what.plain);
+                    let what =
+                        Fact::role(ctx, "timer.active", &interval_fact(ctx, &s(x, "tracked")));
                     moved(ctx, None, sid(x), what, titles)
                 })
                 .collect()
@@ -612,25 +707,35 @@ pub fn started(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Ti
 
 /// `stopped after 5m`: the one spelling of a closed interval (D126), whatever
 /// closed it. A zero interval says `stopped` and no more.
-fn interval_fact(ctx: &Ctx, interval: &str, now: Timestamp) -> Fact {
+fn interval_fact(ctx: &Ctx, interval: &str) -> String {
     if secs(interval) == 0 {
-        return Fact::changed(ctx, "timer.active", "stopped");
+        return "stopped".to_string();
     }
-    let text = format!("stopped after {}", duration_value(ctx, interval, now));
-    Fact::changed(ctx, "timer.active", &text)
+    format!("stopped after {}", exact_duration(ctx, interval))
 }
 
-/// `tracked 2h of 6h`, when the total says more than the interval beside it
-/// does; `None` for a zero total.
-fn tracked_fact(ctx: &Ctx, tracked: &str, est: &str, now: Timestamp) -> Option<Fact> {
+/// `tracked 3h41 of 4h`; `None` for a zero total. Bold only where the write
+/// is known to have changed the total: `stop` closed an interval into it, and
+/// `done` may or may not have, which its result does not say.
+fn tracked_fact(
+    ctx: &Ctx,
+    tracked: &str,
+    est: &str,
+    changed: bool,
+    now: Timestamp,
+) -> Option<Fact> {
     if secs(tracked) == 0 {
         return None;
     }
-    let mut text = format!("tracked {}", duration_value(ctx, tracked, now));
+    let mut text = format!("tracked {}", exact_duration(ctx, tracked));
     if !est.is_empty() {
         text.push_str(&format!(" of {}", duration_value(ctx, est, now)));
     }
-    Some(Fact::changed(ctx, "card.strong", &text))
+    Some(if changed {
+        Fact::changed(ctx, "card.strong", &text)
+    } else {
+        Fact::role(ctx, "card.strong", &text)
+    })
 }
 
 /// `tasqx stop`: the interval it closed, and the total when that says more.
@@ -638,11 +743,12 @@ pub fn stopped(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> Strin
     let interval = s(result, "interval");
     let tracked = s(result, "tracked");
     let est = s(task, "estimate");
-    let mut card = Card::new(task, interval_fact(ctx, &interval, now));
-    // "Says more" is judged on what the reader sees: a total that renders the
+    let what = interval_fact(ctx, &interval);
+    let mut card = Card::new(task, Fact::changed(ctx, "timer.active", &what));
+    // "Says more" is judged on what the reader sees: a total that reads the
     // same as the interval beside it is the same fact twice (rule 11).
-    if duration_value(ctx, &tracked, now) != duration_value(ctx, &interval, now) {
-        if let Some(f) = tracked_fact(ctx, &tracked, &est, now) {
+    if exact_duration(ctx, &tracked) != exact_duration(ctx, &interval) {
+        if let Some(f) = tracked_fact(ctx, &tracked, &est, true, now) {
             card.lead.push(f);
             card.context.est = false;
         }
@@ -654,10 +760,15 @@ pub fn stopped(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> Strin
 /// dependents it released, and the next occurrence of a recurring task. A
 /// closed task has no urgency to rank, so the cell goes (D126).
 pub fn done(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Timestamp) -> String {
-    let mut card = Card::new(task, outcome(ctx, "done"));
+    // When it was done, as a calendar day (P1b: the moment reaches the human
+    // surface), `done today 11:30`: a completion an agent logged is read later.
+    let when = field_ts(result, "completed")
+        .map(|c| format!("done {}", due_cell(c, now)))
+        .unwrap_or_else(|| "done".to_string());
+    let mut card = Card::new(task, outcome(ctx, &when));
     card.context.urgency = false;
     let est = s(result, "estimate");
-    if let Some(f) = tracked_fact(ctx, &s(result, "tracked"), &est, now) {
+    if let Some(f) = tracked_fact(ctx, &s(result, "tracked"), &est, false, now) {
         card.lead.push(f);
         if !est.is_empty() {
             card.context.est = false;
@@ -686,7 +797,7 @@ pub fn done(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Times
 /// stderr: its first clause and where the flags are. The "a self-report
 /// already covers this task" variant asks nothing of the reader, so it prints
 /// nothing. `--json` keeps core's text whole (D56).
-pub fn tokens_note(hint: &str, cols: usize) -> Option<String> {
+pub fn tokens_note(hint: &str, cols: usize, unicode: bool) -> Option<String> {
     if hint.starts_with(ALREADY_COVERED) {
         return None;
     }
@@ -698,11 +809,8 @@ pub fn tokens_note(hint: &str, cols: usize) -> Option<String> {
         .next()
         .unwrap_or(hint)
         .trim();
-    Some(fit_note(
-        &format!("note: {first}"),
-        " — tasqx done --help names the flags",
-        cols,
-    ))
+    let pointer = format!("{}tasqx done --help names the flags", dash(unicode));
+    Some(fit_note(&format!("note: {first}"), &pointer, cols))
 }
 
 /// A note and its pointer, the pointer dropped whole when the two do not fit.
@@ -765,65 +873,89 @@ pub fn modified(
     card.context.rev = true;
     let cleared = |k: &str| set.get(k).is_some_and(Value::is_null);
     let has = |k: &str| set.get(k).is_some_and(|v| !v.is_null());
+    // Each change, as a card draws it and as words for a line with no bold.
+    let mut change: Vec<(Vec<Fact>, String)> = Vec::new();
 
     if has("priority") {
-        card.lead.push(urgency_fact(ctx, task, true));
+        let prio = s(task, "priority");
+        change.push((
+            vec![urgency_fact(ctx, task, true)],
+            format!("priority {prio}"),
+        ));
         card.context.urgency = false;
     }
     if has("project") {
-        card.lead.extend(project_fact(ctx, task, true));
+        if let Some(f) = project_fact(ctx, task, true) {
+            let words = format!("project {}", f.plain);
+            change.push((vec![f], words));
+        }
         card.context.project = false;
     }
     if has("due") {
-        card.lead.extend(due_fact(ctx, task, now, true));
+        if let Some(f) = due_fact(ctx, task, now, true) {
+            let words = f.plain.clone();
+            change.push((vec![f], words));
+        }
         card.context.due = false;
     }
     if !tags.is_empty() {
-        card.lead
-            .extend(tag_set(ctx, &tag_list(task, "tags"), tags));
+        // Which of these were new, `tag.add`'s result does not say, so none
+        // of them is bold; the set follows the outcome and replaces `list`'s
+        // tags fact, which is what marks it as the change.
+        let all = tag_list(task, "tags");
+        let words = format!("tags {}", plus(&merged(&all, tags)));
+        change.push((tag_set(ctx, &all, tags, false), words));
         card.context.tags = false;
     }
     if has("estimate") {
-        card.lead.extend(est_fact(ctx, task, now, true));
+        if let Some(f) = est_fact(ctx, task, now, true) {
+            let words = f.plain.clone();
+            change.push((vec![f], words));
+        }
         card.context.est = false;
     }
     for (k, what) in [("scheduled", "sched"), ("wait", "wait")] {
         if let Some(at) = has(k).then(|| field_ts(task, k)).flatten() {
-            let cell = due_cell(at, now);
-            card.lead
-                .push(Fact::changed(ctx, "card.strong", &format!("{what} {cell}")));
+            let text = format!("{what} {}", due_cell(at, now));
+            change.push((vec![Fact::changed(ctx, "card.strong", &text)], text));
         }
     }
     if has("recurrence") {
-        card.lead.extend(
-            recur_fact(ctx, task)
-                .map(|f| Fact::new(f.plain.clone(), ctx.paint("card.strong", &f.plain))),
-        );
+        if let Some(f) = recur_fact(ctx, task) {
+            let text = format!("repeat {}", s(task, "recurrence"));
+            change.push((vec![Fact::changed(ctx, "card.strong", &f.plain)], text));
+        }
     }
     if has("remind") {
-        let r = s(task, "remind");
-        card.lead
-            .push(Fact::changed(ctx, "card.strong", &format!("remind {r}")));
+        let text = format!("remind {}", s(task, "remind"));
+        change.push((vec![Fact::changed(ctx, "card.strong", &text)], text));
     }
     if has("tracked") {
-        let t = duration_value(ctx, &s(task, "tracked"), now);
-        card.lead
-            .push(Fact::changed(ctx, "card.strong", &format!("tracked {t}")));
+        let text = format!("tracked {}", exact_duration(ctx, &s(task, "tracked")));
+        change.push((vec![Fact::changed(ctx, "card.strong", &text)], text));
     }
     let mut keys: Vec<&String> = set.keys().filter(|k| cleared(k)).collect();
     keys.sort();
     for k in keys {
-        card.lead.push(Fact::changed(
-            ctx,
-            "card.strong",
-            &format!("{} cleared", field_label(k)),
-        ));
+        let text = format!("{} cleared", field_label(k));
+        change.push((vec![Fact::changed(ctx, "card.strong", &text)], text));
         match k.as_str() {
             "project" => card.context.project = false,
             "due" => card.context.due = false,
             "estimate" => card.context.est = false,
             _ => {}
         }
+    }
+    if on_terminal(ctx) {
+        card.lead = change.into_iter().flat_map(|(facts, _)| facts).collect();
+    } else if !change.is_empty() {
+        // Off a terminal there is no bold to mark the change, so say it (the
+        // old echo's `due <- …`).
+        let words: Vec<String> = change.into_iter().map(|(_, w)| w).collect();
+        card.lead.push(Fact::new(
+            format!("set {}", words.join(", ")),
+            format!("set {}", words.join(", ")),
+        ));
     }
     draw(ctx, card, now)
 }
@@ -838,26 +970,33 @@ fn field_label(k: &str) -> &str {
     }
 }
 
-/// A tag set drawn once: the tags this write added bold, the others quiet.
-/// One fact per tag, joined by a space, so a set longer than the line can
-/// continue on the next one instead of running past the edge.
-fn tag_set(ctx: &Ctx, all: &[String], new: &[String]) -> Vec<Fact> {
-    let mut all = all.to_vec();
+/// `all` with any of `new` it lacks appended, in order.
+fn merged(all: &[String], new: &[String]) -> Vec<String> {
+    let mut out = all.to_vec();
     for n in new {
-        if !all.contains(n) {
-            all.push(n.clone());
+        if !out.contains(n) {
+            out.push(n.clone());
         }
     }
-    all.iter()
+    out
+}
+
+/// A tag set drawn once. Where the write's result says which tags it put
+/// there (`known`: an undone untag's `restored`), those are bold and the rest
+/// quiet; where it cannot (`tag.add` answers with the whole set), none is bold.
+/// One fact per tag, joined by a space, so a set longer than the line can
+/// continue on the next one instead of running past the edge.
+fn tag_set(ctx: &Ctx, all: &[String], new: &[String], known: bool) -> Vec<Fact> {
+    merged(all, new)
+        .iter()
         .enumerate()
         .map(|(i, t)| {
             let text = format!("+{t}");
-            let painted = if new.contains(t) {
-                bold(ctx, "tag", &text)
-            } else {
-                ctx.paint("muted", &text)
+            let mut f = match (known, new.contains(t)) {
+                (true, true) => Fact::changed(ctx, "tag", &text),
+                (true, false) => Fact::role(ctx, "muted", &text),
+                (false, _) => Fact::role(ctx, "tag", &text),
             };
-            let mut f = Fact::new(text, painted);
             if i > 0 {
                 f.sep = MEMBER;
             }
@@ -884,7 +1023,7 @@ pub fn tag_changed(
         } else {
             tag_list(result, "tags")
         };
-        card.lead.extend(tag_set(ctx, &all, asked));
+        card.lead.extend(tag_set(ctx, &all, asked, false));
         card.context.tags = false;
         return draw(ctx, card, now);
     }
@@ -941,7 +1080,7 @@ pub fn dep_changed(
         let by_target = blocked
             && (task.get("unmet_blockers").is_none() || blocker_title(task, target).is_some());
         let what = match (by_target, already) {
-            (true, false) => Fact::role(ctx, "danger", &format!("blocked by #{target}")),
+            (true, false) => Fact::changed(ctx, "danger", &format!("blocked by #{target}")),
             (true, true) => Fact::new(
                 format!("already blocked by #{target}"),
                 format!("already blocked by #{target}"),
@@ -968,6 +1107,7 @@ pub fn dep_changed(
                 .and_then(Value::as_i64)
                 .map(|n| (n, String::new()))
         }) {
+            // Not bold: it blocked before this write and still does.
             card.lead.push(Fact::role(
                 ctx,
                 "danger",
@@ -1037,7 +1177,7 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String
                 let when = due_cell(since, now);
                 card.lead.push(Fact::new(
                     format!("since {when}"),
-                    format!("{} {when}", ctx.paint("card.label", "since")),
+                    format!("{} {when}", quiet(ctx, "card.label", "since")),
                 ));
             }
         }
@@ -1050,7 +1190,7 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String
             } else {
                 back.clone()
             };
-            card.lead.extend(tag_set(ctx, &all, &back));
+            card.lead.extend(tag_set(ctx, &all, &back, true));
             card.context.tags = false;
         }
         "dependency.remove" => {
@@ -1091,22 +1231,49 @@ fn record(ctx: &Ctx, name: Option<&str>, fixed: Vec<Fact>, droppable: Vec<Fact>)
         out.push_str(&ctx.paint("card.strong", n));
         out.push('\n');
     }
-    if !ctx.caps.unicode {
-        let all: Vec<Fact> = fixed.into_iter().chain(droppable).collect();
-        out.push_str(&join(&all));
+    let all: Vec<(Fact, bool)> = fixed
+        .into_iter()
+        .map(|f| (f, false))
+        .chain(droppable.into_iter().map(|f| (f, true)))
+        .collect();
+    if !on_terminal(ctx) {
+        let facts: Vec<Fact> = all.into_iter().map(|(f, _)| f).collect();
+        out.push_str(&join(&facts));
         out.push('\n');
         return out;
     }
     let budget = ctx.cols.max(20);
-    let kept = fit_facts(&fixed, &droppable, budget);
+    let kept = fit_facts(&all, budget);
     let indent = width(&kept[0].plain) + FACT_GAP;
-    for (i, line) in pack(&kept, budget, indent).iter().enumerate() {
+    for (i, line) in pack(ctx, &kept, budget, indent).iter().enumerate() {
         let lead = if i == 0 {
             String::new()
         } else {
             " ".repeat(indent)
         };
         out.push_str(&format!("{lead}{}\n", join(line)));
+    }
+    out
+}
+
+/// A note under a record, wrapped at words to the terminal (never cut), and
+/// one line off it.
+fn note_line(ctx: &Ctx, text: &str) -> String {
+    let label = quiet(ctx, "card.label", "note:");
+    if !on_terminal(ctx) {
+        return format!("{label} {text}\n");
+    }
+    let indent = width("note: ");
+    let mut out = String::new();
+    for (i, l) in wrap_words(text, ctx.cols.saturating_sub(indent).max(12))
+        .iter()
+        .enumerate()
+    {
+        if i == 0 {
+            out.push_str(&format!("{label} {l}\n"));
+        } else {
+            out.push_str(&format!("{}{l}\n", " ".repeat(indent)));
+        }
     }
     out
 }
@@ -1135,7 +1302,7 @@ pub fn project_created(ctx: &Ctx, result: &Value) -> String {
         fixed.push(match current {
             Some(d) => Fact::new(
                 format!("default stays {d}"),
-                format!("default stays {}", ctx.paint("project", &d)),
+                format!("default stays {}", quiet(ctx, "project", &d)),
             ),
             None => Fact::new("default stays unset", "default stays unset"),
         });
@@ -1161,7 +1328,7 @@ pub fn default_switched(ctx: &Ctx, result: &Value) -> String {
         let p = san(p);
         fixed.push(Fact::new(
             format!("was {p}"),
-            format!("was {}", ctx.paint("project", &p)),
+            format!("was {}", quiet(ctx, "project", &p)),
         ));
     }
     let droppable = vec![Fact::role(ctx, "card.label", "a bare tasqx add lands here")];
@@ -1242,31 +1409,31 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
     } else {
         plural_tasks(n)
     };
-    let mut what = vec![tasks];
+    let mut fixed = vec![outcome(ctx, "imported"), Fact::new(tasks.clone(), tasks)];
+    let mut count = |text: String| {
+        let mut f = Fact::new(text.clone(), text);
+        f.sep = attach(ctx);
+        fixed.push(f);
+    };
     match p {
         0 => {}
-        1 => what.push("1 project".into()),
-        p => what.push(format!("{p} projects")),
+        1 => count("1 project".into()),
+        p => count(format!("{p} projects")),
     }
-    what.push(match d {
+    count(match d {
         0 => "no memory docs".into(),
         1 => "1 memory doc".into(),
         d => format!("{d} memory docs"),
     });
-    let dot = format!(" {} ", ctx.paint("card.label", "·"));
-    let mut out = format!(
-        "{}   {}\n",
-        ctx.paint("card.strong", "imported"),
-        what.join(&dot)
-    );
+    let mut out = record(ctx, None, fixed, Vec::new());
     if !result
         .get("docs_declared")
         .and_then(Value::as_bool)
         .unwrap_or(true)
     {
-        out.push_str(&format!(
-            "{} the document carried no `docs` section, so no memory docs were restored\n",
-            ctx.paint("card.label", "note:")
+        out.push_str(&note_line(
+            ctx,
+            "the document carried no `docs` section, so no memory docs were restored",
         ));
     }
     let minted: Vec<String> = result
@@ -1275,33 +1442,32 @@ pub fn imported(ctx: &Ctx, result: &Value) -> String {
         .map(|a| a.iter().filter_map(Value::as_str).map(san).collect())
         .unwrap_or_default();
     if !minted.is_empty() {
-        out.push_str(&format!(
-            "{} the document carried no `projects` section, so {} created from the tasks: {}\n",
-            ctx.paint("card.label", "note:"),
-            if minted.len() == 1 {
-                "1 project was"
-            } else {
-                "projects were"
-            },
-            minted.join(", ")
+        out.push_str(&note_line(
+            ctx,
+            &format!(
+                "the document carried no `projects` section, so {} created from the tasks: {}",
+                if minted.len() == 1 {
+                    "1 project was"
+                } else {
+                    "projects were"
+                },
+                minted.join(", ")
+            ),
         ));
     }
     out
 }
 
 /// `tasqx export`'s note, on stderr because stdout IS the document.
-pub fn export_note(dropped: i64, cols: usize) -> String {
+pub fn export_note(dropped: i64, cols: usize, unicode: bool) -> String {
     let what = if dropped == 1 {
         "1 dependency points outside the export, left out".to_string()
     } else {
         format!("{dropped} dependencies point outside the export, left out")
     };
-    let pointer = if dropped == 1 {
-        " — widen the filter to keep it"
-    } else {
-        " — widen the filter to keep them"
-    };
-    fit_note(&format!("note: {what}"), pointer, cols)
+    let them = if dropped == 1 { "it" } else { "them" };
+    let pointer = format!("{}widen the filter to keep {them}", dash(unicode));
+    fit_note(&format!("note: {what}"), &pointer, cols)
 }
 
 #[cfg(test)]

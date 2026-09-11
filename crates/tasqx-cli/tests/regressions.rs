@@ -2441,19 +2441,9 @@ fn the_completion_timestamp_reaches_every_human_surface() {
         "done: {}",
         String::from_utf8_lossy(&done.stderr)
     );
-    // D126: `done` itself does not spell the moment. It is the moment the
-    // reader typed the command, already on screen; an instant there was 30
-    // cells of nanoseconds (rule 3). `show` is where it is read later, below.
     let done_out = String::from_utf8_lossy(&done.stdout);
-    assert!(
-        done_out
-            .lines()
-            .nth(1)
-            .is_some_and(|l| l.starts_with("done")),
-        "`done` must say the task is done: {done_out}"
-    );
 
-    // The timestamp the API carries, so the assertion below compares the two
+    // The timestamp the API carries, so the assertions below compare the
     // surfaces against one value rather than against each other's formatting.
     let json = run(&["--json", "show", "1"]);
     let raw = String::from_utf8_lossy(&json.stdout);
@@ -2463,6 +2453,18 @@ fn the_completion_timestamp_reaches_every_human_surface() {
         .and_then(|c| c.as_str())
         .expect("the API carries `completed`")
         .to_string();
+
+    // D123 spells the moment on `done` as a calendar day, the clock included
+    // because it is today: `done today 10:05`, from that same stored instant
+    // (UTC, as `due_cell` reads it). It was a 30-cell instant in nanoseconds.
+    let clock = &ts[11..16];
+    assert!(
+        done_out.contains(&format!("done today {clock}"))
+            // A completion stamped a hair before midnight and drawn a hair
+            // after is `yesterday`, which is the same moment, correctly spelled.
+            || done_out.contains("done yesterday"),
+        "`done` must name the moment ({ts}): {done_out}"
+    );
 
     // D122: the terminal spells the moment as a calendar day by default
     // (`today 10:05 (just now)`), so the exact value is asserted where the
@@ -4339,11 +4341,11 @@ fn next_takes_a_filter_and_still_skips_blocked_work_in_scope() {
 /// Seeded through `import` (D42's `active_since`/`tracked_seconds` pair)
 /// rather than a real sleep: elapsed wall-clock through `start`/`stop` is
 /// under a second in a test, which would make the interval and the total
-/// coincide and prove nothing. Importing an already-active task with an
-/// `active_since` two hours back gives an interval that reads differently from
-/// the total beside it. (It was 2020 until D126: at that length both round to
-/// the same number of days, and a total that reads the same as its interval is
-/// not printed twice.)
+/// coincide and prove nothing. Importing an already-active task, 1h41 in, with
+/// an `active_since` two hours back gives an interval that reads differently
+/// from the total beside it (`2h` against `3h41`). It was 2020 until D126: at
+/// that length the two read alike, and a total that reads the same as its
+/// interval is not printed twice.
 #[test]
 fn stop_reports_the_same_tracked_total_show_does() {
     let dir = fresh_config_dir("stop-tracked-word");
@@ -4352,7 +4354,13 @@ fn stop_reports_the_same_tracked_total_show_does() {
         "tasqx-stop-tracked-word-{}.json",
         std::process::id()
     ));
-    let two_hours_ago = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(2)).to_string();
+    // Two hours and thirty seconds back: the interval reads `2h` to the minute,
+    // and the half minute keeps it there if the clock the binary reads is a
+    // few seconds off the one this test read (WSL2 was seen to step 2.4 s).
+    let two_hours_ago = (jiff::Timestamp::now()
+        - jiff::SignedDuration::from_hours(2)
+        - jiff::SignedDuration::from_secs(30))
+    .to_string();
     std::fs::write(
         &fixture,
         serde_json::json!({ "tasks": [{
@@ -4360,7 +4368,7 @@ fn stop_reports_the_same_tracked_total_show_does() {
             "short_id": 1,
             "title": "already an hour in",
             "status": "active",
-            "tracked_seconds": 3600,
+            "tracked_seconds": 6060,
             "active_since": two_hours_ago,
         }]})
         .to_string(),
@@ -4388,19 +4396,19 @@ fn stop_reports_the_same_tracked_total_show_does() {
 
     let stopped = ok(&["stop", "1"]);
 
-    // The total as `show` spells it on the same (plain) surface.
-    let shown = ok(&["show", "1"]);
-    let total = shown
-        .lines()
-        .find_map(|l| l.trim_start().strip_prefix("tracked"))
-        .map(str::trim)
-        .expect("show must carry a tracked row")
-        .to_string();
+    // The exact total, from `show --json`, in the minutes `stop` prints it
+    // in (`3h41`): hours and minutes truncated, never rounded, since a total
+    // rounded up to its estimate reads as the estimate used up.
+    let shown: serde_json::Value =
+        serde_json::from_str(&ok(&["--json", "show", "1"])).expect("show --json");
+    let total = shown["tracked"].as_str().expect("show must carry tracked");
+    let total_secs = tasqx_core::util::duration_secs(total).expect("show's tracked must parse");
+    let exact = format!("{}h{:02}", total_secs / 3600, (total_secs % 3600) / 60);
 
     assert!(
-        stopped.contains(&format!("tracked {total}")),
-        "`stop` must call the cumulative total `tracked`, the same word and value `show` \
-         uses for it (show says tracked {total}): {stopped:?}"
+        stopped.contains(&format!("tracked {exact}")),
+        "`stop` must call the cumulative total `tracked`, exactly (show says tracked \
+         {total} = {exact}): {stopped:?}"
     );
     assert!(
         stopped.contains("stopped after 2h"),

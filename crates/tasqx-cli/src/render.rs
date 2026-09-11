@@ -4579,7 +4579,7 @@ mod tests {
             !out.contains("self-reported"),
             "the hint is stderr's: {out:?}"
         );
-        let note = tokens_note(hint, 200).expect("a hint the reader can act on prints");
+        let note = tokens_note(hint, 200, true).expect("a hint the reader can act on prints");
         assert_eq!(note.lines().count(), 1, "{note:?}");
         assert_eq!(
             note.matches("no token counts were self-reported").count(),
@@ -4608,7 +4608,8 @@ mod tests {
         assert_eq!(
             tokens_note(
                 "a self-report already covers this task; nothing further",
-                200
+                200,
+                true
             ),
             None
         );

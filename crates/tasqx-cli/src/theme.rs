@@ -197,6 +197,16 @@ impl Caps {
 
     /// Detect from the live process environment, enabling Windows VT if needed.
     pub fn detect() -> Caps {
+        Caps::detect_for(std::io::stdout().is_terminal())
+    }
+
+    /// [`Caps::detect`] for stderr, where a note goes whatever stdout is
+    /// (`tasqx export > slice.json`), by the same rules (D123).
+    pub fn detect_stderr() -> Caps {
+        Caps::detect_for(std::io::stderr().is_terminal())
+    }
+
+    fn detect_for(stream_is_terminal: bool) -> Caps {
         // Honor the de-facto CLICOLOR_FORCE (and a tasqx-specific alias) so color
         // can be forced through a pipe — standard for tools that feed `less -R`
         // or CI logs. NO_COLOR still wins (checked in `detect_from`).
@@ -204,7 +214,7 @@ impl Caps {
             || std::env::var("CLICOLOR_FORCE")
                 .map(|v| v != "0")
                 .unwrap_or(false);
-        let is_tty = std::io::stdout().is_terminal() || force;
+        let is_tty = stream_is_terminal || force;
         let env = EnvCaps::from_env();
         // On Windows the console needs VT explicitly enabled for ANSI to work.
         let vt_ok = enable_vt();
@@ -223,6 +233,18 @@ impl Caps {
 /// mid-command would otherwise draw a header at one width and its rows at
 /// another, and every row of one `list` must agree with every other.
 pub fn detect_cols() -> usize {
+    cols_of(std::io::stdout().is_terminal())
+}
+
+/// [`detect_cols`] for stderr, where a note goes: `tasqx export > slice.json`
+/// has no stdout width, but the note about it lands on a terminal that has
+/// one (D123).
+pub fn detect_stderr_cols() -> usize {
+    cols_of(std::io::stderr().is_terminal())
+}
+
+/// The width of a stream that is, or is not, a terminal.
+fn cols_of(is_terminal: bool) -> usize {
     if let Some(n) = std::env::var("COLUMNS")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
@@ -230,9 +252,9 @@ pub fn detect_cols() -> usize {
     {
         return n;
     }
-    // A redirected stdout has no width — asking the *terminal* would answer with
-    // the size of a window the bytes are not going to, so don't ask.
-    if !std::io::stdout().is_terminal() {
+    // A redirected stream has no width — asking the *terminal* would answer
+    // with the size of a window the bytes are not going to, so don't ask.
+    if !is_terminal {
         return Ctx::DEFAULT_COLS;
     }
     ratatui::crossterm::terminal::size()
