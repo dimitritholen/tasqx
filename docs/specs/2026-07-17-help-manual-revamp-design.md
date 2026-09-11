@@ -85,6 +85,7 @@ Manual { topic: Option<String> }   // command name, topic name, or none
 - `tasqx manual <command>` → that command's full section (summary, usage, all examples, notes, see-also), themed.
 - `tasqx manual <topic>` → a concept section. Topics: `getting-started, projects, capturing, dates, filters, reminders, reports, daemon, automation, json-api` (a concise mirror of the HTML guide's pages; the concept prose is short and points to `tasqx docs` for depth).
 - Ambiguity rule: resolve `<name>` first against verbs/aliases, then against topic names; unknown → a `not_found`-style message listing valid names, exit 2 (`bad_request`) — never a silent empty page.
+
 > **Amended by D123** (task #351). Two of the bullets above no longer describe what
 > ships. The table of contents is **not numbered**: the index ran 1 to 11 and
 > `tasqx manual` never accepted a number, so each group is a table fitted to the

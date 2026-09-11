@@ -2746,10 +2746,14 @@ regenerated from real output), and `tests/regressions.rs`.
   test went with it.
 
 **Why:** judged as an image at 60, 80, 100 and 140 columns, the manual broke the style on
-every page — 208 lines past a 60-column terminal, 109 past 80, 83 past 100, a rule under
-two headings, section headings painted three different ways, and its own prose dimmed —
-while two of its pages could not be opened at all. Re-derive the counts with
-`COLUMNS=60 tasqx manual <page> | awk 'length > 60'`.
+every page: a rule under two headings, section headings painted three different ways, its
+own prose dimmed, and prose that wrapped at every width — while two of its pages could not
+be opened at all. The wrapping was counted over the contents and every page at **cb6b1b5**,
+the commit this branch cut from and the last one before this ruling, with
+`COLUMNS=<w> tasqx manual <page> | awk 'length > <w>'`: 208 lines wider than 60 columns,
+109 wider than 80, 83 wider than 100. Checked out at that commit, the sweep returns them
+again. Run against the shipped build, it returns only what (c) exempts — code a reader
+copies, which overflows rather than being cut.
 
 **Left standing, deliberately:** in `mono`, `USAGE`/`EXAMPLES`/`NOTES` share `ESC[2m` with
 the `API method:` line, the aliases and the example notes — no existing role is grey in
