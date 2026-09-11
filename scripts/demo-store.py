@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Build a demo store for screenshots: fictional work with a few months of history.
+
+    scripts/demo-store.py                  # writes target/demo/tasks.db
+    TASQX=./target/debug/tasqx scripts/demo-store.py
+
+then render it, with the demo's own config so the machine's does not leak in:
+
+    export TASQX_DB=$PWD/target/demo/tasks.db TASQX_CONFIG_DIR=$PWD/target/demo/config
+    scripts/snap.sh list 100 -- --no-daemon list
+    scripts/snap-tui.sh dashboard 132 36 -- --no-daemon dashboard
+
+Why it exists: the README's screenshots have to come from somewhere, and a real
+store is somebody's actual work, which does not belong on a public landing
+page. Everything here is invented, and every date is relative to today, so the
+pictures look current whenever they are regenerated.
+
+It writes ONE path, target/demo/tasks.db (gitignored), and replaces it on
+every run. It sets TASQX_DB and passes --no-daemon on every call, because a
+reachable daemon ignores TASQX_DB and would answer from the real store instead.
+
+The history goes in through `tasqx import`, which keeps backdated `created`,
+`completed` and event timestamps, so the charts and the dashboard's burndown
+have twelve weeks to draw. A seeded RNG keeps the shape stable from run to run.
+"""
+
+import datetime as dt
+import json
+import os
+import random
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "target" / "demo" / "tasks.db"
+# A config of its own, so the pictures show tasqx's defaults rather than
+# whatever the machine that renders them has configured.
+CONFIG = ROOT / "target" / "demo" / "config"
+TASQX = os.environ.get("TASQX", "tasqx")
+NOW = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+rng = random.Random(7)
+
+
+def iso(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def day(offset, hour=0, minute=0):
+    """Midnight UTC `offset` days from today, plus an optional clock time."""
+    d = NOW.replace(hour=0, minute=0, second=0) + dt.timedelta(days=offset)
+    return d.replace(hour=hour, minute=minute)
+
+
+def uid():
+    return str(uuid.uuid4())
+
+
+PROJECTS = {
+    "website": "Marketing site and docs portal",
+    "api": "Public REST API and its SDKs",
+    "mobile": "iOS and Android apps",
+    "infra": "CI, deploys and on-call",
+    "home": None,
+}
+
+# The working set: (title, project, priority, due offset in days or None,
+# tags, estimate). Spread so every urgency band, every date spelling and the
+# rail have something to show.
+OPEN = [
+    ("Renew the TLS certificate for api.example.dev", "infra", "H", -2, ["ops"], "PT1H"),
+    ("Ship the v2 pricing page", "website", "H", 0, ["launch"], "PT6H"),
+    ("Fix token refresh race on Android", "mobile", "H", 1, ["bug"], "PT4H"),
+    ("Rate-limit the /search endpoint", "api", "H", 3, ["perf"], "PT3H"),
+    ("Write the migration guide for SDK 3.0", "api", "M", 5, ["docs"], "PT5H"),
+    ("Dark mode for the settings screen", "mobile", "M", 9, ["ui"], "PT8H"),
+    ("Move nightly backups to object storage", "infra", "M", None, ["ops"], "PT3H"),
+    ("Cut build time under five minutes", "infra", "M", None, ["ci"], "PT6H"),
+    ("Add OpenAPI examples for every endpoint", "api", "M", None, ["docs"], "PT4H"),
+    ("Accessibility pass on the signup flow", "website", "M", 12, ["a11y"], "PT5H"),
+    ("Replace the carousel on the home page", "website", "L", None, ["ui"], "PT2H"),
+    ("Book the dentist", "home", "L", 6, [], None),
+    ("Archive last year's analytics dashboards", "website", "L", None, [], "PT1H"),
+    ("Investigate flaky checkout test", "mobile", None, None, ["bug", "ci"], None),
+    ("Sketch ideas for the Q4 offsite", "home", None, None, [], None),
+]
+# Index into OPEN of the task that is running, and of one that is blocked by
+# another (blocked, blocker).
+RUNNING = 1
+BLOCKED = (4, 3)
+
+DONE_TITLES = [
+    "Upgrade Postgres to 16", "Add health check endpoint", "Localise the onboarding",
+    "Fix crash on rotate", "Cache the pricing API response", "Retire the v1 webhooks",
+    "Set up error budget alerts", "Publish the changelog feed", "Compress hero images",
+    "Add SSO for the admin panel", "Paginate the audit log", "Fix typo in the terms page",
+    "Rotate the staging secrets", "Add retry to the email worker", "Ship push notifications",
+    "Write the incident postmortem", "Tune the autoscaler", "Add sitemap.xml",
+    "Fix double charge on retry", "Remove the legacy SDK", "Speed up cold start",
+    "Add a status page", "Clean up feature flags", "Document the release process",
+]
+
+
+def main():
+    projects, tasks, events = [], [], []
+    start = day(-90)
+
+    for name, desc in PROJECTS.items():
+        pid = uid()
+        projects.append({"archived": False, "created": iso(start), "description": desc,
+                         "id": pid, "name": name})
+        events.append({"actor": "user", "entity": "project", "entity_id": pid, "id": uid(),
+                       "op": "create", "ts": iso(start),
+                       "payload": {"default": name == "website", "description": desc,
+                                   "name": name}})
+
+    def task(sid, title, project, prio, due, tags, est, created, completed=None):
+        tid = uid()
+        tasks.append({
+            "_rev": 1, "annotations": [], "completed": iso(completed) if completed else None,
+            "created": iso(created), "depends_on": [],
+            "due": iso(due) if due else None, "estimate": est, "id": tid,
+            "modified": iso(completed or created), "priority": prio, "project": project,
+            "recurrence": None, "remind": None, "scheduled": None, "short_id": sid,
+            "status": "done" if completed else "pending", "tags": tags, "title": title,
+            "wait": None,
+        })
+        events.append({"actor": "user", "entity": "task", "entity_id": tid, "id": uid(),
+                       "op": "add", "ts": iso(created),
+                       "payload": {"priority": prio, "project": project, "recurrence": None,
+                                   "status": "pending", "tags": tags, "title": title}})
+        if completed:
+            events.append({"actor": "user", "entity": "task", "entity_id": tid, "id": uid(),
+                           "op": "done", "ts": iso(completed),
+                           "payload": {"completed": iso(completed)}})
+        return tid
+
+    # Twelve weeks of finished work, weekdays mostly, and a little more of it
+    # lately, so the burndown trends down and the heatmap has a rhythm.
+    sid = 1
+    for n in range(84, 0, -1):
+        when = day(-n, 9 + rng.randrange(8), rng.randrange(60))
+        weekday = when.weekday() < 5
+        chance = (0.55 if weekday else 0.12) + (0.15 if n < 21 else 0)
+        for _ in range(1 + (rng.random() < 0.3)):
+            if rng.random() < chance:
+                title = rng.choice(DONE_TITLES)
+                project = rng.choice(["website", "api", "mobile", "infra"])
+                # This week's finished work was all captured before it began,
+                # so the dashboard's seven-day burndown goes down.
+                lead = (10, 30) if n <= 7 else (2, 20)
+                created = when - dt.timedelta(days=rng.randrange(*lead))
+                task(sid, title, project, rng.choice(["H", "M", "M", "L", None]), None,
+                     [], None, created, when)
+                sid += 1
+
+    ids = []
+    for title, project, prio, due, tags, est in OPEN:
+        created = day(-rng.randrange(8, 40), 10)
+        due_at = day(due, 17, 0) if due in (0, 1) else (day(due) if due is not None else None)
+        ids.append((sid, task(sid, title, project, prio, due_at, tags, est, created)))
+        sid += 1
+
+    blocked, blocker = BLOCKED
+    tasks[-len(OPEN) + blocked]["depends_on"] = [ids[blocker][1]]
+
+    payload = {"default_project": "website", "docs": [], "dropped_dependencies": [],
+               "events": sorted(events, key=lambda e: e["ts"]), "projects": projects,
+               "tasks": tasks}
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{OUT}{suffix}").unlink(missing_ok=True)
+    src = OUT.parent / "import.json"
+    src.write_text(json.dumps(payload))
+
+    CONFIG.mkdir(parents=True, exist_ok=True)
+    (CONFIG / "config.toml").unlink(missing_ok=True)
+    env = {**os.environ, "TASQX_DB": str(OUT), "TASQX_CONFIG_DIR": str(CONFIG)}
+    run = lambda *args: subprocess.run([TASQX, "--no-daemon", *args], env=env, check=True,
+                                       stdout=subprocess.DEVNULL)
+    run("import", str(src))
+    # The running timer is started live: an active interval is store state an
+    # export does not carry, and it should read "running since just now".
+    run("start", str(ids[RUNNING][0]))
+    # The demo records no AI token spend, and an empty TOKENS panel is space
+    # a screenshot has better uses for.
+    run("config", "set", "dashboard.panels", "tasks,projects,burndown,pulse,effort")
+    print(OUT)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -217,10 +217,11 @@ TUI screens (`dashboard`, `pick`) need a pty, which this path does not give.
 
 One trap in that path: freeze ignores SGR 39 (default foreground), so a cell
 that resets to the terminal's own colour keeps whatever colour came before it.
-The dashboard's titles render tinted in the ramp colour of the figure beside
-them for exactly this reason; the bytes carry `ESC[39m` and a real terminal
-draws them plain. Read the ANSI (`tmux capture-pane -p -e | cat -v`) before
-filing a colour that bled.
+The dashboard's titles rendered tinted in the ramp colour of the figure beside
+them for exactly this reason, although the bytes carried `ESC[39m` and a real
+terminal drew them plain. `snap-tui.sh` now rewrites SGR 39 to freeze's own
+default foreground before rendering. If a colour still looks as if it bled,
+read the ANSI (`tmux capture-pane -p -e | cat -v`) before filing it.
 
 ---
 
