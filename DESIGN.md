@@ -1272,7 +1272,7 @@ The open trade-offs are now decided. Each entry is the ruling + the one-line why
 **Why:** `report --html` defaults to **stdout**, the same terminal `render.rs` carefully protects. Markup escaping was sound (injected `<script>`, `onerror=`, `<svg onload=` all came back inert), but control bytes passed through untouched, so a hostile title emitted raw `ESC ]0;HIJACKED BEL` (rewrites the terminal window title) and `ESC [2J` (clears the screen) straight into the user's terminal, which executed them. Titles are untrusted: they arrive via `store.import`, the JSON API, and MCP. The terminal path has asserted "raw escape reached the terminal" never happens since its first tests; the HTML path — with the same default sink — held no such standard. `esc` was already promoted to `pub(crate)` as "the one escaper both surfaces share"; it now enforces one rule for both.
 
 ### D20 — the worked example is guarded mechanically, not by the author's memory
-**Decision:** The quickstart's blocks are captured from a store seeded by exactly the commands the page shows, in order. Two tests hold the page to it: the Nth `add` on the page must print `Added #N` (short_ids are handed out in creation order), and no row in a documented output block may name a task no documented command creates — with the row count asserted against the rows shown. Both parse the page a reader actually reads, so there is no parallel list to keep in sync.
+**Decision:** The quickstart's blocks are captured from a store seeded by exactly the commands the page shows, in order. Two tests hold the page to it: the Nth `add` on the page must print `Added #N` (short_ids are handed out in creation order; amended by D123, where an add echoes its card and the guard reads `▌ #N  `), and no row in a documented output block may name a task no documented command creates — with the row count asserted against the rows shown. Both parse the page a reader actually reads, so there is no parallel list to keep in sync.
 **Why:** D15 made *structure* undriftable (verbs, methods, clear-fields render from the tables the tests compare against clap) and the page claims, twice, that "every command and every block of output on this page was executed against the real binary; nothing here is illustrative". Nothing checked the **output**. The blocks had been captured against a scratch store seeded with extra out-of-band tasks, so the 2nd `add` printed `Added #3` and the working-set table showed four rows including "Write the user guide" — a task no command on the page creates. That is not cosmetic: the next snippets say `why 1`, `done 4`, `dep 2 1`, so a reader following along desynchronises from their own store at step three and `done 4` targets nothing in their 3-task store. The row was *real* — it reproduces exactly (urgency 11.5, `+docs`, due friday) once `Write the user guide` exists as #2, and later pages depend on that id (`modify 2 due:monday` → 8.9 on the daemon page) — so the fix restores the missing `add`, it does not delete the row. A claim of "nothing here is illustrative" must be enforced by a test or it is decoration; both guards were verified to fail against the original page.
 
 ### D21 — the default project is claimed once and moved only by `project.use`
@@ -3107,10 +3107,12 @@ where `add` changes.
   completion an agent logged is read later than it happened.
 - **(d) One spelling for a closed interval.** `stopped after 5m` on `stop` and on the line
   `start` draws for a task it auto-stopped; `tracked 3h41 of 4h` is added only when it
-  reads differently from the interval. Both are spelled by the dashboard's `dur_compact`
-  (`52m`, `3h41`), exact to the minute and never rounded: `duration_value`'s one
-  rounded unit turned 3h41 against a 4h estimate into `tracked 4h of 4h`, the estimate
-  apparently used up. An undone stop says `since today 14:44`: what it puts back is the
+  reads differently from the interval. The interval, the total and the estimate beside
+  it (and `est` wherever a card prints it) are all spelled by the dashboard's
+  `dur_compact` (`52m`, `3h41`, `3h30`), exact to the minute and never rounded:
+  `duration_value`'s one rounded unit turned 3h41 against a 4h estimate into `tracked 4h
+  of 4h`, the estimate apparently used up, and rounding only the estimate turned 3h41
+  against 3h30 into `of 4h`, under it when it was 11 minutes over. An undone stop says `since today 14:44`: what it puts back is the
   interval, not a total, so it is not called `tracked`.
 - **(e) The card first.** The task the command named is always the first line under the
   prompt, and what else moved follows in the order it happened.
@@ -3120,13 +3122,23 @@ where `add` changes.
   continues on the rail under itself rather than be cut, and a single clause wider than
   that is wrapped at words by `wrap_words`. A note (`annotate`) wraps. `modify`'s `rev`
   comes last and is never dropped, because `--expected-rev` needs it (#188); `list`'s
-  context gives way first.
+  context gives way first. A title after a `·` (the task that blocks this one, a removed
+  note) is cut with an ellipsis down to eight cells before it goes, the way a moved task's
+  title is: `columns::fit` runs twice, context dropping first and the title shrinking
+  after, because one pass shrinks before it drops. The lines under a card and the
+  pointer after a stderr note go through the same `fit_facts`, so there is no second
+  fitter. `pack` is not one either: it lays facts that already fit their columns into
+  continuation lines, which `columns::fit` does not do, and a single clause too wide for
+  a line goes to `wrap_words`. A zero urgency (`- ▁▁▁▁ 0.0`: no priority, no deadline,
+  no age) is not drawn, by (c).
 - **(g) A project or a store is not a task.** `init`, `use`, `archive` and `import` draw
   no rail; the project's name is the first line in the title's role. D21's and D22's
   facts all survive: whether the default moved, the command that moves it, and the open
-  work an archive leaves (`2 open tasks left in it, 1 overdue`). An archive that cleared
-  the default names `tasqx use <project>` and never drops it. `import` goes through the
-  same builder and its notes wrap to the terminal.
+  work an archive leaves (`2 open tasks left in it, 1 overdue`). The commands that move
+  the default never drop: `init`'s `tasqx use "<name>"`, and `tasqx use <project>` after an
+  archive that cleared it. D89's `tasqx list project:<name>` after an archive is a pointer,
+  not one of those facts, and may drop. `import` goes through the same builder and its
+  notes wrap to the terminal.
 - **(h) The cases the mocks did not draw.** A start of a running task says
   `already running  since today 13:40` with nothing bold. An `undep` that leaves another
   blocker says `⊘ no longer waits on #51  still blocked by #53 · <title>` and never calls
@@ -3147,8 +3159,11 @@ where `add` changes.
   chosen by `caps.ansi || caps.unicode` and not by Unicode alone: a legacy console with
   colour and no Unicode gets the card fitted, without the rail. Where there is no Unicode
   the program's own glyphs are ASCII (`*`, `B`, ` - ` for ` · ` and ` — `, `...`,
-  `repeats` for `↻`). Off a terminal there is no bold to mark the change, so `modify` says
-  it in words: `modified   set priority H, due 18 Sep, tags +bug +urgent   mobile ...`.
+  `repeats` for `↻`). Off a terminal there is no bold to mark the change, so the change is
+  said in words: `modified   set title, priority H, due 18 Sep; cleared remind   mobile
+  ...`, and an undone untag says `+urgent back`. A changed fact is bold and never dim
+  (`mono` dims `project`, and bold on dim rendered dim). A reminder `modify` set is a
+  day like any date (`remind tomorrow 09:00`), or its offset (`remind -1h`).
 
 **Why:** rendered from the demo store, the eighteen echoes were eighteen dialects:
 `Started · timer running (since 2026-09-11T13:42:40.447797449Z)`, `#60  ->  cancelled`,
@@ -3209,9 +3224,26 @@ the moved lines above the card; `done` without its day. Stderr's width and glyph
 (`detect_stderr_cols`, `Caps::detect_stderr`) have no guard: telling stderr's terminal
 from stdout's needs a pty, which the test harness does not have.
 
-**Left standing:** `pick`'s scrollback now ends on `start`'s card, but its own line for a
-task it auto-stopped keeps `Stopped #N  ·  tracked 2h23`, above the card; `pick` is not
-carried. `memory import` still says `doc(s)`; it is not one of the eighteen. `next`'s
+**Review round 2** failed the second commit on three points and nine minors, fixed in the
+third: the estimate beside an exact total was still rounded (`of 4h` for 3h30); `modify
+remind:<date>` printed the stored instant on both paths, and `set remind cleared` read
+oddly; and the title in `⊘ still blocked by #N · <title>` was dropped whole at 80 and 60
+columns instead of cut. With them: `init`'s `tasqx use` could drop; the note-after-card
+order and the total-that-reads-like-its-interval rule had no guard; a changed `project`
+was dim in `mono`; plain `modify` said nothing of a new title, and a plain undone untag
+nothing of which tag came back; a zero urgency printed; two tests accepted more than they
+should (`done yesterday` at any time of day, `1 memory doc` inside `1 memory docs`); and
+the timer tests' 30-second margin gave way to lines derived from the totals the binary
+stored, so no test reads the wall clock against the binary's.
+
+**Left standing:** `modify` bolds every field its command set, even one set to the value
+it already had: `task.modify` answers with the resolved assignment, not the fields that
+differed, and knowing which did needs the read before the write that (j) rules out. (`tag`
+is not bold on the same grounds, because its answer is the whole set, including tags the
+command never named.) `pick`'s scrollback ends on `start`'s card, but it still prints
+its own `Stopped #N  ·  tracked 2h23` above the card, and the card then names the same
+stop under itself (rule 11); `pick` is not carried and is the next task (#392, #399).
+`memory import` still says `doc(s)`; it is not one of the eighteen. `next`'s
 facts line is not fitted (#349). The docs pages were regenerated in their own narrative
 frame (Tuesday 14 July 2026), day names translated from a run with the same offsets.
 `undo` choosing the newest event by id, which an import of non-UUIDv7 events defeats, is
