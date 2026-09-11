@@ -988,6 +988,159 @@ pub(crate) fn due_cell(due: Timestamp, now: Timestamp) -> String {
     }
 }
 
+/// When something last happened, as a calendar day: `today`, `yesterday`,
+/// `3d ago`, `17 Aug`, `4 Jan 25`. The past-facing half of [`due_cell`]'s
+/// vocabulary, for a timestamp that records an event rather than a deadline.
+/// It never prints a clock: "updated 14:02" answers a question nobody browsing
+/// a list of notes is asking.
+pub(crate) fn day_ago(at: Timestamp, now: Timestamp) -> String {
+    let day = at.to_zoned(TimeZone::UTC).date();
+    let today = now.to_zoned(TimeZone::UTC).date();
+    let days: i64 = today
+        .since((Unit::Day, day))
+        .map_or(0, |s| s.get_days())
+        .into();
+    match days {
+        d if d <= 0 => "today".to_string(),
+        1 => "yesterday".to_string(),
+        d if d < 7 => format!("{d}d ago"),
+        _ if day.year() == today.year() => format!("{} {}", day.day(), month_abbrev(day.month())),
+        _ => format!(
+            "{} {} {:02}",
+            day.day(),
+            month_abbrev(day.month()),
+            day.year().rem_euclid(100)
+        ),
+    }
+}
+
+/// One line that says what a memory doc is about, out of the start of its body.
+///
+/// The frontmatter's `description`, when the doc has one: imported agent
+/// memories open with a `---` block, and printing it verbatim is how
+/// `name: vh-mcp-standaard description: "…` came to be every preview's first
+/// words. Otherwise the first line of prose, without its markdown markers.
+pub(crate) fn doc_summary(body: &str) -> String {
+    let mut lines = body.lines().peekable();
+    if lines.peek().is_some_and(|l| l.trim() == "---") {
+        lines.next();
+        let mut description = None;
+        for l in lines.by_ref() {
+            if l.trim() == "---" {
+                break;
+            }
+            if let Some(v) = l.strip_prefix("description:") {
+                description = Some(v.trim().trim_matches('"').to_string());
+            }
+        }
+        if let Some(d) = description.filter(|d| !d.is_empty()) {
+            return san(&d);
+        }
+    }
+    lines
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(['#', '-', '*', '>', ' '])
+                .trim()
+        })
+        .find(|l| !l.is_empty() && !l.starts_with("```") && *l != "---")
+        .map(|l| san(&l.replace("**", "").replace('`', "")))
+        .unwrap_or_default()
+}
+
+/// `tasqx memory list` off a terminal: one line per doc under a header (D121).
+///
+/// It used to print three lines per doc, the title with its source in
+/// parentheses, a snippet with frontmatter leaking into it, and a whole line
+/// for the id, and closed on `N doc(s) of M`. Every row weighed the same and
+/// a grep for a title found a line without the id `memory show` needs. Now
+/// the title carries the row, the id sits on it (dim, last, never dropped:
+/// it is the handle), and the summary says what the reader cannot count.
+pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
+    let empty = Vec::new();
+    let docs = result
+        .get("docs")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let total = result.get("total").and_then(Value::as_u64).unwrap_or(0);
+    if docs.is_empty() {
+        return if total == 0 {
+            "No memory docs yet. `tasqx memory add <title> <body>` stores one.\n".to_string()
+        } else {
+            format!("No docs on this page; the store holds {total}.\n")
+        };
+    }
+    struct Row {
+        title: String,
+        project: String,
+        updated: String,
+        id: String,
+    }
+    let rows: Vec<Row> = docs
+        .iter()
+        .map(|d| Row {
+            title: s(d, "title"),
+            project: s(d, "project"),
+            updated: field_ts(d, "modified").map_or_else(String::new, |t| day_ago(t, now)),
+            id: s(d, "id"),
+        })
+        .collect();
+    let widest = |f: fn(&Row) -> &str, label: &str| {
+        let content = rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
+        if content == 0 {
+            0
+        } else {
+            content.max(width(label))
+        }
+    };
+    let w = columns::fit(
+        &[
+            Column::shrinks(widest(|r| &r.title, "TITLE"), 12),
+            Column::drops(widest(|r| &r.project, "PROJECT"), 8),
+            Column::drops(widest(|r| &r.updated, "UPDATED"), 7),
+            Column::fixed(widest(|r| &r.id, "ID")),
+        ],
+        ctx.cols,
+    );
+    let line = |cells: [(Option<&str>, &str); 4]| {
+        join_cells(
+            cells
+                .iter()
+                .zip(&w)
+                .filter(|(_, w)| **w > 0)
+                .map(|((role, text), w)| cell(ctx, *role, text, *w))
+                .collect(),
+        )
+    };
+
+    let shown = docs.len() as u64;
+    let mut summary = format!("{total} {}", if total == 1 { "doc" } else { "docs" });
+    if shown < total {
+        summary.push_str(&format!(" {} {shown} shown", ctx.mid()));
+    }
+    let mut out = format!("{}\n\n", ctx.paint("table.label", &summary));
+    out.push_str(&ctx.paint(
+        "table.label",
+        &line([
+            (None, "TITLE"),
+            (None, "PROJECT"),
+            (None, "UPDATED"),
+            (None, "ID"),
+        ]),
+    ));
+    out.push('\n');
+    for r in &rows {
+        out.push_str(&line([
+            (None, &r.title),
+            (Some("project"), &r.project),
+            (Some("muted"), &r.updated),
+            (Some("muted"), &r.id),
+        ]));
+        out.push('\n');
+    }
+    out
+}
+
 /// Measure one `task.list` row into the cells the layout will be computed from.
 ///
 /// Shared with [`agenda_text`], which then overwrites `due`/`overdue` with what
@@ -2477,7 +2630,7 @@ fn rail_role(result: &Value) -> &'static str {
 /// than `max` gets its own overlong line rather than being cut — the
 /// enclosing layout budgets generously enough that only pathological input
 /// reaches that arm.
-fn wrap_words(text: &str, max: usize) -> Vec<String> {
+pub(crate) fn wrap_words(text: &str, max: usize) -> Vec<String> {
     let max = max.max(1);
     let mut lines: Vec<String> = Vec::new();
     let mut line = String::new();

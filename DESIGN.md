@@ -1120,7 +1120,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | Deferred | Ruling | Status & why it is safe to defer |
 |---|---|---|
 | **Git-first sync** | **D3** (§12) | **Not built.** Sync is a pure *consumer* of the append-only event log, which has shipped and is written transactionally with every mutation (the load-bearing invariant). Because the log is already the record of truth, the git backend (`store.export` → commit → merge, per-field LWW) can land later without a migration, and the CRDT-per-field upgrade after that is additive on top. Deferring costs nothing structural; building it now would freeze a conflict policy against zero real-world merge evidence. |
-| **Full ratatui TUI** | §2 / D26 / **D58** | **Foundation built; `config edit` and `pick` (D55) ship on it; the dashboard is ruled (D58) and shipped, its legibility pass is ruled (D62) and scheduled, and its per-project board with row actions is ruled (**D79**) and scheduled; a task *browser* stays deferred.** The `tui` module ships the part that is genuinely hard to get right — terminal lifecycle, capability gating, theme→ratatui style mapping — and its screens are pure state machines (key in, intent out) so they stay testable in a repo that fails the build on a warning. The dashboard is the third such screen: an overview whose row cursor sends the write methods every other surface already sends (D79, superseding D58's read-only ruling). What remains deferred is a *browsing* TUI — navigate, edit and complete in place — and that too is more screens on this foundation, not a second foundation. The daemon, socket/named-pipe transport and live `task.changed` push are exercised by `tasqx watch`, and D58's refresh reuses that same data path. Nothing in the JSON API freeze depends on any of it. |
+| **Full ratatui TUI** | §2 / D26 / **D58** | **Foundation built; `config edit`, `pick` (D55) and the memory browser (D121) ship on it; the dashboard is ruled (D58) and shipped, its legibility pass is ruled (D62) and scheduled, and its per-project board with row actions is ruled (**D79**) and scheduled; a task *browser* stays deferred.** The `tui` module ships the part that is genuinely hard to get right — terminal lifecycle, capability gating, theme→ratatui style mapping — and its screens are pure state machines (key in, intent out) so they stay testable in a repo that fails the build on a warning. The dashboard is the third such screen: an overview whose row cursor sends the write methods every other surface already sends (D79, superseding D58's read-only ruling). What remains deferred is a *browsing* TUI — navigate, edit and complete in place — and that too is more screens on this foundation, not a second foundation. The daemon, socket/named-pipe transport and live `task.changed` push are exercised by `tasqx watch`, and D58's refresh reuses that same data path. Nothing in the JSON API freeze depends on any of it. |
 | **Plugins & hooks** | §6 (6a plugin API, 6b hooks + custom subcommands) | **Not built.** MCP proves read/write capability filtering but deliberately does not authenticate plugins: its scope is operator-selected configuration for a local stdio child (D7). A plugin loader therefore still needs a real trust and credential design. Shipping one now would freeze an ABI before there is a second consumer. |
 | **No-daemon OS-scheduler notification path** | **§9b** | **Not built.** §9a (the daemon min-heap path) ships and covers every user who has a daemon, TUI, or `watch` running. §9b would add per-OS scheduler integration (launchd / Task Scheduler / systemd timers) for users who want reminders with *no* long-lived process — three OS-specific integrations, each with its own failure modes, for a strictly narrower audience. `reminder.fire` is already an additive public method with an idempotent `reminded` event, so the scheduler path can call the same API later with no core change. |
 | **Actionable toast buttons** | **§9b** | **Not built.** Notifications fire (log backend always; OS backend behind the off-by-default `notify-os` feature, which stays absent from the default cargo tree). Buttons — "done" / "snooze" *on the toast* — require a live callback target, which means the daemon must own the toast lifecycle on all three OSes; `notify-rust`'s action support is the least portable part of its surface. Deferred until §9b's process-ownership question is answered, since both features hinge on it. |
@@ -1140,7 +1140,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | **Core** | API v1 declared **stable**; the conformance suite (`crates/tasqx-core/tests/conformance.rs`) is the contract of record — the envelope, the error codes and every method's response shape, with its method floor derived from `dispatch::PARAMS` rather than listed. What it freezes is the **JSON API's shape**; what it does *not* freeze is the MCP **tool schema** — tool names, descriptions and input schemas stay free to move, and `tests/mcp.rs` covers them. The tool *results* are not exempt: `conformance.rs` drives the live `tools/list`, maps each tool to its method and asserts that same frozen result shape, so renaming a response field reddens the MCP half too. Read D56's "excludes MCP" as being about the schema, not the answers. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
 | **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). |
 | **Distribution** | Prebuilt archives for four targets on a tag, plus a `completions/` directory inside each one and a generated Homebrew formula that switches completion on at install time (**D57**, `docs/homebrew-tap.md`). The tap and the Scoop bucket exist (`dimitritholen/homebrew-tasqx`, `dimitritholen/scoop-tasqx`), each filled per release by its generator (`scripts/brew-formula.sh`, `scripts/scoop-manifest.sh`) and merged only after that repo's own CI has installed the result for real; the README leads with them, and a package manager the reader already has outranks the script (**D77**). On top of those archives, `install.sh` and `install.ps1` are the **universal** install route (**D61**, narrowed by D77): a one-liner served raw from `raw.githubusercontent.com` that resolves one host triple, verifies the published `.sha256` and unpacks into a per-user directory, with re-running it as the update path — which is not the self-update D10 forbids, because the binary still never writes to itself. The archives are **not signed**: D10 required notarization and Authenticode, D61 narrows that to deferred, and the consequence ships with the route — on macOS it bypasses Gatekeeper rather than passing it, on Windows it is what SmartScreen is built to interrupt. Signing is scheduled work, not a decided absence. |
-| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report` — and a number never gives way to make a row fit (**D120**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
+| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report` — and a number never gives way to make a row fit (**D120**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
 | **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. Responses are bounded: `task.get` pages its history and drops the duplicate block (D63, D66, D72), still a transport-only bound. `task.list` pages its rows and reports what it withheld (D70) — that page's DEFAULT now lives in the engine itself (**D110**), reachable by `tasqx api`/the CLI too, not only by this transport; MCP's own default-insertion is what still drives its byte-budget bisection over an oversized page. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
 
@@ -2550,3 +2550,79 @@ prose notes under `agenda` and `next` still run past a narrow terminal. Those ar
 (`render_config_table`), `verbs.rs` (`run_memory` gains the context),
 `tests/regressions.rs`, and `scripts/snap.sh`/`snap-tui.sh`, which now pass freeze
 `--language ansi` because a screen with no escapes in it produced no picture.
+
+### D121 — `memory list` on a terminal is a browser: a list with a live preview, `/` to search, Enter to read (task #386)
+
+**Decision:** `tasqx memory list` opens a full-screen browser when stdin and stdout are both
+terminals, `--json` is absent, neither `--limit` nor `--offset` was given, and the window
+is at least 48×10. Otherwise, it prints a table. D58's rule for the bare `tasqx`, one
+verb over. Asking for a page is a script's question, so a page gets the table.
+
+- **(a) Layout.** The list (title, and when; the project too once the preview is gone)
+  runs down the left. The body of the doc under the cursor fills the right, from 96
+  columns up. The query sits on the header line with how much of the store it kept
+  (`/ tui   27 of 90 match`), and without one the header says what the store holds. The
+  key bar is the bottom row in every mode.
+- **(b) Keys, less/vim style.** In the list, `j`/`k` and the arrows move, `g`/`G` jump,
+  `/` opens the search, Enter opens the doc, Esc clears a search and otherwise leaves,
+  and `q` leaves. In the search every character is a letter; Enter or Esc goes back to
+  moving with the filter kept. In the doc, `j`/`k`/space/`b`/`g`/`G` scroll, and Esc or
+  `q` goes back, as the dashboard's detail overlay does. `pick`'s type-to-filter was
+  rejected: it costs `j`/`k`.
+- **(c) One key table per mode.** The bar is generated from it and a test presses every
+  key it names, D62's rule. The dashboard's `Key`, `Hint` and `footer_spans` moved up into
+  `tui.rs` so both screens draw their bars with one function.
+- **(d) Ranking.** `pick`'s scorer moved into `tui::fuzzy` and is shared. Titles and
+  projects match as subsequences, D100's rule, with a bonus when the term occurs whole.
+  Source and body match only as a contiguous run, from a lower base, so a title hit
+  outranks them.
+- **(e) A body is read, not dumped.** Frontmatter becomes `key  value` lines.
+  Consecutive source lines are one paragraph, and an indented line continues a bullet.
+  Headings are bold, bullets hang, fenced code keeps its lines, and `code` and
+  `**strong**` lose their markers but keep their emphasis. It is not a markdown parser;
+  it is enough that notes stop looking like their syntax. Bodies are sanitised on the way
+  in (D19) and read one at a time as the cursor reaches them.
+- **(f) The table,** off a terminal. The summary line says how many docs the store
+  holds, plus `N shown` when paged. Under it is a `table.label` header, then one line per
+  doc: title, project, updated, id. It is fitted by `columns::fit` (D120), and the id is
+  never dropped because it is the handle `memory show` takes. It replaces three lines per
+  doc and the `N doc(s) of M` trailer.
+
+**Why:** rendered, the old output gave every row the same weight and spent three lines on
+each doc, one of them a bare UUID. Frontmatter and markdown leaked into every preview,
+there was no project and no date, and the trailer was the count rule 8 forbids. Memory
+titles are often slugs (`qore-subscription-create`), so a list of titles alone does not
+tell docs apart; the preview pane is what does.
+
+**How it was chosen:** three layouts and a detail view were mocked in pixels from a real
+store: the ledger, the ledger with a live preview, and two-line rows. The preview won, and
+the key and fallback models were picked alongside it. Building it, the renders then found
+what the tests did not:
+
+- **The search matched too much.** Subsequence matching over 160 characters of body text
+  matched `tui` in 88 of 90 docs and put unrelated slugs on top. That is (d)'s split.
+- **Scattered letters ranked first.** `tui` inside "punc**tu**at**i**on" outranked the doc
+  filed under `tasqx-tui-restyle`. That is the whole-term bonus.
+- **A source wrapped at 80 columns broke bullets.** Each soft-wrapped continuation became
+  a paragraph against the margin.
+- **Code next to punctuation gained a space.** `` `d9a534c`. `` came out `d9a534c .`.
+- **The list sat under three blank rows** whenever no search was open. The query moved
+  onto the header line.
+
+**Verified:** every guard was then made to bite by injecting its drift, and two were
+silent. The cursor-anchor test had become vacuous once the whole-term bonus put its doc
+first anyway, so its fixture now moves the doc off the top and asserts that it did. The
+sanitisation test checked the drawn frame, and ratatui's buffer drops control characters
+itself, so the frame could not see a missing sanitiser; it now checks the stored body.
+The plain table's integration test was watched fail against the three-line output.
+
+**Left standing:** `memory search` still prints records (D120(d)), and search inside the
+screen only sees the first 160 characters of a body (`memory.list`'s preview), not the
+whole of it. `pick` keeps its own ranking; the whole-term bonus is memory's until `pick` is
+judged against it.
+
+**Where:** `crates/tasqx-cli/src/tui/memory.rs` (new), `tui/fuzzy.rs` (new; out of
+`tui/pick.rs`), `tui.rs` (`Key`, `Hint` and `footer_spans`, out of `tui/dashboard.rs`),
+`memory_screen.rs` (new: the driver and `memory_screen_active`), `lib.rs` (the gate beside
+the dashboard's), `render.rs` (`memory_table`, `day_ago`, `doc_summary`), `verbs.rs`, and
+`command.rs` (the `-h` text).

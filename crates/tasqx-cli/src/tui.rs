@@ -11,6 +11,8 @@
 //! console into raw mode.
 
 pub mod dashboard;
+pub(crate) mod fuzzy;
+pub mod memory;
 pub mod pick;
 pub mod settings;
 
@@ -386,6 +388,104 @@ pub fn with_terminal<T>(
     let out = ratatui::Terminal::new(backend).and_then(|mut t| body(&mut t));
     drop(guard);
     out
+}
+
+// ============================================================================
+// The key bar: one table drives the footer and the help (D62)
+// ============================================================================
+
+/// One binding, in the ONE table a screen's help and its footer both read.
+///
+/// They used to be two. The overlay iterated `KEYS`; the footer built from a
+/// `hints` literal of its own, under a doc comment asserting the two "cannot
+/// drift". They had: `w`, `R`, `g`/`G` and `S-tab` were advertised nowhere but
+/// behind `?`, so the burndown window was a control the screen never mentioned
+/// and a reader who did not open the help had no way to learn it was there
+/// (D62). A second list of strings is a second path to the data, and this is
+/// that rule from `CLAUDE.md` applied to the key vocabulary.
+pub struct Key {
+    /// The binding as a reader types it, e.g. `"j / k"`. Parsed by the tests
+    /// that bind this table to `on_key`, so the shape is load-bearing: tokens
+    /// split on `/`, and anything that is not a single character or one of the
+    /// named non-`Char` keys makes them fail loudly rather than skip it.
+    pub keys: &'static str,
+    /// The overlay's line — a sentence, because the overlay has the room.
+    pub help: &'static str,
+    /// How the footer spells this binding, or `None` for one it deliberately
+    /// withholds.
+    ///
+    /// `ctrl-c` is the only `None`, because `q` already answers "how do I
+    /// leave" — an omission this table states rather than one the footer
+    /// arrives at by drifting.
+    pub footer: Option<Hint>,
+}
+
+/// A binding as the footer draws it: shorter than the overlay's spelling, and
+/// ranked, because a 56-column footer cannot hold eleven of them.
+pub struct Hint {
+    /// The keys the footer prints, which is not always the overlay's spelling.
+    /// `tab / S-tab` prints as `tab` and `q / esc` as `q` — the second half of
+    /// each is a variant of the first. `j / k` prints as `j/k` and `g / G` as
+    /// `g/G`, because there the second half is the other direction and a
+    /// footer naming one of a pair is a footer that has hidden the other.
+    pub keys: &'static str,
+    /// The word beside the keys. One word: the footer is a reminder, and the
+    /// sentence lives in `Key::help`.
+    pub word: &'static str,
+    /// Which hints survive a narrow footer — low numbers first. `?`, `q` and
+    /// `p` are ranked ahead of everything because they are the three a reader
+    /// cannot do without, which is the judgement the deleted `Rung::Xs` arm
+    /// used to carry as a literal.
+    pub rank: u8,
+}
+
+/// The footer's spans: as many of `keys` as the width affords, lowest rank
+/// first, drawn in table order.
+///
+/// The width decides, not the rung. A rung match here would be the second list
+/// again in a different costume — and it made the wide footer a fixed eight
+/// even on a 200-column terminal with room for every one of them. What the rank
+/// buys is that the *narrow* end keeps `?`, `q` and `p`: the three a reader
+/// cannot do without, chosen by the table rather than by a literal beside it.
+///
+/// A hint is taken whole or not at all. A footer cut mid-word reads as a broken
+/// screen, which is why this measures before it pushes rather than truncating
+/// afterwards — the idiom `build_bar` established for the status line.
+pub(crate) fn footer_spans(
+    keys: &[Key],
+    width: u16,
+    accent: ratatui::style::Style,
+    muted: ratatui::style::Style,
+) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::text::Span;
+
+    let mut ranked: Vec<(usize, &Hint)> = keys
+        .iter()
+        .enumerate()
+        .filter_map(|(i, k)| k.footer.as_ref().map(|h| (i, h)))
+        .collect();
+    ranked.sort_by_key(|(_, h)| h.rank);
+
+    let mut budget = width as usize;
+    let mut taken: Vec<(usize, &Hint)> = Vec::new();
+    for (i, h) in ranked {
+        // The keys, a space, the word, and the three cells of gutter that
+        // separate this hint from the next one.
+        let need = crate::render::width(h.keys) + 1 + crate::render::width(h.word) + 3;
+        if need > budget {
+            continue;
+        }
+        budget -= need;
+        taken.push((i, h));
+    }
+    taken.sort_by_key(|(i, _)| *i);
+
+    let mut spans = Vec::new();
+    for (_, h) in taken {
+        spans.push(Span::styled(h.keys.to_string(), accent));
+        spans.push(Span::styled(format!(" {}   ", h.word), muted));
+    }
+    spans
 }
 
 #[cfg(test)]
