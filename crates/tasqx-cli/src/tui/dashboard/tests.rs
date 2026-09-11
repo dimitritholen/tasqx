@@ -2392,9 +2392,15 @@ fn a_frame_under_the_floor_draws_a_message_instead_of_blanking() {
 fn the_ctrl_c_help_text_does_not_overclaim_against_the_pickers_own_cancel_contract() {
     use crate::tui::pick;
 
-    let mut picker = pick::App::new(vec![pick::Row::new(
-        1, "a task", "proj", "-", "0.0", "", false,
-    )]);
+    let ctx = crate::theme::Ctx::new(crate::theme::load("nord", None), crate::theme::Caps::PLAIN);
+    let mut picker = pick::App::new(
+        vec![pick::Row::new(
+            serde_json::json!({ "short_id": 1, "title": "a task" }),
+        )],
+        &ctx,
+        "@working",
+        jiff::Timestamp::UNIX_EPOCH,
+    );
     let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert_eq!(
         picker.on_key(ctrl_c),
@@ -2414,5 +2420,38 @@ fn the_ctrl_c_help_text_does_not_overclaim_against_the_pickers_own_cancel_contra
          picker it only cancels the picker (asserted above), so the help \
          text must not claim \"always\": {:?}",
         entry.help
+    );
+}
+
+/// D123: `p` opens `pick`, and what the dashboard says about it must be what
+/// `pick` does — Enter reads, and the key that starts is the one `pick`'s own
+/// table names. It said "pick a task and start it" when Enter started, and a
+/// help line nobody re-read would keep saying so.
+#[test]
+fn the_p_help_names_the_keys_pick_itself_reads_and_starts_with() {
+    use crate::tui::pick;
+    let p = KEYS
+        .iter()
+        .find(|k| k.keys == "p")
+        .expect("p is documented");
+    let start = pick::LIST_KEYS
+        .iter()
+        .find(|k| k.help.contains("start"))
+        .expect("pick has a start key");
+    let enter = pick::LIST_KEYS
+        .iter()
+        .find(|k| k.keys == "enter")
+        .expect("pick has enter");
+    assert!(
+        p.help.contains(&format!("{} start", start.keys)),
+        "the dashboard's p help does not name pick's start key `{}`: {:?}",
+        start.keys,
+        p.help
+    );
+    assert!(
+        p.help.contains("enter reads") && enter.help.contains("read"),
+        "the dashboard and pick disagree about enter: {:?} / {:?}",
+        p.help,
+        enter.help
     );
 }

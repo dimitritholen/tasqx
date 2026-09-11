@@ -17,9 +17,9 @@ tasqx dashboard          # the same screen, spelled out
 tasqx --json dashboard   # all panels as one JSON document, no screen
 ```
 
-- It's read-only, with one exception: `p` opens the
-  [picker](Working-on-Tasks.md#tasqx-pick), and Enter there starts a task.
-  `q`, Esc and Ctrl-C all close it.
+- It's read-only, with one exception: `p` opens the task browser,
+  [`pick`](Working-on-Tasks.md#tasqx-pick). Enter there reads a task, and `s`
+  starts it and brings you back. `q`, Esc and Ctrl-C all close the dashboard.
 - The BLOCKED panel exists because blocked tasks are hidden from the default
   task list — the dashboard is where work that's standing still stays visible.
 - Layout adapts to your window; below 56×14 it won't open.

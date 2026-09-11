@@ -42,13 +42,10 @@ const TITLE_WEIGHT: i64 = 250;
 const PROJECT_WEIGHT: i64 = 50;
 const SOURCE_WEIGHT: i64 = 50;
 /// A contiguous hit in the source or body scores from this, not from the 1000
-/// a subsequence starts at, so any reasonable title hit outranks it.
+/// a subsequence starts at, so any reasonable title hit outranks it. The
+/// whole-term bonus a title or project earns is `fuzzy::WHOLE_BONUS`, the one
+/// `pick` uses too (D123).
 const PROSE_BASE: i64 = 600;
-/// Added when a term occurs in a title or project as a whole run rather than
-/// as letters spread through it: the word the reader typed beats the same
-/// letters inside another word (`tui` in "tasqx-tui-restyle" over `tui` in
-/// "punctuation").
-const WHOLE_BONUS: i64 = 400;
 
 /// One memory doc as the list shows it, sanitised at construction (D19): a
 /// title or a body is text an agent wrote, and none of its bytes may reach the
@@ -81,10 +78,8 @@ impl Doc {
                 .find(t)
                 .map(|at| PROSE_BASE - (at as i64).min(PROSE_BASE / 2) + weight)
         };
-        let name = |field: &str, t: &str, weight: i64| {
-            let whole = if field.contains(t) { WHOLE_BONUS } else { 0 };
-            fuzzy::score_subsequence(field, t).map(|s| s + weight + whole)
-        };
+        let name =
+            |field: &str, t: &str, weight: i64| fuzzy::score_name(field, t).map(|s| s + weight);
         let mut total = 0;
         for t in terms {
             let best = [
@@ -797,6 +792,7 @@ pub fn render(app: &App, theme: &Theme, caps: &Caps, frame: &mut Frame) {
         area.width.saturating_sub(1),
         sty("accent"),
         sty("muted"),
+        app.unicode,
     ));
     if app.mode == Mode::Detail {
         let total = app.body_lines(app.detail_width()).len();

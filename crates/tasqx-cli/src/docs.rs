@@ -77,7 +77,7 @@ const VERBS: [(&str, &str, &str); 40] = [
     (
         "pick",
         "<code>p</code>, <code>fzf</code>",
-        "task.list + task.start",
+        "task.list + task.get + task.start",
     ),
     ("show", "<code>get</code>", "task.get"),
     ("why", "—", "task.get"),
@@ -1246,17 +1246,32 @@ fn page_commands() -> String {
     // ---- pick
     s.push_str(&h3("pick"));
     s.push_str(&p(
-        "<code>tasqx pick [filter]</code> is a full-screen list over the working set that narrows \
-         as you type — a fuzzy SUBSEQUENCE match over id, title, project and tags. Up/down (or \
-         <code>ctrl-p</code>/<code>ctrl-n</code>) move the highlighted row; <code>enter</code> \
-         starts it — the one key on this screen with a side effect, and the same single-active \
-         rule <code>tasqx start</code> follows; <code>esc</code> clears the query first, then \
-         leaves.",
+        "<code>tasqx pick [filter]</code> is the task browser (D123): a full-screen list over the \
+         working set whose rows are the rows <code>tasqx list</code> prints, under a header that \
+         names the filter and what the set holds. <code>enter</code> opens the task's \
+         <code>tasqx show</code> card; <code>s</code> starts the task under the cursor — the one \
+         key on this screen with a side effect, and the same single-active rule \
+         <code>tasqx start</code> follows. <code>/</code> searches: a fuzzy SUBSEQUENCE match over \
+         id, title, project and tags, where a term found whole ranks above the same letters \
+         scattered. The keys below are generated from the tables the screen's own key bar is \
+         drawn from.",
     ));
+    for (mode, table) in [
+        ("In the list", crate::tui::pick::LIST_KEYS),
+        ("In the search", crate::tui::pick::SEARCH_KEYS),
+        ("On a task's card", crate::tui::pick::DETAIL_KEYS),
+    ] {
+        let rows: Vec<Vec<String>> = table
+            .iter()
+            .map(|k| vec![format!("<code>{}</code>", esc(k.keys)), esc(k.help)])
+            .collect();
+        s.push_str(&p(mode));
+        s.push_str(&table_owned(&["Key", "Does"], &rows));
+    }
     s.push_str(&p(
         "It needs a real terminal on BOTH stdin and stdout, so it refuses in a pipe (exit 2, D26) \
-         rather than writing escape codes into it. Cancelling, or a filter that matches nothing, \
-         exits 4 having started nothing.",
+         rather than writing escape codes into it. Leaving without starting a task, or a filter \
+         that matches nothing, exits 4 having started nothing.",
     ));
 
     // ---- show

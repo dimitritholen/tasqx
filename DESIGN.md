@@ -404,7 +404,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `use` | — | `tasqx use work` — sets the default project a bare `add` inherits. Validated at the edge: unknown → exit 4, archived → exit 5 (D21/D22). |
 | `archive` | — | `tasqx archive old` — takes a project out of rotation; the tasks are untouched and `projects --all` still lists it. Unknown → exit 4, already archived → exit 5. Archiving the *current default* clears the default, and the printed line says which of the two happened (D22). |
 | `tag`/`untag` | — | `tasqx tag 42 blocking` / `tasqx untag 42 blocking`. A tag is written the same way as in `add`/`modify` sugar — `+api` and `api` name one tag — and untagging a tag the task does not have is exit 4 that removes nothing (D52). The bare-ref form `tasqx 42 +blocking` is **not** built: it needs the fuzzy-ref dispatch below, which is not built either. |
-| `pick` | `p`, `fzf` | `tasqx pick [filter]` — a full-screen list of the working set that narrows as you type (fuzzy subsequence, per field), and one key with an effect: enter **starts** the highlighted task. Cancelling, and a filter matching nothing, exit 4 having started nothing. It needs a terminal on stdin *and* stdout, so it refuses in a pipe (exit 2) rather than being composable — see D55 for why that killed the "print the ref" form the mockup drew. |
+| `pick` | `p`, `fzf` | `tasqx pick [filter]` — the task browser (**D123**): `list`'s rows on a full screen, `/` for a fuzzy search (subsequence, per field, a term found whole ranking first), enter to read a task's `show` card, and one key with an effect: `s` **starts** the task under the cursor. Leaving without starting one, and a filter matching nothing, exit 4 having started nothing. It needs a terminal on stdin *and* stdout, so it refuses in a pipe (exit 2) rather than being composable — see D55 for why that killed the "print the ref" form the mockup drew. |
 | `agenda` | `ag`, `cal` | `tasqx agenda [filter] [--days N]` — `list` ordered by time and grouped by day. Each task sits on the EARLIER of its `due` and `scheduled`; overdue first, always; 14 days ahead by default. Tasks with neither date, and tasks past the horizon, are counted under the table rather than dropped (D53). |
 | `undo` | `u` | Reverses the newest event by appending a compensating one — the log is never rewritten. Four operations are undoable (`stop`, `untag`, `undep`, `annotate`); every other one exits 5 naming itself and the verb that does take it back. No ref, and no redo (D54). |
 
@@ -429,7 +429,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `tasqx unannotate 42 <id>` | `annotation.remove` | Hard-deletes the body, keeps a tombstone; unknown/already-removed id → exit 4. Not undo-reversible (D113). |
 | `tasqx 42 dep 43` | `dependency.add` | Cycle → exit 5 (`conflict`). |
 | `tasqx memory add/search/show/rm/import` | `memory.add` / `memory.search` / `memory.get` / `memory.remove` / `memory.import` | D41, `show` from D71. `import`: one doc per `.md` file, one transaction, same `source` replaces. |
-| `tasqx pick [filter]` | `task.list` → `task.start` | Fetches candidates with the same default filter as `list` (`@working`), then starts the one the user selects. One follow-up verb, not a menu of them (D55). |
+| `tasqx pick [filter]` | `task.list` → `task.get` → `task.start` | Fetches every candidate with the same default filter as `list` (`@working`), reads a task's card when the user opens it, then starts the one the user selects with `s`. One verb with an effect, not a menu of them (D55, D123). |
 | `tasqx agenda [filter] [--days N]` | `task.list` | No `agenda` method: the grouping, the horizon and the earlier-of-two-dates ordering are all rendering over fields the row already carries (D53). The filter defaults to every OPEN status, not `@working` — a future `scheduled` parks a task in `backlog`, which `@working` excludes. |
 | `tasqx report <name>` | `report.summary` | Feeds charts (§8) and HTML export. |
 | `tasqx docs` | *(none — no store)* | Generates the §8a user guide and opens it. Pure static content; never touches the store (D15). |
@@ -569,27 +569,30 @@ The single-line form the mockup used to show — `tasqx 47 +blocking -test`, two
 calls in one command — is not built: it needs the bare-ref dispatch (`tasqx 47
 <verb>`) that no verb has today.
 
-**10 — Interactive chooser (shipped #51; captured from `tui::pick::render` on 2026-08-03)**
+**10 — Task browser (shipped #51 as a chooser; the browser since D123, captured from the binary through tmux at 88 columns)**
 
 ```console
-$ tasqx pick project:work.tasqx        # then type: api
-pick a task   3/4
-> api▊
-──────────────────────────────────────────────────────────────────────────────
-▸ #42  11.8  H  Ship the v1 JSON API freeze  work.tasqx    release api
-  #43  6.0   M  Publish API docs             work.tasqx    docs
-  #47  9.4   M  Write API conformance tests  work.tasqx    api test
+$ tasqx pick                           # then: / api enter
+ pick   @working   / api   4 of 14 match
 
-type to narrow   up/down move   enter start   esc clear/quit
+       ID          URG  TASK                           PROJECT  DUE             TAGS
+ ▸     56  M ▄▂▁▁  4.2  Add OpenAPI examples for eve…  api                      +docs
+       48  H ▄▄▄▄ 18.1  Renew the TLS certificate fo…  infra    2d ago          +ops
+       51  H ▄▄▄▄ 16.1  Rate-limit the /search endpo…  api      Mon             +perf
+       57  M ▄▄▁▁  6.6  Accessibility pass on the si…  website  23 Sep          +a11y
+
+ j/k move   / search   enter open   s start   g/G ends   esc clear   q quit
 ```
-The query narrows live — a fuzzy **subsequence** match, per field, so `wac` finds
-"Write API conformance tests" — and whitespace splits it into terms that all
-have to match. Built on `ratatui` in a one-shot alt-screen (no daemon) over a
-single `task.list`. `⏎` **starts** the highlighted task; that is the only key
-with an effect. The `^s`/`^d`/`^e` dispatch keys and the ref-printing `⏎` this
-mockup used to draw are **not** built, and D55 says why: the screen refuses
-unless stdin *and* stdout are terminals, so `tasqx pick | tasqx done` — the
-whole point of printing a ref — never reaches it.
+Each row is the row `tasqx list` prints, drawn by `list`'s own renderer. Without a
+search the header carries `list`'s summary instead (`14 tasks · 2 overdue · #49
+running`). The search is a fuzzy **subsequence** match, per field, so `wac` finds
+"Write API conformance tests", and whitespace splits it into terms that all have
+to match. `⏎` opens the task's `show` card, and `s` **starts** the task under the
+cursor, from the list or the card; that is the only key with an effect. The
+`^s`/`^d`/`^e` dispatch keys and the ref-printing `⏎` the first mockup drew are
+**not** built, and D55 says why: the screen refuses unless stdin *and* stdout are
+terminals, so `tasqx pick | tasqx done` — the whole point of printing a ref —
+never reaches it.
 
 **11 — Agenda (shipped #54; captured from the binary on 2026-08-03)**
 
@@ -1120,7 +1123,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | Deferred | Ruling | Status & why it is safe to defer |
 |---|---|---|
 | **Git-first sync** | **D3** (§12) | **Not built.** Sync is a pure *consumer* of the append-only event log, which has shipped and is written transactionally with every mutation (the load-bearing invariant). Because the log is already the record of truth, the git backend (`store.export` → commit → merge, per-field LWW) can land later without a migration, and the CRDT-per-field upgrade after that is additive on top. Deferring costs nothing structural; building it now would freeze a conflict policy against zero real-world merge evidence. |
-| **Full ratatui TUI** | §2 / D26 / **D58** | **Foundation built; `config edit`, `pick` (D55) and the memory browser (D121) ship on it; the dashboard is ruled (D58) and shipped, its legibility pass is ruled (D62) and scheduled, and its per-project board with row actions is ruled (**D79**) and scheduled; a task *browser* stays deferred.** The `tui` module ships the part that is genuinely hard to get right — terminal lifecycle, capability gating, theme→ratatui style mapping — and its screens are pure state machines (key in, intent out) so they stay testable in a repo that fails the build on a warning. The dashboard is the third such screen: an overview whose row cursor sends the write methods every other surface already sends (D79, superseding D58's read-only ruling). What remains deferred is a *browsing* TUI — navigate, edit and complete in place — and that too is more screens on this foundation, not a second foundation. The daemon, socket/named-pipe transport and live `task.changed` push are exercised by `tasqx watch`, and D58's refresh reuses that same data path. Nothing in the JSON API freeze depends on any of it. |
+| **Full ratatui TUI** | §2 / D26 / **D58** | **Foundation built; `config edit`, `pick` (D55, the task browser since **D123**) and the memory browser (D121) ship on it; the dashboard is ruled (D58) and shipped, its legibility pass is ruled (D62) and scheduled, and its per-project board with row actions is ruled (**D79**) and scheduled; editing and completing *in place* stay deferred.** The `tui` module ships the part that is genuinely hard to get right — terminal lifecycle, capability gating, theme→ratatui style mapping — and its screens are pure state machines (key in, intent out) so they stay testable in a repo that fails the build on a warning. The dashboard is the third such screen: an overview whose row cursor sends the write methods every other surface already sends (D79, superseding D58's read-only ruling). Browsing shipped as `pick` (D123): navigate, search, read a task's card and start it. What remains deferred is editing and completing in place, and that too is more keys on these screens, not a second foundation. The daemon, socket/named-pipe transport and live `task.changed` push are exercised by `tasqx watch`, and D58's refresh reuses that same data path. Nothing in the JSON API freeze depends on any of it. |
 | **Plugins & hooks** | §6 (6a plugin API, 6b hooks + custom subcommands) | **Not built.** MCP proves read/write capability filtering but deliberately does not authenticate plugins: its scope is operator-selected configuration for a local stdio child (D7). A plugin loader therefore still needs a real trust and credential design. Shipping one now would freeze an ABI before there is a second consumer. |
 | **No-daemon OS-scheduler notification path** | **§9b** | **Not built.** §9a (the daemon min-heap path) ships and covers every user who has a daemon, TUI, or `watch` running. §9b would add per-OS scheduler integration (launchd / Task Scheduler / systemd timers) for users who want reminders with *no* long-lived process — three OS-specific integrations, each with its own failure modes, for a strictly narrower audience. `reminder.fire` is already an additive public method with an idempotent `reminded` event, so the scheduler path can call the same API later with no core change. |
 | **Actionable toast buttons** | **§9b** | **Not built.** Notifications fire (log backend always; OS backend behind the off-by-default `notify-os` feature, which stays absent from the default cargo tree). Buttons — "done" / "snooze" *on the toast* — require a live callback target, which means the daemon must own the toast lifecycle on all three OSes; `notify-rust`'s action support is the least portable part of its surface. Deferred until §9b's process-ownership question is answered, since both features hinge on it. |
@@ -1140,7 +1143,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | **Core** | API v1 declared **stable**; the conformance suite (`crates/tasqx-core/tests/conformance.rs`) is the contract of record — the envelope, the error codes and every method's response shape, with its method floor derived from `dispatch::PARAMS` rather than listed. What it freezes is the **JSON API's shape**; what it does *not* freeze is the MCP **tool schema** — tool names, descriptions and input schemas stay free to move, and `tests/mcp.rs` covers them. The tool *results* are not exempt: `conformance.rs` drives the live `tools/list`, maps each tool to its method and asserts that same frozen result shape, so renaming a response field reddens the MCP half too. Read D56's "excludes MCP" as being about the schema, not the answers. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
 | **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). |
 | **Distribution** | Prebuilt archives for four targets on a tag, plus a `completions/` directory inside each one and a generated Homebrew formula that switches completion on at install time (**D57**, `docs/homebrew-tap.md`). The tap and the Scoop bucket exist (`dimitritholen/homebrew-tasqx`, `dimitritholen/scoop-tasqx`), each filled per release by its generator (`scripts/brew-formula.sh`, `scripts/scoop-manifest.sh`) and merged only after that repo's own CI has installed the result for real; the README leads with them, and a package manager the reader already has outranks the script (**D77**). On top of those archives, `install.sh` and `install.ps1` are the **universal** install route (**D61**, narrowed by D77): a one-liner served raw from `raw.githubusercontent.com` that resolves one host triple, verifies the published `.sha256` and unpacks into a per-user directory, with re-running it as the update path — which is not the self-update D10 forbids, because the binary still never writes to itself. The archives are **not signed**: D10 required notarization and Authenticode, D61 narrows that to deferred, and the consequence ships with the route — on macOS it bypasses Gatekeeper rather than passing it, on Windows it is what SmartScreen is built to interrupt. Signing is scheduled work, not a decided absence. |
-| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report` — and a number never gives way to make a row fit (**D120**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
+| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report` — and a number never gives way to make a row fit (**D120**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). `pick` is the task browser: `list`'s rows, a `/` search, `show`'s card on Enter and `s` to start (**D124**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
 | **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. Responses are bounded: `task.get` pages its history and drops the duplicate block (D63, D66, D72), still a transport-only bound. `task.list` pages its rows and reports what it withheld (D70) — that page's DEFAULT now lives in the engine itself (**D110**), reachable by `tasqx api`/the CLI too, not only by this transport; MCP's own default-insertion is what still drives its byte-budget bisection over an oversized page. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
 
@@ -1553,6 +1556,8 @@ This is the third appearance of the bug class D14 exists to prevent, and the sec
 
 ### D55 — `tasqx pick` chooses and starts; it does not print a ref, because the gate it must pass makes a printed ref unreachable
 
+**Amended by D123.** Enter now opens the task's `show` card and `s` starts it; the query lives behind `/`, so "every printable key is text" is true of the search line only, and `j`/`k` move. The ASCII running mark is `*`, not the cursor's `>` (#205's glyph broke rule 4). Starting rather than printing a ref, exit 4 when nothing was started, the refusal before the store opens, the anchored cursor and the centred window all stand as written below.
+
 **Decision:** `tasqx pick [filter…]` (aliases `p`, `fzf`) opens a full-screen list of the candidates a `task.list` returns for that filter — defaulting to `@working`, the same default and the same argv-preserving parse `tasqx list` uses — narrows it live as the user types, and on `⏎` **starts** the highlighted task through `task.start`. That is the only key with an effect. There is no new API method: the verb is `task.list` followed by `task.start`, both of which already exist and already append their own events.
 
 **Why starting, and not printing the ref.** §10 sketched `⏎` printing the ref and `^s`/`^d`/`^e` dispatching three more verbs, with "Pipeable: `tasqx pick | tasqx done`" underneath. That last sentence is what settled it, by being impossible. A full-screen chooser must refuse when it has no terminal (D26) or it writes `\x1b[?1049h` into a pipe and then blocks on a key that never comes — and `tui::is_interactive` asks about **stdout as well as stdin**, because the alternate screen is written to stdout. So `tasqx pick | tasqx done` and `$(tasqx pick)`, the only two things a printed ref is *for*, are exactly the invocations that never reach the screen. A ref printed to a terminal the user then retypes by hand is a slower `tasqx list`. Starting the task is the one outcome that is complete on the surface where the screen can actually run: `pick` answers "which of these am I doing now", and beginning it is that answer.
@@ -1653,7 +1658,7 @@ This is the third appearance of the bug class D14 exists to prevent, and the sec
 
 The verb also ignores `dashboard.enabled`. That setting is the escape hatch a breaking change owes its users, and what it protects is the meaning of a BARE `tasqx`; typing the verb is not a breaking change to anything.
 
-**Read-only, with one write path that already existed.** `p` opens `pick` as a second `Screen` inside the *same* `with_terminal`, and `⏎` there starts a task through the `task.start` D55 already ships and tests. No `d`, no `s`, no edit. A viewer needs no confirmations, no `expected_rev` story and no undo conversation, and `q` is unconditionally safe — which is the property that makes a screen worth opening on a reflex. `pick` is not embedded as a panel: its query line consumes every printable key, so inside a dashboard `j` would be motion in one panel and a letter in another, the precise ambiguity `pick` cites as its reason for not binding `j`/`k` to navigation.
+**Read-only, with one write path that already existed.** `p` opens `pick` as a second `Screen` inside the *same* `with_terminal`, and `⏎` there starts a task through the `task.start` D55 already ships and tests (D123 moved that to `s`; `⏎` there reads the task's card). No `d`, no `s`, no edit. A viewer needs no confirmations, no `expected_rev` story and no undo conversation, and `q` is unconditionally safe — which is the property that makes a screen worth opening on a reflex. `pick` is not embedded as a panel: its query line consumes every printable key, so inside a dashboard `j` would be motion in one panel and a letter in another, the precise ambiguity `pick` cites as its reason for not binding `j`/`k` to navigation. (Since D123 `pick` binds `j`/`k` and keeps its query behind `/`; it is still its own screen, not a panel.)
 
 ### D59 — A burndown a screen redraws must be bounded and must count `reopen`, so `event.list` gains `from` and `chart::burndown` loses its flagged simplification
 
@@ -2108,13 +2113,13 @@ Before that: the burndown's step line, in `chart::plot_step_line` — shared geo
 
 ### D100 — `pick`'s narrowing keeps a rank now, not just a filter, because a picker aliased `fzf` that never grades its own matches is lying about what it is (tasqx audit #203)
 
-**Decision:** `pick`'s live filter (D55) now sorts its candidate set by match quality — contiguity and how early the run starts, weighted per field so title and id outrank project and tags — rather than leaving the store's own order (urgency) as the only order a query ever produces; ties keep that original order as the stable tiebreak, so urgency still decides among equally-good matches for free. D55's identity-preserving cursor is unchanged: it re-finds the same task, not the same index, through a re-rank exactly as it already did through a re-filter.
+**Decision (the filter is behind `/` since D123, and ranks with D121's whole-term bonus; the rest stands):** `pick`'s live filter (D55) now sorts its candidate set by match quality — contiguity and how early the run starts, weighted per field so title and id outrank project and tags — rather than leaving the store's own order (urgency) as the only order a query ever produces; ties keep that original order as the stable tiebreak, so urgency still decides among equally-good matches for free. D55's identity-preserving cursor is unchanged: it re-finds the same task, not the same index, through a re-rank exactly as it already did through a re-filter.
 
 **Why:** D55 specified narrowing and said nothing about ranking because nothing had shown the gap yet; audit #203 did — a three-character query on a real store removed most of the list and still left the intended task off-screen, buried under matches that only happened to sit first by urgency. A verb that ships under the alias `fzf` and calls itself fuzzy is judged against that promise by anyone who has used the real thing, and the fast path off a picker that fights the query it was just given is typing the ref by hand — `pick` going unused on the exact hotkey it exists to be. Scoring is deliberately coarse (a greedy match, an integer gap penalty) because ranking only has to order candidates against each other, not find the objectively tightest span.
 
 ### D101 — `pick`'s stop confirmation ships as a screen-local stand-in ahead of #75, and duplicates on purpose until the engine reports it (tasqx audit #205)
 
-**Decision:** `pick` now prints `Stopped #<id> · tracked <duration>` above its "Started" line whenever starting the highlighted task auto-stops a different one (D6) — computed CLI-side, from a `status:active` snapshot taken immediately before the `task.start` call, paired with the exact `interval_started` instant that same call's own answer names for the interval it just opened (and used internally to close the displaced one). This is deliberately narrower than #75's ruling — `task.start`'s own response should carry what it auto-stopped, for every caller, not just this screen — and is expected to be deleted, not extended, once #75 lands at the engine layer.
+**Retired by D123:** #75 landed and `render::started` prints what `task.start` auto-stopped, so the stand-in below was deleted, as this entry said it would be. **Decision:** `pick` now prints `Stopped #<id> · tracked <duration>` above its "Started" line whenever starting the highlighted task auto-stops a different one (D6) — computed CLI-side, from a `status:active` snapshot taken immediately before the `task.start` call, paired with the exact `interval_started` instant that same call's own answer names for the interval it just opened (and used internally to close the displaced one). This is deliberately narrower than #75's ruling — `task.start`'s own response should carry what it auto-stopped, for every caller, not just this screen — and is expected to be deleted, not extended, once #75 lands at the engine layer.
 
 **Why:** #205 is tagged `data-safety`: a running timer stopped with no word of it anywhere on the one screen most likely to cause it by accident is a usability defect that also destroys data nothing else can reconstruct. Waiting for #75 — the correct, single-source fix — would leave that gap open for however long the general fix takes; the duplication this stand-in costs is one screen's worth of query-then-diff logic, is committed as explicitly temporary, and is a smaller risk than shipping nothing meanwhile. It cannot disagree with what #75 will later report: the engine's single-active rule already treats every `status='active'` row besides the one being started as displaced whenever `keep` is false, unconditionally — the same rule this stand-in reads from the other side of the write — and no `single_active`-style config toggle exists in the engine today to put the two views of "what got stopped" at odds.
 
@@ -2357,7 +2362,7 @@ render-and-look loop that found them, as a working reference, so the screens tha
 the dashboard, `pick` — inherit the reasoning rather than the diff. Its Contract table
 is generated from the renderer by `the_house_style_doc_still_describes_the_screens`,
 which fails in both directions: a glyph the code stopped drawing, and a glyph the doc
-stopped naming.
+stopped naming. `pick` carries it since D123, by drawing `list`'s rows with `list`'s renderer.
 
 **Where:** `crates/tasqx-cli/src/render.rs` (`due_cell`, `rail_marker`, `status_marker`,
 `urgency_meter`, `table_summary`, `plural_tasks`, `when_cell`, `TaskCols`), `theme.rs`
@@ -2572,7 +2577,7 @@ verb over. Asking for a page is a script's question, so a page gets the table.
   and `q` leaves. In the search every character is a letter; Enter or Esc goes back to
   moving with the filter kept. In the doc, `j`/`k`/space/`b`/`g`/`G` scroll, and Esc or
   `q` goes back, as the dashboard's detail overlay does. `pick`'s type-to-filter was
-  rejected: it costs `j`/`k`.
+  rejected: it costs `j`/`k`. (D123 then gave `pick` this shape too.)
 - **(c) One key table per mode.** The bar is generated from it and a test presses every
   key it names, D62's rule. The dashboard's `Key`, `Hint` and `footer_spans` moved up into
   `tui.rs` so both screens draw their bars with one function.
@@ -2623,7 +2628,8 @@ The plain table's integration test was watched fail against the three-line outpu
 **Left standing:** `memory search` still prints records (D120(d)), and search inside the
 screen only sees the first 160 characters of a body (`memory.list`'s preview), not the
 whole of it. `pick` keeps its own ranking; the whole-term bonus is memory's until `pick` is
-judged against it.
+judged against it. (Closed by D123: the bonus is `tui::fuzzy::score_name`, and both screens
+rank through it.)
 
 **Where:** `crates/tasqx-cli/src/tui/memory.rs` (new), `tui/fuzzy.rs` (new; out of
 `tui/pick.rs`), `tui.rs` (`Key`, `Hint` and `footer_spans`, out of `tui/dashboard.rs`),
@@ -2769,3 +2775,133 @@ with `-h` and the HTML guide, so degrading it here alone would make the three di
 (`Ctx::hrule` removed), `command.rs` (the verb's own help text), `docs/terminal-style.md`,
 `docs/wiki/Getting-Started.md`, `docs/specs/2026-07-17-help-manual-revamp-design.md`, and
 §11's Presentation row above.
+### D123 — `pick` is the task browser: `list`'s rows, a `/` search, `show`'s card on Enter, and `s` to start (tasks #392, #399; amends D55, D58, D100, D101, D121)
+
+**Decision:** Dimitri's, on 2026-09-11. `tasqx pick` grows into the task browser, and
+`tasqx list` stays the verb that always prints the table (D58, the README). `list` opens
+no screen.
+
+- **(a) The memory browser's shape (D121).** In the list `j`/`k` and the arrows move,
+  `g`/`G` jump and the page keys page. `/` opens a fuzzy search on the header line, where
+  every letter is a letter. Enter or Esc leaves the search with the filter kept. Esc in
+  the list clears the filter and only then leaves, and `q` leaves. The key bar on the
+  bottom row is generated from one table per mode, and a test presses every key it names
+  (D62's rule). On a terminal without Unicode the bar spells its arrows as words.
+- **(b) Enter reads, `s` starts.** Enter opens the task's `show` card: `render::task_detail`,
+  the renderer `tasqx show` calls (D122), over a `task.get` read made each time the card
+  opens, so a failed read is tried again and a card never outlives the list around it.
+  There `j`/`k`/space/`b`/`g`/`G` scroll and Esc or `q` goes back. `s` starts the task
+  under the cursor, from the list or from its card, and ends the session the way Enter
+  used to. It is still the only key with an effect on the store. A filter can list done,
+  cancelled and backlog work, and `s` on such a row used to leave the screen only to be
+  refused by `task.start`. From the dashboard that refusal ended the whole session. So
+  the screen refuses it itself, on the key bar's row (`#70 is done — only a pending task
+  can start`), and stays open.
+- **(c) A row is `list`'s row.** `render::task_row`, `TaskCols::fit` on `columns::fit`,
+  the rail, the gauge, and `header_line` in `table.label`, all fitted over every candidate
+  so that neither a search nor a scroll reflows the columns. The header names the filter
+  and carries `list`'s own `table_summary`. In a search it carries the query and
+  `N of M match` instead. That count is a number and never gives way: the filter drops
+  first, then the query loses its head. The row under the cursor takes `accent` on its id
+  and title, and its title is bold as well, so the row is still marked under `NO_COLOR`
+  and `mono`.
+- **(d) One renderer, through one seam.** The printed renderers paint, and
+  `tui::painted_line` reads back exactly the SGR `Style::paint` writes, so the frame
+  draws the same cells in the same styles. Any other escape is dropped whole. `watch`
+  made the same choice for the same reason (D102). A guard crosses every role of every
+  built-in theme at every depth. To make the two ends agree, `tui::rt_style` now drops
+  `dim` under `NO_COLOR` the way the painter does (#234 item 7). Before, a `mono` screen
+  under `NO_COLOR` dimmed what `list` printed plain, and that is true of the dashboard
+  and the memory browser too.
+- **(e) One scorer.** D121's whole-term bonus moved into `tui::fuzzy::score_name`, and
+  `pick`'s four fields and the memory browser's title and project both rank through it.
+- **(f) The whole candidate set.** `pick` reads every `task.list` page (D110's ceiling
+  per call, so the common store is one scan) and keeps each task once where pages
+  overlap. One call stopped at D110's default page of 100, so a search could not find
+  the 101st task and the header counted a page as the set.
+- **(g) From the dashboard.** `p` still opens `pick` (D80 has not moved `p` to priority
+  yet), over the working set, or over the project of a PROJECTS row. Enter there reads a
+  task. `s` starts it and returns to the dashboard, which prints every start of the
+  session when it closes, not only the last. `q` or Esc returns having started nothing.
+  A start the engine still refuses, in a race with another writer, is said on the
+  dashboard's status line rather than ending it. The dashboard's `p` help and its manual
+  page say all this, and a test ties that help line to `pick`'s own key table.
+- **(h) The line left in the scrollback is `render::started`.** Since #75, `task.start`
+  names the task and what it auto-stopped, and `render::started` prints both. `pick`
+  printed a `#N  title` header over that. D101's stand-in then said the stop again from a
+  snapshot of its own, so the task was named twice and the stop was said twice with two
+  durations (rule 11). D101 said its stand-in would be deleted once #75 landed, and this
+  change deletes it.
+
+**Amends:** D55 (Enter started; every printable key was text; `>` was the ASCII running
+mark), D58's "`⏎` there starts a task" and its reason for `pick` not binding `j`/`k`, D100
+(the live filter is behind `/` now; its ranking stands), D101 (its stand-in is deleted),
+and D121(b) and its "Left standing" line on `pick`'s ranking, which is closed. It also
+retires #228.12 for this screen: Enter on an empty match list used to leave, because on
+the chooser it did nothing at all. On the browser Enter reads, there is nothing to read,
+and the empty list's sentence names the key that does something in that mode. The §5
+verb table, the §8 sample, §11a's "a task browser stays deferred" and the v1
+Presentation row were walked to match, and so were the wiki pages for `pick` and the
+dashboard.
+
+**Kept, and named so it is a choice rather than an oversight:** leaving without
+starting a task still exits 4 with `nothing picked` (D55: `pick`'s output is the start,
+and a command that produced nothing may not report success). On a browser that reads
+worse than it did on a chooser. The memory browser exits 0, and a session spent only
+reading cards now ends on an error line. Changing it changes a stated principle, so it is
+left for Dimitri rather than decided here.
+
+**Why:** rendered from the demo store, `pick` broke nine of the thirteen rules in
+`docs/terminal-style.md`, and #392 carries the audit. It had no dates, no rail, no gauge,
+a rule under the query, `14/14` for a summary, and a running mark that was the cursor's
+own glyph without Unicode. Type-to-filter cost it `j`/`k`, which is why D121 rejected it.
+And Enter started a timer on a screen people open to look at their tasks, which is the
+most expensive mis-aimed keystroke a browser can have.
+
+**Verified:** each changed behaviour has a test, and each was watched fail against the
+code before its change. Those tests are j/k moving, `/` opening the search, Enter not
+starting, `s` starting, the whole-term bonus, `*` for the ASCII running mark, no rule,
+all 450 of 450 candidates read, the scrollback naming each thing once, `s` refused on a
+done task, the search count and the card position kept whole at 40 and 44 columns, the
+empty result naming the right key per mode, a card read again on reopening, the ASCII
+search bar, foreign escapes dropped whole, and `dim` dropped under `NO_COLOR`. Then every
+guard was made to bite by re-injecting its drift. Among the drifts: a budget of the
+screen's own, the old `N/M` counter, bright colours read as dark by the seam, an
+unsanitised title, a card at its own width, the old dashboard help, and a cursor reset on
+refilter. An adversarial review found eighteen defects, the ones this entry's (b), (c),
+(d), (g) and (h) now describe among them, and three guards that could not see what they
+claimed. The renders are under `target/restyle-goal/392/`. They found one more thing the
+tests had not: a one-cell right margin cost DUE a column earlier than necessary, so the
+margin went. The three cells of cursor lead remain, and they are the price named below.
+Tests written for the chooser kept their intent and press the new keys. The anchor test
+was re-fixtured, because the whole-term bonus would otherwise have put its task first and
+left the test vacuous, which is D121's lesson.
+
+**Left standing, deliberately:**
+
+- **The cursor lead costs three cells.** At 60 columns the browser lays out what `list`
+  would at 57, so DUE drops where `list` still keeps it (from 63 columns `pick` keeps it
+  too). The header still carries the overdue count.
+- **`s` means two things across one hop.** On the shipped dashboard `s` cycles the sort
+  order, and in `pick`, one key away, it starts a task. D80's planned row actions give
+  the dashboard `s` = start, which would settle it. Until then the `pick` key bar says
+  `s start` on every row.
+- **The cursor `▸` and the running mark `▶` are one shape at two sizes.** They sit in
+  different columns, and the cursor row's title is bold. The dashboard's TASKS panel
+  draws the same pair.
+- **The dashboard's own `⏎` overlay** (D62) is still a card of its own, not D122's.
+- **Dates are UTC calendar days,** as on every surface (`due_cell`). The card is rendered
+  against the instant the screen opened, so a screen left open past midnight keeps its
+  day words until it is reopened.
+- **An empty working set is still a refusal**, not an empty screen (D55).
+- **Editing and completing in place** stay deferred (§11a).
+
+**Where:** `crates/tasqx-cli/src/tui/pick.rs` (rewritten), `tui/pick/tests.rs` (new), `tui.rs`
+(`painted_line`, `rt_style`'s `NO_COLOR` dim, `footer_spans`' ASCII arrows), `tui/fuzzy.rs`
+(`score_name`, `WHOLE_BONUS`), `tui/memory.rs`, `render.rs` (`row_line_at`; `TaskRow`,
+`TaskCols`, `task_row`, `header_line` and `table_summary` opened to the crate),
+`pick_screen.rs` (`pick_candidates`, `merge_pages`, the card read, `picked_summary`; D101's
+stand-in deleted), `dashboard_screen.rs`, `tui/dashboard.rs` (the `p` help), `cmddoc.rs`,
+`command.rs` (the `-h` text), `docs.rs` (the key tables, generated from the screen's own),
+`README.md`, `docs/wiki/`, `docs/terminal-style.md`, `docs/agents/carry-the-style.md`, and
+§5, §8 and §11 above.

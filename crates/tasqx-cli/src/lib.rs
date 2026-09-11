@@ -1678,14 +1678,14 @@ mod tests {
         Ctx::new(theme::load("nord", None), Caps::PLAIN)
     }
 
-    /// The flattening from a `task.list` answer to screen rows. Every field on
-    /// this screen decides which task the user starts, and the whole path
-    /// around it needs a real terminal — so a mapping that read `id` where it
-    /// meant `short_id`, or dropped the project, would leave the suite green
-    /// with the chooser unusable. That is the hole `settings_rows` was pulled
-    /// out of `run_config_edit` to close, one screen over.
+    /// The mapping from a `task.list` answer to screen rows. Every row on this
+    /// screen decides which task `s` starts, and the whole path around it
+    /// needs a real terminal — so a mapping that read `id` where it meant
+    /// `short_id` would leave the suite green with the browser unusable. What
+    /// the row DRAWS is `list`'s renderer's business now (D123), tested in
+    /// `tui::pick`; what this pins is identity.
     #[test]
-    fn pick_rows_carry_every_field_the_screen_tells_tasks_apart_by() {
+    fn pick_rows_carry_the_identity_the_screen_starts_by() {
         let listed = json!({ "tasks": [
             { "short_id": 42, "id": "uuid-not-this-one", "title": "Ship the freeze",
               "project": "work.tasqx", "priority": "H", "urgency": 11.84,
@@ -1694,38 +1694,31 @@ mod tests {
         ]});
         let rows = pick_rows(&listed);
         assert_eq!(rows.len(), 2);
-
         assert_eq!(rows[0].short_id, 42, "the ref must be the short_id");
         assert_eq!(rows[0].title, "Ship the freeze");
-        assert_eq!(rows[0].project, "work.tasqx");
-        assert_eq!(rows[0].priority, "H");
-        assert_eq!(rows[0].urgency, "11.8", "urgency is shown to one decimal");
-        assert_eq!(rows[0].tags, "release api");
-
-        // A task missing the optional fields is still a pickable row, and its
-        // priority reads as a fact rather than as a blank cell.
+        // A task missing the optional fields is still a pickable row.
         assert_eq!(rows[1].short_id, 7);
-        assert_eq!(rows[1].priority, "-");
-        assert_eq!(rows[1].urgency, "0.0");
-        assert!(rows[1].project.is_empty() && rows[1].tags.is_empty());
     }
 
-    /// #205: the running task has to be identifiable from the `task.list`
-    /// answer alone, with no second call — `status` is a default field
-    /// (`task_to_json` always includes it; only `depends_on` is gated behind
-    /// `fields`, D70), so `pick_rows` reads it directly rather than issuing a
-    /// `task.get` per row to ask "is this the one with an open timer".
+    /// D123: the browser reads the whole candidate set, not `task.list`'s
+    /// first page (D110's default of 100): a search cannot find what was
+    /// never read, and `100 tasks` over a larger set is rule 10 broken.
     #[test]
-    fn pick_rows_mark_the_task_task_list_reports_as_active() {
-        let listed = json!({ "tasks": [
-            { "short_id": 42, "title": "Running now", "status": "active" },
-            { "short_id": 7, "title": "Not running", "status": "pending" },
-        ]});
-        let rows = pick_rows(&listed);
-        assert!(rows[0].active, "status:active must mark the row active");
-        assert!(
-            !rows[1].active,
-            "a pending task must not be marked as the running one"
+    fn pick_reads_every_page_of_its_candidates() {
+        let e = tasqx_core::Engine::open_in_memory().unwrap();
+        // Past two pages of 200 and past D110's 100, so neither one call at
+        // the page size nor one at D110's default can pass for the loop.
+        for i in 0..450 {
+            e.task_add(&json!({ "title": format!("task {i}") }))
+                .unwrap();
+        }
+        let mut be = Backend::Local(e);
+        let listed = candidates_in_pages(&mut be, "@working", 200).unwrap();
+        assert_eq!(pick_rows(&listed).len(), 450);
+        assert_eq!(
+            listed["count"],
+            json!(450),
+            "the count is the set, not a page"
         );
     }
 
@@ -1783,134 +1776,65 @@ mod tests {
         assert!(!tui::is_interactive_with(&plain_ctx().caps, false, true));
     }
 
-    /// The scrollback line `pick` leaves once the alt screen is gone. It has to
-    /// NAME the task: `render::started` prints "Started task · timer running"
-    /// and nothing else, which is right for `tasqx start 42` — the user typed
-    /// the ref — and leaves an interactive session with no record of which task
-    /// it started. This is the only reachable test of that line; the rest of
-    /// `run_pick` needs a real terminal.
+    /// The scrollback `pick` leaves once the alt screen is gone has to NAME
+    /// the task it started — an interactive session must leave a record of
+    /// which one — and, since #75, `task.start` names it and what it
+    /// auto-stopped itself, so the line says each thing ONCE (D123). It named
+    /// the task twice, and D101's stand-in said the stop twice with two
+    /// different durations (rule 11).
     #[test]
-    fn the_pick_summary_names_the_task_it_started() {
-        let started = json!({ "id": "0199-uuid", "interval_started": "2026-08-03T10:00:00Z" });
-        let text = picked_summary(&plain_ctx(), 42, "Ship the v1 JSON API freeze", &started);
-        assert!(text.contains("#42"), "{text}");
-        assert!(text.contains("Ship the v1 JSON API freeze"), "{text}");
-        assert!(
-            text.contains("Started"),
-            "the timer line must survive too: {text}"
-        );
-        assert!(text.ends_with('\n'), "{text:?}");
-    }
-
-    /// #205: the task `task.start` is about to auto-stop (D6) has to be found
-    /// BEFORE the write runs — `task.start`'s own answer says nothing about
-    /// it (#75) — and the task being chosen must never appear in that list:
-    /// starting an already-active task is idempotent in the engine (nothing
-    /// stops), so reporting it as "stopped" would be a confirmation that lies.
-    #[test]
-    fn active_before_excludes_the_task_about_to_be_started() {
-        let listed = json!({ "tasks": [
-            { "short_id": 122, "active_since": "2026-09-09T09:00:00Z" },
-            { "short_id": 128, "active_since": "2026-09-09T10:00:00Z" },
-        ]});
-        assert_eq!(
-            active_before(&listed, 128),
-            vec![(122, "2026-09-09T09:00:00Z".to_string())],
-            "#128 is the one being started — it must not name itself as stopped"
-        );
-        assert!(
-            active_before(&json!({ "tasks": [] }), 128).is_empty(),
-            "nothing running is the common case and must report nothing"
-        );
-    }
-
-    /// The elapsed time in the confirmation has to be the exact duration the
-    /// engine itself closed the interval over — `active_since` (read moments
-    /// before `task.start`) to `interval_started` (that same call's own
-    /// answer, the identical instant `task.start` used to stop the OTHER
-    /// task) — not a second, client-side clock reading.
-    #[test]
-    fn elapsed_seconds_reads_two_rfc3339_instants() {
-        assert_eq!(
-            elapsed_seconds("2026-09-09T09:00:00Z", "2026-09-09T11:23:21Z"),
-            Some(2 * 3600 + 23 * 60 + 21)
-        );
-        assert_eq!(
-            elapsed_seconds("not-a-timestamp", "2026-09-09T11:23:21Z"),
-            None,
-            "an unparseable instant must say nothing rather than guess"
-        );
-    }
-
-    /// The stop line has to name WHICH task it stopped and for how long — a
-    /// bare "Stopped" is the same invisible-field failure the rest of this
-    /// screen keeps fixing, just for a fact the user cannot get back later.
-    #[test]
-    fn displaced_summary_names_the_stopped_task_and_its_tracked_time() {
-        let text = displaced_summary(&plain_ctx(), 122, 2 * 3600 + 23 * 60 + 21);
-        assert!(text.contains("Stopped"), "{text}");
-        assert!(text.contains("#122"), "{text}");
-        assert!(text.contains("2h23"), "{text}");
-        assert!(text.ends_with('\n'), "{text:?}");
-    }
-
-    /// The end-to-end shape #205 asks for: a running task auto-stopped by a
-    /// pick has to be named ABOVE the started task, not silently folded away.
-    /// `run_pick` itself needs a real terminal and a `Backend`, so this
-    /// composes the same three pure pieces it calls, in the same order.
-    #[test]
-    fn the_confirmation_names_the_stopped_task_above_the_started_one() {
-        let before_active = json!({ "tasks": [
-            { "short_id": 122, "active_since": "2026-09-09T09:00:00Z" },
-        ]});
-        let displaced = active_before(&before_active, 128);
-        let started = json!({ "id": "uuid", "interval_started": "2026-09-09T11:23:21Z" });
-        let started_at = started["interval_started"].as_str().unwrap();
-
-        let mut text = String::new();
-        for (id, since) in &displaced {
-            let secs =
-                elapsed_seconds(since, started_at).expect("both instants here are valid RFC 3339");
-            text.push_str(&displaced_summary(&plain_ctx(), *id, secs));
-        }
-        text.push_str(&picked_summary(&plain_ctx(), 128, "Next task", &started));
-
-        assert!(text.contains("Stopped"), "{text}");
-        assert!(text.contains("#122"), "{text}");
-        assert!(text.contains("2h23"), "{text}");
-        assert!(text.contains("Started"), "{text}");
-        assert!(text.contains("#128"), "{text}");
+    fn the_pick_summary_says_each_thing_once() {
+        let started = json!({
+            "id": "0199-uuid", "short_id": 48, "title": "Renew the TLS certificate",
+            "status": "active", "interval_started": "2026-08-03T10:00:00Z",
+            "already_running": false,
+            "auto_stopped": [{ "id": "u", "short_id": 49, "tracked": "PT2H23M" }],
+        });
+        let text = picked_summary(&plain_ctx(), &started);
+        assert_eq!(text.matches("#48").count(), 1, "{text}");
+        assert_eq!(text.matches("Stopped").count(), 1, "{text}");
+        assert!(text.contains("Renew the TLS certificate"), "{text}");
+        // #205's shape, kept: the stopped task is named, with its time, ABOVE
+        // the task that was started.
+        assert!(text.contains("#49") && text.contains("2h"), "{text}");
         assert!(
             text.find("Stopped").unwrap() < text.find("Started").unwrap(),
             "the stop line must print ABOVE the start line: {text}"
         );
     }
 
-    /// The common case — nothing was running — must be byte-for-byte the OLD
-    /// summary. #205's fix must not print an empty "Stopped" line, or a
-    /// header naming nothing, when `active_before` finds no candidate.
+    /// Nothing was running: no stop line, and no header naming nothing.
     #[test]
     fn no_displaced_task_means_no_stop_line_at_all() {
-        let displaced = active_before(&json!({ "tasks": [] }), 128);
-        assert!(displaced.is_empty());
-        let started = json!({ "id": "uuid", "interval_started": "2026-08-03T10:00:00Z" });
-        let mut text = String::new();
-        for (id, since) in &displaced {
-            let secs = elapsed_seconds(since, "2026-08-03T10:00:00Z").unwrap();
-            text.push_str(&displaced_summary(&plain_ctx(), *id, secs));
-        }
-        text.push_str(&picked_summary(
-            &plain_ctx(),
-            128,
-            "Ship the freeze",
-            &started,
-        ));
+        let started = json!({
+            "id": "uuid", "short_id": 128, "title": "Next task",
+            "interval_started": "2026-08-03T10:00:00Z", "auto_stopped": [],
+        });
+        let text = picked_summary(&plain_ctx(), &started);
         assert!(!text.contains("Stopped"), "{text}");
-        assert_eq!(
-            text,
-            picked_summary(&plain_ctx(), 128, "Ship the freeze", &started),
-            "identical to the pre-#205 summary when nothing was displaced"
+        assert!(
+            text.contains("#128") && text.contains("Next task"),
+            "{text}"
         );
+    }
+
+    /// Pages read at different instants can overlap when a write lands
+    /// between them; a task is kept once, where it first appeared.
+    #[test]
+    fn pages_that_overlap_keep_each_task_once() {
+        let pages = [
+            json!({ "tasks": [{ "short_id": 1 }, { "short_id": 2 }] }),
+            json!({ "tasks": [{ "short_id": 2 }, { "short_id": 3 }] }),
+        ];
+        let merged = merge_pages(&pages);
+        let ids: Vec<i64> = merged["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["short_id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(merged["count"], json!(3));
     }
 
     /// `--json` must carry the identity of the task that was picked. The method
