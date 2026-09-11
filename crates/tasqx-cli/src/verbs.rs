@@ -128,27 +128,56 @@ pub(crate) fn run_add(
     let result = be
         .call("task.add", &params)
         .map_err(|e| name_the_cut(e, cut.as_deref()))?;
-    // The interactive echo is a card (D76), and the card wants fields
-    // `task.add`'s frozen five-field result does not carry — tags, due,
-    // priority, estimate — so this path reads the task back, the same
-    // composite shape `modify` uses for its follow-up `tag.add`. Only on the
-    // card path: the plain line renders from the add result alone, byte for
-    // byte as it always has. A failed read-back falls back to that plain
-    // line rather than erroring — the add succeeded, and the echo failing
-    // must not turn that into a red exit.
-    let full = if ctx.caps.unicode {
-        result
-            .get("short_id")
-            .and_then(Value::as_i64)
-            .and_then(|sid| be.call("task.get", &json!({ "ref": sid })).ok())
-    } else {
-        None
-    };
-    let text = match full {
-        Some(task) => render::task_added_card(ctx, &task, jiff::Timestamp::now()),
-        None => render::task_added(ctx, &result, &parsed.title),
-    };
+    // The echo is `add`'s card (D122, D126) on both paths, and the card
+    // wants fields `task.add`'s frozen five-field result does not carry —
+    // tags, due, priority, estimate — so the task is read back, the same
+    // composite shape `modify` uses for its follow-up `tag.add`. A failed
+    // read-back falls back to the result plus the title that was typed: the
+    // add succeeded, and the echo failing must not turn that into a red exit.
+    let mut fallback = result.clone();
+    fallback["title"] = Value::String(parsed.title.clone());
+    let task = read_back(be, &result).unwrap_or(fallback);
+    let text = render::added(ctx, &task, jiff::Timestamp::now());
     Ok((result, text))
+}
+
+/// The task a write just touched, as `task.get` reads it back (D126): the
+/// echo is a card, and D56 froze the write results without the facts a card
+/// draws. `None` when the read fails; every caller then renders from the
+/// write's own result rather than erroring, since the write succeeded.
+pub(crate) fn read_back(be: &mut Backend, result: &Value) -> Option<Value> {
+    result
+        .get("short_id")
+        .and_then(Value::as_i64)
+        .and_then(|sid| be.call("task.get", &json!({ "ref": sid })).ok())
+}
+
+/// The titles of the other tasks a write moved (auto-stopped, released,
+/// re-blocked), for the lines under its card. A task that cannot be read
+/// prints its id alone.
+pub(crate) fn titles_of(be: &mut Backend, ids: &[i64]) -> render::Titles {
+    ids.iter()
+        .filter_map(|&n| {
+            let t = be.call("task.get", &json!({ "ref": n })).ok()?;
+            Some((n, t.get("title")?.as_str()?.to_string()))
+        })
+        .collect()
+}
+
+/// The short ids in one array field of a write's result.
+fn ids_in(result: &Value, key: &str, inner: Option<&str>) -> Vec<i64> {
+    result
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| match inner {
+                    Some(k) => v.get(k).and_then(Value::as_i64),
+                    None => v.as_i64(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// `tasqx modify <ref> [words / sugar] [--flags] [--clear FIELD]…`
@@ -271,7 +300,8 @@ pub(crate) fn run_modify(
         }
     }
 
-    let text = render::modified(ctx, &result, &set, &parsed.tags);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let text = render::modified(ctx, &task, &set, &parsed.tags, jiff::Timestamp::now());
     Ok((result, text))
 }
 
@@ -484,14 +514,17 @@ pub(crate) fn run_start(
     let mut params = json!({ "ref": r#ref, "keep": keep });
     apply_correlation(&mut params, correlation);
     let result = be.call("task.start", &params)?;
-    let text = render::started(ctx, &result);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let titles = titles_of(be, &ids_in(&result, "auto_stopped", Some("short_id")));
+    let text = render::started(ctx, &result, &task, &titles, jiff::Timestamp::now());
     Ok((result, text))
 }
 
 pub(crate) fn run_stop(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
     let params = json!({ "ref": r#ref });
     let result = be.call("task.stop", &params)?;
-    let text = render::stopped(ctx, &result);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let text = render::stopped(ctx, &result, &task, jiff::Timestamp::now());
     Ok((result, text))
 }
 
@@ -531,7 +564,19 @@ pub(crate) fn run_done(
     apply_correlation(&mut params, correlation);
     apply_self_report(&mut params, self_report);
     let result = be.call("task.done", &params)?;
-    let text = render::done(ctx, &result);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let titles = titles_of(be, &ids_in(&result, "unblocked", None));
+    let text = render::done(ctx, &result, &task, &titles, jiff::Timestamp::now());
+    // The hint about the write goes to stderr, after the card (D126): the
+    // card is the first thing under the prompt, and core's paragraph was 190
+    // cells of stdout under every completion. `--json` keeps it whole.
+    if let Some(note) = result
+        .get("tokens_hint")
+        .and_then(Value::as_str)
+        .and_then(|h| render::tokens_note(h, ctx.cols))
+    {
+        crate::note_after_output(note);
+    }
     Ok((result, text))
 }
 
@@ -541,7 +586,8 @@ pub(crate) fn run_show(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome
     Ok((result, text))
 }
 
-/// A method taking only `{ref}` and returning `{short_id, status}`.
+/// A method taking only `{ref}` and returning `{short_id, status}`:
+/// `task.cancel` and `task.reopen`, and the dependents each moved.
 pub(crate) fn run_simple_ref(
     be: &mut Backend,
     ctx: &Ctx,
@@ -549,7 +595,16 @@ pub(crate) fn run_simple_ref(
     r#ref: String,
 ) -> CmdOutcome {
     let result = be.call(method, &json!({ "ref": r#ref }))?;
-    let text = render::status_line(ctx, &result);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let mut moved = ids_in(&result, "unblocked", None);
+    moved.extend(ids_in(&result, "blocked", None));
+    let titles = titles_of(be, &moved);
+    let verb = match method {
+        "task.cancel" => "cancelled",
+        "task.reopen" => "reopened",
+        other => other,
+    };
+    let text = render::status_changed(ctx, verb, &result, &task, &titles, jiff::Timestamp::now());
     Ok((result, text))
 }
 
@@ -562,7 +617,8 @@ pub(crate) fn run_simple_ref(
 /// against what they actually did.
 pub(crate) fn run_undo(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
     let result = be.call("event.revert", &json!({}))?;
-    let text = render::undone(ctx, &result);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let text = render::undone(ctx, &result, &task, jiff::Timestamp::now());
     Ok((result, text))
 }
 
@@ -574,7 +630,8 @@ pub(crate) fn run_annotate(
 ) -> CmdOutcome {
     let body = text.join(" ");
     let result = be.call("annotation.add", &json!({ "ref": r#ref, "body": body }))?;
-    let out = render::annotated(ctx, &result);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let out = render::annotated(ctx, &result, &task, jiff::Timestamp::now());
     Ok((result, out))
 }
 
@@ -594,7 +651,8 @@ pub(crate) fn run_unannotate(
         "annotation.remove",
         &json!({ "ref": r#ref, "annotation_id": annotation_id }),
     )?;
-    let out = render::annotation_removed(ctx, &result);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let out = render::annotation_removed(ctx, &task, jiff::Timestamp::now());
     Ok((result, out))
 }
 
@@ -618,7 +676,9 @@ pub(crate) fn run_tag(
 ) -> CmdOutcome {
     let names = sugar::tag_arguments(tags)?;
     let result = be.call(method, &json!({ "ref": r#ref, "tags": names }))?;
-    let text = render::tag_result(ctx, &result, method == "tag.add", &names);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let now = jiff::Timestamp::now();
+    let text = render::tag_changed(ctx, &result, &task, method == "tag.add", &names, now);
     Ok((result, text))
 }
 
@@ -630,7 +690,16 @@ pub(crate) fn run_dep(
     depends_on: String,
 ) -> CmdOutcome {
     let result = be.call(method, &json!({ "ref": r#ref, "depends_on": depends_on }))?;
-    let text = render::dep_result(ctx, &result, method == "dependency.add", &depends_on);
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let added = method == "dependency.add";
+    let text = render::dep_changed(
+        ctx,
+        &result,
+        &task,
+        added,
+        &depends_on,
+        jiff::Timestamp::now(),
+    );
     Ok((result, text))
 }
 
@@ -1052,8 +1121,8 @@ pub(crate) fn run_export(be: &mut Backend, filter: &[String]) -> CmdOutcome {
         .unwrap_or(0);
     if dropped > 0 {
         eprintln!(
-            "note: dropped {dropped} dependency edge(s) pointing outside the exported set; \
-             widen the filter to keep them"
+            "{}",
+            render::export_note(dropped, crate::theme::detect_cols())
         );
     }
     // Human output IS the canonical JSON document (git-diffable, greppable).
@@ -1072,7 +1141,7 @@ pub(crate) fn run_export(be: &mut Backend, filter: &[String]) -> CmdOutcome {
     Ok((result, text))
 }
 
-pub(crate) fn run_import(be: &mut Backend, file: String) -> CmdOutcome {
+pub(crate) fn run_import(be: &mut Backend, ctx: &Ctx, file: String) -> CmdOutcome {
     let raw = if file == "-" {
         let mut s = String::new();
         std::io::stdin()
@@ -1121,53 +1190,7 @@ pub(crate) fn run_import(be: &mut Backend, file: String) -> CmdOutcome {
         Value::Null => return Err(shape("the top level is JSON null")),
     };
     let result = be.call("store.import", &params)?;
-    let n = result.get("imported").and_then(Value::as_i64).unwrap_or(0);
-    let p = result
-        .get("projects_imported")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    // A project row the caller did not send is a write they did not ask for, so
-    // it is named on the human surface too, not only in the JSON (D37).
-    let minted: Vec<&str> = result
-        .get("projects_created")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-    let d = result
-        .get("docs_imported")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    // #179: PRESENT-and-empty and ABSENT used to print the identical line —
-    // dropping the segment whenever `d == 0` made a `docs` typo (or an older
-    // exporter's document) that silently restored zero memory docs read
-    // exactly like a legacy document that never had any. D39: `docs_imported`
-    // is computed and returned, so a human surface must render it, always —
-    // the omission is what made D41's export completeness unobservable.
-    let mut text = format!("Imported {n} task(s), {p} project(s), {d} memory doc(s)\n");
-    // The PRESENCE half `projects` already gets below: a document that never
-    // declared a `docs` section at all (a pre-D41 export, or a typo'd key)
-    // is named by the same shape, so the reader learns WHY it was zero
-    // instead of just that it was.
-    if !result
-        .get("docs_declared")
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
-    {
-        text.push_str(
-            "note: the document carried no `docs` section, so no memory docs were restored\n",
-        );
-    }
-    if !minted.is_empty() {
-        text.push_str(&format!(
-            "note: the document carried no `projects` section, so {} created from the tasks: {}\n",
-            if minted.len() == 1 {
-                "1 project was"
-            } else {
-                "projects were"
-            },
-            minted.join(", ")
-        ));
-    }
+    let text = render::imported(ctx, &result);
     Ok((result, text))
 }
 

@@ -279,6 +279,26 @@ impl Exit {
     }
 }
 
+thread_local! {
+    /// Lines a verb wants on stderr AFTER its stdout rendering: see
+    /// [`note_after_output`].
+    static NOTES_AFTER: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue a note for stderr, printed once the command's stdout rendering has
+/// been written (D126). A write's echo is a card, and the card is the first
+/// thing under the prompt; a note printed while the verb runs would land above
+/// it on a terminal, because stderr is written at once and stdout only at the
+/// end of [`run`]. Dropped under `--json`, where the result carries the same
+/// text in full.
+pub(crate) fn note_after_output(note: String) {
+    NOTES_AFTER.with(|n| n.borrow_mut().push(note));
+}
+
+fn take_notes() -> Vec<String> {
+    NOTES_AFTER.with(|n| std::mem::take(&mut *n.borrow_mut()))
+}
+
 /// Write a finished rendering to stdout, tolerating a reader that stops early.
 ///
 /// NOT `print!`: that panics if stdout closes mid-write, and several of the
@@ -388,6 +408,12 @@ pub fn run() {
                 ));
             } else {
                 emit(&render);
+            }
+            let notes = take_notes();
+            if !json {
+                for note in notes {
+                    eprintln!("{note}");
+                }
             }
             // D57, and it sits HERE for the same reason the JSON terminal does:
             // one place every command passes through. Only on the success arm —
@@ -939,7 +965,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Memory { action }) => run_memory(&mut backend, &ctx, &action),
         Some(Command::Tokens { action }) => run_tokens(&mut backend, &ctx, &action),
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
-        Some(Command::Import { file }) => run_import(&mut backend, file),
+        Some(Command::Import { file }) => run_import(&mut backend, &ctx, file),
         Some(Command::Next { filter }) => run_next(&mut backend, &ctx, &filter),
         Some(Command::Pick { filter }) => run_pick(&mut backend, &ctx, &filter),
         Some(Command::Why { r#ref }) => run_why(&mut backend, &ctx, r#ref),
@@ -1798,7 +1824,7 @@ mod tests {
         // the task that was started.
         assert!(text.contains("#49") && text.contains("2h"), "{text}");
         assert!(
-            text.find("Stopped").unwrap() < text.find("Started").unwrap(),
+            text.find("Stopped").unwrap() < text.find("started").unwrap(),
             "the stop line must print ABOVE the start line: {text}"
         );
     }

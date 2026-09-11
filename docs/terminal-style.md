@@ -10,9 +10,10 @@ of them — the gauge's resolution and its inverted ranking — could not have b
 found any other way. §14 is the loop that makes that cheap.
 
 `list`, `agenda`, the dashboard, the memory browser, `memory search`,
-`pick`, `show`, `next`, `why`, `add`'s echo, `projects`, `report`,
-`theme list`, `theme show` and `tasqx manual` carry the style.
-`config list`, `tokens recompute` and the write echoes do not yet.
+`pick`, `show`, `next`, `why`, `projects`, `report`, `theme list`,
+`theme show`, `tasqx manual` and the write echoes (`add` and every verb that
+changes something, D126) carry the style. `config list` and `tokens recompute`
+do not yet.
 The manual, the one screen that is mostly prose, adds conventions of its own
 (a prose measure, two heading levels, copied code never split); they are
 written down in `crates/tasqx-cli/src/manual.rs`'s module doc, and named by
@@ -257,6 +258,12 @@ terminal drew them plain. `snap-tui.sh` now rewrites SGR 39 to freeze's own
 default foreground before rendering. If a colour still looks as if it bled,
 read the ANSI (`tmux capture-pane -p -e | cat -v`) before filing it.
 
+A second trap: freeze draws SGR 1 at normal weight (its SVG says
+`font-weight: normal`), so nothing is bold in its pictures. Where bold carries
+meaning — on the write echoes it means "this write changed it", and under
+`NO_COLOR` it is the only emphasis left — judge the screen from an HTML render
+of the same ANSI instead, rasterized the same way.
+
 ---
 
 ## Contract
@@ -283,7 +290,6 @@ leaving a guide describing a screen that no longer exists.
 - `config list` and `tokens recompute` — not judged as images. `config list`
   fits the width (D120) and takes `table.label`; `tokens recompute` still
   counts `N task(s)`.
-- The write echoes (`start`, `done`, `modify`, …), family C (#348).
 - The dashboard carries it. The disagreement its spec had with rule 4 (`⛔` for
   blocked where this file says `⊘`) is settled in favour of `⊘`, which is what
   `list`, `agenda` and TASKS all now draw.

@@ -14,6 +14,9 @@ use serde_json::{json, Value};
 use crate::theme::Ctx;
 use crate::AGENDA_MAX_DAYS;
 
+mod echo;
+pub use echo::*;
+
 /// Strip terminal-control bytes from untrusted text before it is painted, so an
 /// imported or agent-authored task field can't smuggle ANSI/OSC escapes that
 /// clear the screen, move the cursor, set the window title, or spoof CLI output.
@@ -119,388 +122,6 @@ fn onboarding_hint(ctx: &Ctx) -> String {
 
 fn s(v: &Value, key: &str) -> String {
     san(v.get(key).and_then(Value::as_str).unwrap_or(""))
-}
-
-/// D21: the trailer is driven by the `default` field the core returns, not
-/// printed unconditionally. `project.create` claims the default only when the
-/// store has none, so this line was a lie on every `init` but the first.
-pub fn project_created(ctx: &Ctx, result: &Value) -> String {
-    let name = s(result, "name");
-    let became_default = result
-        .get("default")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let trailer = if became_default {
-        "  ·  now your default project".to_string()
-    } else {
-        // Name the verb that would do it: the user's complaint was being left
-        // with no way to steer this and no hint that one existed.
-        //
-        // #229 item 13: `name` is quoted here (`filter::quote`'s own
-        // "quotes unconditionally" rule — a project name may hold padding or
-        // spaces D36 keeps verbatim, e.g. `init " padded "`) so the printed
-        // command is always one the shell can carry back in, rather than a
-        // bare word that drops the very whitespace `tasqx use` needs to see.
-        format!(
-            "  ·  default is still {}  (tasqx use {})",
-            default_label(ctx, result),
-            tasqx_core::filter::quote(&name)
-        )
-    };
-    format!(
-        "{} created{trailer}\n",
-        ctx.paint("accent", &format!("Project {name}"))
-    )
-}
-
-/// The name of the default at the time of a `project.create` that did not claim
-/// it. The core reports it on the same result so the CLI never has to guess.
-fn default_label(ctx: &Ctx, result: &Value) -> String {
-    match result.get("current_default").and_then(Value::as_str) {
-        Some(d) => ctx.paint("project", &san(d)),
-        None => "unset".to_string(),
-    }
-}
-
-/// D21: `use` moved the default. Both sides are printed — the new one because
-/// it is the answer, the old one because a silent switch is the bug.
-pub fn default_switched(ctx: &Ctx, result: &Value) -> String {
-    let name = s(result, "name");
-    let previous = result
-        .get("previous")
-        .and_then(Value::as_str)
-        .filter(|p| !p.is_empty());
-    let trailer = match previous {
-        Some(p) => format!("  ·  was {}", ctx.paint("project", &san(p))),
-        None => String::new(),
-    };
-    format!(
-        "{}  ·  a bare `tasqx add` lands here{trailer}\n",
-        ctx.paint("accent", &format!("Default project is now {name}"))
-    )
-}
-
-/// D22/D89: `archive` retired a project, may have un-pointed the default doing
-/// it, and may have left open work fully live inside a project no read surface
-/// but `tasqx list project:<name>`/`--all` mentions again. All three facts go
-/// on the line.
-///
-/// The default-clearing branch is the whole reason this function is not a
-/// one-liner. `project.archive` clears the `default_project` key when it
-/// archives the project that key names, so a single `tasqx archive work` can
-/// change where every future bare `tasqx add` lands — and D22 wrote, before any
-/// terminal copy existed, that when a CLI verb landed it would render
-/// `default_cleared`. Printing only "Project work archived" would leave the user
-/// to discover the move by finding their next task in no project at all.
-///
-/// The other branch is stated rather than implied for the D39 reason: "Project
-/// work archived" alone is also exactly what the cleared case would print, so
-/// silence cannot be read as "the default is fine". Both outcomes name
-/// themselves, and `default_cleared` — a field the core always sends, never
-/// omits — decides which.
-///
-/// D89's addition is the same move at a second field: `open_tasks`/
-/// `open_overdue` are counted by `project.archive` itself and never omitted, so
-/// "Project acme archived · your default project is unchanged" used to be the
-/// entire line for a project holding an overdue, high-priority task — the one
-/// moment a user is thinking about this project is the one line that said
-/// nothing about the work still sitting in it. `open_tasks == 0` prints exactly
-/// the old copy, unchanged: a project archived with nothing left behind has
-/// nothing new to say.
-pub fn project_archived(ctx: &Ctx, result: &Value) -> String {
-    let name = s(result, "name");
-    let cleared = result
-        .get("default_cleared")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let open = result
-        .get("open_tasks")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let overdue = result
-        .get("open_overdue")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-
-    // Name the verb that points the default somewhere again: a store with no
-    // default is a valid state (D22), but it is one the user has to be able to
-    // leave, and `use` is the only way out.
-    let default_clause = if cleared {
-        "it was your default project, so a bare `tasqx add` has no home until `tasqx use <project>`"
-    } else {
-        "your default project is unchanged"
-    };
-
-    let trailer = if open > 0 {
-        // Noun and verb both carry the plural — pluralizing "task" and leaving
-        // "remain" hardcoded reads as "1 open task remain", which is not
-        // English (caught in review of D89's first draft).
-        let (noun, verb) = if open == 1 {
-            ("task", "remains")
-        } else {
-            ("tasks", "remain")
-        };
-        let overdue_part = if overdue > 0 {
-            format!(" ({overdue} overdue)")
-        } else {
-            String::new()
-        };
-        format!(
-            "  ·  {open} open {noun}{overdue_part} {verb} — `tasqx list project:{name}`  ·  {default_clause}"
-        )
-    } else {
-        format!("  ·  {default_clause}")
-    };
-
-    format!(
-        "{}{trailer}\n",
-        ctx.paint("accent", &format!("Project {name} archived"))
-    )
-}
-
-pub fn task_added(ctx: &Ctx, result: &Value, title: &str) -> String {
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-    let status = s(result, "status");
-    // D21: name where it landed. With no explicit `project:`, the task inherits
-    // the default, and this is the only place the user finds out which project
-    // that was — "silently lands in prive.klussen" is this text not existing.
-    // Finding #10 (audit-2026-09): a bare `add` with no default project set
-    // used to just omit the ` · <project>` suffix — the only tell that the
-    // task landed nowhere, in a line read a hundred times a day. State it.
-    let proj = match result
-        .get("project")
-        .and_then(Value::as_str)
-        .filter(|p| !p.is_empty())
-    {
-        Some(p) => format!("  ·  {}", ctx.paint("project", &san(p))),
-        None => "  ·  no project (set one with `tasqx use <project>`)".to_string(),
-    };
-    format!(
-        "{}  ·  {status}  ·  urgency {urg:.1}{proj}\n  {}\n",
-        ctx.paint("accent", &format!("Added #{sid}")),
-        san(title)
-    )
-}
-
-/// A duration in `90h15m` / `2h` / `30s` form: hours, minutes, seconds, each
-/// omitted when zero, with no separators — the same glued shape
-/// `datetime::parse_duration` accepts back in. Finding #3 (audit-2026-09):
-/// `start`/`stop`/`done` never rendered a human-readable duration, leaving raw
-/// ISO-8601 (`PT30S`) on the one surface a reader actually looks at.
-fn human_duration(iso: &str) -> String {
-    let secs = tasqx_core::util::duration_secs(iso).unwrap_or(0).max(0);
-    if secs == 0 {
-        return "0s".to_string();
-    }
-    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
-    let mut out = String::new();
-    if h > 0 {
-        out.push_str(&format!("{h}h"));
-    }
-    if m > 0 {
-        out.push_str(&format!("{m}m"));
-    }
-    if s > 0 {
-        out.push_str(&format!("{s}s"));
-    }
-    out
-}
-
-/// `#id title`, sanitized — the name every start/stop/done confirmation now
-/// echoes (finding #3) so a success line naming the wrong task is visible
-/// immediately instead of one command later, at `tasqx show`.
-fn task_ref_line(ctx: &Ctx, result: &Value) -> String {
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let title = s(result, "title");
-    format!("{}  {title}", ctx.paint("accent", &format!("#{sid}")))
-}
-
-pub fn started(ctx: &Ctx, result: &Value) -> String {
-    let started = s(result, "interval_started");
-    // Finding #9 (audit-2026-09): `start` on an already-running task answered
-    // exactly the same "Started" line as a genuine start — the same instant
-    // in `since`, so nothing was lost, but the word claims an action that did
-    // not happen. For a human re-running a lost command that reads as a
-    // heart-attack: the timer LOOKS reset.
-    let already = result
-        .get("already_running")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let mut line = if already {
-        format!(
-            "{}  ·  since {started}\n  {}\n",
-            ctx.paint("timer.active", "Already running"),
-            task_ref_line(ctx, result)
-        )
-    } else {
-        format!(
-            "{}  ·  timer running (since {started})\n  {}\n",
-            ctx.paint("timer.active", "Started"),
-            task_ref_line(ctx, result)
-        )
-    };
-    // #75: D6's single-active rule may have auto-stopped a different task to
-    // make room for this one; say so ABOVE the "Started" line so a session
-    // that just ended a running timer sees that before it sees what it
-    // started instead (same ordering D101's `pick`-screen stand-in used).
-    let stopped_lines: String = result
-        .get("auto_stopped")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .map(|a| {
-            let sid = a.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-            let tracked = a.get("tracked").and_then(Value::as_str).unwrap_or("");
-            format!(
-                "{} #{sid}  ·  tracked {}\n",
-                ctx.paint("timer.active", "Stopped"),
-                human_duration(tracked)
-            )
-        })
-        .collect();
-    if !stopped_lines.is_empty() {
-        line = format!("{stopped_lines}{line}");
-    }
-    line
-}
-
-/// #185: this used to print the interval `stop` had just closed under the
-/// label `tracked` — the same word `show`, `--json` and `report` all use for
-/// the task's *cumulative* total, which this line never showed. A reader
-/// billing by tracked time read "tracked 3s" on a task that in fact carried
-/// an hour, with no way to tell short of a second `show`. `interval` now
-/// names the delta and `tracked` keeps its one meaning everywhere.
-pub fn stopped(ctx: &Ctx, result: &Value) -> String {
-    let interval = s(result, "interval");
-    let tracked = s(result, "tracked");
-    format!(
-        "{}  ·  interval {}  ·  tracked {}\n  {}\n",
-        ctx.paint("timer.active", "Stopped"),
-        human_duration(&interval),
-        human_duration(&tracked),
-        task_ref_line(ctx, result)
-    )
-}
-
-/// The dependents a closing verb just released, or nothing if it released none.
-///
-/// Shared by `done` and `status_line` because BOTH `task.done` and
-/// `task.cancel` return this list from the same helper (`compute_unblocked`),
-/// and only `done` used to render it. D11 makes cancelling a blocker release
-/// its dependents precisely so the graph stays honest, so a `cancel` that
-/// printed `#1 -> cancelled` and nothing else hid the very effect the decision
-/// exists to produce — and hid it from a reader who had already learned from
-/// `done` that a release gets announced, so silence read as "nothing changed".
-///
-/// One helper rather than a second copy: the two verbs answering differently is
-/// the failure, so they cannot have two renderers to drift between. Empty in,
-/// empty out — a verb that released nothing must not claim a heading either.
-fn unblocked_line(ctx: &Ctx, result: &Value) -> String {
-    let refs: Vec<String> = result
-        .get("unblocked")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_i64)
-                .map(|n| format!("#{n}"))
-                .collect()
-        })
-        .unwrap_or_default();
-    if refs.is_empty() {
-        return String::new();
-    }
-    format!(
-        "  {} {}\n",
-        ctx.paint("accent", "now actionable:"),
-        refs.join(" ")
-    )
-}
-
-/// The dependents a reopen just put back into `blocked`, or nothing.
-///
-/// The mirror of [`unblocked_line`], and it exists for the mirror reason: a
-/// reopen changes which work is actionable and used to say nothing about it
-/// (D69). Keyed on the `blocked` list, which only `task.reopen` returns, so the
-/// shared `status_line` stays correct for `task.cancel` without a list of which
-/// verbs re-block.
-fn reblocked_line(ctx: &Ctx, result: &Value) -> String {
-    let refs: Vec<String> = result
-        .get("blocked")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_i64)
-                .map(|n| format!("#{n}"))
-                .collect()
-        })
-        .unwrap_or_default();
-    if refs.is_empty() {
-        return String::new();
-    }
-    format!(
-        "  {} {}
-",
-        ctx.paint("accent", "back to blocked:"),
-        refs.join(" ")
-    )
-}
-
-pub fn done(ctx: &Ctx, result: &Value) -> String {
-    let completed = s(result, "completed");
-    // Finding #3 (audit-2026-09): name the task, and — when it carried an
-    // estimate — the comparison that is the entire payoff of typing `est:2h`
-    // at capture time.
-    let tracked_vs_estimate = match result.get("estimate").and_then(Value::as_str) {
-        Some(est) if !est.is_empty() => format!(
-            "  ·  tracked {} of a {} estimate",
-            human_duration(&s(result, "tracked")),
-            human_duration(est)
-        ),
-        _ => String::new(),
-    };
-    let mut out = format!(
-        "{}  ·  completed {completed}{tracked_vs_estimate}\n  {}\n",
-        ctx.paint("timer.active", "Done"),
-        task_ref_line(ctx, result)
-    );
-    out.push_str(&unblocked_line(ctx, result));
-    // A recurring task spawns its next instance on completion (DESIGN §10, D2).
-    if let Some(sp) = result.get("spawned") {
-        let sid = sp.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-        let when = sp
-            .get("due")
-            .and_then(Value::as_str)
-            .or_else(|| sp.get("scheduled").and_then(Value::as_str))
-            .unwrap_or("");
-        let tail = if when.is_empty() {
-            String::new()
-        } else {
-            format!(" due {when}")
-        };
-        out.push_str(&format!(
-            "  {} #{sid}{tail}\n",
-            ctx.paint(
-                "accent",
-                if ctx.caps.unicode {
-                    "\u{21b3} next:"
-                } else {
-                    "-> next:"
-                }
-            )
-        ));
-    }
-    // #214/D50: a completion with no self-report carries a `tokens_hint`
-    // teaching the ONE thing that makes tasqx's headline feature work — and
-    // the CLI used to generate it and then throw it away. `muted`, and
-    // rendered exactly once (the response carries at most one), so it reads
-    // as a footnote rather than competing with the completion line above it.
-    if let Some(hint) = result.get("tokens_hint").and_then(Value::as_str) {
-        out.push_str(&ctx.paint("muted", hint));
-        out.push('\n');
-    }
-    out
 }
 
 /// One row of the `task.list` table, as plain text — measured, not yet painted.
@@ -2767,7 +2388,8 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
 // The task card (D76)
 // ============================================================================
 //
-// The interactive echo of `add` and the interactive body of `show`. Gated on
+// The interactive body of `show` (the write echoes, `add`'s among them, are
+// built in `echo`, D126). Gated on
 // `caps.unicode` — true exactly when stdout is a VT-capable terminal — so
 // every piped, dumb-terminal and legacy-console caller keeps the byte-stable
 // plain rendering above, and a script diffing two runs sees what it always
@@ -2775,112 +2397,6 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
 // stdin too because it reads keys, and that stricter gate must not be copied
 // here. Tones come from the `card.*` roles — see `theme::builtin` for why
 // they are deliberately achromatic in every built-in.
-
-/// The `add` confirmation card (D122, replacing D76's framed card). Takes the
-/// FULL task, a `task.get` result, because `task.add`'s own result carries no
-/// priority or estimate (see `run_add`, which reads the task back on the
-/// interactive path and falls back to the plain line when that read fails).
-///
-/// Two lines in `show`'s visual language: the status rail, `#N` and the title,
-/// then `list`'s urgency cell and the facts a reader just typed, spelled the
-/// way `list` spells them (`due Fri`, `est 3h`). The framed card was a second
-/// visual language for the same object, and it printed `due
-/// 2026-09-18T00:00:00Z` and `est PT3H` back at the person who had typed
-/// `due:friday est:3h`.
-pub fn task_added_card(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
-    let sid = task.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let urg = task.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-    let rail = ctx.paint(rail_role(task), "▌");
-    let avail = ctx.cols.saturating_sub(2).max(20);
-
-    let id = format!("#{sid}");
-    let title = truncate(
-        &s(task, "title"),
-        avail.saturating_sub(width(&id) + 2),
-        true,
-    );
-    let mut out = format!(
-        "{rail} {}  {}\n",
-        ctx.paint("card.label", &id),
-        ctx.paint("card.strong", &title)
-    );
-
-    let prio = task.get("priority").and_then(Value::as_str).unwrap_or("-");
-    let prio_role = match prio {
-        "H" => "priority.H",
-        "M" => "priority.M",
-        "L" => "priority.L",
-        _ => "muted",
-    };
-    let (bar, track) = urgency_meter(urgency_scale(urg));
-    let ramp = ctx.theme.ramp_style(urgency_scale(urg));
-    // Each fact is (rank, plain text for measuring, painted text), taken
-    // whole or not at all so a narrow terminal drops facts rather than
-    // cutting one.
-    //
-    // Ranked as `next` ranks the same facts (`fit_facts`): the urgency cell,
-    // then the deadline, then where the task lives and what it is tagged,
-    // then the estimate and the recurrence. They print in the order the
-    // card has always read.
-    let mut facts: Vec<(u8, String, String)> = vec![(
-        0,
-        format!("{prio} {bar}{track} {urg:.1}"),
-        format!(
-            "{} {}{} {}",
-            ctx.paint(prio_role, prio),
-            ramp.paint(&bar, &ctx.caps),
-            ctx.paint("muted", &track),
-            ramp.paint(&format!("{urg:.1}"), &ctx.caps)
-        ),
-    )];
-    let proj = s(task, "project");
-    if !proj.is_empty() {
-        facts.push((2, proj.clone(), ctx.paint("project", &proj)));
-    }
-    if let Some(tags) = task.get("tags").and_then(Value::as_array) {
-        // `+tag`, the one spelling `list`'s filter grammar reads back (#228.16).
-        let names: Vec<String> = tags
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|t| format!("+{}", san(t)))
-            .collect();
-        if !names.is_empty() {
-            let joined = names.join(" ");
-            facts.push((3, joined.clone(), ctx.paint("tag", &joined)));
-        }
-    }
-    if let Some(due) = field_ts(task, "due") {
-        let cell = due_cell(due, now);
-        facts.push((
-            1,
-            format!("due {cell}"),
-            format!(
-                "{} {}",
-                ctx.paint("card.label", "due"),
-                ctx.paint("card.strong", &cell)
-            ),
-        ));
-    }
-    if !s(task, "estimate").is_empty() {
-        let est = duration_value(ctx, &s(task, "estimate"), now);
-        facts.push((
-            4,
-            format!("est {est}"),
-            format!("{} {est}", ctx.paint("card.label", "est")),
-        ));
-    }
-    if !s(task, "recurrence").is_empty() {
-        let rec = s(task, "recurrence");
-        facts.push((
-            5,
-            format!("↻ {rec}"),
-            format!("{} {rec}", ctx.paint("card.label", "↻")),
-        ));
-    }
-
-    out.push_str(&format!("{rail} {}\n", fit_facts(facts, avail)));
-    out
-}
 
 /// Which parts of a line of facts survive the width, by the one rule every
 /// such line follows (`docs/terminal-style.md` rule 9): the parts are taken
@@ -3242,315 +2758,6 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         }
     }
     out
-}
-
-/// `tasqx modify` — echo back exactly what changed, and at what rev.
-///
-/// The echo is the point: `modify` is the one verb that can quietly do the wrong
-/// thing (a misparsed date, a field cleared that you meant to set), and a bare
-/// "ok" would hide it. Cleared fields print as `field ← (cleared)` so a removal
-/// never reads like a set. Values shown are the RESOLVED ones the core stored —
-/// `due:friday` echoes the timestamp it actually became, which is where a
-/// natural-language misread becomes visible.
-pub fn modified(
-    ctx: &Ctx,
-    result: &Value,
-    set: &serde_json::Map<String, Value>,
-    tags: &[String],
-) -> String {
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let rev = result.get("_rev").and_then(Value::as_i64);
-
-    let mut out = match rev {
-        Some(r) => format!(
-            "{}  ·  rev {r}\n",
-            ctx.paint("accent", &format!("Modified #{sid}"))
-        ),
-        None => format!("{}\n", ctx.paint("accent", &format!("Modified #{sid}"))),
-    };
-
-    // Stable order: whatever the user typed, the report reads the same every time.
-    let mut keys: Vec<&String> = set.keys().collect();
-    keys.sort();
-    for k in keys {
-        let v = &set[k];
-        let shown = if v.is_null() {
-            ctx.paint("muted", "(cleared)")
-        } else {
-            san(v.as_str().unwrap_or(""))
-        };
-        out.push_str(&format!("  {} <- {shown}\n", pad(k, 11)));
-    }
-    if !tags.is_empty() {
-        let all: Vec<String> = result
-            .get("tags")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(|t| format!("+{}", san(t)))
-                    .collect()
-            })
-            .unwrap_or_else(|| tags.iter().map(|t| format!("+{}", san(t))).collect());
-        out.push_str(&format!(
-            "  {} <- {}\n",
-            pad("tags", 11),
-            ctx.paint("tag", &all.join(" "))
-        ));
-    }
-    out
-}
-
-/// The one-line result of a verb that only changes status — and the cascade it
-/// caused, when it caused one.
-///
-/// `unblocked` is appended rather than branched on by verb: the key is present
-/// only when the method returns it (today `task.cancel`), so the shared
-/// renderer stays correct for the verbs that release nothing without needing a
-/// list of which ones those are.
-pub fn status_line(ctx: &Ctx, result: &Value) -> String {
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let mut out = format!(
-        "{}  ->  {}\n",
-        ctx.paint("accent", &format!("#{sid}")),
-        s(result, "status")
-    );
-    out.push_str(&unblocked_line(ctx, result));
-    out.push_str(&reblocked_line(ctx, result));
-    out
-}
-
-pub fn annotated(ctx: &Ctx, result: &Value) -> String {
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let body = san(result
-        .get("annotation")
-        .and_then(|a| a.get("body"))
-        .and_then(Value::as_str)
-        .unwrap_or(""));
-    format!(
-        "{}: {body}\n",
-        ctx.paint("accent", &format!("Annotated #{sid}"))
-    )
-}
-
-/// `tasqx unannotate` (D113). No body to print — the whole point is that it is
-/// gone — so the line names the id that was scrubbed and confirms it is
-/// permanent, the one thing about this call a user cannot learn by trying.
-pub fn annotation_removed(ctx: &Ctx, result: &Value) -> String {
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let id = result
-        .get("removed")
-        .and_then(|r| r.get("id"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    format!(
-        "{}: annotation {} removed — the text is gone from the store, and `undo` does not cover \
-         it\n",
-        ctx.paint("accent", &format!("#{sid}")),
-        ctx.paint("muted", id)
-    )
-}
-
-/// `tasqx undo`.
-///
-/// Names the operation AND the task AND what came back, because "undone" on its
-/// own is the one answer nobody can check: undo takes no argument, so the user
-/// never named the thing it acted on and has only this line to confirm it was
-/// the thing they meant.
-///
-/// The detail line is driven by the reverted op rather than by sniffing which
-/// keys `restored` happens to carry — a response shape that grows a key must not
-/// be able to silently change the sentence. An op this build has no phrasing for
-/// still prints its `restored` object rather than nothing: a new entry in the
-/// core's closed set would otherwise reach the terminal as a blank second line,
-/// which reads as "it restored nothing".
-pub fn undone(ctx: &Ctx, result: &Value) -> String {
-    let op = result
-        .get("reverted")
-        .and_then(|r| r.get("op"))
-        .and_then(Value::as_str)
-        .unwrap_or("?");
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let title = san(result.get("title").and_then(Value::as_str).unwrap_or(""));
-    let restored = result.get("restored").cloned().unwrap_or(Value::Null);
-
-    let tags = |key: &str| -> String {
-        restored
-            .get(key)
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(|t| format!("+{}", san(t)))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .unwrap_or_default()
-    };
-    let detail = match op {
-        "tag.remove" => format!("tags back: {}", ctx.paint("tag", &tags("tags"))),
-        "dependency.remove" => format!(
-            "depends on {} again",
-            ctx.paint(
-                "accent",
-                &format!(
-                    "#{}",
-                    restored
-                        .get("depends_on")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0)
-                )
-            )
-        ),
-        "stop" => format!(
-            "the timer is running again  ·  {} back on the clock",
-            san(restored
-                .get("tracked")
-                .and_then(Value::as_str)
-                .unwrap_or("PT0S"))
-        ),
-        "annotation.add" => format!(
-            "note removed: {}",
-            ctx.paint(
-                "muted",
-                &san(restored
-                    .get("annotation")
-                    .and_then(Value::as_str)
-                    .unwrap_or(""))
-            )
-        ),
-        _ => format!("restored: {}", san(&restored.to_string())),
-    };
-
-    let arrow = match ctx.caps.unicode {
-        true => "↩",
-        false => "<-",
-    };
-    format!(
-        "{} {}  ·  {} {}\n  {detail}\n",
-        ctx.paint("accent", arrow),
-        ctx.paint("accent", &format!("undid {}", san(op))),
-        ctx.paint("accent", &format!("#{sid}")),
-        title,
-    )
-}
-
-/// `tasqx tag` / `untag`.
-///
-/// Both halves name what CHANGED and what the task carries now, for the reason
-/// [`dep_result`] does below: `tags` in the result is the set that REMAINS, so a
-/// removal rendered from it alone reads `#42 tags: +api` with no mention of what
-/// went, which is the same line a call that removed nothing would print. The
-/// core answers `removed` on `tag.remove` precisely so this line does not have
-/// to be reconstructed from the request, and D39 asks that a field the core
-/// computes reach a human surface.
-///
-/// `added` selects the verb rather than sniffing for the `removed` key, so a
-/// response shape that changes cannot silently flip the wording.
-pub fn tag_result(ctx: &Ctx, result: &Value, added: bool, asked: &[String]) -> String {
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let painted = |names: &[String]| -> String {
-        match names.is_empty() {
-            true => ctx.paint("muted", "(none)"),
-            false => ctx.paint(
-                "tag",
-                &names
-                    .iter()
-                    .map(|t| format!("+{}", san(t)))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            ),
-        }
-    };
-    let strings = |key: &str| -> Vec<String> {
-        result
-            .get(key)
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    // The remaining set comes from the core; what changed comes from the core on
-    // removal (`removed`) and from the request on addition, where `tag.add` has
-    // no equivalent key and re-adding an existing tag is a legitimate no-change.
-    let all = strings("tags");
-    let changed = match added {
-        true => asked.to_vec(),
-        false => {
-            let removed = strings("removed");
-            match removed.is_empty() {
-                true => asked.to_vec(),
-                false => removed,
-            }
-        }
-    };
-    let verb = match added {
-        true => "tagged",
-        false => "untagged",
-    };
-    format!(
-        "{} {verb} {}   ·   tags: {}\n",
-        ctx.paint("accent", &format!("#{sid}")),
-        painted(&changed),
-        painted(&all),
-    )
-}
-
-/// `tasqx dep` / `undep`.
-///
-/// `depends_on` in the result is the set that REMAINS, which made the removal
-/// line read `#2 no longer depends on: (none)` — indistinguishable from "the
-/// removal did nothing" at a glance. So the removed edge is named from the
-/// request, and the remaining set is labelled as such rather than being silently
-/// substituted for it.
-pub fn dep_result(ctx: &Ctx, result: &Value, added: bool, target: &str) -> String {
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-    let deps: Vec<String> = result
-        .get("depends_on")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_i64)
-                .map(|n| format!("#{n}"))
-                .collect()
-        })
-        .unwrap_or_default();
-    let blocked = result
-        .get("blocked")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let list = if deps.is_empty() {
-        "(none)".to_string()
-    } else {
-        deps.join(" ")
-    };
-    let target = san(target.trim_start_matches('#'));
-
-    if added {
-        // Finding #9 (audit-2026-09): `dep` on an edge that already existed
-        // answered exactly the same "now depends on" line as a genuinely new
-        // one — both are correct (no duplicate edge, no time lost), but only
-        // one of them is an action. `inserted` (absent from an older core, or
-        // an already-inserted default of true) tells them apart.
-        let already = result
-            .get("inserted")
-            .and_then(Value::as_bool)
-            .is_some_and(|inserted| !inserted);
-        let verb = if already { "already" } else { "now" };
-        format!(
-            "{} {verb} depends on #{target}   ·   depends on: {list}   blocked={blocked}\n",
-            ctx.paint("accent", &format!("#{sid}"))
-        )
-    } else {
-        format!(
-            "{} no longer depends on #{target}   ·   still depends on: {list}   blocked={blocked}\n",
-            ctx.paint("accent", &format!("#{sid}"))
-        )
-    }
 }
 
 pub fn project_table(ctx: &Ctx, result: &Value) -> String {
@@ -4833,7 +4040,7 @@ mod tests {
             card.contains('▌') && !card.contains("  status     "),
             "unicode caps should render the rail card: {card:?}"
         );
-        let added = task_added_card(
+        let added = added(
             &Ctx::new(theme::default_theme(), card_caps()),
             &t,
             Timestamp::now(),
@@ -4846,16 +4053,21 @@ mod tests {
 
     /// D122: the add card is `show`'s rail in two lines, and it fits: every line
     /// starts on the rail, no line runs past the terminal, and what the reader
-    /// typed comes back in `list`'s spelling rather than the store's.
+    /// typed comes back in `list`'s spelling rather than the store's. Since
+    /// D126 the second line's rail cell carries the task's `⊘`/`▶` (this
+    /// fixture is blocked).
     #[test]
     fn the_add_card_is_two_rail_lines_in_lists_spelling() {
         let ctx = Ctx::new(theme::default_theme(), card_caps()).with_cols(80);
         let now: Timestamp = "2026-09-01T12:00:00Z".parse().unwrap();
-        let out = task_added_card(&ctx, &full_task(), now);
+        let out = added(&ctx, &full_task(), now);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 2, "title line and facts line:\n{out}");
         for line in &lines {
-            assert!(line.starts_with('▌'), "off the rail: {line:?}");
+            assert!(
+                line.starts_with('▌') || line.starts_with('⊘'),
+                "off the rail: {line:?}"
+            );
             assert!(width(line) <= 80, "{} cells at 80: {line:?}", width(line));
         }
         assert!(
@@ -4869,7 +4081,7 @@ mod tests {
 
         let mut long = full_task();
         long["title"] = json!("x".repeat(300));
-        let out = task_added_card(&ctx, &long, now);
+        let out = added(&ctx, &long, now);
         assert!(
             out.lines().all(|l| width(l) <= 80),
             "a long title ran past the terminal:\n{out}"
@@ -5344,48 +4556,61 @@ mod tests {
     /// (`--input-tokens` etc., D50/D65), so the theory no longer holds: a
     /// terminal user who never passes them is exactly the reader the hint is
     /// for, and hiding it is how the feature stayed invisible from its
-    /// primary surface. The hint renders once, muted, under the Done line.
+    /// primary surface. D126 moved it off the card: it is one line on stderr,
+    /// after the card, and it still renders exactly once.
     #[test]
     fn done_renders_the_tokens_hint_once_muted() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let hint = "no token counts were self-reported; log-parse \
             attribution is a best-effort fallback";
-        let out = done(
-            &ctx,
-            &json!({
-                "status": "done",
-                "completed": "2026-07-31T10:00:00Z",
-                "unblocked": [],
-                "tokens_hint": hint,
-            }),
-        );
+        let result = json!({
+            "short_id": 1, "title": "t",
+            "status": "done",
+            "completed": "2026-07-31T10:00:00Z",
+            "unblocked": [],
+            "tokens_hint": hint,
+        });
+        let out = done(&ctx, &result, &result, &Titles::new(), Timestamp::now());
         assert!(
-            out.contains("Done"),
+            out.contains("done"),
             "the completion line itself went missing: {out:?}"
         );
+        assert!(
+            !out.contains("self-reported"),
+            "the hint is stderr's: {out:?}"
+        );
+        let note = tokens_note(hint, 200).expect("a hint the reader can act on prints");
+        assert_eq!(note.lines().count(), 1, "{note:?}");
         assert_eq!(
-            out.matches(hint).count(),
+            note.matches("no token counts were self-reported").count(),
             1,
-            "the hint should render exactly once: {out:?}"
+            "the hint should render exactly once: {note:?}"
         );
     }
 
     /// A completion that DID self-report (or a plain response with no hint
-    /// key at all) must not grow a hint line from nothing.
+    /// key at all) must not grow a hint line from nothing, and the variant
+    /// that asks nothing of the reader prints nothing on a terminal.
     #[test]
     fn done_omits_the_tokens_hint_line_when_the_response_has_none() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let out = done(
-            &ctx,
-            &json!({
-                "status": "done",
-                "completed": "2026-07-31T10:00:00Z",
-                "unblocked": [],
-            }),
-        );
+        let result = json!({
+            "short_id": 1, "title": "t",
+            "status": "done",
+            "completed": "2026-07-31T10:00:00Z",
+            "unblocked": [],
+        });
+        let out = done(&ctx, &result, &result, &Titles::new(), Timestamp::now());
         assert!(
             !out.contains("tokens_hint") && !out.contains("self-reported"),
             "a hint appeared where the response carried none: {out:?}"
+        );
+        assert_eq!(
+            tokens_note(
+                "a self-report already covers this task; nothing further",
+                200
+            ),
+            None
         );
     }
 
@@ -5833,17 +5058,17 @@ mod tests {
             !no_overdue.contains("overdue"),
             "zero overdue must not be printed as a fact: {no_overdue:?}"
         );
-        // Noun and verb must agree: "1 open task remain" is not English. The
-        // fix must not stop at pluralizing the noun and leave the verb
-        // hardcoded — assert the exact singular clause, not just a substring
-        // that a mismatched verb would still satisfy.
+        // The number must agree with its noun: "1 open tasks" is not English.
+        // Assert the exact clause in both numbers, not a substring a mismatch
+        // would still satisfy. (D126 spells it `left in it`, which has no verb
+        // to disagree; it was `remain(s)`.)
         assert!(
-            no_overdue.contains("1 open task remains"),
-            "singular subject needs a singular verb: {no_overdue:?}"
+            no_overdue.contains("1 open task left in it"),
+            "singular: {no_overdue:?}"
         );
         assert!(
-            with_overdue.contains("2 open tasks (1 overdue) remain "),
-            "plural subject needs a plural verb: {with_overdue:?}"
+            with_overdue.contains("2 open tasks left in it, 1 overdue"),
+            "plural: {with_overdue:?}"
         );
 
         // Nothing left behind: the line is exactly what it was before D89,
@@ -6499,18 +5724,22 @@ mod tests {
     #[test]
     fn start_stop_done_name_the_task_and_done_compares_tracked_to_estimate() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let now = Timestamp::now();
+        let none = Titles::new();
 
         let started_json = json!({
             "interval_started": "2026-09-09T10:43:48Z",
             "short_id": 144,
             "title": "Prod: mailbox sync 500 op staging",
         });
-        let out = started(&ctx, &started_json);
+        let out = started(&ctx, &started_json, &started_json, &none, now);
         assert!(out.contains("#144"), "{out:?}");
         assert!(out.contains("Prod: mailbox sync 500 op staging"), "{out:?}");
 
-        let stopped_json = json!({ "tracked": "PT12S", "short_id": 9, "title": "some task" });
-        let out = stopped(&ctx, &stopped_json);
+        let stopped_json = json!({
+            "interval": "PT12S", "tracked": "PT12S", "short_id": 9, "title": "some task"
+        });
+        let out = stopped(&ctx, &stopped_json, &stopped_json, now);
         assert!(out.contains("#9"), "{out:?}");
         assert!(out.contains("some task"), "{out:?}");
         assert!(
@@ -6526,11 +5755,11 @@ mod tests {
             "tracked": "PT30S",
             "estimate": "PT2H",
         });
-        let out = done(&ctx, &done_json);
+        let out = done(&ctx, &done_json, &done_json, &none, now);
         assert!(out.contains("#144"), "{out:?}");
         assert!(out.contains("Prod: mailbox sync 500 op staging"), "{out:?}");
         assert!(
-            out.contains("tracked 30s of a 2h estimate"),
+            out.contains("tracked 30s of 2h"),
             "the tracked-vs-estimate clause is missing: {out:?}"
         );
     }
@@ -6541,33 +5770,39 @@ mod tests {
     #[test]
     fn start_and_dep_say_already_instead_of_claiming_a_fresh_action() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let now = Timestamp::now();
+        let none = Titles::new();
 
         let fresh = json!({
             "interval_started": "2026-09-09T10:35:52Z", "short_id": 1, "title": "restart",
             "already_running": false,
         });
-        assert!(started(&ctx, &fresh).contains("Started"));
+        assert!(started(&ctx, &fresh, &fresh, &none, now).contains("started"));
 
         let idempotent = json!({
             "interval_started": "2026-09-09T10:35:52Z", "short_id": 1, "title": "restart",
             "already_running": true,
         });
-        let out = started(&ctx, &idempotent);
+        let out = started(&ctx, &idempotent, &idempotent, &none, now);
         assert!(
-            out.contains("Already running"),
+            out.contains("already running"),
             "must not claim a fresh start: {out:?}"
         );
-        assert!(!out.contains("Started"), "{out:?}");
+        assert!(!out.contains("started"), "{out:?}");
 
         let fresh_dep =
             json!({ "short_id": 250, "depends_on": [249], "blocked": true, "inserted": true });
-        assert!(dep_result(&ctx, &fresh_dep, true, "249").contains("now depends on"));
+        let out = dep_changed(&ctx, &fresh_dep, &fresh_dep, true, "249", now);
+        assert!(
+            out.contains("blocked by #249") && !out.contains("already"),
+            "{out:?}"
+        );
 
         let existing_dep =
             json!({ "short_id": 250, "depends_on": [249], "blocked": true, "inserted": false });
-        let out = dep_result(&ctx, &existing_dep, true, "249");
+        let out = dep_changed(&ctx, &existing_dep, &existing_dep, true, "249", now);
         assert!(
-            out.contains("already depends on"),
+            out.contains("already blocked by #249"),
             "must not claim a fresh edge: {out:?}"
         );
     }
@@ -6578,10 +5813,12 @@ mod tests {
     #[test]
     fn task_added_names_the_project_it_landed_in() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let out = task_added(
+        let now = Timestamp::now();
+        let out = added(
             &ctx,
-            &json!({ "short_id": 3, "status": "pending", "urgency": 5.0, "project": "work" }),
-            "a task",
+            &json!({ "short_id": 3, "title": "a task", "status": "pending",
+                     "urgency": 5.0, "project": "work" }),
+            now,
         );
         assert!(
             out.contains("work"),
@@ -6591,10 +5828,11 @@ mod tests {
         // Finding #10 (audit-2026-09): a task landing with no default project
         // must SAY so, naming the way out — not just omit the suffix, which
         // reads identically to every other successful `add`.
-        let none = task_added(
+        let none = added(
             &ctx,
-            &json!({ "short_id": 4, "status": "pending", "urgency": 5.0, "project": null }),
-            "homeless",
+            &json!({ "short_id": 4, "title": "homeless", "status": "pending",
+                     "urgency": 5.0, "project": null }),
+            now,
         );
         assert!(
             none.contains("no project"),
@@ -8037,9 +7275,10 @@ mod tests {
             "title": "Ship v1",
             "restored": { "tags": ["api", "release"] },
         });
-        let out = undone(&ctx, &result);
+        let out = undone(&ctx, &result, &result, Timestamp::now());
+        // D126 names the operation by the verb that did it: `untag`.
         assert!(
-            out.contains("tag.remove"),
+            out.contains("undid untag"),
             "the line must name the operation that was reversed: {out:?}"
         );
         assert!(
@@ -8067,21 +7306,30 @@ mod tests {
     fn every_undoable_op_gets_a_line_that_says_what_it_restored() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let line = |op: &str, restored: Value| -> String {
-            undone(
-                &ctx,
-                &json!({
-                    "reverted": { "event": "e1", "op": op, "ts": "t" },
-                    "short_id": 7,
-                    "title": "t",
-                    "restored": restored,
-                }),
-            )
+            let result = json!({
+                "reverted": { "event": "e1", "op": op, "ts": "t" },
+                "short_id": 7,
+                "title": "t",
+                "restored": restored,
+            });
+            // The task as read back after the revert: running again for a stop.
+            let mut task = result.clone();
+            if op == "stop" {
+                task["status"] = json!("active");
+            }
+            undone(&ctx, &result, &task, Timestamp::now())
         };
 
         assert!(line("dependency.remove", json!({ "depends_on": 3 })).contains("#3"));
-        let stopped = line("stop", json!({ "tracked": "PT30M", "status": "active" }));
+        // D126: `*` in the rail says it runs again, and the line says since
+        // when; `restored.tracked` is the interval put back, not a total.
+        let stopped = line(
+            "stop",
+            json!({ "tracked": "PT30M", "status": "active",
+                    "interval_started": "2026-09-09T10:00:00Z" }),
+        );
         assert!(
-            stopped.contains("PT30M") && stopped.contains("running"),
+            stopped.contains("* undid stop") && stopped.contains("since"),
             "{stopped:?}"
         );
         let noted = line(
@@ -8104,15 +7352,13 @@ mod tests {
     #[test]
     fn undone_sanitizes_control_bytes_in_the_text_it_echoes() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let out = undone(
-            &ctx,
-            &json!({
-                "reverted": { "event": "e1", "op": "annotation.add", "ts": "t" },
-                "short_id": 1,
-                "title": "\u{1b}[2Jclear",
-                "restored": { "annotation": "\u{1b}]0;evil\u{7}note" },
-            }),
-        );
+        let result = json!({
+            "reverted": { "event": "e1", "op": "annotation.add", "ts": "t" },
+            "short_id": 1,
+            "title": "\u{1b}[2Jclear",
+            "restored": { "annotation": "\u{1b}]0;evil\u{7}note" },
+        });
+        let out = undone(&ctx, &result, &result, Timestamp::now());
         assert!(
             !out.contains('\u{1b}'),
             "escape byte reached the terminal: {out:?}"
@@ -8133,7 +7379,14 @@ mod tests {
     fn an_untag_line_names_what_went_and_what_remains() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let result = json!({ "short_id": 1, "tags": ["release"], "removed": ["api"] });
-        let out = tag_result(&ctx, &result, false, &["api".to_string()]);
+        let out = tag_changed(
+            &ctx,
+            &result,
+            &result,
+            false,
+            &["api".to_string()],
+            Timestamp::now(),
+        );
         assert!(out.contains("untagged"), "{out:?}");
         assert!(out.contains("+api"), "the removed tag must appear: {out:?}");
         assert!(
@@ -8143,22 +7396,26 @@ mod tests {
     }
 
     /// The addition half, and the empty case. `tag.add` returns no `removed`
-    /// key, so the changed set comes from the request there; and a task left
-    /// with no tags renders `(none)` rather than a blank where a list belongs.
+    /// key, so the changed set comes from the request there. A task left with
+    /// no tags used to print `tags: (none)` so the label was not followed by a
+    /// blank; D126 has no label to leave blank, and a zero is not a fact, so
+    /// the line names what went and stops.
     #[test]
     fn a_tag_line_names_the_added_tag_and_an_empty_set_says_so() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let now = Timestamp::now();
         let added = json!({ "short_id": 7, "tags": ["api", "release"] });
-        let out = tag_result(&ctx, &added, true, &["api".to_string()]);
+        let out = tag_changed(&ctx, &added, &added, true, &["api".to_string()], now);
         assert!(out.contains("#7") && out.contains("tagged"), "{out:?}");
         assert!(out.contains("+api") && out.contains("+release"), "{out:?}");
         assert!(!out.contains("untagged"), "the verb must not flip: {out:?}");
 
         let emptied = json!({ "short_id": 7, "tags": [], "removed": ["api"] });
-        let out = tag_result(&ctx, &emptied, false, &["api".to_string()]);
+        let out = tag_changed(&ctx, &emptied, &emptied, false, &["api".to_string()], now);
+        assert!(out.contains("untagged   +api"), "{out:?}");
         assert!(
-            out.contains("(none)"),
-            "a task with no tags left must say so, not print a blank: {out:?}"
+            !out.contains("(none)") && !out.contains("tags:"),
+            "no label left blank and no placeholder: {out:?}"
         );
     }
 
@@ -8173,7 +7430,7 @@ mod tests {
             "tags": ["]0;evilsafe"],
             "removed": ["[2Jgone"],
         });
-        let out = tag_result(&ctx, &result, false, &[]);
+        let out = tag_changed(&ctx, &result, &result, false, &[], Timestamp::now());
         assert!(
             !out.contains(''),
             "escape byte reached the terminal: {out:?}"

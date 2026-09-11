@@ -2350,8 +2350,9 @@ fn one_filter_selects_one_set_of_rows_in_every_spelling() {
 /// `done` and `cancel` are asserted TOGETHER because they return the same
 /// cascade from the same helper (`compute_unblocked`). One of them rendering it
 /// is not the property worth guarding; both of them rendering it the same way
-/// is, since a reader who learns "now actionable" from `done` will read its
-/// absence under `cancel` as "nothing was released".
+/// is, since a reader who learns "unblocked" from `done` will read its absence
+/// under `cancel` as "nothing was released". (It was `now actionable:` before
+/// D126 gave the released task a line of its own under the card.)
 #[test]
 fn both_done_and_cancel_name_the_dependents_they_released() {
     for verb in ["done", "cancel"] {
@@ -2376,7 +2377,7 @@ fn both_done_and_cancel_name_the_dependents_they_released() {
             "`{verb}` released #2 — the API says so — and must name it: {stdout}"
         );
         assert!(
-            stdout.contains("now actionable"),
+            stdout.contains("#2  unblocked"),
             "`{verb}` must label the release the same way its twin does: {stdout}"
         );
     }
@@ -2385,8 +2386,8 @@ fn both_done_and_cancel_name_the_dependents_they_released() {
 /// P1a, the other half: a verb that released NOTHING must not claim it did.
 ///
 /// A guard that only checks the list appears passes just as well against a
-/// renderer that prints "now actionable:" unconditionally, which would be a
-/// worse bug than the silence it replaced.
+/// renderer that prints "unblocked" unconditionally, which would be a worse
+/// bug than the silence it replaced.
 #[test]
 fn neither_verb_announces_a_release_that_did_not_happen() {
     for verb in ["done", "cancel"] {
@@ -2405,7 +2406,7 @@ fn neither_verb_announces_a_release_that_did_not_happen() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(
-            !stdout.contains("now actionable"),
+            !stdout.contains("unblocked"),
             "`{verb}` released nothing and must say nothing: {stdout}"
         );
     }
@@ -2440,10 +2441,16 @@ fn the_completion_timestamp_reaches_every_human_surface() {
         "done: {}",
         String::from_utf8_lossy(&done.stderr)
     );
+    // D126: `done` itself does not spell the moment. It is the moment the
+    // reader typed the command, already on screen; an instant there was 30
+    // cells of nanoseconds (rule 3). `show` is where it is read later, below.
     let done_out = String::from_utf8_lossy(&done.stdout);
     assert!(
-        done_out.contains("completed"),
-        "`done` must name the moment: {done_out}"
+        done_out
+            .lines()
+            .nth(1)
+            .is_some_and(|l| l.starts_with("done")),
+        "`done` must say the task is done: {done_out}"
     );
 
     // The timestamp the API carries, so the assertion below compares the two
@@ -3548,8 +3555,10 @@ fn undo_reverses_the_last_change_and_refuses_the_operations_it_cannot() {
     // argument, so this is the user's only confirmation that it hit the thing
     // they meant.
     let undone = ok(&["undo"]);
+    // D126 names the operation by the verb that did it (`untag` for
+    // `tag.remove`).
     assert!(
-        undone.contains("tag.remove") && undone.contains("#1"),
+        undone.contains("undid untag") && undone.contains("#1"),
         "the undo line must name the operation and the task: {undone}"
     );
     assert!(
@@ -3609,7 +3618,7 @@ fn undo_reverses_the_last_change_and_refuses_the_operations_it_cannot() {
     ok(&["annotate", "1", "wrong task"]);
     let aliased = ok(&["u"]);
     assert!(
-        aliased.contains("annotation.add"),
+        aliased.contains("undid annotate"),
         "`tasqx u` must be `tasqx undo`: {aliased}"
     );
 }
@@ -4330,9 +4339,11 @@ fn next_takes_a_filter_and_still_skips_blocked_work_in_scope() {
 /// Seeded through `import` (D42's `active_since`/`tracked_seconds` pair)
 /// rather than a real sleep: elapsed wall-clock through `start`/`stop` is
 /// under a second in a test, which would make the interval and the total
-/// coincide and prove nothing. Importing an already-active task with an old
-/// `active_since` gives a large, easily-distinguished interval against a
-/// pre-existing total.
+/// coincide and prove nothing. Importing an already-active task with an
+/// `active_since` two hours back gives an interval that reads differently from
+/// the total beside it. (It was 2020 until D126: at that length both round to
+/// the same number of days, and a total that reads the same as its interval is
+/// not printed twice.)
 #[test]
 fn stop_reports_the_same_tracked_total_show_does() {
     let dir = fresh_config_dir("stop-tracked-word");
@@ -4341,6 +4352,7 @@ fn stop_reports_the_same_tracked_total_show_does() {
         "tasqx-stop-tracked-word-{}.json",
         std::process::id()
     ));
+    let two_hours_ago = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(2)).to_string();
     std::fs::write(
         &fixture,
         serde_json::json!({ "tasks": [{
@@ -4349,7 +4361,7 @@ fn stop_reports_the_same_tracked_total_show_does() {
             "title": "already an hour in",
             "status": "active",
             "tracked_seconds": 3600,
-            "active_since": "2020-01-01T00:00:00Z",
+            "active_since": two_hours_ago,
         }]})
         .to_string(),
     )
@@ -4376,33 +4388,23 @@ fn stop_reports_the_same_tracked_total_show_does() {
 
     let stopped = ok(&["stop", "1"]);
 
-    let shown: serde_json::Value =
-        serde_json::from_str(&ok(&["--json", "show", "1"])).expect("show --json");
-    let total = shown["tracked"].as_str().expect("show must carry tracked");
-    let total_secs = tasqx_core::util::duration_secs(total).expect("show's tracked must parse");
-
-    // `stop`'s confirmation renders the duration humanized (finding #3, e.g.
-    // "58666h3m44s"), not the raw ISO `show --json` carries — glued h/m/s,
-    // each omitted when zero, the same shape `render::human_duration` builds.
-    let (h, m, s) = (total_secs / 3600, (total_secs % 3600) / 60, total_secs % 60);
-    let mut human = String::new();
-    if h > 0 {
-        human.push_str(&format!("{h}h"));
-    }
-    if m > 0 {
-        human.push_str(&format!("{m}m"));
-    }
-    if s > 0 {
-        human.push_str(&format!("{s}s"));
-    }
-    if human.is_empty() {
-        human.push_str("0s");
-    }
+    // The total as `show` spells it on the same (plain) surface.
+    let shown = ok(&["show", "1"]);
+    let total = shown
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("tracked"))
+        .map(str::trim)
+        .expect("show must carry a tracked row")
+        .to_string();
 
     assert!(
-        stopped.contains(&format!("tracked {human}")),
-        "`stop` must call the cumulative total `tracked`, the same word `show` uses for it \
-         (show says tracked {total} = {human}): {stopped:?}"
+        stopped.contains(&format!("tracked {total}")),
+        "`stop` must call the cumulative total `tracked`, the same word and value `show` \
+         uses for it (show says tracked {total}): {stopped:?}"
+    );
+    assert!(
+        stopped.contains("stopped after 2h"),
+        "and the interval must not be called `tracked`: {stopped:?}"
     );
 }
 
