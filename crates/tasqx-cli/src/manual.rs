@@ -5,12 +5,15 @@
 //! `tasqx manual <name>`; there is no pager (kept dependency-free and portable).
 //! For the exhaustive browser guide, `tasqx docs`.
 //!
-//! The page follows `docs/terminal-style.md`, plus five conventions of its
+//! The page follows `docs/terminal-style.md`, plus six conventions of its
 //! own, because it is the one screen that is mostly prose:
 //!
 //! - Prose keeps a measure (`MEASURE`) rather than running to the edge.
 //! - Two levels of heading: the page's title in `header`, a section in
-//!   `accent` and capitals, and no row painted like either.
+//!   `table.label` and capitals, and no row painted like either. The two
+//!   levels differ in rendered bytes in every built-in theme.
+//! - A topic's table stacks each definition under its term when the
+//!   terminal is too narrow for two readable columns.
 //! - What a reader copies (an example, a code line, inline code in
 //!   backticks) is never wrapped or cut: it overflows instead.
 //! - An example's notes sit beside their commands, or under them, decided
@@ -35,6 +38,10 @@ const TEXT_FLOOR: usize = 12;
 /// How far a wrapped usage line, or an example's note that had to move under
 /// its command, sits in from the line it continues.
 const HANG: usize = 4;
+/// A definition column narrower than this stacks a topic's table: each
+/// definition goes under its term. Narrower, two columns orphan a word ("edit
+/// the startup" over "file" at 60 columns) or run past their floor at 40.
+const STACK_BELOW: usize = 24;
 
 pub fn render(ctx: &Ctx, arg: Option<&str>) -> Result<String, String> {
     let Some(name) = arg else {
@@ -65,12 +72,14 @@ fn title(ctx: &Ctx, text: &str) -> String {
     format!("{}\n", ctx.paint("header", text))
 }
 
-/// A section heading, one step under the page's title: `accent`, as
-/// `agenda`'s day headings are, in capitals, flush over what it heads. Under
-/// `NO_COLOR` the capitals and the blank line ahead of it carry it, and the
-/// title keeps the only bold on the page.
+/// A section heading: `table.label`, in capitals, flush over what it heads.
+/// It is structure, so it recedes (house style rule 12's reason), and the
+/// page's title keeps the only emphasis. The two differ in the bytes drawn in
+/// every built-in theme and under `NO_COLOR`: bold against `table.label`'s
+/// grey, its dim in `mono`, and plain capitals without colour. `accent` was
+/// tried first; `mono` draws it as plain bold, the very bytes of the title.
 fn heading(ctx: &Ctx, text: &str) -> String {
-    format!("{}\n", ctx.paint("accent", text))
+    format!("{}\n", ctx.paint("table.label", text))
 }
 
 /// Prose split where it may wrap: at a space, but never inside a backtick
@@ -146,14 +155,30 @@ fn toc(ctx: &Ctx) -> String {
             ));
         }
     }
-    s.push_str(&format!(
-        "\n{} Jump to a topic or command:  tasqx manual <name>\n",
-        ctx.arrow(),
-    ));
-    s.push_str(&format!(
-        "{} Full browser guide:          tasqx docs\n",
-        ctx.arrow(),
-    ));
+    // The footer: a label and the command it names. The command is copied, so
+    // it stays whole; where both do not fit on one line, each command goes
+    // under its label.
+    let footer = [
+        ("Jump to a topic or command:", "tasqx manual <name>"),
+        ("Full browser guide:", "tasqx docs"),
+    ];
+    let label_w = footer.iter().map(|(l, _)| width(l)).max().unwrap_or(0) + GAP;
+    let lead = width(ctx.arrow()) + 1;
+    let side_by_side = footer
+        .iter()
+        .all(|(_, cmd)| lead + label_w + width(cmd) <= ctx.cols);
+    s.push('\n');
+    for (label, cmd) in footer {
+        if side_by_side {
+            s.push_str(&format!("{} {}{cmd}\n", ctx.arrow(), pad(label, label_w)));
+        } else {
+            s.push_str(&format!(
+                "{} {label}\n{}{cmd}\n",
+                ctx.arrow(),
+                " ".repeat(lead)
+            ));
+        }
+    }
     s
 }
 
@@ -388,8 +413,8 @@ fn follow_on(ctx: &Ctx, label: &str, names: &[&str]) -> String {
 }
 
 fn topic_section(ctx: &Ctx, t: Topic) -> String {
-    // In the topic's own case: a section heading is the one in capitals, so
-    // the two differ even where `mono` draws both bold.
+    // In the topic's own case: it names the page, and a section heading is
+    // the line in capitals.
     let mut s = title(ctx, t.title());
     s.push('\n');
     s.push_str(&body(ctx, topic_body(t)));
@@ -457,7 +482,9 @@ fn body(ctx: &Ctx, src: &str) -> String {
 }
 
 /// A topic's two-column table: the term whole (it is what gets typed), the
-/// definition wrapped in whatever `columns::fit` leaves it.
+/// definition wrapped in whatever `columns::fit` leaves it, or stacked under
+/// its term where that is narrower than `STACK_BELOW` or than a piece of a
+/// definition that cannot break.
 fn table(ctx: &Ctx, rows: &[(&str, &str)]) -> String {
     let term_w = rows.iter().map(|(t, _)| width(t)).max().unwrap_or(0);
     let text_w = rows.iter().map(|(_, d)| width(d)).max().unwrap_or(0);
@@ -466,8 +493,32 @@ fn table(ctx: &Ctx, rows: &[(&str, &str)]) -> String {
         ctx.cols.min(MEASURE).saturating_sub(INDENT),
     );
     let lead = " ".repeat(INDENT);
-    let hang = " ".repeat(INDENT + w[0] + GAP);
     let mut out = String::new();
+    // A piece that cannot break (a path, a variable) and is wider than the
+    // column would run past the terminal beside its term, so it stacks too.
+    let widest_piece = rows
+        .iter()
+        .filter(|(term, _)| !term.is_empty())
+        .flat_map(|(_, text)| prose_pieces(text))
+        .map(|piece| width(&piece))
+        .max()
+        .unwrap_or(0);
+    if w[1] < STACK_BELOW.min(text_w) || widest_piece > w[1] {
+        let under = " ".repeat(INDENT + HANG);
+        let width_left = ctx.cols.min(MEASURE).saturating_sub(INDENT + HANG);
+        for (term, text) in rows {
+            if term.is_empty() {
+                out.push_str(&format!("{under}{text}\n"));
+                continue;
+            }
+            out.push_str(&format!("{lead}{term}\n"));
+            for line in wrap_prose(text, width_left) {
+                out.push_str(&format!("{under}{line}\n"));
+            }
+        }
+        return out;
+    }
+    let hang = " ".repeat(INDENT + w[0] + GAP);
     for (term, text) in rows {
         if term.is_empty() {
             out.push_str(&format!("{hang}{text}\n"));
@@ -572,9 +623,9 @@ clock.
 
   Relative days\t`today`, `tomorrow`, `yesterday`, `now`, `eom` (end of month), `eow` (end of week).
   Weekday names\t`monday`..`sunday` or `mon`..`sat` — the next occurrence, today included if it IS that day.
-  Counted spans\t`in 1 day`, `\"in 3 days\"`, `in 2 weeks`, `in 3 months` — days, weeks and months only; `in 2 hours` is not in this family and is rejected.
+  Counted spans\t`in 1 day`, `in 3 days`, `in 2 weeks`, `in 3 months` — days, weeks and months only; `in 2 hours` is not in this family and is rejected.
   Signed offsets\t`-1d`, `+3d`, `3d` (no sign defaults to future).
-  Times\t`17:00`, `5pm`, attached to a day with a space — `\"tomorrow 17:00\"`, `\"friday 9am\"` — or a full instant — `\"2026-09-09 17:00\"`, `2026-09-09T17:00:00+02:00` (an explicit offset is honoured and converted to UTC on the way in).
+  Times\t`17:00`, `5pm`, attached to a day with a space — `tomorrow 17:00`, `friday 9am` — or a full instant — `2026-09-09 17:00`, `2026-09-09T17:00:00+02:00` (an explicit offset is honoured and converted to UTC on the way in).
 
 Four date fields carry meaning:
   due\twhen it's due
@@ -659,8 +710,7 @@ off-by-default `notify-os` build feature."
         }
 
         Topic::Reports => {
-            "\
-  tasqx report [group_by]\tcounts, optionally grouped (project | status | priority)
+            "  tasqx report [group_by]\tcounts, optionally grouped (project | status | priority)
   tasqx report --html\tone self-contained HTML file
   tasqx chart throughput\tcompletions over time
   tasqx chart heatmap\tactivity calendar
@@ -744,15 +794,15 @@ same five on Linux, macOS and Windows.
 
 The line, and the file it belongs in:
 
-  bash\t~/.bashrc
+  bash\t`~/.bashrc`
   \tsource <(TASQX_COMPLETE=bash tasqx)
-  zsh\t~/.zshrc, AFTER your compinit line
+  zsh\t`~/.zshrc`, AFTER your compinit line
   \tsource <(TASQX_COMPLETE=zsh tasqx)
-  fish\t~/.config/fish/completions/tasqx.fish
+  fish\t`~/.config/fish/completions/tasqx.fish`
   \tTASQX_COMPLETE=fish tasqx | source
-  elvish\t~/.elvish/rc.elv
+  elvish\t`~/.elvish/rc.elv`
   \teval (E:TASQX_COMPLETE=elvish tasqx | slurp)
-  powershell\t$PROFILE
+  powershell\t`$PROFILE`
   \t$env:TASQX_COMPLETE = \"powershell\"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\\TASQX_COMPLETE
 
 `--install` finds the shell from $SHELL, prints the exact block
@@ -902,6 +952,14 @@ mod tests {
             .iter()
             .flat_map(|d| d.examples.iter().map(|e| e.cmd.to_string()))
             .collect();
+        // A usage piece that cannot break, `[--out PATH | --no-open |
+        // --stdout]`, alone on its line.
+        copied.extend(
+            cmddoc::COMMAND_REF
+                .iter()
+                .flat_map(|d| usage_pieces(d.usage))
+                .map(|(_, piece)| piece.to_string()),
+        );
         for t in Topic::ALL {
             for line in topic_body(t).lines().filter(|l| l.starts_with("  ")) {
                 match line.split_once('\t') {
@@ -943,19 +1001,20 @@ mod tests {
             .collect()
     }
 
-    /// A line that is one piece: no space outside a backtick span. Inline code
-    /// is copied too, so a span wider than the line stands alone and overflows
-    /// rather than being split.
-    fn unbreakable(line: &str) -> bool {
-        let mut in_span = false;
-        for c in line.trim().chars() {
-            if c == '`' {
-                in_span = !in_span;
-            } else if c.is_whitespace() && !in_span {
-                return false;
-            }
-        }
-        true
+    /// A line that is exactly one inline code span, and at most the
+    /// punctuation that closes its sentence: `` `tasqx list --sort due …`. ``.
+    /// That is code a reader copies, so when it is wider than the line it
+    /// stands alone and overflows rather than being split. Nothing else is
+    /// exempt: not a long word, not a line with a span in it.
+    fn a_whole_code_span(line: &str) -> bool {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix('`') else {
+            return false;
+        };
+        let Some(close) = rest.find('`') else {
+            return false;
+        };
+        close > 0 && rest[close + 1..].chars().all(|c| c.is_ascii_punctuation())
     }
 
     /// The lines under `heading` on `page`, up to the next blank line.
@@ -1105,7 +1164,10 @@ mod tests {
     }
 
     /// House style rule 2, over the whole manual: nothing runs past the
-    /// terminal, at any width, except a line a reader copies. Those are never
+    /// terminal, at any width from `Ctx::MIN_COLS` to `Ctx::MAX_COLS`, except
+    /// a line a reader copies: an example command, an indented code line of a
+    /// topic, one usage piece that cannot break, or a line that is one whole
+    /// inline code span. Those are never
     /// wrapped or cut, since a command that has been cut is a different
     /// command (rule 2's "a number never gives way", for commands).
     ///
@@ -1114,12 +1176,12 @@ mod tests {
     fn every_page_fits_the_terminal_except_what_is_copied() {
         let copied = copied_lines();
         let mut over = Vec::new();
-        for cols in [60, 80, 100, 140] {
+        for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
             for (name, page) in every_page(&at(cols)) {
                 for line in page.lines() {
                     if render::width(line) > cols
                         && !copied.iter().any(|c| c == line.trim())
-                        && !unbreakable(line)
+                        && !a_whole_code_span(line)
                     {
                         over.push(format!("{name} @{cols}: {line}"));
                     }
@@ -1174,7 +1236,7 @@ mod tests {
     /// every code line a topic carries.
     #[test]
     fn what_is_copied_is_printed_whole_on_one_line() {
-        for cols in [60, 80, 140] {
+        for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
             let ctx = at(cols);
             for d in cmddoc::COMMAND_REF {
                 let page = command_section(&ctx, d);
@@ -1209,58 +1271,59 @@ mod tests {
 
     /// A usage line too long for the terminal breaks BETWEEN arguments: no
     /// `[--project p]` or `<title…>` is split across two lines, nothing is
-    /// lost, and every line fits.
+    /// lost, and every line fits unless it is one piece that cannot break. At
+    /// every width from `Ctx::MIN_COLS` to `Ctx::MAX_COLS`: sampled at 60 alone,
+    /// a break inside a group went unseen at 101 of the 121 widths.
     #[test]
     fn usage_breaks_between_arguments_and_keeps_every_one() {
-        let cols = 60;
-        for d in cmddoc::COMMAND_REF {
-            let page = command_section(&at(cols), d);
-            let lines = block_under(&page, "USAGE");
-            for l in &lines {
-                assert!(
-                    render::width(l) <= cols,
-                    "{}: usage line wider than {cols}: {l:?}",
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
+            for d in cmddoc::COMMAND_REF {
+                let page = command_section(&at(cols), d);
+                let lines = block_under(&page, "USAGE");
+                for l in &lines {
+                    assert!(
+                        render::width(l) <= cols || usage_pieces(l.trim()).len() == 1,
+                        "{} at {cols}: usage line wider than the terminal: {l:?}",
+                        d.verb
+                    );
+                }
+                let joined = lines
+                    .iter()
+                    .map(|l| l.trim())
+                    .fold(String::new(), |acc, l| {
+                        if acc.is_empty() || l.starts_with('|') {
+                            acc + l
+                        } else {
+                            acc + " " + l
+                        }
+                    });
+                assert_eq!(
+                    words(&joined),
+                    words(d.usage),
+                    "{} at {cols}: the wrapped usage lost or changed something",
                     d.verb
                 );
-            }
-            let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-            let joined = lines
-                .iter()
-                .map(|l| l.trim())
-                .fold(String::new(), |acc, l| {
-                    if acc.is_empty() || l.starts_with('|') {
-                        acc + l
-                    } else {
-                        acc + " " + l
-                    }
-                });
-            assert_eq!(
-                words(&joined),
-                words(d.usage),
-                "{}: the wrapped usage lost or changed something",
-                d.verb
-            );
-            // Every innermost bracket group survives on one line.
-            let b = d.usage.as_bytes();
-            let mut open: Vec<usize> = Vec::new();
-            for (i, c) in b.iter().enumerate() {
-                match c {
-                    b'[' | b'<' => open.push(i),
-                    b']' | b'>' => {
-                        if let Some(start) = open.pop() {
+                // Every innermost bracket group survives on one line.
+                let b = d.usage.as_bytes();
+                let mut open: Vec<usize> = Vec::new();
+                for (i, c) in b.iter().enumerate() {
+                    match c {
+                        b'[' | b'<' => open.push(i),
+                        b']' | b'>' => {
+                            let Some(start) = open.pop() else { continue };
                             let group = &d.usage[start..=i];
-                            let leaf = !group[1..group.len() - 1].contains(['[', '<']);
-                            if leaf {
+                            if !group[1..group.len() - 1].contains(['[', '<']) {
                                 assert!(
                                     lines.iter().any(|l| l.contains(group)),
-                                    "{}: {group:?} was split across lines:\n{}",
+                                    "{} at {cols}: {group:?} was split across lines:\n{}",
                                     d.verb,
                                     lines.join("\n")
                                 );
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
@@ -1489,24 +1552,74 @@ mod tests {
         }
     }
 
-    /// A date a reader types is never split across lines, at any width:
-    /// `"tomorrow 17:00"` broken after `"tomorrow` is two things to type.
+    /// A date a reader types is written as code, once: never split across
+    /// lines at any width, and never both backticked and double-quoted, which
+    /// printed `` `"in 3 days"` `` as double punctuation.
     #[test]
     fn typed_date_literals_are_never_split() {
         for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
             let page = topic_section(&at(cols), Topic::Dates);
+            assert!(
+                !page.contains("`\""),
+                "double punctuation at {cols}:\n{page}"
+            );
             for literal in [
-                "\"in 3 days\"",
-                "\"tomorrow 17:00\"",
-                "\"friday 9am\"",
-                "\"2026-09-09 17:00\"",
+                "`in 3 days`",
+                "`tomorrow 17:00`",
+                "`friday 9am`",
+                "`2026-09-09 17:00`",
             ] {
                 assert!(
                     page.lines().any(|l| l.contains(literal)),
-                    "{literal} is split at {cols}:\n{page}"
+                    "{literal} is split or missing at {cols}:\n{page}"
                 );
             }
         }
+    }
+
+    /// Every `term\tdefinition` line of every topic renders as a table row,
+    /// at every width: the term two cells in, then its definition beside it
+    /// or, where the terminal is too narrow for two columns, under it.
+    ///
+    /// Checked on the rendered page, not the source: `Reports` opened its body
+    /// with `"\`, Rust's line continuation stripped the first row's indent, and
+    /// `body` read that row as prose at the margin, which the source, read
+    /// back by a test, could not show.
+    #[test]
+    fn every_table_row_renders_as_a_table_row() {
+        for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
+            for t in Topic::ALL {
+                let page = topic_section(&at(cols), t);
+                for (term, _) in topic_body(t)
+                    .lines()
+                    .filter_map(|l| l.split_once('\t'))
+                    .map(|(term, def)| (term.trim(), def))
+                    .filter(|(term, _)| !term.is_empty())
+                {
+                    assert!(
+                        page.lines().any(|l| l.strip_prefix("  ").is_some_and(|r| {
+                            r.strip_prefix(term)
+                                .is_some_and(|after| after.is_empty() || after.starts_with("  "))
+                        })),
+                        "topic {} at {cols}: the row {term:?} is not a table row:\n{page}",
+                        t.slug()
+                    );
+                }
+            }
+        }
+    }
+
+    /// A definition is not wrapped into a column too narrow to read: at 60
+    /// columns the completion topic's `--install` row broke "edit the
+    /// startup" from "file". Too narrow for two columns, a table stacks each
+    /// definition under its term instead.
+    #[test]
+    fn a_narrow_table_stacks_rather_than_orphaning_a_word() {
+        let page = topic_section(&at(60), Topic::Completion);
+        assert!(
+            page.lines().any(|l| l.contains("edit the startup file")),
+            "the definition was split into a column too narrow for it:\n{page}"
+        );
     }
 
     /// Each note on a command page is a paragraph of its own. Wrapped, two
@@ -1533,92 +1646,89 @@ mod tests {
         }
     }
 
-    /// A page has two levels of heading, and they must look it, in every
-    /// built-in theme and without colour.
+    /// A page has two levels of heading, and they must look it in RENDERED
+    /// BYTES in every built-in theme and under `NO_COLOR`, not only in the
+    /// roles asked for: `mono` draws `accent` and `header` alike as `ESC[1m`,
+    /// so a test of roles passed while TASQX MANUAL, TOPICS and COMMANDS were
+    /// three identical bold lines in capitals.
     ///
-    /// - The page's title takes `header` (house style rule 12), and a topic's
-    ///   title keeps its own case. A section heading takes `accent`, in
-    ///   capitals, flush over what it heads. When both were `header` and in
-    ///   capitals, `SHELL COMPLETION` and `BEFORE YOU SWITCH IT ON` drew
-    ///   identically, and the section halfway down read as a second page.
-    /// - No row carries paint of its own. `mono` draws `accent` and `header`
-    ///   alike as plain bold, so TOC names and See also names in `accent`
-    ///   were as heavy there as the headings over them, and in colour TOPICS
-    ///   was the very paint of every name under it.
-    /// - Under `NO_COLOR` the title keeps its bold, and a section heading its
-    ///   capitals and the blank line ahead of it.
+    /// Also: a section heading is flush over what it heads; no row carries
+    /// paint of its own; a topic's title keeps its own case.
     ///
-    /// Rewritten from this change's first cut, which asserted `header` on
-    /// every heading. Its intent (a heading is painted as one, and keeps a
-    /// weight without colour) is kept, and the hierarchy is added.
+    /// Rewritten twice from this change's first cut, which asserted `header`
+    /// on every heading; the intent (a heading is painted as one and keeps a
+    /// weight without colour) is kept, and the comparison moved from roles to
+    /// bytes.
     #[test]
     fn section_headings_sit_one_step_under_the_page_title() {
-        for theme in [default_theme(), crate::theme::builtin("mono").unwrap()] {
-            let caps = Caps {
-                depth: ColorDepth::Truecolor,
-                ansi: true,
-                unicode: true,
+        let truecolor = Caps {
+            depth: ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        };
+        let mut ctxs: Vec<(String, Ctx)> = crate::theme::BUILTINS
+            .iter()
+            .map(|n| {
+                (
+                    n.to_string(),
+                    Ctx::new(crate::theme::builtin(n).unwrap(), truecolor),
+                )
+            })
+            .collect();
+        ctxs.push(("NO_COLOR".to_string(), no_color()));
+        for (theme, ctx) in &ctxs {
+            let add = command_section(ctx, cmddoc::find("add").unwrap());
+            let completion = topic_section(ctx, Topic::Completion);
+            let toc = toc(ctx);
+            // The escapes a line opens with, before its first visible text.
+            let sgr = |line: &str, text: &str| -> String {
+                line[..line.find(text).expect("text on its line")].to_string()
             };
-            let ctx = Ctx::new(theme, caps);
-            let add = command_section(&ctx, cmddoc::find("add").unwrap());
-            let completion = topic_section(&ctx, Topic::Completion);
-            let toc = toc(&ctx);
-            for (page, title) in [
-                (&toc, "TASQX MANUAL"),
-                (&add, "tasqx add"),
-                (&completion, "Shell completion"),
+            for (page, title, sections) in [
+                (&toc, "TASQX MANUAL", &["TOPICS", "COMMANDS"][..]),
+                (&add, "tasqx add", &["USAGE", "EXAMPLES", "NOTES"][..]),
+                (
+                    &completion,
+                    "Shell completion",
+                    &["BEFORE YOU SWITCH IT ON"][..],
+                ),
             ] {
-                // `starts_with`: a command's title shares its line with its
-                // muted aliases.
-                assert!(
-                    page.lines()
-                        .next()
-                        .is_some_and(|l| l.starts_with(&ctx.paint("header", title))),
-                    "{title} is not the page's title:\n{page}"
-                );
-            }
-            for (page, heading) in [
-                (&toc, "TOPICS"),
-                (&toc, "COMMANDS"),
-                (&add, "USAGE"),
-                (&add, "EXAMPLES"),
-                (&add, "NOTES"),
-                (&completion, "BEFORE YOU SWITCH IT ON"),
-            ] {
-                let painted = ctx.paint("accent", heading);
                 let lines: Vec<&str> = page.lines().collect();
-                let at = lines
-                    .iter()
-                    .position(|l| *l == painted)
-                    .unwrap_or_else(|| panic!("{heading} is not a section heading:\n{page}"));
+                let title_line = lines[0];
                 assert!(
-                    !lines[at + 1].trim().is_empty(),
-                    "{heading} is not flush over what it heads:\n{page}"
+                    strip(title_line).starts_with(title),
+                    "{theme}: {title} is not the page's first line:\n{page}"
                 );
+                let title_sgr = sgr(title_line, title);
+                assert!(
+                    !title_sgr.is_empty(),
+                    "{theme}: {title} carries no emphasis"
+                );
+                for section in sections {
+                    let at = lines
+                        .iter()
+                        .position(|l| strip(l) == *section)
+                        .unwrap_or_else(|| panic!("{theme}: no {section} heading:\n{page}"));
+                    assert_ne!(
+                        sgr(lines[at], section),
+                        title_sgr,
+                        "{theme}: {section} is drawn exactly like the title {title}"
+                    );
+                    assert!(
+                        !lines[at + 1].trim().is_empty(),
+                        "{theme}: {section} is not flush over what it heads"
+                    );
+                }
             }
-            // Rows: every TOC entry, and every See also / Commands line.
             let rows = toc
                 .lines()
                 .filter(|l| l.starts_with("  "))
                 .chain(add.lines().filter(|l| l.contains("See also:")))
                 .chain(completion.lines().filter(|l| l.contains("Commands:")));
             for row in rows {
-                assert!(
-                    !row.contains('\x1b'),
-                    "a row is painted like the headings over it: {row:?}"
-                );
+                assert!(!row.contains('\x1b'), "{theme}: a row is painted: {row:?}");
             }
         }
-        let plain = no_color();
-        let add = command_section(&plain, cmddoc::find("add").unwrap());
-        assert!(
-            add.lines().next().is_some_and(|l| l.contains("\x1b[1")),
-            "the title must keep its bold under NO_COLOR:\n{add}"
-        );
-        assert!(
-            add.lines().any(|l| l == "USAGE"),
-            "a section heading must not claim the title's bold under NO_COLOR:\n{add}"
-        );
     }
 
     /// House style rule 1: what is read is not dimmed. The TOC dimmed its
