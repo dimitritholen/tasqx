@@ -18,6 +18,17 @@ use jiff::Timestamp;
 use crate::types::Priority;
 use crate::util::parse_ts;
 
+/// What the due term contributes once the deadline has passed, and the most it
+/// ever contributes.
+///
+/// It is also the one landmark on the scale with a meaning a reader already
+/// holds: a task at this score is as urgent as an overdue task with nothing
+/// else going for it. The CLI's urgency gauge draws this as a full bar (D119),
+/// which is why it is a named constant rather than a literal. A gauge scaled
+/// against its own copy of the number would keep drawing the old scale after
+/// the formula moved.
+pub const DUE_WEIGHT: f64 = 12.0;
+
 /// Days from `now` until `target`, or None if `target` is unparseable.
 ///
 /// Seconds-to-f64 is exact for any instant this tool will ever see (f64
@@ -54,9 +65,9 @@ pub fn breakdown_at(
     if let Some(due) = due {
         if let Some(d) = days_until(due, now) {
             due_term = if d <= 0.0 {
-                12.0
+                DUE_WEIGHT
             } else {
-                (12.0 * (1.0 - d / 14.0)).max(0.0)
+                (DUE_WEIGHT * (1.0 - d / 14.0)).max(0.0)
             };
         }
     }

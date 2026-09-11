@@ -53,21 +53,6 @@ impl Rgb {
         format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
     }
 
-    /// Linear interpolation toward `other` (`t` in 0..=1).
-    fn lerp(&self, other: &Rgb, t: f64) -> Rgb {
-        let t = t.clamp(0.0, 1.0);
-        let mix = |a: u8, b: u8| -> u8 {
-            (a as f64 + (b as f64 - a as f64) * t)
-                .round()
-                .clamp(0.0, 255.0) as u8
-        };
-        Rgb {
-            r: mix(self.r, other.r),
-            g: mix(self.g, other.g),
-            b: mix(self.b, other.b),
-        }
-    }
-
     /// SGR foreground parameter for a given depth (`None` when depth carries no
     /// color). Quantizes truecolor down to the terminal's real palette.
     fn sgr_fg(&self, depth: ColorDepth) -> Option<String> {
@@ -491,43 +476,40 @@ impl Theme {
         self.palette.get(name).copied()
     }
 
-    /// The urgency ramp anchors (cold → hot).
+    /// The urgency ramp's anchors, quiet first (D119).
     pub fn ramp(&self) -> &[Rgb] {
         &self.ramp
     }
 
-    /// Ramp color for a normalized position `t` in 0..=1 (cold→hot), interpolated
-    /// across the anchors. None when the theme defines no ramp (e.g. `mono`).
-    pub fn ramp_rgb(&self, t: f64) -> Option<Rgb> {
-        match self.ramp.len() {
-            0 => None,
-            1 => Some(self.ramp[0]),
-            n => {
-                let t = t.clamp(0.0, 1.0);
-                let span = (n - 1) as f64;
-                let pos = t * span;
-                let i = pos.floor() as usize;
-                if i >= n - 1 {
-                    Some(self.ramp[n - 1])
-                } else {
-                    Some(self.ramp[i].lerp(&self.ramp[i + 1], pos - i as f64))
-                }
-            }
-        }
+    /// The ramp anchor for a position `t` on the urgency scale (0..=1, where 1
+    /// is "as urgent as an overdue task"). None when the theme defines no ramp
+    /// (e.g. `mono`).
+    ///
+    /// Read in BANDS, one per anchor, and never blended (D119). With `n`
+    /// anchors, band `i` covers `t` in `[i/(n-1), (i+1)/(n-1))` and the last
+    /// anchor is reached only at the top. The built-ins' three anchors
+    /// therefore change at 6 and at 12. A blend from a grey low stop to
+    /// `warn` passes through a dark tan that reads as more orange than `warn`
+    /// itself, which put M rows visually above H rows. The gauge's length
+    /// already carries the magnitude, so all the colour has to say is which
+    /// threshold a row has crossed.
+    pub fn ramp_band(&self, t: f64) -> Option<Rgb> {
+        let last = self.ramp.len().checked_sub(1)?;
+        let i = (t.clamp(0.0, 1.0) * last as f64).floor() as usize;
+        Some(self.ramp[i.min(last)])
     }
 
-    /// The urgency ramp as a `Style` for a normalized value (used in the table).
+    /// The urgency ramp as a `Style` for a position on the urgency scale.
     pub fn ramp_style(&self, t: f64) -> Style {
-        match self.ramp_rgb(t) {
-            Some(rgb) => Style::fg(rgb),
-            // No ramp (mono): let the hot end read as bold so meaning survives.
-            None => {
-                if t >= 0.66 {
-                    Style::default().bold()
-                } else {
-                    Style::default()
-                }
-            }
+        let base = self.ramp_band(t).map_or_else(Style::default, Style::fg);
+        // The top band is bold in every theme, `mono` included, because
+        // `NO_COLOR` keeps emphasis and drops hue. The `overdue` role pairs
+        // `danger` with bold for the same reason. Nothing below the top band
+        // is bold, so the one emphasis left spends where it matters.
+        if t >= 1.0 {
+            base.bold()
+        } else {
+            base
         }
     }
 
@@ -551,6 +533,11 @@ impl Theme {
 /// mid-tone on purpose — readable on light and dark grounds alike — and
 /// `card.strong` carries no color at all, so emphasis is always the terminal's
 /// own strongest foreground. A user theme file can still override all three.
+///
+/// The urgency ramp follows the same reasoning (D119): its quiet end is that
+/// grey (`table.label`'s `#8a8a8a`) in every coloured built-in, and its other
+/// two anchors are the palette's own `warn` and `danger`. A cold row should
+/// recede. It should not be painted in the green `timer.active` means.
 fn build(
     name: &str,
     palette: &[(&str, &str)],
@@ -658,7 +645,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
                     },
                 ),
             ],
-            &["#a3be8c", "#ebcb8b", "#bf616a"],
+            &["#8a8a8a", "#ebcb8b", "#bf616a"],
         ),
         "gruvbox" => build(
             "gruvbox",
@@ -702,7 +689,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
                     },
                 ),
             ],
-            &["#b8bb26", "#fabd2f", "#fb4934"],
+            &["#8a8a8a", "#fabd2f", "#fb4934"],
         ),
         "dracula" => build(
             "dracula",
@@ -746,7 +733,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
                     },
                 ),
             ],
-            &["#50fa7b", "#f1fa8c", "#ff5555"],
+            &["#8a8a8a", "#f1fa8c", "#ff5555"],
         ),
         "solarized" => build(
             "solarized",
@@ -790,7 +777,7 @@ pub fn builtin(name: &str) -> Option<Theme> {
                     },
                 ),
             ],
-            &["#859900", "#b58900", "#dc322f"],
+            &["#8a8a8a", "#b58900", "#dc322f"],
         ),
         // mono: no color anywhere — meaning is carried by bold/dim/underline
         // only, so it is correct even on a NO_COLOR or 16-color terminal.
@@ -1670,22 +1657,83 @@ urgency.ramp = ["#000000", "#ffffff"]
         assert_eq!(merged.ramp(), &[Rgb::new(0, 0, 0), Rgb::new(255, 255, 255)]);
     }
 
+    /// D119: the ramp is read in bands, one per anchor, and never blended.
+    ///
+    /// Blending from a grey low stop to `warn` passes through a dark tan of
+    /// the same hue as `warn` and lower lightness, and that reads as MORE
+    /// orange than `warn` itself: rendered on a real store, the M rows looked
+    /// warmer than the H rows above them. So rule 6's ranking broke in the
+    /// colour channel. The bar already carries the magnitude, which leaves the
+    /// colour to say only which threshold a row has crossed.
     #[test]
-    fn ramp_interpolates_cold_to_hot() {
+    fn the_ramp_is_read_in_bands_not_blended() {
         let t = builtin("nord").unwrap();
-        assert_eq!(t.ramp_rgb(0.0), Some(Rgb::new(0xa3, 0xbe, 0x8c)));
-        assert_eq!(t.ramp_rgb(1.0), Some(Rgb::new(0xbf, 0x61, 0x6a)));
-        // mid is between anchors, not equal to either end
-        let mid = t.ramp_rgb(0.5).unwrap();
-        assert_ne!(mid, t.ramp_rgb(0.0).unwrap());
+        let a = t.ramp().to_vec();
+        assert_eq!(a.len(), 3);
+        for (at, want) in [
+            (0.0, a[0]),
+            (0.49, a[0]),
+            (0.5, a[1]),
+            (0.99, a[1]),
+            (1.0, a[2]),
+            (1.7, a[2]),
+        ] {
+            assert_eq!(t.ramp_style(at).fg, Some(want), "at {at}");
+        }
     }
 
+    /// D119: every coloured built-in's ramp runs quiet, then `warn`, then
+    /// `danger`, and the quiet end is the achromatic `table.label` grey.
+    ///
+    /// It used to start at the theme's green, the hue `timer.active` uses, so a
+    /// cold row's urgency read as reassuring rather than quiet (#329). The
+    /// middle and top are the palette's own `warn` and `danger` so the ramp
+    /// cannot disagree with the roles that already mean those things.
     #[test]
-    fn mono_has_no_ramp_color() {
+    fn every_coloured_builtin_ramp_runs_quiet_then_warn_then_danger() {
+        for name in BUILTINS.iter().filter(|n| **n != "mono") {
+            let t = builtin(name).unwrap();
+            let quiet = t.role("table.label").fg.expect("table.label has a colour");
+            assert_eq!(
+                t.ramp(),
+                &[
+                    quiet,
+                    t.palette_color("warn").unwrap(),
+                    t.palette_color("danger").unwrap(),
+                ],
+                "{name}'s ramp is not quiet → warn → danger"
+            );
+            assert!(
+                quiet.r == quiet.g && quiet.g == quiet.b,
+                "{name}'s quiet end has a hue: {quiet:?}"
+            );
+        }
+    }
+
+    /// The top band is bold in EVERY built-in, not only in `mono`.
+    ///
+    /// `NO_COLOR` keeps emphasis and drops hue (DESIGN.md §8), so a top band
+    /// that was `danger` and nothing else gave the one overdue row on a real
+    /// store no mark at all under it. The `overdue` role is `danger` plus
+    /// bold for the same reason.
+    #[test]
+    fn the_top_band_is_bold_in_every_builtin_so_it_survives_no_color() {
+        for name in BUILTINS {
+            let t = builtin(name).unwrap();
+            assert!(t.ramp_style(1.0).bold, "{name}: top band not bold");
+            assert!(!t.ramp_style(0.99).bold, "{name}: bold below the top band");
+        }
+    }
+
+    /// `mono` has no ramp, so the top band reads as bold and nothing below it
+    /// does: the one emphasis mono has is spent where a coloured theme spends
+    /// `danger`, not on a row that is merely high priority.
+    #[test]
+    fn mono_has_no_ramp_color_and_bolds_only_the_top_band() {
         let t = builtin("mono").unwrap();
-        assert_eq!(t.ramp_rgb(0.5), None);
-        // hot end still readable via bold under mono
-        assert!(t.ramp_style(0.9).bold);
+        assert_eq!(t.ramp_style(0.5).fg, None);
+        assert!(!t.ramp_style(0.9).bold, "below the top band is not bold");
+        assert!(t.ramp_style(1.0).bold, "the top band must still read");
     }
 
     // ---- user-file diagnostics ----------------------------------------------

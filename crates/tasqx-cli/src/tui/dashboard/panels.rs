@@ -313,7 +313,6 @@ fn tasks_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'sta
             out.push(task_line(
                 task,
                 at == cursor.row && cursor.shown,
-                t.max_urgency,
                 dash.today,
                 ctx,
                 id_w,
@@ -353,11 +352,9 @@ fn group_heading(g: &TaskGroup, s: &Styles, w: usize, unicode: bool) -> Line<'st
 }
 
 /// One task row, in `tasqx list`'s layout.
-#[allow(clippy::too_many_arguments)]
 fn task_line(
     t: &Task,
     on_cursor: bool,
-    max_urgency: f64,
     today: Date,
     ctx: &PanelCtx,
     id_w: usize,
@@ -388,7 +385,7 @@ fn task_line(
         _ => s.muted,
     };
     let gauge = if unicode {
-        let (bar, track) = render::urgency_meter(t.urgency / max_urgency);
+        let (bar, track) = render::urgency_meter(render::urgency_scale(t.urgency));
         Some((bar, track))
     } else {
         None
@@ -444,17 +441,23 @@ fn task_line(
         Span::styled(format!("{prio} "), prio_style),
     ];
     if let Some((bar, track)) = gauge {
-        let ramp = rt_style(ctx.theme.ramp_style(t.urgency / max_urgency), ctx.caps);
+        let ramp = rt_style(
+            ctx.theme.ramp_style(render::urgency_scale(t.urgency)),
+            ctx.caps,
+        );
         spans.push(Span::styled(bar, ramp));
         spans.push(Span::styled(track, s.muted));
         spans.push(Span::styled(" ".to_string(), s.plain));
     }
-    // The figure takes the ramp, exactly as `list` paints it — the two screens
-    // shading the same task differently is what the shared denominator exists
-    // to prevent.
+    // The figure takes the ramp, exactly as `list` paints it. Both read
+    // `render::urgency_scale`, so the two screens cannot shade the same task
+    // differently (D119).
     spans.push(Span::styled(
         format!("{:>4}  ", format!("{:.1}", t.urgency)),
-        rt_style(ctx.theme.ramp_style(t.urgency / max_urgency), ctx.caps),
+        rt_style(
+            ctx.theme.ramp_style(render::urgency_scale(t.urgency)),
+            ctx.caps,
+        ),
     ));
     spans.push(Span::styled(
         render::pad(&render::truncate(t.title(), title_w, unicode), title_w),

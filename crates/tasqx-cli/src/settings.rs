@@ -427,17 +427,36 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                     }),
                 );
             }
-            // Show the urgency ramp as a cold→hot strip.
-            let strip: String = (0..=10)
+            // The urgency ramp as the table reads it: one swatch per band, each
+            // labelled with the urgency the band starts at (D119). A strip of
+            // blended samples previewed a gradient no screen draws. `mono` has
+            // no anchors and still has two bands, plain and bold.
+            let bands = preview.theme.ramp().len().max(2);
+            let strip: Vec<String> = (0..bands)
                 .map(|i| {
-                    let t = i as f64 / 10.0;
-                    preview.theme.ramp_style(t).paint(bar, &preview.caps)
+                    let t = i as f64 / (bands - 1) as f64;
+                    let from = t * tasqx_core::urgency::DUE_WEIGHT;
+                    format!(
+                        "{} {}",
+                        preview
+                            .theme
+                            .ramp_style(t)
+                            .paint(&bar.repeat(3), &preview.caps),
+                        preview.paint("muted", &format!("{from:.0}")),
+                    )
                 })
                 .collect();
             text.push_str(&format!(
-                "  {:<14} {strip}  {}\n",
+                "  {:<14} {}  {}\n",
                 "urgency.ramp",
-                preview.paint("muted", "cold → hot")
+                strip.join("  "),
+                preview.paint(
+                    "muted",
+                    &format!(
+                        "({:.0} = as urgent as overdue)",
+                        tasqx_core::urgency::DUE_WEIGHT
+                    )
+                )
             ));
             Ok((
                 json!({

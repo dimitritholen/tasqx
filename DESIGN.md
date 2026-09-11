@@ -465,13 +465,15 @@ $ tasqx list
 @working   4 tasks · 1 overdue · 1 due today · #47 running
 
     ID          URG  TASK                             PROJECT     DUE        TAGS
-    42  H ▄▄▄▄ 11.8  Ship the v1 JSON API freeze      work.tasqx  Mon 17:00  +release +api
-▶   47  M ▄▄▄▂  9.4  Write API conformance tests      work.tasqx  today      +api +test
+    42  H ▄▄▄▃ 11.8  Ship the v1 JSON API freeze      work.tasqx  Mon 17:00  +release +api
+▶   47  M ▄▄▄▁  9.4  Write API conformance tests      work.tasqx  today      +api +test
     31  H ▄▄▂▁  7.1  Fix WAL busy_timeout on Windows  work.infra  3d ago     +bug
     55  L ▄▂▁▁  4.2  Draft README quickstart          work.tasqx             +docs
 ```
-Row 31's `3d ago` renders in red, and the gauge beside each figure is that row's
-urgency over the hottest on screen, in the theme's ramp colour. The left rail carries
+Row 31's `3d ago` renders in red, and the gauge beside each figure places that row's
+urgency on one absolute scale, full at "as urgent as an overdue task", in the ramp band it
+has reached: quiet, `warn` from H priority alone, `danger` from overdue (**D119**). The
+left rail carries
 the two facts a reader needs before any other — `▶` the running timer, `⊘` blocked —
 and is the one column no width squeeze drops (**D117**). Maps to
 `task.list {filter:"@working", sort:["-urgency"]}`.
@@ -883,7 +885,7 @@ priority.M   = { fg = "warn" }
 priority.L   = { fg = "muted" }
 overdue      = { fg = "danger", bold = true }
 timer.active = { fg = "#a3be8c" }
-urgency.ramp = ["#a3be8c", "#ebcb8b", "#bf616a"]   # cold → hot gradient
+urgency.ramp = ["#8a8a8a", "#ebcb8b", "#bf616a"]   # quiet → warn → danger, one band per anchor (D119)
 ```
 
 ### Graceful degradation
@@ -954,7 +956,7 @@ All charts are pure clients of `report.summary` and `task.list` — the core ret
 |---|---|
 | **Typography** | System UI stack for prose (`ui-sans-serif, -apple-system, Segoe UI…`); a mono stack (`ui-monospace, "Cascadia Code"…`) for ids/durations. Generous line-height, one accent weight. |
 | **Layout** | One centered column, 1100px wide, for prose, lists, charts and the table alike (**D116**; the earlier 72ch prose measure with a breakout for the table and charts, #235/3, left every heading hanging off its own figure). Sticky summary header with four tiles — open now, done · last 7 days, backlog · 30 days, needs attention — each naming its window, plus the snapshot instant; unpinned on a two-column grid under 600px. Sections in decision order: assessment, needs attention, now actionable, then the evidence. |
-| **Charts** | The §8 burndown/heatmap/throughput re-rendered as crisp inline **SVG** (same numbers, same `urgency.ramp` as a `<linearGradient>`). |
+| **Charts** | The §8 burndown/heatmap/throughput re-rendered as crisp inline **SVG** (same numbers, and the same roles the terminal charts paint each mark with: `accent`, `timer.active`; never `urgency.ramp`, which is the urgency scale alone, **D119**). |
 | **Dark/light** | Both on every page, over CSS custom properties; the report palette is generated from the *active tasqx theme*, so terminal and HTML match. Light is the default whatever the OS prefers; dark is a switch in the header, the choice kept per browser (**D116**). |
 | **Data shown** | An assessment line; needs attention (in progress, overdue, due within 7 days); now actionable; weekly throughput and the open backlog, each captioned with its start, end and change; token spend as four buckets; per-project open/total, est vs. tracked, overdue and the four buckets; completed this period; top tags. `—` is unmeasured or untracked, `0` a measured zero. |
 | **Interaction** | One inline script (**D48b**, **D116**): a search box, a status select and clickable project/tag chips filter the task lists in place; the project table sorts by any column; every task id opens a `:target` detail panel with fields, dependencies and its newest annotations, bounded by `PANEL_BUDGET`. The script flips attributes and moves focus; the page renders fully without it. |
@@ -1138,7 +1140,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | **Core** | API v1 declared **stable**; the conformance suite (`crates/tasqx-core/tests/conformance.rs`) is the contract of record — the envelope, the error codes and every method's response shape, with its method floor derived from `dispatch::PARAMS` rather than listed. What it freezes is the **JSON API's shape**; what it does *not* freeze is the MCP **tool schema** — tool names, descriptions and input schemas stay free to move, and `tests/mcp.rs` covers them. The tool *results* are not exempt: `conformance.rs` drives the live `tools/list`, maps each tool to its method and asserts that same frozen result shape, so renaming a response field reddens the MCP half too. Read D56's "excludes MCP" as being about the schema, not the answers. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
 | **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). |
 | **Distribution** | Prebuilt archives for four targets on a tag, plus a `completions/` directory inside each one and a generated Homebrew formula that switches completion on at install time (**D57**, `docs/homebrew-tap.md`). The tap and the Scoop bucket exist (`dimitritholen/homebrew-tasqx`, `dimitritholen/scoop-tasqx`), each filled per release by its generator (`scripts/brew-formula.sh`, `scripts/scoop-manifest.sh`) and merged only after that repo's own CI has installed the result for real; the README leads with them, and a package manager the reader already has outranks the script (**D77**). On top of those archives, `install.sh` and `install.ps1` are the **universal** install route (**D61**, narrowed by D77): a one-liner served raw from `raw.githubusercontent.com` that resolves one host triple, verifies the published `.sha256` and unpacks into a per-user directory, with re-running it as the update path — which is not the self-update D10 forbids, because the binary still never writes to itself. The archives are **not signed**: D10 required notarization and Authenticode, D61 narrows that to deferred, and the consequence ships with the route — on macOS it bypasses Gatekeeper rather than passing it, on Windows it is what SmartScreen is built to interrupt. Signing is scheduled work, not a decided absence. |
-| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
+| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
 | **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. Responses are bounded: `task.get` pages its history and drops the duplicate block (D63, D66, D72), still a transport-only bound. `task.list` pages its rows and reports what it withheld (D70) — that page's DEFAULT now lives in the engine itself (**D110**), reachable by `tasqx api`/the CLI too, not only by this transport; MCP's own default-insertion is what still drives its byte-budget bisection over an oversized page. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
 
@@ -1456,7 +1458,7 @@ Meanwhile five commands silently accepted `--json` and printed prose, because `c
 
 ### D48 — The report page renders four token buckets, and earns one inline script to do it
 
-**Decision:** Three parts, one rule. **(a) The four token buckets are never blended on any output surface.** `cache read`, `cache write`, `input` and `output` render as four separate stats adjacent to the bars that decompose them; the per-project chart is a four-segment stacked bar and the per-task table carries a four-segment micro-bar. The single blended `stat("AI tokens")` in `html.rs` and the single blended `TOKENS` column in the terminal report are deleted. Where a surface must say which bucket matters it renders a **weighted dominance ratio** from published relative weights — never a currency figure, because tasqx has no price list and a wrong one is worse than none. **(b) `report_is_self_contained` is replaced by the `docs.rs` guard shape**: every `href` an in-page `#anchor`, exactly one inline `<script>` with no network API, no History API and no `eval`, plus the three bans the old guard missed entirely — `<link>`, `@import`, and `url(` other than an in-document `url(#…)` — applied **structurally** over attribute values and `<style>`/`<script>` content, never as a substring scan over the whole document. **(c) The chart palette is derived from the theme, not taken from it**: four categorical steps per scheme, each role keeping its hue while lightness and chroma are re-stepped to pass an OKLCH lightness band, a chroma floor, an adjacent-pair CVD floor and 3:1 contrast against their own surface; stack order fixed cyan → amber → purple → green so the deutan- and protan-confusable pairs are never adjacent. `urgency.ramp` stays sequential and is used only for magnitude. **(d) Every panel states its window, and the windowed ones share one range** — backlog is a state, throughput and tokens are a window — and **the range is a generation-time parameter, not an in-page control.** No library is vendored; the interaction budget is ~4.7 KB of inline vanilla JS.
+**Decision:** Three parts, one rule. **(a) The four token buckets are never blended on any output surface.** `cache read`, `cache write`, `input` and `output` render as four separate stats adjacent to the bars that decompose them; the per-project chart is a four-segment stacked bar and the per-task table carries a four-segment micro-bar. The single blended `stat("AI tokens")` in `html.rs` and the single blended `TOKENS` column in the terminal report are deleted. Where a surface must say which bucket matters it renders a **weighted dominance ratio** from published relative weights — never a currency figure, because tasqx has no price list and a wrong one is worse than none. **(b) `report_is_self_contained` is replaced by the `docs.rs` guard shape**: every `href` an in-page `#anchor`, exactly one inline `<script>` with no network API, no History API and no `eval`, plus the three bans the old guard missed entirely — `<link>`, `@import`, and `url(` other than an in-document `url(#…)` — applied **structurally** over attribute values and `<style>`/`<script>` content, never as a substring scan over the whole document. **(c) The chart palette is derived from the theme, not taken from it**: four categorical steps per scheme, each role keeping its hue while lightness and chroma are re-stepped to pass an OKLCH lightness band, a chroma floor, an adjacent-pair CVD floor and 3:1 contrast against their own surface; stack order fixed cyan → amber → purple → green so the deutan- and protan-confusable pairs are never adjacent. `urgency.ramp` stays sequential and is used only for magnitude (narrowed by **D119** to urgency alone: the charts no longer read it). **(d) Every panel states its window, and the windowed ones share one range** — backlog is a state, throughput and tokens are a window — and **the range is a generation-time parameter, not an in-page control.** No library is vendored; the interaction budget is ~4.7 KB of inline vanilla JS.
 
 **Why (a):** `engine/reports.rs` already carries the comment "cache tokens cost a fraction, so a blended total would lie", and keeps the four counters apart through the entire aggregation, deriving `tokens_total` only at emit. Both presentation layers then took that derived field and made it **the** headline number, discarding the exact care the core took. Measured on this project's own store: `in 136 · out 83 479 · cacheR 13 630 240 · cacheW 186 965`. The blend is 13.9 M. Weighted by published relative prices, cache read is **98.1 % of that volume but 67.7 % of the cost**, while output is **0.6 % of the volume and 20.7 % of the cost**. One number cannot carry a 35× spread in price per token, and the blend is wrong in the flattering direction — the D18/D21/D23/D24 class: a number that drives a decision and does not mean what its label says. The blend survived on one surface: `--json` and the API kept emitting the derived `tokens_total` metric. D50 closed that exception — the field left the metric vocabulary outright, so "never blended on any output surface" now holds uniformly.
 
@@ -2395,3 +2397,96 @@ removes.
 parameter), `docs.rs`'s `every_env_var_is_either_a_registered_setting_or_a_named_exception`
 list, `crates/tasqx-cli/tests/completion.rs`. Not documented as a switch and not on the
 wiki's Shell-Completion page: it is test scaffolding, like `TASQX_PANIC_PROBE_CHILD`.
+
+### D119 — Urgency is drawn on one absolute scale, and the ramp is read in three bands that start quiet (tasks #337, #329)
+
+**Decision:** One ruling over two knobs, because they are one knob. The urgency gauge and
+the ramp colour that `list`, `agenda` and the dashboard's TASKS paint it in answer the same
+question, and they now answer it the same way on every screen.
+
+- **(a) The scale is absolute.** `render::urgency_scale` places a score at
+  `urgency / DUE_WEIGHT`, clipped to 1. `DUE_WEIGHT` is the due term's saturation, 12,
+  exported from `tasqx_core::urgency` and used by the formula itself, so the gauge cannot
+  keep drawing an old scale after the formula moves. A full bar therefore means "as urgent
+  as an overdue task"; H priority alone is half of that. The denominator used to be the
+  hottest row on screen (`max_urgency`, in `render` and again in the dashboard model), and
+  it is gone from both, as is the dashboard JSON's `max_urgency`, which only ever reported
+  it.
+- **(b) The ramp is read in bands, one per anchor, and never blended.** `Theme::ramp_band`
+  replaces the interpolating `ramp_rgb`: with `n` anchors, band `i` covers
+  `[i/(n-1), (i+1)/(n-1))` and the last anchor is reached only at the top. The gauge's
+  length carries the magnitude, so all the colour says is which threshold a row has
+  crossed. The heatmap ruled the same way when it took colour off the count.
+- **(c) The built-ins' ramp is quiet, `warn`, `danger`.** The quiet end is `table.label`'s
+  achromatic `#8a8a8a` in all four coloured themes (D76's reasoning, applied to the ramp),
+  and the other two anchors are each palette's own `warn` and `danger`. On the absolute
+  scale the three bands change at 6 and 12: everything short of H priority stays quiet, H
+  alone and anything short of overdue is `warn`, and overdue or its equivalent is `danger`.
+- **(d) The top band is bold in every theme**, not only in `mono`. `NO_COLOR` keeps emphasis
+  and drops hue (§8), so a `danger` that was only a foreground left the one overdue row on a
+  real store with no mark under it. It is the `overdue` role's pairing.
+- **(e) The gauge floors instead of rounding.** Rounding drew 11.5 as a full bar while the
+  band, which floors, still painted it `warn`, so the bar and its colour disagreed about the
+  one threshold both exist to show. A step is one urgency point.
+- **(f) `urgency.ramp` is the urgency scale and nothing else.** The HTML report took the
+  ramp's ENDS as fixed colours: throughput's "done" bar was `ramp().first()` and the
+  backlog stroke `ramp().last()` over a ramp gradient. That worked only while the first
+  stop happened to be `timer.active`'s green, and it would have drawn "done" in quiet grey
+  once (c) landed. They now take `timer.active` and `accent`, the roles `chart.rs` already
+  paints the same marks with, and the report draws no gradient. This narrows D48(c)'s
+  "`urgency.ramp` stays sequential and is used only for magnitude" to urgency alone.
+  `theme show` previews the bands as they will be drawn (`0 · 6 · 12`) rather than a blended
+  strip no screen draws.
+
+**Why:** `tasqx list` was rendered against a real store right after D117 shipped, and one
+overdue task at 18.5, about three times the next score, flattened everything else: every H
+row drew a third of a gauge in the ramp's green while its priority letter was red. #337
+measured that as sixteen distinct scores collapsing to five marks. #329 was the same knob
+from the other side: a green low stop is `timer.active`'s hue, so a cold row read as
+reassuring rather than quiet. Re-derive the spread with `tasqx list --json` over the working
+set.
+
+**How it was chosen:** five candidates were rendered as images on a copy of that store,
+with a throwaway env-switch build, before any Rust was written for real. The pictures
+decided:
+
+- **p90 of the visible rows, clipped** (#337's own candidate), drew all sixteen H rows as
+  the same full red bar as the one overdue task, so the only row actually on fire lost its
+  distinction. On a filtered view it painted done tasks in `danger`. Every relative scale
+  does that: its top row is always full and always hot, whatever it holds.
+- **A continuous grey → `warn` → `danger` ramp** has a muddy middle. Between a mid grey and
+  `warn` sits a darker tan of `warn`'s own hue, and it reads as MORE orange than `warn`, so M
+  rows looked warmer than the H rows above them. That is rule 6 of
+  `docs/terminal-style.md` broken in the colour channel.
+- **No colour on the gauge at all** made the bars the loudest ink on the row, against rule 1.
+- **Absolute with three bands** read as one hot row, a warm band and a quiet rest, which is
+  what the store holds. The same view also exposed the misleading part of the "five marks"
+  count: the store has five meaningful clusters (none, L, M, H, overdue), and the other
+  eleven values differ only in the age term's hundredths. A gauge that separated those would
+  be amplifying noise.
+
+**The price, named rather than assumed:** everything at or past 12 draws the same full bar,
+so an overdue H task and a task due in a week with H priority look alike until the figure
+beside them is read. D117's 17.9-versus-15.8 finding was about that top of the scale, and
+it now saturates on purpose; `the_urgency_gauge_separates_the_scores_the_reader_is_ranking`
+guards the landmarks below the top instead. The band edge at 6 means "H alone" only while H
+is exactly half the due weight; `a_full_gauge_means_as_urgent_as_an_overdue_task` fails if
+the formula breaks that. D1's `[urgency]` weight overrides, when they land, must feed the
+effective due weight into `urgency_scale` rather than leave it reading the constant.
+
+**Verified:** every new guard was watched fail against the original code, and each was then
+made to bite by injecting its drift into the new code: a CLI-side literal 12 against a moved
+formula, a wrong `warn` anchor in the last built-in, `mono` bolding at 0.66 again, banding by
+rounding, the meter rounding again, and the report's "done" bar borrowing the ramp. The
+rewritten landmarks test cannot be run against the original code, which had no scale to feed
+it. It was made to bite with a whole-cell meter instead, which drew no priority and L
+identically. One
+line, an epsilon nudge ahead of the meter's floor, never went red under any injection. A
+scan of every one-decimal score from 0 to 12.9 showed it was never needed, so it was
+deleted rather than kept unguarded.
+
+**Where:** `crates/tasqx-core/src/urgency.rs` (`DUE_WEIGHT`), `crates/tasqx-cli/src/render.rs`
+(`urgency_scale`, `urgency_meter`'s floor, `task_row`), `theme.rs` (`ramp_band`,
+`ramp_style`, the four coloured built-ins' ramps), `tui/dashboard/{model,panels,json}.rs`,
+`html.rs` (`role_hex`, `svg_wrap`), `settings.rs` (the `theme show` strip),
+`docs/terminal-style.md` rule 6 and its Contract table.

@@ -150,7 +150,6 @@ pub fn document(d: &Dashboard, days: usize, order: &[PanelId]) -> Value {
             "tasks".to_string(),
             json!({
                 "sort": t.sort.label(),
-                "max_urgency": t.max_urgency,
                 "total": t.total,
                 "groups": groups,
             }),

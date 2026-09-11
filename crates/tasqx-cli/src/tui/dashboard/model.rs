@@ -272,9 +272,6 @@ impl StatusBar {
 #[derive(Clone, Debug, Default)]
 pub struct Tasks {
     pub groups: Vec<TaskGroup>,
-    /// The ramp denominator, computed the way `render` computes it so the
-    /// dashboard and `tasqx list` shade the same task the same colour.
-    pub max_urgency: f64,
     /// Every row across every group, so a panel can size itself without
     /// walking them.
     pub total: usize,
@@ -349,11 +346,6 @@ pub fn group_tasks(rows: Vec<Task>, today: Date, sort: Sort) -> Tasks {
         Sort::Touched => rows,
         _ => rows.into_iter().filter(|t| t.status.is_open()).collect(),
     };
-    let max_urgency = rows
-        .iter()
-        .map(|t| t.urgency)
-        .fold(0.0_f64, f64::max)
-        .max(1.0);
     let total = rows.len();
     let overdue_of = |t: &Task| t.due_date().is_some_and(|d| d < today);
 
@@ -387,7 +379,6 @@ pub fn group_tasks(rows: Vec<Task>, today: Date, sort: Sort) -> Tasks {
                 overdue,
                 rows,
             }],
-            max_urgency,
             total,
             sort,
         };
@@ -417,7 +408,6 @@ pub fn group_tasks(rows: Vec<Task>, today: Date, sort: Sort) -> Tasks {
 
     Tasks {
         groups,
-        max_urgency,
         total,
         sort,
     }
