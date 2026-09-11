@@ -1747,34 +1747,20 @@ pub(crate) fn humanize_iso(iso: &str) -> String {
 use tasqx_core::util::duration_secs;
 
 // ============================================================================
-// Inline SVG charts (same numbers + urgency.ramp as the terminal)
+// Inline SVG charts (same numbers and the same roles as the terminal charts)
 // ============================================================================
 
-fn ramp_stops(theme: &Theme, id: &str) -> String {
-    let anchors = theme.ramp();
-    if anchors.is_empty() {
-        // mono: a single accent-derived stop so the gradient is still valid.
-        let a = theme
-            .palette_color("fg")
-            .unwrap_or(Rgb::new(0x88, 0x88, 0x88));
-        return format!(
-            "<linearGradient id=\"{id}\" x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\">\
-             <stop offset=\"0%\" stop-color=\"{c}\"/><stop offset=\"100%\" stop-color=\"{c}\"/></linearGradient>",
-            c = a.hex()
-        );
-    }
-    let n = anchors.len();
-    let mut stops = String::new();
-    for (i, c) in anchors.iter().enumerate() {
-        let off = (i as f64 / (n - 1).max(1) as f64) * 100.0;
-        stops.push_str(&format!(
-            "<stop offset=\"{off:.0}%\" stop-color=\"{}\"/>",
-            c.hex()
-        ));
-    }
-    format!(
-        "<linearGradient id=\"{id}\" x1=\"0\" y1=\"1\" x2=\"0\" y2=\"0\">{stops}</linearGradient>"
-    )
+/// A role's colour for a chart mark, or `fallback` where the theme gives the
+/// role none (`mono`).
+///
+/// The charts used to take `urgency.ramp`'s ends as fixed colours: "done" was
+/// `ramp().first()` and the burndown's stroke `ramp().last()` over a ramp
+/// gradient. That only worked while the ramp's first stop happened to be the
+/// green `timer.active` uses. D119 re-anchored it to a quiet grey, and the ramp
+/// is the urgency scale and nothing else, so the page paints these marks with
+/// the roles `chart.rs` already uses for them.
+fn role_hex(theme: &Theme, role: &str, fallback: Rgb) -> String {
+    theme.role(role).fg.unwrap_or(fallback).hex()
 }
 
 fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
@@ -1792,16 +1778,8 @@ fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
         .unwrap_or(1)
         .max(1) as f64;
 
-    let accent = theme
-        .palette_color("accent")
-        .unwrap_or(Rgb::new(0x88, 0xc0, 0xd0))
-        .hex();
-    let done_c = theme
-        .ramp()
-        .first()
-        .copied()
-        .unwrap_or(Rgb::new(0xa3, 0xbe, 0x8c))
-        .hex();
+    let accent = role_hex(theme, "accent", Rgb::new(0x88, 0xc0, 0xd0));
+    let done_c = role_hex(theme, "timer.active", Rgb::new(0xa3, 0xbe, 0x8c));
 
     let n = buckets.len().max(1);
     let slot = plot_w / n as f64;
@@ -1869,7 +1847,7 @@ fn svg_throughput(buckets: &[chart::WeekBucket], theme: &Theme) -> String {
         lx2x = w - 64.0,
     );
 
-    svg_wrap(w, h, &format!("{axis}{bars}{labels}{legend}"), theme, "tp")
+    svg_wrap(w, h, &format!("{axis}{bars}{labels}{legend}"))
 }
 
 fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
@@ -1895,12 +1873,7 @@ fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
     }
     area.push_str(&format!(" L {:.1} {:.1} Z", x_at(n - 1), pad_t + plot_h));
 
-    let stroke = theme
-        .ramp()
-        .last()
-        .copied()
-        .unwrap_or(Rgb::new(0xbf, 0x61, 0x6a))
-        .hex();
+    let stroke = role_hex(theme, "accent", Rgb::new(0x88, 0xc0, 0xd0));
     let axis = format!(
         "<line x1=\"{pad_l}\" y1=\"{y0:.1}\" x2=\"{pad_l}\" y2=\"{y1:.1}\" class=\"axis\"/>\
          <line x1=\"{pad_l}\" y1=\"{y1:.1}\" x2=\"{xr:.1}\" y2=\"{y1:.1}\" class=\"axis\"/>\
@@ -1945,11 +1918,11 @@ fn svg_burndown(series: &[chart::RemainingPoint], theme: &Theme) -> String {
     };
 
     let body = format!(
-        "{axis}<path d=\"{area}\" fill=\"url(#burn_ramp)\" opacity=\"0.28\"/>\
+        "{axis}<path d=\"{area}\" fill=\"{stroke}\" opacity=\"0.18\"/>\
          <path d=\"{line}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"2.5\" stroke-linejoin=\"round\"/>\
          {points}{date_labels}"
     );
-    svg_wrap(w, h, &body, theme, "burn")
+    svg_wrap(w, h, &body)
 }
 
 /// A halfway y-axis label, so a reader can place a bar between the top and
@@ -1964,13 +1937,11 @@ fn mid_axis_label(max: f64, x: f64, y: f64) -> String {
     )
 }
 
-/// Wrap chart geometry in a themed `<svg>` with the ramp gradient + axis style.
-fn svg_wrap(w: f64, h: f64, inner: &str, theme: &Theme, prefix: &str) -> String {
-    let gid = format!("{prefix}_ramp");
-    let defs = ramp_stops(theme, &gid);
+/// Wrap chart geometry in an `<svg>` with the axis style.
+fn svg_wrap(w: f64, h: f64, inner: &str) -> String {
     format!(
         "<figure><svg viewBox=\"0 0 {w:.0} {h:.0}\" role=\"img\">\
-         <defs>{defs}<style>\
+         <defs><style>\
          .axis {{ stroke: var(--line); stroke-width: 1; }}\
          .axl {{ fill: var(--muted); font: 11px ui-monospace, monospace; }}\
          </style></defs>{inner}</svg></figure>"
@@ -3075,11 +3046,58 @@ mod tests {
         );
     }
 
+    /// D119: `urgency.ramp` is the urgency scale, and the report's charts do
+    /// not borrow its ends as fixed colours.
+    ///
+    /// They did: throughput's "done" bar was `ramp().first()` and the
+    /// burndown's stroke `ramp().last()` over a ramp gradient, so re-anchoring
+    /// the ramp's low stop from green to a quiet grey would have drawn the
+    /// best number on the page as nothing. The terminal charts paint those
+    /// marks `timer.active` and `accent`, and the page now does the same.
+    /// A theme whose ramp is three colours nothing else uses proves it: none
+    /// of them may reach the page.
+    #[test]
+    fn the_report_charts_do_not_borrow_the_urgency_ramp() {
+        let (summary, export, actionable, events) = synthetic();
+        let user = theme::parse_user_theme(
+            "extends = \"nord\"\n[roles]\n\
+             urgency.ramp = [\"#0a0b0c\", \"#1a1b1c\", \"#2a2b2c\"]\n",
+        )
+        .expect("parse");
+        let th = theme::merge(&theme::builtin("nord").unwrap(), &user);
+        let now = "2026-07-15T12:00:00Z".to_string();
+        let doc = Report {
+            theme: &th,
+            group_by: "project",
+            filter: None,
+            summary: &summary,
+            export: &export,
+            actionable: &actionable,
+            events: &events,
+            now: &now,
+        }
+        .render();
+        for hex in ["#0a0b0c", "#1a1b1c", "#2a2b2c"] {
+            assert!(
+                !doc.to_lowercase().contains(hex),
+                "the report painted the ramp anchor {hex}"
+            );
+        }
+        let done = th.role("timer.active").fg.unwrap().hex();
+        assert!(
+            doc.contains(&format!("fill=\"{done}\"")),
+            "throughput's done bars are not timer.active ({done})"
+        );
+    }
+
     #[test]
     fn report_renders_for_mono_theme() {
-        // mono has an empty ramp — the SVG gradient must still be valid.
+        // mono gives the chart roles no colour, so every mark takes its
+        // fallback rather than an empty `fill=""`.
         let doc = render_with("mono");
-        assert!(doc.contains("<linearGradient"));
+        assert!(doc.contains("<svg"));
+        assert!(!doc.contains("fill=\"\""), "a mark with no colour");
+        assert!(!doc.contains("stroke=\"\""), "a line with no colour");
         assert!(!doc.contains("http://"));
     }
 

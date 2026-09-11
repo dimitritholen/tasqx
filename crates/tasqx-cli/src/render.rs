@@ -891,8 +891,8 @@ fn status_marker(t: &Value) -> Option<(&'static str, String)> {
     None
 }
 
-/// The urgency gauge: `r.ramp` — this row's urgency over the hottest on screen
-/// — as a bar on a track. Returns the two halves separately, because they are
+/// The urgency gauge: `r.ramp` — this row's place on [`urgency_scale`] — as a
+/// bar on a track. Returns the two halves separately, because they are
 /// painted differently: the bar in the theme's ramp color, the track in
 /// `muted`.
 ///
@@ -912,7 +912,11 @@ pub(crate) fn urgency_meter(ramp: f64) -> (String, String) {
     /// The remainder glyphs, all SHORTER than the `▄` a full cell draws.
     const PART: [char; 3] = ['▂', '▃', '▄'];
     const CELLS: usize = 4;
-    let steps = (ramp.clamp(0.0, 1.0) * (CELLS * PART.len()) as f64).round() as usize;
+    // Floored, not rounded (D119). A full gauge claims "as urgent as an overdue
+    // task", and rounding drew 11.5 full while the ramp, which bands by
+    // flooring, still painted it `warn`. The bar and its colour then disagreed
+    // about the one threshold both exist to show.
+    let steps = (ramp.clamp(0.0, 1.0) * (CELLS * PART.len()) as f64).floor() as usize;
     let full = (steps / PART.len()).min(CELLS);
     let rest = steps % PART.len();
 
@@ -1003,12 +1007,12 @@ pub(crate) fn due_cell(due: Timestamp, now: Timestamp) -> String {
 /// sanitizing, the `-` for an unset priority — is identical by construction
 /// rather than by two functions agreeing, which is how the two views cannot come
 /// to disagree about the same task.
-fn task_row(t: &Value, max_urg: f64, now: Timestamp, unicode: bool) -> TaskRow {
+fn task_row(t: &Value, now: Timestamp, unicode: bool) -> TaskRow {
     let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
     TaskRow {
         sid: format!("{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
         urg: format!("{urg:.1}"),
-        ramp: urg / max_urg,
+        ramp: urgency_scale(urg),
         prio: t
             .get("priority")
             .and_then(Value::as_str)
@@ -1049,14 +1053,21 @@ fn task_row(t: &Value, max_urg: f64, now: Timestamp, unicode: bool) -> TaskRow {
     }
 }
 
-/// The urgency denominator that normalizes the ramp across the visible rows.
-/// Floored at 1.0 so a table of zero-urgency rows divides by something.
-fn max_urgency(tasks: &[&Value]) -> f64 {
-    tasks
-        .iter()
-        .filter_map(|t| t.get("urgency").and_then(Value::as_f64))
-        .fold(0.0_f64, f64::max)
-        .max(1.0)
+/// Where an urgency sits on the gauge and the ramp: 0 is nothing pressing, 1
+/// is as urgent as an overdue task (`urgency::DUE_WEIGHT`), and anything
+/// above that is clipped to 1 (D119).
+///
+/// Absolute, so it is a property of the task and not of the rows beside it.
+/// The denominator used to be the hottest row on screen. On a real store one
+/// overdue task at 18.5 drew every H row at a third of a gauge and in the
+/// ramp's cool colour, and any filtered view gave its top row a full bar in
+/// `danger`, done tasks included. `list`, `agenda` and the dashboard's TASKS
+/// all read this one function, so the same task is the same mark on all three.
+///
+/// The price, taken knowingly: rows at or past the overdue landmark all draw a
+/// full bar, and the figure beside it tells them apart.
+pub(crate) fn urgency_scale(urgency: f64) -> f64 {
+    (urgency / tasqx_core::urgency::DUE_WEIGHT).clamp(0.0, 1.0)
 }
 
 /// One RFC3339 instant field of a task, or `None` when it is absent, null, or
@@ -1251,10 +1262,9 @@ pub fn task_table_filtered(
     }
 
     let refs: Vec<&Value> = tasks.iter().collect();
-    let max_urg = max_urgency(&refs);
     let rows: Vec<TaskRow> = tasks
         .iter()
-        .map(|t| task_row(t, max_urg, now, ctx.caps.unicode))
+        .map(|t| task_row(t, now, ctx.caps.unicode))
         .collect();
     let c = TaskCols::fit(&rows, ctx.cols, "DUE", ctx.caps.unicode);
 
@@ -1729,12 +1739,11 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
 
     let refs: Vec<&Value> = a.entries.iter().map(|e| e.task).collect();
     if !refs.is_empty() {
-        let max_urg = max_urgency(&refs);
         let rows: Vec<TaskRow> = a
             .entries
             .iter()
             .map(|e| {
-                let mut r = task_row(e.task, max_urg, a.at_start_of_today(), ctx.caps.unicode);
+                let mut r = task_row(e.task, a.at_start_of_today(), ctx.caps.unicode);
                 let overdue = e.day < a.today;
                 r.due = when_cell(e.kind, e.at, overdue);
                 // Repainted from the AGENDA instant, not from `due` alone: a
@@ -4327,8 +4336,8 @@ mod tests {
             "status": "pending", "due": "2026-08-31T12:00:00Z"
         });
         let at = |s: &str| s.parse::<Timestamp>().unwrap();
-        assert!(!task_row(&t, 1.0, at("2026-08-31T11:59:59Z"), true).overdue);
-        assert!(task_row(&t, 1.0, at("2026-08-31T12:00:01Z"), true).overdue);
+        assert!(!task_row(&t, at("2026-08-31T11:59:59Z"), true).overdue);
+        assert!(task_row(&t, at("2026-08-31T12:00:01Z"), true).overdue);
     }
 
     /// #233.1: a genuinely fresh store (never held a task) must not answer
@@ -5248,6 +5257,16 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
 
+        // Where each of the built-in ramp's bands begins, on the urgency scale.
+        let anchors = theme::builtin("nord").unwrap().ramp().len();
+        let bands = (0..anchors)
+            .map(|i| {
+                let from = i as f64 / (anchors - 1) as f64 * tasqx_core::urgency::DUE_WEIGHT;
+                format!("from {from:.0}")
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+
         for row in [
             format!(
                 "| rail, running | `{}` (`{}` without Unicode) |",
@@ -5263,6 +5282,11 @@ mod tests {
             format!("| gauge, track | `{track}` |"),
             format!("| gauge, remainder | {remainder} |"),
             "| gauge width | 4 cells |".to_string(),
+            format!(
+                "| gauge full at | urgency {:.0} (`urgency::DUE_WEIGHT`) |",
+                tasqx_core::urgency::DUE_WEIGHT
+            ),
+            format!("| ramp bands, built-ins | {bands} |"),
             "| column-header role | `table.label` |".to_string(),
         ] {
             assert!(
@@ -5285,20 +5309,27 @@ mod tests {
         );
     }
 
-    /// The gauge separates the pair the reader is actually ranking.
+    /// The gauge separates the scores a reader is actually ranking.
     ///
     /// The first mock drew whole cells only, and 17.9 and 15.8 against a top of
-    /// 17.9 both came out `▄▄▄▄` — the two rows a reader compares hardest,
-    /// drawn identically. Three steps inside each cell is what fixed it.
+    /// 17.9 both came out `▄▄▄▄`, the two rows a reader compared hardest drawn
+    /// identically. Three steps inside each cell is what fixed it. Under D119's
+    /// absolute scale both of those now saturate, on purpose, so the pairs that
+    /// matter are the landmarks below the top: no priority, L, M and H alone,
+    /// an H task ten days from its deadline, and overdue. Each must draw its
+    /// own mark. A step is one urgency point, so the age term's hundredths are
+    /// not asked to show.
     #[test]
-    fn the_urgency_gauge_separates_the_pair_the_reader_is_ranking() {
-        let hot = urgency_meter(1.0);
-        let near = urgency_meter(15.8 / 17.9);
-        assert_ne!(
-            (hot.0.clone(), hot.1.clone()),
-            (near.0.clone(), near.1.clone()),
-            "17.9 and 15.8 draw the same gauge: {hot:?}"
-        );
+    fn the_urgency_gauge_separates_the_scores_the_reader_is_ranking() {
+        let marks: Vec<(String, String)> = [0.0, 1.8, 3.9, 6.0, 9.0, 12.0]
+            .iter()
+            .map(|&u| urgency_meter(urgency_scale(u)))
+            .collect();
+        for (i, a) in marks.iter().enumerate() {
+            for b in &marks[i + 1..] {
+                assert_ne!(a, b, "two landmarks draw the same gauge: {marks:?}");
+            }
+        }
     }
 
     /// More urgency is never less ink.
@@ -5334,6 +5365,96 @@ mod tests {
         }
         assert_eq!(mass(0.0), 4, "an empty gauge is a bare track");
         assert_eq!(mass(1.0), 16, "a full gauge is four full cells");
+    }
+
+    /// The gauge glyphs on the row carrying `title`, and nothing else.
+    fn gauge_of(out: &str, title: &str) -> String {
+        out.lines()
+            .find(|l| l.contains(title))
+            .unwrap_or_else(|| panic!("no row for {title:?} in {out}"))
+            .chars()
+            .filter(|c| matches!(c, '▁' | '▂' | '▃' | '▄'))
+            .collect()
+    }
+
+    /// D119: a task's gauge and colour are a property of the TASK, not of the
+    /// other rows on screen.
+    ///
+    /// The denominator used to be the hottest visible row, so one overdue task
+    /// at 18.5 flattened every other gauge on a real store, and a filtered view
+    /// gave its top row a full bar in the danger colour whatever that row held.
+    /// On a project with nothing pressing that meant done tasks were painted
+    /// in `danger`. Compared painted, colour included, so a scale that moved
+    /// only the colour would fail here too.
+    #[test]
+    fn the_same_task_draws_the_same_urgency_cell_whatever_else_is_on_screen() {
+        let ctx = Ctx::new(
+            theme::default_theme(),
+            Caps {
+                depth: theme::ColorDepth::Truecolor,
+                ansi: true,
+                unicode: true,
+            },
+        );
+        let row = |id: i64, title: &str, urgency: f64| {
+            let mut t = task_json(id, title, "work", "", &[]);
+            t["urgency"] = json!(urgency);
+            t
+        };
+        let subject = "the task under test";
+        let alone = json!({ "tasks": [row(1, subject, 6.0)], "count": 1 });
+        let beside = json!({ "tasks": [
+            row(2, "an outlier elsewhere", 9.9), row(1, subject, 6.0),
+        ], "count": 2 });
+        let cell = |r: &Value| {
+            let out = task_table(&ctx, r, Timestamp::now());
+            let line = out.lines().find(|l| l.contains(subject)).unwrap();
+            line.split(subject).next().unwrap().to_string()
+        };
+        assert_eq!(
+            cell(&alone),
+            cell(&beside),
+            "a hotter row elsewhere on screen changed this task's urgency cell"
+        );
+    }
+
+    /// D119: a full gauge means "as urgent as an overdue task". The scale is
+    /// the due term's saturation, read from core, so it cannot drift from the
+    /// formula it describes.
+    ///
+    /// Scored through `urgency::score_at` rather than written as literals, so
+    /// a change to the formula moves both sides of this test together. What H
+    /// priority alone earns is half of that, and draws half a gauge. That half
+    /// is also where the built-in ramp's middle band begins, so if the formula
+    /// stops making H exactly half the due weight, this fails, and D119's
+    /// "warn starts at H alone" needs revisiting rather than this assertion.
+    #[test]
+    fn a_full_gauge_means_as_urgent_as_an_overdue_task() {
+        use tasqx_core::types::Priority;
+        use tasqx_core::urgency::score_at;
+
+        let mut ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        ctx.caps.unicode = true;
+        let now: Timestamp = "2026-09-11T12:00:00Z".parse().unwrap();
+        let created = "2026-09-11T12:00:00Z";
+        let gauge = |urgency: f64| {
+            let mut t = task_json(1, "subject", "work", "", &[]);
+            t["urgency"] = json!(urgency);
+            gauge_of(
+                &task_table(&ctx, &json!({ "tasks": [t], "count": 1 }), now),
+                "subject",
+            )
+        };
+
+        let overdue = score_at(None, Some("2026-09-01T00:00:00Z"), created, now);
+        let h_alone = score_at(Some(Priority::H), None, created, now);
+        assert_eq!(gauge(overdue), "▄▄▄▄", "overdue at {overdue}");
+        assert_eq!(gauge(h_alone), "▄▄▁▁", "H priority alone at {h_alone}");
+        assert_ne!(
+            gauge(overdue - 0.5),
+            "▄▄▄▄",
+            "the gauge fills before the task is as urgent as an overdue one"
+        );
     }
 
     /// No glyph set degrades honestly here, so a terminal without Unicode gets

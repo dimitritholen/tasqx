@@ -74,26 +74,39 @@ plus a gap on either side to describe a number two columns away. The cell reads
 
 ## 6. A magnitude gets a mark, and the mark must rank the way the number does
 
-`render::urgency_meter` draws urgency-over-the-hottest-on-screen as a four-cell
-bar on a `▁` track. Two things it had to get right, both found by looking at it
-rather than by reasoning about it:
+`render::urgency_meter` draws urgency as a four-cell bar on a `▁` track. Three
+things it had to get right, all found by looking at it rather than by reasoning
+about it:
 
 - **Resolution where the ranking happens.** Whole cells drew 17.9 and 15.8
-  identically against a top of 17.9 — the pair a reader compares hardest. Three
+  identically against a top of 17.9, the pair a reader compared hardest. Three
   steps inside each cell fixed it.
 - **Visual mass must rise with the value.** Drawing the remainder as a glyph
   TALLER than the bar's own `▄` made a 22 % gauge the heaviest mark in the
   column. Remainders are shorter (`▂`, `▃`), and a test weighs the glyphs across
   the whole scale rather than reading a value off them.
+- **The scale belongs to the task, not to the screen** (`DESIGN.md` D119). The
+  bar is `render::urgency_scale`: full at the due term's saturation, which is
+  "as urgent as an overdue task", and never relative to the other rows. The
+  denominator used to be the hottest row on screen, so one outlier flattened a
+  hundred rows, and a filtered view painted its top row in `danger` whatever
+  that row held. The same task is the same mark on `list`, `agenda` and the
+  dashboard. The bar floors rather than rounds, so it is never full before the
+  task is as urgent as overdue.
 
-The precise figure always prints beside the mark. The mark is for the scan down
-the column, not for reading a value off. Where no glyph set degrades honestly,
-draw nothing and hand the cells back — `caps.unicode` false drops the gauge.
+The colour says less than the bar, on purpose. The ramp is read in BANDS, one
+per anchor, never blended: quiet grey below H priority alone, `warn` from there,
+`danger` from overdue, and bold on top of `danger` so the band survives
+`NO_COLOR`. A blend from grey to `warn` passes through a tan that reads more
+orange than `warn` itself, which drew M rows warmer than H rows. The bar carries
+the magnitude, which leaves the colour to say only which threshold was crossed.
+It is the heatmap's rule again: one channel per number.
 
-> **Open:** the denominator is the maximum over the visible rows, so one
-> outlier flattens everything else. Measured on a real store: 100 rows, 16
-> distinct urgency values, **5** distinct gauge marks. Tracked as task #337
-> alongside #329 (the ramp's colours); read both before changing either.
+The price is at the top. Everything at or past overdue draws the same full bar,
+and the figure beside it tells them apart. The precise figure always prints. The
+mark is for the scan down the column, not for reading a value off. Where no
+glyph set degrades honestly, draw nothing and hand the cells back: `caps.unicode`
+false drops the gauge.
 
 ## 7. No rules. Weight and whitespace separate
 
@@ -185,8 +198,15 @@ It writes into `target/snaps/`, so the pictures never reach a commit. Driving a
 dev build needs `TASQX` pointed at it **and** a scratch `TASQX_DB` —
 `CLAUDE.md`'s rule, which this script does not relax.
 
-TUI screens (`dashboard`, `pick`) need a pty, which this path does not give;
-capture those through `script(1)` first.
+TUI screens (`dashboard`, `pick`) need a pty, which this path does not give.
+`scripts/snap-tui.sh` holds them in tmux and captures the pane.
+
+One trap in that path: freeze ignores SGR 39 (default foreground), so a cell
+that resets to the terminal's own colour keeps whatever colour came before it.
+The dashboard's titles render tinted in the ramp colour of the figure beside
+them for exactly this reason; the bytes carry `ESC[39m` and a real terminal
+draws them plain. Read the ANSI (`tmux capture-pane -p -e | cat -v`) before
+filing a colour that bled.
 
 ---
 
@@ -204,6 +224,8 @@ leaving a guide describing a screen that no longer exists.
 | gauge, track | `▁` |
 | gauge, remainder | `▂` `▃` |
 | gauge width | 4 cells |
+| gauge full at | urgency 12 (`urgency::DUE_WEIGHT`) |
+| ramp bands, built-ins | from 0 · from 6 · from 12 |
 | column-header role | `table.label` |
 
 ## Where it is not carried yet

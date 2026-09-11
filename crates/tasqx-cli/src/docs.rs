@@ -2501,7 +2501,7 @@ fn page_themes() -> String {
         "Built-in themes\n  nord ← active\n  gruvbox\n  dracula\n  solarized\n  mono",
     ));
     s.push_str(&p(
-        "<code>tasqx theme show [name]</code> previews every role plus the cold→hot urgency ramp, \
+        "<code>tasqx theme show [name]</code> previews every role plus the urgency ramp's bands, \
          rendered at your terminal's <em>real</em> capability. Set one permanently:",
     ));
     s.push_str(&pre_plain("# config.toml\n[theme]\nname = \"gruvbox\""));

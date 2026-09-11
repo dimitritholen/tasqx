@@ -681,6 +681,32 @@ fn the_cursor_clamps_at_both_ends_without_underflowing() {
     assert_eq!(a.cursor_of(PanelId::Tasks), rows.saturating_sub(1));
 }
 
+/// D119: TASKS draws a task's gauge on `tasqx list`'s absolute scale, not
+/// against the hottest row it happens to hold.
+///
+/// The fixture's hottest open row scores 5.0. Against that, the old
+/// denominator drew 5.0 as a full `▄▄▄▄`. On the shared scale, 5.0 is 5/12 of
+/// "as urgent as overdue", which is five steps of twelve: one full cell and a
+/// `▃`, the same gauge `list` draws for the same number.
+#[test]
+fn the_dashboard_gauge_is_lists_gauge_not_one_relative_to_its_own_rows() {
+    let a = app();
+    let (w, h) = (160, 44);
+    let buf = draw_at(&a, w, h, &caps());
+    let screen = a.screen(w, h).unwrap();
+    let r = interior(screen.placement(PanelId::Tasks).expect("TASKS placed"));
+    let body = cell_text(&buf, r.x, r.y, r.width, r.height);
+    let line = body
+        .lines()
+        .find(|l| l.contains("another"))
+        .unwrap_or_else(|| panic!("no row for the 5.0 task:\n{body}"));
+    let gauge: String = line
+        .chars()
+        .filter(|c| matches!(c, '▁' | '▂' | '▃' | '▄'))
+        .collect();
+    assert_eq!(gauge, "▄▃▁▁", "{line}");
+}
+
 /// Something on the screen must say WHICH row the reader is on.
 ///
 /// Panel focus is drawn in the rule; row focus was drawn nowhere at all. `j`

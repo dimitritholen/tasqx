@@ -566,28 +566,6 @@ fn a_blocked_task_is_in_the_list_marked_rather_than_hidden_from_it() {
     );
 }
 
-/// The ramp denominator is computed the way `render` computes it, so the
-/// dashboard and `tasqx list` shade the same task the same colour.
-#[test]
-fn the_urgency_ramp_denominator_never_falls_below_one() {
-    let d = build_with(
-        task_list(vec![task_row(1, "zero urgency")]),
-        summary(vec![]),
-        project_list(vec![]),
-    );
-    assert_eq!(
-        d.tasks.max_urgency, 1.0,
-        "an all-zero store must not divide by zero"
-    );
-
-    let d = build_with(
-        task_list(vec![with(task_row(1, "hot"), "urgency", json!(17.6))]),
-        summary(vec![]),
-        project_list(vec![]),
-    );
-    assert_eq!(d.tasks.max_urgency, 17.6);
-}
-
 /// The running row reports time INCLUDING the open interval.
 ///
 /// `tracked` alone reads as the final answer when it is only the total so far.
