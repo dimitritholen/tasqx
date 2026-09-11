@@ -70,7 +70,7 @@ vocabulary both views share.
 first. Never dropped by the width fit. Not drawn at all when no row has one.
 `pick` sizes it over every candidate rather than the rows a search leaves on
 screen, so the rows do not shift sideways as a query crosses the one running
-task; there the rail can stand empty (`DESIGN.md` D123(c)).
+task; there the rail can stand empty (`DESIGN.md` D124(c)).
 
 Without Unicode they are `*` and `B` — and NOT `>`, however natural `>` looks
 for "running". `>` is the CURSOR on a terminal that has no better glyph: `pick`

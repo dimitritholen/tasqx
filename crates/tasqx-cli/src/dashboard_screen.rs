@@ -444,7 +444,7 @@ pub(crate) fn after_pick(
 ) -> Result<Option<String>, ApiError> {
     match outcome {
         // Every start of the session reaches the scrollback, not only the
-        // last: each one can have auto-stopped another timer (D123(g)).
+        // last: each one can have auto-stopped another timer (D124(g)).
         Ok((_, render)) => picked.get_or_insert_with(String::new).push_str(&render),
         // Backing out of the picker is not an error HERE. `pick` as a command
         // exits 4 having started nothing, because its whole output is the
@@ -566,7 +566,7 @@ mod tests {
         Ok((json!({ "short_id": n }), format!("Started #{n}\n")))
     }
 
-    /// D123(g): every start of a dashboard session reaches the scrollback
+    /// D124(g): every start of a dashboard session reaches the scrollback
     /// when it closes. Each start can have auto-stopped another timer, and
     /// keeping only the last lost the earlier "Stopped" lines.
     #[test]
@@ -578,7 +578,7 @@ mod tests {
         assert!(text.contains("#1") && text.contains("#2"), "{text}");
     }
 
-    /// D123(g): a start `task.start` refuses — the task changed under the
+    /// D124(g): a start `task.start` refuses — the task changed under the
     /// browser, a race with another writer — is said on the dashboard's
     /// status line and the dashboard stays. Backing out is silent. Anything
     /// else still ends the session, as a failed read does elsewhere in it.

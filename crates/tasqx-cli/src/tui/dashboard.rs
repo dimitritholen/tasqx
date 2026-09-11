@@ -49,7 +49,7 @@ pub const WINDOW_CHOICES: [(&str, usize); 3] = [("week", 7), ("14d", 14), ("30d"
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Action {
     Quit,
-    /// Hand over to `pick`, the task browser (D123), scoped to
+    /// Hand over to `pick`, the task browser (D124), scoped to
     /// [`App::focused_scope`] — the filter DSL tokens for the row the cursor
     /// was on, or empty on a panel with no natural scope.
     Pick(Vec<String>),
@@ -1414,7 +1414,7 @@ pub const KEYS: &[Key] = &[
     },
     Key {
         keys: "p",
-        // `pick` is the task browser now (D123): Enter there reads a task and
+        // `pick` is the task browser now (D124): Enter there reads a task and
         // `s` starts it. The old "pick a task and start it" described the
         // chooser, where Enter started.
         help: "browse the tasks: enter reads one, s starts it",
@@ -1458,7 +1458,7 @@ pub const KEYS: &[Key] = &[
         // `pick::App`'s tests pin it as "leaves even with a query in
         // progress"), so it backs out of the picker rather than quitting
         // the dashboard underneath it (#229 item 10).
-        // In `pick` (D123) ctrl-c goes back here, like `q`; Esc there clears a
+        // In `pick` (D124) ctrl-c goes back here, like `q`; Esc there clears a
         // search first and on the card goes back to the list, so it is not
         // the key to name.
         help: "close (inside pick, go back to the dashboard)",

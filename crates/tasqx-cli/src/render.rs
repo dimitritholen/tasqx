@@ -770,7 +770,7 @@ fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
     row_line_at(ctx, c, r, false)
 }
 
-/// [`row_line`], for a screen with a cursor (`pick`, D123): the row the reader
+/// [`row_line`], for a screen with a cursor (`pick`, D124): the row the reader
 /// is on carries its id and title in `accent`, the title bold as well, so the
 /// row survives `NO_COLOR` and `mono` with more than the cursor glyph to mark
 /// it. The memory browser marks its cursor row the same way. `list` never

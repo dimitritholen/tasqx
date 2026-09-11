@@ -1537,7 +1537,7 @@ mod tests {
         }
     }
 
-    /// D123: both pages that describe `pick`'s keys say `s` starts and Enter
+    /// D124: both pages that describe `pick`'s keys say `s` starts and Enter
     /// reads. Enter used to start, and a page nobody re-read after the change
     /// is a page telling the reader to press the key that no longer does it.
     #[test]

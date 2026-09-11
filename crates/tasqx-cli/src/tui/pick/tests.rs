@@ -1,6 +1,6 @@
-//! The task browser's tests (D55, D100, D123).
+//! The task browser's tests (D55, D100, D124).
 //!
-//! Several of these were written against the chooser `pick` was before D123
+//! Several of these were written against the chooser `pick` was before D124
 //! and kept their intent through it: the cursor clamps, follows the task
 //! through a refilter, never starts a task that is not highlighted, and the
 //! screen marks the running task apart from the cursor. What moved is the key
@@ -153,7 +153,7 @@ fn the_cursor_clamps_at_both_ends() {
     assert_eq!(a.selected().map(|r| r.short_id), Some(55));
 }
 
-/// D123: in the list j/k move and are not letters. Type-to-filter (D100's
+/// D124: in the list j/k move and are not letters. Type-to-filter (D100's
 /// screen) cost the reader j/k, which is why D121 rejected it for the memory
 /// browser; pick now takes the memory browser's shape.
 #[test]
@@ -170,7 +170,7 @@ fn j_and_k_move_through_the_list() {
     assert_eq!(a.selected().map(|r| r.short_id), Some(42));
 }
 
-/// D123: `/` is the only way into the query, and there every letter is a
+/// D124: `/` is the only way into the query, and there every letter is a
 /// letter — `j`, `k`, `q` and `s` type themselves rather than moving,
 /// quitting or starting a task mid-word.
 #[test]
@@ -185,7 +185,7 @@ fn slash_opens_the_search_where_every_letter_types() {
     assert_eq!(a.mode(), Mode::Search, "q must not leave the search");
 }
 
-/// D123: Enter reads the task and never starts it; `s` starts it.
+/// D124: Enter reads the task and never starts it; `s` starts it.
 #[test]
 fn enter_reads_the_task_and_s_starts_it() {
     let mut a = app();
@@ -242,7 +242,7 @@ fn the_card_is_asked_for_once_and_esc_returns_to_its_row() {
 ///
 /// #228.12 made Enter on an empty list leave, because on the chooser it did
 /// nothing at all. On the browser Enter reads, and there is nothing to read:
-/// it stays, under the sentence that names Esc (D123).
+/// it stays, under the sentence that names Esc (D124).
 #[test]
 fn an_empty_list_navigates_and_starts_nothing() {
     let mut a = app_of(Vec::new());
@@ -330,7 +330,7 @@ fn ranking_promotes_the_contiguous_match_over_a_scattered_one_regardless_of_inpu
     assert_eq!(ids(&a), vec![90, 10]);
 }
 
-/// D123, D121's finding brought to pick: the word the reader typed outranks
+/// D124, D121's finding brought to pick: the word the reader typed outranks
 /// the same letters scattered through another word, and it outranks them from
 /// the project too.
 #[test]
@@ -631,7 +631,7 @@ fn the_key_tables_say_s_starts_and_enter_reads() {
 
 // ---- rendering --------------------------------------------------------------
 
-/// D123: a row is `list`'s row, cell for cell. The screen draws what
+/// D124: a row is `list`'s row, cell for cell. The screen draws what
 /// `render::task_table` prints for the same tasks at the same width, behind
 /// the three cells of cursor lead — one renderer, so the two cannot drift.
 #[test]
@@ -1165,7 +1165,13 @@ fn s_on_a_task_that_cannot_start_stays_and_says_why() {
     let mut a = app_of(vec![done, task(71, "Open", "work", "L", 1.0, &[])]);
     assert_eq!(a.on_key(press(KeyCode::Char('s'))), None, "s left to fail");
     let bar = line_at(&draw(&a, 100, 24), 23);
+    // The sentence names BOTH statuses `task.start` takes, or it teaches the
+    // reader that a running task cannot be started either (D105).
     assert!(bar.contains("#70") && bar.contains("done"), "{bar}");
+    assert!(
+        bar.contains("pending or running"),
+        "the refusal must name every status that can start: {bar}"
+    );
     a.on_key(press(KeyCode::Char('j')));
     assert!(
         line_at(&draw(&a, 100, 24), 23).contains("start"),
@@ -1381,4 +1387,42 @@ fn esc_is_not_called_clear_when_there_is_nothing_to_clear() {
     a.on_key(press(KeyCode::Enter));
     let bar = line_at(&draw(&a, 100, 24), 23);
     assert!(bar.contains("esc clear"), "{bar}");
+}
+
+// ---- found by review round 3 ------------------------------------------------
+
+/// At the narrowest width the screen draws, the bar keeps the keys that DO
+/// something over the ones that only look: the way out, then `s`, then the
+/// rest. It used to drop `s start` at 40 columns and keep `enter open`.
+#[test]
+fn a_narrow_bar_keeps_the_key_with_an_effect() {
+    let mut a = app();
+    a.observe(40, 12);
+    let bar = line_at(&draw(&a, 40, 12), 11);
+    assert!(bar.contains("s start"), "{bar}");
+    assert!(bar.contains("q leave"), "{bar}");
+    assert!(
+        !bar.contains("enter open"),
+        "a looking key outranked s: {bar}"
+    );
+}
+
+/// A card longer than the screen says which key scrolls it, at every width it
+/// draws: the position alone (`1–22 of 86`) says there is more and not how to
+/// reach it.
+#[test]
+fn a_scrolling_card_always_says_what_scrolls_it() {
+    let mut t = task(42, "Ship", "w", "H", 11.8, &[]);
+    t["annotations"] = json!((0..40)
+        .map(|n| json!({ "body": format!("note {n}"), "created": "2026-09-01T00:00:00Z" }))
+        .collect::<Vec<_>>());
+    for w in [40u16, 60, 100] {
+        let mut a = app();
+        a.on_key(press(KeyCode::Enter));
+        a.set_detail(42, Ok(t.clone()));
+        a.observe(w, 12);
+        let bar = line_at(&draw(&a, w, 12), 11);
+        assert!(bar.contains("j/k scroll"), "at {w}: {bar}");
+        assert!(bar.contains("esc back"), "at {w}: {bar}");
+    }
 }

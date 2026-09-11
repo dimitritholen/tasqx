@@ -347,7 +347,7 @@ pub fn rt_style(s: crate::theme::Style, caps: &Caps) -> ratatui::style::Style {
     // Dim is a colour substitute, so `NO_COLOR` drops it with the colour, as
     // `Style::paint` does (§8's degradation table, #234 item 7). It used to
     // survive here, so under `NO_COLOR` a `mono` screen dimmed what `list`
-    // printed plain (D123).
+    // printed plain (D124).
     if s.dim && caps.depth != ColorDepth::None {
         out = out.add_modifier(Modifier::DIM);
     }
@@ -395,7 +395,7 @@ pub fn with_terminal<T>(
 }
 
 // ============================================================================
-// The printed renderers, drawn inside a screen (D123)
+// The printed renderers, drawn inside a screen (D124)
 // ============================================================================
 
 /// A line the terminal renderers painted (`render::row_line_at`,
@@ -553,7 +553,7 @@ pub(crate) struct SearchLine<'a> {
 /// summary is: the count is a number and never gives way (rule 2), the
 /// filter drops first when the line is too long, and then the query loses
 /// its HEAD, keeping the end the reader is typing at. One function for both
-/// screens (D123): they had two, and the memory browser's still cut the count.
+/// screens (D124): they had two, and the memory browser's still cut the count.
 pub(crate) fn search_spans(
     line: &SearchLine,
     room: usize,
@@ -808,7 +808,7 @@ mod tests {
     }
 
     /// `painted_line` is the seam between the printed renderers and the
-    /// screen that shows them (D123). It must read back every style the
+    /// screen that shows them (D124). It must read back every style the
     /// painter writes, as the style `rt_style` would have drawn directly, or
     /// `pick` would draw `list`'s rows in colours `list` never prints.
     ///
