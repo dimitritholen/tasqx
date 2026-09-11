@@ -105,7 +105,7 @@ pub(crate) fn total(widths: &[usize]) -> usize {
 ///
 /// Once a column has been dropped, the shrink pass runs again from what the
 /// survivors asked for, so the cells the drop freed go back to the columns
-/// that gave them, by the same widest-first rule (#346). Keeping the floors
+/// that gave them, by the same widest-first rule (D123(c)). Keeping the floors
 /// instead cut `memory list`'s titles to twelve cells beside ten empty ones.
 ///
 /// A row that still does not fit after both passes overflows. The floors are

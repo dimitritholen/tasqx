@@ -37,7 +37,7 @@ would say in half the space.
 Every table is fitted by one function, `columns::fit` (`DESIGN.md` D120), and
 gives way in one order: cells come off the widest column above its floor, then
 droppable columns go from the right. A table only decides what each column asks
-for, where its floor is, and whether it may go. Two rules come with it:
+for, where its floor is, and whether it may go. Three rules come with it:
 
 - **A number never gives way.** Cut, it is a different number; dropped, it may
   be the one the reader asked for by name. The key column shrinks instead, and
@@ -45,12 +45,14 @@ for, where its floor is, and whether it may go. Two rules come with it:
 - **Data is cut only where the terminal cannot hold it.** A wrapped row breaks
   every column at once, so a name or a value gets an ellipsis first, and the
   column that says where something came from goes before the data does.
+- **A record is not a table.** Its name stays, where it came from goes first,
+  the handle that opens it never goes, and the line under it is cut to the
+  width. `memory search` is the record (D123): title, source and handle on one
+  line, the words that matched under it.
 
-The tables of things a reader picks one of (`memory list`, `memory search`) put
-the title's floor at what the terminal can give it beside the id, so every
-other column goes before the title gives way. They were records until D121 and
-#346, a name with a parenthetical and a snippet under it; nothing on a read
-screen prints one now.
+After a drop the survivors get the freed cells back (D123), and a memory
+title's floor is what the terminal can give it beside the id or handle, never
+below twelve cells, so every other column goes before the title gives way.
 
 ## 3. Dates are calendar days — not instants, not elapsed hours
 

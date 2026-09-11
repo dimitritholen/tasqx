@@ -1056,16 +1056,23 @@ pub(crate) fn doc_summary(body: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The floor of a table's leading column when everything beside it but a
-/// fixed column (the memory tables' id) may go: as much of what it asks for as
-/// the terminal can give it beside that column. The fitter shrinks the widest
-/// column first, so with a low floor the title, the one column a row is read
-/// for, was cut to meet a snippet or a project name that the fitter could have
-/// dropped instead (#346 review; rule 1, D120(c)). Both memory tables fit
-/// their titles by this one rule.
+/// The floor of a memory title beside a column that never goes (the id, or a
+/// search hit's handle), D123(b): as much of what the title asks for as the
+/// terminal can give it beside that column, so the other columns go before
+/// the title gives way (rule 1, D120(c)), and never below [`MIN_TITLE_CELLS`],
+/// where a title stops telling one doc from another. Past that the row
+/// overflows, as every table's does (D120). The first version had no lower
+/// bound and printed `r…` for a title at 40 columns.
 fn lead_floor(asked: usize, cols: usize, fixed: usize) -> usize {
-    asked.min(cols.saturating_sub(fixed + columns::GAP))
+    asked.min(
+        cols.saturating_sub(fixed + columns::GAP)
+            .max(MIN_TITLE_CELLS),
+    )
 }
+
+/// Twelve cells: `android-t...`, still a name. The floor `memory list` shipped
+/// with (D121), kept as the lower bound of [`lead_floor`].
+const MIN_TITLE_CELLS: usize = 12;
 
 /// `tasqx memory list` off a terminal: one line per doc under a header (D121).
 ///
@@ -1164,22 +1171,20 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     out
 }
 
-/// `tasqx memory search`: [`memory_table`]'s shape for a `memory.search`
-/// result (#346, D121(f)).
+/// `tasqx memory search`: one record per hit (D123(a)).
+///
+/// The head line is the title, where it came from, and the handle that opens
+/// it, fitted like a table row: the source goes first, the title gives way
+/// last ([`lead_floor`]), and the handle never goes. Under it are the words
+/// that matched, cut to the terminal, because they are the reason the hit is
+/// on the screen. The handle is a doc's id, which `memory show` takes, or
+/// `annotation on #N` for an annotation, whose own id `memory show` refuses
+/// and whose task `tasqx show N` opens.
 ///
 /// It printed three lines per hit (the title with `(doc · source)`, the
 /// snippet, and `id <uuid>` on a line of its own), every one at the same
-/// weight, and closed on `N hit(s)`. Now the summary names the query and what
-/// it found, and each hit is one line: the title carries it, and the matching
-/// words, where it came from and the id recede. The id is never dropped, for
-/// the reason `memory_table` gives. The match gives cells first, being the
-/// widest, and SOURCE goes before it does, because data outlasts where it came
-/// from (D120(c)). An annotation's source is its task (`task:#55`), which is
-/// how a reader tells it from a doc.
-///
-/// A hit carries no timestamp and no project, so this table has no UPDATED
-/// and no PROJECT column: the JSON is frozen (D56), and a column no row can
-/// fill is not drawn (D51).
+/// weight, and closed on `N hit(s)`. #346's first cut made it a table, and at
+/// 60 and 80 columns the 36-cell id left room for the title alone.
 pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str) -> String {
     let empty = Vec::new();
     let hits = result
@@ -1200,101 +1205,105 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str) -> String {
     if count < total {
         parts.push(("muted", format!("{count} shown")));
     }
-    let mut out = summary_line(ctx, Some(&san(query)), parts);
+    // The expression that ran (D69), not the words as typed: a plain query
+    // comes back with each term quoted, which sets it off from the count
+    // where dim does not reach the screen, and it is what a miss has to name.
+    let asked = result
+        .get("matched")
+        .and_then(Value::as_str)
+        .map_or_else(|| san(query), san);
+    let mut out = summary_line(ctx, Some(&asked), parts);
     out.push('\n');
 
     if !hits.is_empty() {
-        struct Row {
+        struct Hit {
             title: String,
-            snippet: String,
             source: String,
-            id: String,
+            handle: String,
+            snippet: String,
         }
-        let rows: Vec<Row> = hits
+        let rows: Vec<Hit> = hits
             .iter()
-            .map(|h| Row {
-                title: s(h, "title"),
-                // The engine's snippet keeps the body's line breaks, which a
-                // one-line cell cannot.
-                snippet: s(h, "snippet")
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                source: s(h, "source"),
-                id: s(h, "id"),
+            .map(|h| {
+                let source = s(h, "source");
+                let task = source
+                    .strip_prefix("task:#")
+                    .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+                let (source, handle) = match (s(h, "kind").as_str(), task) {
+                    // The source already names the task, and the handle says
+                    // it, so the source column stays empty (rule 11).
+                    ("annotation", Some(n)) => (String::new(), format!("annotation on #{n}")),
+                    _ => (source, s(h, "id")),
+                };
+                Hit {
+                    title: s(h, "title"),
+                    source,
+                    handle,
+                    // The engine's snippet keeps the body's line breaks,
+                    // which a one-line cell cannot.
+                    snippet: s(h, "snippet")
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                }
             })
             .collect();
-        let widest = |f: fn(&Row) -> &str, label: &str| {
-            let content = rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
-            if content == 0 {
-                0
-            } else {
-                content.max(width(label))
-            }
-        };
-        // The title gives way last (`lead_floor`). A match under twenty
-        // cells is a fragment, and a path cut in the middle names no file, so
-        // SOURCE is whole or gone, and it goes before MATCH, data outlasting
-        // where it came from (D120(c)).
-        let (title_w, id_w) = (widest(|r| &r.title, "TITLE"), widest(|r| &r.id, "ID"));
-        let source_w = widest(|r| &r.source, "SOURCE");
+        let widest = |f: fn(&Hit) -> &str| rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
+        let (title_w, handle_w) = (widest(|r| &r.title), widest(|r| &r.handle));
+        // A path cut in the middle names no file, so SOURCE is whole or gone.
+        let source_w = widest(|r| &r.source);
         let w = columns::fit(
             &[
-                Column::shrinks(title_w, lead_floor(title_w, ctx.cols, id_w)),
-                Column::drops(widest(|r| &r.snippet, "MATCH"), 20),
+                Column::shrinks(title_w, lead_floor(title_w, ctx.cols, handle_w)),
                 Column::drops(source_w, source_w),
-                Column::fixed(id_w),
+                Column::fixed(handle_w),
             ],
             ctx.cols,
         );
-        let line = |cells: [(Option<&str>, &str); 4]| {
-            join_cells(
-                cells
-                    .iter()
-                    .zip(&w)
-                    .filter(|(_, w)| **w > 0)
-                    .map(|((role, text), w)| cell(ctx, *role, text, *w))
-                    .collect(),
-            )
-        };
-        out.push('\n');
-        out.push_str(&ctx.paint(
-            "table.label",
-            &line([
-                (None, "TITLE"),
-                (None, "MATCH"),
-                (None, "SOURCE"),
-                (None, "ID"),
-            ]),
-        ));
         out.push('\n');
         for r in &rows {
-            out.push_str(&line([
-                (None, &r.title),
-                (Some("muted"), &r.snippet),
-                (Some("muted"), &r.source),
-                (Some("muted"), &r.id),
-            ]));
+            out.push_str(&join_cells(
+                [
+                    (None, r.title.as_str()),
+                    (Some("muted"), r.source.as_str()),
+                    (Some("muted"), r.handle.as_str()),
+                ]
+                .iter()
+                .zip(&w)
+                .filter(|(_, w)| **w > 0)
+                .map(|((role, text), w)| cell(ctx, *role, text, *w))
+                .collect(),
+            ));
             out.push('\n');
+            if !r.snippet.is_empty() {
+                out.push_str(&format!(
+                    "  {}\n",
+                    ctx.paint(
+                        "muted",
+                        &truncate(&r.snippet, ctx.cols.saturating_sub(2), ctx.caps.unicode)
+                    )
+                ));
+            }
         }
     }
 
-    // Prose after the table stands off it by a blank line (rule 7), and wraps
-    // rather than running past the terminal.
+    // Prose after the records stands off them by a blank line (rule 7), and
+    // wraps rather than running past the terminal.
     let mut notes: Vec<(Option<&str>, String)> = Vec::new();
     if count < total {
         notes.push((Some("muted"), format!("--limit {total} shows every hit")));
     }
-    // On a miss, name the expression that produced it (D69). Every word of a
-    // plain query is a required phrase, so a question typed as a sentence
-    // comes back exactly as empty as a subject nobody ever wrote down, and the
-    // two need different next moves.
-    if count == 0 {
-        if let Some(matched) = result.get("matched").and_then(Value::as_str) {
-            // At the terminal's own weight: on a miss it is the only thing
-            // on screen that says what to do next.
-            notes.push((None, format!("every term was required: {}", san(matched))));
-        }
+    // On a miss, say why an expression the summary already names came back
+    // empty (D69): every word of a plain query is a required phrase, so a
+    // question typed as a sentence comes back exactly as empty as a subject
+    // nobody ever wrote down, and the two need different next moves. At the
+    // terminal's own weight, because it is the only line that says what to
+    // do next. The expression is not repeated here (rule 11).
+    if count == 0 && result.get("matched").and_then(Value::as_str).is_some() {
+        notes.push((
+            None,
+            "every term was required; use fewer, or --raw with OR".to_string(),
+        ));
     }
     if !notes.is_empty() {
         out.push('\n');
@@ -6018,7 +6027,7 @@ mod tests {
     /// give it beside the id, in both tables.
     #[test]
     fn a_memory_title_gives_way_only_after_the_columns_beside_it() {
-        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(100);
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(80);
         let hit = |title: &str, source: &str| {
             json!({ "id": "01a0903d-243b-7842-8f5c-184005a2d8f2", "kind": "doc",
                     "title": title, "source": source,
@@ -6027,7 +6036,7 @@ mod tests {
         let out = memory_hits(
             &ctx,
             &json!({ "count": 2, "total": 2, "hits": [
-                hit("Cut build time under five minutes", "task:#55"),
+                hit("Cut build time under five minutes", "docs/ci/build-time.md"),
                 hit("release-process", "docs/release.md"),
             ] }),
             "release",
@@ -6036,7 +6045,7 @@ mod tests {
             out.contains("Cut build time under five minutes"),
             "the title was cut while other columns kept room: {out}"
         );
-        assert!(!out.contains("SOURCE"), "{out}");
+        assert!(!out.contains("docs/ci/build-time.md"), "{out}");
 
         let ctx = ctx.with_cols(60);
         let doc = |title: &str| {
@@ -6053,6 +6062,71 @@ mod tests {
             "the title was cut to keep PROJECT: {out}"
         );
         assert!(!out.contains("PROJECT"), "{out}");
+    }
+
+    /// Round 1 review of #346: a title never gives way below twelve cells,
+    /// the floor at which it stops telling one doc from another; past it the
+    /// row overflows, as every table's does (D120). The title floor had no
+    /// lower bound, so at 40 columns `memory list` printed `...` on every row
+    /// and `memory search` printed `r…`, and in ASCII the row still wrapped.
+    #[test]
+    fn a_memory_title_keeps_twelve_cells_on_a_narrow_terminal() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(40);
+        let doc = |title: &str| {
+            json!({ "id": "01a0903c-c020-70e3-8c9a-7f625ab84c91", "title": title,
+                    "project": "website", "modified": "2026-08-01T00:00:00Z" })
+        };
+        let list = memory_table(
+            &ctx,
+            &json!({ "total": 1, "docs": [doc("android-token-refresh")] }),
+            anchor(),
+        );
+        assert!(list.contains("android-t"), "{list}");
+        let hits = memory_hits(
+            &ctx,
+            &json!({ "count": 1, "total": 1, "hits": [
+                { "id": "01a0903c-bff0-76a2-9bcb-5428786a56c4", "kind": "doc",
+                  "title": "release-process", "source": "docs/release.md",
+                  "snippet": "How an SDK release is cut" } ] }),
+            "release",
+        );
+        assert!(hits.contains("release-p"), "{hits}");
+        // And the handle, the one thing a search record never gives up
+        // (D123(a)), is still on the line: the row overflows instead.
+        assert!(
+            hits.contains("01a0903c-bff0-76a2-9bcb-5428786a56c4"),
+            "the handle was dropped to fit: {hits}"
+        );
+    }
+
+    /// D123: the summary names the expression that ran, which a plain query
+    /// quotes, so it stands apart from the count even where dim does not
+    /// reach the screen (`mono`, NO_COLOR). It printed the query bare, and
+    /// `the   5 hits · 2 shown` read as a sentence.
+    #[test]
+    fn a_search_summary_sets_the_expression_off() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = memory_hits(
+            &ctx,
+            &json!({ "count": 0, "total": 0, "hits": [], "matched": "\"the\"" }),
+            "the",
+        );
+        assert!(out.starts_with("\"the\"   0 hits"), "{out}");
+    }
+
+    /// Round 1 review of #346: the `*` rail is not drawn when no row is in
+    /// effect, so a table with no default spends no cells on it (rule 4).
+    #[test]
+    fn the_current_rail_is_not_drawn_when_nothing_is_in_effect() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = project_table(
+            &ctx,
+            &json!({ "projects": [
+                { "name": "home", "archived": false, "default": false, "description": "" },
+            ] }),
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines, ["PROJECT", "home"], "{out}");
     }
 
     /// #346 review: a stray backtick does not turn the rest of a note into one
