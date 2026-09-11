@@ -9,8 +9,8 @@ and 140 columns. None of them were visible to a fully green test suite, and two
 of them — the gauge's resolution and its inverted ranking — could not have been
 found any other way. §14 is the loop that makes that cheap.
 
-`list`, `agenda`, the dashboard and the memory browser carry the style.
-`show`, `report`, `next` and `pick` do not yet.
+`list`, `agenda`, the dashboard, the memory browser, `show`, `next`, `why` and
+`add`'s echo carry the style. `report` and `pick` do not yet.
 
 ---
 
@@ -245,9 +245,10 @@ leaving a guide describing a screen that no longer exists.
 
 ## Where it is not carried yet
 
-- `show`, `report`, `next` — not judged as images. `report`, `projects`,
-  `config list` and the memory records fit the width (D120) and take
-  `table.label`, but nothing else about them has been restyled.
+- `report` — not judged as an image. `report`, `projects`, `config list` and
+  the memory records fit the width (D120) and take `table.label`, but nothing
+  else about them has been restyled.
+- The write echoes (`start`, `done`, `modify`, …), family C (#348).
 - `pick`.
 - The dashboard carries it. The disagreement its spec had with rule 4 (`⛔` for
   blocked where this file says `⊘`) is settled in favour of `⊘`, which is what

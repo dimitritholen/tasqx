@@ -13,21 +13,21 @@ an answer you can interrogate:
 
 ```console
 $ tasqx add Ship the release notes due:friday +docs !high --project work
-╭─ #42 · Ship the release notes ─╮
-│ ● pending   ! high   ▲ 11.4    │
-│ work · #docs                   │
-│ due 2026-09-04T00:00:00Z       │
-╰────────────────────────────────╯
+▌ #42  Ship the release notes
+▌ H ▄▄▄▄ 12.4   work   +docs   due 18 Sep
 
 $ tasqx next
-#42  (urgency 11.4)  Ship the release notes
+next    #42  Ship the release notes
+        H ▄▄▄▄ 12.4   work   due 18 Sep   +docs
+        tasqx start 42  ·  tasqx why 42
 
 $ tasqx why 42
-Why #42 has urgency 11.4
-  priority         6.00
-  due_proximity    5.40
-  age              0.00
-  = total          11.4
+#42  Ship the release notes
+
+  priority   H                 6.0
+  deadline   due 18 Sep        6.4
+  age        created today     0.0
+  urgency                     12.4
 ```
 
 And when you point an AI agent at the same backlog, it isn't scraping your

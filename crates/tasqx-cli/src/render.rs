@@ -2129,19 +2129,9 @@ pub fn task_detail(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         // The plain layout's emphasis map over the SAME row set the card
         // renders — the facts and their conditions live in `detail_rows`.
         let cell = match row.field {
-            DetailField::Priority => {
-                let role = match row.value.as_str() {
-                    "H" => "priority.H",
-                    "M" => "priority.M",
-                    "L" => "priority.L",
-                    _ => "muted",
-                };
-                ctx.paint(role, &row.value)
-            }
             DetailField::Project => ctx.paint("project", &row.value),
-            DetailField::Remind | DetailField::Repeats | DetailField::Running => {
-                ctx.paint("accent", &row.value)
-            }
+            DetailField::Remind | DetailField::Repeats => ctx.paint("accent", &row.value),
+            DetailField::Blocked => ctx.paint("danger", &row.value),
             DetailField::Tags => ctx.paint("tag", &row.value),
             _ => row.value,
         };
@@ -2150,11 +2140,69 @@ pub fn task_detail(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     out
 }
 
+/// An instant as a detail view spells it (D122): the stored text under
+/// `detail.time_format = iso`, and otherwise the calendar day `list` would
+/// print (`Wed 16 Sep`, `today 17:00`, `3d ago`), followed by the elapsed
+/// words where they add something (`Wed 16 Sep (in 5 days)`).
+///
+/// It used to be `fmt_instant`'s spelling: the raw instant, nanoseconds
+/// included (`2026-09-11T09:36:45.809321632Z (just now)`), under the default
+/// `both`. That is rule 3 broken on the one screen that exists to read a
+/// task's dates, and the width it cost is what made `show` wrap at 60
+/// columns. The MCP text view keeps core's spelling; this is the terminal's.
+fn instant_value(ctx: &Ctx, v: &str, now: Timestamp) -> String {
+    use tasqx_core::markdown::{fmt_instant, DetailOpts, TimeFormat};
+    let Ok(at) = v.parse::<Timestamp>() else {
+        return v.to_string();
+    };
+    if ctx.time_format == TimeFormat::Iso {
+        return v.to_string();
+    }
+    let day = if at >= now {
+        due_cell(at, now)
+    } else {
+        let today = now.to_zoned(TimeZone::UTC).date() == at.to_zoned(TimeZone::UTC).date();
+        if today {
+            due_cell(at, now)
+        } else {
+            day_ago(at, now)
+        }
+    };
+    if ctx.time_format == TimeFormat::Relative {
+        return day;
+    }
+    // `both`: the elapsed words, unless the day already is elapsed words
+    // (`yesterday`, `3d ago`), where they would say it twice.
+    let days = (at.as_second() - now.as_second()).abs() / 86_400;
+    if at < now && days < 7 && !day.starts_with("today") {
+        return day;
+    }
+    let rel = fmt_instant(
+        v,
+        &DetailOpts {
+            time: TimeFormat::Relative,
+            now,
+        },
+    );
+    format!("{day} ({rel})")
+}
+
+/// A duration as a detail view spells it (D122): `PT5H` under `iso`, `5h`
+/// otherwise. `both` used to print `PT5H (5h)`, the same duration twice.
+fn duration_value(ctx: &Ctx, v: &str, now: Timestamp) -> String {
+    use tasqx_core::markdown::{fmt_duration, DetailOpts, TimeFormat};
+    let time = if ctx.time_format == TimeFormat::Iso {
+        TimeFormat::Iso
+    } else {
+        TimeFormat::Relative
+    };
+    fmt_duration(v, &DetailOpts { time, now })
+}
+
 /// Which fact a detail row names, so each layout can map the same row set to
 /// its own emphasis without restating the row conditions.
 enum DetailField {
     Status,
-    Priority,
     Project,
     Urgency,
     Due,
@@ -2165,7 +2213,6 @@ enum DetailField {
     Estimate,
     Completed,
     Tracked,
-    Running,
     Blocked,
     Tags,
     DependsOn,
@@ -2198,12 +2245,8 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
     // `Thu 10 Sep` / `in 2 days` identically on both surfaces. Only the
     // *values* converge here; the layout stays each renderer's own (D78's rail
     // card is untouched by this).
-    let opts = tasqx_core::markdown::DetailOpts {
-        time: ctx.time_format,
-        now,
-    };
-    let fmt_i = |v: &str| tasqx_core::markdown::fmt_instant(v, &opts);
-    let fmt_d = |v: &str| tasqx_core::markdown::fmt_duration(v, &opts);
+    let fmt_i = |v: &str| instant_value(ctx, v, now);
+    let fmt_d = |v: &str| duration_value(ctx, v, now);
 
     let mut rows = Vec::new();
     let mut row = |label: &'static str, field: DetailField, value: String| {
@@ -2214,21 +2257,71 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
         });
     };
 
-    row("status", DetailField::Status, status_cell(ctx, result));
-    row(
-        "priority",
-        DetailField::Priority,
-        result
-            .get("priority")
-            .and_then(Value::as_str)
-            .unwrap_or("-")
-            .to_string(),
-    );
+    // D122: a running task says so in its status, not on a `running` row of
+    // its own beside `status active`, which said the same thing twice. The
+    // open interval is still not folded into `tracked` (see `task_to_json`),
+    // so the moment it started is what distinguishes "running" from "done
+    // running": it rides on the status.
+    let mut status = status_cell(ctx, result);
+    if !s(result, "active_since").is_empty() && !status_is_unrecognized(result) {
+        status = format!("{status} · since {}", fmt_i(&s(result, "active_since")));
+    }
+    row("status", DetailField::Status, status);
+    // D122: blocked is a line only when it is true, and it names what blocks
+    // the task. It used to be `blocked true` beside `depends_on #51`, two rows
+    // for one fact, and `blocked false` on every other task, which is noise.
+    let blocked = result
+        .get("blocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if blocked {
+        let empty = Vec::new();
+        let blockers: Vec<String> = result
+            .get("unmet_blockers")
+            .and_then(Value::as_array)
+            .unwrap_or(&empty)
+            .iter()
+            .map(|b| {
+                let sid = b.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+                let title = san(b.get("title").and_then(Value::as_str).unwrap_or(""));
+                if title.is_empty() {
+                    format!("#{sid}")
+                } else {
+                    format!("#{sid} · {title}")
+                }
+            })
+            .collect();
+        let named = if blockers.is_empty() {
+            // An older core, or a caller that trimmed the field: the edge is
+            // still in `depends_on`.
+            result
+                .get("depends_on")
+                .and_then(Value::as_array)
+                .map(|d| {
+                    d.iter()
+                        .filter_map(Value::as_i64)
+                        .map(|n| format!("#{n}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default()
+        } else {
+            blockers.join(", ")
+        };
+        row("blocked", DetailField::Blocked, format!("by {named}"));
+    }
+    // D122 (rule 5): priority sits in the urgency cell it modifies, as in
+    // `list`, rather than on a row of its own describing a number two rows
+    // away.
+    let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+    let prio = result
+        .get("priority")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    row("urgency", DetailField::Urgency, format!("{prio} {urg:.1}"));
     if !s(result, "project").is_empty() {
         row("project", DetailField::Project, s(result, "project"));
     }
-    let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-    row("urgency", DetailField::Urgency, format!("{urg:.1}"));
     if !s(result, "due").is_empty() {
         row("due", DetailField::Due, fmt_i(&s(result, "due")));
     }
@@ -2276,21 +2369,6 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
     if !tracked.is_empty() && tracked != "PT0S" {
         row("tracked", DetailField::Tracked, fmt_d(&tracked));
     }
-    // The open interval is NOT folded into `tracked` (see `task_to_json`), so
-    // an active task must say the clock is still running or its tracked total
-    // reads as the final answer when it is only the total so far.
-    if !s(result, "active_since").is_empty() {
-        row(
-            "running",
-            DetailField::Running,
-            format!("since {}", fmt_i(&s(result, "active_since"))),
-        );
-    }
-    let blocked = result
-        .get("blocked")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    row("blocked", DetailField::Blocked, blocked.to_string());
     if let Some(tags) = result.get("tags").and_then(Value::as_array) {
         if !tags.is_empty() {
             // `+tag`, matching `list`'s table and its own filter grammar — see
@@ -2303,8 +2381,11 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
             row("tags", DetailField::Tags, names.join(" "));
         }
     }
+    // Only while the task is not blocked: a blocked task's `blocked` line
+    // already names what it waits on, and the edges to finished tasks no
+    // longer stop anything.
     if let Some(deps) = result.get("depends_on").and_then(Value::as_array) {
-        if !deps.is_empty() {
+        if !deps.is_empty() && !blocked {
             let refs: Vec<String> = deps
                 .iter()
                 .filter_map(Value::as_i64)
@@ -2424,176 +2505,113 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
 // here. Tones come from the `card.*` roles — see `theme::builtin` for why
 // they are deliberately achromatic in every built-in.
 
-/// One run of card text: the role that paints it, or `None` for the
-/// terminal's own foreground — the card's "values" tone. Default-fg rather
-/// than a literal light gray, so the card reads on light and dark grounds
-/// alike.
-type Seg = (Option<&'static str>, String);
-
-fn segs_width(segs: &[Seg]) -> usize {
-    segs.iter().map(|(_, t)| width(t)).sum()
-}
-
-fn paint_segs(ctx: &Ctx, segs: &[Seg]) -> String {
-    segs.iter()
-        .map(|(role, t)| match role {
-            Some(r) => ctx.paint(r, t),
-            None => t.clone(),
-        })
-        .collect()
-}
-
-/// Truncate a seg run to at most `max` cells, keeping each run's role and
-/// letting [`truncate`] put the ellipsis on the piece that was cut.
-fn fit_segs(segs: Vec<Seg>, max: usize) -> Vec<Seg> {
-    if segs_width(&segs) <= max {
-        return segs;
-    }
-    let mut out: Vec<Seg> = Vec::new();
-    let mut used = 0usize;
-    for (role, t) in segs {
-        let w = width(&t);
-        if used + w <= max {
-            used += w;
-            out.push((role, t));
-            continue;
-        }
-        if max > used {
-            out.push((role, truncate(&t, max - used, true)));
-        }
-        break;
-    }
-    out
-}
-
-/// The rounded gray frame around body rows, with the header worked into the
-/// top border — the quiet-frame shape the user chose in #259.
+/// The `add` confirmation card (D122, replacing D76's framed card). Takes the
+/// FULL task, a `task.get` result, because `task.add`'s own result carries no
+/// priority or estimate (see `run_add`, which reads the task back on the
+/// interactive path and falls back to the plain line when that read fails).
 ///
-/// The interior is as wide as the widest row asks, capped at 80 total cells
-/// (a card is a glance, not a table) and at the live terminal width. Glyph
-/// honesty note, recorded in D76: `─`/`│`/`●`/`▲` are East-Asian-ambiguous
-/// width, which [`width`] counts as one cell; a terminal configured to draw
-/// ambiguous glyphs wide will bend the right edge. The dashboard's borders
-/// accepted the same edge first.
-fn card_box(ctx: &Ctx, header: Vec<Seg>, rows: Vec<Vec<Seg>>) -> String {
-    let cap = ctx.cols.clamp(Ctx::MIN_COLS, 80).saturating_sub(4);
-    let body_w = rows.iter().map(|r| segs_width(r)).max().unwrap_or(0);
-    let head_w = segs_width(&header);
-    let inner = body_w.max(head_w + 2).clamp(10, cap);
-    let header = fit_segs(header, inner.saturating_sub(2));
-    let head_w = segs_width(&header);
-    let mut out = String::new();
-    out.push_str(&ctx.paint("card.frame", "╭─ "));
-    out.push_str(&paint_segs(ctx, &header));
-    out.push(' ');
-    out.push_str(&ctx.paint(
-        "card.frame",
-        &format!("{}╮", "─".repeat(inner - 1 - head_w)),
-    ));
-    out.push('\n');
-    for row in rows {
-        let row = fit_segs(row, inner);
-        let fill = " ".repeat(inner - segs_width(&row));
-        out.push_str(&format!(
-            "{}{}{fill}{}\n",
-            ctx.paint("card.frame", "│ "),
-            paint_segs(ctx, &row),
-            ctx.paint("card.frame", " │"),
-        ));
-    }
-    out.push_str(&ctx.paint("card.frame", &format!("╰{}╯", "─".repeat(inner + 2))));
-    out.push('\n');
-    out
-}
-
-/// The `add` confirmation card (D76). Takes the FULL task — a `task.get`
-/// result — because `task.add`'s own result is a frozen five-field summary
-/// that carries no tags, due, priority or estimate (see `run_add`, which
-/// reads the task back on the interactive path and falls back to the plain
-/// line when that read fails).
-pub fn task_added_card(ctx: &Ctx, task: &Value) -> String {
+/// Two lines in `show`'s visual language: the status rail, `#N` and the title,
+/// then `list`'s urgency cell and the facts a reader just typed, spelled the
+/// way `list` spells them (`due Fri`, `est 3h`). The framed card was a second
+/// visual language for the same object, and it printed `due
+/// 2026-09-18T00:00:00Z` and `est PT3H` back at the person who had typed
+/// `due:friday est:3h`.
+pub fn task_added_card(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
     let sid = task.get("short_id").and_then(Value::as_i64).unwrap_or(0);
     let urg = task.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-    let gap = |row: &mut Vec<Seg>| {
-        if !row.is_empty() {
-            row.push((None, "   ".into()));
-        }
+    let rail = ctx.paint(rail_role(task), "▌");
+    let avail = ctx.cols.saturating_sub(2).max(20);
+
+    let id = format!("#{sid}");
+    let title = truncate(
+        &s(task, "title"),
+        avail.saturating_sub(width(&id) + 2),
+        true,
+    );
+    let mut out = format!(
+        "{rail} {}  {}\n",
+        ctx.paint("card.label", &id),
+        ctx.paint("card.strong", &title)
+    );
+
+    let prio = task.get("priority").and_then(Value::as_str).unwrap_or("-");
+    let prio_role = match prio {
+        "H" => "priority.H",
+        "M" => "priority.M",
+        "L" => "priority.L",
+        _ => "muted",
     };
-
-    let header: Vec<Seg> = vec![
-        (Some("card.label"), format!("#{sid}")),
-        (Some("card.frame"), " · ".into()),
-        (Some("card.strong"), s(task, "title")),
-    ];
-
-    // Row 1: the state of the thing — status, priority when set, urgency.
-    // Raw status, not `status_cell`: segs are measured for padding before they
-    // are painted, so a pre-painted string would have its SGR bytes counted as
-    // cells and bend the frame. The plain `add` line shows the raw status too.
-    let mut state: Vec<Seg> = vec![(None, format!("● {}", s(task, "status")))];
-    match task.get("priority").and_then(Value::as_str) {
-        Some("H") => {
-            gap(&mut state);
-            state.push((Some("card.strong"), "! high".into()));
-        }
-        Some("M") => {
-            gap(&mut state);
-            state.push((None, "med".into()));
-        }
-        Some("L") => {
-            gap(&mut state);
-            state.push((Some("card.label"), "low".into()));
-        }
-        _ => {}
-    }
-    gap(&mut state);
-    state.push((Some("card.strong"), format!("▲ {urg:.1}")));
-
-    // Row 2: where it lives — project and tags, absent rows drawn as nothing.
-    let mut place: Vec<Seg> = Vec::new();
+    let (bar, track) = urgency_meter(urgency_scale(urg));
+    let ramp = ctx.theme.ramp_style(urgency_scale(urg));
+    // Each fact is (plain text for measuring, painted text), taken whole or
+    // not at all so a narrow terminal drops facts rather than cutting one.
+    let mut facts: Vec<(String, String)> = vec![(
+        format!("{prio} {bar}{track} {urg:.1}"),
+        format!(
+            "{} {}{} {}",
+            ctx.paint(prio_role, prio),
+            ramp.paint(&bar, &ctx.caps),
+            ctx.paint("muted", &track),
+            ramp.paint(&format!("{urg:.1}"), &ctx.caps)
+        ),
+    )];
     let proj = s(task, "project");
     if !proj.is_empty() {
-        place.push((Some("card.label"), proj));
+        facts.push((proj.clone(), ctx.paint("project", &proj)));
     }
     if let Some(tags) = task.get("tags").and_then(Value::as_array) {
-        // `+tag`, not `#tag`: the card is the first place a new tag is ever
-        // shown, and `#tag` is the one spelling `list`'s filter grammar
-        // rejects outright (#228.16).
+        // `+tag`, the one spelling `list`'s filter grammar reads back (#228.16).
         let names: Vec<String> = tags
             .iter()
             .filter_map(Value::as_str)
             .map(|t| format!("+{}", san(t)))
             .collect();
         if !names.is_empty() {
-            if !place.is_empty() {
-                place.push((Some("card.frame"), " · ".into()));
-            }
-            place.push((None, names.join(" ")));
+            let joined = names.join(" ");
+            facts.push((joined.clone(), ctx.paint("tag", &joined)));
         }
     }
-
-    // Row 3: when and how much — due (the fact you act on), estimate, repeat.
-    let mut when: Vec<Seg> = Vec::new();
-    if !s(task, "due").is_empty() {
-        when.push((Some("card.label"), "due ".into()));
-        when.push((Some("card.strong"), s(task, "due")));
+    if let Some(due) = field_ts(task, "due") {
+        let cell = due_cell(due, now);
+        facts.push((
+            format!("due {cell}"),
+            format!(
+                "{} {}",
+                ctx.paint("card.label", "due"),
+                ctx.paint("card.strong", &cell)
+            ),
+        ));
     }
     if !s(task, "estimate").is_empty() {
-        gap(&mut when);
-        when.push((Some("card.label"), "est ".into()));
-        when.push((None, s(task, "estimate")));
+        let est = duration_value(ctx, &s(task, "estimate"), now);
+        facts.push((
+            format!("est {est}"),
+            format!("{} {est}", ctx.paint("card.label", "est")),
+        ));
     }
     if !s(task, "recurrence").is_empty() {
-        gap(&mut when);
-        when.push((Some("card.label"), "↻ ".into()));
-        when.push((None, s(task, "recurrence")));
+        let rec = s(task, "recurrence");
+        facts.push((
+            format!("↻ {rec}"),
+            format!("{} {rec}", ctx.paint("card.label", "↻")),
+        ));
     }
 
-    let rows: Vec<Vec<Seg>> = [state, place, when]
-        .into_iter()
-        .filter(|r| !r.is_empty())
-        .collect();
-    card_box(ctx, header, rows)
+    let mut used = 0usize;
+    let mut line = String::new();
+    for (plain, painted) in facts {
+        let need = width(&plain) + if line.is_empty() { 0 } else { 3 };
+        if used + need > avail {
+            break;
+        }
+        if !line.is_empty() {
+            line.push_str("   ");
+        }
+        line.push_str(&painted);
+        used += need;
+    }
+    out.push_str(&format!("{rail} {line}\n"));
+    out
 }
 
 // The `show` card: the status-colored left rail (the C variant that
@@ -2712,6 +2730,9 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         // `status_cell` with its warn SGR already applied), whose width
         // cannot be measured — it is emitted alone and never wrapped.
         prepainted: bool,
+        // A value painted here whose width is known from its plain form (the
+        // urgency cell), so it can still pair with a neighbour.
+        width: Option<usize>,
     }
     let unrecognized = status_is_unrecognized(result);
     let mut cells: Vec<MetaCell> = Vec::new();
@@ -2722,23 +2743,68 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
                 annotations.push(r.value);
                 continue;
             }
+            // D122: the one fact that stops the reader working opens the
+            // card, under the title, in the rail's own colour: `⊘ blocked by
+            // #51 · <title>`. A row among the others was the same fact at the
+            // same weight as `created`.
+            DetailField::Blocked => {
+                let glyph = if ctx.caps.unicode { "⊘ " } else { "B " };
+                push(
+                    &mut out,
+                    format!(
+                        "{}{}",
+                        ctx.paint("danger", &format!("{glyph}{}", r.label)),
+                        ctx.paint("danger", &format!(" {}", r.value)),
+                    ),
+                );
+                push(&mut out, String::new());
+                continue;
+            }
+            // D122: `list`'s urgency cell, priority letter and gauge
+            // included, so a task reads the same on both screens. Painted
+            // here and measured from the plain value, whose width it shares
+            // once the gauge's cells are added.
+            DetailField::Urgency => {
+                let urg = result.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+                let prio = r.value.split(' ').next().unwrap_or("-").to_string();
+                let prio_role = match prio.as_str() {
+                    "H" => "priority.H",
+                    "M" => "priority.M",
+                    "L" => "priority.L",
+                    _ => "muted",
+                };
+                let (bar, track) = urgency_meter(urgency_scale(urg));
+                let ramp = ctx.theme.ramp_style(urgency_scale(urg));
+                let painted = format!(
+                    "{} {}{} {}",
+                    ctx.paint(prio_role, &prio),
+                    ramp.paint(&bar, &ctx.caps),
+                    ctx.paint("muted", &track),
+                    ramp.paint(&format!("{urg:.1}"), &ctx.caps),
+                );
+                let plain_w = width(&format!("{prio} {bar}{track} {urg:.1}"));
+                cells.push(MetaCell {
+                    label: r.label,
+                    value: painted,
+                    role: None,
+                    prepainted: false,
+                    width: Some(plain_w),
+                });
+                continue;
+            }
             DetailField::Status => (None, unrecognized),
-            DetailField::Priority => (
-                match r.value.as_str() {
-                    "H" => Some("card.strong"),
-                    "L" => Some("card.label"),
-                    "M" => None,
-                    _ => Some("card.frame"),
-                },
-                false,
-            ),
-            DetailField::Due | DetailField::Running => (Some("card.strong"), false),
-            DetailField::Blocked => (
-                Some(if r.value == "true" {
-                    "card.strong"
-                } else {
-                    "card.label"
-                }),
+            // An open task past its deadline reads in `overdue`, as its row
+            // does in `list`: the same fact in the same colour on both.
+            DetailField::Due => (
+                Some(
+                    if field_ts(result, "due").is_some_and(|d| d < now)
+                        && status_is_open(&s(result, "status"))
+                    {
+                        "overdue"
+                    } else {
+                        "card.strong"
+                    },
+                ),
                 false,
             ),
             _ => (None, false),
@@ -2748,6 +2814,7 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             value: r.value,
             role,
             prepainted,
+            width: None,
         });
     }
 
@@ -2757,14 +2824,15 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             None => text.to_string(),
         }
     };
+    let value_w = |c: &MetaCell| c.width.unwrap_or_else(|| width(&c.value));
     let mut i = 0;
     while i < cells.len() {
         let a = &cells[i];
-        let aw = LW + width(&a.value);
+        let aw = LW + value_w(a);
         // Pair two short facts on one line when both fit their columns.
         if !a.prepainted && aw + 3 <= COL2 && i + 1 < cells.len() {
             let b = &cells[i + 1];
-            if !b.prepainted && COL2 + LW + width(&b.value) <= avail {
+            if !b.prepainted && COL2 + LW + value_w(b) <= avail {
                 push(
                     &mut out,
                     format!(
@@ -2780,7 +2848,7 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
                 continue;
             }
         }
-        if a.prepainted || aw <= avail {
+        if a.prepainted || a.width.is_some() || aw <= avail {
             push(
                 &mut out,
                 format!("{}{}", lab(a.label), paint_val(a, &a.value)),
@@ -3686,43 +3754,105 @@ fn bucket_delta(before: &Value, after: &Value) -> String {
 /// auto-stops whatever was running), a caller who does not already know #9 is
 /// the one they started an hour ago reads this as a fresh recommendation and
 /// starts timing the wrong thing.
-pub fn next_task(ctx: &Ctx, result: &Value) -> String {
+pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     let empty = Vec::new();
     let tasks = result
         .get("tasks")
         .and_then(Value::as_array)
         .unwrap_or(&empty);
-    match tasks.first() {
-        None if store_is_empty(result) => onboarding_hint(),
-        None => "Nothing actionable — you're clear.\n".to_string(),
-        Some(t) => {
-            let sid = t.get("short_id").and_then(Value::as_i64).unwrap_or(0);
-            let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-            let mut out = format!(
-                "{}  (urgency {urg:.1})  {}\n",
-                ctx.paint("accent", &format!("#{sid}")),
-                s(t, "title")
-            );
-            if s(t, "status") == "active" {
-                let since = t
-                    .get("active_since")
-                    .and_then(Value::as_str)
-                    .and_then(|v| v.parse::<Timestamp>().ok())
-                    .map(|ts| {
-                        let time = ts.to_zoned(TimeZone::UTC).time();
-                        format!("{:02}:{:02}", time.hour(), time.minute())
-                    });
-                out.push_str(&ctx.paint(
-                    "timer.active",
-                    &match since {
-                        Some(hhmm) => format!("  already running, since {hhmm} UTC\n"),
-                        None => "  already running\n".to_string(),
-                    },
-                ));
-            }
-            out
+    let Some(t) = tasks.first() else {
+        return if store_is_empty(result) {
+            onboarding_hint()
+        } else {
+            "Nothing actionable — you're clear.\n".to_string()
+        };
+    };
+    // D122: the "what now" answer says why this one, and what to type next.
+    // It printed `#48  (urgency 18.1)  <title>`: no deadline (the task was two
+    // days overdue), no project, and a score in parentheses that explained
+    // nothing. The title comes first because it is the answer; the reasons
+    // follow on `list`'s own terms (the urgency cell, the project, the
+    // deadline as a calendar day); the last line is the two commands a reader
+    // reaches for next, so neither has to be remembered.
+    let sid = t.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
+    // The lines under the title start where `#N` does, measured rather than
+    // counted: a hand-counted indent drew the facts one column short of it.
+    let label = "next  ";
+    let pad = " ".repeat(width(label) + 2);
+    let mut out = format!(
+        "{}  {}  {}\n",
+        ctx.paint("table.label", label),
+        ctx.paint("card.label", &format!("#{sid}")),
+        ctx.paint("card.strong", &s(t, "title"))
+    );
+    let prio = t.get("priority").and_then(Value::as_str).unwrap_or("-");
+    let prio_role = match prio {
+        "H" => "priority.H",
+        "M" => "priority.M",
+        "L" => "priority.L",
+        _ => "muted",
+    };
+    let ramp = ctx.theme.ramp_style(urgency_scale(urg));
+    let mut facts = vec![if ctx.caps.unicode {
+        let (bar, track) = urgency_meter(urgency_scale(urg));
+        format!(
+            "{} {}{} {}",
+            ctx.paint(prio_role, prio),
+            ramp.paint(&bar, &ctx.caps),
+            ctx.paint("muted", &track),
+            ramp.paint(&format!("{urg:.1}"), &ctx.caps)
+        )
+    } else {
+        format!(
+            "{} {}",
+            ctx.paint(prio_role, prio),
+            ramp.paint(&format!("{urg:.1}"), &ctx.caps)
+        )
+    }];
+    let proj = s(t, "project");
+    if !proj.is_empty() {
+        facts.push(ctx.paint("project", &proj));
+    }
+    if let Some(due) = field_ts(t, "due") {
+        let cell = format!("due {}", due_cell(due, now));
+        facts.push(if due < now {
+            ctx.paint("overdue", &cell)
+        } else {
+            cell
+        });
+    }
+    if s(t, "status") == "active" {
+        let since = field_ts(t, "active_since").map(|at| due_cell(at, now));
+        facts.push(ctx.paint(
+            "timer.active",
+            &match since {
+                Some(when) => format!("already running, since {when}"),
+                None => "already running".to_string(),
+            },
+        ));
+    }
+    if let Some(tags) = t.get("tags").and_then(Value::as_array) {
+        let names: Vec<String> = tags
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|g| format!("+{}", san(g)))
+            .collect();
+        if !names.is_empty() {
+            facts.push(ctx.paint("tag", &names.join(" ")));
         }
     }
+    out.push_str(&format!("{pad}{}\n", facts.join("   ")));
+    let start = if s(t, "status") == "active" {
+        format!("tasqx done {sid}")
+    } else {
+        format!("tasqx start {sid}")
+    };
+    out.push_str(&format!(
+        "{pad}{}\n",
+        ctx.paint("muted", &format!("{start}  {}  tasqx why {sid}", ctx.mid()))
+    ));
+    out
 }
 
 /// Urgency breakdown (`tasqx why`).
@@ -3738,7 +3868,7 @@ pub fn next_task(ctx: &Ctx, result: &Value) -> String {
 /// every blocked row (D53's rule), so a task can score highest here and still
 /// never be offered. `task.get` already carries `blocked`/`depends_on`
 /// (`show` renders both), so the one line this appends costs no extra call.
-pub fn why(ctx: &Ctx, result: &Value) -> String {
+pub fn why(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     use tasqx_core::{urgency, Priority};
     let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
 
@@ -3757,8 +3887,8 @@ pub fn why(ctx: &Ctx, result: &Value) -> String {
         })
         .filter(|parts| !parts.is_empty());
 
-    let mut out = match from_breakdown_field {
-        Some(parts) => why_rows(ctx, sid, &parts),
+    let parts = match from_breakdown_field {
+        Some(parts) => parts,
         None => {
             let prio = result
                 .get("priority")
@@ -3766,9 +3896,62 @@ pub fn why(ctx: &Ctx, result: &Value) -> String {
                 .and_then(Priority::parse);
             let due = result.get("due").and_then(Value::as_str);
             let created = result.get("created").and_then(Value::as_str).unwrap_or("");
-            why_rows(ctx, sid, &urgency::breakdown(prio, due, created))
+            urgency::breakdown(prio, due, created)
         }
     };
+
+    // D122: the task by name, and each term by what drove it. `why` used to
+    // say `Why #48 has urgency 18.1` over `due_proximity 12.00`, which named
+    // neither the task nor the fact that it was two days overdue.
+    let title = s(result, "title");
+    let mut out = String::new();
+    if title.is_empty() {
+        out.push_str(&ctx.paint("card.label", &format!("#{sid}")));
+    } else {
+        out.push_str(&format!(
+            "{}  {}",
+            ctx.paint("card.label", &format!("#{sid}")),
+            ctx.paint("card.strong", &title)
+        ));
+    }
+    out.push_str("\n\n");
+    let rows: Vec<(&str, String, f64)> = parts
+        .iter()
+        .map(|(name, v)| match *name {
+            "priority" => (
+                "priority",
+                result
+                    .get("priority")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none")
+                    .to_string(),
+                *v,
+            ),
+            "due_proximity" => (
+                "deadline",
+                match field_ts(result, "due") {
+                    None => "none".to_string(),
+                    Some(due) if due < now => format!("overdue, {}", day_ago(due, now)),
+                    Some(due) => format!("due {}", due_cell(due, now)),
+                },
+                *v,
+            ),
+            "age" => (
+                "age",
+                field_ts(result, "created").map_or_else(String::new, |c| {
+                    let days = (now.as_second() - c.as_second()).max(0) / 86_400;
+                    match days {
+                        0 => "created today".to_string(),
+                        1 => "1 day".to_string(),
+                        n => format!("{n} days"),
+                    }
+                }),
+                *v,
+            ),
+            other => (other, String::new(), *v),
+        })
+        .collect();
+    out.push_str(&why_table(ctx, &rows));
     out.push_str(&blocked_line_for_why(ctx, result));
     out
 }
@@ -3807,33 +3990,61 @@ fn blocked_line_for_why(ctx: &Ctx, result: &Value) -> String {
     )
 }
 
-/// Render a breakdown the caller has already computed.
+/// The breakdown as a table: each term, what drove it, and its share, then
+/// the urgency. One decimal throughout, so the total is the number `list`,
+/// `show` and `next` print for the same task (D122).
 ///
-/// `parts` is a PARAMETER for the same reason `chart::render_throughput`'s
-/// series is: [`why`] reaches `urgency::breakdown` through the wall clock, so
-/// a test that could only reach this code through it would not get to choose
-/// the value under test — and the value that broke this display (`-0.0`, from
-/// `(-age).max(0.0)` when `created` lands in the very second the clock is
-/// read) is one a test cannot schedule there, while `urgency::breakdown_at`
-/// plus this seam can stage it exactly.
-fn why_rows(ctx: &Ctx, sid: i64, parts: &[(&'static str, f64)]) -> String {
-    let total: f64 = parts.iter().map(|(_, v)| v).sum();
-
+/// The parts are rounded by largest remainder so the rounded shares add up to
+/// the rounded total, which is what audit finding #6 asked of this table
+/// (`3.90 + 11.52` must not read as `15.4`), kept at one decimal rather than
+/// bought with two. Two decimals made the total `18.09` under a heading, and
+/// beside a `list`, that said `18.1`.
+///
+/// `parts` is a PARAMETER for the reason `chart::render_throughput`'s series
+/// is: [`why`] reaches `urgency::breakdown` through the wall clock, and the
+/// value that once broke this display (`-0.0`, from `(-age).max(0.0)` when
+/// `created` lands in the very second the clock is read) is one a test can
+/// only stage through this seam.
+fn why_table(ctx: &Ctx, parts: &[(&str, String, f64)]) -> String {
+    let shares = apportion(&parts.iter().map(|(_, _, v)| *v).collect::<Vec<_>>());
+    let total: f64 = parts.iter().map(|(_, _, v)| v).sum();
+    let desc_w = parts.iter().map(|(_, d, _)| width(d)).max().unwrap_or(0);
     let mut out = String::new();
-    out.push_str(&ctx.paint(
-        "header",
-        &format!("Why #{sid} has urgency {}", signed(total, 1)),
-    ));
-    out.push('\n');
-    for (name, val) in parts {
-        out.push_str(&format!("  {name:<14} {:>6}\n", signed(*val, 2)));
+    for ((name, desc, _), share) in parts.iter().zip(&shares) {
+        out.push_str(&format!(
+            "  {} {}  {:>6}\n",
+            ctx.paint("table.label", &pad(name, 10)),
+            pad(desc, desc_w),
+            signed(*share, 1)
+        ));
     }
-    // Finding #6 (audit-2026-09): the components print at 2 decimals, so the
-    // total row does too — otherwise a reader who adds up the parts printed
-    // above gets a different answer from the one printed here (`3.90 + 11.52`
-    // must read `15.42`, not the heading's rounder `15.4`).
-    out.push_str(&format!("  {:<14} {:>6}\n", "= total", signed(total, 2)));
+    out.push_str(&format!(
+        "  {} {}  {:>6}\n",
+        ctx.paint("table.label", &pad("urgency", 10)),
+        " ".repeat(desc_w),
+        ctx.paint("card.strong", &format!("{:>6}", signed(total, 1)))
+    ));
     out
+}
+
+/// `values` rounded to one decimal so that the rounded parts add up to the
+/// rounded total: round each down to a tenth, then hand the tenths still
+/// missing to the parts that lost the most in rounding. Largest remainder, the
+/// method percentages that must add to 100 use.
+fn apportion(values: &[f64]) -> Vec<f64> {
+    let target = (values.iter().sum::<f64>() * 10.0).round() as i64;
+    let mut floors: Vec<i64> = values.iter().map(|v| (v * 10.0).floor() as i64).collect();
+    let mut order: Vec<usize> = (0..values.len()).collect();
+    order.sort_by(|&a, &b| {
+        let ra = values[a] * 10.0 - floors[a] as f64;
+        let rb = values[b] * 10.0 - floors[b] as f64;
+        rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let missing = target - floors.iter().sum::<i64>();
+    for &i in order.iter().cycle().take(missing.max(0) as usize) {
+        floors[i] += 1;
+    }
+    floors.into_iter().map(|t| t as f64 / 10.0).collect()
 }
 
 /// `v` to `places` decimals, without a minus sign the printed number does not
@@ -4043,7 +4254,7 @@ mod tests {
         // detail view must show it too — an invisible field is how the dependency
         // bug stayed hidden.
         assert!(out.contains("estimate"), "estimate row missing: {out:?}");
-        assert!(out.contains("PT4H"), "estimate value missing: {out:?}");
+        assert!(out.contains("4h"), "estimate value missing: {out:?}");
 
         // Absent remind must stay absent — the row is conditional, like `due`.
         let mut bare = base.clone();
@@ -4120,9 +4331,11 @@ mod tests {
             out_rel.contains("4h"),
             "estimate must read as a humanized duration, not PT4H: {out_rel:?}"
         );
+        // D122: in the terminal, the relative forms are calendar days, rule 3
+        // of docs/terminal-style.md, not elapsed prose.
         assert!(
-            out_rel.contains("in "),
-            "a future due date must read as relative prose: {out_rel:?}"
+            out_rel.contains("tomorrow"),
+            "a future due date must read as a calendar day: {out_rel:?}"
         );
 
         // The bug, precisely: every mode rendered the identical bytes.
@@ -4191,47 +4404,47 @@ mod tests {
             card.contains('▌') && !card.contains("  status     "),
             "unicode caps should render the rail card: {card:?}"
         );
-        let added = task_added_card(&Ctx::new(theme::default_theme(), card_caps()), &t);
+        let added = task_added_card(
+            &Ctx::new(theme::default_theme(), card_caps()),
+            &t,
+            Timestamp::now(),
+        );
         assert!(
-            added.contains('╭'),
-            "the add card lost its frame: {added:?}"
+            added.starts_with('▌'),
+            "the add card lost its rail: {added:?}"
         );
     }
 
-    /// The frame is only worth drawing if it closes: every line the same cell
-    /// width, empty rows not drawn at all, and a 300-cell title truncated into
-    /// the border instead of bursting it.
+    /// D122: the add card is `show`'s rail in two lines, and it fits: every line
+    /// starts on the rail, no line runs past the terminal, and what the reader
+    /// typed comes back in `list`'s spelling rather than the store's.
     #[test]
-    fn the_add_card_frame_stays_closed() {
-        let ctx = Ctx::new(theme::default_theme(), card_caps());
-        let out = task_added_card(&ctx, &full_task());
+    fn the_add_card_is_two_rail_lines_in_lists_spelling() {
+        let ctx = Ctx::new(theme::default_theme(), card_caps()).with_cols(80);
+        let now: Timestamp = "2026-09-01T12:00:00Z".parse().unwrap();
+        let out = task_added_card(&ctx, &full_task(), now);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 5, "header + 3 rows + bottom:\n{out}");
-        let w = width(lines[0]);
+        assert_eq!(lines.len(), 2, "title line and facts line:\n{out}");
         for line in &lines {
-            assert_eq!(width(line), w, "ragged frame:\n{out}");
+            assert!(line.starts_with('▌'), "off the rail: {line:?}");
+            assert!(width(line) <= 80, "{} cells at 80: {line:?}", width(line));
+        }
+        assert!(
+            lines[1].contains("due Fri 17:00") || lines[1].contains("due Fri"),
+            "{out}"
+        );
+        assert!(lines[1].contains("est 4h"), "{out}");
+        for iso in ["PT4H", "2026-09-04T17:00:00Z", "╭", "▲"] {
+            assert!(!out.contains(iso), "{iso:?} in the add card:\n{out}");
         }
 
-        // No project, tags, due, estimate or recurrence: one state row only.
-        let bare = json!({"short_id": 7, "title": "bare", "status": "pending",
-                          "urgency": 0.0});
-        let out = task_added_card(&ctx, &bare);
-        assert_eq!(
-            out.lines().count(),
-            3,
-            "empty rows must not be drawn:\n{out}"
-        );
-
-        // A title longer than any terminal still yields a closed, capped box.
         let mut long = full_task();
         long["title"] = json!("x".repeat(300));
-        let out = task_added_card(&ctx, &long);
-        let lines: Vec<&str> = out.lines().collect();
-        let w = width(lines[0]);
-        assert!(w <= 80, "the card must cap its width, got {w}");
-        for line in &lines {
-            assert_eq!(width(line), w, "long title burst the frame:\n{out}");
-        }
+        let out = task_added_card(&ctx, &long, now);
+        assert!(
+            out.lines().all(|l| width(l) <= 80),
+            "a long title ran past the terminal:\n{out}"
+        );
     }
 
     /// The rail card (the C variant that superseded the D76 ledger): every
@@ -4343,10 +4556,183 @@ mod tests {
             }),
             Timestamp::now(),
         );
+        // D122 folded priority into the urgency cell, so the short pair is now
+        // status and urgency.
         let paired = out
             .lines()
-            .any(|l| l.contains("status") && l.contains("priority"));
-        assert!(paired, "status and priority did not share a line:\n{out}");
+            .any(|l| l.contains("status") && l.contains("urgency"));
+        assert!(paired, "status and urgency did not share a line:\n{out}");
+    }
+
+    /// A blocked task from the demo store, with a running timer's worth of
+    /// fields around it, as `task.get` returns it.
+    fn detail_fixture() -> serde_json::Value {
+        json!({
+            "short_id": 52, "title": "Write the migration guide for SDK 3.0",
+            "status": "pending", "priority": "M", "project": "api",
+            "urgency": 12.1, "due": "2026-09-16T00:00:00Z", "estimate": "PT5H",
+            "blocked": true, "depends_on": [51],
+            "unmet_blockers": [{ "short_id": 51, "title": "Rate-limit the /search endpoint" }],
+            "tags": ["docs"], "created": "2026-09-01T10:00:00Z",
+            "modified": "2026-09-11T09:36:55.218763722Z", "_rev": 2
+        })
+    }
+
+    /// D122, rule 3: a detail view spells its instants as calendar days and
+    /// its durations as `5h`. Under the default `both` it printed
+    /// `2026-09-11T09:36:55.218763722Z (just now)` and `PT5H (5h)`.
+    #[test]
+    fn show_spells_dates_as_calendar_days_and_durations_once() {
+        let now: Timestamp = "2026-09-11T11:00:00Z".parse().unwrap();
+        for caps in [Caps::PLAIN, card_caps()] {
+            let ctx = Ctx::new(theme::default_theme(), caps).with_time_format(TimeFormat::Both);
+            let out = task_detail(&ctx, &detail_fixture(), now);
+            assert!(out.contains("Wed (in 5 days)"), "{out}");
+            assert!(out.contains("1 Sep (10 days ago)"), "{out}");
+            for raw in ["T00:00:00Z", "T09:36", "PT5H", ".218763722"] {
+                assert!(!out.contains(raw), "{raw:?} leaked into show:\n{out}");
+            }
+        }
+    }
+
+    /// D122, rule 11: a blocked task says what blocks it, once, by name. It
+    /// was `blocked true` beside `depends_on #51`; and every task that was
+    /// not blocked carried `blocked false`.
+    #[test]
+    fn a_blocked_task_names_its_blocker_once_and_others_say_nothing() {
+        let now: Timestamp = "2026-09-11T11:00:00Z".parse().unwrap();
+        let card = task_detail(
+            &Ctx::new(theme::default_theme(), card_caps()),
+            &detail_fixture(),
+            now,
+        );
+        assert!(
+            card.contains("⊘ blocked by #51 · Rate-limit the /search endpoint"),
+            "{card}"
+        );
+        for gone in ["depends_on", "true", "false"] {
+            assert!(!card.contains(gone), "{gone:?} still in the card:\n{card}");
+        }
+        let mut free = detail_fixture();
+        free["blocked"] = json!(false);
+        free["unmet_blockers"] = json!([]);
+        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &free, now);
+        assert!(!plain.contains("blocked"), "{plain}");
+        assert!(
+            plain.contains("depends_on"),
+            "a met dependency still shows: {plain}"
+        );
+    }
+
+    /// D122: a running task says so in its status line, and priority sits in
+    /// the urgency cell it modifies (rule 5). Two rows each used to say half
+    /// of one fact.
+    #[test]
+    fn running_joins_the_status_and_priority_joins_the_urgency() {
+        let now: Timestamp = "2026-09-11T11:00:00Z".parse().unwrap();
+        let mut t = detail_fixture();
+        t["status"] = json!("active");
+        t["active_since"] = json!("2026-09-11T09:00:00Z");
+        t["blocked"] = json!(false);
+        let plain = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &t, now);
+        let status = plain.lines().find(|l| l.contains("status")).unwrap();
+        assert!(
+            status.contains("active") && status.contains("since"),
+            "{plain}"
+        );
+        assert!(
+            !plain.contains("running"),
+            "a running row beside the status: {plain}"
+        );
+        assert!(!plain.contains("priority"), "{plain}");
+        assert!(plain.contains("urgency    M 12.1"), "{plain}");
+    }
+
+    /// An open task past its deadline reads in `overdue` on the card, as its
+    /// row does in `list`. The card painted it in the plain emphasis every
+    /// other date got.
+    #[test]
+    fn an_overdue_deadline_is_painted_overdue_on_the_card() {
+        let now: Timestamp = "2026-09-11T11:00:00Z".parse().unwrap();
+        let ctx = Ctx::new(
+            theme::default_theme(),
+            Caps {
+                depth: theme::ColorDepth::Truecolor,
+                ansi: true,
+                unicode: true,
+            },
+        );
+        let mut t = detail_fixture();
+        t["due"] = json!("2026-09-09T00:00:00Z");
+        let out = task_detail(&ctx, &t, now);
+        assert!(out.contains(&ctx.paint("overdue", "2d ago")), "{out:?}");
+    }
+
+    /// D122: `next` says why this task, and what to type. It printed
+    /// `#48  (urgency 18.1)  <title>` for a task two days overdue.
+    #[test]
+    fn next_says_why_this_task_and_what_to_type() {
+        let now: Timestamp = "2026-09-11T11:00:00Z".parse().unwrap();
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = next_task(
+            &ctx,
+            &json!({ "tasks": [{
+                "short_id": 48, "title": "Renew the TLS certificate",
+                "status": "pending", "priority": "H", "urgency": 18.1,
+                "project": "infra", "due": "2026-09-09T00:00:00Z", "tags": ["ops"]
+            }] }),
+            now,
+        );
+        for want in [
+            "Renew the TLS certificate",
+            "H 18.1",
+            "infra",
+            "due 2d ago",
+            "+ops",
+            "tasqx start 48",
+            "tasqx why 48",
+        ] {
+            assert!(out.contains(want), "{want:?} missing from next:\n{out}");
+        }
+        assert!(!out.contains("(urgency"), "{out}");
+        let lines: Vec<&str> = out.lines().collect();
+        let col = lines[0].find("#48").unwrap();
+        assert_eq!(
+            lines[1].len() - lines[1].trim_start().len(),
+            col,
+            "the facts do not start under #48:\n{out}"
+        );
+    }
+
+    /// D122: `why` names the task, says what drove each term, and ends on the
+    /// number every other screen prints. It said `Why #48 has urgency 18.1`
+    /// over `due_proximity 12.00` and closed on `= total 18.09`.
+    #[test]
+    fn why_names_the_task_explains_each_term_and_totals_the_urgency() {
+        let now: Timestamp = "2026-09-11T11:00:00Z".parse().unwrap();
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = why(
+            &ctx,
+            &json!({
+                "short_id": 48, "title": "Renew the TLS certificate", "priority": "H",
+                "urgency": 18.1, "due": "2026-09-09T00:00:00Z",
+                "created": "2026-09-02T10:00:00Z", "blocked": false,
+                "urgency_breakdown": { "priority": 6.0, "due_proximity": 12.0, "age": 0.09 }
+            }),
+            now,
+        );
+        for want in [
+            "Renew the TLS certificate",
+            "deadline",
+            "overdue, 2d ago",
+            "9 days",
+            "18.1",
+        ] {
+            assert!(out.contains(want), "{want:?} missing from why:\n{out}");
+        }
+        for gone in ["due_proximity", "18.09", "Why #"] {
+            assert!(!out.contains(gone), "{gone:?} still in why:\n{out}");
+        }
     }
 
     /// The rail is the card's one loud signal, keyed to what the reader most
@@ -4620,14 +5006,14 @@ mod tests {
     fn next_task_on_a_genuinely_empty_store_names_the_onboarding_commands() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
         let empty_store = json!({ "tasks": [], "store_empty": true });
-        let out = next_task(&ctx, &empty_store);
+        let out = next_task(&ctx, &empty_store, Timestamp::now());
         assert!(out.contains("tasqx add"), "{out:?}");
 
         // A working set that is genuinely clear (real tasks exist, none is
         // actionable right now) keeps the original, true statement.
         let clear = json!({ "tasks": [], "store_empty": false });
         assert_eq!(
-            next_task(&ctx, &clear),
+            next_task(&ctx, &clear, Timestamp::now()),
             "Nothing actionable — you're clear.\n"
         );
     }
@@ -6341,23 +6727,27 @@ mod tests {
     #[test]
     fn why_never_renders_a_component_or_a_total_as_negative_zero() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let out = why_rows(
+        let part = |name: &'static str, v: f64| (name, String::new(), v);
+        let out = why_table(
             &ctx,
-            1,
-            &[("priority", 0.0), ("due_proximity", 0.0), ("age", -0.0)],
+            &[
+                part("priority", 0.0),
+                part("deadline", 0.0),
+                part("age", -0.0),
+            ],
         );
         assert!(
             !out.contains("-0"),
             "a component rendered as negative zero: {out:?}"
         );
         assert!(
-            out.contains("0.00"),
+            out.contains("0.0"),
             "the zero itself must still be shown: {out:?}"
         );
 
         // Every part negative-zero makes the SUM negative zero too, which is the
-        // heading and the total row — the twin the component fix does not reach.
-        let all_neg = why_rows(&ctx, 1, &[("priority", -0.0), ("age", -0.0)]);
+        // total row — the twin the component fix does not reach.
+        let all_neg = why_table(&ctx, &[part("priority", -0.0), part("age", -0.0)]);
         assert!(
             !all_neg.contains("-0"),
             "the total rendered as negative zero: {all_neg:?}"
@@ -6366,7 +6756,7 @@ mod tests {
         // The rule is about a sign that survived ROUNDING, not about the value
         // being exactly zero: -0.004 is genuinely negative and still prints as a
         // row of zeros, so `v == 0.0` would not have caught it.
-        let tiny = why_rows(&ctx, 1, &[("age", -0.004)]);
+        let tiny = why_table(&ctx, &[part("age", -0.004)]);
         assert!(
             !tiny.contains("-0"),
             "a rounded-to-zero negative kept its sign: {tiny:?}"
@@ -6380,26 +6770,41 @@ mod tests {
     #[test]
     fn why_keeps_the_sign_of_a_value_that_is_actually_negative() {
         let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let out = why_rows(&ctx, 1, &[("penalty", -1.5), ("priority", 6.0)]);
+        let out = why_table(
+            &ctx,
+            &[
+                ("penalty", String::new(), -1.5),
+                ("priority", String::new(), 6.0),
+            ],
+        );
         assert!(
-            out.contains("-1.50"),
+            out.contains("-1.5"),
             "a real negative lost its sign: {out:?}"
         );
         assert!(out.contains("4.5"), "the total must still net out: {out:?}");
     }
 
-    /// Finding #6 (audit-2026-09): components print at 2 decimals and the
-    /// `= total` row printed at 1, so the row's own arithmetic visibly failed
-    /// to add up (`3.90 + 11.52` read as `= total 15.4`, not `15.42`). The
-    /// total row must match the components' precision.
+    /// Finding #6 (audit-2026-09), kept at one decimal (D122): the shares
+    /// printed must add up to the total printed. Rounded independently,
+    /// `3.95 + 11.45` reads `4.0 + 11.5` over a total of `15.4`; apportioned by
+    /// largest remainder the shares are `3.9 + 11.5`, and the total is still
+    /// the `15.4` every other screen prints for the task.
     #[test]
-    fn why_total_row_matches_component_precision() {
-        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
-        let out = why_rows(&ctx, 127, &[("priority", 3.90), ("due_proximity", 11.52)]);
-        assert!(
-            out.contains("= total         15.42"),
-            "total row must add up at 2 decimals like its parts: {out:?}"
-        );
+    fn why_shares_add_up_to_the_total_at_one_decimal() {
+        for parts in [
+            vec![3.95, 11.45],
+            vec![6.0, 12.0, 0.09],
+            vec![3.9, 11.52, 0.33],
+            vec![1.8, 0.05, 0.05, 0.05],
+        ] {
+            let shares = apportion(&parts);
+            let sum: f64 = shares.iter().sum();
+            let total: f64 = parts.iter().sum();
+            assert!(
+                (sum - (total * 10.0).round() / 10.0).abs() < 1e-9,
+                "{parts:?} -> {shares:?} sums to {sum}, not {total:.1}"
+            );
+        }
     }
 
     /// Finding #8 (audit-2026-09): `why` explained a blocked task's urgency
@@ -6418,6 +6823,7 @@ mod tests {
                 "blocked": true,
                 "unmet_blockers": [{ "short_id": 280, "title": "the blocker" }],
             }),
+            Timestamp::now(),
         );
         assert!(out.contains("#280"), "{out:?}");
         assert!(out.contains("the blocker"), "{out:?}");
@@ -6434,6 +6840,7 @@ mod tests {
                 "blocked": false,
                 "unmet_blockers": [],
             }),
+            Timestamp::now(),
         );
         assert!(
             !out.contains("blocked by"),
@@ -7267,7 +7674,7 @@ mod tests {
             "urgency": 18.0, "blocked": true, "depends_on": [2],
             "unmet_blockers": [{ "short_id": 2, "title": "the blocker" }]
         });
-        let why_out = why(&ctx, &get_result);
+        let why_out = why(&ctx, &get_result, Timestamp::now());
         assert!(
             why_out.contains("blocked") && why_out.contains("#2"),
             "`why` must say the task is blocked and name what it is blocked by, \
@@ -7304,7 +7711,7 @@ mod tests {
 
         let mut running = row("active");
         running["active_since"] = json!("2026-08-31T12:00:00Z");
-        let next_out = next_task(&ctx, &json!({ "tasks": [running] }));
+        let next_out = next_task(&ctx, &json!({ "tasks": [running] }), Timestamp::now());
         assert!(
             next_out.to_lowercase().contains("already running"),
             "`next` handing back the task that is already running must say so: \

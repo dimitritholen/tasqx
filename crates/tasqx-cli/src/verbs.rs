@@ -145,7 +145,7 @@ pub(crate) fn run_add(
         None
     };
     let text = match full {
-        Some(task) => render::task_added_card(ctx, &task),
+        Some(task) => render::task_added_card(ctx, &task, jiff::Timestamp::now()),
         None => render::task_added(ctx, &result, &parsed.title),
     };
     Ok((result, text))
@@ -1221,7 +1221,7 @@ pub(crate) fn run_next(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
     };
     let params = json!({ "filter": filter_str, "sort": ["-urgency"], "limit": 1 });
     let result = be.call("task.list", &params)?;
-    let text = render::next_task(ctx, &result);
+    let text = render::next_task(ctx, &result, jiff::Timestamp::now());
     Ok((result, text))
 }
 
@@ -1232,7 +1232,7 @@ pub(crate) fn run_why(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome 
     // on the wire, so the machine form answers the question the command name
     // promises instead of handing back the one number the caller already had.
     let result = be.call("task.get", &json!({ "ref": r#ref, "explain": true }))?;
-    let text = render::why(ctx, &result);
+    let text = render::why(ctx, &result, jiff::Timestamp::now());
     Ok((result, text))
 }
 

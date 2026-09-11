@@ -916,7 +916,9 @@ fn page_install() -> String {
     ));
     s.push_str(&snippet(
         "tasqx next",
-        "#1  (urgency 17.5)  Ship the v1 JSON API freeze",
+        "next    #1  Ship the v1 JSON API freeze\n\
+         \x20       H 17.5   work.tasqx   due Fri   +api +release\n\
+         \x20       tasqx start 1  -  tasqx why 1",
     ));
 
     s.push_str(&p(
@@ -924,11 +926,12 @@ fn page_install() -> String {
     ));
     s.push_str(&snippet(
         "tasqx why 1",
-        "Why #1 has urgency 17.5\n\
-         \x20 priority         6.00\n\
-         \x20 due_proximity   11.46\n\
-         \x20 age             -0.00\n\
-         \x20 = total         17.46",
+        "#1  Ship the v1 JSON API freeze\n\
+         \n\
+         \x20 priority   H                 6.0\n\
+         \x20 deadline   due Fri          11.5\n\
+         \x20 age        created today     0.0\n\
+         \x20 urgency                     17.5",
     ));
 
     s.push_str(&h3("Work it, finish it"));
