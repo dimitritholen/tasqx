@@ -822,3 +822,226 @@ fn a_record_too_long_for_one_line_continues_under_itself() {
     let indent = " ".repeat(width("archived") + 3);
     assert!(lines[2..].iter().all(|l| l.starts_with(&indent)), "{out}");
 }
+
+// ---- review round 2 ------------------------------------------------------
+
+/// D123 (d): both sides of `of` at the same precision. The estimate was
+/// rounded to one unit beside an exact total: 3h41 against a 3h30 estimate
+/// read `tracked 3h41 of 4h`, under the estimate when it was 11m over.
+#[test]
+fn a_total_and_its_estimate_are_spelled_alike() {
+    let ctx = unicode(120);
+    let line = |tracked: &str, est: &str| {
+        let mut t = task();
+        t["estimate"] = json!(est);
+        stopped(
+            &ctx,
+            &json!({ "interval": "PT5M", "tracked": tracked }),
+            &t,
+            now(),
+        )
+    };
+    let over = line("PT3H41M", "PT3H30M");
+    assert!(over.contains("tracked 3h41 of 3h30"), "{over}");
+    let over = line("PT1H40M", "PT1H30M");
+    assert!(over.contains("tracked 1h40 of 1h30"), "{over}");
+    let under = line("PT3H41M", "PT4H");
+    assert!(under.contains("tracked 3h41 of 4h"), "{under}");
+}
+
+/// Rule 11: a total that reads the same as the interval beside it is the
+/// same fact twice, and is left off.
+#[test]
+fn a_total_that_reads_like_its_interval_is_not_repeated() {
+    let out = stopped(
+        &unicode(120),
+        &json!({ "interval": "PT2H0M10S", "tracked": "PT2H0M50S" }),
+        &task(),
+        now(),
+    );
+    assert!(out.contains("stopped after 2h"), "{out}");
+    assert!(!out.contains("tracked"), "{out}");
+}
+
+/// D123 (h): `⊘ still blocked by #N · <title>`, at 60 columns with a long
+/// title: the title is cut with an ellipsis, the way a moved task's title is,
+/// and not dropped whole.
+#[test]
+fn a_blockers_title_is_cut_not_dropped() {
+    let long = "Write the migration guide for the SDK and every language binding it ships";
+    let mut t = task();
+    t["blocked"] = json!(true);
+    t["unmet_blockers"] = json!([{ "short_id": 53, "title": long }]);
+    let undep = dep_changed(
+        &unicode(60),
+        &json!({ "blocked": true }),
+        &t,
+        false,
+        "51",
+        now(),
+    );
+    let dep = dep_changed(
+        &unicode(60),
+        &json!({ "inserted": true }),
+        &t,
+        true,
+        "53",
+        now(),
+    );
+    for out in [&undep, &dep] {
+        let l = out.lines().nth(1).unwrap();
+        assert!(l.contains("blocked by #53 · Write the"), "{out}");
+        assert!(l.contains('…'), "cut, with an ellipsis: {out}");
+        for l in out.lines() {
+            assert!(width(l) <= 60, "{} cells: {l:?}", width(l));
+        }
+    }
+}
+
+/// D21 survives a long name: `init` keeps the command that moves the default.
+#[test]
+fn init_keeps_the_command_that_moves_the_default() {
+    let name = "a-project-with-a-name-long-enough-to-crowd-the-line";
+    let out = project_created(
+        &unicode(40),
+        &json!({ "name": name, "default": false, "current_default": "work" }),
+    );
+    let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains(&format!("tasqx use \"{name}\"")), "{out}");
+}
+
+/// A changed fact is bold and never dim: `mono` paints `project` dim, and
+/// bold on top of dim rendered dim, so a changed project was invisible.
+#[test]
+fn a_changed_fact_is_never_dim() {
+    let mono = Ctx::new(
+        theme::builtin("mono").expect("mono is built in"),
+        Caps {
+            depth: theme::ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        },
+    )
+    .with_cols(160);
+    let out = modified(
+        &mono,
+        &task(),
+        &set(&[("project", json!("mobile"))]),
+        &[],
+        now(),
+    );
+    let line = out.lines().nth(1).unwrap();
+    for sgr in line.split('\u{1b}').skip(1) {
+        let codes: Vec<&str> = sgr
+            .trim_start_matches('[')
+            .split('m')
+            .next()
+            .unwrap_or("")
+            .split(';')
+            .collect();
+        assert!(
+            !(codes.contains(&"1") && codes.contains(&"2")),
+            "bold and dim at once: {line:?}"
+        );
+    }
+}
+
+/// Off a terminal `modify` names every change in words, a new title and a
+/// cleared field included: it printed `modified   H 17.2 …` for a new title,
+/// and `set remind cleared` for a clear.
+#[test]
+fn plain_modify_names_a_new_title_and_a_cleared_field() {
+    let retitled = modified(
+        &plain(100),
+        &task(),
+        &set(&[("title", json!("x"))]),
+        &[],
+        now(),
+    );
+    assert!(
+        retitled
+            .lines()
+            .nth(1)
+            .unwrap()
+            .starts_with("modified   set title"),
+        "{retitled}"
+    );
+    let cleared = modified(
+        &plain(100),
+        &task(),
+        &set(&[("remind", Value::Null)]),
+        &[],
+        now(),
+    );
+    let l = cleared.lines().nth(1).unwrap();
+    assert!(l.starts_with("modified   cleared remind"), "{cleared}");
+    assert!(!l.contains("set"), "{cleared}");
+}
+
+/// Off a terminal an undone untag says which tag came back.
+#[test]
+fn plain_undo_of_an_untag_says_which_tag_came_back() {
+    let mut t = task();
+    t["tags"] = json!(["docs", "urgent"]);
+    let result = json!({
+        "reverted": { "op": "tag.remove" }, "short_id": 50,
+        "restored": { "tags": ["urgent"] },
+    });
+    let out = undone(&plain(100), &result, &t, now());
+    assert!(
+        out.lines()
+            .nth(1)
+            .unwrap()
+            .starts_with("undid untag   +urgent back"),
+        "{out}"
+    );
+}
+
+/// A zero is not a fact (D123 c): a fresh task with no priority and no
+/// deadline has urgency 0, and every echo drew `- ▁▁▁▁ 0.0` for it.
+#[test]
+fn a_zero_urgency_is_not_a_fact() {
+    let mut t = task();
+    t["urgency"] = json!(0.0);
+    t["priority"] = Value::Null;
+    for out in [
+        added(&unicode(120), &t, now()),
+        added(&plain(120), &t, now()),
+        status_changed(
+            &unicode(120),
+            "reopened",
+            &json!({}),
+            &t,
+            &Titles::new(),
+            now(),
+        ),
+    ] {
+        let l = out.lines().nth(1).unwrap();
+        assert!(!l.contains("0.0") && !l.contains('▁'), "{out}");
+    }
+}
+
+/// Rule 3 on `modify`'s reminder: an absolute reminder is a day, not the
+/// stored instant (`remind 2026-09-12T00:00:00Z`).
+#[test]
+fn modify_spells_an_absolute_reminder_as_a_day() {
+    let mut t = task();
+    t["remind"] = json!("2026-09-12T09:00:00Z");
+    for ctx in [unicode(120), plain(120)] {
+        let out = modified(&ctx, &t, &set(&[("remind", json!("x"))]), &[], now());
+        assert!(out.contains("remind tomorrow 09:00"), "{out}");
+        assert!(!out.contains("2026-"), "{out}");
+    }
+    t["remind"] = json!("-1h");
+    let out = modified(
+        &unicode(120),
+        &t,
+        &set(&[("remind", json!("x"))]),
+        &[],
+        now(),
+    );
+    assert!(
+        out.contains("remind -1h"),
+        "an offset stays an offset: {out}"
+    );
+}

@@ -301,17 +301,41 @@ fn every_task_echo_opens_with_the_task_the_command_named() {
 fn no_echo_spells_an_instant_or_an_iso_duration() {
     let st = seeded("no-iso");
     let mut seen = Vec::new();
+    // Every date-bearing field `modify` can set, a reminder both as an
+    // instant and as a day, and each of them cleared again: review round 2
+    // found `remind 2026-09-12T00:00:00Z` on both paths.
     for args in [
         vec!["start", "1"],
         vec!["start", "2"],
         vec!["stop", "2"],
         vec!["modify", "1", "due:monday", "est:2h"],
+        vec!["modify", "1", "remind:tomorrow"],
+        vec!["modify", "1", "remind:2026-12-24T09:00"],
+        vec!["modify", "1", "scheduled:monday", "wait:tomorrow"],
+        vec![
+            "modify",
+            "1",
+            "--clear",
+            "remind",
+            "--clear",
+            "scheduled",
+            "--clear",
+            "wait",
+            "--clear",
+            "due",
+        ],
         vec!["done", "2"],
         vec!["start", "1"],
     ] {
         let plain = st.plain(&args);
         if let Some(bad) = store_spelling(&plain) {
             seen.push(format!("{args:?} (plain): {bad:?}\n{plain}"));
+        }
+        if args[0] == "modify" {
+            let term = st.term(80, &args);
+            if let Some(bad) = store_spelling(&term) {
+                seen.push(format!("{args:?} (terminal): {bad:?}\n{term}"));
+            }
         }
     }
     let term = st.term(80, &["done", "1"]);
@@ -556,13 +580,10 @@ fn a_closed_interval_is_spelled_stopped_after_everywhere() {
     // Seeded through `import` with a timer two hours old (D42's
     // `active_since`/`tracked_seconds`): a real start/stop in a test closes an
     // interval of 0s, and a zero is not a fact, so it would prove nothing.
-    // Two hours and thirty seconds back: the interval reads `2h` to the minute,
-    // and the half minute keeps it there if the clock the binary reads is a
-    // few seconds off the one this test read (WSL2 was seen to step 2.4 s).
-    let two_hours_ago = (jiff::Timestamp::now()
-        - jiff::SignedDuration::from_hours(2)
-        - jiff::SignedDuration::from_secs(30))
-    .to_string();
+    // What the lines must say is derived from the totals the binary itself
+    // stored (`show --json`), never from this test's clock, which the
+    // binary's may differ from (WSL2 was seen to step 2.4 s).
+    let two_hours_ago = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(2)).to_string();
     let seed = |st: &Store| {
         let fixture = st.path().join("seed.json");
         std::fs::write(
@@ -598,10 +619,11 @@ fn a_closed_interval_is_spelled_stopped_after_everywhere() {
         Some("#2  Review the draft"),
         "{start2}"
     );
+    let interval = tracked_secs(&st, "1") - 3600;
     assert!(
         start2
             .lines()
-            .any(|l| l.starts_with("  #1  stopped after 2h")),
+            .any(|l| l.starts_with(&format!("  #1  stopped after {}", compact(interval)))),
         "{start2}"
     );
 
@@ -610,7 +632,13 @@ fn a_closed_interval_is_spelled_stopped_after_everywhere() {
     seed(&st);
     let stop = st.plain(&["stop", "1"]);
     let line2 = stop.lines().nth(1).unwrap();
-    assert!(line2.starts_with("stopped after 2h   tracked 3h"), "{stop}");
+    let total = tracked_secs(&st, "1");
+    let want = format!(
+        "stopped after {}   tracked {}",
+        compact(total - 3600),
+        compact(total)
+    );
+    assert!(line2.starts_with(&want), "want {want:?}: {stop}");
     assert!(!stop.contains("interval"), "{stop}");
 
     // undo of a stop: `*` says it runs again, and since when. What comes back
@@ -624,6 +652,23 @@ fn a_closed_interval_is_spelled_stopped_after_everywhere() {
         !undo.contains("running again"),
         "rule 11: * says it: {undo}"
     );
+}
+
+/// The total a task's `show --json` holds, in seconds.
+fn tracked_secs(st: &Store, r: &str) -> i64 {
+    let t = st.json(&["show", r]);
+    tasqx_core::util::duration_secs(t["tracked"].as_str().expect("tracked"))
+        .expect("tracked parses")
+}
+
+/// A duration as the echoes spell it (`2h`, `3h41`, `52m`), from its seconds.
+fn compact(secs: i64) -> String {
+    match secs {
+        s if s >= 3600 && (s % 3600) / 60 == 0 => format!("{}h", s / 3600),
+        s if s >= 3600 => format!("{}h{:02}", s / 3600, (s % 3600) / 60),
+        s if s >= 60 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
 }
 
 /// D126, amendment 8: an `undep` that leaves another blocker names it, and
@@ -689,6 +734,29 @@ fn the_token_note_goes_to_stderr_as_one_line() {
             .is_some_and(|h| h.contains("input_tokens")),
         "--json keeps core's hint verbatim (D56): {json}"
     );
+}
+
+/// D126 (i): the note about a write follows its card. On a terminal stdout and
+/// stderr are one stream, so a note written while the verb ran (stderr goes
+/// out at once, stdout at the end of `run`) landed above the card. Here both
+/// point at one file, in the order the bytes were written.
+#[test]
+fn the_token_note_lands_under_the_card_on_one_stream() {
+    let st = seeded("note-order");
+    let path = st.path().join("both.txt");
+    let file = std::fs::File::create(&path).expect("create capture file");
+    let status = st
+        .bin()
+        .args(["done", "2"])
+        .stdout(file.try_clone().expect("clone capture file"))
+        .stderr(file)
+        .status()
+        .expect("run tasqx");
+    assert!(status.success());
+    let both = std::fs::read_to_string(&path).expect("read capture");
+    let card = both.find("#2  Review the draft").expect("the card");
+    let note = both.find("note: ").expect("the note");
+    assert!(card < note, "the note came first:\n{both}");
 }
 
 /// D126, amendment 6: `add` gives way the way `list` does, so its facts come

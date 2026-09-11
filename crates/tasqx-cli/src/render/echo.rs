@@ -33,8 +33,8 @@
 use std::collections::HashMap;
 
 use super::{
-    due_cell, duration_value, field_ts, plural_tasks, rail_marker, rail_role, s, san,
-    status_is_open, truncate, urgency_meter, urgency_scale, width, wrap_words,
+    due_cell, field_ts, plural_tasks, rail_marker, rail_role, s, san, status_is_open, truncate,
+    urgency_meter, urgency_scale, width, wrap_words,
 };
 use crate::columns::{self, Column};
 use crate::theme::{Ctx, Style};
@@ -96,7 +96,11 @@ impl Fact {
 
     /// A fact the write changed: its role, made bold.
     fn changed(ctx: &Ctx, role: &str, text: &str) -> Fact {
-        Fact::styled(ctx, ctx.theme.role(role).bold(), text)
+        // And never dim: `mono` paints `project` dim, and bold on dim
+        // renders dim, which hid the change it was meant to mark.
+        let mut style = ctx.theme.role(role).bold();
+        style.dim = false;
+        Fact::styled(ctx, style, text)
     }
 }
 
@@ -187,7 +191,7 @@ struct Card<'a> {
     /// Droppable, but only after `list`'s context has gone: detail belonging
     /// to the change, such as the title of the task that now blocks this one.
     /// It sits left of the context, and the fit drops from the right.
-    detail: Vec<Fact>,
+    detail: Vec<(Fact, Give)>,
     context: Context,
     below: Vec<String>,
 }
@@ -322,12 +326,12 @@ fn tags_fact(ctx: &Ctx, task: &Value) -> Option<Fact> {
     Some(Fact::role(ctx, "tag", &plus(&tags)))
 }
 
-fn est_fact(ctx: &Ctx, task: &Value, now: Timestamp, changed: bool) -> Option<Fact> {
+fn est_fact(ctx: &Ctx, task: &Value, changed: bool) -> Option<Fact> {
     let est = s(task, "estimate");
     if est.is_empty() {
         return None;
     }
-    let value = duration_value(ctx, &est, now);
+    let value = exact_duration(ctx, &est);
     let plain = format!("est {value}");
     let painted = if changed {
         ctx.paint("card.strong", &plain)
@@ -352,7 +356,13 @@ fn recur_fact(ctx: &Ctx, task: &Value) -> Option<Fact> {
 /// `list`'s facts that are still to say, in `list`'s order.
 fn context_facts(ctx: &Ctx, task: &Value, c: Context, now: Timestamp) -> Vec<Fact> {
     let mut out = Vec::new();
-    if c.urgency && task.get("urgency").is_some() {
+    // A zero is not a fact (D123 c): no priority, no deadline and no age
+    // score `- ▁▁▁▁ 0.0`, which says nothing.
+    let urgent = task
+        .get("urgency")
+        .and_then(Value::as_f64)
+        .is_some_and(|u| u > 0.0);
+    if c.urgency && urgent {
         out.push(urgency_fact(ctx, task, false));
     }
     if c.project {
@@ -365,7 +375,7 @@ fn context_facts(ctx: &Ctx, task: &Value, c: Context, now: Timestamp) -> Vec<Fac
         out.extend(tags_fact(ctx, task));
     }
     if c.est {
-        out.extend(est_fact(ctx, task, now, false));
+        out.extend(est_fact(ctx, task, false));
     }
     if c.recur {
         out.extend(recur_fact(ctx, task));
@@ -400,36 +410,90 @@ fn gap_before(i: usize, f: &Fact) -> usize {
     }
 }
 
-/// Fit the second line's facts, each marked droppable or not, into `budget`
-/// cells with the one fitter every table uses (D120). The outcome and the
-/// change are fixed; the droppable ones go whole, from the right. The extra
-/// cell a card puts between facts rides on each fact after the first, so
-/// `columns::fit`'s arithmetic stays its own.
-fn fit_facts(all: &[(Fact, bool)], budget: usize) -> Vec<Fact> {
-    let cols: Vec<Column> = all
+/// How a fact gives way when its line is too narrow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Give {
+    /// Never: the outcome, the change, `rev`. Past the edge it continues on
+    /// the next line (see [`pack`]).
+    Keep,
+    /// Whole, from the right: `list`'s context.
+    Drop,
+    /// Cut with an ellipsis down to [`CUT_FLOOR`] cells, and only then
+    /// dropped: a title, which still identifies its task when cut.
+    Cut,
+}
+
+/// Cells a cut title keeps before it is dropped instead.
+const CUT_FLOOR: usize = 8;
+
+/// A fact's width as a `columns::fit` column: `fit` counts its own GAP
+/// between columns, so the card's gap before this fact rides on its width.
+fn col_width(i: usize, f: &Fact) -> usize {
+    (width(&f.plain) + gap_before(i, f)).saturating_sub(if i == 0 { 0 } else { columns::GAP })
+}
+
+/// Fit a line's facts into `budget` cells with the one fitter every table
+/// uses (D120), in two passes over it. First `list`'s context goes, whole
+/// and from the right; then, if the line is still too wide, a title gives
+/// cells down to [`CUT_FLOOR`] and goes only after that. One pass would cut
+/// the title while the context beside it survived, because `fit` shrinks
+/// before it drops.
+fn fit_facts(ctx: &Ctx, all: &[(Fact, Give)], budget: usize) -> Vec<Fact> {
+    let first: Vec<Column> = all
         .iter()
         .enumerate()
-        .map(|(i, (f, drop))| {
-            // `fit` counts GAP between columns; the card's own gap before
-            // this fact rides on its width instead, so the sums agree.
-            let w = (width(&f.plain) + gap_before(i, f)).saturating_sub(if i == 0 {
-                0
-            } else {
-                columns::GAP
-            });
-            if *drop {
-                Column::drops(w, w)
-            } else {
-                Column::fixed(w)
+        .map(|(i, (f, give))| {
+            let w = col_width(i, f);
+            match give {
+                Give::Drop => Column::drops(w, w),
+                _ => Column::fixed(w),
             }
         })
         .collect();
-    let kept = columns::fit(&cols, budget);
-    all.iter()
-        .zip(kept)
+    let kept: Vec<&(Fact, Give)> = all
+        .iter()
+        .zip(columns::fit(&first, budget))
         .filter(|(_, w)| *w > 0)
-        .map(|((f, _), _)| f.clone())
+        .map(|(f, _)| f)
+        .collect();
+    let second: Vec<Column> = kept
+        .iter()
+        .enumerate()
+        .map(|(i, (f, give))| {
+            let w = col_width(i, f);
+            match give {
+                Give::Cut => Column::drops(w, w.min(CUT_FLOOR + gap_before(i, f))),
+                _ => Column::fixed(w),
+            }
+        })
+        .collect();
+    let widths = columns::fit(&second, budget);
+    kept.iter()
+        .enumerate()
+        .zip(widths)
+        .filter(|(_, w)| *w > 0)
+        .map(|((i, (f, give)), w)| {
+            let full = col_width(i, f);
+            if *give == Give::Cut && w < full {
+                cut(ctx, f, width(&f.plain) - (full - w))
+            } else {
+                f.clone()
+            }
+        })
         .collect()
+}
+
+/// A fact cut to `cells` with an ellipsis and painted in its own style.
+fn cut(ctx: &Ctx, f: &Fact, cells: usize) -> Fact {
+    let text = truncate(&f.plain, cells, ctx.caps.unicode);
+    let painted = f
+        .style
+        .map_or_else(|| text.clone(), |st| st.paint(&text, &ctx.caps));
+    Fact {
+        plain: text,
+        painted,
+        ..f.clone()
+    }
 }
 
 /// Facts laid into lines of at most `budget` cells, greedily and whole; every
@@ -490,15 +554,15 @@ fn draw(ctx: &Ctx, card: Card, now: Timestamp) -> String {
     let title = s(task, "title");
     let glyph = state_glyph(ctx, task);
     let fitted = on_terminal(ctx);
-    let mut facts: Vec<(Fact, bool)> = vec![(card.outcome, false)];
-    facts.extend(card.lead.into_iter().map(|f| (f, false)));
-    facts.extend(card.detail.into_iter().map(|f| (f, true)));
+    let mut facts: Vec<(Fact, Give)> = vec![(card.outcome, Give::Keep)];
+    facts.extend(card.lead.into_iter().map(|f| (f, Give::Keep)));
+    facts.extend(card.detail);
     facts.extend(
         context_facts(ctx, task, card.context, now)
             .into_iter()
-            .map(|f| (f, true)),
+            .map(|f| (f, Give::Drop)),
     );
-    facts.extend(rev_fact(ctx, task, card.context).map(|f| (f, false)));
+    facts.extend(rev_fact(ctx, task, card.context).map(|f| (f, Give::Keep)));
 
     // The rail is drawn where Unicode is; without it the glyph is `*`/`B` at
     // column 0 and an ordinary line starts at column 0.
@@ -541,7 +605,7 @@ fn draw(ctx: &Ctx, card: Card, now: Timestamp) -> String {
         // part of it.
         let head: Vec<Fact> = facts
             .iter()
-            .filter(|(_, drop)| !drop)
+            .filter(|(_, give)| *give == Give::Keep)
             .map(|(f, _)| f.clone())
             .collect();
         let indent = width(
@@ -564,7 +628,7 @@ fn draw(ctx: &Ctx, card: Card, now: Timestamp) -> String {
             }
         }
     } else {
-        let kept = fit_facts(&facts, budget);
+        let kept = fit_facts(ctx, &facts, budget);
         // A change too long for one line (a long tag set, several fields at
         // once) continues under itself rather than be cut, since the change
         // is what the echo is for.
@@ -590,32 +654,24 @@ fn moved(ctx: &Ctx, glyph: Option<(&str, &str)>, id: i64, what: Fact, titles: &T
         Some((role, g)) => format!("{} ", quiet(ctx, role, g)),
         None => "  ".to_string(),
     };
-    let head = format!("#{id}");
-    let title = titles.get(&id).cloned().unwrap_or_default();
-    let used = 2 + width(&head) + 2 + width(&what.plain);
-    let sep = attach(ctx);
-    let tail = if title.is_empty() {
-        String::new()
-    } else if !on_terminal(ctx) {
-        format!("{sep}{title}")
+    let mut facts = vec![
+        (Fact::role(ctx, "card.label", &format!("#{id}")), Give::Keep),
+        (Fact { sep: TWO, ..what }, Give::Keep),
+    ];
+    if let Some(title) = titles.get(&id).filter(|t| !t.is_empty()) {
+        facts.push((Fact::detail(ctx, title), Give::Cut));
+    }
+    // The same fit as the card's line, over the cells after the rail column.
+    let facts = if on_terminal(ctx) {
+        fit_facts(ctx, &facts, ctx.cols.saturating_sub(2))
     } else {
-        let room = ctx.cols.saturating_sub(used + width(sep));
-        if room < 8 {
-            String::new()
-        } else {
-            quiet(
-                ctx,
-                "card.label",
-                &format!("{sep}{}", truncate(&title, room, ctx.caps.unicode)),
-            )
-        }
+        facts.into_iter().map(|(f, _)| f).collect()
     };
-    format!(
-        "{cell}{}  {}{tail}\n",
-        quiet(ctx, "card.label", &head),
-        what.painted
-    )
+    format!("{cell}{}\n", join(&facts))
 }
+
+/// What sits between a moved task's id and what happened to it.
+const TWO: &str = "  ";
 
 fn blocked_glyph(ctx: &Ctx) -> (&'static str, &'static str) {
     ("danger", if ctx.caps.unicode { "⊘" } else { "B" })
@@ -655,7 +711,7 @@ pub fn added(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
     }
     if s(task, "project").is_empty() {
         card.lead.push(Fact::role(ctx, "warn", "no project"));
-        card.detail
+        card.lead
             .push(Fact::detail(ctx, "set a default with tasqx use <project>"));
     }
     draw(ctx, card, now)
@@ -717,19 +773,15 @@ fn interval_fact(ctx: &Ctx, interval: &str) -> String {
 /// `tracked 3h41 of 4h`; `None` for a zero total. Bold only where the write
 /// is known to have changed the total: `stop` closed an interval into it, and
 /// `done` may or may not have, which its result does not say.
-fn tracked_fact(
-    ctx: &Ctx,
-    tracked: &str,
-    est: &str,
-    changed: bool,
-    now: Timestamp,
-) -> Option<Fact> {
+fn tracked_fact(ctx: &Ctx, tracked: &str, est: &str, changed: bool) -> Option<Fact> {
     if secs(tracked) == 0 {
         return None;
     }
     let mut text = format!("tracked {}", exact_duration(ctx, tracked));
     if !est.is_empty() {
-        text.push_str(&format!(" of {}", duration_value(ctx, est, now)));
+        // The estimate at the total's precision: `of 3h30`, not a rounded
+        // `of 4h` that reads as under it when the total is 11m over.
+        text.push_str(&format!(" of {}", exact_duration(ctx, est)));
     }
     Some(if changed {
         Fact::changed(ctx, "card.strong", &text)
@@ -748,7 +800,7 @@ pub fn stopped(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> Strin
     // "Says more" is judged on what the reader sees: a total that reads the
     // same as the interval beside it is the same fact twice (rule 11).
     if exact_duration(ctx, &tracked) != exact_duration(ctx, &interval) {
-        if let Some(f) = tracked_fact(ctx, &tracked, &est, true, now) {
+        if let Some(f) = tracked_fact(ctx, &tracked, &est, true) {
             card.lead.push(f);
             card.context.est = false;
         }
@@ -768,7 +820,7 @@ pub fn done(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Times
     let mut card = Card::new(task, outcome(ctx, &when));
     card.context.urgency = false;
     let est = s(result, "estimate");
-    if let Some(f) = tracked_fact(ctx, &s(result, "tracked"), &est, false, now) {
+    if let Some(f) = tracked_fact(ctx, &s(result, "tracked"), &est, false) {
         card.lead.push(f);
         if !est.is_empty() {
             card.context.est = false;
@@ -813,9 +865,22 @@ pub fn tokens_note(hint: &str, cols: usize, unicode: bool) -> Option<String> {
     Some(fit_note(&format!("note: {first}"), &pointer, cols))
 }
 
-/// A note and its pointer, the pointer dropped whole when the two do not fit.
+/// A note and its pointer, the pointer dropped whole when the two do not
+/// fit: two columns through `columns::fit`, the pointer's own separator in
+/// its width, so a note gives way by the same rule a card's line does.
 fn fit_note(note: &str, pointer: &str, cols: usize) -> String {
-    if width(note) + width(pointer) <= cols {
+    let (n, p) = (width(note), width(pointer));
+    let widths = columns::fit(
+        &[
+            Column::fixed(n),
+            Column::drops(
+                p.saturating_sub(columns::GAP),
+                p.saturating_sub(columns::GAP),
+            ),
+        ],
+        cols,
+    );
+    if widths[1] > 0 {
         format!("{note}{pointer}")
     } else {
         note.to_string()
@@ -908,7 +973,7 @@ pub fn modified(
         card.context.tags = false;
     }
     if has("estimate") {
-        if let Some(f) = est_fact(ctx, task, now, true) {
+        if let Some(f) = est_fact(ctx, task, true) {
             let words = f.plain.clone();
             change.push((vec![f], words));
         }
@@ -927,7 +992,12 @@ pub fn modified(
         }
     }
     if has("remind") {
-        let text = format!("remind {}", s(task, "remind"));
+        // An offset (`-1h`) stays an offset; an instant is a day (rule 3).
+        let r = s(task, "remind");
+        let when = r
+            .parse::<Timestamp>()
+            .map_or(r.clone(), |at| due_cell(at, now));
+        let text = format!("remind {when}");
         change.push((vec![Fact::changed(ctx, "card.strong", &text)], text));
     }
     if has("tracked") {
@@ -936,9 +1006,14 @@ pub fn modified(
     }
     let mut keys: Vec<&String> = set.keys().filter(|k| cleared(k)).collect();
     keys.sort();
+    let mut cleared_words = Vec::new();
     for k in keys {
         let text = format!("{} cleared", field_label(k));
-        change.push((vec![Fact::changed(ctx, "card.strong", &text)], text));
+        cleared_words.push(field_label(k).to_string());
+        change.push((
+            vec![Fact::changed(ctx, "card.strong", &text)],
+            String::new(),
+        ));
         match k.as_str() {
             "project" => card.context.project = false,
             "due" => card.context.due = false,
@@ -948,14 +1023,26 @@ pub fn modified(
     }
     if on_terminal(ctx) {
         card.lead = change.into_iter().flat_map(|(facts, _)| facts).collect();
-    } else if !change.is_empty() {
+    } else {
         // Off a terminal there is no bold to mark the change, so say it (the
-        // old echo's `due <- …`).
-        let words: Vec<String> = change.into_iter().map(|(_, w)| w).collect();
-        card.lead.push(Fact::new(
-            format!("set {}", words.join(", ")),
-            format!("set {}", words.join(", ")),
-        ));
+        // old echo's `due <- …`): what it set, a new title included, and what
+        // it cleared, each named once.
+        let mut set_words: Vec<String> = Vec::new();
+        if has("title") {
+            set_words.push("title".into());
+        }
+        set_words.extend(change.into_iter().map(|(_, w)| w).filter(|w| !w.is_empty()));
+        let mut parts = Vec::new();
+        if !set_words.is_empty() {
+            parts.push(format!("set {}", set_words.join(", ")));
+        }
+        if !cleared_words.is_empty() {
+            parts.push(format!("cleared {}", cleared_words.join(", ")));
+        }
+        if !parts.is_empty() {
+            let text = parts.join("; ");
+            card.lead.push(Fact::new(text.clone(), text));
+        }
     }
     draw(ctx, card, now)
 }
@@ -1093,7 +1180,7 @@ pub fn dep_changed(
         };
         let mut card = Card::new(task, what);
         if let Some(t) = blocker_title(task, target) {
-            card.detail.push(Fact::detail(ctx, &t));
+            card.detail.push((Fact::detail(ctx, &t), Give::Cut));
         }
         return draw(ctx, card, now);
     }
@@ -1114,7 +1201,7 @@ pub fn dep_changed(
                 &format!("still blocked by #{id}"),
             ));
             if !title.is_empty() {
-                card.detail.push(Fact::detail(ctx, &title));
+                card.detail.push((Fact::detail(ctx, &title), Give::Cut));
             }
         }
     }
@@ -1190,7 +1277,13 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String
             } else {
                 back.clone()
             };
-            card.lead.extend(tag_set(ctx, &all, &back, true));
+            if on_terminal(ctx) {
+                card.lead.extend(tag_set(ctx, &all, &back, true));
+            } else {
+                // No bold off a terminal: say which came back.
+                let text = format!("{} back", plus(&back));
+                card.lead.push(Fact::new(text.clone(), text));
+            }
             card.context.tags = false;
         }
         "dependency.remove" => {
@@ -1206,7 +1299,7 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String
             card.lead
                 .push(Fact::changed(ctx, "card.strong", "note removed"));
             if !note.is_empty() {
-                card.detail.push(Fact::detail(ctx, &note));
+                card.detail.push((Fact::detail(ctx, &note), Give::Cut));
             }
             card.context = Context::NONE;
         }
@@ -1231,10 +1324,10 @@ fn record(ctx: &Ctx, name: Option<&str>, fixed: Vec<Fact>, droppable: Vec<Fact>)
         out.push_str(&ctx.paint("card.strong", n));
         out.push('\n');
     }
-    let all: Vec<(Fact, bool)> = fixed
+    let all: Vec<(Fact, Give)> = fixed
         .into_iter()
-        .map(|f| (f, false))
-        .chain(droppable.into_iter().map(|f| (f, true)))
+        .map(|f| (f, Give::Keep))
+        .chain(droppable.into_iter().map(|f| (f, Give::Drop)))
         .collect();
     if !on_terminal(ctx) {
         let facts: Vec<Fact> = all.into_iter().map(|(f, _)| f).collect();
@@ -1243,7 +1336,7 @@ fn record(ctx: &Ctx, name: Option<&str>, fixed: Vec<Fact>, droppable: Vec<Fact>)
         return out;
     }
     let budget = ctx.cols.max(20);
-    let kept = fit_facts(&all, budget);
+    let kept = fit_facts(ctx, &all, budget);
     let indent = width(&kept[0].plain) + FACT_GAP;
     for (i, line) in pack(ctx, &kept, budget, indent).iter().enumerate() {
         let lead = if i == 0 {
@@ -1288,7 +1381,6 @@ pub fn project_created(ctx: &Ctx, result: &Value) -> String {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let mut fixed = vec![outcome(ctx, "created")];
-    let mut droppable = Vec::new();
     if became {
         fixed.push(Fact::new(
             "now your default project",
@@ -1306,13 +1398,14 @@ pub fn project_created(ctx: &Ctx, result: &Value) -> String {
             ),
             None => Fact::new("default stays unset", "default stays unset"),
         });
-        droppable.push(Fact::role(
+        // D21's way to steer the default, so it never drops.
+        fixed.push(Fact::role(
             ctx,
             "card.label",
             &format!("tasqx use {}", tasqx_core::filter::quote(&name)),
         ));
     }
-    record(ctx, Some(&name), fixed, droppable)
+    record(ctx, Some(&name), fixed, Vec::new())
 }
 
 /// `tasqx use` (D21): the new default, and the old one, because a silent

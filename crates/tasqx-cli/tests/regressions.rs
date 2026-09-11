@@ -2457,13 +2457,18 @@ fn the_completion_timestamp_reaches_every_human_surface() {
     // D123 spells the moment on `done` as a calendar day, the clock included
     // because it is today: `done today 10:05`, from that same stored instant
     // (UTC, as `due_cell` reads it). It was a 30-cell instant in nanoseconds.
+    // `yesterday` only when the completion's UTC day is no longer today's,
+    // which is a completion stamped just before midnight and drawn after.
     let clock = &ts[11..16];
+    let today = jiff::Timestamp::now().to_string();
+    let want = if ts[..10] == today[..10] {
+        format!("done today {clock}")
+    } else {
+        "done yesterday".to_string()
+    };
     assert!(
-        done_out.contains(&format!("done today {clock}"))
-            // A completion stamped a hair before midnight and drawn a hair
-            // after is `yesterday`, which is the same moment, correctly spelled.
-            || done_out.contains("done yesterday"),
-        "`done` must name the moment ({ts}): {done_out}"
+        done_out.contains(&want),
+        "`done` must name the moment ({ts}), as {want:?}: {done_out}"
     );
 
     // D122: the terminal spells the moment as a calendar day by default
@@ -4354,13 +4359,9 @@ fn stop_reports_the_same_tracked_total_show_does() {
         "tasqx-stop-tracked-word-{}.json",
         std::process::id()
     ));
-    // Two hours and thirty seconds back: the interval reads `2h` to the minute,
-    // and the half minute keeps it there if the clock the binary reads is a
-    // few seconds off the one this test read (WSL2 was seen to step 2.4 s).
-    let two_hours_ago = (jiff::Timestamp::now()
-        - jiff::SignedDuration::from_hours(2)
-        - jiff::SignedDuration::from_secs(30))
-    .to_string();
+    // The interval the line must name is derived from the total the binary
+    // stored, not from this test's clock (WSL2 was seen to step 2.4 s).
+    let two_hours_ago = (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(2)).to_string();
     std::fs::write(
         &fixture,
         serde_json::json!({ "tasks": [{
@@ -4410,8 +4411,14 @@ fn stop_reports_the_same_tracked_total_show_does() {
         "`stop` must call the cumulative total `tracked`, exactly (show says tracked \
          {total} = {exact}): {stopped:?}"
     );
+    let interval = total_secs - 6060;
+    let interval = if (interval % 3600) / 60 == 0 {
+        format!("{}h", interval / 3600)
+    } else {
+        format!("{}h{:02}", interval / 3600, (interval % 3600) / 60)
+    };
     assert!(
-        stopped.contains("stopped after 2h"),
+        stopped.contains(&format!("stopped after {interval}")),
         "and the interval must not be called `tracked`: {stopped:?}"
     );
 }

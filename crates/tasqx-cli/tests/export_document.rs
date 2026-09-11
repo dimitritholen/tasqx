@@ -470,7 +470,10 @@ fn an_import_with_no_docs_section_says_so_instead_of_printing_the_same_line_as_z
         &c,
         &["import", good_path.to_str().expect("utf8 path")],
     );
-    assert!(out.contains("1 memory doc"), "{out}");
+    assert!(
+        out.lines().any(|l| l.ends_with(" 1 memory doc")),
+        "one doc, in the singular: {out}"
+    );
     assert!(
         !out.contains("note: the document carried no `docs` section"),
         "a document that DOES declare `docs` must not get the absence note: {out}"

@@ -946,7 +946,7 @@ fn page_install() -> String {
          ▌ #1  Ship the v1 JSON API freeze\n\
          ▌ stopped   H ▄▄▄▄ 16.0   work.tasqx   due Fri   +api +release   est 4h\n\
          ▌ #1  Ship the v1 JSON API freeze\n\
-         ▌ done today 15:43   work.tasqx   due Fri   +api +release   est 4h",
+         ▌ done today 16:20   work.tasqx   due Fri   +api +release   est 4h",
     ));
 
     s.push_str(&h3("Where to go next"));
@@ -1298,8 +1298,8 @@ fn page_commands() -> String {
          ▌ status      pending           urgency     H ▄▄▄▄ 16.0\n\
          ▌ project     work.tasqx        due         Fri (in 2 days)\n\
          ▌ estimate    4h                tags        +api +release\n\
-         ▌ created     today 15:43 (just now)\n\
-         ▌ modified    today 15:43 (just now)\n\
+         ▌ created     today 16:20 (just now)\n\
+         ▌ modified    today 16:20 (just now)\n\
          ▌ rev         2\n\
          ▌\n\
          ▌ · Blocked on the D12 decision",
@@ -1377,7 +1377,7 @@ fn page_commands() -> String {
          prive.klussen\n\
          now the default   was work.tasqx   a bare tasqx add lands here\n\
          ▌ #5  Fix the shed door\n\
-         ▌ added   - ▁▁▁▁ 0.0   prive.klussen",
+         ▌ added   prive.klussen",
     ));
     s.push_str(&p(
         "Note what <code>init</code> did <em>not</em> do: creating <code>prive.klussen</code> left the \
@@ -1454,7 +1454,7 @@ fn page_commands() -> String {
     s.push_str(&snippet(
         "tasqx done 4",
         "▌ #4  Water the plants\n\
-         ▌ done today 15:43   home   due today 23:59\n\
+         ▌ done today 16:20   home   due today 23:59\n\
          \x20 #6  next, due Fri",
     ));
 
@@ -1763,14 +1763,14 @@ fn page_scheduling() -> String {
         "▌ #4  Water the plants\n\
          ▌ added   - ▄▄▄▃ 11.7   home   due today 23:59   ↻ every 3 days\n\
          ▌ #4  Water the plants\n\
-         ▌ done today 15:43   home   due today 23:59\n\
+         ▌ done today 16:20   home   due today 23:59\n\
          \x20 #5  next, due Fri\n\
          ▌ #5  Water the plants\n\
          ▌\n\
-         ▌ status      pending           urgency     - ▄▄▄▁ 9.1\n\
+         ▌ status      pending           urgency     - ▄▄▄▁ 9.2\n\
          ▌ project     home              due         Fri (in 3 days)\n\
-         ▌ repeats     every 3 days      created     today 15:43 (just now)\n\
-         ▌ modified    today 15:43 (just now)\n\
+         ▌ repeats     every 3 days      created     today 16:20 (just now)\n\
+         ▌ modified    today 16:20 (just now)\n\
          ▌ rev         1",
     ));
 
@@ -1848,8 +1848,8 @@ fn page_reminders() -> String {
          ▌ status      pending           urgency     H ▄▄▄▄ 16.0\n\
          ▌ project     work.tasqx        due         Fri (in 2 days)\n\
          ▌ remind      -1h               estimate    4h\n\
-         ▌ tags        +api +release     created     today 15:43 (just now)\n\
-         ▌ modified    today 15:43 (just now)\n\
+         ▌ tags        +api +release     created     today 16:20 (just now)\n\
+         ▌ modified    today 16:20 (just now)\n\
          ▌ rev         2",
     ));
     s.push_str(&note(
