@@ -13,7 +13,8 @@ found any other way. §14 is the loop that makes that cheap.
 `add`'s echo and `tasqx manual` carry the style. `report` and `pick` do not yet.
 The manual, the one screen that is mostly prose, adds conventions of its own
 (a prose measure, two heading levels, copied code never split); they are
-written down in `crates/tasqx-cli/src/manual.rs`'s module doc.
+written down in `crates/tasqx-cli/src/manual.rs`'s module doc, and named by
+`DESIGN.md` §12 **D123**, which is the ruling that carried the style to it.
 
 ---
 

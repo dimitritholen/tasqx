@@ -1140,7 +1140,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | **Core** | API v1 declared **stable**; the conformance suite (`crates/tasqx-core/tests/conformance.rs`) is the contract of record — the envelope, the error codes and every method's response shape, with its method floor derived from `dispatch::PARAMS` rather than listed. What it freezes is the **JSON API's shape**; what it does *not* freeze is the MCP **tool schema** — tool names, descriptions and input schemas stay free to move, and `tests/mcp.rs` covers them. The tool *results* are not exempt: `conformance.rs` drives the live `tools/list`, maps each tool to its method and asserts that same frozen result shape, so renaming a response field reddens the MCP half too. Read D56's "excludes MCP" as being about the schema, not the answers. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
 | **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). |
 | **Distribution** | Prebuilt archives for four targets on a tag, plus a `completions/` directory inside each one and a generated Homebrew formula that switches completion on at install time (**D57**, `docs/homebrew-tap.md`). The tap and the Scoop bucket exist (`dimitritholen/homebrew-tasqx`, `dimitritholen/scoop-tasqx`), each filled per release by its generator (`scripts/brew-formula.sh`, `scripts/scoop-manifest.sh`) and merged only after that repo's own CI has installed the result for real; the README leads with them, and a package manager the reader already has outranks the script (**D77**). On top of those archives, `install.sh` and `install.ps1` are the **universal** install route (**D61**, narrowed by D77): a one-liner served raw from `raw.githubusercontent.com` that resolves one host triple, verifies the published `.sha256` and unpacks into a per-user directory, with re-running it as the update path — which is not the self-update D10 forbids, because the binary still never writes to itself. The archives are **not signed**: D10 required notarization and Authenticode, D61 narrows that to deferred, and the consequence ships with the route — on macOS it bypasses Gatekeeper rather than passing it, on Windows it is what SmartScreen is built to interrupt. Signing is scheduled work, not a decided absence. |
-| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report` — and a number never gives way to make a row fit (**D120**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
+| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report` — and a number never gives way to make a row fit (**D120**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
 | **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. Responses are bounded: `task.get` pages its history and drops the duplicate block (D63, D66, D72), still a transport-only bound. `task.list` pages its rows and reports what it withheld (D70) — that page's DEFAULT now lives in the engine itself (**D110**), reachable by `tasqx api`/the CLI too, not only by this transport; MCP's own default-insertion is what still drives its byte-budget bisection over an oversized page. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
 
@@ -2701,3 +2701,67 @@ untouched) is filed as #398.
 `task_detail_card`, `task_added_card`, `next_task`, `why`, `why_table`, `apportion`),
 `verbs.rs` (the three callers pass `now`), `README.md` and `docs.rs` (the samples,
 regenerated from real output), and `tests/regressions.rs`.
+
+### D123 — The manual is a screen of the house style, and two rulings of its own spec are reversed (task #351)
+
+**Decision:** `tasqx manual` carries `docs/terminal-style.md` (**D117**), and the
+2026-07-17 help/manual spec is amended in two places.
+
+- **(a) The table of contents is not numbered** (amends
+  `docs/specs/2026-07-17-help-manual-revamp-design.md`'s "numbered concept-topics").
+  The numbers ran 1 to 11 down the topics, and `tasqx manual` never took one: six cells
+  a row, naming something no reader could type (rule 2). Each group — TOPICS, COMMANDS —
+  is now a table fitted on its own by `columns::fit` (**D120**), the name whole because it
+  is what gets typed, the description cut only where the terminal cannot hold it
+  (D120(c)). Fitted as ONE table across both groups, `getting-started` widened the command
+  column and cut summaries a 60-column terminal had room for, which is the same rule
+  read the other way.
+- **(b) A name that is both a verb and a topic opens both pages, topic first** (amends the
+  same spec's ambiguity rule, "resolve `<name>` first against verbs/aliases, then against
+  topic names"). Under that order `projects` and `daemon` opened the command page alone,
+  so two topic pages the contents advertised could not be reached at all. The command page
+  that follows is set apart by two blank lines, and drops from its `See also` whatever the
+  topic's `Commands` line has just offered (rule 11).
+- **(c) The manual's own conventions live in `crates/tasqx-cli/src/manual.rs`'s module
+  doc**, six of them: prose wrapped to a 72-cell measure rather than to the terminal's
+  edge; two levels of heading, the page's title in `header` and a section in `table.label`
+  and capitals, with no row painted like either; what a reader copies — an example, a code
+  line, inline code in backticks — never wrapped or cut, so it overflows instead; an
+  example's notes beside their commands or under them, decided once per block; a topic's
+  table stacking each definition under its term where the column would be under 24 cells,
+  or too narrow for a piece or a kept code line; and the two blank lines of (b). They are
+  written there rather than in `docs/terminal-style.md` because they are this screen's and
+  not the terminal's: no other surface is mostly prose, and the house style is read before
+  laying out a table of tasks. `docs/terminal-style.md` names the manual among the screens
+  that carry the style and points at that module doc, so the trail runs DESIGN.md → the
+  house style → the conventions.
+- **(d) `table.label` carries a section heading too** (extends **D117(e)**, which
+  introduced it for the column line of `list` and `agenda`). Its reason carries across
+  unchanged — structure recedes, only what you act on is emphasized — and it is the one
+  label role guarded achromatic in every built-in, which is what lets the title stay the
+  only emphasis on the page in every theme. `accent` was tried first and is plain bold in
+  `mono`, the very bytes of the title.
+- **(e) `Ctx::hrule` is deleted.** The manual drew the last two rules in the CLI, under
+  TASQX MANUAL and under every topic title (rule 7); nothing else called it, and its unit
+  test went with it.
+
+**Why:** judged as an image at 60, 80, 100 and 140 columns, the manual broke the style on
+every page — 208 lines past a 60-column terminal, 109 past 80, 83 past 100, a rule under
+two headings, section headings painted three different ways, and its own prose dimmed —
+while two of its pages could not be opened at all. Re-derive the counts with
+`COLUMNS=60 tasqx manual <page> | awk 'length > 60'`.
+
+**Left standing, deliberately:** in `mono`, `USAGE`/`EXAMPLES`/`NOTES` share `ESC[2m` with
+the `API method:` line, the aliases and the example notes — no existing role is grey in
+colour yet neither dim nor bold in `mono`, and a role of its own is a theme ruling, not
+this one. `automation` at 60 columns leaves one orphaned word a row (its definition column
+lands at 25 cells, one above the stacking threshold). `docs`' usage runs one cell past a
+40-column terminal, being a bracket group with nothing inside it to break at. Piped ASCII
+output still prints the `·`, `…`, `—` and `→` the source text carries; that text is shared
+with `-h` and the HTML guide, so degrading it here alone would make the three disagree.
+
+**Where:** `crates/tasqx-cli/src/manual.rs` (the renderer and the topic bodies),
+`render.rs` (`wrap_pieces`/`wrap_hanging`, one greedy wrap for every caller), `theme.rs`
+(`Ctx::hrule` removed), `command.rs` (the verb's own help text), `docs/terminal-style.md`,
+`docs/wiki/Getting-Started.md`, `docs/specs/2026-07-17-help-manual-revamp-design.md`, and
+§11's Presentation row above.
