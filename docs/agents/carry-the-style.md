@@ -159,7 +159,7 @@ the pipe-into-freeze loop does not reach them. Capture through `script(1)` first
 $ TASQX_DB=<scratch>/tasks.db script -qec "COLUMNS=100 tasqx --no-daemon pick" /dev/null > /tmp/pick.ansi
 ```
 
-`s` in `pick` starts a task (D123), so drive it only against a scratch store.
+`s` in `pick` starts a task (D124), so drive it only against a scratch store.
 `scripts/snap-tui.sh` holds these screens in tmux and is the easier route.
 
 then feed that file to `freeze` the way `scripts/snap.sh` feeds it stdin. If

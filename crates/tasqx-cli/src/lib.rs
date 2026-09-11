@@ -1682,7 +1682,7 @@ mod tests {
     /// screen decides which task `s` starts, and the whole path around it
     /// needs a real terminal — so a mapping that read `id` where it meant
     /// `short_id` would leave the suite green with the browser unusable. What
-    /// the row DRAWS is `list`'s renderer's business now (D123), tested in
+    /// the row DRAWS is `list`'s renderer's business now (D124), tested in
     /// `tui::pick`; what this pins is identity.
     #[test]
     fn pick_rows_carry_the_identity_the_screen_starts_by() {
@@ -1700,7 +1700,7 @@ mod tests {
         assert_eq!(rows[1].short_id, 7);
     }
 
-    /// D123: the browser reads the whole candidate set, not `task.list`'s
+    /// D124: the browser reads the whole candidate set, not `task.list`'s
     /// first page (D110's default of 100): a search cannot find what was
     /// never read, and `100 tasks` over a larger set is rule 10 broken.
     #[test]
@@ -1779,7 +1779,7 @@ mod tests {
     /// The scrollback `pick` leaves once the alt screen is gone has to NAME
     /// the task it started — an interactive session must leave a record of
     /// which one — and, since #75, `task.start` names it and what it
-    /// auto-stopped itself, so the line says each thing ONCE (D123). It named
+    /// auto-stopped itself, so the line says each thing ONCE (D124). It named
     /// the task twice, and D101's stand-in said the stop twice with two
     /// different durations (rule 11).
     #[test]

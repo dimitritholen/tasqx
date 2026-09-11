@@ -1,4 +1,4 @@
-//! The `tasqx pick` driver (DESIGN.md §10, D55, D123): rows out of every
+//! The `tasqx pick` driver (DESIGN.md §10, D55, D124): rows out of every
 //! task.list page, the alt-screen loop and the one read the screen asks for,
 //! and the started-task summary. The widget
 //! itself lives in `tui::pick`; the structural TTY gate stays in `execute`,
@@ -19,7 +19,7 @@ pub(crate) const PICK_NEEDS_A_TERMINAL: &str =
      (one of them is piped, redirected, or TERM=dumb). `tasqx next` picks the \
      highest-urgency task for you and `tasqx start <ref>` starts it.";
 
-/// `tasqx pick` — browse tasks on a full screen, and start one (D123).
+/// `tasqx pick` — browse tasks on a full screen, and start one (D124).
 ///
 /// The pieces this function owns are the ones the state machine must not: the
 /// candidate snapshot, the card read, and the write. Everything between them
@@ -101,7 +101,7 @@ pub(crate) fn no_candidates(filter: &str) -> ApiError {
 /// at a time: `{tasks, count}` with `count` the number read.
 ///
 /// All of them and not the first page, because this is a browser with a
-/// search (D123), and a search cannot rank what was never read — the memory
+/// search (D124), and a search cannot rank what was never read — the memory
 /// screen pages for the same reason. It used to make one call, which D110
 /// bounds at 100 rows, so on a larger working set the task the reader was
 /// searching for could simply not be there, and the header counted the page
@@ -161,7 +161,7 @@ pub(crate) fn merge_pages(pages: &[Value]) -> Value {
 /// which would make every `s` start the wrong task or none at all — would leave
 /// the whole suite green with the screen unusable. That is the same hole
 /// `settings_rows` was pulled out of `run_config_edit` to close. Each row keeps
-/// the task as the store sent it, because `render::task_row` lays it out (D123).
+/// the task as the store sent it, because `render::task_row` lays it out (D124).
 pub(crate) fn pick_rows(result: &Value) -> Vec<tui::pick::Row> {
     result
         .get("tasks")
@@ -219,7 +219,7 @@ pub(crate) fn pick_loop(
 /// a `#N  title` header over that, and D101's screen-local stand-in printed
 /// the stop again from a snapshot of its own, so the task was named twice and
 /// the stop said twice with two different durations. D101 said its stand-in
-/// would be deleted once #75 landed; D123 did.
+/// would be deleted once #75 landed; D124 did.
 pub(crate) fn picked_summary(ctx: &Ctx, result: &Value) -> String {
     render::started(ctx, result)
 }

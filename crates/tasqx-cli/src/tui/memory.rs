@@ -44,7 +44,7 @@ const SOURCE_WEIGHT: i64 = 50;
 /// A contiguous hit in the source or body scores from this, not from the 1000
 /// a subsequence starts at, so any reasonable title hit outranks it. The
 /// whole-term bonus a title or project earns is `fuzzy::WHOLE_BONUS`, the one
-/// `pick` uses too (D123).
+/// `pick` uses too (D124).
 const PROSE_BASE: i64 = 600;
 
 /// One memory doc as the list shows it, sanitised at construction (D19): a
@@ -869,7 +869,7 @@ fn draw_list(app: &App, sty: &dyn Fn(&str) -> RtStyle, frame: &mut Frame, area: 
     ];
     if app.mode == Mode::Search || !app.query.is_empty() {
         // `pick`'s search line too: one function fits both, and the count
-        // never gives way (D123).
+        // never gives way (D124).
         head.extend(tui::search_spans(
             &tui::SearchLine {
                 filter: "",
@@ -1195,7 +1195,7 @@ mod tests {
     }
 
     /// The count on the search line is a number and never gives way (rule 2),
-    /// on this screen as on `pick`: one function fits both (D123).
+    /// on this screen as on `pick`: one function fits both (D124).
     #[test]
     fn the_search_count_stays_whole_on_a_narrow_terminal() {
         let mut a = app();

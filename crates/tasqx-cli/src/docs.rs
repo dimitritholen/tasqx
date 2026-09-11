@@ -1246,7 +1246,7 @@ fn page_commands() -> String {
     // ---- pick
     s.push_str(&h3("pick"));
     s.push_str(&p(
-        "<code>tasqx pick [filter]</code> is the task browser (D123): a full-screen list over the \
+        "<code>tasqx pick [filter]</code> is the task browser (D124): a full-screen list over the \
          working set whose rows are the rows <code>tasqx list</code> prints, under a header that \
          names the filter and what the set holds. <code>enter</code> opens the task's \
          <code>tasqx show</code> card; <code>s</code> starts the task under the cursor — the one \

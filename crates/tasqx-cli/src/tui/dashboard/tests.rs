@@ -1670,7 +1670,7 @@ fn the_help_overlay_never_hides_its_own_close_instructions() {
         a.on_key(key(KeyCode::Char('?')));
         let text = all_text(&draw_at(&a, MIN_WIDTH.max(70), h, &caps()));
         // Read from the table rather than restated, so the wording can move
-        // (D123 renamed the picker) without this test going stale.
+        // (D124 renamed the picker) without this test going stale.
         let ctrl_c = KEYS.iter().find(|k| k.keys == "ctrl-c").unwrap().help;
         assert!(
             text.contains(ctrl_c),
@@ -2426,7 +2426,7 @@ fn the_ctrl_c_help_text_does_not_overclaim_against_the_pickers_own_cancel_contra
     );
 }
 
-/// D123: `p` opens `pick`, and what the dashboard says about it must be what
+/// D124: `p` opens `pick`, and what the dashboard says about it must be what
 /// `pick` does — Enter reads, and the key that starts is the one `pick`'s own
 /// table names. It said "pick a task and start it" when Enter started, and a
 /// help line nobody re-read would keep saying so.

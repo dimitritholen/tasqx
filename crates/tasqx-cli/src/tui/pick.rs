@@ -1,4 +1,4 @@
-//! The task browser: `tasqx pick` (DESIGN.md §10, D55, D123).
+//! The task browser: `tasqx pick` (DESIGN.md §10, D55, D124).
 //!
 //! The memory browser's shape (D121) over the working set. `j`/`k` move, `/`
 //! opens a fuzzy search on the header line, Enter opens the task's `show` card
@@ -23,11 +23,11 @@
 //!
 //! D55's reasoning for starting rather than printing a ref stands: the screen
 //! refuses a pipe, so a printed ref could only be retyped by hand. What moved
-//! (D123) is the key. Enter used to start; it now reads, because on a browser
+//! (D124) is the key. Enter used to start; it now reads, because on a browser
 //! Enter is the key a reader presses to look, and a look that started a timer
 //! is the most expensive mis-aimed keystroke this screen could have. `s` is
 //! `tasqx start`'s word, and the one D80 plans for the dashboard's row actions
-//! (the shipped dashboard still spends `s` on its sort order, D123 "Left
+//! (the shipped dashboard still spends `s` on its sort order, D124 "Left
 //! standing"). Starting still ends the session:
 //! `pick` answers "which of these am I doing now", and beginning it is that
 //! answer.
@@ -112,7 +112,7 @@ impl Row {
 
     /// How well this row matches every term of an already-lowercased query,
     /// or `None` when some term matches no field (D100, with D121's
-    /// whole-term bonus, D123).
+    /// whole-term bonus, D124).
     fn score(&self, terms: &[&str]) -> Option<i64> {
         fuzzy::score_terms(&self.fields, &FIELD_WEIGHT, terms)
     }
@@ -306,7 +306,7 @@ impl App {
         }
         let dash = if self.caps.unicode { "—" } else { "-" };
         self.status = Some(format!(
-            "#{} is {} {dash} only a pending task can start",
+            "#{} is {} {dash} only a pending or running task can start",
             row.short_id,
             render::san(status)
         ));
@@ -506,7 +506,7 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "j/k",
             word: "move",
-            rank: 2,
+            rank: 3,
         }),
     },
     Key {
@@ -515,7 +515,7 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "/",
             word: "search",
-            rank: 1,
+            rank: 2,
         }),
     },
     Key {
@@ -524,7 +524,7 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "enter",
             word: "open",
-            rank: 1,
+            rank: 2,
         }),
     },
     Key {
@@ -542,7 +542,7 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "g/G",
             word: "ends",
-            rank: 4,
+            rank: 5,
         }),
     },
     Key {
@@ -565,7 +565,7 @@ pub const LIST_FILTERED_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "j/k",
             word: "move",
-            rank: 2,
+            rank: 3,
         }),
     },
     Key {
@@ -574,7 +574,7 @@ pub const LIST_FILTERED_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "/",
             word: "search",
-            rank: 1,
+            rank: 2,
         }),
     },
     Key {
@@ -583,7 +583,7 @@ pub const LIST_FILTERED_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "enter",
             word: "open",
-            rank: 1,
+            rank: 2,
         }),
     },
     Key {
@@ -601,7 +601,7 @@ pub const LIST_FILTERED_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "g/G",
             word: "ends",
-            rank: 4,
+            rank: 5,
         }),
     },
     Key {
@@ -610,7 +610,7 @@ pub const LIST_FILTERED_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "esc",
             word: "clear",
-            rank: 3,
+            rank: 4,
         }),
     },
     Key {
@@ -633,7 +633,7 @@ pub const LIST_EMPTY_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "/",
             word: "search",
-            rank: 1,
+            rank: 2,
         }),
     },
     Key {
@@ -642,7 +642,7 @@ pub const LIST_EMPTY_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "esc",
             word: "clear",
-            rank: 1,
+            rank: 4,
         }),
     },
     Key {
@@ -718,7 +718,7 @@ pub const DETAIL_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "j/k",
             word: "scroll",
-            rank: 2,
+            rank: 1,
         }),
     },
     Key {
@@ -745,7 +745,7 @@ pub const DETAIL_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "s",
             word: "start",
-            rank: 1,
+            rank: 2,
         }),
     },
     Key {

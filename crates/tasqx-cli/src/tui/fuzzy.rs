@@ -9,7 +9,7 @@
 /// spread through it: the word the reader typed beats the same letters inside
 /// another word (`tui` in "tasqx-tui-restyle" over `tui` in "punctuation").
 ///
-/// Found on the memory browser (D121) and brought to `pick` by D123, so both
+/// Found on the memory browser (D121) and brought to `pick` by D124, so both
 /// screens rank a query by one rule.
 pub(crate) const WHOLE_BONUS: i64 = 400;
 
@@ -122,7 +122,7 @@ mod tests {
         assert_eq!(score_terms(&title_hit, &w, &["memory", "zzz"]), None);
     }
 
-    /// D123, from D121: the word the reader typed beats the same letters
+    /// D124, from D121: the word the reader typed beats the same letters
     /// inside another word, on `pick` as on the memory browser.
     #[test]
     fn a_term_found_whole_outranks_its_letters_scattered() {
