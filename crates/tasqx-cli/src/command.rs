@@ -1219,11 +1219,16 @@ pub(super) enum MemoryAction {
         project: Option<String>,
     },
     /// Browse docs without a query (maps to memory.list). Newest first.
+    ///
+    /// On a terminal this opens a full-screen browser: j/k to move, / to
+    /// search, Enter to read a doc. Piped, under --json, or with --limit or
+    /// --offset it prints a table instead, one doc per line.
     List {
-        /// Max rows to return. Omit for everything from `--offset` on.
+        /// Max rows to return. Omit for everything from `--offset` on. Asking
+        /// for a page prints the table, never the browser.
         #[arg(long)]
         limit: Option<u64>,
-        /// How many matching docs to skip.
+        /// How many matching docs to skip. Like `--limit`, prints the table.
         #[arg(long, default_value_t = 0)]
         offset: u64,
         /// Restrict to docs stored with this project.

@@ -861,22 +861,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
                 params["project"] = json!(p);
             }
             let result = be.call("memory.list", &params)?;
-            let mut text = String::new();
-            for doc in result["docs"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
-                let title = render::san(doc["title"].as_str().unwrap_or(""));
-                let src = render::san(doc["source"].as_str().unwrap_or("—"));
-                let preview = render::san(doc["body_preview"].as_str().unwrap_or(""));
-                let id = render::san(doc["id"].as_str().unwrap_or("?"));
-                let (cols, uni) = (ctx.cols, ctx.caps.unicode);
-                text.push_str(&format!(
-                    "{}\n{}\n  id {id}\n",
-                    render::record_head(&title, &src, cols, uni),
-                    render::record_line(&preview, cols, uni),
-                ));
-            }
-            let count = result["count"].as_u64().unwrap_or(0);
-            let total = result["total"].as_u64().unwrap_or(count);
-            text.push_str(&format!("{count} doc(s) of {total}\n"));
+            let text = render::memory_table(ctx, &result, jiff::Timestamp::now());
             Ok((result, text))
         }
         MemoryAction::Update {

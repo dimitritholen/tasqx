@@ -2932,6 +2932,71 @@ fn every_table_fits_a_sixty_column_terminal() {
     );
 }
 
+/// D121: off a terminal, `memory list` is a table: one line per doc, the id
+/// on the same line as the title it names, under a header and a summary.
+///
+/// It was three lines per doc: the title with its source in parentheses, a
+/// snippet with frontmatter and markdown leaking into it, and a whole line for
+/// the id, closed by `N doc(s) of M`. Every row had the same weight, and a
+/// reader who grepped for a title got a line without the id `memory show`
+/// needs.
+#[test]
+fn memory_list_off_a_terminal_is_one_line_per_doc() {
+    let dir = fresh_config_dir("memory-plain");
+    let run = |args: &[&str]| {
+        bin("memory-plain", &dir)
+            .env("COLUMNS", "120")
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let add = |title: &str, body: &str| {
+        let out = run(&["--json", "memory", "add", "--", title, body]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        v["id"].as_str().expect("an id").to_string()
+    };
+    let first = add(
+        "Deploy checklist",
+        "---\nname: deploy\n---\nRun the smoke tests.",
+    );
+    let second = add("Release notes style", "Write them for users.");
+
+    let out = run(&["memory", "list"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].contains("2 docs"), "no summary line: {text}");
+    let header = lines
+        .iter()
+        .position(|l| l.contains("TITLE") && l.contains("ID"))
+        .unwrap_or_else(|| panic!("no header: {text}"));
+    for (title, id) in [
+        ("Deploy checklist", &first),
+        ("Release notes style", &second),
+    ] {
+        let row = lines[header + 1..]
+            .iter()
+            .find(|l| l.contains(title))
+            .unwrap_or_else(|| panic!("no row for {title}: {text}"));
+        assert!(
+            row.contains(id.as_str()),
+            "the id is not on the row: {row:?}"
+        );
+    }
+    assert_eq!(
+        lines.len(),
+        header + 3,
+        "one line per doc and nothing more: {text}"
+    );
+    assert!(!text.contains("doc(s)"), "the old trailer: {text}");
+    assert!(!text.contains("---"), "frontmatter leaked: {text}");
+}
+
 /// D119's `theme show` ramp line fits the terminal it is printed on.
 ///
 /// The band preview carries a note saying what 12 means, and at 60 columns the

@@ -25,6 +25,7 @@ mod docs;
 mod docs_open;
 mod html;
 mod manual;
+mod memory_screen;
 mod pick_screen;
 mod render;
 mod serve;
@@ -37,6 +38,7 @@ mod verbs;
 use backend::*;
 use dashboard_screen::*;
 use docs_open::*;
+use memory_screen::*;
 use pick_screen::*;
 use serve::*;
 use settings::*;
@@ -786,6 +788,28 @@ fn execute(cli: Cli) -> Exit {
             }
         }
         return Exit::SelfFramed;
+    }
+
+    // `memory list` on a terminal is the memory browser (D121), decided here
+    // for the reason the dashboard is decided just above: the screen frames
+    // itself, so it leaves as `SelfFramed` and never reaches `emit`.
+    if let Some(Command::Memory {
+        action:
+            MemoryAction::List {
+                limit,
+                offset,
+                project,
+            },
+    }) = &cli.command
+    {
+        let paged = limit.is_some() || *offset > 0;
+        if memory_screen_active(&ctx.caps, cli.json, paged, term_size, stdout_tty, stdin_tty) {
+            if let Err(e) = run_memory_screen(&mut backend, &ctx, project.as_deref()) {
+                eprintln!("error [{}]: {}", code_str(&e), e.message);
+                exit(e.exit_code());
+            }
+            return Exit::SelfFramed;
+        }
     }
 
     Exit::Out(match cli.command {
