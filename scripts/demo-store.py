@@ -101,6 +101,24 @@ DONE_TITLES = [
     "Add a status page", "Clean up feature flags", "Document the release process",
 ]
 
+# Memory docs: (title, project, source, body). Invented like everything else.
+MEMORY = [
+    ("release-process", "api", "docs/release.md",
+     "---\ndescription: How an SDK release is cut, tagged and announced\n---\n"
+     "Cut the release branch on Monday, tag after the canary has run for a day, "
+     "and announce in the changelog feed once the packages are live."),
+    ("on-call-handover", "infra", None,
+     "The handover happens Friday at 16:00. Walk the open incidents, the error "
+     "budget and anything paged twice in the week, then rotate the pager."),
+    ("pricing-page-decisions", "website", "notes/pricing.md",
+     "# Pricing page\nThree tiers, annual billing shown first. The release of v2 "
+     "waits for legal to sign off the new terms."),
+    ("android-token-refresh", "mobile", None,
+     "The refresh race happens when two requests see an expired token at once. "
+     "Serialise refresh behind one lock and retry the losing request."),
+    ("dentist", None, None, "Dr. Visser, Tuesdays and Thursdays, book two weeks ahead."),
+]
+
 
 def main():
     projects, tasks, events = [], [], []
@@ -187,6 +205,16 @@ def main():
     # The demo records no AI token spend, and an empty TOKENS panel is space
     # a screenshot has better uses for.
     run("config", "set", "dashboard.panels", "tasks,projects,burndown,pulse,effort")
+    # Memory docs, so `memory list` and `memory search` have something to show.
+    # Added live rather than imported: `import` carries tasks, not docs.
+    for title, project, source, body in MEMORY:
+        args = ["memory", "add"]
+        if source:
+            args += ["--source", source]
+        if project:
+            args += ["--project", project]
+        # `--` because a body that opens with frontmatter starts with `---`.
+        run(*args, "--", title, body)
     print(OUT)
 
 

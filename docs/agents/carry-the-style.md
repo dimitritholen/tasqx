@@ -177,8 +177,10 @@ Learned the hard way on the branch that produced the style.
 
 - **`.claude/guard.sh` blocks on substrings.** A command containing the text of
   a dev-build path, or `git` in a shape it cannot verify, is refused whole.
-  Keep shell commands plain and separate: `git add` with explicit paths (never
-  `-A`), then `git commit -F <file>` as its own call. Write commit messages to a file rather than passing
+  Keep shell commands plain and separate: `git add` with explicit paths
+  (never `-A` — a vanishing `.claude/settings.local.json.tmp.*` once made
+  it commit nothing), then `git commit -F <file>` as its own call. Write
+  commit messages to a file rather than passing
   them inline. Avoid command substitution and heredocs in anything git- or
   binary-adjacent.
 - **Driving a dev build needs both `TASQX_DB` pointed at a scratch store and
