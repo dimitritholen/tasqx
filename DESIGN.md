@@ -1140,7 +1140,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | **Core** | API v1 declared **stable**; the conformance suite (`crates/tasqx-core/tests/conformance.rs`) is the contract of record — the envelope, the error codes and every method's response shape, with its method floor derived from `dispatch::PARAMS` rather than listed. What it freezes is the **JSON API's shape**; what it does *not* freeze is the MCP **tool schema** — tool names, descriptions and input schemas stay free to move, and `tests/mcp.rs` covers them. The tool *results* are not exempt: `conformance.rs` drives the live `tools/list`, maps each tool to its method and asserts that same frozen result shape, so renaming a response field reddens the MCP half too. Read D56's "excludes MCP" as being about the schema, not the answers. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
 | **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). |
 | **Distribution** | Prebuilt archives for four targets on a tag, plus a `completions/` directory inside each one and a generated Homebrew formula that switches completion on at install time (**D57**, `docs/homebrew-tap.md`). The tap and the Scoop bucket exist (`dimitritholen/homebrew-tasqx`, `dimitritholen/scoop-tasqx`), each filled per release by its generator (`scripts/brew-formula.sh`, `scripts/scoop-manifest.sh`) and merged only after that repo's own CI has installed the result for real; the README leads with them, and a package manager the reader already has outranks the script (**D77**). On top of those archives, `install.sh` and `install.ps1` are the **universal** install route (**D61**, narrowed by D77): a one-liner served raw from `raw.githubusercontent.com` that resolves one host triple, verifies the published `.sha256` and unpacks into a per-user directory, with re-running it as the update path — which is not the self-update D10 forbids, because the binary still never writes to itself. The archives are **not signed**: D10 required notarization and Authenticode, D61 narrows that to deferred, and the consequence ships with the route — on macOS it bypasses Gatekeeper rather than passing it, on Windows it is what SmartScreen is built to interrupt. Signing is scheduled work, not a decided absence. |
-| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
+| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report` — and a number never gives way to make a row fit (**D120**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
 | **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. Responses are bounded: `task.get` pages its history and drops the duplicate block (D63, D66, D72), still a transport-only bound. `task.list` pages its rows and reports what it withheld (D70) — that page's DEFAULT now lives in the engine itself (**D110**), reachable by `tasqx api`/the CLI too, not only by this transport; MCP's own default-insertion is what still drives its byte-budget bisection over an oversized page. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
 
@@ -2490,3 +2490,63 @@ deleted rather than kept unguarded.
 `ramp_style`, the four coloured built-ins' ramps), `tui/dashboard/{model,panels,json}.rs`,
 `html.rs` (`role_hex`, `svg_wrap`), `settings.rs` (the `theme show` strip),
 `docs/terminal-style.md` rule 6 and its Contract table.
+
+### D120 — Every table is fitted to the terminal by one function, and a number never gives way (task #352)
+
+**Decision:** D51's column fitting leaves `list` and becomes the CLI's.
+
+- **(a) One fitter.** `columns::fit` takes a row of columns, each with the width it asks
+  for, a floor and whether it may be dropped. It shrinks one cell at a time from whichever
+  column is widest above its floor, and then drops droppable columns from the right until
+  the row fits. `render::TaskCols` is rebuilt on it, and so are `projects`, `config list`
+  and `report`. There is no second algorithm to drift from the first. A tie in width goes
+  to the higher `tie_rank`, then to the right: `list` carries its old order that way
+  (STATUS, TAGS, PROJECT, then the date, then the title), because a date cut to
+  `due 2026-0…` says nothing while a project name cut by the same cell still identifies
+  itself.
+- **(b) A number is never cut and never dropped.** In `report` every column but the key is
+  fixed, so the key gives down to its floor and past that the row overflows. A number cut
+  to fit is a different number. A token bucket dropped to fit hides the very column
+  `--metrics tokens_in` asked for, and half of D48(a)'s four.
+- **(c) Data is cut only where the terminal cannot hold it.** A project name, a config
+  value and a description keep their full width wherever it fits, and each gets an ellipsis
+  before its row would wrap. A wrapped row breaks every column at once, which is worse than
+  one cut value, and `config get` prints the value whole. This retires the "padded, never
+  truncated" stance the `config list` alignment test used to state. Where a table has a
+  column that says where something came from (SOURCE) or what else it is (ARCHIVED,
+  DESCRIPTION), that column goes before the data does.
+- **(d) Records are not tables, and fit too.** `memory list` and `memory search` keep the
+  name and let the parenthetical go first (`render::record_head`: cut while twelve cells of
+  it survive, dropped below that), and cut the snippet line to the width. The report's
+  footnotes wrap at words (`wrap_words`).
+- **(e) The column headers of all three tables take `table.label`,** following
+  `docs/terminal-style.md` rule 12, the same as `list`'s.
+
+**Why:** swept every read verb at 60 columns and counted the lines wider than the terminal:
+`projects` laid itself out with `format!("{:<7}  {:<24}  {:<9}  {}")` and an unbounded
+DESCRIPTION, `config list` was sized to its content and never to the terminal, `report` read
+the width but held its numeric columns at a fixed 10 or 12 cells, so the key was crushed to
+`code-...` and the row still ran two cells over, and the memory records printed a
+fixed-length snippet whatever the width. A terminal wraps such a row, and the wrap destroys
+the alignment of every column, which is verbatim the failure `TaskCols::fit`'s doc comment
+says it exists to prevent. Re-derive with `COLUMNS=60 tasqx <verb> | awk 'length > 60'`.
+
+**How it was checked:** `list` and `agenda` were captured byte for byte before `TaskCols`
+moved onto the shared fitter, at seven widths, six filters, and plain, Unicode and colour
+output. The first capture after the move differed in exactly one place, `agenda`'s overdue
+dates at 80 columns, and that is where the tie rank came from. The second was identical.
+`every_table_fits_a_sixty_column_terminal` was watched fail on all four surfaces at once. It
+collects every violation before failing, so one red run names every table rather than the
+first. The report's two new tests and the tie-rank test were each watched fail. The bucket
+test was red against this change's own first draft.
+
+**Left standing:** `projects` spends seven cells of DEFAULT on one `*`, which rule 2 argues
+against; `report`'s TOTAL row is still painted `header`; `show`, the burndown chart, and the
+prose notes under `agenda` and `next` still run past a narrow terminal. Those are families
+#346, #347 and #349, not this defect.
+
+**Where:** `crates/tasqx-cli/src/columns.rs` (new), `render.rs` (`TaskCols::fit`,
+`project_table`, `report`, `record_head`, `record_line`), `settings.rs`
+(`render_config_table`), `verbs.rs` (`run_memory` gains the context),
+`tests/regressions.rs`, and `scripts/snap.sh`/`snap-tui.sh`, which now pass freeze
+`--language ansi` because a screen with no escapes in it produced no picture.

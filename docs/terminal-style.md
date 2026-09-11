@@ -28,6 +28,20 @@ A column's width should track how much a reader gets from it. Twenty cells for
 the row is actually read for. Before widening anything, ask what the column
 would say in half the space.
 
+Every table is fitted by one function, `columns::fit` (`DESIGN.md` D120), and
+gives way in one order: cells come off the widest column above its floor, then
+droppable columns go from the right. A table only decides what each column asks
+for, where its floor is, and whether it may go. Three rules come with it:
+
+- **A number never gives way.** Cut, it is a different number; dropped, it may
+  be the one the reader asked for by name. The key column shrinks instead, and
+  past its floor the row overflows.
+- **Data is cut only where the terminal cannot hold it.** A wrapped row breaks
+  every column at once, so a name or a value gets an ellipsis first, and the
+  column that says where something came from goes before the data does.
+- **A record is not a table.** Its name stays, its parenthetical goes first,
+  and the line under it is cut to the width.
+
 ## 3. Dates are calendar days — not instants, not elapsed hours
 
 `today 23:59`, `tomorrow`, `yesterday`, `2d ago`, `Sun`, `17 Sep`, `4 Jan 27`.
@@ -230,7 +244,9 @@ leaving a guide describing a screen that no longer exists.
 
 ## Where it is not carried yet
 
-- `show`, `report`, `next` — not judged as images.
+- `show`, `report`, `next` — not judged as images. `report`, `projects`,
+  `config list` and the memory records fit the width (D120) and take
+  `table.label`, but nothing else about them has been restyled.
 - `pick`.
 - The dashboard carries it. The disagreement its spec had with rule 4 (`⛔` for
   blocked where this file says `⊘`) is settled in favour of `⊘`, which is what

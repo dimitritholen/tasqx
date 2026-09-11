@@ -68,7 +68,8 @@ tmux capture-pane -p -e -t "$session" >"$ansi"
 # of 40 rows would otherwise render with 22 rows of empty PNG under it.
 sed -i -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' "$ansi"
 
-freeze --output "$svg" --window=false --padding 14 <"$ansi" >/dev/null
+# `--language ansi`: see snap.sh. Without it an unpainted screen gets no picture.
+freeze --language ansi --output "$svg" --window=false --padding 14 <"$ansi" >/dev/null
 
 w=$(grep -om1 'width="[0-9.]*"' "$svg" | grep -o '[0-9.]*' | cut -d. -f1)
 h=$(grep -om1 'height="[0-9.]*"' "$svg" | grep -o '[0-9.]*' | cut -d. -f1)

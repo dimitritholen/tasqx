@@ -44,6 +44,11 @@ for tool in freeze google-chrome; do
     }
 done
 
+# `--language ansi` because freeze otherwise guesses a language from the text,
+# and on a screen that paints nothing at all (`memory list`) the guess fails
+# with "Language Unknown" and no picture. On painted input the SVG is the same
+# either way.
+#
 # COLUMNS is read by theme::detect_cols; TASQX_FORCE_COLOR makes the binary
 # paint even though its stdout is a pipe. Both have to agree with the --width
 # freeze lays out for, or the render and the layout assume different terminals.
@@ -51,7 +56,7 @@ COLUMNS="$width" \
 TASQX_FORCE_COLOR=1 \
 TERM=xterm-256color \
     "${TASQX:-tasqx}" ${THEME:+--theme "$THEME"} "$@" 2>&1 |
-    freeze --output "$svg" --window=false --padding 14 >/dev/null
+    freeze --language ansi --output "$svg" --window=false --padding 14 >/dev/null
 
 # Sized from the SVG's own attributes: Chrome will not grow its viewport to
 # fit, so a window smaller than the drawing silently crops the right-hand
