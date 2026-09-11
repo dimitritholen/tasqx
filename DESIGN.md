@@ -2532,6 +2532,8 @@ deleted rather than kept unguarded.
   name and let the parenthetical go first (`render::record_head`: cut while twelve cells of
   it survive, dropped below that), and cut the snippet line to the width. The report's
   footnotes wrap at words (`wrap_words`).
+  (Amended by D123(a): `memory list` became a table in D121, and `memory search` prints a
+  record of its own in `render::memory_hits`; `record_head` and `record_line` are gone.)
 - **(e) The column headers of all three tables take `table.label`,** following
   `docs/terminal-style.md` rule 12, the same as `list`'s.
 
@@ -2559,7 +2561,8 @@ prose notes under `agenda` and `next` still run past a narrow terminal. Those ar
 #346, #347 and #349, not this defect.
 
 **Where:** `crates/tasqx-cli/src/columns.rs` (new), `render.rs` (`TaskCols::fit`,
-`project_table`, `report`, `record_head`, `record_line`), `settings.rs`
+`project_table`, `report`, `record_head` and `record_line`, both since deleted by D123),
+`settings.rs`
 (`render_config_table`), `verbs.rs` (`run_memory` gains the context),
 `tests/regressions.rs`, and `scripts/snap.sh`/`snap-tui.sh`, which now pass freeze
 `--language ansi` because a screen with no escapes in it produced no picture.
@@ -2947,34 +2950,61 @@ stand-in deleted), `dashboard_screen.rs`, `tui/dashboard.rs` (the `p` help), `cm
 `command.rs` (the `-h` text), `docs.rs` (the key tables, generated from the screen's own),
 `README.md`, `docs/wiki/`, `docs/terminal-style.md`, `docs/agents/carry-the-style.md`, and
 §5, §8 and §11 above.
-### D123 — `memory search` prints a two-line record per hit, whose handle opens it; a memory title never gives way below twelve cells; the fitter returns what a drop frees (task #346)
+### D123 — `memory search` prints a two-line record per hit, whose handle opens it; `*` marks the one in effect; one rule fits every line of facts; the fitter returns what a drop frees (task #346)
 
-**Decision:** three amendments, found by rendering #346's first cut and by its review.
+**Decision:** five amendments, found by rendering #346's first cut and by its two reviews.
 
 - **(a) A search hit is a record, not a table row** (restates D120(d); #346's first cut, a
-  TITLE/MATCH/SOURCE/ID table, is withdrawn). The head line holds the title, where the hit
-  came from, and its handle, fitted by `columns::fit`: SOURCE goes first, the title gives
-  way last, and the handle never goes. Under it are the words that matched, cut to the
-  terminal. The handle is the thing that OPENS the hit: a doc's id, which `memory show`
-  takes, or `annotation on #N`, because `memory show` refuses an annotation's id (exit 4)
-  and `tasqx show N` opens its task. The summary names the expression that ran (D69), which
-  a plain query quotes, so `"release"   3 hits` reads as a query and a count where dim does
-  not reach the screen. A miss says why the expression came back empty without printing it
-  a second time (rule 11).
-- **(b) A memory title's floor is what the terminal can give it beside the column that
-  never goes, and never below twelve cells** (`render::lead_floor`; amends D121(f)'s
-  twelve-cell floor, which is kept as the lower bound). Widest-first shrinking otherwise cut
-  the title, the one column a row is read for, to meet a snippet or a project name that the
-  fitter could have dropped. Below twelve cells the row overflows, as every table's does.
+  TITLE/MATCH/SOURCE/ID table, is withdrawn). Each record's head line holds the title,
+  where the hit came from, and its handle, fitted to that record alone (a record is not a
+  table): SOURCE goes first, and the title is never cut to make room for the handle.
+  Where the two cannot share a line, the handle takes the line under the title, and the
+  title is cut only where it is wider than the terminal. The words that matched come
+  last, cut to the terminal. The handle is the thing that OPENS the hit: a doc's id, which
+  `memory show` takes, or `annotation on #N`, which `tasqx show N` opens. `memory show`
+  refuses an annotation's id (exit 4). The summary names the expression that ran (D69),
+  which a plain query quotes, so `"release"   3 hits` reads as a query and a count where
+  dim does not reach the screen. A miss says why the expression came back empty without
+  printing it a second time (rule 11). The miss hint and the `--limit N` note both name
+  the next command, and both print at the terminal's own weight.
+- **(b) `memory list`'s title floor is what the terminal can give it beside the id, and
+  never below twelve cells** (`render::lead_floor`; amends D121(f)'s twelve-cell floor,
+  which is kept as the lower bound). Widest-first shrinking otherwise cut the title, the
+  one column a row is read for, to keep a project name the fitter could have dropped.
+  Below twelve cells the row overflows, as every table's does.
 - **(c) After a drop, `columns::fit` runs the shrink pass again from what the survivors
   asked for** (amends D120(a)), so the cells the drop freed go back to the columns that
   gave them. Keeping the floors cut `memory list`'s titles to twelve cells beside ten
   empty ones at 60 columns, which D120(c) rules out.
+- **(d) `*` marks the one row in effect in a table of choices**, `projects`' default and
+  `theme list`'s active theme (`render::CurrentRail`), in a two-cell rail, the way `git
+  branch` marks the branch that is checked out. `docs/terminal-style.md` rule 4 argues
+  against one glyph with two meanings, and `*` is also `list`'s running marker without
+  Unicode. The glyph stands anyway: rule 4's objection is to two meanings on one screen,
+  where a terminal with no colour cannot tell them apart. No screen draws both, since
+  these tables never show a task and a task table has no row "in effect". D21 already
+  spelled the default `*`. An ASCII glyph that collides with nothing (`>` is the cursor,
+  `B` blocked, `+` a tag) would be a new mark to learn for the same fact `git` taught.
+- **(e) One rule fits every line of facts** (`render::keep_ranked`; amends D122(b) and
+  (c), which fitted `add`'s and `next`'s facts by hand). Facts are taken in rank order, and
+  the first that does not fit ends the line, so nothing less important survives a fact
+  that was dropped. The summary line ranks its facts in the order they print, which is
+  rule 9's "drop from the right". `next` and `add`'s echo rank the facts they share the
+  same way: the urgency cell, the deadline, a running timer, then the project and the
+  tags. They still print in the order D122 set.
 
 **Why:** at 60 and 80 columns the first cut left room for the title and the 36-cell id
-alone, so a hit no longer showed why it matched, and an annotation showed an id the one
-command that takes ids refuses. The record printed before #346 showed both at every
-width; what it lacked was the handle on the title's line and a summary.
+alone, so a hit no longer showed why it matched, and an annotation showed an id that
+`memory show` refuses. The second cut fitted all head lines as one table, so a 36-cell doc
+id set the title width for an annotation's 17-cell handle and cut its title beside 19 empty
+cells. At 40 columns it cut every title to twelve cells, where the old record had printed
+them whole.
+
+**The price, named:** the old record printed every hit's own id, and for an annotation that
+is the id `tasqx unannotate <ref> <annotation-id>` takes, which `tasqx show` does not print
+(`show --json` and `memory search --json` carry it). No text screen shows it now. The
+handle on the search screen is the one that opens the hit, and removing a note starts from
+`show --json`, as `unannotate`'s own help says.
 
 **How it was chosen:** three layouts rendered at 60, 80 and 100 columns
 (`target/restyle-goal/346/mocks/`): the table as shipped, a table whose last column is
@@ -2989,5 +3019,6 @@ made to bite by re-injecting its drift. Rendered at 40, 60, 80, 100 and 140 colu
 **Left standing:** the 36-cell id is still most of a 60-column line in `memory list`, and a
 shorter handle would need `memory show` to take a unique prefix, which is an API question.
 
-**Where:** `crates/tasqx-cli/src/render.rs` (`memory_hits`, `lead_floor`, `memory_table`),
-`columns.rs` (`fit`), `docs/terminal-style.md` rule 2, `tests/regressions.rs`.
+**Where:** `crates/tasqx-cli/src/render.rs` (`memory_hits`, `lead_floor`, `memory_table`,
+`CurrentRail`, `keep_ranked`, `fit_facts`, `summary_line`), `columns.rs` (`fit`),
+`docs/terminal-style.md` rules 2, 4 and 9, `tests/regressions.rs`.

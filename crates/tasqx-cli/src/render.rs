@@ -1056,13 +1056,14 @@ pub(crate) fn doc_summary(body: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The floor of a memory title beside a column that never goes (the id, or a
-/// search hit's handle), D123(b): as much of what the title asks for as the
-/// terminal can give it beside that column, so the other columns go before
-/// the title gives way (rule 1, D120(c)), and never below [`MIN_TITLE_CELLS`],
-/// where a title stops telling one doc from another. Past that the row
-/// overflows, as every table's does (D120). The first version had no lower
-/// bound and printed `r…` for a title at 40 columns.
+/// The floor of `memory list`'s title beside the id, which never goes
+/// (D123(b)): as much of what the title asks for as the terminal can give it
+/// beside the id, so the other columns go before the title gives way (rule 1,
+/// D120(c)), and never below [`MIN_TITLE_CELLS`], where a title stops telling
+/// one doc from another. Past that the row overflows, as every table's does
+/// (D120). The first version had no lower bound and printed `...` for every
+/// title at 40 columns. `memory search` does not need it: each of its records
+/// fits its own head line ([`memory_hits`]).
 fn lead_floor(asked: usize, cols: usize, fixed: usize) -> usize {
     asked.min(
         cols.saturating_sub(fixed + columns::GAP)
@@ -1248,33 +1249,45 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str) -> String {
                 }
             })
             .collect();
-        let widest = |f: fn(&Hit) -> &str| rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
-        let (title_w, handle_w) = (widest(|r| &r.title), widest(|r| &r.handle));
-        // A path cut in the middle names no file, so SOURCE is whole or gone.
-        let source_w = widest(|r| &r.source);
-        let w = columns::fit(
-            &[
-                Column::shrinks(title_w, lead_floor(title_w, ctx.cols, handle_w)),
-                Column::drops(source_w, source_w),
-                Column::fixed(handle_w),
-            ],
-            ctx.cols,
-        );
         out.push('\n');
         for r in &rows {
-            out.push_str(&join_cells(
-                [
-                    (None, r.title.as_str()),
-                    (Some("muted"), r.source.as_str()),
-                    (Some("muted"), r.handle.as_str()),
-                ]
-                .iter()
-                .zip(&w)
-                .filter(|(_, w)| **w > 0)
-                .map(|((role, text), w)| cell(ctx, *role, text, *w))
-                .collect(),
-            ));
-            out.push('\n');
+            // Each record's head line is fitted to its OWN handle (round 2
+            // review): fitted as one table, a 36-cell doc id set the title
+            // width for an annotation whose handle is 17 cells, and cut its
+            // title beside 19 empty ones. The title is data and is not cut
+            // to make room for the handle: where the two cannot share a line,
+            // the handle takes the next one, and the title is cut only where
+            // it is wider than the terminal itself. A path cut in the middle
+            // names no file, so SOURCE is whole or gone, and it goes first.
+            let (title_w, handle_w) = (width(&r.title), width(&r.handle));
+            if title_w + columns::GAP + handle_w <= ctx.cols {
+                let source_w = width(&r.source);
+                let w = columns::fit(
+                    &[
+                        Column::fixed(title_w),
+                        Column::drops(source_w, source_w),
+                        Column::fixed(handle_w),
+                    ],
+                    ctx.cols,
+                );
+                out.push_str(&join_cells(
+                    [
+                        (None, r.title.as_str()),
+                        (Some("muted"), r.source.as_str()),
+                        (Some("muted"), r.handle.as_str()),
+                    ]
+                    .iter()
+                    .zip(&w)
+                    .filter(|(_, w)| **w > 0)
+                    .map(|((role, text), w)| cell(ctx, *role, text, *w))
+                    .collect(),
+                ));
+                out.push('\n');
+            } else {
+                out.push_str(&truncate(&r.title, ctx.cols, ctx.caps.unicode));
+                out.push('\n');
+                out.push_str(&format!("  {}\n", ctx.paint("muted", &r.handle)));
+            }
             if !r.snippet.is_empty() {
                 out.push_str(&format!(
                     "  {}\n",
@@ -1291,7 +1304,9 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str) -> String {
     // wraps rather than running past the terminal.
     let mut notes: Vec<(Option<&str>, String)> = Vec::new();
     if count < total {
-        notes.push((Some("muted"), format!("--limit {total} shows every hit")));
+        // At the terminal's own weight, like the miss hint below: both name
+        // the command that shows what this screen could not.
+        notes.push((None, format!("--limit {total} shows every hit")));
     }
     // On a miss, say why an expression the summary already names came back
     // empty (D69): every word of a plain query is a required phrase, so a
@@ -1552,17 +1567,23 @@ pub(crate) fn table_summary(
 /// for `list` the count, what is late, what is due today, what is running,
 /// what is stuck. Dropping says less; truncating mid-word would say something
 /// else.
-fn summary_line(ctx: &Ctx, label: Option<&str>, mut parts: Vec<(&str, String)>) -> String {
+fn summary_line(ctx: &Ctx, label: Option<&str>, parts: Vec<(&str, String)>) -> String {
     let head = label.map_or(0, |l| {
         width(&truncate(l, ctx.cols / 2, ctx.caps.unicode)) + 3
     });
-    let sep_w = width(ctx.mid()) + 2;
-    let plain_w = |ps: &[(&str, String)]| -> usize {
-        ps.iter().map(|(_, t)| width(t)).sum::<usize>() + sep_w * ps.len().saturating_sub(1)
-    };
-    while parts.len() > 1 && head + plain_w(&parts) > ctx.cols {
-        parts.pop();
-    }
+    let widths: Vec<usize> = parts.iter().map(|(_, t)| width(t)).collect();
+    let ranks: Vec<u8> = (0..parts.len()).map(|i| i as u8).collect();
+    let keep = keep_ranked(
+        &widths,
+        &ranks,
+        width(ctx.mid()) + 2,
+        ctx.cols.saturating_sub(head),
+    );
+    let parts: Vec<(&str, String)> = parts
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(p, k)| k.then_some(p))
+        .collect();
 
     let sep = format!(" {} ", ctx.paint("muted", ctx.mid()));
     let facts = parts
@@ -2771,9 +2792,16 @@ pub fn task_added_card(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
     };
     let (bar, track) = urgency_meter(urgency_scale(urg));
     let ramp = ctx.theme.ramp_style(urgency_scale(urg));
-    // Each fact is (plain text for measuring, painted text), taken whole or
-    // not at all so a narrow terminal drops facts rather than cutting one.
-    let mut facts: Vec<(String, String)> = vec![(
+    // Each fact is (rank, plain text for measuring, painted text), taken
+    // whole or not at all so a narrow terminal drops facts rather than
+    // cutting one.
+    //
+    // Ranked as `next` ranks the same facts (`fit_facts`): the urgency cell,
+    // then the deadline, then where the task lives and what it is tagged,
+    // then the estimate and the recurrence. They print in the order the
+    // card has always read.
+    let mut facts: Vec<(u8, String, String)> = vec![(
+        0,
         format!("{prio} {bar}{track} {urg:.1}"),
         format!(
             "{} {}{} {}",
@@ -2785,7 +2813,7 @@ pub fn task_added_card(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
     )];
     let proj = s(task, "project");
     if !proj.is_empty() {
-        facts.push((proj.clone(), ctx.paint("project", &proj)));
+        facts.push((2, proj.clone(), ctx.paint("project", &proj)));
     }
     if let Some(tags) = task.get("tags").and_then(Value::as_array) {
         // `+tag`, the one spelling `list`'s filter grammar reads back (#228.16).
@@ -2796,12 +2824,13 @@ pub fn task_added_card(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
             .collect();
         if !names.is_empty() {
             let joined = names.join(" ");
-            facts.push((joined.clone(), ctx.paint("tag", &joined)));
+            facts.push((3, joined.clone(), ctx.paint("tag", &joined)));
         }
     }
     if let Some(due) = field_ts(task, "due") {
         let cell = due_cell(due, now);
         facts.push((
+            1,
             format!("due {cell}"),
             format!(
                 "{} {}",
@@ -2813,6 +2842,7 @@ pub fn task_added_card(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
     if !s(task, "estimate").is_empty() {
         let est = duration_value(ctx, &s(task, "estimate"), now);
         facts.push((
+            4,
             format!("est {est}"),
             format!("{} {est}", ctx.paint("card.label", "est")),
         ));
@@ -2820,52 +2850,60 @@ pub fn task_added_card(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
     if !s(task, "recurrence").is_empty() {
         let rec = s(task, "recurrence");
         facts.push((
+            5,
             format!("↻ {rec}"),
             format!("{} {rec}", ctx.paint("card.label", "↻")),
         ));
     }
 
-    // Ranked in the order they print: the echo's facts already run from what
-    // the reader typed to lose least to most.
-    let ranked = facts
-        .into_iter()
-        .enumerate()
-        .map(|(i, (plain, painted))| (i as u8, plain, painted))
-        .collect();
-    out.push_str(&format!("{rail} {}\n", fit_facts(ranked, avail)));
+    out.push_str(&format!("{rail} {}\n", fit_facts(facts, avail)));
     out
 }
 
-/// A line of facts, three cells apart, fitted to `avail` cells. Each fact is
-/// `(rank, plain text for measuring, painted text)` and is taken whole or not
-/// at all, so a narrow terminal drops facts rather than cutting one. Facts
-/// are considered by rank, lowest first, and one that does not fit is skipped
-/// rather than ending the line; the survivors print in their given order.
-/// `add`'s echo and `next` both fit their facts here (#346), which is how they
-/// cannot drift apart.
+/// Which parts of a line of facts survive the width, by the one rule every
+/// such line follows (`docs/terminal-style.md` rule 9): the parts are taken
+/// in rank order, lowest rank first, and the first that does not fit ends the
+/// line, so nothing less important survives a part that was dropped.
+/// Dropping says less; truncating mid-word would say something else. The
+/// lowest-ranked part is always kept, since a line with nothing on it says
+/// less than one that runs over.
 ///
-/// The rank is what a reader loses without the fact, which is not always
-/// where it sits: `next` prints the project before the deadline, and the
-/// first cut, which took facts left to right and stopped at the first that
-/// did not fit, let a long project name push the deadline off the line.
-fn fit_facts(facts: Vec<(u8, String, String)>, avail: usize) -> String {
-    let mut order: Vec<usize> = (0..facts.len()).collect();
-    order.sort_by_key(|&i| facts[i].0);
-    let mut keep = vec![false; facts.len()];
+/// `summary_line` ranks its parts in the order they print, which makes this
+/// "drop from the right". `fit_facts` ranks `next`'s and `add`'s facts by what
+/// the reader loses without each, which is not where each prints: the first
+/// version took facts left to right, and a long project name pushed the
+/// deadline off `next`'s line. A second version skipped a fact that did not
+/// fit and carried on, so `next` kept the tags after dropping the project
+/// (round 2 review of #346). There is one rule now, and it lives here.
+fn keep_ranked(widths: &[usize], ranks: &[u8], sep: usize, budget: usize) -> Vec<bool> {
+    let mut order: Vec<usize> = (0..widths.len()).collect();
+    order.sort_by_key(|&i| ranks[i]);
+    let mut keep = vec![false; widths.len()];
     let mut used = 0usize;
-    for i in order {
-        let gap = if used == 0 { 0 } else { 3 };
-        let need = width(&facts[i].1) + gap;
-        if used + need <= avail {
-            keep[i] = true;
-            used += need;
+    for (n, i) in order.into_iter().enumerate() {
+        let need = widths[i] + if n == 0 { 0 } else { sep };
+        if n > 0 && used + need > budget {
+            break;
         }
+        keep[i] = true;
+        used += need;
     }
+    keep
+}
+
+/// A line of facts, three cells apart, fitted to `avail` cells by
+/// [`keep_ranked`]. Each fact is `(rank, plain text for measuring, painted
+/// text)` and is taken whole or not at all. `add`'s echo and `next` both fit
+/// their facts here and rank the facts they share the same way (urgency,
+/// deadline, then project and tags), which is how they cannot drift apart.
+fn fit_facts(facts: Vec<(u8, String, String)>, avail: usize) -> String {
+    let widths: Vec<usize> = facts.iter().map(|(_, plain, _)| width(plain)).collect();
+    let ranks: Vec<u8> = facts.iter().map(|(rank, _, _)| *rank).collect();
+    let keep = keep_ranked(&widths, &ranks, 3, avail);
     facts
         .into_iter()
         .zip(keep)
-        .filter(|(_, k)| *k)
-        .map(|((_, _, painted), _)| painted)
+        .filter_map(|((_, _, painted), k)| k.then_some(painted))
         .collect::<Vec<_>>()
         .join("   ")
 }
@@ -6168,6 +6206,129 @@ mod tests {
         let muted = ctx.paint("muted", "\u{0}");
         let muted = muted.split('\u{0}').next().expect("an SGR prefix");
         assert!(!hint.contains(muted), "the hint is muted: {hint:?}");
+
+        // Round 2 review of #346: the bounded note does the same job (it
+        // names the next command), so it is painted the same way.
+        let hit = json!({ "id": "01a0903c-bff0-76a2-9bcb-5428786a56c4", "kind": "doc",
+                          "title": "release-process", "source": "", "snippet": "cut" });
+        let out = memory_hits(
+            &ctx,
+            &json!({ "count": 1, "total": 5, "hits": [hit], "matched": "\"cut\"" }),
+            "cut",
+        );
+        let note = out
+            .lines()
+            .find(|l| l.contains("--limit 5"))
+            .unwrap_or_else(|| panic!("no note: {out:?}"));
+        assert!(!note.contains(muted), "the --limit note is muted: {note:?}");
+    }
+
+    /// Round 2 review of #346: each search record fits its head line to its
+    /// OWN handle. The head lines were fitted as one table, so a 36-cell doc
+    /// id set the title width for an annotation whose handle is 17 cells:
+    /// `Cut build time unde...  annotation on #55` beside 19 empty cells at 60
+    /// columns. And where a title and its handle cannot share a line, the
+    /// handle takes the next one rather than the title being cut to make
+    /// room: at 40 columns every title printed whole on main.
+    #[test]
+    fn a_search_record_fits_its_head_line_to_its_own_handle() {
+        use unicode_width::UnicodeWidthStr;
+        let hits = json!({ "count": 2, "total": 2, "hits": [
+            { "id": "01a0903c-c020-70e3-8c9a-7f625ab84c91", "kind": "doc",
+              "title": "pricing-page-decisions", "source": "notes/pricing.md",
+              "snippet": "The release of v2 waits for legal to sign off" },
+            { "id": "01a0903d-243b-7842-8f5c-184005a2d8f2", "kind": "annotation",
+              "title": "Cut build time under five minutes", "source": "task:#55",
+              "snippet": "Blocked on the release of the new runner image" },
+        ] });
+        let at = |cols: usize| {
+            let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(cols);
+            memory_hits(&ctx, &hits, "release")
+        };
+        let out = at(60);
+        assert!(
+            out.lines()
+                .any(|l| l.starts_with("Cut build time under five minutes")
+                    && l.contains("annotation on #55")),
+            "the annotation's title was cut beside room it did not need: {out}"
+        );
+        let out = at(40);
+        for l in out.lines() {
+            assert!(l.width() <= 40, "{} cells at 40: {l:?}\n{out}", l.width());
+        }
+        let lines: Vec<&str> = out.lines().collect();
+        let doc = lines
+            .iter()
+            .position(|l| *l == "pricing-page-decisions")
+            .unwrap_or_else(|| panic!("the doc title was cut or shares a line: {out}"));
+        assert_eq!(
+            lines[doc + 1].trim(),
+            "01a0903c-c020-70e3-8c9a-7f625ab84c91",
+            "the handle is not on the line under the title: {out}"
+        );
+        assert!(
+            lines.contains(&"Cut build time under five minutes"),
+            "{out}"
+        );
+    }
+
+    /// Rule 9, through the one fitter since round 2 of #346 (`keep_ranked`):
+    /// the summary drops facts from the right until it fits, and the first
+    /// fact, the count, is kept whatever the width.
+    #[test]
+    fn the_summary_drops_facts_from_the_right() {
+        // 40 is the narrowest width a Ctx takes (`Ctx::MIN_COLS`).
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(40);
+        let parts = vec![
+            ("card.strong", "44 tasks".to_string()),
+            ("muted", "20 shown".to_string()),
+            ("timer.active", "#49 #50 #51 running".to_string()),
+            ("muted", "2 blocked".to_string()),
+        ];
+        // `2 blocked` would fit after the running fact is dropped; it goes
+        // anyway, because a fact never outlives one ranked above it.
+        let mid = ctx.mid().to_string();
+        assert_eq!(
+            summary_line(&ctx, None, parts),
+            format!("44 tasks {mid} 20 shown")
+        );
+    }
+
+    /// Round 2 review of #346: `next` and `add`'s echo fit their facts by the
+    /// one rule `summary_line` follows: taken in rank order, and the first that
+    /// does not fit ends the line, so nothing less important survives a fact
+    /// that was dropped. `next` kept the tags after dropping the project, and
+    /// `add` ranked the project above the deadline where `next` ranked it
+    /// below.
+    #[test]
+    fn next_and_add_drop_facts_from_the_least_important_up() {
+        let ctx = Ctx::new(theme::default_theme(), card_caps()).with_cols(60);
+        let mut t = task_json(
+            48,
+            "Renew the certificate",
+            "infrastructure-platform-team-west",
+            "2026-08-05T00:00:00Z",
+            &["ops"],
+        );
+        t["priority"] = json!("H");
+        t["urgency"] = json!(18.1);
+        let next = next_task(&ctx, &json!({ "tasks": [t.clone()] }), anchor());
+        let facts = next.lines().nth(1).expect("a facts line");
+        assert!(facts.contains("due "), "{next}");
+        assert!(!facts.contains("infrastructure"), "{next}");
+        assert!(
+            !facts.contains("+ops"),
+            "a fact outlived a more important one that was dropped: {facts:?}"
+        );
+
+        let ctx = ctx.with_cols(40);
+        let added = task_added_card(&ctx, &t, anchor());
+        let facts = added.lines().nth(1).expect("a facts line");
+        assert!(
+            facts.contains("due "),
+            "add ranked the project above the deadline: {added}"
+        );
+        assert!(!facts.contains("infrastructure"), "{added}");
     }
 
     /// Finding #3 (audit-2026-09): `start`/`stop`/`done` confirmed an action
