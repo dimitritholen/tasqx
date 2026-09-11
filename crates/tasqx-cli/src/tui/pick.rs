@@ -304,8 +304,9 @@ impl App {
                 short_id: row.short_id,
             });
         }
+        let dash = if self.caps.unicode { "—" } else { "-" };
         self.status = Some(format!(
-            "#{} is {} — only a pending task can start",
+            "#{} is {} {dash} only a pending task can start",
             row.short_id,
             render::san(status)
         ));
@@ -494,7 +495,8 @@ impl App {
 // The key tables
 // ============================================================================
 
-/// The list's keys. The footer is drawn from this, lowest rank first.
+/// The list's keys. The footer is drawn from this, lowest rank first, so the
+/// way out ranks first of all: at any width the bar says how to leave.
 pub const LIST_KEYS: &[Key] = &[
     Key {
         keys: "j / k",
@@ -502,7 +504,7 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "j/k",
             word: "move",
-            rank: 1,
+            rank: 2,
         }),
     },
     Key {
@@ -511,7 +513,7 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "/",
             word: "search",
-            rank: 0,
+            rank: 1,
         }),
     },
     Key {
@@ -520,7 +522,7 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "enter",
             word: "open",
-            rank: 0,
+            rank: 1,
         }),
     },
     Key {
@@ -529,7 +531,7 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "s",
             word: "start",
-            rank: 0,
+            rank: 1,
         }),
     },
     Key {
@@ -538,7 +540,7 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "g/G",
             word: "ends",
-            rank: 3,
+            rank: 4,
         }),
     },
     Key {
@@ -547,7 +549,40 @@ pub const LIST_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "esc",
             word: "clear",
-            rank: 2,
+            rank: 3,
+        }),
+    },
+    Key {
+        keys: "q",
+        // "leave", not "quit": opened from the dashboard, `q` goes back to it.
+        help: "leave, starting nothing (back to the dashboard, when opened from it)",
+        footer: Some(Hint {
+            keys: "q",
+            word: "leave",
+            rank: 0,
+        }),
+    },
+];
+
+/// The list's keys when nothing is listed (a search that matched nothing):
+/// only the ones that still do something, D62's rule for a bar.
+pub const LIST_EMPTY_KEYS: &[Key] = &[
+    Key {
+        keys: "/",
+        help: "change the search",
+        footer: Some(Hint {
+            keys: "/",
+            word: "search",
+            rank: 1,
+        }),
+    },
+    Key {
+        keys: "esc",
+        help: "clear the search",
+        footer: Some(Hint {
+            keys: "esc",
+            word: "clear",
+            rank: 1,
         }),
     },
     Key {
@@ -555,7 +590,7 @@ pub const LIST_KEYS: &[Key] = &[
         help: "leave, starting nothing",
         footer: Some(Hint {
             keys: "q",
-            word: "quit",
+            word: "leave",
             rank: 0,
         }),
     },
@@ -592,6 +627,29 @@ pub const SEARCH_KEYS: &[Key] = &[
     },
 ];
 
+/// The search line's keys when the query matches nothing: there is nothing
+/// to move through.
+pub const SEARCH_EMPTY_KEYS: &[Key] = &[
+    Key {
+        keys: "enter / esc",
+        help: "keep the filter and go back to moving",
+        footer: Some(Hint {
+            keys: "enter",
+            word: "done",
+            rank: 0,
+        }),
+    },
+    Key {
+        keys: "ctrl-u",
+        help: "clear the query (ctrl-w deletes a word)",
+        footer: Some(Hint {
+            keys: "ctrl-u",
+            word: "clear",
+            rank: 1,
+        }),
+    },
+];
+
 /// The card's keys.
 pub const DETAIL_KEYS: &[Key] = &[
     Key {
@@ -600,7 +658,7 @@ pub const DETAIL_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "j/k",
             word: "scroll",
-            rank: 1,
+            rank: 2,
         }),
     },
     Key {
@@ -609,7 +667,7 @@ pub const DETAIL_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "space",
             word: "page",
-            rank: 2,
+            rank: 3,
         }),
     },
     Key {
@@ -618,7 +676,7 @@ pub const DETAIL_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "g/G",
             word: "ends",
-            rank: 3,
+            rank: 4,
         }),
     },
     Key {
@@ -627,7 +685,7 @@ pub const DETAIL_KEYS: &[Key] = &[
         footer: Some(Hint {
             keys: "s",
             word: "start",
-            rank: 0,
+            rank: 1,
         }),
     },
     Key {
@@ -641,11 +699,17 @@ pub const DETAIL_KEYS: &[Key] = &[
     },
 ];
 
-fn keys_for(mode: Mode) -> &'static [Key] {
-    match mode {
-        Mode::List => LIST_KEYS,
-        Mode::Search => SEARCH_KEYS,
-        Mode::Detail => DETAIL_KEYS,
+/// The table for the state the screen is in. A list or a search with nothing
+/// in it has a table of its own, so the bar never offers a key that has
+/// nothing to act on.
+fn keys_for(app: &App) -> &'static [Key] {
+    let empty = app.matches.is_empty();
+    match (app.mode, empty) {
+        (Mode::List, false) => LIST_KEYS,
+        (Mode::List, true) => LIST_EMPTY_KEYS,
+        (Mode::Search, false) => SEARCH_KEYS,
+        (Mode::Search, true) => SEARCH_EMPTY_KEYS,
+        (Mode::Detail, _) => DETAIL_KEYS,
     }
 }
 
@@ -704,7 +768,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     }
     let room = (area.width as usize).saturating_sub(1 + render::width(&pos));
     spans.extend(footer_spans(
-        keys_for(app.mode),
+        keys_for(app),
         room as u16,
         sty("accent"),
         sty("muted"),
@@ -840,7 +904,7 @@ fn draw_list(
         render::header_line(&cols, "DUE"),
         sty("table.label"),
     ));
-    line_at(frame, area, area.y + 2, labels);
+    line_at(frame, area, area.y + 2, tui::fit_spans(labels, w, unicode));
 
     let rows = app.list_rows();
     let top = area.y + 3;
@@ -858,6 +922,9 @@ fn draw_list(
             Span::raw(" "),
         ];
         spans.extend(tui::painted_line(&render::row_line_at(&ctx, &cols, &app.table[i], on)).spans);
+        // Past `list`'s floors a row overflows; cut it with an ellipsis rather
+        // than let the frame stop it mid-word (rule 2).
+        let spans = tui::fit_spans(spans, w, unicode);
         line_at(frame, area, top + (n - first) as u16, spans);
     }
 }

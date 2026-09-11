@@ -416,22 +416,8 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
                 return run_list(be, ctx, &[filter], &[], None, None, &[]).map(|(_, r)| Some(r));
             }
             Some(Action::Pick(scope)) => {
-                match run_pick(be, ctx, &scope) {
-                    // Every start of the session reaches the scrollback, not
-                    // only the last: each one can have stopped another timer.
-                    Ok((_, render)) => picked.get_or_insert_with(String::new).push_str(&render),
-                    // Backing out of the picker is not an error HERE. `pick` as
-                    // a command exits 4 having started nothing, because its
-                    // whole output is the choice (D55); reached from a screen
-                    // the user is going back to, cancelling is just cancelling.
-                    Err(e) if e.code == tasqx_core::ErrorCode::NotFound => {}
-                    // The terminal itself failing ends the session, as a read
-                    // failing does elsewhere in this loop.
-                    Err(e) if e.code == tasqx_core::ErrorCode::Internal => return Err(e),
-                    // A start the engine refused (a race with another writer:
-                    // the browser refuses what it can see) is said on the
-                    // dashboard's own status line rather than ending it (D123).
-                    Err(e) => app.say(e.message),
+                if let Some(said) = after_pick(run_pick(be, ctx, &scope), &mut picked)? {
+                    app.say(said);
                 }
                 // Whatever happened, the screen shows it: a started task turns
                 // up in NOW, and a cancelled pick redraws unchanged.
@@ -447,6 +433,33 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
             _ => return Ok(picked),
         }
     }
+}
+
+/// What the dashboard does with `pick`'s outcome, pulled out of the loop so a
+/// test can reach it: returns a sentence for the dashboard's status line, or
+/// the error that ends the session.
+pub(crate) fn after_pick(
+    outcome: CmdOutcome,
+    picked: &mut Option<String>,
+) -> Result<Option<String>, ApiError> {
+    match outcome {
+        // Every start of the session reaches the scrollback, not only the
+        // last: each one can have auto-stopped another timer (D123(g)).
+        Ok((_, render)) => picked.get_or_insert_with(String::new).push_str(&render),
+        // Backing out of the picker is not an error HERE. `pick` as a command
+        // exits 4 having started nothing, because its whole output is the
+        // choice (D55); reached from a screen the user is going back to,
+        // cancelling is just cancelling.
+        Err(e) if e.code == tasqx_core::ErrorCode::NotFound => {}
+        // A start `task.start` refused: the task changed under the browser,
+        // a race with another writer, since `pick` refuses what it can see
+        // itself. Said on the dashboard's status line; the dashboard stays.
+        Err(e) if e.code == tasqx_core::ErrorCode::Conflict => return Ok(Some(e.message)),
+        // Anything else ends the session, as a failed read does everywhere
+        // else in this loop.
+        Err(e) => return Err(e),
+    }
+    Ok(None)
 }
 
 /// `tasqx --json dashboard` — the panels as data, with no screen involved.
@@ -543,4 +556,50 @@ pub(crate) fn burndown_members(
     }
     let listed = dispatch(engine, "task.list", &params)?;
     Ok((chart::members_of(&listed), label))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn started(n: i64) -> CmdOutcome {
+        Ok((json!({ "short_id": n }), format!("Started #{n}\n")))
+    }
+
+    /// D123(g): every start of a dashboard session reaches the scrollback
+    /// when it closes. Each start can have auto-stopped another timer, and
+    /// keeping only the last lost the earlier "Stopped" lines.
+    #[test]
+    fn every_start_of_a_session_reaches_the_scrollback() {
+        let mut picked = None;
+        after_pick(started(1), &mut picked).unwrap();
+        after_pick(started(2), &mut picked).unwrap();
+        let text = picked.unwrap();
+        assert!(text.contains("#1") && text.contains("#2"), "{text}");
+    }
+
+    /// D123(g): a start `task.start` refuses — the task changed under the
+    /// browser, a race with another writer — is said on the dashboard's
+    /// status line and the dashboard stays. Backing out is silent. Anything
+    /// else still ends the session, as a failed read does elsewhere in it.
+    #[test]
+    fn a_refused_start_is_said_and_anything_else_still_ends_the_session() {
+        let mut picked = None;
+        let said = after_pick(
+            Err(ApiError::conflict("cannot start a done task")),
+            &mut picked,
+        )
+        .expect("a refused start must not end the dashboard");
+        assert_eq!(said.as_deref(), Some("cannot start a done task"));
+        assert_eq!(
+            after_pick(
+                Err(ApiError::not_found("nothing picked", None)),
+                &mut picked
+            )
+            .unwrap(),
+            None
+        );
+        assert!(picked.is_none());
+        assert!(after_pick(Err(ApiError::internal("disk")), &mut picked).is_err());
+    }
 }

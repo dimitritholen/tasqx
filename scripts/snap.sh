@@ -31,6 +31,18 @@ name=$1
 width=$2
 shift 3
 
+# Refuse rather than render from the real store: without TASQX_DB the binary
+# opens the default store, and a live daemon answers from its own whatever
+# TASQX_DB says, so `--no-daemon` is added when the arguments lack it.
+if [ -z "${TASQX_DB:-}" ]; then
+    echo "snap.sh: TASQX_DB must name a scratch store (see CLAUDE.md)" >&2
+    exit 2
+fi
+case " $* " in
+    *" --no-daemon "*) ;;
+    *) set -- --no-daemon "$@" ;;
+esac
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=${OUT:-$root/target/snaps}
 mkdir -p "$out"

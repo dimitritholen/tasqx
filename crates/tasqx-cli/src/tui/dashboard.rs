@@ -1458,7 +1458,10 @@ pub const KEYS: &[Key] = &[
         // `pick::App`'s tests pin it as "leaves even with a query in
         // progress"), so it backs out of the picker rather than quitting
         // the dashboard underneath it (#229 item 10).
-        help: "close (esc leaves the picker)",
+        // In `pick` (D123) ctrl-c goes back here, like `q`; Esc there clears a
+        // search first and on the card goes back to the list, so it is not
+        // the key to name.
+        help: "close (inside pick, go back to the dashboard)",
         footer: None,
     },
 ];
