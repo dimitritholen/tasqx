@@ -2649,20 +2649,42 @@ fn rail_role(result: &Value) -> &'static str {
 /// enclosing layout budgets generously enough that only pathological input
 /// reaches that arm.
 pub(crate) fn wrap_words(text: &str, max: usize) -> Vec<String> {
-    let max = max.max(1);
+    wrap_pieces(text.split_whitespace().map(|word| (" ", word)), max)
+}
+
+/// The greedy fill behind [`wrap_words`], over pieces that each carry what
+/// joins them to the piece before: a space between words, ` · ` between the
+/// names in a list, nothing before a usage line's `|alternative`. The joiner
+/// is dropped where a piece starts a line. Like `wrap_words` it never cuts: a
+/// piece wider than `max` gets an overlong line of its own.
+pub(crate) fn wrap_pieces<'a>(
+    pieces: impl IntoIterator<Item = (&'a str, &'a str)>,
+    max: usize,
+) -> Vec<String> {
+    wrap_hanging(pieces, max, max)
+}
+
+/// [`wrap_pieces`] with a first line of its own width: a synopsis whose
+/// continuation lines hang further in than its first.
+pub(crate) fn wrap_hanging<'a>(
+    pieces: impl IntoIterator<Item = (&'a str, &'a str)>,
+    first: usize,
+    rest: usize,
+) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut line = String::new();
-    for word in text.split_whitespace() {
+    for (joiner, piece) in pieces {
         if line.is_empty() {
-            line = word.to_string();
+            line = piece.to_string();
             continue;
         }
-        if width(&line) + 1 + width(word) <= max {
-            line.push(' ');
-            line.push_str(word);
+        let max = if lines.is_empty() { first } else { rest }.max(1);
+        if width(&line) + width(joiner) + width(piece) <= max {
+            line.push_str(joiner);
+            line.push_str(piece);
         } else {
             lines.push(std::mem::take(&mut line));
-            line = word.to_string();
+            line = piece.to_string();
         }
     }
     if !line.is_empty() {
@@ -4105,7 +4127,7 @@ pub fn pad(s: &str, max: usize) -> String {
 ///
 /// The ellipsis degrades to ASCII `...` when the terminal can't render Unicode
 /// (piped/dumb/legacy), so the script-safe path never leaks a stray `…` —
-/// matching the rest of the glyph gating (hrule/arrow/mid/chart bars).
+/// matching the rest of the glyph gating (arrow/mid/chart bars).
 ///
 /// The cut is made by `unicode_truncate`, which walks GRAPHEME CLUSTERS: half a
 /// ZWJ sequence is not a shorter emoji but a different one — or a dangling

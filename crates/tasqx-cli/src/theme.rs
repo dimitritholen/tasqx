@@ -1331,12 +1331,6 @@ impl Ctx {
         self.theme.paint(role, text, &self.caps)
     }
 
-    /// A horizontal rule glyph run, Unicode when supported else ASCII.
-    pub fn hrule(&self, len: usize) -> String {
-        let ch = if self.caps.unicode { '─' } else { '-' };
-        ch.to_string().repeat(len)
-    }
-
     /// Leading marker for footer hints (`▸` / `>`).
     pub fn arrow(&self) -> &'static str {
         if self.caps.unicode {
@@ -1497,14 +1491,6 @@ mod tests {
         let out = s.paint("hello", &Caps::PLAIN);
         assert_eq!(out, "hello");
         assert!(!out.contains('\x1b'));
-    }
-
-    #[test]
-    fn hrule_degrades_to_ascii() {
-        let uni = Ctx::new(default_theme(), caps(ColorDepth::Truecolor, true));
-        assert_eq!(uni.hrule(3), "───");
-        let ascii = Ctx::new(default_theme(), Caps::PLAIN);
-        assert_eq!(ascii.hrule(3), "---");
     }
 
     // ---- theme resolution + precedence -------------------------------------
