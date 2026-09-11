@@ -473,43 +473,33 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                 }
                 None => Ctx::new(ctx.theme.clone(), ctx.caps).with_cols(ctx.cols),
             };
-            // Block glyphs are Unicode; degrade the swatch to ASCII on the plain/
-            // legacy path so `theme show | cat` never emits mojibake.
-            let bar = if preview.caps.unicode { "█" } else { "#" };
+            use crate::columns::{self, Column};
             let mut text = String::new();
             text.push_str(&format!(
                 "{}\n\n",
                 preview.paint("header", &format!("Theme: {}", preview.theme.name))
             ));
-            // One row per role, since #346: the role's NAME painted in the
-            // role, which makes the name its own sample, then its colour and
-            // its emphasis in words. It printed `████ sample text` seventeen
+            // One row per role, since #346: the role's name at the terminal's
+            // own colour, a sample painted in the role, the colour, and the
+            // emphasis in words. It printed `████ sample text` seventeen
             // times, and under NO_COLOR and in `mono` every one of those was
             // the same grey bar, so the preview said nothing on exactly the
             // terminals where a theme author most needs to know what a role
-            // does. The hex and the words say it on every terminal.
+            // does. The hex and the words say it on every terminal. The name
+            // stays unpainted because painting it in its role made the faint
+            // roles (`muted`, `card.frame`) the hardest rows to read (rule 1).
+            //
+            // Fitted by `columns::fit` like every table (rule 2). Only STYLE
+            // can go: the name, the sample and the colour are the preview.
             //
             // The resolved role→colour map is built from the SAME `role_names`
             // walk that prints the rows, so the two views of one theme cannot
             // come to differ about which roles it defines.
+            const SAMPLE: &str = "sample";
+            const HEX: usize = 7;
             let names = preview.theme.role_names();
-            let role_w = names
-                .iter()
-                .map(|r| render::width(r))
-                .chain([render::width("urgency.ramp"), render::width("ROLE")])
-                .max()
-                .unwrap_or(0);
-            let gap = " ".repeat(crate::columns::GAP);
-            text.push_str(&preview.paint(
-                "table.label",
-                &format!("{:<role_w$}{gap}{:<7}{gap}STYLE", "ROLE", "COLOUR"),
-            ));
-            text.push('\n');
-            let mut roles = serde_json::Map::new();
-            for role in names {
-                let st = preview.theme.role(&role);
-                let colour = st.fg.map_or_else(|| "-".to_string(), |c| c.hex());
-                let emphasis = [
+            let emphasis = |st: &theme::Style| {
+                [
                     (st.bold, "bold"),
                     (st.dim, "dim"),
                     (st.underline, "underline"),
@@ -518,13 +508,59 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                 .filter(|(on, _)| *on)
                 .map(|(_, word)| *word)
                 .collect::<Vec<_>>()
-                .join(" ");
-                let row = render::join_cells(vec![
-                    render::cell(&preview, Some(&role), &role, role_w),
-                    render::cell(&preview, Some("muted"), &colour, 7),
-                    preview.paint("muted", &emphasis),
-                ]);
-                text.push_str(&row);
+                .join(" ")
+            };
+            let role_w = names
+                .iter()
+                .map(|r| render::width(r))
+                .chain([render::width("urgency.ramp"), render::width("ROLE")])
+                .max()
+                .unwrap_or(0);
+            let style_w = names
+                .iter()
+                .map(|r| render::width(&emphasis(&preview.theme.role(r))))
+                .chain([render::width("STYLE")])
+                .max()
+                .unwrap_or(0);
+            let w = columns::fit(
+                &[
+                    Column::fixed(role_w),
+                    Column::fixed(render::width(SAMPLE)),
+                    Column::fixed(HEX.max(render::width("COLOUR"))),
+                    Column::drops(style_w, style_w),
+                ],
+                preview.cols,
+            );
+            let line = |cells: [(Option<&str>, &str); 4]| {
+                render::join_cells(
+                    cells
+                        .iter()
+                        .zip(&w)
+                        .filter(|(_, w)| **w > 0)
+                        .map(|((role, text), w)| render::cell(&preview, *role, text, *w))
+                        .collect(),
+                )
+            };
+            text.push_str(&preview.paint(
+                "table.label",
+                &line([
+                    (None, "ROLE"),
+                    (None, "SAMPLE"),
+                    (None, "COLOUR"),
+                    (None, "STYLE"),
+                ]),
+            ));
+            text.push('\n');
+            let mut roles = serde_json::Map::new();
+            for role in names {
+                let st = preview.theme.role(&role);
+                let colour = st.fg.map_or_else(|| "-".to_string(), |c| c.hex());
+                text.push_str(&line([
+                    (None, &role),
+                    (Some(&role), SAMPLE),
+                    (Some("muted"), &colour),
+                    (Some("muted"), &emphasis(&st)),
+                ]));
                 text.push('\n');
                 roles.insert(
                     role.clone(),
@@ -534,10 +570,10 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                     }),
                 );
             }
-            // The urgency ramp as the table reads it: one swatch per band, each
-            // labelled with the urgency the band starts at (D119). A strip of
-            // blended samples previewed a gradient no screen draws. `mono` has
-            // no anchors and still has two bands, plain and bold.
+            // The urgency ramp as the table reads it: each band labelled with
+            // the urgency it starts at (D119), from the SAMPLE column on. A
+            // strip of blended samples previewed a gradient no screen draws.
+            // `mono` has no anchors and still has two bands, plain and bold.
             let bands = preview.theme.ramp().len().max(2);
             let starts: Vec<(f64, String)> = (0..bands)
                 .map(|i| {
@@ -545,25 +581,49 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                     (t, format!("{:.0}", t * tasqx_core::urgency::DUE_WEIGHT))
                 })
                 .collect();
-            let swatch = bar.repeat(3);
-            let strip = starts
+            // A swatch only where the terminal draws the band's hue. Under
+            // NO_COLOR and in `mono` the three swatches were identical grey
+            // blocks; there the band starts carry the emphasis each band
+            // keeps (bold on top, D119(d)), which is what the gauge shows.
+            // Rule 6: where no glyph degrades honestly, draw nothing.
+            let hued = preview.caps.depth != theme::ColorDepth::None
+                && starts
+                    .iter()
+                    .any(|(t, _)| preview.theme.ramp_style(*t).fg.is_some());
+            // Block glyphs are Unicode; degrade the swatch to ASCII on the
+            // legacy path so `theme show | cat` never emits mojibake.
+            let swatch = if preview.caps.unicode { "█" } else { "#" }.repeat(3);
+            let strip: Vec<(usize, String)> = starts
                 .iter()
                 .map(|(t, from)| {
-                    format!(
-                        "{} {}",
-                        preview.theme.ramp_style(*t).paint(&swatch, &preview.caps),
-                        preview.paint("muted", from),
-                    )
+                    let band = preview.theme.ramp_style(*t);
+                    if hued {
+                        (
+                            render::width(&swatch) + 1 + render::width(from),
+                            format!(
+                                "{} {}",
+                                band.paint(&swatch, &preview.caps),
+                                preview.paint("muted", from),
+                            ),
+                        )
+                    } else {
+                        (render::width(from), band.paint(from, &preview.caps))
+                    }
                 })
+                .collect();
+            let head = format!(
+                "{}{}",
+                render::cell(&preview, None, "urgency.ramp", w[0]),
+                " ".repeat(columns::GAP)
+            );
+            // Measured unpainted: the escapes are not cells.
+            let strip_w =
+                strip.iter().map(|(cells, _)| cells).sum::<usize>() + 2 * (strip.len() - 1);
+            let strip = strip
+                .into_iter()
+                .map(|(_, painted)| painted)
                 .collect::<Vec<_>>()
                 .join("  ");
-            let head = format!("{:<role_w$}{gap}", "urgency.ramp");
-            // Measured unpainted: the escapes are not cells.
-            let strip_w = starts
-                .iter()
-                .map(|(_, from)| render::width(&swatch) + 1 + render::width(from))
-                .sum::<usize>()
-                + 2 * (starts.len() - 1);
             // The note explains the preview and is not part of it, so it is
             // the thing dropped when the line would otherwise wrap (rule 9).
             let note = format!(

@@ -2526,7 +2526,7 @@ fn page_themes() -> String {
     ));
     s.push_str(&p(
         "The <code>*</code> marks the theme in effect. <code>tasqx theme show [name]</code> \
-         previews every role, its name drawn in that role beside its colour and emphasis, plus \
+         previews every role, a sample drawn in it beside its colour and emphasis, plus \
          the urgency ramp's bands, rendered at your terminal's <em>real</em> capability. Set one permanently:",
     ));
     s.push_str(&pre_plain("# config.toml\n[theme]\nname = \"gruvbox\""));

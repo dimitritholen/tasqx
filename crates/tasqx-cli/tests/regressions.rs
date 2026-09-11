@@ -2921,6 +2921,18 @@ fn every_table_fits_a_sixty_column_terminal() {
             "--source",
             "docs/some/deeply/nested/path/to/a/source-file.md",
         ],
+        // The task `next` hands out: overdue and H, with a title, a project
+        // and tags that cannot all share one sixty-column line.
+        &[
+            "add",
+            "A task title long enough that next has to cut it on a narrow terminal",
+            "--project",
+            "reporting-redesign-for-width",
+            "due:yesterday",
+            "!high",
+            "+alpha",
+            "+beta",
+        ],
     ] {
         let out = run(args);
         assert!(
@@ -2930,6 +2942,15 @@ fn every_table_fits_a_sixty_column_terminal() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+
+    // A user theme, so `theme list` draws FROM and names the directory it read
+    // them from, which is the line that can run past the terminal.
+    std::fs::create_dir_all(dir.join("themes")).unwrap();
+    std::fs::write(
+        dir.join("themes").join("ocean.toml"),
+        "name = \"ocean\"\nextends = \"nord\"\n",
+    )
+    .unwrap();
 
     let mut over = Vec::new();
     for args in [
@@ -3028,20 +3049,23 @@ fn memory_list_off_a_terminal_is_one_line_per_doc() {
     assert!(!text.contains("---"), "frontmatter leaked: {text}");
 }
 
-/// #346: `memory search` off a terminal is `memory list`'s table (D121(f)):
-/// the query and what it found on one line, a header, then one line per hit
-/// with its id on the row it names.
+/// D123: `memory search` prints one record per hit: the title, where it
+/// came from and the handle that opens it on one line, the words that matched
+/// under it, cut to the terminal.
 ///
 /// It printed three lines per hit (the title with `(doc · source)`, the
 /// snippet, and `id <uuid>` on a line of its own), every line at the same
-/// weight, and closed on `N hit(s)`. A grep for a title found a line without
-/// the handle `memory show` takes.
+/// weight, and closed on `N hit(s)`. #346's first cut made it a table, and at
+/// 60 and 80 columns the 36-cell id left room for the title alone: the matched
+/// words were gone, and an annotation showed an id `memory show` refuses.
 #[test]
-fn memory_search_off_a_terminal_is_one_line_per_hit() {
+fn memory_search_off_a_terminal_is_a_record_per_hit() {
+    use unicode_width::UnicodeWidthStr;
+
     let dir = fresh_config_dir("memory-search-table");
     let run = |args: &[&str]| {
         bin("memory-search-table", &dir)
-            .env("COLUMNS", "120")
+            .env("COLUMNS", "60")
             .args(args)
             .output()
             .expect("run tasqx")
@@ -3064,36 +3088,49 @@ fn memory_search_off_a_terminal_is_one_line_per_hit() {
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
         ids.push(v["id"].as_str().expect("an id").to_string());
     }
+    for args in [
+        &["init", "work"][..],
+        &["add", "Ship the thing"],
+        &["annotate", "1", "the deploy went out on friday"],
+    ] {
+        assert!(run(args).status.success(), "seeding `{}`", args.join(" "));
+    }
 
     let out = run(&["memory", "search", "deploy"]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).expect("UTF-8");
     let lines: Vec<&str> = text.lines().collect();
     assert!(
-        lines[0].contains("deploy") && lines[0].contains("2 hits"),
-        "the summary must name the query and what it found: {text}"
+        lines[0].starts_with("\"deploy\"") && lines[0].contains("3 hits"),
+        "the summary must name the query, set off, and what it found: {text}"
     );
-    let header = lines
-        .iter()
-        .position(|l| l.contains("TITLE") && l.contains("ID"))
-        .unwrap_or_else(|| panic!("no header: {text}"));
-    for (title, id) in [
-        ("Deploy checklist", &ids[0]),
-        ("Release notes style", &ids[1]),
-    ] {
-        let row = lines[header + 1..]
-            .iter()
-            .find(|l| l.contains(title))
-            .unwrap_or_else(|| panic!("no row for {title}: {text}"));
-        assert!(
-            row.contains(id.as_str()),
-            "the id is not on the row: {row:?}"
-        );
+    for l in &lines {
+        assert!(l.width() <= 60, "{} cells at 60: {l:?}\n{text}", l.width());
     }
+    let record = |head: &str, handle: &str| {
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with(head))
+            .unwrap_or_else(|| panic!("no record for {head}: {text}"));
+        assert!(
+            lines[at].contains(handle),
+            "the handle is not on the title's line: {:?}",
+            lines[at]
+        );
+        assert!(
+            lines[at + 1].starts_with("  ") && lines[at + 1].contains("deploy"),
+            "the matched words are not under the title: {text}"
+        );
+    };
+    record("Deploy checklist", &ids[0]);
+    record("Release notes style", &ids[1]);
+    // An annotation's handle is its task, the one `tasqx show` takes: the
+    // annotation's own id is refused by `memory show`.
+    record("Ship the thing", "annotation on #1");
     assert_eq!(
         lines.len(),
-        header + 3,
-        "one line per hit and nothing more: {text}"
+        2 + 2 * 3,
+        "two lines per hit and nothing more: {text}"
     );
     assert!(!text.contains("hit(s)"), "the old trailer: {text}");
 
@@ -3103,21 +3140,23 @@ fn memory_search_off_a_terminal_is_one_line_per_hit() {
     assert!(
         text.lines()
             .next()
-            .is_some_and(|l| l.contains("2 hits") && l.contains("1 shown")),
+            .is_some_and(|l| l.contains("3 hits") && l.contains("1 shown")),
         "a bounded search must name both numbers: {text}"
     );
     assert!(
-        text.contains("--limit 2"),
+        text.contains("--limit 3"),
         "the flag that shows every hit is not named: {text}"
     );
 
-    // A miss still names the expression that produced it (D69).
+    // A miss still names the expression that produced it (D69), once: the
+    // summary carries it, so the hint does not say it again (rule 11).
     let out = run(&["memory", "search", "zebra"]);
     let text = String::from_utf8(out.stdout).expect("UTF-8");
     assert!(
         text.contains("0 hits") && text.contains("every term was required"),
         "{text}"
     );
+    assert_eq!(text.matches("\"zebra\"").count(), 1, "{text}");
 }
 
 /// #346: `theme list` is a table. The active theme is marked in a rail, the
@@ -3207,6 +3246,78 @@ fn theme_list_marks_the_user_file_that_shadows_a_builtin() {
             .any(|l| l.starts_with("  ") && l.contains("built-in")),
         "the shadowed built-in is marked: {text}"
     );
+}
+
+/// Round 1 review of #346: FROM is drawn only when some theme came from a
+/// user file. On a machine with the built-ins alone it would say `built-in`
+/// on every row (D51's rule for a column no row distinguishes).
+#[test]
+fn theme_list_draws_from_only_when_a_user_theme_exists() {
+    let dir = fresh_config_dir("theme-list-plain");
+    let out = bin("theme-list-plain", &dir)
+        .env("COLUMNS", "100")
+        .args(["theme", "list"])
+        .output()
+        .expect("run tasqx");
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert_eq!(text.lines().next(), Some("  THEME"), "{text}");
+    assert!(!text.contains("built-in"), "{text}");
+}
+
+/// Round 1 review of #346: `theme show` paints a sample in each role and
+/// leaves the role's NAME at the terminal's own colour. Painting the name in
+/// its role made the faint roles (`muted`, `card.frame`, `priority.L`) hard to
+/// read, which is rule 1 broken on the one screen about colour. And where the
+/// terminal draws no hue (NO_COLOR, `mono`) the ramp row draws no swatches,
+/// which were three identical grey blocks, only the band starts in the
+/// emphasis each band keeps.
+#[test]
+fn theme_show_paints_a_sample_and_leaves_the_name_readable() {
+    let dir = fresh_config_dir("theme-show-sample");
+    let show = |theme: &str, no_color: bool| {
+        let mut c = bin("theme-show-sample", &dir);
+        c.env("COLUMNS", "100")
+            .env("TASQX_FORCE_COLOR", "1")
+            .env("COLORTERM", "truecolor")
+            .env("TERM", "xterm-256color")
+            .args(["theme", "show", theme]);
+        if no_color {
+            c.env("NO_COLOR", "1");
+        } else {
+            c.env_remove("NO_COLOR");
+        }
+        String::from_utf8(c.output().expect("run tasqx").stdout).expect("UTF-8")
+    };
+    let nord = show("nord", false);
+    let muted = nord
+        .lines()
+        .find(|l| l.starts_with("muted"))
+        .unwrap_or_else(|| panic!("the muted row's name is painted: {nord:?}"));
+    let sample = muted.find("sample").expect("a sample cell");
+    assert!(
+        muted[..sample].contains('\u{1b}'),
+        "the sample is not painted: {muted:?}"
+    );
+    let ramp = nord
+        .lines()
+        .find(|l| l.starts_with("urgency.ramp"))
+        .expect("a ramp row");
+    assert!(
+        ramp.contains('█'),
+        "the hued ramp lost its swatches: {ramp:?}"
+    );
+
+    for (theme, no_color) in [("nord", true), ("mono", false)] {
+        let out = show(theme, no_color);
+        let ramp = out
+            .lines()
+            .find(|l| l.starts_with("urgency.ramp"))
+            .expect("a ramp row");
+        assert!(
+            !ramp.contains('█'),
+            "{theme}, NO_COLOR={no_color}: swatches with no hue to show: {ramp:?}"
+        );
+    }
 }
 
 /// #346: `theme show` says what each role IS, not seventeen times `sample

@@ -1143,7 +1143,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | **Core** | API v1 declared **stable**; the conformance suite (`crates/tasqx-core/tests/conformance.rs`) is the contract of record — the envelope, the error codes and every method's response shape, with its method floor derived from `dispatch::PARAMS` rather than listed. What it freezes is the **JSON API's shape**; what it does *not* freeze is the MCP **tool schema** — tool names, descriptions and input schemas stay free to move, and `tests/mcp.rs` covers them. The tool *results* are not exempt: `conformance.rs` drives the live `tools/list`, maps each tool to its method and asserts that same frozen result shape, so renaming a response field reddens the MCP half too. Read D56's "excludes MCP" as being about the schema, not the answers. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
 | **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). |
 | **Distribution** | Prebuilt archives for four targets on a tag, plus a `completions/` directory inside each one and a generated Homebrew formula that switches completion on at install time (**D57**, `docs/homebrew-tap.md`). The tap and the Scoop bucket exist (`dimitritholen/homebrew-tasqx`, `dimitritholen/scoop-tasqx`), each filled per release by its generator (`scripts/brew-formula.sh`, `scripts/scoop-manifest.sh`) and merged only after that repo's own CI has installed the result for real; the README leads with them, and a package manager the reader already has outranks the script (**D77**). On top of those archives, `install.sh` and `install.ps1` are the **universal** install route (**D61**, narrowed by D77): a one-liner served raw from `raw.githubusercontent.com` that resolves one host triple, verifies the published `.sha256` and unpacks into a per-user directory, with re-running it as the update path — which is not the self-update D10 forbids, because the binary still never writes to itself. The archives are **not signed**: D10 required notarization and Authenticode, D61 narrows that to deferred, and the consequence ships with the route — on macOS it bypasses Gatekeeper rather than passing it, on Windows it is what SmartScreen is built to interrupt. Signing is scheduled work, not a decided absence. |
-| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report`, `memory list`, `memory search`, `theme list` — and a number never gives way to make a row fit (**D120**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `memory search`, `projects`, `report`, `theme list` and `theme show` read the same way (#346, under D117 and D120). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). `pick` is the task browser: `list`'s rows, a `/` search, `show`'s card on Enter and `s` to start (**D124**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
+| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report`, `memory list`, `theme list`, `theme show`, and the head line of each `memory search` record — and a number never gives way to make a row fit (**D120**); after a drop the survivors get the freed cells back (**D123**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `projects`, `report`, `theme list` and `theme show` read the same way (#346, under D117 and D120), and `memory search` prints one two-line record per hit whose handle opens it, the id for a doc and the task for an annotation (**D123**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). `pick` is the task browser: `list`'s rows, a `/` search, `show`'s card on Enter and `s` to start (**D124**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
 | **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. Responses are bounded: `task.get` pages its history and drops the duplicate block (D63, D66, D72), still a transport-only bound. `task.list` pages its rows and reports what it withheld (D70) — that page's DEFAULT now lives in the engine itself (**D110**), reachable by `tasqx api`/the CLI too, not only by this transport; MCP's own default-insertion is what still drives its byte-budget bisection over an oversized page. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
 
@@ -2364,8 +2364,9 @@ is generated from the renderer by `the_house_style_doc_still_describes_the_scree
 which fails in both directions: a glyph the code stopped drawing, and a glyph the doc
 stopped naming. `pick` carries it since D124, by drawing `list`'s rows with `list`'s renderer. #346 carried it to `memory search`, `projects`, `report`, `theme list` and
 `theme show`, closing what D120 and D121 left standing on those screens: the DEFAULT
-column became a `*` rail and ARCHIVED a word, TOTAL a `table.label` row, search hits one
-line each, and the prose under `agenda` and `next` wraps.
+column became a `*` rail and ARCHIVED a word, TOTAL a `table.label` row set off by a blank
+line, a search hit a record with a handle that opens it (D123), and the prose under
+`agenda` and `next` wraps.
 
 **Where:** `crates/tasqx-cli/src/render.rs` (`due_cell`, `rail_marker`, `status_marker`,
 `urgency_meter`, `table_summary`, `plural_tasks`, `when_cell`, `TaskCols`), `theme.rs`
@@ -2515,9 +2516,7 @@ deleted rather than kept unguarded.
   to the higher `tie_rank`, then to the right: `list` carries its old order that way
   (STATUS, TAGS, PROJECT, then the date, then the title), because a date cut to
   `due 2026-0…` says nothing while a project name cut by the same cell still identifies
-  itself. Once a column is dropped, the shrink pass runs again from what the survivors
-  asked for, so the cells the drop freed go back to them (#346); keeping the floors cut
-  `memory list`'s titles to twelve cells beside ten empty ones, against (c).
+  itself. (Amended by D123(c): after a drop the shrink pass runs again.)
 - **(b) A number is never cut and never dropped.** In `report` every column but the key is
   fixed, so the key gives down to its floor and past that the row overflows. A number cut
   to fit is a different number. A token bucket dropped to fit hides the very column
@@ -2948,3 +2947,47 @@ stand-in deleted), `dashboard_screen.rs`, `tui/dashboard.rs` (the `p` help), `cm
 `command.rs` (the `-h` text), `docs.rs` (the key tables, generated from the screen's own),
 `README.md`, `docs/wiki/`, `docs/terminal-style.md`, `docs/agents/carry-the-style.md`, and
 §5, §8 and §11 above.
+### D123 — `memory search` prints a two-line record per hit, whose handle opens it; a memory title never gives way below twelve cells; the fitter returns what a drop frees (task #346)
+
+**Decision:** three amendments, found by rendering #346's first cut and by its review.
+
+- **(a) A search hit is a record, not a table row** (restates D120(d); #346's first cut, a
+  TITLE/MATCH/SOURCE/ID table, is withdrawn). The head line holds the title, where the hit
+  came from, and its handle, fitted by `columns::fit`: SOURCE goes first, the title gives
+  way last, and the handle never goes. Under it are the words that matched, cut to the
+  terminal. The handle is the thing that OPENS the hit: a doc's id, which `memory show`
+  takes, or `annotation on #N`, because `memory show` refuses an annotation's id (exit 4)
+  and `tasqx show N` opens its task. The summary names the expression that ran (D69), which
+  a plain query quotes, so `"release"   3 hits` reads as a query and a count where dim does
+  not reach the screen. A miss says why the expression came back empty without printing it
+  a second time (rule 11).
+- **(b) A memory title's floor is what the terminal can give it beside the column that
+  never goes, and never below twelve cells** (`render::lead_floor`; amends D121(f)'s
+  twelve-cell floor, which is kept as the lower bound). Widest-first shrinking otherwise cut
+  the title, the one column a row is read for, to meet a snippet or a project name that the
+  fitter could have dropped. Below twelve cells the row overflows, as every table's does.
+- **(c) After a drop, `columns::fit` runs the shrink pass again from what the survivors
+  asked for** (amends D120(a)), so the cells the drop freed go back to the columns that
+  gave them. Keeping the floors cut `memory list`'s titles to twelve cells beside ten
+  empty ones at 60 columns, which D120(c) rules out.
+
+**Why:** at 60 and 80 columns the first cut left room for the title and the 36-cell id
+alone, so a hit no longer showed why it matched, and an annotation showed an id the one
+command that takes ids refuses. The record printed before #346 showed both at every
+width; what it lacked was the handle on the title's line and a summary.
+
+**How it was chosen:** three layouts rendered at 60, 80 and 100 columns
+(`target/restyle-goal/346/mocks/`): the table as shipped, a table whose last column is
+the handle (doc id or `annotation on #N`), and the two-line record. The handle table
+still dropped the matched words at 60. Only the record kept title, matched words and a
+working handle at every width. The id stays whole because `memory show` rejects a prefix.
+
+**Verified:** each new test was watched fail against the code it replaces, and each guard
+made to bite by re-injecting its drift. Rendered at 40, 60, 80, 100 and 140 columns, in
+`mono` and under NO_COLOR.
+
+**Left standing:** the 36-cell id is still most of a 60-column line in `memory list`, and a
+shorter handle would need `memory show` to take a unique prefix, which is an API question.
+
+**Where:** `crates/tasqx-cli/src/render.rs` (`memory_hits`, `lead_floor`, `memory_table`),
+`columns.rs` (`fit`), `docs/terminal-style.md` rule 2, `tests/regressions.rs`.
