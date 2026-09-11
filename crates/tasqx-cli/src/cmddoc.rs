@@ -280,7 +280,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "It needs a terminal of at least 56x14 on stdin AND stdout, and says which it got when it refuses. A bare `tasqx` in a window that small falls back to the working-set table instead, silently: whoever typed nothing did not ask for a dashboard.",
             "`--json` skips both of those checks, because it opens no screen. It is the only verb where `--json` decides whether the terminal gate applies, and it is what makes the panel data reachable from a script.",
             "`--panels tasks,burndown` narrows the `--json` document to those panels, on that one call — it does not touch `dashboard.panels` or the interactive screen. The task rows are row-capped per group with `total`/`truncated` alongside them, because the list tracks the store's size rather than the screen's (#152). The four panel names D80 retired — `now`, `next`, `due`, `blocked`, `recent` — still parse, and all mean `tasks`, which is where their rows went.",
-            "Read-only, with one exception: `p` opens the picker, and Enter there starts the highlighted task. `q`, `esc` and ctrl-c all close.",
+            "Read-only, with one exception: `p` opens `pick`, the task browser, over the working set — or, from a PROJECTS row, over that project. Enter there reads a task and `s` starts it, which brings you back here; `q` or `esc` there comes back having started nothing. `q`, `esc` and ctrl-c close the dashboard.",
             "Every key (also behind `?` in the screen itself): `1-6` focus a panel; `s` cycles the list order between urgency, due and touched; `tab`/`S-tab` cycle panels; `j`/`k` move the cursor; `g`/`G` jump to the first/last row; `r` refreshes now; `R` toggles auto-refresh; `w` cycles the burndown window; `enter` opens the row under the cursor; `l` leaves and prints the task list.",
         ],
         see_also: &["list", "pick", "agenda", "chart"],
@@ -289,8 +289,8 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
         verb: "pick",
         aliases: &["p", "fzf"],
-        method: "task.list + task.start",
-        summary: "Choose a task on a full-screen list, and start it.",
+        method: "task.list + task.get + task.start",
+        summary: "Browse tasks on a full-screen list: read one, search them, start one.",
         usage: "tasqx pick [filter…]",
         examples: &[
             // `NoRun`, like `config edit`, and for the same reason rather than
@@ -301,12 +301,13 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             // command IS the screen. What the refusal does on that path is
             // covered for real by `help.rs::pick_refuses_a_piped_stdout_with_a_
             // nonzero_exit`, which drives the binary and asserts the code.
-            ex_norun("tasqx pick", "choose from the working set and start it"),
+            ex_norun("tasqx pick", "browse the working set, and start a task from it"),
             ex_norun("tasqx pick project:work +api", "narrow the candidates first"),
         ],
         notes: &[
-            "Type to narrow: the query is a fuzzy SUBSEQUENCE match over id, title, project and tags, so `wac` finds `Write API conformance tests`. Whitespace splits it into terms that must all match.",
-            "Up/down (or ctrl-p/ctrl-n) move the highlighted row. Enter STARTS the highlighted task — the one key on this screen with a side effect, and the same single-active rule `tasqx start` follows. Esc clears the query first, and only then leaves.",
+            "Each row is the row `tasqx list` prints: the running and blocked rail, the priority and urgency gauge, the title, the project, the deadline as a calendar day and the tags. The header names the filter and what the set holds — overdue, due today, running, blocked — as `list`'s summary does.",
+            "`j`/`k` or the arrows move, `g`/`G` jump to the ends. Enter opens the task's `tasqx show` card; there `j`/`k`/space/`b` scroll and `esc` or `q` goes back to the list. `s` starts the task under the cursor, from the list or from its card — the one key on this screen with a side effect, and the same single-active rule `tasqx start` follows. `q` leaves.",
+            "`/` opens the search on the header line: a fuzzy SUBSEQUENCE match over id, title, project and tags, so `wac` finds `Write API conformance tests`, and a term found whole ranks above the same letters scattered. Whitespace splits it into terms that must all match. Every letter is a letter there; up/down or ctrl-p/ctrl-n move, ctrl-u clears, ctrl-w deletes a word, and Enter or `esc` goes back to the list with the filter kept. `esc` in the list clears the filter, and only then leaves.",
             "Cancelling, and a filter that matches no task, both exit 4 having started nothing. `pick` exists to produce one task; when it produced none, saying ok would be a command reporting success for work it did not do.",
             "It needs a real terminal on stdin AND stdout, so `tasqx pick | …` and `$(tasqx pick)` refuse with exit 2 rather than writing escape codes into your pipe (D26). Non-interactively, `tasqx next` answers the same question and `tasqx start <ref>` acts on it.",
         ],
@@ -1532,6 +1533,32 @@ mod tests {
             assert!(
                 joined.contains(token),
                 "`tasqx manual config` must mention `{token}`: {joined}"
+            );
+        }
+    }
+
+    /// D123: both pages that describe `pick`'s keys say `s` starts and Enter
+    /// reads. Enter used to start, and a page nobody re-read after the change
+    /// is a page telling the reader to press the key that no longer does it.
+    #[test]
+    fn pick_and_dashboard_notes_say_s_starts_and_enter_reads() {
+        // Positive, per page: each must say what Enter and `s` DO, in the
+        // words the screen's own key table uses, rather than merely avoid two
+        // old phrasings.
+        for (verb, enter) in [
+            ("pick", "Enter opens the task's `tasqx show` card"),
+            ("dashboard", "Enter there reads a task"),
+        ] {
+            let joined = find(verb).expect("documented").notes.join(" ");
+            assert!(joined.contains(enter), "`tasqx manual {verb}`: {joined}");
+            assert!(
+                joined.contains("`s` start"),
+                "`tasqx manual {verb}`: {joined}"
+            );
+            let lower = joined.to_lowercase();
+            assert!(
+                !lower.contains("enter starts") && !lower.contains("enter there starts"),
+                "`tasqx manual {verb}` still says Enter starts: {joined}"
             );
         }
     }

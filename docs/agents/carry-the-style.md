@@ -156,18 +156,20 @@ These are not suggestions. Each one is a way a night gets lost.
 the pipe-into-freeze loop does not reach them. Capture through `script(1)` first:
 
 ```console
-$ script -qec "COLUMNS=100 tasqx pick" /dev/null > /tmp/pick.ansi
+$ TASQX_DB=<scratch>/tasks.db script -qec "COLUMNS=100 tasqx --no-daemon pick" /dev/null > /tmp/pick.ansi
 ```
+
+`s` in `pick` starts a task (D123), so drive it only against a scratch store.
+`scripts/snap-tui.sh` holds these screens in tmux and is the easier route.
 
 then feed that file to `freeze` the way `scripts/snap.sh` feeds it stdin. If
 that does not work inside two attempts, stop trying: do the code work, say the
 visual check did not happen, and leave the render for a human.
 
-The dashboard has one open disagreement: its spec
-(`docs/specs/2026-09-02-dashboard-redesign-design.md`) spells blocked `⛔`
-where rule 4 says `⊘`. Use `⊘` — it is the newer decision, it is guarded, and
-it is what `list` and `agenda` already draw — and record the change as a
-**proposal for review**, not a settled ruling.
+The dashboard's spec (`docs/specs/2026-09-02-dashboard-redesign-design.md`)
+spells blocked `⛔` where rule 4 says `⊘`. That is settled in favour of `⊘`
+(`docs/terminal-style.md`, "Where it is not carried yet"): it is guarded, and
+it is what `list`, `agenda` and TASKS draw.
 
 ## Things that will waste your turns
 

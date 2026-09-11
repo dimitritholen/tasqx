@@ -157,7 +157,8 @@ a burndown and token spend, under a header that counts what matters
 (`17 open · 1 active · 2 overdue · 3 blocked · 8 done/week`) and a footer that
 names every key. The BLOCKED panel earns its place: the default list filter
 hides blocked tasks, so the dashboard is where work that is standing still
-stays visible. Press `p` to pick a task and start it; `q` closes.
+stays visible. Press `p` to browse your tasks in `tasqx pick`, where Enter
+reads a task and `s` starts it; `q` closes.
 
 Anything that is *not* a person at a keyboard gets the plain table instead —
 the dashboard opens only when stdin and stdout are both interactive terminals,

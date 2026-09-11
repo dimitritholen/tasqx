@@ -45,7 +45,7 @@ task, and where to find help.
 | `done` | Complete a task | [Working on Tasks](Working-on-Tasks.md#tasqx-done) |
 | `cancel` | Cancel a task (reversibly) | [Working on Tasks](Working-on-Tasks.md#tasqx-cancel) |
 | `reopen` | Bring a finished task back | [Working on Tasks](Working-on-Tasks.md#tasqx-reopen) |
-| `pick` | Pick a task from a full-screen list and start it | [Working on Tasks](Working-on-Tasks.md#tasqx-pick) |
+| `pick` | Browse tasks on a full screen, read one, and start it | [Working on Tasks](Working-on-Tasks.md#tasqx-pick) |
 | `undo` | Take back the last change | [Working on Tasks](Working-on-Tasks.md#tasqx-undo) |
 | `dep` / `undep` | Say "this waits on that" | [Dependencies](Dependencies.md) |
 

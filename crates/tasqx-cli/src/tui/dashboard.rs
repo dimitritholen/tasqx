@@ -49,7 +49,7 @@ pub const WINDOW_CHOICES: [(&str, usize); 3] = [("week", 7), ("14d", 14), ("30d"
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Action {
     Quit,
-    /// Hand over to `pick` inside the SAME terminal session (D58), scoped to
+    /// Hand over to `pick`, the task browser (D123), scoped to
     /// [`App::focused_scope`] — the filter DSL tokens for the row the cursor
     /// was on, or empty on a panel with no natural scope.
     Pick(Vec<String>),
@@ -951,7 +951,7 @@ fn draw_footer(screen: &Screen, app: &App, theme: &Theme, caps: &Caps, frame: &m
             // right-alignment math has to agree with that or it lands one
             // cell past the edge and gets clipped, not padded.
             let drawable = width.saturating_sub(1);
-            let mut spans = footer_spans(KEYS, drawable, accent, muted);
+            let mut spans = footer_spans(KEYS, drawable, accent, muted, caps.unicode);
             let used = spans_width(&spans);
             let leftover = drawable.saturating_sub(used);
             if leftover >= badge_w + 2 {
@@ -1414,7 +1414,10 @@ pub const KEYS: &[Key] = &[
     },
     Key {
         keys: "p",
-        help: "pick a task and start it",
+        // `pick` is the task browser now (D123): Enter there reads a task and
+        // `s` starts it. The old "pick a task and start it" described the
+        // chooser, where Enter started.
+        help: "browse the tasks: enter reads one, s starts it",
         footer: Some(Hint {
             keys: "p",
             word: "pick",

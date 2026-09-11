@@ -417,13 +417,21 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
             }
             Some(Action::Pick(scope)) => {
                 match run_pick(be, ctx, &scope) {
-                    Ok((_, render)) => picked = Some(render),
+                    // Every start of the session reaches the scrollback, not
+                    // only the last: each one can have stopped another timer.
+                    Ok((_, render)) => picked.get_or_insert_with(String::new).push_str(&render),
                     // Backing out of the picker is not an error HERE. `pick` as
                     // a command exits 4 having started nothing, because its
                     // whole output is the choice (D55); reached from a screen
                     // the user is going back to, cancelling is just cancelling.
                     Err(e) if e.code == tasqx_core::ErrorCode::NotFound => {}
-                    Err(e) => return Err(e),
+                    // The terminal itself failing ends the session, as a read
+                    // failing does elsewhere in this loop.
+                    Err(e) if e.code == tasqx_core::ErrorCode::Internal => return Err(e),
+                    // A start the engine refused (a race with another writer:
+                    // the browser refuses what it can see) is said on the
+                    // dashboard's own status line rather than ending it (D123).
+                    Err(e) => app.say(e.message),
                 }
                 // Whatever happened, the screen shows it: a started task turns
                 // up in NOW, and a cancelled pick redraws unchanged.

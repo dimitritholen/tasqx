@@ -1,5 +1,6 @@
-//! The `tasqx pick` driver (DESIGN.md §10, D55): rows out of a task.list
-//! answer, the alt-screen loop, and the started-task summary. The widget
+//! The `tasqx pick` driver (DESIGN.md §10, D55, D123): rows out of every
+//! task.list page, the alt-screen loop and the one read the screen asks for,
+//! and the started-task summary. The widget
 //! itself lives in `tui::pick`; the structural TTY gate stays in `execute`,
 //! above the store-open, where its ordering is the property.
 
@@ -18,10 +19,11 @@ pub(crate) const PICK_NEEDS_A_TERMINAL: &str =
      (one of them is piped, redirected, or TERM=dumb). `tasqx next` picks the \
      highest-urgency task for you and `tasqx start <ref>` starts it.";
 
-/// `tasqx pick` — choose a task on a full-screen list, and start it.
+/// `tasqx pick` — browse tasks on a full screen, and start one (D123).
 ///
-/// The two pieces this function owns are the two the state machine must not:
-/// the candidate snapshot and the write. Everything between them is `tui::pick`.
+/// The pieces this function owns are the ones the state machine must not: the
+/// candidate snapshot, the card read, and the write. Everything between them
+/// is `tui::pick`.
 ///
 /// # The TTY gate is NOT here
 ///
@@ -43,18 +45,14 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
     } else {
         tasqx_core::filter::from_argv(filter)
     };
-    let listed = be.call(
-        "task.list",
-        &json!({ "filter": filter_str, "sort": ["-urgency"] }),
-    )?;
+    let listed = pick_candidates(be, &filter_str)?;
     let rows = pick_rows(&listed);
     if rows.is_empty() {
         return Err(no_candidates(&filter_str));
     }
 
-    let mut app = tui::pick::App::new(rows);
-    let caps = ctx.caps;
-    let chosen = tui::with_terminal(|term| pick_loop(term, &mut app, &ctx.theme, caps))
+    let mut app = tui::pick::App::new(rows, ctx, &filter_str, jiff::Timestamp::now());
+    let chosen = tui::with_terminal(|term| pick_loop(term, be, &mut app))
         .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
 
     // Cancelling is exit 4, not exit 0. `pick` exists to produce one task; when
@@ -69,95 +67,20 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
             None,
         ));
     };
-    // The title is read back out of the snapshot the screen was built from,
-    // because the screen is gone by the time this prints and `task.start`
-    // answers with a UUID and a timestamp, neither of which a human recognises.
+    let result = be.call(
+        "task.start",
+        &json!({ "ref": short_id.to_string(), "keep": false }),
+    )?;
+    let text = picked_summary(ctx, &result);
+    // The title out of the snapshot the screen was built from, for the
+    // `--json` body's identity fields (below).
     let title = app
         .rows()
         .iter()
         .find(|r| r.short_id == short_id)
         .map(|r| r.title.clone())
         .unwrap_or_default();
-
-    // Snapshotted BEFORE the write: `task.start` auto-stops whichever task is
-    // currently active (D6) and its own answer says nothing about it (#75) —
-    // silently, on the screen most likely to end a running timer by accident,
-    // which is what #205 is filed against. This is the CLI-side stand-in
-    // until #75 lands and the engine reports it directly; excluding
-    // `short_id` itself covers the idempotent case (choosing the task that is
-    // already running stops nothing).
-    let before_active = be.call("task.list", &json!({ "filter": "status:active" }))?;
-    let displaced = active_before(&before_active, short_id);
-
-    let result = be.call(
-        "task.start",
-        &json!({ "ref": short_id.to_string(), "keep": false }),
-    )?;
-    // The exact instant the engine used to close the displaced interval AND
-    // to open this one — `task.start` runs both updates in one transaction
-    // against one `now()` (engine/task.rs) — so the elapsed time computed
-    // from it is the real tracked total, not a client-clock guess at how
-    // long the round trip took.
-    let started_at = result
-        .get("interval_started")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let mut text = String::new();
-    for (id, since) in &displaced {
-        if let Some(secs) = elapsed_seconds(since, started_at) {
-            text.push_str(&displaced_summary(ctx, *id, secs));
-        }
-    }
-    text.push_str(&picked_summary(ctx, short_id, &title, &result));
     Ok((pick_result(short_id, &title, result), text))
-}
-
-/// Whichever tasks `status:active` reported BEFORE `task.start` ran, as
-/// `(short_id, active_since)` — everything `elapsed_seconds` needs and
-/// nothing `displaced_summary` doesn't use, extracted so both are testable
-/// without a `Backend`. Excludes `keep_short_id`: starting an already-active
-/// task is idempotent in the engine (task.rs:257) and stops nothing, so it
-/// must not be reported as stopped.
-pub(crate) fn active_before(listed: &Value, keep_short_id: i64) -> Vec<(i64, String)> {
-    listed
-        .get("tasks")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|t| {
-            let id = t.get("short_id").and_then(Value::as_i64)?;
-            if id == keep_short_id {
-                return None;
-            }
-            let since = t.get("active_since").and_then(Value::as_str)?;
-            Some((id, since.to_string()))
-        })
-        .collect()
-}
-
-/// Whole seconds between two RFC 3339 instants, floored at zero. `None` when
-/// either fails to parse, which a caller treats as "say nothing" rather than
-/// guessing — a wrong duration in a data-safety confirmation is worse than a
-/// missing one.
-pub(crate) fn elapsed_seconds(from: &str, to: &str) -> Option<i64> {
-    let from: jiff::Timestamp = from.parse().ok()?;
-    let to: jiff::Timestamp = to.parse().ok()?;
-    Some((to.as_second() - from.as_second()).max(0))
-}
-
-/// The scrollback line for a task `task.start` auto-stopped (D6) to make room
-/// for the one just chosen — printed ABOVE `picked_summary`'s "Started" line
-/// (`run_pick`), so a session that ended a running timer says so before it
-/// says what it started instead. #205's finding is that this line was
-/// missing entirely: 2h23 of tracked time could vanish from the picker with
-/// no word of it on screen or after.
-pub(crate) fn displaced_summary(ctx: &Ctx, short_id: i64, elapsed_secs: i64) -> String {
-    format!(
-        "{} #{short_id}  ·  tracked {}\n",
-        ctx.paint("timer.active", "Stopped"),
-        tui::dashboard::panels::dur_compact(elapsed_secs)
-    )
 }
 
 /// An empty candidate set is a refusal, not an empty screen.
@@ -174,109 +97,131 @@ pub(crate) fn no_candidates(filter: &str) -> ApiError {
     )
 }
 
-/// The `task.list` answer, flattened into the rows the screen draws.
+/// Every task `filter` selects, in `-urgency` order, read one `task.list` page
+/// at a time: `{tasks, count}` with `count` the number read.
+///
+/// All of them and not the first page, because this is a browser with a
+/// search (D123), and a search cannot rank what was never read — the memory
+/// screen pages for the same reason. It used to make one call, which D110
+/// bounds at 100 rows, so on a larger working set the task the reader was
+/// searching for could simply not be there, and the header counted the page
+/// as though it were the set.
+pub(crate) fn pick_candidates(be: &mut Backend, filter: &str) -> Result<Value, ApiError> {
+    // D110's ceiling, so the common store is read in one call: `task.list`
+    // scans the whole store each time (D58), and a small page made opening
+    // the screen cost one scan per page.
+    candidates_in_pages(be, filter, 10_000)
+}
+
+/// [`pick_candidates`] with the page size named, so a test can make the loop
+/// run without seeding ten thousand tasks.
+///
+/// Pages are read at different instants and a write can land between them,
+/// so a task can arrive twice across a boundary; it is kept once, where it
+/// first appeared.
+pub(crate) fn candidates_in_pages(
+    be: &mut Backend,
+    filter: &str,
+    page: u64,
+) -> Result<Value, ApiError> {
+    let mut pages: Vec<Value> = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        let listed = be.call(
+            "task.list",
+            &json!({ "filter": filter, "sort": ["-urgency"], "limit": page, "offset": offset }),
+        )?;
+        let next = listed["next_offset"].as_u64();
+        pages.push(listed);
+        match next {
+            Some(next) if next > offset => offset = next,
+            _ => break,
+        }
+    }
+    Ok(merge_pages(&pages))
+}
+
+/// `task.list` pages as one answer, each task once, in the order it first
+/// appeared: `{tasks, count}`.
+pub(crate) fn merge_pages(pages: &[Value]) -> Value {
+    let mut seen = std::collections::HashSet::new();
+    let tasks: Vec<Value> = pages
+        .iter()
+        .flat_map(|p| p["tasks"].as_array().cloned().unwrap_or_default())
+        .filter(|t| seen.insert(t["short_id"].as_i64()))
+        .collect();
+    let count = tasks.len();
+    json!({ "tasks": tasks, "count": count })
+}
+
+/// The `task.list` answer, as the rows the screen draws.
 ///
 /// Extracted so it is reachable from a test at all: everything around it needs
-/// a real terminal, and a mapping that dropped a field — or read `id` where it
-/// meant `short_id`, which would make every Enter start the wrong task or none
-/// at all — would leave the whole suite green with the screen unusable. That is
-/// the same hole `settings_rows` was pulled out of `run_config_edit` to close.
+/// a real terminal, and a mapping that read `id` where it meant `short_id` —
+/// which would make every `s` start the wrong task or none at all — would leave
+/// the whole suite green with the screen unusable. That is the same hole
+/// `settings_rows` was pulled out of `run_config_edit` to close. Each row keeps
+/// the task as the store sent it, because `render::task_row` lays it out (D123).
 pub(crate) fn pick_rows(result: &Value) -> Vec<tui::pick::Row> {
-    let field = |t: &Value, key: &str| -> String {
-        t.get(key).and_then(Value::as_str).unwrap_or("").to_string()
-    };
     result
         .get("tasks")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
-        .map(|t| {
-            let urgency = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
-            tui::pick::Row::new(
-                t.get("short_id").and_then(Value::as_i64).unwrap_or(0),
-                &field(t, "title"),
-                &field(t, "project"),
-                // `-` and not an empty cell: a task with no priority is a fact,
-                // and a blank column reads as a rendering bug.
-                match field(t, "priority").as_str() {
-                    "" => "-",
-                    p => p,
-                },
-                &format!("{urgency:.1}"),
-                &t.get("tags")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .unwrap_or_default(),
-                // `status` is a default `task.list` field (`task_to_json`
-                // always includes it, D70's gate is `depends_on` only), so
-                // this reads it for free rather than issuing a second call.
-                field(t, "status") == "active",
-            )
-        })
+        .cloned()
+        .map(tui::pick::Row::new)
         .collect()
 }
 
-/// Draw, read one key, fold it in. Returns the chosen `short_id`, or `None`
-/// when the user left without choosing.
-///
-/// The theme is resolved once, outside, and not per frame: unlike the settings
-/// screen there is nothing here whose value depends on repainting in a
-/// different theme, so re-loading it every keystroke would be work with no
-/// observable effect.
+/// Draw, serve the one read the screen asks for, read one key, fold it in.
+/// Returns the `short_id` to start, or `None` when the reader left without
+/// starting anything.
 pub(crate) fn pick_loop(
     term: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    be: &mut Backend,
     app: &mut tui::pick::App,
-    theme: &theme::Theme,
-    caps: Caps,
 ) -> std::io::Result<Option<i64>> {
     use ratatui::crossterm::event::{self, Event};
 
     loop {
-        // PageUp/PageDown need to know a screenful — `App` never touches a
-        // `Frame` to learn it itself. The body loses 4 rows to the header,
-        // query line, rule and footer (see `render`'s own `Layout::vertical`),
-        // and re-reading it every iteration means a resize between key
-        // presses changes the page size along with everything else on screen.
-        let visible = term.size()?.height.saturating_sub(4).max(1) as usize;
-        app.observe(visible);
-        term.draw(|f| tui::pick::render(app, theme, &caps, f))?;
+        // Re-read every iteration, so a resize between key presses changes
+        // the page size and the card's width along with everything else.
+        let size = term.size()?;
+        app.observe(size.width, size.height);
+        if let Some(id) = app.wanted() {
+            // The card `tasqx show` prints (D122), read when it is opened. A
+            // task that cannot be read says so on the card rather than ending
+            // the session: the other tasks are still there to pick.
+            let got = be
+                .call("task.get", &json!({ "ref": id.to_string() }))
+                .map_err(|e| format!("#{id} could not be read: {}", e.message));
+            app.set_detail(id, got);
+        }
+        term.draw(|f| tui::pick::render(app, f))?;
         // Resize and paste events just redraw; only keys are decisions.
         let Event::Key(key) = event::read()? else {
             continue;
         };
         match app.on_key(key) {
-            Some(tui::pick::Action::Choose { short_id }) => return Ok(Some(short_id)),
+            Some(tui::pick::Action::Start { short_id }) => return Ok(Some(short_id)),
             Some(tui::pick::Action::Cancel) => return Ok(None),
             None => {}
         }
     }
 }
 
-/// The scrollback record `pick` leaves behind once the alt screen is gone.
+/// The scrollback record `pick` leaves behind once the alt screen is gone:
+/// `render::started`, the line `tasqx start` prints.
 ///
-/// `render::started` alone is not enough here, and that is not a style
-/// preference: it prints "Started task · timer running (since …)" and names no
-/// task, which is right for `tasqx start 42` — the user typed the ref — and
-/// wrong for a screen that has just been wiped off the display. Without the
-/// identity line an interactive session leaves no trace of WHICH task it
-/// started, which is exactly the auditability `saved_summary` exists to give
-/// `config edit`.
-///
-/// Extracted for the same reason as that function: the rest of `run_pick` needs
-/// a real terminal, so this line would otherwise be the one piece of it no test
-/// could ever see.
-pub(crate) fn picked_summary(ctx: &Ctx, short_id: i64, title: &str, result: &Value) -> String {
-    format!(
-        "{}\n{}",
-        ctx.paint("header", &format!("#{short_id}  {title}")),
-        render::started(ctx, result)
-    )
+/// Since #75, `task.start` answers with the task's id and title and with what
+/// it auto-stopped (D6), and `render::started` prints both. This used to add
+/// a `#N  title` header over that, and D101's screen-local stand-in printed
+/// the stop again from a snapshot of its own, so the task was named twice and
+/// the stop said twice with two different durations. D101 said its stand-in
+/// would be deleted once #75 landed; D123 did.
+pub(crate) fn picked_summary(ctx: &Ctx, result: &Value) -> String {
+    render::started(ctx, result)
 }
 
 /// The `--json` body: `task.start`'s own answer, plus the identity of the task

@@ -501,7 +501,7 @@ pub fn done(ctx: &Ctx, result: &Value) -> String {
 /// on a store with no due dates and `TASK` held 36 on a 150-cell terminal, so
 /// the widest gap in the table sat where there was no data and the titles that
 /// had some were the ones truncated.
-struct TaskRow {
+pub(crate) struct TaskRow {
     sid: String,
     urg: String,
     ramp: f64,
@@ -521,7 +521,7 @@ struct TaskRow {
 
 /// The width of every column of one table, in cells. A `0` means the column is
 /// ABSENT — not empty-but-drawn — and neither its header nor its gap is emitted.
-struct TaskCols {
+pub(crate) struct TaskCols {
     /// The left rail: `0` when no visible row has a state to show, else
     /// [`TaskCols::RAIL`] — glyph plus the one space that keeps it off a
     /// four-digit id.
@@ -596,7 +596,12 @@ impl TaskCols {
     /// chosen by the caller and a width computed from a different one is a
     /// header that can overhang its column by exactly the difference — the
     /// misalignment this whole function exists to end, rebuilt one caller over.
-    fn fit(rows: &[TaskRow], budget: usize, when_label: &str, unicode: bool) -> TaskCols {
+    pub(crate) fn fit(
+        rows: &[TaskRow],
+        budget: usize,
+        when_label: &str,
+        unicode: bool,
+    ) -> TaskCols {
         let meter_w = if unicode { Self::METER } else { 0 };
         let max_of = |f: fn(&TaskRow) -> &str| rows.iter().map(|r| width(f(r))).max().unwrap_or(0);
         // A column is as wide as its widest cell OR its own header, whichever
@@ -737,7 +742,7 @@ pub(crate) fn join_cells(cells: Vec<String>) -> String {
 
 /// The header line for a fitted table. `when_label` must be the same string the
 /// widths were fitted with — see [`TaskCols::fit`].
-fn header_line(c: &TaskCols, when_label: &str) -> String {
+pub(crate) fn header_line(c: &TaskCols, when_label: &str) -> String {
     // The rail has no label — a two-cell column cannot hold one, and the two
     // glyphs it draws are the kind a reader learns once. It is prefixed to the
     // id cell rather than joined as a column of its own, so `join_cells` does
@@ -762,6 +767,15 @@ fn header_line(c: &TaskCols, when_label: &str) -> String {
 
 /// One painted row of a fitted table.
 fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
+    row_line_at(ctx, c, r, false)
+}
+
+/// [`row_line`], for a screen with a cursor (`pick`, D123): the row the reader
+/// is on carries its id and title in `accent`, the title bold as well, so the
+/// row survives `NO_COLOR` and `mono` with more than the cursor glyph to mark
+/// it. The memory browser marks its cursor row the same way. `list` never
+/// passes `true`, so its bytes do not move.
+pub(crate) fn row_line_at(ctx: &Ctx, c: &TaskCols, r: &TaskRow, on_cursor: bool) -> String {
     let prio_role = match r.prio.as_str() {
         "H" => "priority.H",
         "M" => "priority.M",
@@ -793,11 +807,21 @@ fn row_line(ctx: &Ctx, c: &TaskCols, r: &TaskRow) -> String {
         (w, Some((role, glyph))) => cell(ctx, Some(role), glyph, w),
         (w, None) => " ".repeat(w),
     };
-    let mut line = vec![
-        format!("{rail}{}", rpad(&r.sid, c.id)),
-        urg,
-        cell(ctx, None, &r.title, c.title),
-    ];
+    let (sid, title) = if on_cursor {
+        let at = ctx.theme.role("accent");
+        let t = truncate(&r.title, c.title, ctx.caps.unicode);
+        (
+            at.paint(&rpad(&r.sid, c.id), &ctx.caps),
+            format!(
+                "{}{}",
+                at.bold().paint(&t, &ctx.caps),
+                " ".repeat(c.title.saturating_sub(width(&t)))
+            ),
+        )
+    } else {
+        (rpad(&r.sid, c.id), cell(ctx, None, &r.title, c.title))
+    };
+    let mut line = vec![format!("{rail}{sid}"), urg, title];
     if c.marker > 0 {
         let (role, text) = r
             .marker
@@ -1148,7 +1172,7 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
 /// sanitizing, the `-` for an unset priority — is identical by construction
 /// rather than by two functions agreeing, which is how the two views cannot come
 /// to disagree about the same task.
-fn task_row(t: &Value, now: Timestamp, unicode: bool) -> TaskRow {
+pub(crate) fn task_row(t: &Value, now: Timestamp, unicode: bool) -> TaskRow {
     let urg = t.get("urgency").and_then(Value::as_f64).unwrap_or(0.0);
     TaskRow {
         sid: format!("{}", t.get("short_id").and_then(Value::as_i64).unwrap_or(0)),
@@ -1246,7 +1270,7 @@ fn plural_tasks(n: i64) -> String {
 /// Only non-zero facts are printed. A line that says `0 overdue · 0 blocked`
 /// trains the reader to skip it, and then it is not there on the day it says
 /// something.
-fn table_summary(
+pub(crate) fn table_summary(
     ctx: &Ctx,
     tasks: &[&Value],
     rows: &[TaskRow],

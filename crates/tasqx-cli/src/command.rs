@@ -889,18 +889,20 @@ pub(super) enum Command {
         #[arg(long, value_name = "LIST")]
         panels: Option<String>,
     },
-    /// Choose a task on a full-screen list and start it (maps to task.list,
-    /// then task.start).
+    /// Browse tasks on a full-screen list, and start one (maps to task.list,
+    /// task.get, then task.start).
     ///
-    /// Type to narrow the list — the query is a fuzzy subsequence match over
-    /// id, title, project and tags, and whitespace splits it into terms that
-    /// all have to match. Up/down (or ctrl-p/ctrl-n) move, enter starts the
-    /// highlighted task, esc clears the query and then leaves.
+    /// Each row is the row `tasqx list` prints. j/k or the arrows move, enter
+    /// opens the task's `tasqx show` card (esc goes back), and `s` starts the
+    /// task under the cursor. `/` searches: a fuzzy subsequence match over id,
+    /// title, project and tags, whitespace splitting it into terms that all
+    /// have to match; enter or esc keeps the filter, and esc in the list clears
+    /// it and then leaves.
     ///
-    /// Enter is the only key with a side effect, and it has one: this verb
-    /// starts the task it selects. Cancelling, or a filter that matches no
-    /// task, exits 4 having changed nothing — `pick` produced no task, and a
-    /// command that produced nothing may not report success.
+    /// `s` is the only key with a side effect, and it has one: this verb starts
+    /// the task it selects. Leaving without starting one, or a filter that
+    /// matches no task, exits 4 having changed nothing — `pick` produced no
+    /// task, and a command that produced nothing may not report success.
     ///
     /// It needs a real terminal on BOTH stdin and stdout, so it refuses in a
     /// pipe rather than writing escape codes into it (exit 2, D26).

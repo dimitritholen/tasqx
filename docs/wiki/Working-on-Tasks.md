@@ -75,12 +75,14 @@ what `done` unblocked. The answer names them.
 
 *Aliases: `p`, `fzf`*
 
-A full-screen list to choose a task from, fuzzy-search style. Type to narrow —
-`wac` finds "**W**rite **A**PI **c**onformance tests". Enter starts the
-highlighted task; Esc leaves.
+A full-screen browser over your tasks, each row the row `tasqx list` prints.
+`j`/`k` or the arrows move. Enter opens the task's `tasqx show` card (Esc goes
+back), and `s` starts the task under the cursor. `/` searches, fuzzy-search
+style — `wac` finds "**W**rite **A**PI **c**onformance tests" — and Enter or Esc
+keeps the filter. Esc in the list clears it, and `q` leaves.
 
 ```console
-tasqx pick                  # pick from the working set
+tasqx pick                  # browse the working set
 tasqx pick project:work     # narrow the candidates first
 ```
 

@@ -344,7 +344,11 @@ pub fn rt_style(s: crate::theme::Style, caps: &Caps) -> ratatui::style::Style {
     if s.bold {
         out = out.add_modifier(Modifier::BOLD);
     }
-    if s.dim {
+    // Dim is a colour substitute, so `NO_COLOR` drops it with the colour, as
+    // `Style::paint` does (§8's degradation table, #234 item 7). It used to
+    // survive here, so under `NO_COLOR` a `mono` screen dimmed what `list`
+    // printed plain (D123).
+    if s.dim && caps.depth != ColorDepth::None {
         out = out.add_modifier(Modifier::DIM);
     }
     if s.underline {
@@ -388,6 +392,109 @@ pub fn with_terminal<T>(
     let out = ratatui::Terminal::new(backend).and_then(|mut t| body(&mut t));
     drop(guard);
     out
+}
+
+// ============================================================================
+// The printed renderers, drawn inside a screen (D123)
+// ============================================================================
+
+/// A line the terminal renderers painted (`render::row_line_at`,
+/// `render::task_detail`, `render::table_summary`), as the ratatui spans that
+/// draw the same cells in the same styles.
+///
+/// This is how `pick` shows `list`'s rows and `show`'s card without a second
+/// renderer for either: the text, the widths, the glyphs and the roles all come
+/// from the function the printed command calls, so the screen and the table
+/// cannot drift. `watch` made the same choice for the same reason (D102).
+///
+/// It reads exactly the vocabulary [`crate::theme::Style::paint`] writes, and
+/// nothing else: `ESC[…m` with `0`, `1`, `2`, `4`, `38;2;r;g;b`, `38;5;n` and
+/// `30–37`/`90–97`. Any other escape is dropped whole — a CSI to its final
+/// byte, an OSC to its terminator, a charset switch with its designator — and
+/// so is any other control character. The text reaching this has already been
+/// through `render::san`; a sequence that is not one of the painter's own is
+/// not one this should honour, nor draw as stray letters. `every_role_crosses_into_the_screen_as_the_style_it_was_painted`
+/// holds the two ends together over every role of every built-in theme at every
+/// depth.
+pub(crate) fn painted_line(s: &str) -> ratatui::text::Line<'static> {
+    use ratatui::style::Style as RtStyle;
+    use ratatui::text::{Line, Span};
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut style = RtStyle::default();
+    let mut text = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            if !c.is_control() {
+                text.push(c);
+            }
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameter and intermediate bytes, then one final byte in
+            // `@`..`~`. Only a final `m` with plain digits is the painter's.
+            Some('[') => {}
+            // OSC (a window title, a hyperlink): everything up to BEL or ST.
+            Some(']') => {
+                while let Some(o) = chars.next() {
+                    if o == '\x07' || (o == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            // Any other escape: its one following byte, and a charset
+            // designation's one more (`ESC ( B`).
+            Some('(' | ')' | '*' | '+') => {
+                chars.next();
+                continue;
+            }
+            _ => continue,
+        }
+        let mut params = String::new();
+        let mut end = None;
+        for p in chars.by_ref() {
+            if ('@'..='~').contains(&p) {
+                end = Some(p);
+                break;
+            }
+            params.push(p);
+        }
+        if end != Some('m') || !params.chars().all(|p| p.is_ascii_digit() || p == ';') {
+            continue;
+        }
+        if !text.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut text), style));
+        }
+        let codes: Vec<u16> = params.split(';').map(|p| p.parse().unwrap_or(0)).collect();
+        let mut i = 0;
+        while i < codes.len() {
+            match codes[i] {
+                0 => style = RtStyle::default(),
+                1 => style = style.add_modifier(Modifier::BOLD),
+                2 => style = style.add_modifier(Modifier::DIM),
+                4 => style = style.add_modifier(Modifier::UNDERLINED),
+                n @ 30..=37 => style = style.fg(Color::Indexed((n - 30) as u8)),
+                n @ 90..=97 => style = style.fg(Color::Indexed((n - 90 + 8) as u8)),
+                38 if codes.get(i + 1) == Some(&2) && i + 4 < codes.len() => {
+                    let c = |k: usize| codes[k] as u8;
+                    style = style.fg(Color::Rgb(c(i + 2), c(i + 3), c(i + 4)));
+                    i += 4;
+                }
+                38 if codes.get(i + 1) == Some(&5) => {
+                    style = style.fg(Color::Indexed(codes.get(i + 2).copied().unwrap_or(0) as u8));
+                    i += 2;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    if !text.is_empty() {
+        spans.push(Span::styled(text, style));
+    }
+    Line::from(spans)
 }
 
 // ============================================================================
@@ -456,8 +563,21 @@ pub(crate) fn footer_spans(
     width: u16,
     accent: ratatui::style::Style,
     muted: ratatui::style::Style,
+    unicode: bool,
 ) -> Vec<ratatui::text::Span<'static>> {
     use ratatui::text::Span;
+
+    // A hint's keys may be arrows; a terminal without Unicode gets words, as
+    // every other glyph on these screens degrades.
+    let spell = |k: &str| -> String {
+        if unicode {
+            k.to_string()
+        } else {
+            k.replace("↑↓", "up/dn")
+                .replace('↑', "up")
+                .replace('↓', "dn")
+        }
+    };
 
     let mut ranked: Vec<(usize, &Hint)> = keys
         .iter()
@@ -471,7 +591,7 @@ pub(crate) fn footer_spans(
     for (i, h) in ranked {
         // The keys, a space, the word, and the three cells of gutter that
         // separate this hint from the next one.
-        let need = crate::render::width(h.keys) + 1 + crate::render::width(h.word) + 3;
+        let need = crate::render::width(&spell(h.keys)) + 1 + crate::render::width(h.word) + 3;
         if need > budget {
             continue;
         }
@@ -482,7 +602,7 @@ pub(crate) fn footer_spans(
 
     let mut spans = Vec::new();
     for (_, h) in taken {
-        spans.push(Span::styled(h.keys.to_string(), accent));
+        spans.push(Span::styled(spell(h.keys), accent));
         spans.push(Span::styled(format!(" {}   ", h.word), muted));
     }
     spans
@@ -533,6 +653,86 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `painted_line` is the seam between the printed renderers and the
+    /// screen that shows them (D123). It must read back every style the
+    /// painter writes, as the style `rt_style` would have drawn directly, or
+    /// `pick` would draw `list`'s rows in colours `list` never prints.
+    ///
+    /// The one deliberate difference is `dim` under `NO_COLOR`: the painter
+    /// drops it there (#234 item 7, §8's degradation table), and the seam
+    /// follows the painter, because the printed output is the reference.
+    #[test]
+    fn every_role_crosses_into_the_screen_as_the_style_it_was_painted() {
+        use ratatui::text::Span;
+        let depths = [
+            ColorDepth::Truecolor,
+            ColorDepth::Ansi256,
+            ColorDepth::Ansi16,
+            ColorDepth::None,
+        ];
+        for name in crate::theme::BUILTINS {
+            let th = crate::theme::load(name, None);
+            let mut styles: Vec<(String, Style)> = th
+                .role_names()
+                .into_iter()
+                .map(|r| (r.clone(), th.role(&r)))
+                .collect();
+            for t in [0.0, 0.5, 1.0] {
+                styles.push((format!("ramp {t}"), th.ramp_style(t)));
+                styles.push((format!("ramp {t} bold"), th.ramp_style(t).bold()));
+            }
+            for depth in depths {
+                let c = caps(depth, true);
+                for (role, style) in &styles {
+                    let mut painted = *style;
+                    if depth == ColorDepth::None {
+                        painted.dim = false;
+                    }
+                    let want = rt_style(painted, &c);
+                    let got = painted_line(&style.paint("cell", &c));
+                    assert_eq!(
+                        got.spans,
+                        vec![Span::styled("cell", want)],
+                        "{name} {role} at {depth:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Text is kept and styles end where the painter resets them; a byte that
+    /// is not the painter's own is never drawn.
+    #[test]
+    fn a_painted_line_keeps_its_text_and_drops_foreign_escapes() {
+        let c = caps(ColorDepth::Truecolor, true);
+        let accent = Style::fg(Rgb::new(1, 2, 3)).bold();
+        let line = painted_line(&format!("a {} b\x1b[2Jc\x07", accent.paint("x", &c)));
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "a x bc");
+        assert_eq!(line.spans[1].style.fg, Some(Color::Rgb(1, 2, 3)));
+        assert_eq!(line.spans[2].style, ratatui::style::Style::default());
+    }
+
+    /// Any escape that is not the painter's own SGR is dropped whole, not
+    /// just its ESC byte: an OSC title, a private CSI, a charset switch.
+    #[test]
+    fn a_foreign_escape_is_dropped_whole() {
+        let line = painted_line("a\x1b]0;evil\x07b\x1b[?25hc\x1b(Bd\x1b]2;t\x1b\\e");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "abcde");
+    }
+
+    /// `NO_COLOR` keeps bold and underline and drops everything else, dim
+    /// included (§8, #234 item 7) — on a screen as on the printed path, so a
+    /// `mono` screen does not dim what `list` prints plain.
+    #[test]
+    fn no_color_drops_dim_on_a_screen_too() {
+        let s = Style::fg(Rgb::new(1, 2, 3)).dim().bold();
+        let none = rt_style(s, &caps(ColorDepth::None, true));
+        assert!(!none.add_modifier.contains(Modifier::DIM), "{none:?}");
+        assert!(none.add_modifier.contains(Modifier::BOLD));
     }
 
     fn caps(depth: ColorDepth, ansi: bool) -> Caps {

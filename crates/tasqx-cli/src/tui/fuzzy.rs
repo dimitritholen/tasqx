@@ -5,9 +5,25 @@
 //! Every term must match some field as a subsequence, each term takes its
 //! best field, and a field's weight says how much a hit there counts.
 
-/// Score one row against already-lowercased `terms`, over lowercased `fields`
-/// with a weight each. `None` when some term matches no field at all, so the
-/// row is not a candidate; otherwise higher is better.
+/// Added when a term occurs in a name as a whole run rather than as letters
+/// spread through it: the word the reader typed beats the same letters inside
+/// another word (`tui` in "tasqx-tui-restyle" over `tui` in "punctuation").
+///
+/// Found on the memory browser (D121) and brought to `pick` by D123, so both
+/// screens rank a query by one rule.
+pub(crate) const WHOLE_BONUS: i64 = 400;
+
+/// One term against one NAME field (a title, a project, an id, a tag list):
+/// a subsequence, plus [`WHOLE_BONUS`] when the term occurs whole. `None`
+/// when the term is not a subsequence of the field at all.
+pub(crate) fn score_name(field: &str, term: &str) -> Option<i64> {
+    let whole = if field.contains(term) { WHOLE_BONUS } else { 0 };
+    score_subsequence(field, term).map(|s| s + whole)
+}
+
+/// Score one row against already-lowercased `terms`, over lowercased name
+/// `fields` with a weight each. `None` when some term matches no field at
+/// all, so the row is not a candidate; otherwise higher is better.
 ///
 /// Each term picks its OWN best-scoring field independently: the AND is
 /// "every term matches something", and only the order among candidates comes
@@ -19,7 +35,7 @@ pub(crate) fn score_terms(fields: &[String], weights: &[i64], terms: &[&str]) ->
         let best = fields
             .iter()
             .zip(weights)
-            .filter_map(|(f, w)| score_subsequence(f, t).map(|s| s + w))
+            .filter_map(|(f, w)| score_name(f, t).map(|s| s + w))
             .max()?;
         total += best;
     }
@@ -104,6 +120,28 @@ mod tests {
         let b = score_terms(&tag_hit, &w, &["memory"]).unwrap();
         assert!(a > b, "a title hit must outrank a tag hit: {a} vs {b}");
         assert_eq!(score_terms(&title_hit, &w, &["memory", "zzz"]), None);
+    }
+
+    /// D123, from D121: the word the reader typed beats the same letters
+    /// inside another word, on `pick` as on the memory browser.
+    #[test]
+    fn a_term_found_whole_outranks_its_letters_scattered() {
+        let w = [250, 250, 50, 50];
+        let scattered = [
+            "1".to_string(),
+            "fix punctuation in emails".to_string(),
+            "work".to_string(),
+            String::new(),
+        ];
+        let whole = [
+            "2".to_string(),
+            "house style".to_string(),
+            "tasqx-tui-restyle".to_string(),
+            String::new(),
+        ];
+        let a = score_terms(&scattered, &w, &["tui"]).unwrap();
+        let b = score_terms(&whole, &w, &["tui"]).unwrap();
+        assert!(b > a, "scattered {a} outranked whole {b}");
     }
 
     #[test]
