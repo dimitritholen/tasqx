@@ -536,8 +536,7 @@ struct TaskCols {
     tags: usize,
 }
 
-/// Cells between two columns.
-const GAP: usize = 2;
+use crate::columns::{self, Column, GAP};
 
 impl TaskCols {
     /// Floors: below these a column stops carrying information, so the table
@@ -575,20 +574,11 @@ impl TaskCols {
     /// status word or one glyph.
     const MAX_MARKER: usize = 11;
 
-    /// Everything left of `TASK`, plus the gap that follows it.
-    fn head_width(&self) -> usize {
-        self.rail + self.id + GAP + self.urg + GAP
-    }
-
-    /// The whole row, gaps included, absent columns costing nothing.
-    fn total(&self) -> usize {
-        let opt = |w: usize| if w == 0 { 0 } else { GAP + w };
-        self.head_width()
-            + self.title
-            + opt(self.marker)
-            + opt(self.project)
-            + opt(self.due)
-            + opt(self.tags)
+    /// Everything left of `TASK`, as one column the fitter never touches: the
+    /// rail is glued to the id with no gap, and the urgency cell is a
+    /// composite whose parts are sized by their own constants.
+    fn head(&self) -> usize {
+        self.rail + self.id + GAP + self.urg
     }
 
     /// Size the columns to the rows, then to the terminal.
@@ -659,64 +649,62 @@ impl TaskCols {
         c.project = c.project.min(Self::MAX_PROJECT);
         c.tags = c.tags.min(Self::MAX_TAGS);
 
-        // Over budget: take each cell from whichever column is currently WIDEST,
-        // down to its floor. Not "shrink the least important one first" — that
-        // was tried, and on a real store it cut `PROJECT` and `TAGS` to their
-        // floors while a 68-cell `TASK` column sat untouched, which is the same
-        // failure as the old fixed widths (one column keeping room it does not
-        // need while its neighbours are unreadable), just chosen dynamically.
-        // Taking from the widest converges on columns of comparable size, so
-        // what gets cut is whatever has the most left to lose.
-        //
-        // Ties go to the title: it is the one column whose first characters are
-        // rarely enough to identify the row.
-        let mut over = c.total().saturating_sub(budget);
-        while over > 0 {
-            // Order matters: `max_by_key` keeps the LAST of equal maxima, so
-            // the title comes first and is the last to be picked on a tie.
-            let mut cols: Vec<(&mut usize, usize)> = vec![
-                (&mut c.title, Self::MIN_TITLE),
-                (&mut c.due, Self::MIN_DUE),
-                (&mut c.project, Self::MIN_PROJECT),
-                (&mut c.tags, Self::MIN_TAGS),
-                (&mut c.marker, Self::MIN_MARKER),
-            ];
-            cols.retain(|(w, floor)| **w > *floor);
-            let Some((widest, _)) = cols.into_iter().max_by_key(|(w, _)| **w) else {
-                break; // every column is at its floor — see the drop pass below
-            };
-            *widest -= 1;
-            over -= 1;
-        }
-
-        // Still over, with every column at its floor: a narrow terminal that
-        // simply cannot hold this many columns. Drop them from the RIGHT until
-        // the row fits — positional, so a reader can predict which column goes
-        // without reading this function. A row that overflowed instead would
-        // wrap, and a wrapped row destroys the alignment of every column at
-        // once, which is worse than showing fewer of them.
-        if c.total() > budget {
-            c.tags = 0;
-        }
-        if c.total() > budget {
-            c.due = 0;
-        }
-        if c.total() > budget {
-            c.project = 0;
-        }
-        // STATUS goes last: on a store where at least one row is not open
-        // work, that fact is the reason to open the table at all, and
-        // TAGS/DUE/PROJECT are ordinary data by comparison.
-        if c.total() > budget {
-            c.marker = 0;
-        }
-        // The rail is never dropped. It costs two cells, it carries the two
-        // facts a reader most needs off a narrow terminal (what is running,
-        // what is stuck), and there is no smaller version of it to fall back
-        // to — which is exactly the position STATUS used to be in when it
-        // still held them, and lost.
+        // The shrink and drop passes are `columns::fit`'s, which is where they
+        // live for every table (#352). They were found HERE, on a real store:
+        // "shrink the least important column first" cut PROJECT and TAGS to
+        // their floors while a 68-cell TASK column sat untouched, so cells come
+        // off whichever column is widest, and ties go right, so TASK, the
+        // leftmost of these, is cut last. Among the rest, a tie cuts STATUS,
+        // then TAGS, then PROJECT, and DUE last: a date cut to `due 2026-0…`
+        // says nothing, while a project or tag cut by the same cell still
+        // identifies itself. At every floor and still over,
+        // columns drop from the right: TAGS, DUE, PROJECT, then STATUS. STATUS
+        // goes last because on a store where some row is not open work, that
+        // fact is the reason to open the table at all. The rail is never
+        // dropped. It costs two cells, it carries the two facts a reader most
+        // needs off a narrow terminal (what is running, what is stuck), and
+        // there is no smaller version of it to fall back to.
+        let w = columns::fit(
+            &[
+                Column::fixed(c.head()),
+                Column::shrinks(c.title, Self::MIN_TITLE),
+                Column::drops(c.marker, Self::MIN_MARKER).tie_rank(4),
+                Column::drops(c.project, Self::MIN_PROJECT).tie_rank(2),
+                Column::drops(c.due, Self::MIN_DUE).tie_rank(1),
+                Column::drops(c.tags, Self::MIN_TAGS).tie_rank(3),
+            ],
+            budget,
+        );
+        (c.title, c.marker, c.project, c.due, c.tags) = (w[1], w[2], w[3], w[4], w[5]);
         c
     }
+}
+
+/// The first line of a record, meaning its name and then a parenthetical saying
+/// what it is and where it came from, fitted to `cols` (#352).
+///
+/// `memory list` and `memory search` printed this line and the snippet under it
+/// at whatever length they came, so a source path wrapped the record on any
+/// narrow terminal. The name is what a record is recognised by, so the
+/// parenthetical gives way first. It is cut while a readable piece of it
+/// survives and dropped below that, and a name longer than the terminal is
+/// cut last.
+pub(crate) fn record_head(name: &str, meta: &str, cols: usize, unicode: bool) -> String {
+    /// Less of the parenthetical than this is noise: drop it instead.
+    const MIN_META: usize = 12;
+    let room = cols.saturating_sub(width(name) + 4);
+    if room >= width(meta) {
+        format!("{name}  ({meta})")
+    } else if room >= MIN_META {
+        format!("{name}  ({})", truncate(meta, room, unicode))
+    } else {
+        truncate(name, cols, unicode)
+    }
+}
+
+/// An indented line under a record, cut to the terminal rather than wrapped.
+pub(crate) fn record_line(text: &str, cols: usize, unicode: bool) -> String {
+    format!("  {}", truncate(text, cols.saturating_sub(2), unicode))
 }
 
 /// Right-align `s` in `w` CELLS. The `{:>w$}` this replaces pads by char count.
@@ -731,7 +719,7 @@ fn rpad(s: &str, w: usize) -> String {
 /// `role: None` is a deliberately unpainted cell (the title, an ordinary due
 /// date): the alternative is inventing a role name no theme file defines, which
 /// would read as themed and paint nothing.
-fn cell(ctx: &Ctx, role: Option<&str>, text: &str, w: usize) -> String {
+pub(crate) fn cell(ctx: &Ctx, role: Option<&str>, text: &str, w: usize) -> String {
     let t = truncate(text, w, ctx.caps.unicode);
     let padding = " ".repeat(w.saturating_sub(width(&t)));
     match role {
@@ -743,7 +731,7 @@ fn cell(ctx: &Ctx, role: Option<&str>, text: &str, w: usize) -> String {
 /// Cells between two columns, applied by the ONE joiner both the header and
 /// every row go through — so a dropped column cannot survive in one of them and
 /// not the other.
-fn join_cells(cells: Vec<String>) -> String {
+pub(crate) fn join_cells(cells: Vec<String>) -> String {
     cells.join(&" ".repeat(GAP)).trim_end().to_string()
 }
 
@@ -3019,29 +3007,97 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
             "No projects.\n".to_string()
         };
     }
-    let mut out = String::new();
     // D21: the leading column is the default marker. `projects` is THE read
     // surface for "where does a bare `tasqx add` land?" — a fact that drove
     // behavior while being shown nowhere.
-    out.push_str(&ctx.paint(
-        "header",
-        &format!(
-            "{:<7}  {:<24}  {:<9}  {}",
-            "DEFAULT", "PROJECT", "ARCHIVED", "DESCRIPTION"
-        ),
-    ));
+    struct Row {
+        default: &'static str,
+        name: String,
+        archived: &'static str,
+        desc: String,
+    }
+    let rows: Vec<Row> = projects
+        .iter()
+        .map(|p| Row {
+            default: if p.get("default").and_then(Value::as_bool).unwrap_or(false) {
+                "*"
+            } else {
+                ""
+            },
+            name: s(p, "name"),
+            archived: if p.get("archived").and_then(Value::as_bool).unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            },
+            desc: san(p.get("description").and_then(Value::as_str).unwrap_or("")),
+        })
+        .collect();
+
+    // Laid out on `columns::fit` like `list` (#352). It used to be
+    // `format!("{:<7}  {:<24}  {:<9}  {}")`: a project name past 24 cells
+    // pushed its row out of line, and DESCRIPTION had no end at all, so on an
+    // 80-column terminal every described project wrapped and took the grid
+    // with it. The name gives way before it would wrap, down to a floor that
+    // still tells projects apart. DESCRIPTION gives first, being the widest,
+    // and is the first to go. A store where no project has one gets no
+    // column for it (D51).
+    const MIN_PROJECT: usize = 12;
+    const MAX_PROJECT: usize = 32;
+    const MIN_DESC: usize = 12;
+    let desc_w = rows.iter().map(|r| width(&r.desc)).max().unwrap_or(0);
+    let name_w = rows
+        .iter()
+        .map(|r| width(&r.name))
+        .max()
+        .unwrap_or(0)
+        .max(width("PROJECT"))
+        .min(MAX_PROJECT);
+    let w = columns::fit(
+        &[
+            Column::fixed(width("DEFAULT")),
+            Column::shrinks(name_w, MIN_PROJECT.min(name_w)),
+            Column::drops(width("ARCHIVED"), width("ARCHIVED")),
+            Column::drops(
+                if desc_w == 0 {
+                    0
+                } else {
+                    desc_w.max(width("DESCRIPTION"))
+                },
+                MIN_DESC,
+            ),
+        ],
+        ctx.cols,
+    );
+    let row = |cells: [(Option<&str>, &str); 4]| {
+        join_cells(
+            cells
+                .iter()
+                .zip(&w)
+                .filter(|(_, w)| **w > 0)
+                .map(|((role, text), w)| cell(ctx, *role, text, *w))
+                .collect(),
+        )
+    };
+
+    let mut out = ctx.paint(
+        "table.label",
+        &row([
+            (None, "DEFAULT"),
+            (None, "PROJECT"),
+            (None, "ARCHIVED"),
+            (None, "DESCRIPTION"),
+        ]),
+    );
     out.push('\n');
-    for p in projects {
-        let name = s(p, "name");
-        let archived = p.get("archived").and_then(Value::as_bool).unwrap_or(false);
-        let is_default = p.get("default").and_then(Value::as_bool).unwrap_or(false);
-        let desc = san(p.get("description").and_then(Value::as_str).unwrap_or(""));
-        out.push_str(&format!(
-            "{:<7}  {}  {:<9}  {desc}\n",
-            if is_default { "*" } else { "" },
-            ctx.paint("project", &pad(&name, 24)),
-            if archived { "yes" } else { "no" }
-        ));
+    for r in &rows {
+        out.push_str(&row([
+            (None, r.default),
+            (Some("project"), &r.name),
+            (None, r.archived),
+            (None, &r.desc),
+        ]));
+        out.push('\n');
     }
     out
 }
@@ -3097,50 +3153,6 @@ pub fn report(
         })
     });
 
-    // #234 item 2: the group_by column used to be a hardcoded 20 cells —
-    // wide enough for most project names, and silent about the rest: a name
-    // past it (`code-review-2026-07` is 19, `eblinqx-claude-plugins` is 22)
-    // was never truncated, so it pushed every column after it to the right
-    // by the overflow, and a table's whole point — scanning a column of
-    // counts straight down — broke on exactly the rows most likely to be
-    // long project names. Sized from the data actually being printed
-    // instead, the same idea `TaskCols` already uses for `list`.
-    const MIN_KEY: usize = 8;
-    const MAX_KEY: usize = 32;
-    let header_label = group_by.to_uppercase();
-    let key_w = groups
-        .iter()
-        .map(|g| width(&san(g.get(group_by).and_then(Value::as_str).unwrap_or(""))))
-        .max()
-        .unwrap_or(0)
-        .max(width(&header_label))
-        .clamp(MIN_KEY, MAX_KEY);
-    // And respect COLUMNS: shrink the one column this table can shrink
-    // rather than let the row run past a narrow terminal uncorrected.
-    let suffix_w = if show_all_tokens {
-        5 + 2 + 10 + 2 + 7 + 2 + 10 + 4 * (2 + 8)
-    } else {
-        5 + 2 + 10 + 2 + 7 + 2 + 10 + 2 + 12
-    };
-    let key_w = key_w
-        .min(ctx.cols.saturating_sub(suffix_w + 2))
-        .max(MIN_KEY);
-
-    let mut out = String::new();
-    let mut header = format!(
-        "{:<key_w$}  {:>5}  {:>10}  {:>7}  {:>10}",
-        header_label, "COUNT", "EST", "OVERDUE", "TRACKED",
-    );
-    if show_all_tokens {
-        for (_, short, _) in crate::tokens::BUCKETS {
-            header.push_str(&format!("  {:>8}", short.to_uppercase()));
-        }
-    } else {
-        header.push_str(&format!("  {:>12}", "TOKENS"));
-    }
-    out.push_str(&ctx.paint("header", &header));
-    out.push('\n');
-
     // Totals (#234 item 5), accumulated alongside the rows — the report
     // already holds every group before rendering, so this cannot drift from
     // what the rows above it show the way a second, independent sum could.
@@ -3160,7 +3172,30 @@ pub fn report(
         Some(c) if c != tasqx_core::tokens::CONFIDENCE_HIGH => format!("{cell} ~{c}"),
         _ => cell,
     };
+    // The token cells of one row: all four buckets, or the one that dominates.
+    let token_cells = |g: &Value, confidence: Option<&str>| -> Vec<String> {
+        if show_all_tokens {
+            crate::tokens::BUCKETS
+                .iter()
+                .map(|(bkey, _, _)| {
+                    crate::tokens::compact(g.get(*bkey).and_then(Value::as_i64).unwrap_or(0))
+                })
+                .collect()
+        } else {
+            vec![mark_confidence(crate::tokens::dominant_cell(g), confidence)]
+        }
+    };
 
+    // Every cell is measured before any is printed, so the columns can be
+    // sized to what they hold (#352). The numeric columns were a fixed 10 or
+    // 12 cells whatever they held, so on a 60-column terminal the key was
+    // crushed to `code-...` and the row still ran two cells past the edge.
+    struct Row {
+        key: String,
+        overdue: i64,
+        cells: Vec<String>,
+    }
+    let mut rows: Vec<Row> = Vec::new();
     for g in groups {
         let key = san(g.get(group_by).and_then(Value::as_str).unwrap_or(""));
         let count = g.get("count").and_then(Value::as_i64).unwrap_or(0);
@@ -3196,34 +3231,18 @@ pub fn report(
             }
         }
 
-        let overdue_cell = format!("{overdue:>7}");
-        let overdue_p = if overdue > 0 {
-            ctx.paint("warn", &overdue_cell)
-        } else {
-            ctx.paint("muted", &overdue_cell)
-        };
-        let mut line = format!(
-            "{}  {count:>5}  {:>10}  {overdue_p}  {:>10}",
-            ctx.paint(
-                "project",
-                &pad(&truncate(&key, key_w, ctx.caps.unicode), key_w)
-            ),
+        let mut cells = vec![
+            count.to_string(),
             human_or_dash(est_iso),
+            overdue.to_string(),
             human_or_dash(tracked_iso),
-        );
-        if show_all_tokens {
-            for (bkey, _, _) in crate::tokens::BUCKETS {
-                let n = g.get(bkey).and_then(Value::as_i64).unwrap_or(0);
-                line.push_str(&format!("  {:>8}", crate::tokens::compact(n)));
-            }
-        } else {
-            line.push_str(&format!(
-                "  {:>12}",
-                mark_confidence(crate::tokens::dominant_cell(g), confidence)
-            ));
-        }
-        out.push_str(&line);
-        out.push('\n');
+        ];
+        cells.extend(token_cells(g, confidence));
+        rows.push(Row {
+            key,
+            overdue,
+            cells,
+        });
     }
 
     // The totals row — same columns, same widths, "TOTAL" where a group name
@@ -3234,41 +3253,121 @@ pub fn report(
         "tokens_in": total_bucket.get("tokens_in").copied().unwrap_or(0),
         "tokens_out": total_bucket.get("tokens_out").copied().unwrap_or(0),
     });
-    let mut total_line = format!(
-        "{}  {total_count:>5}  {:>10}  {:>7}  {:>10}",
-        ctx.paint(
-            "header",
-            &pad(&truncate("TOTAL", key_w, ctx.caps.unicode), key_w)
-        ),
+    let mut total_cells = vec![
+        total_count.to_string(),
         human_or_dash(&tasqx_core::util::iso_duration(total_est_secs)),
-        total_overdue,
+        total_overdue.to_string(),
         human_or_dash(&tasqx_core::util::iso_duration(total_tracked_secs)),
-    );
+    ];
+    total_cells.extend(token_cells(&total_row, total_confidence));
+
+    let header_label = group_by.to_uppercase();
+    let mut labels = vec![
+        "COUNT".to_string(),
+        "EST".to_string(),
+        "OVERDUE".to_string(),
+        "TRACKED".to_string(),
+    ];
     if show_all_tokens {
-        for (bkey, _, _) in crate::tokens::BUCKETS {
-            let n = total_bucket.get(bkey).copied().unwrap_or(0);
-            total_line.push_str(&format!("  {:>8}", crate::tokens::compact(n)));
-        }
+        labels.extend(
+            crate::tokens::BUCKETS
+                .iter()
+                .map(|(_, short, _)| short.to_uppercase()),
+        );
     } else {
-        total_line.push_str(&format!(
-            "  {:>12}",
-            mark_confidence(crate::tokens::dominant_cell(&total_row), total_confidence)
-        ));
+        labels.push("TOKENS".to_string());
     }
-    out.push_str(&ctx.paint("header", &total_line));
+
+    // #234 item 2: the group_by column was once a hardcoded 20 cells, and a
+    // name past it pushed every column after it to the right. It is sized to
+    // its names, capped, and it is the one column that gives when the
+    // terminal is narrow. Every other column is a number, and a number cut to
+    // fit is a different number, while one dropped to fit hides a bucket the
+    // reader may have asked for by name (`--metrics tokens_in`). Past the
+    // key's floor the row overflows.
+    const MIN_KEY: usize = 8;
+    const MAX_KEY: usize = 32;
+    let key_w = rows
+        .iter()
+        .map(|r| width(&r.key))
+        .chain([width(&header_label), width("TOTAL")])
+        .max()
+        .unwrap_or(0)
+        .min(MAX_KEY);
+    let mut cols = vec![Column::shrinks(key_w, MIN_KEY.min(key_w))];
+    for (n, label) in labels.iter().enumerate() {
+        let w = rows
+            .iter()
+            .map(|r| width(&r.cells[n]))
+            .chain([width(label), width(&total_cells[n])])
+            .max()
+            .unwrap_or(0);
+        cols.push(Column::fixed(w));
+    }
+    let w = columns::fit(&cols, ctx.cols);
+
+    // One line: the key cell, then every other cell right-aligned. The padding
+    // goes OUTSIDE any paint, so `join_cells` can trim the end and the
+    // escapes never count as width.
+    let line = |key: String, cells: Vec<(Option<&str>, String)>| {
+        let mut parts = vec![key];
+        for ((role, c), cw) in cells.into_iter().zip(&w[1..]) {
+            if *cw == 0 {
+                continue;
+            }
+            let pad = " ".repeat(cw.saturating_sub(width(&c)));
+            let c = match role {
+                Some(r) => ctx.paint(r, &c),
+                None => c,
+            };
+            parts.push(format!("{pad}{c}"));
+        }
+        join_cells(parts)
+    };
+    let plain = |cells: Vec<String>| cells.into_iter().map(|c| (None, c)).collect::<Vec<_>>();
+
+    let mut out = ctx.paint(
+        "table.label",
+        &line(pad(&header_label, w[0]), plain(labels)),
+    );
+    out.push('\n');
+    for r in rows {
+        // OVERDUE is `warn` when there is any and `muted` when there is none.
+        let overdue_role = if r.overdue > 0 { "warn" } else { "muted" };
+        let cells = r
+            .cells
+            .into_iter()
+            .enumerate()
+            .map(|(n, c)| ((n == 2).then_some(overdue_role), c))
+            .collect();
+        out.push_str(&line(cell(ctx, Some("project"), &r.key, w[0]), cells));
+        out.push('\n');
+    }
+    out.push_str(&ctx.paint(
+        "header",
+        &line(cell(ctx, None, "TOTAL", w[0]), plain(total_cells)),
+    ));
     out.push('\n');
 
-    // Footnotes — printed only when they have something to say.
+    // Footnotes — printed only when they have something to say, and wrapped
+    // at words to the terminal: the legend is one 171-cell sentence, which a
+    // narrow terminal otherwise broke mid-word on its own (#352).
+    let footnote = |out: &mut String, text: &str| {
+        for line in wrap_words(text, ctx.cols) {
+            out.push_str(&ctx.paint("muted", &line));
+            out.push('\n');
+        }
+    };
     if any_tokens && !show_all_tokens {
         // #212 (D48a, challenges-design — see the commit and the report for
         // the reasoning): the cell above is one bucket of four, ranked by
         // volume rather than a priced ratio (D48a's own wording), and until
         // now the terminal gave no way to see the other three at all.
-        out.push_str(&ctx.paint(
-            "muted",
+        footnote(
+            &mut out,
             "TOKENS shows the largest of four buckets (cacheR/cacheW/in/out) by volume; \
-             --metrics tokens_in,tokens_out,tokens_cache_read,tokens_cache_creation or --html shows all four.\n",
-        ));
+             --metrics tokens_in,tokens_out,tokens_cache_read,tokens_cache_creation or --html shows all four.",
+        );
     }
     let excluded = result
         .get("tokens_excluded_cancelled_tasks")
@@ -3278,10 +3377,10 @@ pub fn report(
         // #234 item 12: D24 excludes cancelled tasks from this report by
         // default (right for counting abandoned work; silent about the spend
         // already incurred on it, which this line stops being silent about).
-        out.push_str(&ctx.paint(
-            "muted",
-            &format!("{excluded} cancelled task(s) excluded; --all includes their spend.\n"),
-        ));
+        footnote(
+            &mut out,
+            &format!("{excluded} cancelled task(s) excluded; --all includes their spend."),
+        );
     }
     out
 }
@@ -5367,6 +5466,32 @@ mod tests {
         assert_eq!(mass(1.0), 16, "a full gauge is four full cells");
     }
 
+    /// On a tie between PROJECT and DUE, PROJECT gives the cell.
+    ///
+    /// `columns::fit` breaks ties to the right by default, which cut `agenda`'s
+    /// overdue dates to `due 2026-0…` on an 80-column terminal while the
+    /// project beside them kept its full width. The order the table had before
+    /// the shared fitter, STATUS then TAGS then PROJECT then DUE, is carried
+    /// as `tie_rank`s. A cut project name still identifies itself; a cut date
+    /// says nothing.
+    #[test]
+    fn on_a_tie_the_project_gives_before_the_date() {
+        let mut r = task_row(
+            &json!({ "short_id": 1, "urgency": 1.0, "priority": "M",
+                     "title": "t".repeat(14), "project": "p".repeat(14),
+                     "status": "pending" }),
+            Timestamp::now(),
+            false,
+        );
+        r.due = "d".repeat(14);
+        let natural = TaskCols::fit(std::slice::from_ref(&r), 200, "DUE", false);
+        assert_eq!((natural.project, natural.due), (14, 14), "not a tie");
+        let budget =
+            columns::total(&[natural.head(), natural.title, natural.project, natural.due]) - 1;
+        let c = TaskCols::fit(std::slice::from_ref(&r), budget, "DUE", false);
+        assert_eq!((c.project, c.due), (13, 14));
+    }
+
     /// The gauge glyphs on the row carrying `title`, and nothing else.
     fn gauge_of(out: &str, title: &str) -> String {
         out.lines()
@@ -5738,6 +5863,60 @@ mod tests {
             !row.contains("13900820") && !row.contains("13.9M"),
             "the blended total reached the terminal: {row:?}"
         );
+    }
+
+    /// #352: a narrow terminal never hides a bucket that was asked for.
+    ///
+    /// On the shared fitter the four token columns were first made droppable,
+    /// and at 60 columns `report --metrics tokens_in` drew CACHER and CACHEW
+    /// and silently lost IN and OUT: the very bucket the flag named, and half
+    /// of D48(a)'s "four, never blended". A number is not a column to give way.
+    /// The key does, down to its floor, and past that the row overflows.
+    #[test]
+    fn a_narrow_report_keeps_every_bucket_it_was_asked_for() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(60);
+        let metrics = vec!["tokens_in".to_string()];
+        let out = report(
+            &ctx,
+            &json!({ "groups": [
+                { "project": "P", "count": 1, "est_total": "PT1H", "overdue": 0,
+                  "tracked_total": "PT2H",
+                  "tokens_in": 136, "tokens_out": 83_479,
+                  "tokens_cache_read": 13_630_240, "tokens_cache_creation": 186_965 }
+            ] }),
+            "project",
+            Some(&metrics),
+        );
+        let header = out.lines().next().unwrap();
+        for (_, short, _) in crate::tokens::BUCKETS {
+            assert!(
+                header.contains(&short.to_uppercase()),
+                "{short} was dropped at 60 columns: {header:?}"
+            );
+        }
+    }
+
+    /// #352: the report's footnotes wrap at word boundaries to the terminal.
+    ///
+    /// The TOKENS legend is one 171-cell sentence, which a 60-column terminal
+    /// broke mid-word on its own, three times.
+    #[test]
+    fn a_narrow_reports_footnotes_wrap_at_words() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(60);
+        let out = report(
+            &ctx,
+            &json!({ "groups": [
+                { "project": "P", "count": 1, "est_total": "PT1H", "overdue": 0,
+                  "tracked_total": "PT2H", "tokens_cache_read": 13_630_240 }
+            ], "tokens_excluded_cancelled_tasks": 3 }),
+            "project",
+            None,
+        );
+        assert!(out.contains("largest of four"), "no legend: {out}");
+        assert!(out.contains("--all includes"), "no exclusion note: {out}");
+        for line in out.lines() {
+            assert!(width(line) <= 60, "{} cells at 60: {line:?}", width(line));
+        }
     }
 
     /// #217: `report.summary` carries a `tokens_confidence` field alongside

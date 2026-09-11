@@ -756,7 +756,7 @@ pub(crate) fn run_report(
 }
 
 /// `tasqx memory add|search|rm|import` (DESIGN.md §12-D41).
-pub(crate) fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome {
+pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> CmdOutcome {
     match action {
         MemoryAction::Add {
             title,
@@ -803,7 +803,12 @@ pub(crate) fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome 
                 let src = render::san(hit["source"].as_str().unwrap_or("—"));
                 let snip = render::san(hit["snippet"].as_str().unwrap_or(""));
                 let id = render::san(hit["id"].as_str().unwrap_or("?"));
-                text.push_str(&format!("{title}  ({kind} · {src})\n  {snip}\n  id {id}\n"));
+                let (cols, uni) = (ctx.cols, ctx.caps.unicode);
+                text.push_str(&format!(
+                    "{}\n{}\n  id {id}\n",
+                    render::record_head(&title, &format!("{kind} · {src}"), cols, uni),
+                    render::record_line(&snip, cols, uni),
+                ));
             }
             let count = result["count"].as_u64().unwrap_or(0);
             let total = result["total"].as_u64().unwrap_or(count);
@@ -862,7 +867,12 @@ pub(crate) fn run_memory(be: &mut Backend, action: &MemoryAction) -> CmdOutcome 
                 let src = render::san(doc["source"].as_str().unwrap_or("—"));
                 let preview = render::san(doc["body_preview"].as_str().unwrap_or(""));
                 let id = render::san(doc["id"].as_str().unwrap_or("?"));
-                text.push_str(&format!("{title}  ({src})\n  {preview}\n  id {id}\n"));
+                let (cols, uni) = (ctx.cols, ctx.caps.unicode);
+                text.push_str(&format!(
+                    "{}\n{}\n  id {id}\n",
+                    render::record_head(&title, &src, cols, uni),
+                    render::record_line(&preview, cols, uni),
+                ));
             }
             let count = result["count"].as_u64().unwrap_or(0);
             let total = result["total"].as_u64().unwrap_or(count);

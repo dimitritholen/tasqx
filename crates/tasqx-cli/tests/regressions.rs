@@ -2858,6 +2858,80 @@ fn an_out_of_range_date_is_refused_in_this_tools_words() {
     );
 }
 
+/// #352: every table `tasqx` prints fits the terminal it is printed on.
+///
+/// `projects` laid itself out with `format!("{:<7}  {:<24}  {:<9}  {}")` and an
+/// unbounded DESCRIPTION, `config list` sized to its content and never to the
+/// terminal, `report` read the width but kept every numeric column at a fixed
+/// 10 or 12 cells and so still overflowed at 60, and the memory records
+/// printed a fixed-length snippet whatever the width. A terminal wraps an
+/// over-long row, and a wrapped row destroys the alignment of every column at
+/// once, the failure `TaskCols::fit` exists to prevent in `list`.
+///
+/// Every violation is collected before failing, so one red run names all the
+/// surfaces rather than the first.
+#[test]
+fn every_table_fits_a_sixty_column_terminal() {
+    use unicode_width::UnicodeWidthStr;
+
+    let dir = fresh_config_dir("narrow-tables");
+    let run = |args: &[&str]| {
+        bin("narrow-tables", &dir)
+            .env("COLUMNS", "60")
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let long = "a description long enough that no sixty-column terminal \
+                could hold it on one line beside the rest of its row";
+    for args in [
+        &["init", "reporting-redesign-for-width", "--desc", long][..],
+        &["init", "second"],
+        &["add", "estimate me", "est:4h"],
+        &[
+            "memory",
+            "add",
+            "A memory title long enough to overflow a narrow terminal by itself",
+            long,
+            "--source",
+            "docs/some/deeply/nested/path/to/a/source-file.md",
+        ],
+    ] {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "seeding `{}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let mut over = Vec::new();
+    for args in [
+        &["projects"][..],
+        &["config", "list"],
+        &["report"],
+        &["memory", "list"],
+        &["memory", "search", "memory"],
+    ] {
+        let out = run(args);
+        assert!(out.status.success(), "`tasqx {}` failed", args.join(" "));
+        let text = String::from_utf8(out.stdout).expect("UTF-8");
+        for line in text.lines().filter(|l| l.width() > 60) {
+            over.push(format!(
+                "tasqx {} ({}): {line}",
+                args.join(" "),
+                line.width()
+            ));
+        }
+    }
+    assert!(
+        over.is_empty(),
+        "lines wider than a 60-column terminal:\n{}",
+        over.join("\n")
+    );
+}
+
 /// D119's `theme show` ramp line fits the terminal it is printed on.
 ///
 /// The band preview carries a note saying what 12 means, and at 60 columns the
@@ -2895,9 +2969,10 @@ fn the_theme_show_ramp_line_fits_and_drops_its_note_rather_than_wrap() {
 }
 
 /// The same char-vs-cell rule on `tasqx config list`, whose VALUE column carries
-/// a project name the user chose. This one is padded but never truncated: the
-/// value is the data the reader came to read, so overflowing the cell is a cost
-/// worth paying and silently cutting it is not.
+/// a project name the user chose. The value is the data the reader came to
+/// read, so it is kept whole wherever the terminal can hold it. Only a
+/// terminal too narrow for it gets an ellipsis, since a wrapped row would
+/// break every column (#352), and `config get` prints the value whole.
 #[test]
 fn the_config_table_stays_aligned_when_a_value_is_not_ascii() {
     use unicode_width::UnicodeWidthStr;

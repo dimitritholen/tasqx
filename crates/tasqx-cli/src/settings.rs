@@ -993,64 +993,81 @@ pub(crate) fn settings_loop(
 /// column is the point — the question behind a surprising setting is always
 /// "which layer won", and a bare value cannot answer it.
 pub(crate) fn render_config_table(ctx: &Ctx, rows: &[Value]) -> String {
-    // Widths come from the rows about to be printed, floored at the layout this
-    // table has always had (D51's rule, one table over). They were plain `18`
-    // and `22`, and both are guesses about data the renderer is holding: the
-    // registry grew a `daemon.idle_timeout` (19 cells), which overflowed the
-    // key column and shoved SOURCE one cell right on that row alone — the
-    // misalignment `the_config_table_stays_aligned_when_a_value_is_not_ascii`
-    // exists to catch, arriving from the column that was never suspected.
-    // Padded, never truncated: a key and a value are the data the reader came
-    // for, and this table is where they read it.
-    let cells =
-        |v: &Value, field: &str| -> usize { render::width(v[field].as_str().unwrap_or("")) };
-    let key_w = rows
-        .iter()
-        .map(|r| cells(r, "key"))
-        .max()
-        .unwrap_or(0)
-        .max(18);
-    let val_w = rows
-        .iter()
-        .map(|r| {
-            let w = cells(r, "value");
-            // The empty value renders as `(unset)`, which is what has to fit.
-            if w == 0 {
-                render::width("(unset)")
-            } else {
-                w
-            }
-        })
-        .max()
-        .unwrap_or(0)
-        .max(22);
-    let mut out = String::new();
-    out.push_str(&format!(
-        "{}\n",
-        ctx.paint(
-            "header",
-            &format!(
-                "{} {} {}",
-                render::pad("SETTING", key_w),
-                render::pad("VALUE", val_w),
-                "SOURCE"
-            )
+    use crate::columns::{self, Column};
+
+    // Widths come from the rows about to be printed (D51's rule, one table
+    // over), then from the terminal (#352). They were plain `18` and `22`, and
+    // both were guesses about data the renderer was holding: the registry grew
+    // a `daemon.idle_timeout` (19 cells), which overflowed the key column and
+    // shoved SOURCE one cell right on that row alone. That is the misalignment
+    // `the_config_table_stays_aligned_when_a_value_is_not_ascii` exists to
+    // catch, arriving from the column that was never suspected. Then the table
+    // was sized to its content and never to the terminal, so a long value
+    // wrapped the row on a narrow one.
+    //
+    // A key and a value are the data the reader came for, so neither is cut
+    // while the terminal can hold it, and the value keeps a wide floor.
+    // SOURCE is where a setting came from, which matters less than what it
+    // is, and it is what goes first. `config get <key>` prints a cut value
+    // whole.
+    let field = |r: &Value, name: &str| r[name].as_str().unwrap_or("").to_string();
+    // The empty value renders as `(unset)`, which is what has to fit.
+    let shown = |r: &Value| {
+        let v = field(r, "value");
+        if v.is_empty() {
+            "(unset)".to_string()
+        } else {
+            v
+        }
+    };
+    let widest = |f: &dyn Fn(&Value) -> String, label: &str| {
+        rows.iter()
+            .map(|r| render::width(&f(r)))
+            .max()
+            .unwrap_or(0)
+            .max(render::width(label))
+    };
+    let key_w = widest(&|r| field(r, "key"), "SETTING");
+    let val_w = widest(&shown, "VALUE");
+    let src_w = widest(&|r| field(r, "source"), "SOURCE");
+    let w = columns::fit(
+        &[
+            Column::shrinks(key_w, key_w.min(12)),
+            Column::shrinks(val_w, val_w.min(24)),
+            Column::drops(src_w, src_w),
+        ],
+        ctx.cols,
+    );
+    let line = |cells: [(Option<&str>, String); 3]| {
+        render::join_cells(
+            cells
+                .iter()
+                .zip(&w)
+                .filter(|(_, w)| **w > 0)
+                .map(|((role, text), w)| render::cell(ctx, *role, text, *w))
+                .collect(),
         )
-    ));
+    };
+
+    let mut out = ctx.paint(
+        "table.label",
+        &line([
+            (None, "SETTING".into()),
+            (None, "VALUE".into()),
+            (None, "SOURCE".into()),
+        ]),
+    );
+    out.push('\n');
     for r in rows {
-        let key = r["key"].as_str().unwrap_or("");
-        let val = r["value"].as_str().unwrap_or("");
-        let src = r["source"].as_str().unwrap_or("");
-        let shown = if val.is_empty() { "(unset)" } else { val };
-        // `render::pad` measures terminal CELLS, not chars, so a value carrying
-        // CJK or an emoji — an editor path, a project name — no longer shoves
-        // the SOURCE column sideways.
-        out.push_str(&format!(
-            "{} {} {}\n",
-            render::pad(key, key_w),
-            render::pad(shown, val_w),
-            ctx.paint("muted", src)
-        ));
+        // `render::cell` measures terminal CELLS, not chars, so a value
+        // carrying CJK or an emoji — an editor path, a project name — does
+        // not shove the SOURCE column sideways.
+        out.push_str(&line([
+            (None, field(r, "key")),
+            (None, shown(r)),
+            (Some("muted"), field(r, "source")),
+        ]));
+        out.push('\n');
     }
     out
 }
