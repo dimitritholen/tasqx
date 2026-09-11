@@ -2858,6 +2858,42 @@ fn an_out_of_range_date_is_refused_in_this_tools_words() {
     );
 }
 
+/// D119's `theme show` ramp line fits the terminal it is printed on.
+///
+/// The band preview carries a note saying what 12 means, and at 60 columns the
+/// line ran to 66 and wrapped. The note is dropped rather than the line cut,
+/// because the swatches and their band starts are the preview and the note
+/// only explains it (`docs/terminal-style.md` rule 9). It returns at a width
+/// that holds it.
+#[test]
+fn the_theme_show_ramp_line_fits_and_drops_its_note_rather_than_wrap() {
+    use unicode_width::UnicodeWidthStr;
+
+    let dir = fresh_config_dir("theme-show-width");
+    let show = |cols: &str| {
+        let out = bin("theme-show-width", &dir)
+            .env("COLUMNS", cols)
+            .args(["theme", "show", "nord"])
+            .output()
+            .expect("run tasqx");
+        String::from_utf8(out.stdout).expect("UTF-8")
+    };
+
+    let narrow = show("60");
+    let ramp = narrow
+        .lines()
+        .find(|l| l.contains("urgency.ramp"))
+        .unwrap_or_else(|| panic!("no ramp line:\n{narrow}"));
+    assert!(ramp.width() <= 60, "{} cells at 60: {ramp:?}", ramp.width());
+    assert!(ramp.contains(" 12"), "the band starts were cut: {ramp:?}");
+
+    let wide = show("100");
+    assert!(
+        wide.contains("as urgent as overdue"),
+        "the note is gone even where it fits:\n{wide}"
+    );
+}
+
 /// The same char-vs-cell rule on `tasqx config list`, whose VALUE column carries
 /// a project name the user chose. This one is padded but never truncated: the
 /// value is the data the reader came to read, so overflowing the cell is a cost
