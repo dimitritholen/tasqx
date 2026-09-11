@@ -3,6 +3,10 @@
 **Task management for your terminal — and for the AI agents working beside
 you.**
 
+<!-- Screenshots come from an invented demo store, never a real one:
+     scripts/demo-store.py builds it, and its docstring has the render lines. -->
+![The tasqx dashboard: projects, a burndown, pulse and effort beside the working set grouped by project](docs/img/dashboard.png)
+
 One binary. One SQLite file on your own disk. No account, no cloud, no service
 reading your backlog. Capture a task in one line, ask what to do next, and get
 an answer you can interrogate:
@@ -162,6 +166,8 @@ caveat for automation: a script or agent that allocates a pty looks
 interactive, and a bare `tasqx` there opens a screen that waits for a key. So
 in anything automated, spell the verb — `tasqx list` always means the table.
 
+![tasqx list: a running task and an overdue one, each row with a priority, an urgency gauge and a calendar date](docs/img/list.png)
+
 ## Give your agent a backlog and a memory
 
 ```console
@@ -240,6 +246,8 @@ echo '{"tasqx":"1","method":"task.list","params":{"filter":"@working"}}' | tasqx
   heatmap / burndown charts drawn from the event log, or a self-contained
   themed HTML page with zero external requests. Five built-in themes, and
   output degrades cleanly down to a colorless terminal.
+
+  ![The HTML weekly review: headline counts, then what needs attention](docs/img/report.png)
 - **Built for scripts too.** Every command with a result takes `--json`;
   exit codes mean something (`0` ok, `2` bad request, `4` not found,
   `5` conflict) and don't change. A live daemon (`tasqx daemon`) gives many

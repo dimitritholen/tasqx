@@ -34,6 +34,9 @@ shift 3
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=${OUT:-$root/target/snaps}
 mkdir -p "$out"
+# Absolute, because Chrome is handed a file:// URL built from it and a relative
+# path there is ERR_INVALID_URL, which it screenshots as a picture of an error.
+out=$(cd "$out" && pwd)
 svg="$out/$name-w$width.svg"
 png="$out/$name-w$width.png"
 

@@ -13,6 +13,8 @@
 # Env:
 #   TASQX     binary to drive (default: the tasqx on PATH)
 #   TASQX_DB  store to read (MANDATORY for a dev build — see CLAUDE.md)
+#   TASQX_CONFIG_DIR  config to read, passed into the pane like TASQX_DB (the
+#             pane's shell does not inherit this one's environment)
 #   THEME     passed through as --theme
 #   KEYS      space-separated keys to send before capturing, e.g. "] j"
 #   SETTLE    seconds to wait for the first paint (default 2)
@@ -38,6 +40,9 @@ shift 4
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=${OUT:-$root/target/snaps}
 mkdir -p "$out"
+# Absolute, because Chrome is handed a file:// URL built from it and a relative
+# path there is ERR_INVALID_URL, which it screenshots as a picture of an error.
+out=$(cd "$out" && pwd)
 ansi=$(mktemp)
 svg="$out/$name-${cols}x${rows}.svg"
 png="$out/$name-${cols}x${rows}.png"
@@ -53,7 +58,7 @@ trap cleanup EXIT
 # screen reads. Without them a detached session gets tmux's 80x24 default and
 # every width test measures the same screen.
 tmux new-session -d -s "$session" -x "$cols" -y "$rows" \
-    "TASQX_DB='${TASQX_DB:-}' ${TASQX:-tasqx} ${THEME:+--theme $THEME} $* ; sleep 300"
+    "TASQX_DB='${TASQX_DB:-}' ${TASQX_CONFIG_DIR:+TASQX_CONFIG_DIR='$TASQX_CONFIG_DIR'} ${TASQX:-tasqx} ${THEME:+--theme $THEME} $* ; sleep 300"
 
 sleep "${SETTLE:-2}"
 
@@ -63,6 +68,13 @@ for key in ${KEYS:-}; do
 done
 
 tmux capture-pane -p -e -t "$session" >"$ansi"
+
+# freeze ignores SGR 39 ("default foreground"), so a cell that resets to the
+# terminal's own colour kept whatever colour came before it: the dashboard's
+# titles rendered in the ramp colour of the figure beside them, which no real
+# terminal draws. Spelled out as freeze's own default foreground instead, so
+# the picture shows what the bytes say.
+sed -i -e 's/\x1b\[39m/\x1b[38;2;196;196;196m/g' "$ansi"
 
 # Trailing blank rows are the pane's, not the screen's: a chart that fills 18
 # of 40 rows would otherwise render with 22 rows of empty PNG under it.
