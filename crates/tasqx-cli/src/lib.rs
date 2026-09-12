@@ -1795,6 +1795,43 @@ mod tests {
         );
     }
 
+    /// D128: leaving the browser without starting a task is exit 0. D55 made
+    /// it exit 4 because `pick` was a CHOOSER whose entire output was the
+    /// start; D124 turned it into the task browser, where `j`/`k` move, `/`
+    /// searches and Enter reads a card, so closing it having read is the
+    /// ordinary way to use it. A shell that treats `q` as a failure breaks
+    /// `pick && …`, a prompt indicator, and any script that opens it to look.
+    #[test]
+    fn leaving_the_browser_without_starting_a_task_is_exit_0() {
+        let (body, render) = nothing_picked().expect("closing the browser is not a failed run");
+        assert_eq!(
+            body["started"],
+            json!(false),
+            "`--json` has to say a task was not started: {body}"
+        );
+        assert!(
+            render.is_empty(),
+            "a browser you closed leaves no line in the scrollback: {render:?}"
+        );
+    }
+
+    /// D128 moves the LEAVE, not the refusals. A request that could not be
+    /// served stays non-zero: an empty candidate set is still `not_found`
+    /// (exit 4, the test above this one), and a piped `pick` is still exit 2
+    /// (`help.rs::pick_refuses_a_piped_stdout_with_a_nonzero_exit`).
+    #[test]
+    fn a_request_that_could_not_be_served_is_still_non_zero() {
+        assert_eq!(
+            no_candidates("@working").exit_code(),
+            4,
+            "an empty store is a request pick could not serve, not a session the user ended"
+        );
+        assert!(
+            nothing_picked().is_ok(),
+            "…and the leave it is contrasted with is not"
+        );
+    }
+
     /// The refusal a script hits. It must name the commands that answer the
     /// same question without a screen — "needs a terminal" alone leaves the
     /// reader with nothing to type next — and those commands must be real,
@@ -1897,6 +1934,9 @@ mod tests {
         let out = pick_result(42, "Ship the freeze", started);
         assert_eq!(out["short_id"], json!(42));
         assert_eq!(out["title"], json!("Ship the freeze"));
+        // D128: the exit code is 0 either way now, so the BODY is where a
+        // script reads whether a task was started.
+        assert_eq!(out["started"], json!(true));
         assert_eq!(out["id"], json!("0199-uuid"));
         assert_eq!(out["interval_started"], json!("2026-08-03T10:00:00Z"));
     }

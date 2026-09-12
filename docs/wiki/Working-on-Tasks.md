@@ -89,6 +89,11 @@ tasqx pick project:work     # narrow the candidates first
 `pick` needs a real terminal (it draws a screen), so in scripts use
 `tasqx next` to ask the same question and `tasqx start <ref>` to act on it.
 
+Closing the browser without starting anything exits 0 — reading your tasks and
+starting none of them is an ordinary way to use it, so `tasqx pick && …` and a
+prompt indicator survive `q`. A filter that matches no task exits 4 instead:
+that is a question tasqx could not answer, not a session you ended.
+
 ## tasqx undo
 
 *Alias: `u`*

@@ -1283,8 +1283,10 @@ fn page_commands() -> String {
     }
     s.push_str(&p(
         "It needs a real terminal on BOTH stdin and stdout, so it refuses in a pipe (exit 2, D26) \
-         rather than writing escape codes into it. Leaving without starting a task, or a filter \
-         that matches nothing, exits 4 having started nothing.",
+         rather than writing escape codes into it. Leaving without starting a task exits 0 — a \
+         browser you close is not a failed run — while a filter that matches nothing still exits \
+         4, having started nothing either way. Under <code>--json</code> the body's \
+         <code>started</code> says which of the two happened.",
     ));
 
     // ---- show
@@ -3329,6 +3331,32 @@ mod tests {
             checked, 10,
             "expected to check all 10 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
+        );
+    }
+
+    /// D128: the guide's `pick` page carried D55's rule — that leaving exits 4
+    /// — for the whole life of the browser D124 made of that chooser. Both
+    /// halves are asserted, because dropping "exit 4" altogether would take
+    /// the empty-set refusal with it, and that one has not moved.
+    #[test]
+    fn the_pick_page_says_closing_the_browser_is_exit_0() {
+        // Flattened: the paragraph is one string whose line breaks are the
+        // source file's continuations, not the page's.
+        let flat = page_commands()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            flat.contains("Leaving without starting a task exits 0"),
+            "the guide's pick page must say leaving is exit 0"
+        );
+        assert!(
+            !flat.contains("Leaving without starting a task, or a filter"),
+            "the guide's pick page still states D55's rule"
+        );
+        assert!(
+            flat.contains("still exits 4"),
+            "the guide's pick page must keep the empty-set refusal non-zero"
         );
     }
 

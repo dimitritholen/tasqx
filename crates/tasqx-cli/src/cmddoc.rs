@@ -312,7 +312,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "Each row is the row `tasqx list` prints: the running and blocked rail, the priority and urgency gauge, the title, the project, the deadline as a calendar day and the tags. The header names the filter and what the set holds — overdue, due today, running, blocked — as `list`'s summary does.",
             "`j`/`k` or the arrows move, `g`/`G` jump to the ends. Enter opens the task's `tasqx show` card; there `j`/`k`/space/`b` scroll and `esc` or `q` goes back to the list. `s` starts the task under the cursor, from the list or from its card — the one key on this screen with a side effect, and the same single-active rule `tasqx start` follows. `q` leaves.",
             "`/` opens the search on the header line: a fuzzy SUBSEQUENCE match over id, title, project and tags, so `wac` finds `Write API conformance tests`, and a term found whole ranks above the same letters scattered. Whitespace splits it into terms that must all match. Every letter is a letter there; up/down or ctrl-p/ctrl-n move, ctrl-u clears, ctrl-w deletes a word, and Enter or `esc` goes back to the list with the filter kept. `esc` in the list clears the filter, and only then leaves.",
-            "Leaving without starting a task, and a filter that matches no task, both exit 4 having started nothing. `pick` exists to produce one task; when it produced none, saying ok would be a command reporting success for work it did not do.",
+            "Leaving without starting a task exits 0: `pick` is a browser, and a browser you close is not a failed run — `tasqx pick && …`, a prompt indicator and any script that opens it to look all survive `q`. A filter that matches no task still exits 4, and so does an empty working set: that is a request `pick` could not serve, not a session you ended.",
             "It needs a real terminal on stdin AND stdout, so `tasqx pick | …` and `$(tasqx pick)` refuse with exit 2 rather than writing escape codes into your pipe (D26). Non-interactively, `tasqx next` answers the same question and `tasqx start <ref>` acts on it.",
         ],
         see_also: &["next", "list", "start", "agenda"],
@@ -1583,6 +1583,27 @@ mod tests {
                 "`tasqx manual {verb}` still says Enter starts: {joined}"
             );
         }
+    }
+
+    /// D128: `tasqx manual pick` renders from these notes, and they carried
+    /// D55's rule — that leaving exits 4 — for the whole life of the browser
+    /// D124 made. Both halves are asserted, because saying only "exit 0" would
+    /// let the refusal quietly go with it.
+    #[test]
+    fn pick_notes_say_leaving_exits_0_and_a_refusal_still_does_not() {
+        let joined = find("pick").expect("pick is documented").notes.join(" ");
+        assert!(
+            joined.contains("exits 0"),
+            "`tasqx manual pick` must say leaving is exit 0: {joined}"
+        );
+        assert!(
+            !joined.contains("both exit 4"),
+            "`tasqx manual pick` still states D55's rule: {joined}"
+        );
+        assert!(
+            joined.contains("still exits 4"),
+            "`tasqx manual pick` must keep the empty-set refusal non-zero: {joined}"
+        );
     }
 
     /// `pick --help`'s own clap doc comment already documents ctrl-n/ctrl-p

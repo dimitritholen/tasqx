@@ -782,9 +782,11 @@ Captured on a terminal at 64 columns, since this screen cannot be piped:
 
    j/k move   / search   enter open   s start   q leave
 
-Leaving without starting a task exits 4, and so does a filter that
-matches none: `pick` is there to produce one task to work on, and saying
-ok when it produced none would report success for work it did not do."
+Leaving without starting a task exits 0: a browser you close is not a
+failed run, so `tasqx pick && …` and a prompt indicator survive `q`. A
+filter that matches no task still exits 4, and so does an empty working
+set — that is a question tasqx could not answer, not a session you
+ended."
         }
 
         Topic::Reminders => {
@@ -1843,6 +1845,31 @@ mod tests {
         assert!(
             page.to_lowercase().contains("captured"),
             "the page must say the screen was captured, not replayed:\n{page}"
+        );
+    }
+
+    /// D128: the page has to say that closing the browser is an ordinary end
+    /// to a session, and that a filter matching nothing is not. It stated the
+    /// opposite rule for as long as `pick` was D55's chooser, and a reader who
+    /// believes it will not write `tasqx pick && …`.
+    #[test]
+    fn the_screens_topic_says_closing_pick_is_not_a_failure() {
+        let page = render(&plain(), Some("screens")).expect("`tasqx manual screens` opens");
+        // Flattened: the page is wrapped to a measure, so where a line breaks
+        // is the renderer's business and an assertion that reads a sentence
+        // whole may not depend on it.
+        let flat = page.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains("Leaving without starting a task exits 0"),
+            "the page must say leaving is exit 0:\n{page}"
+        );
+        assert!(
+            !flat.contains("Leaving without starting a task exits 4"),
+            "the page still states D55's rule:\n{page}"
+        );
+        assert!(
+            flat.contains("still exits 4"),
+            "the page must keep the refusal non-zero:\n{page}"
         );
     }
 

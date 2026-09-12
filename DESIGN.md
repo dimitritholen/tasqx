@@ -404,7 +404,7 @@ tasqx [GLOBAL-FLAGS] [VERB] [REF...] [ARGS / FILTER] [--flags]
 | `use` | — | `tasqx use work` — sets the default project a bare `add` inherits. Validated at the edge: unknown → exit 4, archived → exit 5 (D21/D22). |
 | `archive` | — | `tasqx archive old` — takes a project out of rotation; the tasks are untouched and `projects --all` still lists it. Unknown → exit 4, already archived → exit 5. Archiving the *current default* clears the default, and the printed line says which of the two happened (D22). |
 | `tag`/`untag` | — | `tasqx tag 42 blocking` / `tasqx untag 42 blocking`. A tag is written the same way as in `add`/`modify` sugar — `+api` and `api` name one tag — and untagging a tag the task does not have is exit 4 that removes nothing (D52). The bare-ref form `tasqx 42 +blocking` is **not** built: it needs the fuzzy-ref dispatch below, which is not built either. |
-| `pick` | `p`, `fzf` | `tasqx pick [filter]` — the task browser (**D124**): `list`'s rows on a full screen, `/` for a fuzzy search (subsequence, per field, a term found whole ranking first), enter to read a task's `show` card, and one key with an effect: `s` **starts** the task under the cursor. Leaving without starting one, and a filter matching nothing, exit 4 having started nothing. It needs a terminal on stdin *and* stdout, so it refuses in a pipe (exit 2) rather than being composable — see D55 for why that killed the "print the ref" form the mockup drew. |
+| `pick` | `p`, `fzf` | `tasqx pick [filter]` — the task browser (**D124**): `list`'s rows on a full screen, `/` for a fuzzy search (subsequence, per field, a term found whole ranking first), enter to read a task's `show` card, and one key with an effect: `s` **starts** the task under the cursor. Leaving without starting one exits 0 — a browser you close is not a failed run (**D128**) — while a filter matching nothing still exits 4, having started nothing either way. It needs a terminal on stdin *and* stdout, so it refuses in a pipe (exit 2) rather than being composable — see D55 for why that killed the "print the ref" form the mockup drew. |
 | `agenda` | `ag`, `cal` | `tasqx agenda [filter] [--days N]` — `list` ordered by time and grouped by day. Each task sits on the EARLIER of its `due` and `scheduled`; overdue first, always; 14 days ahead by default. Tasks with neither date, and tasks past the horizon, are counted under the table rather than dropped (D53). |
 | `undo` | `u` | Reverses the newest event by appending a compensating one — the log is never rewritten. Four operations are undoable (`stop`, `untag`, `undep`, `annotate`); every other one exits 5 naming itself and the verb that does take it back. No ref, and no redo (D54). |
 
@@ -1147,7 +1147,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | **Core** | API v1 declared **stable**; the conformance suite (`crates/tasqx-core/tests/conformance.rs`) is the contract of record — the envelope, the error codes and every method's response shape, with its method floor derived from `dispatch::PARAMS` rather than listed. What it freezes is the **JSON API's shape**; what it does *not* freeze is the MCP **tool schema** — tool names, descriptions and input schemas stay free to move, and `tests/mcp.rs` covers them. The tool *results* are not exempt: `conformance.rs` drives the live `tools/list`, maps each tool to its method and asserts that same frozen result shape, so renaming a response field reddens the MCP half too. Read D56's "excludes MCP" as being about the schema, not the answers. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
 | **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). And `tasqx about`, the credits screen: who made it, two links, the build this binary was made from and the store it would open — CLI-only, with no API method (**D127**). |
 | **Distribution** | Prebuilt archives for four targets on a tag, plus a `completions/` directory inside each one and a generated Homebrew formula that switches completion on at install time (**D57**, `docs/homebrew-tap.md`). The tap and the Scoop bucket exist (`dimitritholen/homebrew-tasqx`, `dimitritholen/scoop-tasqx`), each filled per release by its generator (`scripts/brew-formula.sh`, `scripts/scoop-manifest.sh`) and merged only after that repo's own CI has installed the result for real; the README leads with them, and a package manager the reader already has outranks the script (**D77**). On top of those archives, `install.sh` and `install.ps1` are the **universal** install route (**D61**, narrowed by D77): a one-liner served raw from `raw.githubusercontent.com` that resolves one host triple, verifies the published `.sha256` and unpacks into a per-user directory, with re-running it as the update path — which is not the self-update D10 forbids, because the binary still never writes to itself. The archives are **not signed**: D10 required notarization and Authenticode, D61 narrows that to deferred, and the consequence ships with the route — on macOS it bypasses Gatekeeper rather than passing it, on Windows it is what SmartScreen is built to interrupt. Signing is scheduled work, not a decided absence. |
-| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report`, `memory list`, `theme list`, `theme show`, and the head line of each `memory search` record — and a number never gives way to make a row fit (**D120**); after a drop the survivors get the freed cells back (**D125**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `projects`, `report`, `theme list` and `theme show` read the same way (#346, under D117 and D120), and `memory search` prints one two-line record per hit whose handle opens it, the id for a doc and the task for an annotation (**D125**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). `tasqx about` credits its author and states this build and the store it would open, in labelled rows whose values — URLs, a path — are copied text and so may overflow rather than be cut (**D127**). Every write echo — `add` and the eighteen verbs after it — is one card in `add`'s voice: the task it named, then what happened and what changed in bold, then `list`'s facts, fitted to the terminal (**D126**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). `pick` is the task browser: `list`'s rows, a `/` search, `show`'s card on Enter and `s` to start (**D124**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
+| **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report`, `memory list`, `theme list`, `theme show`, and the head line of each `memory search` record — and a number never gives way to make a row fit (**D120**); after a drop the survivors get the freed cells back (**D125**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `projects`, `report`, `theme list` and `theme show` read the same way (#346, under D117 and D120), and `memory search` prints one two-line record per hit whose handle opens it, the id for a doc and the task for an annotation (**D125**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). `tasqx about` credits its author and states this build and the store it would open, in labelled rows whose values — URLs, a path — are copied text and so may overflow rather than be cut (**D127**). Every write echo — `add` and the eighteen verbs after it — is one card in `add`'s voice: the task it named, then what happened and what changed in bold, then `list`'s facts, fitted to the terminal (**D126**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). `pick` is the task browser: `list`'s rows, a `/` search, `show`'s card on Enter and `s` to start (**D124**); closing it without starting anything exits 0, because a browser you close is not a failed run (**D128**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
 | **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. Responses are bounded: `task.get` pages its history and drops the duplicate block (D63, D66, D72), still a transport-only bound. `task.list` pages its rows and reports what it withheld (D70) — that page's DEFAULT now lives in the engine itself (**D110**), reachable by `tasqx api`/the CLI too, not only by this transport; MCP's own default-insertion is what still drives its byte-budget bisection over an oversized page. |
 | **Notifications** | ✅ Daemon-heap path (§9a), `Notifier` + log backend always, OS backend behind `notify-os`. ⏳ OS-scheduler (no-daemon) path across all three OSes — deferred, §9b. |
 
@@ -1560,7 +1560,7 @@ This is the third appearance of the bug class D14 exists to prevent, and the sec
 
 ### D55 — `tasqx pick` chooses and starts; it does not print a ref, because the gate it must pass makes a printed ref unreachable
 
-**Amended by D124.** Enter now opens the task's `show` card and `s` starts it; the query lives behind `/`, so "every printable key is text" is true of the search line only, and `j`/`k` move. The ASCII running mark is `*`, not the cursor's `>` (#205's glyph broke rule 4). Starting rather than printing a ref, exit 4 when nothing was started, the refusal before the store opens, the anchored cursor and the centred window all stand as written below.
+**Amended by D124 and D128.** Enter now opens the task's `show` card and `s` starts it; the query lives behind `/`, so "every printable key is text" is true of the search line only, and `j`/`k` move. The ASCII running mark is `*`, not the cursor's `>` (#205's glyph broke rule 4). **D128 flips the exit code**: leaving without starting a task exits 0, because the screen D124 made is a browser and a browser you close is not a failed run. Starting rather than printing a ref, the refusal before the store opens (exit 2), the empty candidate set's exit 4, the anchored cursor and the centred window all stand as written below.
 
 **Decision:** `tasqx pick [filter…]` (aliases `p`, `fzf`) opens a full-screen list of the candidates a `task.list` returns for that filter — defaulting to `@working`, the same default and the same argv-preserving parse `tasqx list` uses — narrows it live as the user types, and on `⏎` **starts** the highlighted task through `task.start`. That is the only key with an effect. There is no new API method: the verb is `task.list` followed by `task.start`, both of which already exist and already append their own events.
 
@@ -1570,7 +1570,7 @@ This is the third appearance of the bug class D14 exists to prevent, and the sec
 
 **One key, and no hints about the others.** `^s`/`^d`/`^e` are absent rather than deferred-and-advertised. A footer that offers `^d done` on a screen which ignores it is worse than a footer that does not mention it, and each of those keys is a second mutating path through a screen whose whole value is that a mis-aimed keystroke is cheap to understand.
 
-**Producing nothing is exit 4, not exit 0.** Cancelling (`esc` on an empty query, or `^c`) and a filter that matches no task both exit `not_found` having started nothing, each with its own sentence — the empty-set one quotes the filter back, because "no pending tasks" and "this filter excludes everything" look identical from outside and want opposite responses. `config edit` exiting 0 after a session with no edits is deliberately **not** the precedent: that screen is a session where zero changes is a legitimate outcome, and this one is a selection whose entire output is the choice. A command that produced nothing may not report success.
+**Producing nothing is exit 4, not exit 0.** **Half of this is withdrawn by D128:** the CANCEL exits 0 now, on the browser D124 made of this chooser; the empty candidate set below is unchanged. As written when `pick` was a chooser: cancelling (`esc` on an empty query, or `^c`) and a filter that matches no task both exit `not_found` having started nothing, each with its own sentence — the empty-set one quotes the filter back, because "no pending tasks" and "this filter excludes everything" look identical from outside and want opposite responses. `config edit` exiting 0 after a session with no edits is deliberately **not** the precedent: that screen is a session where zero changes is a legitimate outcome, and this one is a selection whose entire output is the choice. A command that produced nothing may not report success.
 
 **Refusing a pipe names the way through.** Non-interactive, `pick` exits 2 with a message naming `tasqx next` (which answers the same question without a screen) and `tasqx start <ref>` (which acts on it) — the shape `config edit`'s refusal established. The gate runs **before** the store is opened, so a piped `pick project:typo` reports the thing the caller can act on rather than a filter error they do not have, and the piped path touches no database at all.
 
@@ -2878,12 +2878,13 @@ verb table, the §8 sample, §11a's "a task browser stays deferred" and the v1
 Presentation row were walked to match, and so were the wiki pages for `pick` and the
 dashboard.
 
-**Kept, and named so it is a choice rather than an oversight:** leaving without
-starting a task still exits 4 with `nothing picked` (D55: `pick`'s output is the start,
-and a command that produced nothing may not report success). On a browser that reads
-worse than it did on a chooser. The memory browser exits 0, and a session spent only
-reading cards now ends on an error line. Changing it changes a stated principle, so it is
-left for Dimitri rather than decided here.
+**Kept, and named so it is a choice rather than an oversight — and since DECIDED, by
+D128:** leaving without starting a task exited 4 with `nothing picked` (D55: `pick`'s
+output is the start, and a command that produced nothing may not report success). On a
+browser that reads worse than it did on a chooser. The memory browser exits 0, and a
+session spent only reading cards ended on an error line. Changing it changes a stated
+principle, so it was left for Dimitri rather than decided here. He took it: **D128** makes
+the leave exit 0, and leaves the empty candidate set at 4.
 
 **Why:** rendered from the demo store, `pick` broke nine of the thirteen rules in
 `docs/terminal-style.md`, and #392 carries the audit. It had no dates, no rail, no gauge,
@@ -3370,3 +3371,67 @@ the layout applies D117's rules rather than changing them.
 **Where:** `crates/tasqx-cli/src/about.rs` (new), `lib.rs` (`JSON_CARVE_OUTS`, the dispatch
 beside `manual`), `command.rs`, `cmddoc.rs`, `docs.rs` (`VERBS`), `README.md`,
 `docs/terminal-style.md`, `docs/wiki/`, and §11's CLI and Presentation rows above.
+
+### D128 — Closing `pick` is exit 0: a browser you close is not a failed run (task #580; amends D55 and D124)
+
+**Decision:** Dimitri's, on 2026-09-12. Leaving `tasqx pick` without starting a task exits
+**0**, writes nothing to the scrollback, and answers `started: false` under `--json`. D55's
+"producing nothing is exit 4, not exit 0" is withdrawn for the LEAVE and stands for
+everything else on that screen.
+
+**Why:** D55 designed `pick` as a *chooser*. It started a task and could not print a ref
+(the pipe it would have been read through is the one invocation the screen refuses), so its
+entire output was the start, "nothing picked" was a run that produced nothing, and exit 4
+was the honest signal. **D124 turned it into the task browser:** Enter opens `show`'s card,
+`j`/`k` move, `/` searches, and reading without starting anything is now the ordinary way
+to use it. On that screen exit 4 is a lie about what happened, and an expensive one — a
+shell that treats `q` as an error breaks `tasqx pick && …`, puts a failure mark in a prompt
+indicator, and fails any script that opens the browser to look. D124 saw this and declined
+to decide it: *"on a browser that reads worse than it did on a chooser … changing it
+changes a stated principle, so it is left for Dimitri rather than decided here."* This is
+that decision.
+
+**What is still non-zero, and where the line falls.** A request that could not be **served**
+is still a refusal: `pick` on an empty working set, or a filter that matches no task, is
+`not_found` — exit 4, with the filter quoted back (`no_candidates`, unchanged) — and a
+piped `pick` is still exit 2, decided before the store is opened (D26, D55). The line is not
+"did a task start" but "did tasqx answer the question it was asked": a screen the user read
+and closed answered it; an empty candidate set never opened one.
+
+**The exit code no longer carries the answer, so the body does.** Both outcomes leave
+through `Exit::Out(Ok)`, so `tasqx --json pick` gains `started` — `true` beside
+`task.start`'s own keys, `false` alone. It is the CLI's own composition beside `short_id`
+and `title` (D124), not a change to what any method returns, so §4's freeze (D56) is
+untouched. Without it the machine-readable answer would have lost the one fact the exit
+code used to carry.
+
+**The dashboard's `p` does not move, and had to be changed to stay still.** D124(g) already
+made backing out of the picker silent there, by swallowing `run_pick`'s `not_found`. With
+the leave an `Ok`, the success arm caught it instead and pushed its empty render into the
+buffer the dashboard prints on the way out, so a user who pressed `q` twice would have got
+a blank line where D124 promised silence. `after_pick` now reads `started` rather than the
+error code — deliberately the field and not the render's emptiness, which would work by
+accident and would quietly stop recording a start whose echo came back empty.
+
+**Nothing was made silent, and the one line a leave can still print is named.** Leaving
+prints nothing at all, as the memory browser (D121) and the dashboard (D58) already do.
+What a leave can now reach that a refusal could not is D57's completion note, which `run()`
+prints on the success arm every exit-0 command passes through. It is accepted rather than
+carved out: `pick`'s start path already printed it, it is said once per machine, and it
+names a real command. `pick` stays an ordinary `CmdOutcome` rather than becoming
+`SelfFramed` (D58's reasoning for the dashboard) for the reason D58 gives — it still has a
+result to render, and `--json` must reach it.
+
+**Verified:** three tests were watched fail against the code before this entry.
+`leaving_the_browser_without_starting_a_task_is_exit_0` failed on the `not_found` it got
+back; `a_request_that_could_not_be_served_is_still_non_zero`, which pins the two sides
+against each other in one place, failed on the same; and
+`a_picker_closed_without_starting_anything_leaves_nothing_behind` failed on `Some("")` —
+the dashboard defect above, found by writing the test before the fix. The three docs
+guards (`manual`, `cmddoc`, the guide's commands page) were each watched fail against the
+prose that still said exit 4, which is the same evidence as injecting the drift.
+
+**Where:** `crates/tasqx-cli/src/pick_screen.rs` (`nothing_picked`, `pick_result`'s
+`started`), `tui/pick.rs` (`Action::Cancel`), `dashboard_screen.rs` (`after_pick`),
+`manual.rs` (`Topic::Screens`), `cmddoc.rs`, `docs.rs`, `command.rs` (the `-h` text),
+`docs/wiki/Working-on-Tasks.md`, and §5 and §11 above.
