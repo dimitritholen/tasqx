@@ -216,9 +216,7 @@ impl Caps {
                 .unwrap_or(false);
         let is_tty = stream_is_terminal || force;
         let env = EnvCaps::from_env();
-        // On Windows the console needs VT explicitly enabled for ANSI to work.
-        let vt_ok = enable_vt();
-        detect_from(&env, is_tty, vt_ok)
+        detect_from(&env, is_tty, vt_for(stream_is_terminal, enable_vt))
     }
 }
 
@@ -337,6 +335,24 @@ pub fn detect_from(env: &EnvCaps, is_tty: bool, vt_ok: bool) -> Caps {
         ansi: true,
         unicode: true,
     }
+}
+
+/// Whether VT processing is available for the stream we are about to write to.
+///
+/// On Windows the console needs VT explicitly enabled for ANSI to work, and
+/// [`enable_vt`] asks the CONSOLE for it. A pipe is not a console:
+/// `GetConsoleMode` fails on every redirected handle, and the fallback that
+/// failure triggers — 16 colours and ASCII, or `Caps::PLAIN` outright under
+/// `NO_COLOR` — describes a real pre-VT `cmd.exe`, not whatever is reading the
+/// other end of a pipe. So the probe may only VETO for a stream that IS a
+/// console. A forced pipe keeps the modern profile, which is what forcing
+/// means (D76) and what Linux and macOS already did, `enable_vt` being
+/// hardcoded true there.
+fn vt_for(stream_is_terminal: bool, probe: impl FnOnce() -> bool) -> bool {
+    if !stream_is_terminal {
+        return true;
+    }
+    probe()
 }
 
 // --- Windows VT enabling -----------------------------------------------------
@@ -1447,6 +1463,41 @@ mod tests {
         assert_eq!(c.depth, ColorDepth::Ansi16);
         assert!(c.ansi);
         assert!(!c.unicode, "legacy console => ASCII box chars");
+    }
+
+    /// A pipe is not a legacy console, and the console probe does not speak for
+    /// one. `GetConsoleMode` fails on every redirected Windows handle, so
+    /// colour forced through a pipe — `CLICOLOR_FORCE=1 tasqx list | less -R`,
+    /// a CI log, and this suite's own forced fixtures — was handed `cmd.exe`'s
+    /// profile. The same command on Linux and macOS got the modern one, since
+    /// `enable_vt` is hardcoded true there, which is why only Windows went red.
+    #[test]
+    fn a_failed_console_probe_speaks_only_for_a_console() {
+        // A real pre-VT console: its own answer stands, both ways.
+        assert!(!vt_for(true, || false), "a console answers for itself");
+        assert!(vt_for(true, || true));
+        // A pipe: the probe cannot answer for it, so it does not get a veto.
+        assert!(vt_for(false, || false), "a pipe is not a legacy console");
+    }
+
+    /// The composed condition the Windows job actually ran. Under `NO_COLOR` it
+    /// resolved to `Caps::PLAIN`, so the write echoes lost the rail, the bold
+    /// and the fit D126 gives them and were laid out for a pipe; with colour it
+    /// resolved to 16-colour ASCII, so `theme show` drew `###` where it
+    /// promises `█`.
+    #[test]
+    fn a_forced_pipe_keeps_the_profile_it_forced() {
+        let forced_pipe = vt_for(false, || false);
+        let c = detect_from(&env(true, "xterm-256color", ""), true, forced_pipe);
+        assert_ne!(c, Caps::PLAIN, "forcing through a pipe means forcing");
+        assert!(c.ansi && c.unicode, "NO_COLOR keeps bold and the glyphs");
+        let c = detect_from(
+            &env(false, "xterm-256color", "truecolor"),
+            true,
+            forced_pipe,
+        );
+        assert_eq!(c.depth, ColorDepth::Truecolor);
+        assert!(c.unicode, "a forced pipe draws █, not ###");
     }
 
     // ---- style rendering at each depth -------------------------------------
