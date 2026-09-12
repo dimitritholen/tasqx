@@ -861,6 +861,21 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::GettingStarted,
     },
     CmdDoc {
+        verb: "about",
+        aliases: &[],
+        method: "— (no store)",
+        summary: "Who made tasqx, where to find it, and what build this is.",
+        usage: "tasqx about",
+        examples: &[ex("tasqx about")],
+        notes: &[
+            "Five lines: the author, two links, the build this binary was made from, and the store it would open. The build is the string `tasqx --version` prints — the crate version plus the commit — and reads `unknown` on a build from a source tarball, which has no git to ask.",
+            "It opens no store and no network. The store line is the path a command WOULD open, resolved without creating anything, so asking where things live never authors a data directory.",
+            "A credits screen is not data, so there is no API method and `--json` is declined with a note (D31's carve-out list, D127).",
+        ],
+        see_also: &["manual", "docs"],
+        topic: Topic::GettingStarted,
+    },
+    CmdDoc {
         verb: "manual",
         aliases: &["man"],
         method: "— (no store)",

@@ -93,6 +93,7 @@ tasqx done 1                 # complete it
 That's the whole loop. When you want depth: `tasqx manual` is a real manual in
 your terminal, every verb answers `-h` with copy-pasteable examples, and
 `tasqx docs` renders the full guide as one self-contained HTML page.
+`tasqx about` says who made it, where it lives, and which build you are on.
 
 Prebuilt binaries for Linux, macOS and Windows are on the
 [Releases page](https://github.com/dimitritholen/tasqx/releases). Building

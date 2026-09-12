@@ -1145,7 +1145,7 @@ These are **deferred, not skipped**. Each was specified, has a ruling in §12 or
 | Surface | Ships |
 |---|---|
 | **Core** | API v1 declared **stable**; the conformance suite (`crates/tasqx-core/tests/conformance.rs`) is the contract of record — the envelope, the error codes and every method's response shape, with its method floor derived from `dispatch::PARAMS` rather than listed. What it freezes is the **JSON API's shape**; what it does *not* freeze is the MCP **tool schema** — tool names, descriptions and input schemas stay free to move, and `tests/mcp.rs` covers them. The tool *results* are not exempt: `conformance.rs` drives the live `tools/list`, maps each tool to its method and asserts that same frozen result shape, so renaming a response field reddens the MCP half too. Read D56's "excludes MCP" as being about the schema, not the answers. Daemon + socket/named-pipe transport + `event` notification stream. Recurrence engine (RRULE-subset, incremental spawning), urgency model, optimistic concurrency (`expected_rev`), dependency-cycle detection. Single static binary for Windows/Linux/macOS. |
-| **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). |
+| **CLI** | `pick`, `agenda`, `undo`, `next`, `why`, `tag`/`untag`, `archive`, native charts, shell completions — and the onboarding that makes the last of those reachable without reading the README: one stderr note, said once, naming `tasqx completions --install` (**D57**). Plus `dashboard` (`dash`), and with it the conditional meaning of a bare `tasqx`: the screen when a human is watching, the working-set table everywhere else (**D58**). And `tasqx about`, the credits screen: who made it, two links, the build this binary was made from and the store it would open — CLI-only, with no API method (**D127**). |
 | **Distribution** | Prebuilt archives for four targets on a tag, plus a `completions/` directory inside each one and a generated Homebrew formula that switches completion on at install time (**D57**, `docs/homebrew-tap.md`). The tap and the Scoop bucket exist (`dimitritholen/homebrew-tasqx`, `dimitritholen/scoop-tasqx`), each filled per release by its generator (`scripts/brew-formula.sh`, `scripts/scoop-manifest.sh`) and merged only after that repo's own CI has installed the result for real; the README leads with them, and a package manager the reader already has outranks the script (**D77**). On top of those archives, `install.sh` and `install.ps1` are the **universal** install route (**D61**, narrowed by D77): a one-liner served raw from `raw.githubusercontent.com` that resolves one host triple, verifies the published `.sha256` and unpacks into a per-user directory, with re-running it as the update path — which is not the self-update D10 forbids, because the binary still never writes to itself. The archives are **not signed**: D10 required notarization and Authenticode, D61 narrows that to deferred, and the consequence ships with the route — on macOS it bypasses Gatekeeper rather than passing it, on Windows it is what SmartScreen is built to interrupt. Signing is scheduled work, not a decided absence. |
 | **Presentation** | Cascading theme system + built-ins; burndown/heatmap/throughput; self-contained HTML report, in decision order and with its own drill-down on one inline script (**D116**; D48 slices 4 and 6 — the theme-derived chart palette and the token API delta — remain open). The shared `list`/`agenda` table reads as one screen rather than a grid of equal weights (**D117**): a state rail at the left edge, priority folded into the urgency cell, calendar dates, one rule, and a summary line in place of a count. Its urgency gauge and ramp colour read one absolute scale in three bands, the same on `list`, `agenda` and the dashboard (**D119**). Every table is fitted to the terminal by the same `columns::fit` — `list`, `agenda`, `projects`, `config list`, `report`, `memory list`, `theme list`, `theme show`, and the head line of each `memory search` record — and a number never gives way to make a row fit (**D120**); after a drop the survivors get the freed cells back (**D125**). `memory list` on a terminal is a browser with a live preview and a search, and a one-line-per-doc table everywhere else (**D121**). `projects`, `report`, `theme list` and `theme show` read the same way (#346, under D117 and D120), and `memory search` prints one two-line record per hit whose handle opens it, the id for a doc and the task for an annotation (**D125**). `show`, `add`'s echo, `next` and `why` spell dates as calendar days, say each fact once, and explain themselves (**D122**). Every write echo — `add` and the eighteen verbs after it — is one card in `add`'s voice: the task it named, then what happened and what changed in bold, then `list`'s facts, fitted to the terminal (**D126**). `tasqx manual` is a screen of that style too: a table of contents of two fitted tables with no index numbers, pages that wrap prose to a measure and never cut what a reader copies, and a name that is both a verb and a topic opening both of its pages (**D123**). `pick` is the task browser: `list`'s rows, a `/` search, `show`'s card on Enter and `s` to start (**D124**). The `tui` module (D26) carries the shared terminal lifecycle; `pick` and the dashboard (**D58**) are screens on it, not second foundations. The dashboard's panels use the semantic theme roles, five of which (**D79**) default into existing roles, so every shipped `themes/*.toml` remains complete for it. |
 | **MCP** | `tasqx mcp serve` with the §7 tools over stdio, scoped read/write per **D7**. Responses are bounded: `task.get` pages its history and drops the duplicate block (D63, D66, D72), still a transport-only bound. `task.list` pages its rows and reports what it withheld (D70) — that page's DEFAULT now lives in the engine itself (**D110**), reachable by `tasqx api`/the CLI too, not only by this transport; MCP's own default-insertion is what still drives its byte-budget bisection over an oversized page. |
@@ -3328,3 +3328,45 @@ was walked.
 `pick_screen.rs`, `docs.rs`, `README.md`, `tests/write_echoes.rs` (new),
 `tests/regressions.rs`, `tests/export_document.rs`, `theme.rs` (`Caps::detect_stderr`,
 `detect_stderr_cols`), §5's examples and §11 above, and `docs/terminal-style.md`.
+
+### D127 — `tasqx about` is a credits screen, and a screen is not data (task #570)
+
+**Decision:** `tasqx about` prints five labelled rows under a `header` title: the author,
+his LinkedIn, the project's GitHub, the build this binary was made from, and the store it
+would open. There is **no API method**, and the verb joins D31(3)'s `--json` carve-out list
+as its sixth entry, with its reason written there: a credits screen carries nothing a
+machine reads, and a method would freeze its shape in the conformance suite (**D56**) for
+a screen whose whole content is prose and links.
+
+- **(a) Labelled rows, and both columns fixed.** `table.label` carries the labels, the
+  foreground carries what the row is read for (rules 1 and 12), and nothing is drawn
+  (rule 7). In `columns::fit` both columns are `fixed`, for the reason a number is: a cut
+  label is not a label, and a cut URL is a different URL. A row that does not fit
+  **overflows**, which is the manual's `verbatim` rule (**D123**) on the one screen where
+  every value — URL, path, build id — is a thing to copy. Nothing else on the screen may
+  overflow, and a test sweeps 40 to 160 columns to say so.
+- **(b) One source for the build.** The row prints `VERSION`, the constant `--version`
+  already prints: the crate version plus `TASQX_BUILD_ID`, which is `unknown` on a build
+  from a source tarball. A second source would let the credits screen and the flag
+  disagree about which commit this is, which is the staleness `build.rs` exists to end.
+- **(c) The store path is resolved read-only** (`db_path_read_only`). `db_path` creates the
+  platform data directory on its way, and a screen that only says where things live must
+  not author one.
+- **(d) Dispatched beside `manual`**, after `build_ctx` and before the engine: it needs the
+  themed `Ctx` and the store's PATH, and opens neither a store nor a network.
+
+**Why:** Dimitri asked for it, and the design was picked by drawing three candidates and
+judging them as images at 40, 60, 80, 100 and 140 columns, in colour, `mono` and
+`NO_COLOR` — the loop `docs/terminal-style.md` §14 exists for.
+
+**Rejected:** the task card's rail (`▌` means a TASK in **D122** and **D126**, and rule 4's
+glyph contract gives it no ASCII spelling, so the mock invented `|`); and a prose block
+(its composed last line ran to 88 cells at 40 columns, an overflow the layout could have
+avoided, and unlabelled facts left the store path unnamed).
+
+**Amends:** **D31(3)**, whose carve-out list gains `about` with its reason. Nothing else:
+the layout applies D117's rules rather than changing them.
+
+**Where:** `crates/tasqx-cli/src/about.rs` (new), `lib.rs` (`JSON_CARVE_OUTS`, the dispatch
+beside `manual`), `command.rs`, `cmddoc.rs`, `docs.rs` (`VERBS`), `README.md`, and §11's
+CLI row above.

@@ -12,6 +12,7 @@
 //! segment repeats because `ProjectDirs::from("dev", "tasqx", "tasqx")` passes
 //! `tasqx` as both organization and application).
 
+mod about;
 mod argv;
 mod backend;
 mod chart;
@@ -194,6 +195,10 @@ fn exit_on_parse_error(e: &clap::Error, filter_command: bool, argv: &[std::ffi::
 /// derives the command list from clap and drives every command that is *not*
 /// listed here through the real binary, asserting it emits JSON.
 pub const JSON_CARVE_OUTS: &[(&str, &str)] = &[
+    (
+        "about",
+        "a credits screen: a name, two links and this build, with nothing a machine reads",
+    ),
     (
         "api",
         "already speaks the JSON API response envelope; --json would double-wrap it",
@@ -475,6 +480,7 @@ fn verb_name(command: &Option<Command>) -> Option<&'static str> {
     match command {
         Some(Command::Api) => Some("api"),
         Some(Command::Docs { .. }) => Some("docs"),
+        Some(Command::About) => Some("about"),
         Some(Command::Manual { .. }) => Some("manual"),
         Some(Command::Completions { .. }) => Some("completions"),
         _ => None,
@@ -637,6 +643,15 @@ fn execute(cli: Cli) -> Exit {
     // `theme` needs no store; handle it before opening the engine.
     if let Some(Command::Theme { action }) = &cli.command {
         return Exit::Out(run_theme(&ctx, action));
+    }
+
+    // `about` needs the themed Ctx and the store PATH, but opens neither a
+    // store nor a network; dispatch it beside `manual`.
+    if let Some(Command::About) = &cli.command {
+        let exit = Exit::self_framed("about", cli.json);
+        let facts = about::Facts::gather();
+        emit(&about::render(&ctx, &facts));
+        return exit;
     }
 
     // `manual` needs the themed Ctx but no store and no network; dispatch it
@@ -976,6 +991,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Api) => unreachable!("handled above"),
         Some(Command::Daemon { .. }) => unreachable!("handled above"),
         Some(Command::Mcp { .. }) => unreachable!("handled above"),
+        Some(Command::About) => unreachable!("handled above"),
         Some(Command::Manual { .. }) => unreachable!("handled above"),
         Some(Command::Completions { .. }) => unreachable!("handled above"),
     })

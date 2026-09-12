@@ -86,6 +86,22 @@ tasqx docs              # open in the browser
 tasqx docs --out guide.html   # write the file instead
 ```
 
+### tasqx about
+
+Who made tasqx, where to find it, and what build you are on. Five labelled
+rows: the author, his LinkedIn, the project on GitHub, the build this binary
+was made from, and the store it would open. It opens no store and no network —
+the store line is the path a command *would* use, resolved without creating
+anything.
+
+```console
+tasqx about
+```
+
+The build line is the same string `tasqx --version` prints: the crate version
+plus the commit it was built from, or `unknown` for a build from a source
+tarball, which has no git to ask. Quote it when you report a bug.
+
 ### Per-command help
 
 Every command answers `-h` with usage, flags and copy-pasteable examples:

@@ -77,6 +77,7 @@ task, and where to find help.
 | `theme` | Browse and pick a color theme | [Settings and Themes](Settings-and-Themes.md#tasqx-theme) |
 | `completions` | Turn on Tab completion | [Shell Completion](Shell-Completion.md) |
 | `manual` / `docs` | The built-in guides | [Getting Started](Getting-Started.md#getting-help) |
+| `about` | Who made it, and which build this is | [Getting Started](Getting-Started.md#tasqx-about) |
 
 ## Topic pages
 
