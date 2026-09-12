@@ -990,6 +990,12 @@ pub(super) enum Command {
         #[arg(long)]
         stdout: bool,
     },
+    /// Who made tasqx, where to find it, and what build this is.
+    /// Prints the author, two links, this build's version and commit, and the
+    /// store it would open. Needs no store and no network.
+    #[command(after_help = crate::cmddoc::after_help("about"))]
+    About,
+
     /// Browse the complete manual in your terminal: a themed, navigable guide.
     /// `tasqx manual` prints the table of contents; `tasqx manual <command|topic>`
     /// opens that page, or both where a name is a command and a topic
