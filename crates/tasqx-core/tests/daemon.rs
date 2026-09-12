@@ -899,25 +899,51 @@ fn a_connected_client_holds_the_daemon_open_and_leaving_starts_the_countdown() {
 /// observation, retried on a fresh store up to three times. A daemon that has
 /// genuinely stopped seeing the reminder fails on the FIRST attempt, because
 /// nothing spoiled it — which is exactly what the injected-drift run checks.
+///
+/// **What the instrument covers, and what it does not.** Two stretches are
+/// sampled, and both are reported when the daemon leaves early: the judged
+/// WINDOW, from the client's disconnect to the outcome, and the SETUP stretch
+/// before it — from where `at` is computed, through the two adds and the barrier
+/// wait, up to the instant the window opens. The setup number is recorded and
+/// never judged. A step there is invisible to the window and still decides the
+/// run, because `at` is absolute: the reminder ends up further out by the size
+/// of the step against the daemon's own clock, which can put it beyond twice the
+/// timeout and out of reach of the horizon. The pair is what tells a blind
+/// instrument from a second mechanism.
+///
+/// It settles nothing by itself, and it makes no failure less likely — it makes
+/// the next one self-diagnosing. The state of the question, to be re-derived
+/// from a run rather than trusted here: one failure in 25 runs before the setup
+/// stretch was sampled, whose window read -0.000s and could not say why; then
+/// none in 75 runs after. So the hypothesis that a step lands in the setup
+/// stretch is UNTESTED rather than confirmed — the failure has not fired again,
+/// so nothing has read that stretch at the moment it matters. Note also that the
+/// sampling adds clock reads inside the barrier loop, so it cannot be claimed
+/// perfectly timing-neutral.
 #[test]
 fn a_reminder_about_to_ripen_holds_the_daemon_past_its_own_deadline() {
     let mut spoiled = Vec::new();
     for _ in 0..3 {
         match observe_a_reminder_holding_the_daemon() {
             Ok(()) => return,
-            Err(skew) => {
+            Err((skew, setup)) => {
                 // Half a second is far below the smallest step ever measured
                 // here (2 s) and far above anything a healthy clock does, so
                 // this separates "the clock moved" from "the daemon stopped
                 // honouring the horizon" without straddling either.
+                //
+                // Judged on the WINDOW alone. `setup` is reported beside it and
+                // never tested: it is there to say which stretch moved when this
+                // fires, not to widen the excuse.
                 assert!(
                     skew <= -0.5,
                     "the daemon returned at its own idle deadline while a reminder it should \
                      have waited for was still pending, so nothing ever delivered it — and the \
-                     wall clock held still across the window (worst backward excursion \
-                     {skew:.3}s), which leaves the mechanism this test guards"
+                     wall clock held still across the judged window (worst backward excursion \
+                     {skew:.3}s; across the earlier stretch, from `at` through the barrier, \
+                     {setup:.3}s), which leaves the mechanism this test guards"
                 );
-                spoiled.push(format!("{skew:.3}s"));
+                spoiled.push(format!("window {skew:.3}s / setup {setup:.3}s"));
             }
         }
     }
@@ -930,10 +956,12 @@ fn a_reminder_about_to_ripen_holds_the_daemon_past_its_own_deadline() {
 }
 
 /// One observation of the horizon: `Ok(())` when the reminder was delivered
-/// before `serve` returned, `Err(skew)` when the daemon returned first — where
-/// `skew` is the worst BACKWARD wall-clock excursion measured across the window,
-/// in seconds, and `0.0` means the clock ran forward throughout.
-fn observe_a_reminder_holding_the_daemon() -> Result<(), f64> {
+/// before `serve` returned, `Err((window, setup))` when the daemon returned
+/// first. Both are the worst BACKWARD wall-clock excursion in seconds, `0.0`
+/// meaning the clock ran forward throughout — `window` across the judged stretch
+/// after the client leaves, `setup` across the stretch before it. Only `window`
+/// is ever judged; see this test's doc comment for why `setup` is carried.
+fn observe_a_reminder_holding_the_daemon() -> Result<(), (f64, f64)> {
     let (db, sock) = unique_target();
     let collector: Arc<Collecting> = Arc::new(Collecting::default());
     let (shutdown, result_rx, server) = start_daemon_observing_result(
@@ -946,6 +974,11 @@ fn observe_a_reminder_holding_the_daemon() -> Result<(), f64> {
             ..Default::default()
         },
     );
+
+    // Observation only (#398): the stretch the judged window below cannot see,
+    // opened here so it covers `at` itself.
+    let (setup_mono, setup_wall) = (std::time::Instant::now(), jiff::Timestamp::now());
+    let mut worst_setup: f64 = 0.0;
 
     {
         let mut writer = daemon::try_connect(&sock).expect("connect writer");
@@ -979,9 +1012,26 @@ fn observe_a_reminder_holding_the_daemon() -> Result<(), f64> {
                 std::time::Instant::now() < seen,
                 "the scheduler never delivered an already-due reminder within 30s"
             );
+            let mono = setup_mono.elapsed().as_secs_f64();
+            let wall = jiff::Timestamp::now()
+                .duration_since(setup_wall)
+                .as_secs_f64();
+            worst_setup = worst_setup.min(wall - mono);
             thread::sleep(Duration::from_millis(20));
         }
     } // The client leaves; from here the reminder is the only reason to stay.
+
+    // Closes the setup stretch where the judged window opens, so the two
+    // together cover everything since `at` — including the case where the
+    // barrier had already been delivered when the loop above first looked and
+    // its body never ran.
+    {
+        let mono = setup_mono.elapsed().as_secs_f64();
+        let wall = jiff::Timestamp::now()
+            .duration_since(setup_wall)
+            .as_secs_f64();
+        worst_setup = worst_setup.min(wall - mono);
+    }
 
     // Whichever comes first decides, and one of them always comes: a daemon that
     // honours the horizon delivers, one that does not returns at its own
@@ -1022,7 +1072,7 @@ fn observe_a_reminder_holding_the_daemon() -> Result<(), f64> {
         shutdown.store(true, Ordering::Relaxed);
         server.join().expect("server thread");
         let _ = std::fs::remove_file(&db);
-        return Err(worst_skew);
+        return Err((worst_skew, worst_setup));
     }
 
     assert_eq!(
