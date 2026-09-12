@@ -3347,6 +3347,63 @@ fn theme_list_draws_from_only_when_a_user_theme_exists() {
     assert!(!text.contains("built-in"), "{text}");
 }
 
+/// The themes-dir note is cut from the FRONT, and that direction is the half a
+/// fit guard cannot see.
+///
+/// `every_table_fits_a_sixty_column_terminal` pins that this line fits, and a
+/// head-first `truncate` fits exactly as well — so the whole reason a path is
+/// fitted differently from a title went unguarded. What a reader needs off this
+/// line is WHICH config dir the themes came from, and that is the tail: every
+/// path on one machine shares its front, and the leaf is `themes` for everybody
+/// alive, so it is the parent directly above it that identifies the directory.
+#[test]
+fn theme_list_cuts_its_themes_dir_from_the_front() {
+    use unicode_width::UnicodeWidthStr;
+
+    // Long for the same reason the fit guard's dir is: so the path is over
+    // sixty cells on every platform rather than only on the runners'.
+    let tag = "theme-list-tail-in-a-config-dir-whose-path-no-sixty-column-terminal-can-hold";
+    let dir = fresh_config_dir(tag);
+    std::fs::create_dir_all(dir.join("themes")).unwrap();
+    std::fs::write(
+        dir.join("themes").join("ocean.toml"),
+        "name = \"ocean\"\nextends = \"nord\"\n",
+    )
+    .unwrap();
+    let out = bin(tag, &dir)
+        .env("COLUMNS", "60")
+        .args(["theme", "list"])
+        .output()
+        .expect("run tasqx");
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    // The note closes the screen, so the path is the last thing printed.
+    let path_line = text
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or_else(|| panic!("the note names the themes dir: {text}"));
+    assert!(
+        path_line.starts_with("...") || path_line.starts_with('…'),
+        "cut at the front means the ellipsis leads: {path_line:?}"
+    );
+    assert!(
+        path_line.ends_with("themes"),
+        "the directory it actually reads is the end of the path: {path_line:?}"
+    );
+    // The pid CLOSES this dir's name, so a tail-first cut keeps it; `tasqx-reg-`
+    // OPENS it, so a head-first cut would have kept that instead. One pair of
+    // assertions, and they swap places the moment the direction does.
+    assert!(
+        path_line.contains(&std::process::id().to_string()),
+        "the name telling this config dir from another was cut away: {path_line:?}"
+    );
+    assert!(
+        !path_line.contains("tasqx-reg-"),
+        "the front every path shares survived in place of the tail: {path_line:?}"
+    );
+    assert!(path_line.width() <= 60, "{path_line:?}");
+}
+
 /// Round 1 review of #346: `theme show` paints a sample in each role and
 /// leaves the role's NAME at the terminal's own colour. Painting the name in
 /// its role made the faint roles (`muted`, `card.frame`, `priority.L`) hard to
