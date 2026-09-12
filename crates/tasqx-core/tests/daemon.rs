@@ -512,7 +512,18 @@ fn subscribe_events(sock: &str) -> mpsc::Receiver<Value> {
 
 /// Wait for a `task.changed` push carrying `op`, ignoring the others.
 fn wait_for_op(rx: &mpsc::Receiver<Value>, op: &str) -> Value {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    wait_for_op_within(rx, op, Duration::from_secs(5))
+}
+
+/// [`wait_for_op`] on a stated budget, for the waits where the push follows a
+/// background loop rather than the call that was just made. Five seconds is ten
+/// attribution ticks and twenty-five reminder ticks, which is ample on an idle
+/// machine and not obviously ample under an instrumented coverage build on a
+/// loaded runner — and a liveness budget that is too small does not make a test
+/// stricter, it makes it a coin toss. Same reasoning, and same generosity, as
+/// the connect deadline in `start_daemon_with_options`.
+fn wait_for_op_within(rx: &mpsc::Receiver<Value>, op: &str, within: Duration) -> Value {
+    let deadline = std::time::Instant::now() + within;
     loop {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         assert!(
@@ -818,14 +829,111 @@ fn a_connected_client_holds_the_daemon_open_and_leaving_starts_the_countdown() {
 /// unit test: the mirror could be left unwritten and every predicate test would
 /// still pass while a live daemon walked out one second before a delivery.
 ///
-/// The timings are the smallest that separate the two outcomes. The reminder
-/// leads by 1.8 s against a 2 s timeout, so it sits inside the horizon from the
-/// moment it is set: a daemon that honours it fires at ~1.8 s and can then leave
-/// no earlier than ~3.8 s, while one that cannot see it leaves at ~2 s. The 3 s
-/// window between those is what this asserts. Both drift the same way on a
-/// loaded machine — later — so slowness costs a missed defect, never a red run.
+/// **The two outcomes differ in what happens, not in when.** The reminder leads
+/// by 3 s against a 2 s idle timeout, and both numbers are constrained — from
+/// opposite ends. The lead must EXCEED the timeout, or a daemon that cannot see
+/// the reminder is still there when it ripens and delivers it anyway, which is
+/// what the 1.8 s lead below got wrong. And the lead must stay under TWICE the
+/// timeout, because the horizon `server_busy` judges against is the timeout
+/// itself: the reminder only enters that horizon `lead - timeout` after the
+/// client leaves, while the idle clock expires `timeout` after the same instant.
+/// At 3 s against 2 s each margin is a full second. At 4 s against 2 s — which
+/// this briefly was — the second margin is exactly zero.
+///
+/// So a daemon that honours the horizon has its idle clock reset a second before
+/// it would have fired, stays, delivers at ~3 s and leaves ~2 s after that. One
+/// that cannot see the reminder returns at ~2 s, a second before it was due, and
+/// then nothing delivers it, ever. The assertion is an order between two
+/// observable events — the delivery, and `serve`'s return — not a stopwatch
+/// reading.
+///
+/// **The daemon may not start its idle clock until it has seen the reminder**,
+/// which is what the second, already-due reminder is for. It is added alongside
+/// the first and waited for WHILE THE WRITER IS STILL CONNECTED — where a client
+/// is itself a reason to stay, so the wait cannot be raced and costs nothing.
+/// Its delivery can only come from a tick that rebuilt the heap from a store
+/// already holding both, and every tick republishes `peek_at()` for the accept
+/// loop on its way out. Only then does the client leave.
+///
+/// #398, in two parts. The first cut led by 1.8 s against the same 2 s, which
+/// makes BOTH daemons deliver the reminder (the reminder loop fires
+/// independently of the idle decision) and leaves "was it still here at 3 s" as
+/// the only difference — a 3 s window against a ~3.8 s departure. The comment
+/// here claimed slowness could only cost a missed defect, never a red run. That
+/// was wrong in the one direction that matters: `at` is an ABSOLUTE instant
+/// fixed BEFORE the `task.add` round trip while the window starts AFTER it, so
+/// every millisecond that round trip loses under load comes straight off the
+/// 800 ms margin. One second of injected delay reddens it with the daemon
+/// untouched.
+///
+/// Lengthening the lead alone did not finish the job, and two stress runs said
+/// so — 25 runs of this binary beside a full `cargo test` and one busy core
+/// each, twice over. The first reddened here with the daemon's own stderr
+/// showing it had left at its 2 s deadline: the reminder loop had not ticked
+/// yet, so the mirror the accept loop reads was still empty when the idle clock
+/// ran out — a window that opens at the `task.add` and has nothing to do with
+/// how far out the reminder is. Hence the barrier, which closes that window by
+/// construction instead of by making the numbers bigger. The second reddened the
+/// same line for the opposite reason: the lead had been pushed to 4 s, exactly
+/// twice the timeout, so the reminder entered the horizon at the same instant
+/// the idle clock expired and which loop looked first decided the run.
+///
+/// Slowness costs a missed defect here — a round trip slow enough to drag the
+/// ripening back before the wrong daemon's deadline makes the delivery happen
+/// either way — but slowness alone cannot redden the run.
+///
+/// **What no margin can fix, measured rather than assumed.** The daemon judges
+/// the horizon on the WALL clock (`reminder_due_within` reads
+/// `jiff::Timestamp::now()`) while its idle deadline runs on a monotonic
+/// `Instant`. A wall clock that steps BACKWARDS therefore makes a pending
+/// reminder look further away than it is while the deadline keeps running, and
+/// the daemon leaves for a reason that has nothing to do with the mechanism
+/// under test. That is not hypothetical here: sampling both clocks for 60 s
+/// under the load this suite runs beside measured four backward steps, the worst
+/// 5.4 s — every one of them at least 2 s, half of them over 5 s. A margin that
+/// absorbs that is a 6 s timeout and a twenty-second test, and it would still be
+/// a bet rather than a guarantee.
+///
+/// So an early departure is not a verdict by itself. The window samples both
+/// clocks, and a departure with a backward excursion in it is a SPOILED
+/// observation, retried on a fresh store up to three times. A daemon that has
+/// genuinely stopped seeing the reminder fails on the FIRST attempt, because
+/// nothing spoiled it — which is exactly what the injected-drift run checks.
 #[test]
 fn a_reminder_about_to_ripen_holds_the_daemon_past_its_own_deadline() {
+    let mut spoiled = Vec::new();
+    for _ in 0..3 {
+        match observe_a_reminder_holding_the_daemon() {
+            Ok(()) => return,
+            Err(skew) => {
+                // Half a second is far below the smallest step ever measured
+                // here (2 s) and far above anything a healthy clock does, so
+                // this separates "the clock moved" from "the daemon stopped
+                // honouring the horizon" without straddling either.
+                assert!(
+                    skew <= -0.5,
+                    "the daemon returned at its own idle deadline while a reminder it should \
+                     have waited for was still pending, so nothing ever delivered it — and the \
+                     wall clock held still across the window (worst backward excursion \
+                     {skew:.3}s), which leaves the mechanism this test guards"
+                );
+                spoiled.push(format!("{skew:.3}s"));
+            }
+        }
+    }
+    panic!(
+        "three observations running were spoiled by a backward wall-clock step ({}), so this \
+         run never got to see the property. The daemon is not implicated: `reminder_due_within` \
+         reads the wall clock while the idle deadline runs on a monotonic `Instant`.",
+        spoiled.join(", ")
+    );
+}
+
+/// One observation of the horizon: `Ok(())` when the reminder was delivered
+/// before `serve` returned, `Err(skew)` when the daemon returned first — where
+/// `skew` is the worst BACKWARD wall-clock excursion measured across the window,
+/// in seconds, and `0.0` means the clock ran forward throughout.
+fn observe_a_reminder_holding_the_daemon() -> Result<(), f64> {
     let (db, sock) = unique_target();
     let collector: Arc<Collecting> = Arc::new(Collecting::default());
     let (shutdown, result_rx, server) = start_daemon_observing_result(
@@ -841,7 +949,7 @@ fn a_reminder_about_to_ripen_holds_the_daemon_past_its_own_deadline() {
 
     {
         let mut writer = daemon::try_connect(&sock).expect("connect writer");
-        let at = jiff::Timestamp::now() + jiff::SignedDuration::from_millis(1800);
+        let at = jiff::Timestamp::now() + jiff::SignedDuration::from_millis(3000);
         let added = writer
             .request(
                 "task.add",
@@ -849,16 +957,78 @@ fn a_reminder_about_to_ripen_holds_the_daemon_past_its_own_deadline() {
             )
             .expect("add a task with a reminder");
         ok(&added);
+        // The barrier: already due, so the scheduler fires it on its first tick
+        // after both of these writes.
+        let barrier = writer
+            .request(
+                "task.add",
+                &json!({ "title": "already due", "remind": "2020-01-01T00:00:00Z" }),
+            )
+            .expect("add the barrier reminder");
+        ok(&barrier);
+
+        // Waited for here, still connected: a tick has now rebuilt the heap
+        // from a store holding both reminders, and republished what it holds.
+        let seen = std::time::Instant::now() + Duration::from_secs(30);
+        while !collector
+            .titles()
+            .iter()
+            .any(|t| t.as_str() == "already due")
+        {
+            assert!(
+                std::time::Instant::now() < seen,
+                "the scheduler never delivered an already-due reminder within 30s"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
     } // The client leaves; from here the reminder is the only reason to stay.
 
-    assert!(
-        serve_result(&result_rx, Duration::from_secs(3)).is_none(),
-        "the daemon left while a reminder was inside its own idle window"
-    );
+    // Whichever comes first decides, and one of them always comes: a daemon that
+    // honours the horizon delivers, one that does not returns at its own
+    // deadline a second before the reminder was due and delivers nothing ever.
+    // Both clocks are sampled across the window, because on this machine a
+    // backward wall-clock step is its own explanation for an early return.
+    let (mono_start, wall_start) = (std::time::Instant::now(), jiff::Timestamp::now());
+    let mut worst_skew: f64 = 0.0;
+    let deadline = mono_start + Duration::from_secs(30);
+    let left_early = loop {
+        let mono = mono_start.elapsed().as_secs_f64();
+        let wall = jiff::Timestamp::now()
+            .duration_since(wall_start)
+            .as_secs_f64();
+        worst_skew = worst_skew.min(wall - mono);
+        // By NAME. The barrier is already in the collector, so "something was
+        // delivered" is satisfied the instant the client lets go, and this
+        // would break out having proved nothing.
+        if collector
+            .titles()
+            .iter()
+            .any(|t| t.as_str() == "hold the door")
+        {
+            break None;
+        }
+        if let Some(returned) = serve_result(&result_rx, Duration::from_millis(50)) {
+            break Some(returned);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "neither the reminder nor the daemon's return arrived within 30s"
+        );
+    };
+
+    if left_early.is_some() {
+        // Already returned, so the join is immediate; the caller decides whether
+        // this was the defect or the clock.
+        shutdown.store(true, Ordering::Relaxed);
+        server.join().expect("server thread");
+        let _ = std::fs::remove_file(&db);
+        return Err(worst_skew);
+    }
+
     assert_eq!(
         collector.titles(),
-        vec!["hold the door".to_string()],
-        "it stayed for a reminder that then actually fired"
+        vec!["already due".to_string(), "hold the door".to_string()],
+        "the barrier, then the reminder it stayed for — each delivered exactly once"
     );
 
     let outcome = serve_result(&result_rx, Duration::from_secs(20));
@@ -868,6 +1038,7 @@ fn a_reminder_about_to_ripen_holds_the_daemon_past_its_own_deadline() {
         .expect("and once the reminder is delivered it may leave")
         .expect("idle shutdown is an ordinary stop");
     let _ = std::fs::remove_file(&db);
+    Ok(())
 }
 
 /// A TCP port nothing is listening on right now, for the daemon's OTLP receiver
@@ -1097,48 +1268,80 @@ fn a_correlated_completion_yields_a_stored_measurement_and_a_push() {
 /// With the opt-in OFF (the default), the attribution thread is never spawned:
 /// a correlated completion is left un-attributed.
 ///
-/// The barrier is a **positive control**, not a sleep. This assertion is
-/// negative — "nothing appeared" — so a stopwatch makes it pass for the wrong
-/// reason the moment the runner is slower than the budget, and the coverage job
+/// A negative assertion needs two things a stopwatch cannot give it: the
+/// measurement must be unable to land after the read, and the completion must be
+/// one that WOULD have been measured, or the test passes on a fixture nothing
+/// could have attributed. Both come from sequencing here.
+///
+/// **Nothing can land after the read.** The opted-out daemon is stopped and
+/// JOINED before the store is read, so "no measurement" is a fact about a
+/// returned process rather than a race with a running one. No budget defends it
+/// and none can invalidate it.
+///
+/// **The fixture is provably measurable.** After that read, a second daemon with
+/// the opt-in ON opens the SAME store and attributes that very completion — the
+/// catch-up-on-start rebuild `attribution_loop` documents. That is what makes
+/// the emptiness a statement about the gate instead of about the transcript.
+///
+/// **What is left, and stated rather than hidden.** The one thing no observable
+/// outside the process can establish is that a thread which does not exist would
+/// have run by now. What bounds it is the daemon's OWN barrier: a second task
+/// whose reminder ripens a second after the completion, delivered by this
+/// daemon's own reminder loop, in this daemon's own process, under this
+/// machine's actual load — where an attribution tick is 500 ms and the first
+/// tick rebuilds the pending set from the whole store. It is the idiom
+/// `a_restarted_daemon_does_not_refire_an_already_reminded_reminder` uses one
+/// screen up, and the inference is between two sibling loops in one process
+/// rather than between two machines' worth of scheduling.
+///
+/// **The usage line is placed inside the window by arithmetic, not by a clock
+/// read.** The task's `created` and `completed` are read back out of the store
+/// after the completion, and the transcript is stamped with their midpoint, so
+/// containment is a property of two stored values rather than of the machine's
+/// clock running forward between two reads — which on this machine it does not
+/// always do. The first cut stamped the line with a `util::now()` taken between
+/// the creation and the completion, and one stress run in 25 caught it: the
+/// daemon reported "no usage in window yet" for a file whose lines sat just
+/// outside a window nothing could widen, and the poll below timed out on a
+/// daemon that was working correctly. What is left of that exposure is named in
+/// the assertion beside the arithmetic — if the store itself recorded a
+/// completion before its own creation, the window is empty and the test says so
+/// in those words instead of blaming attribution.
+///
+/// #502: the control used to be a *concurrent* second daemon on its own store,
+/// whose `tokens.attributed` push was read as a clock for this one. That is an
+/// ordering between two independent processes, and the 5 s `wait_for_op` budget
+/// riding on it made a loaded runner red — while the coverage job
 /// (`cargo llvm-cov --all-targets`) runs this very test under instrumentation.
-/// Raising the number cannot fix that class: on a negative assertion a bigger
-/// budget buys robustness, never soundness. So a *second* daemon with the opt-in
-/// ON, on its OWN store and socket, completes the same shaped task; its
-/// `tokens.attributed` push is the proof that a full attribution pass has
-/// happened here, now, under this machine's actual load. The stores must stay
-/// separate — sharing one would let the enabled daemon attribute the disabled
-/// daemon's task and turn this red for a reason unrelated to the gate.
+/// Proving both halves on one store needs no cross-daemon ordering at all.
 #[test]
 fn attribution_does_not_run_when_the_opt_in_is_off() {
     let (db, sock) = unique_target();
-    let (control_db, control_sock) = unique_target();
     let dir = unique_dir("off");
-    // One fixture, read by both daemons: it is an input file, not shared state.
     let path = dir.join("session.jsonl");
 
-    let shutdown = start_daemon(&db, &sock); // tokens disabled by default
-    let control_shutdown =
-        start_daemon_with_options(&control_db, &control_sock, Arc::new(LogNotifier), true);
+    // Observed rather than detached: everything below rests on this daemon
+    // being demonstrably gone, which is a return value, not an elapsed time.
+    let (shutdown, result_rx, server) = start_daemon_observing_result(
+        &db,
+        &sock,
+        daemon::DaemonOptions {
+            tokens_enabled: false, // the default, spelled out because it is the subject
+            ..Default::default()
+        },
+    );
     let rx = subscribe_events(&sock);
-    let control_rx = subscribe_events(&control_sock);
     let mut c = daemon::try_connect(&sock).expect("connect");
-    let mut cc = daemon::try_connect(&control_sock).expect("connect control");
 
     let add = c
         .request("task.add", &json!({ "title": "ship it" }))
         .unwrap();
     let id = ok(&add)["short_id"].as_i64().unwrap();
-    let control_add = cc
-        .request("task.add", &json!({ "title": "ship it" }))
-        .unwrap();
-    let control_id = ok(&control_add)["short_id"].as_i64().unwrap();
 
-    // Captured after both creations and before both completions => provably
-    // inside each task's [created, completed] window.
-    let in_window = tasqx_core::util::now();
-    std::fs::write(&path, transcript(&in_window)).unwrap();
-    // The opt-in-off completion goes FIRST, so the control's attribution tick
-    // cannot fire before this daemon has even seen its own `done` event.
+    // Completed against a transcript that does not exist yet, which is the real
+    // shape and not a convenience: `tasqx done` runs inside the agent turn whose
+    // usage it wants to count, and that turn's line is not written until the turn
+    // ends (#73), so the daemon reads an absent transcript as "not yet".
     c.request(
         "task.done",
         &json!({
@@ -1148,39 +1351,94 @@ fn attribution_does_not_run_when_the_opt_in_is_off() {
         }),
     )
     .unwrap();
-    cc.request(
-        "task.done",
-        &json!({
-            "ref": control_id,
-            "client": "claude-code",
-            "transcript_path": path.to_string_lossy(),
-        }),
-    )
-    .unwrap();
 
-    // Barrier 1: this daemon has broadcast the completion, so the event is
-    // committed to its store and its background loop is running.
-    wait_for_op(&rx, "done");
-    // Barrier 2: an attribution loop elsewhere has run a full pass over an
-    // equivalent task since then.
-    let attributed = wait_for_op(&control_rx, "tokens.attributed");
-    assert_eq!(
-        attributed["data"]["short_id"],
-        json!(control_id),
-        "the control's push must be for the control's own task"
-    );
-
+    // The window is read back OUT OF THE STORE and the usage line placed inside
+    // it by arithmetic — see the doc comment for why no clock is read here.
     let got = c.request("task.get", &json!({ "ref": id })).unwrap();
-    let tokens = ok(&got)["tokens"].as_array().expect("tokens array");
+    let window = ok(&got);
+    let created: jiff::Timestamp = window["created"]
+        .as_str()
+        .expect("a task carries its created")
+        .parse()
+        .expect("created parses");
+    let completed: jiff::Timestamp = window["completed"]
+        .as_str()
+        .expect("a completed task carries its completed")
+        .parse()
+        .expect("completed parses");
     assert!(
-        tokens.is_empty(),
-        "attribution must stay off without the opt-in, got {tokens:?}"
+        completed > created,
+        "the store recorded a completion before its own creation ({created} .. {completed}): \
+         the clock stepped backwards mid-test, and no sample timestamp is inside that window"
+    );
+    let half =
+        jiff::SignedDuration::from_nanos((completed.duration_since(created).as_nanos() / 2) as i64);
+    std::fs::write(&path, transcript(&(created + half).to_string())).unwrap();
+
+    // The barrier comes last, so the second of background loops it bounds is a
+    // second in which everything an attribution pass needs is already in place.
+    let at = jiff::Timestamp::now() + jiff::SignedDuration::from_millis(1000);
+    let barrier = c
+        .request(
+            "task.add",
+            &json!({ "title": "the barrier", "remind": at.to_string() }),
+        )
+        .unwrap();
+    ok(&barrier);
+    wait_for_op_within(&rx, "reminded", Duration::from_secs(30));
+
+    // Stop it and watch it go. Everything after this reads a store nothing is
+    // writing to.
+    drop(c);
+    shutdown.store(true, Ordering::Relaxed);
+    serve_result(&result_rx, Duration::from_secs(20))
+        .expect("the opted-out daemon must return when it is asked to stop")
+        .expect("an asked-for stop is an ordinary stop");
+    server.join().expect("server thread");
+
+    let unattributed = {
+        let e = Engine::open(&db).expect("open the store the daemon left behind");
+        let got = dispatch(&e, "task.get", &json!({ "ref": id })).expect("task.get");
+        got["tokens"].as_array().expect("tokens array").len()
+    };
+    assert_eq!(
+        unattributed, 0,
+        "attribution must stay off without the opt-in, and the only daemon that \
+         could have written one has already returned"
     );
 
-    shutdown.store(true, Ordering::Relaxed);
-    control_shutdown.store(true, Ordering::Relaxed);
+    // The same completion, the same store, the opt-in ON.
+    let (_, on_sock) = unique_target();
+    let on_shutdown = start_daemon_with_options(&db, &on_sock, Arc::new(LogNotifier), true);
+    let mut on_c = daemon::try_connect(&on_sock).expect("connect the opted-in daemon");
+    // Polled, not waited on: the completion was already in the store when this
+    // daemon opened it, so its catch-up pass can finish before any subscription
+    // could exist. The stored measurement is this half's claim; the push that
+    // accompanies it is `a_correlated_completion_yields_a_stored_measurement_and_a_push`'s.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let measured = loop {
+        let got = on_c.request("task.get", &json!({ "ref": id })).unwrap();
+        let tokens = ok(&got)["tokens"].as_array().expect("tokens array").clone();
+        if !tokens.is_empty() {
+            break tokens;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the opted-in daemon never attributed the completion the opted-out one left, \
+             so the fixture above proves nothing"
+        );
+        thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(
+        measured.len(),
+        1,
+        "exactly one measurement, written by the daemon that was allowed to: {measured:?}"
+    );
+    assert_eq!(measured[0]["source"], json!("log-parse"));
+    assert_eq!(measured[0]["input_tokens"], json!(110), "in-window only");
+
+    on_shutdown.store(true, Ordering::Relaxed);
     let _ = std::fs::remove_file(&db);
-    let _ = std::fs::remove_file(&control_db);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
