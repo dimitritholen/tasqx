@@ -2934,9 +2934,18 @@ fn an_out_of_range_date_is_refused_in_this_tools_words() {
 fn every_table_fits_a_sixty_column_terminal() {
     use unicode_width::UnicodeWidthStr;
 
-    let dir = fresh_config_dir("narrow-tables");
+    // The tag is this long on purpose. `theme list` names the directory it read
+    // user themes from, and a path is one unbreakable word, so whether the line
+    // fit sixty columns was decided by the length of the machine's temp dir:
+    // the guard held on Linux (`/tmp/…`) and failed on the Windows and macOS
+    // runners (`C:\Users\RUNNER~1\AppData\Local\Temp\…`, `/var/folders/…`).
+    // That is the fixture measuring the tmp dir rather than the renderer. A tag
+    // wider than the terminal on its own puts the path past sixty cells
+    // everywhere, so the guard now bites on every platform or on none.
+    let tag = "narrow-tables-in-a-config-dir-whose-path-no-sixty-column-terminal-can-hold";
+    let dir = fresh_config_dir(tag);
     let run = |args: &[&str]| {
-        bin("narrow-tables", &dir)
+        bin(tag, &dir)
             .env("COLUMNS", "60")
             .args(args)
             .output()

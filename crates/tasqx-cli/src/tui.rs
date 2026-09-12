@@ -581,36 +581,15 @@ pub(crate) fn search_spans(
         if line.searching { accent } else { muted },
     ));
     let query_room = room.saturating_sub(2 + width(caret));
-    spans.push(Span::raw(tail_fit(line.query, query_room, unicode)));
+    spans.push(Span::raw(crate::render::tail_fit(
+        line.query, query_room, unicode,
+    )));
     if line.searching {
         spans.push(Span::styled(caret, accent));
     }
     spans.push(Span::raw("   "));
     spans.push(Span::styled(count, muted));
     spans
-}
-
-/// The END of `text` in at most `cells` cells, an ellipsis standing for what
-/// was cut from the front: the part of a query the reader is typing at.
-pub(crate) fn tail_fit(text: &str, cells: usize, unicode: bool) -> String {
-    use crate::render::width;
-    if width(text) <= cells {
-        return text.to_string();
-    }
-    let dots = if unicode { "…" } else { "..." };
-    let keep = cells.saturating_sub(width(dots));
-    let mut tail: Vec<char> = Vec::new();
-    let mut used = 0;
-    for c in text.chars().rev() {
-        let cw = width(&c.to_string());
-        if used + cw > keep {
-            break;
-        }
-        used += cw;
-        tail.push(c);
-    }
-    tail.reverse();
-    format!("{dots}{}", tail.into_iter().collect::<String>())
 }
 
 /// A screen's bottom row: a cell of margin, the hints `keys` can fit, and —
