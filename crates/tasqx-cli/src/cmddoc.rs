@@ -34,6 +34,7 @@ pub enum Topic {
     Capturing,
     Dates,
     Filters,
+    Screens,
     Reminders,
     Reports,
     Daemon,
@@ -43,12 +44,13 @@ pub enum Topic {
 }
 
 impl Topic {
-    pub const ALL: [Topic; 11] = [
+    pub const ALL: [Topic; 12] = [
         Topic::GettingStarted,
         Topic::Projects,
         Topic::Capturing,
         Topic::Dates,
         Topic::Filters,
+        Topic::Screens,
         Topic::Reminders,
         Topic::Reports,
         Topic::Daemon,
@@ -63,6 +65,7 @@ impl Topic {
             Topic::Capturing => "capturing",
             Topic::Dates => "dates",
             Topic::Filters => "filters",
+            Topic::Screens => "screens",
             Topic::Reminders => "reminders",
             Topic::Reports => "reports",
             Topic::Daemon => "daemon",
@@ -78,6 +81,7 @@ impl Topic {
             Topic::Capturing => "Capturing tasks",
             Topic::Dates => "Dates & recurrence",
             Topic::Filters => "Filter grammar",
+            Topic::Screens => "Screens & browsing",
             Topic::Reminders => "Reminders",
             Topic::Reports => "Reports & charts",
             Topic::Daemon => "Daemon & watch",
@@ -669,7 +673,9 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ex("tasqx theme list"),
             ex("tasqx theme show nord"),
         ],
-        notes: &[],
+        notes: &[
+            "`theme list` marks the theme in effect with `*`, the mark `tasqx projects` puts on the default project.",
+        ],
         see_also: &["report", "manual"],
         topic: Topic::Reports,
     },
@@ -728,6 +734,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             ),
         ],
         notes: &[
+            "A hit is two lines: the title, where it came from and the handle that opens it, then the words that matched. The handle is a doc's id, which `tasqx memory show <id>` reads, or `annotation on #N`, which `tasqx show N` opens — `memory show` refuses an annotation's id and names the task instead (exit 4).",
             "Search covers your imported docs AND task annotations, bm25-ranked, with stemming (\"reviewing\" matches \"review\"). Plain words are matched as phrases (hyphens and dots are safe); pass --raw for FTS5 operator syntax. The response's total/has_more say what --limit left out.",
             "list browses every doc without a query — the enumeration search can't do without one — newest-modified first, paged the same way as `tasqx list`.",
             "update replaces title/body/source/project in place, guarded by the same optimistic-concurrency rev `tasqx modify` uses. rm is permanent; update is the correction path that keeps the id and doesn't pollute search with a stale duplicate.",
