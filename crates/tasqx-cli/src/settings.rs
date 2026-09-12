@@ -433,9 +433,14 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                 // dir was deeper than the screen is wide, which is the DEFAULT
                 // on both Windows (`C:\Users\…\AppData\Local\…`) and macOS
                 // (`/var/folders/…`): the one wrap D120 fits every table to
-                // avoid. Fitted from the tail, because the leaf is what tells
-                // this directory from the ones beside it; `--json` still
-                // carries the whole path under `user.dir`.
+                // avoid. Cut from the FRONT, because the front is what every
+                // path on the machine has in common (`/home/<me>/.config`,
+                // `C:\Users\<me>\AppData\Roaming`) while the tail carries the
+                // config dir's own name — WHICH store's themes these are. Note
+                // that the leaf alone would not do it: that is `themes` for
+                // every user alive, and it is the parent directly above it that
+                // tells one of these apart from another. `--json` still carries
+                // the whole path under `user.dir`.
                 let from = render::tail_fit(&dir.to_string_lossy(), ctx.cols, ctx.caps.unicode);
                 text.push_str(&render::prose(
                     ctx,

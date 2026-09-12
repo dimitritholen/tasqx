@@ -197,16 +197,20 @@ impl Caps {
 
     /// Detect from the live process environment, enabling Windows VT if needed.
     pub fn detect() -> Caps {
-        Caps::detect_for(std::io::stdout().is_terminal())
+        Caps::detect_for(std::io::stdout().is_terminal(), STD_OUTPUT_HANDLE)
     }
 
     /// [`Caps::detect`] for stderr, where a note goes whatever stdout is
     /// (`tasqx export > slice.json`), by the same rules (D126).
     pub fn detect_stderr() -> Caps {
-        Caps::detect_for(std::io::stderr().is_terminal())
+        Caps::detect_for(std::io::stderr().is_terminal(), STD_ERROR_HANDLE)
     }
 
-    fn detect_for(stream_is_terminal: bool) -> Caps {
+    /// `handle` names the same stream `stream_is_terminal` describes. Windows
+    /// enables VT per HANDLE, so a probe of stdout says nothing about stderr,
+    /// and `tasqx export > slice.json` — D126's own example, a redirected
+    /// stdout beside a console stderr — is exactly where the two disagree.
+    fn detect_for(stream_is_terminal: bool, handle: u32) -> Caps {
         // Honor the de-facto CLICOLOR_FORCE (and a tasqx-specific alias) so color
         // can be forced through a pipe — standard for tools that feed `less -R`
         // or CI logs. NO_COLOR still wins (checked in `detect_from`).
@@ -216,7 +220,11 @@ impl Caps {
                 .unwrap_or(false);
         let is_tty = stream_is_terminal || force;
         let env = EnvCaps::from_env();
-        detect_from(&env, is_tty, vt_for(stream_is_terminal, enable_vt))
+        detect_from(
+            &env,
+            is_tty,
+            vt_for(stream_is_terminal, || enable_vt(handle)),
+        )
     }
 }
 
@@ -340,14 +348,18 @@ pub fn detect_from(env: &EnvCaps, is_tty: bool, vt_ok: bool) -> Caps {
 /// Whether VT processing is available for the stream we are about to write to.
 ///
 /// On Windows the console needs VT explicitly enabled for ANSI to work, and
-/// [`enable_vt`] asks the CONSOLE for it. A pipe is not a console:
-/// `GetConsoleMode` fails on every redirected handle, and the fallback that
-/// failure triggers — 16 colours and ASCII, or `Caps::PLAIN` outright under
-/// `NO_COLOR` — describes a real pre-VT `cmd.exe`, not whatever is reading the
-/// other end of a pipe. So the probe may only VETO for a stream that IS a
-/// console. A forced pipe keeps the modern profile, which is what forcing
-/// means (D76) and what Linux and macOS already did, `enable_vt` being
+/// [`enable_vt`] asks the CONSOLE behind THIS stream's handle for it. A pipe is
+/// not a console: `GetConsoleMode` fails on every redirected handle, and the
+/// fallback that failure triggers — 16 colours and ASCII, or `Caps::PLAIN`
+/// outright under `NO_COLOR` — describes a real pre-VT `cmd.exe`, not whatever
+/// is reading the other end of a pipe. So the probe may only VETO for a stream
+/// that IS a console. A forced pipe keeps the modern profile, which is what
+/// forcing means (D76) and what Linux and macOS already did, `enable_vt` being
 /// hardcoded true there.
+///
+/// Both halves of that sentence have to hold for it to mean anything: the
+/// caller must pass the handle of the very stream whose `is_terminal()` it
+/// passed, or the probe vetoes for a console that was never asked about.
 fn vt_for(stream_is_terminal: bool, probe: impl FnOnce() -> bool) -> bool {
     if !stream_is_terminal {
         return true;
@@ -357,13 +369,20 @@ fn vt_for(stream_is_terminal: bool, probe: impl FnOnce() -> bool) -> bool {
 
 // --- Windows VT enabling -----------------------------------------------------
 
+/// `GetStdHandle` ids, named in portable code rather than inside the
+/// `cfg(windows)` module: the mapping is the half that was wrong — stderr's
+/// capability read off stdout's console — and out here it can be tested on
+/// every platform instead of only the one that breaks.
+const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5; // (DWORD)-11
+const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4; // (DWORD)-12
+
 #[cfg(windows)]
-fn enable_vt() -> bool {
-    winvt::enable()
+fn enable_vt(handle: u32) -> bool {
+    winvt::enable(handle)
 }
 
 #[cfg(not(windows))]
-fn enable_vt() -> bool {
+fn enable_vt(_handle: u32) -> bool {
     true
 }
 
@@ -378,15 +397,18 @@ mod winvt {
         fn SetConsoleMode(h: *mut c_void, mode: u32) -> i32;
     }
 
-    const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5; // (DWORD)-11
     const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
     const INVALID_HANDLE: isize = -1;
 
-    /// Try to turn on VT processing for stdout. Returns true if VT is (now) on,
-    /// false on a legacy console that refuses it.
-    pub fn enable() -> bool {
+    /// Try to turn on VT processing for the stream `handle` names. Returns true
+    /// if VT is (now) on, false on a legacy console that refuses it.
+    ///
+    /// The handle is the caller's, not a constant here: VT is a per-handle mode,
+    /// so answering for stdout when asked about stderr is a wrong answer, not a
+    /// close one.
+    pub fn enable(handle: u32) -> bool {
         unsafe {
-            let h = GetStdHandle(STD_OUTPUT_HANDLE);
+            let h = GetStdHandle(handle);
             if h.is_null() || h as isize == INVALID_HANDLE {
                 return false;
             }
@@ -1485,6 +1507,14 @@ mod tests {
     /// and the fit D126 gives them and were laid out for a pipe; with colour it
     /// resolved to 16-colour ASCII, so `theme show` drew `###` where it
     /// promises `█`.
+    ///
+    /// **What this does NOT pin, inherited:** it hands `detect_from` a literal
+    /// `is_tty = true` rather than driving `detect_for`'s own
+    /// `stream_is_terminal || force`, so the step that turns a forced pipe INTO
+    /// `is_tty` is guarded by nothing here. That step is untouched by the fix
+    /// this test belongs to. It stays untested because `detect_for` reads the
+    /// live environment, which cargo's parallel threads share — the reason
+    /// every test in this module drives the pure decision instead.
     #[test]
     fn a_forced_pipe_keeps_the_profile_it_forced() {
         let forced_pipe = vt_for(false, || false);
@@ -1498,6 +1528,24 @@ mod tests {
         );
         assert_eq!(c.depth, ColorDepth::Truecolor);
         assert!(c.unicode, "a forced pipe draws █, not ###");
+    }
+
+    /// VT is a per-HANDLE mode on Windows, so "is VT on?" has no answer until
+    /// the stream is named — and `enable_vt` probed `STD_OUTPUT_HANDLE`
+    /// whatever it was asked about, while `Caps::detect_stderr` passed
+    /// stderr's own `is_terminal()`. On `tasqx export > slice.json` with a
+    /// console stderr — D126's own example — the note's capability was read
+    /// off the redirected stdout, and the probe vetoed for a console nobody
+    /// had asked about. Both callers now name their own handle; this pins that
+    /// those two handles are not the same one.
+    #[test]
+    fn each_stream_names_its_own_console_handle() {
+        assert_eq!(STD_OUTPUT_HANDLE, -11i32 as u32, "GetStdHandle's stdout id");
+        assert_eq!(STD_ERROR_HANDLE, -12i32 as u32, "GetStdHandle's stderr id");
+        assert_ne!(
+            STD_OUTPUT_HANDLE, STD_ERROR_HANDLE,
+            "stderr's capability would be read off stdout's console"
+        );
     }
 
     // ---- style rendering at each depth -------------------------------------
