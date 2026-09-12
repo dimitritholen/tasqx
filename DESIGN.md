@@ -3411,8 +3411,15 @@ timer", so it is **false** when `s` hit a task that was already running: `task.s
 idempotent there, answering `already_running` and opening no interval (D105). The first cut
 stamped `started: true` unconditionally, so such a body asserted `already_running: true`
 and `started: true` at once — unreadable by any script, and a false claim inside a ruling
-one commit old. **The two may never both be true**, and a test pins that as an invariant
-rather than as a restatement of the code. Note what did NOT change with it: the dashboard's
+one commit old. **The two may never both be true**, pinned by a test of its own
+(`pick_result_never_reports_a_start_and_an_already_running_task_at_once`) whose ONLY
+assertion is that conjunction, over every answer shape `task.start` can give. Separate
+deliberately, and the first cut got this wrong: asserted after `started == false` in the
+case-specific test, the conjunction could never be the first thing to fail, because no
+drift can satisfy the earlier probe and still violate it. It was a restatement wearing an
+invariant's words — this repo's recurring defect of a sentence claiming a guarantee that
+nothing can break, and it had been written into this entry as well. Note what did NOT
+change with it: the dashboard's
 `p` asks a different question and so reads a different field. Not "did a timer open" but
 "did the reader act on a task at all", which is the presence of `short_id` — an
 already-running re-start still draws `render::started`'s "already running · running for X"
@@ -3449,6 +3456,21 @@ addendum above added two more, both watched fail before their fix:
 `a_restart_of_an_already_running_task_still_reaches_the_scrollback`, on the card the
 dashboard had started swallowing. Every one of these guards was then made to bite by
 re-injecting the drift it claims to catch.
+
+**Left standing, recorded as latent rather than overlooked (both found by the review of the
+addendum above, and both deliberately not defended here):**
+
+- **A non-object `task.start` answer makes `pick_result` a no-op**, so the body carries
+  neither `short_id` nor `started`, and the dashboard reads that as a leave. This is
+  **unchanged** by the addendum's fix: before it, the same body was read as a leave through
+  `started` instead, so the blast radius and the severity are identical either way. It is
+  reachable only if a method answers `ok` with a non-object result, which `dispatch` does
+  not do.
+- **A missing `already_running` key defaults to `false`**, which would make `started: true`
+  on a call that opened no timer — the same shape one line up. Unreachable today because
+  `task.start` is the only method feeding this and always emits the key. Recorded so that a
+  second producer, or a change making that field conditional, is known to need this line
+  changed with it rather than silently inheriting a wrong default.
 
 **Where:** `crates/tasqx-cli/src/pick_screen.rs` (`nothing_picked`, `pick_result`'s
 `started`), `tui/pick.rs` (`Action::Cancel`), `dashboard_screen.rs` (`after_pick`),

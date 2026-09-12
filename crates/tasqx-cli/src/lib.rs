@@ -1950,8 +1950,11 @@ mod tests {
     /// unconditionally made the body assert both at once — unreadable by any
     /// script, and a false claim inside a ruling one commit old.
     ///
-    /// The last assertion is the invariant rather than a restatement: whatever
-    /// else moves, these two fields may never both be true.
+    /// What this pins is the already-running case specifically: `started`
+    /// false, the method's own `already_running` passed through untouched, and
+    /// the identity still present. The general invariant — that the two may
+    /// never both be true — is pinned on its own below, where no earlier
+    /// assertion implies it.
     #[test]
     fn a_restart_of_an_already_running_task_is_not_a_start() {
         let answer = json!({
@@ -1972,10 +1975,38 @@ mod tests {
         // The reader still ACTED on #7, so the identity is still there — that
         // is what the dashboard reads, and it is a different question.
         assert_eq!(out["short_id"], json!(7));
-        assert!(
-            !(out["already_running"] == json!(true) && out["started"] == json!(true)),
-            "`already_running` and `started` may never both be true: {out}"
-        );
+    }
+
+    /// The invariant itself: over every answer `task.start` can give,
+    /// `pick_result` may never report a start and an already-running task at
+    /// once. A body claiming both is unreadable — `already_running: true` says
+    /// no timer opened and `started: true` says one did.
+    ///
+    /// Its own test, and that separation is the point. In the case-specific
+    /// test above, `started == false` is asserted first, so this conjunction
+    /// could never be the FIRST thing to fail: no drift can satisfy the
+    /// earlier probe and still violate this one. Left there it was a
+    /// restatement wearing an invariant's words — a sentence claiming a
+    /// guarantee that nothing could break. Here the conjunction is the only
+    /// assertion, so it carries its own weight, and the already-running rows
+    /// are what make it bite.
+    #[test]
+    fn pick_result_never_reports_a_start_and_an_already_running_task_at_once() {
+        for answer in [
+            json!({ "already_running": true, "id": "u", "interval_started": "t" }),
+            json!({ "already_running": false, "id": "u", "interval_started": "t" }),
+            json!({ "already_running": true, "auto_stopped": [], "status": "active" }),
+            // The key absent at all: whatever it defaults to, it may not
+            // produce the contradiction.
+            json!({ "id": "u", "interval_started": "t" }),
+        ] {
+            let out = pick_result(7, "Ship the freeze", answer.clone());
+            assert!(
+                !(out["already_running"] == json!(true) && out["started"] == json!(true)),
+                "a body may not claim a start AND an already-running task; \
+                 answer was {answer}, body was {out}"
+            );
+        }
     }
 
     // ---- the reference examples parse ---------------------------------------
