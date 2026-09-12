@@ -26,6 +26,7 @@ task, and where to find help.
 | `modify` | Change a task | [Adding and Editing Tasks](Adding-and-Editing-Tasks.md#tasqx-modify) |
 | `tag` / `untag` | Label a task, or unlabel it | [Adding and Editing Tasks](Adding-and-Editing-Tasks.md#tasqx-tag) |
 | `annotate` | Attach a note to a task | [Adding and Editing Tasks](Adding-and-Editing-Tasks.md#tasqx-annotate) |
+| `unannotate` | Scrub one annotation's text, for good | [Adding and Editing Tasks](Adding-and-Editing-Tasks.md#tasqx-unannotate) |
 
 **Decide what to do**
 
@@ -93,7 +94,10 @@ task, and where to find help.
 - **`--json` everywhere.** Every command that produces a result accepts
   `--json` and prints the raw API answer instead of the human table. Great for
   scripts.
-- **Exit codes mean something.** `0` ok, `2` bad request, `4` not found,
-  `5` conflict. They don't change between releases.
+- **Exit codes mean something.** `0` ok, `1` failed before or beneath the
+  request (the store would not open, a write failed, `watch` had no daemon to
+  follow, or the engine returned `internal`), `2` bad request, `4` not found,
+  `5` conflict, `6` unsupported API version. They don't change between
+  releases.
 - **Nothing is silently destroyed.** There is no hard delete. `cancel` is
   reversible with `reopen`, and every change lands in an append-only event log.

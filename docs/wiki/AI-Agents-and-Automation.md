@@ -63,8 +63,10 @@ echo '{"tasqx":"1","method":"task.list","params":{"filter":"@working"}}' | tasqx
 ```
 
 Every method the engine has is callable this way — `tasqx docs` carries the
-full method table. Exit codes mirror the error model: 0 ok, 2 bad request,
-4 not found, 5 conflict.
+full method table. Exit codes mirror the error model: `0` ok, `2` bad request,
+`4` not found, `5` conflict, `6` unsupported API version — plus `1` for
+`internal`, or for a failure beneath the request such as a store that would
+not open.
 
 ## tasqx daemon
 

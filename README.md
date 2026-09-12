@@ -14,21 +14,25 @@ an answer you can interrogate:
 ```console
 $ tasqx add Ship the release notes due:friday +docs !high --project work
 ▌ #42  Ship the release notes
-▌ added   H ▄▄▄▄ 12.5   work   due 18 Sep   +docs
+▌ added   H ▄▄▄▄ 13.5   work   due Fri   +docs
 
 $ tasqx next
 next    #42  Ship the release notes
-        H ▄▄▄▄ 12.5   work   due 18 Sep   +docs
+        H ▄▄▄▄ 13.5   work   due Fri   +docs
         tasqx start 42  ·  tasqx why 42
 
 $ tasqx why 42
 #42  Ship the release notes
 
   priority   H                 6.0
-  deadline   due 18 Sep        6.5
+  deadline   due Fri           7.5
   age        created today     0.0
-  urgency                     12.5
+  urgency                     13.5
 ```
+
+Urgency is recomputed on every read, so the deadline row — and the total it
+feeds — climb as Friday approaches. The scores in any capture, including this
+one, are an illustration; the rows are the contract.
 
 And when you point an AI agent at the same backlog, it isn't scraping your
 CLI: tasqx ships an MCP server, and the agent becomes a first-class user of
@@ -156,9 +160,11 @@ On a terminal, a bare `tasqx` opens a full-screen overview instead of printing
 a table: your working set, deadlines, blocked work, recent activity, projects,
 a burndown and token spend, under a header that counts what matters
 (`17 open · 1 active · 2 overdue · 3 blocked · 8 done/week`) and a footer that
-names every key. The BLOCKED panel earns its place: the default list filter
-hides blocked tasks, so the dashboard is where work that is standing still
-stays visible. Press `p` to browse your tasks in `tasqx pick`, where Enter
+names every key. Blocked work earns its place there: the default list filter
+hides it, and the dashboard does not — D80 folded the old NOW, NEXT UP, DUE,
+BLOCKED and RECENT panels into one TASKS panel, where a blocked task keeps its
+row and the header counts it. So the dashboard is where work that is standing
+still stays visible. Press `p` to browse your tasks in `tasqx pick`, where Enter
 reads a task and `s` starts it; `q` closes.
 
 Anything that is *not* a person at a keyboard gets the plain table instead —
@@ -250,10 +256,13 @@ echo '{"tasqx":"1","method":"task.list","params":{"filter":"@working"}}' | tasqx
   output degrades cleanly down to a colorless terminal.
 
   ![The HTML weekly review: headline counts, then what needs attention](docs/img/report.png)
-- **Built for scripts too.** Every command with a result takes `--json`;
-  exit codes mean something (`0` ok, `2` bad request, `4` not found,
-  `5` conflict) and don't change. A live daemon (`tasqx daemon`) gives many
-  concurrent clients one writer and pushes changes to `tasqx watch`.
+- **Built for scripts too.** Every command with a result takes `--json`, and
+  exit codes mean something and don't change: `0` ok, `1` failed before or
+  beneath the request (the store would not open, a write failed, `watch` had
+  no daemon to follow, or the engine returned `internal`), `2` bad request,
+  `4` not found, `5` conflict, `6` unsupported API version. A live daemon
+  (`tasqx daemon`) gives many concurrent clients one writer and pushes changes
+  to `tasqx watch`.
 - **Tab completion that knows your data.** bash, zsh, fish, elvish and
   PowerShell: verbs, flags, file paths, your task ids (with titles where the
   shell allows), projects, tags, the capture sugar and the filter grammar.

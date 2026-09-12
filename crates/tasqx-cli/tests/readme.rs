@@ -852,3 +852,145 @@ fn the_installers_map_only_targets_the_release_workflow_builds() {
         );
     }
 }
+
+/// Every exit code the CLI can leave with, derived from
+/// [`ErrorCode::exit_code`] — see the twin in `wiki.rs` for why the variants
+/// are spelled out rather than read from `ErrorCode::ALL`.
+fn expected_exit_codes() -> Vec<i32> {
+    use tasqx_core::ErrorCode;
+    // Membership derived from the enum, not retyped, and no floor — see the
+    // twin in `wiki.rs` for what both shortcuts let through.
+    let mut codes: Vec<i32> = ErrorCode::all().iter().map(|c| c.exit_code()).collect();
+    codes.push(0);
+    codes.sort_unstable();
+    codes.dedup();
+    codes
+}
+
+/// Paragraph-ish chunks, as in `wiki.rs`: blank-line blocks split again at
+/// bullet starts, so a claim in one bullet cannot satisfy a check aimed at
+/// another.
+fn chunks(text: &str) -> Vec<String> {
+    text.split("\n\n")
+        .flat_map(|para| para.split("\n- "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The README's exit-code roster must name `1`, and may keep promising the set
+/// does not change only while the set it prints is the whole one.
+///
+/// `tasqx --no-daemon watch` exits 1 ("watch requires a running daemon"); so
+/// does a store that will not open, and a failed write to stdout. The README
+/// listed 0/2/4/5 and added "and don't change", which is the sentence that
+/// makes the omission costly: a script author reads it as an enumeration they
+/// may rely on, and a `1` then looks like a tasqx bug rather than a documented
+/// outcome. D-free correction — the codes themselves are not renumbered.
+#[test]
+fn the_readme_exit_code_roster_names_every_code() {
+    let text = readme();
+    let codes = expected_exit_codes();
+    let mut rosters = 0;
+    for chunk in chunks(&text) {
+        let lower = chunk.to_lowercase();
+        if !lower.contains("exit code")
+            || !lower.contains("not found")
+            || !lower.contains("conflict")
+        {
+            continue;
+        }
+        rosters += 1;
+        for code in &codes {
+            assert!(
+                chunk.contains(&format!("`{code}`")),
+                "the README lists exit codes and never names `{code}`. The CLI \
+                 can leave with {codes:?}, and the sentence promises the set \
+                 does not change:\n{chunk}"
+            );
+        }
+    }
+    assert_eq!(
+        rosters, 1,
+        "expected exactly one README exit-code roster, found {rosters} — the \
+         scan is reading something other than the contract sentence"
+    );
+}
+
+/// The README may not present a panel D80 retired as a panel that ships.
+///
+/// "The BLOCKED panel earns its place" survived the commit that folded
+/// NOW/NEXT UP/DUE/BLOCKED/RECENT into one TASKS panel, so the landing page
+/// told every new reader to look for a panel the binary does not draw. Naming
+/// a retired panel is allowed — explaining the fold needs it — as long as the
+/// same chunk says that is what happened to it.
+#[test]
+fn the_readme_does_not_present_a_retired_panel_as_current() {
+    let retired = tasqx_cli::retired_dashboard_panel_names();
+    assert!(
+        retired.len() >= 5,
+        "only {} retired panel names — the derivation broke",
+        retired.len()
+    );
+
+    let text = readme();
+    let mut mentions = 0;
+    for chunk in chunks(&text) {
+        let lower = chunk.to_lowercase();
+        if !lower.contains("panel") {
+            continue;
+        }
+        for upper in retired.iter().map(|n| n.to_uppercase()) {
+            if !chunk.contains(&upper) {
+                continue;
+            }
+            mentions += 1;
+            assert!(
+                lower.contains("d80") || lower.contains("retired") || lower.contains("folded"),
+                "the README calls {upper} a panel without saying D80 folded it \
+                 into TASKS:\n{chunk}"
+            );
+        }
+    }
+    assert!(
+        mentions >= 1,
+        "no README chunk names a retired panel beside the word panel — this \
+         guard is checking nothing"
+    );
+}
+
+/// The README's `why` sample must use the rows `why` prints.
+///
+/// Same drift as the wiki's: the pre-D122 spellings (`due_proximity`, a
+/// `= total` footer, a "Why #42 has urgency" header) read as current on the
+/// first screen a visitor sees.
+#[test]
+fn the_readme_why_sample_uses_the_rows_the_command_prints() {
+    let text = readme();
+    assert!(
+        text.contains("$ tasqx why"),
+        "the README no longer shows a `tasqx why` sample — this guard is \
+         checking nothing"
+    );
+    for gone in ["Why #", "due_proximity", "= total"] {
+        assert!(
+            !text.contains(gone),
+            "the README still shows {gone:?}, which `tasqx why` stopped printing at D122"
+        );
+    }
+    // The SCORES in the sample rot by the hour — urgency is recomputed from
+    // the deadline on every read, so a captured 13.5 reads 13.6 the same
+    // afternoon. Pinning the figures would redden the build daily; the sample
+    // instead says the numbers illustrate and the rows are the contract, and
+    // that sentence is what this pins.
+    assert!(
+        text.contains("are an illustration; the rows are the contract"),
+        "the README prints urgency figures from a capture without saying they \
+         move with the clock — the numbers are wrong within hours"
+    );
+    for row in ["priority", "deadline", "age", "urgency"] {
+        assert!(
+            text.contains(row),
+            "the README's `why` sample is missing the {row:?} row the command prints"
+        );
+    }
+}

@@ -25,6 +25,40 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// Every variant, in wire order.
+    ///
+    /// Built by an exhaustive `match` rather than a hand-kept array, because
+    /// hand-kept copies of this list had multiplied to four — one here and one
+    /// in each surface that documents exit codes — and adding a sixth variant
+    /// left the whole workspace green while no roster named its exit status.
+    /// Only the NUMBERS were derived; membership was retyped everywhere.
+    ///
+    /// The chain below stops that at compile time: a new variant makes `next`
+    /// non-exhaustive, and the only way to make it compile is to give the code
+    /// a place in the chain — which puts it in the list every consumer reads.
+    ///
+    /// `pub` because there are consumers now. The note that used to sit on the
+    /// test-local `ALL` said a public list "would be API surface with no
+    /// consumer", which was true when it was written; the guide's two
+    /// exit-code tables and the prose guards over the README and the wiki are
+    /// three consumers that cannot derive membership any other way.
+    pub fn all() -> Vec<ErrorCode> {
+        fn next(c: ErrorCode) -> Option<ErrorCode> {
+            match c {
+                ErrorCode::BadRequest => Some(ErrorCode::NotFound),
+                ErrorCode::NotFound => Some(ErrorCode::Conflict),
+                ErrorCode::Conflict => Some(ErrorCode::UnsupportedVersion),
+                ErrorCode::UnsupportedVersion => Some(ErrorCode::Internal),
+                ErrorCode::Internal => None,
+            }
+        }
+        let mut out = vec![ErrorCode::BadRequest];
+        while let Some(n) = next(*out.last().expect("seeded with one code")) {
+            out.push(n);
+        }
+        out
+    }
+
     /// CLI exit code mapping (DESIGN.md §4: 0 ok, 2 bad_request, 4 not_found,
     /// 5 conflict). Version/internal get their own non-zero codes.
     pub fn exit_code(self) -> i32 {
@@ -217,7 +251,30 @@ mod tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), before, "ALL contains a duplicate");
-        assert_eq!(before, 5, "ALL must list every variant");
+        // Not a literal count. `assert_eq!(before, 5)` counted the array
+        // rather than the enum, so a sixth variant satisfied it untouched —
+        // which is how a new code reached the docs guards unnoticed.
+        assert_eq!(
+            before,
+            ErrorCode::all().len(),
+            "ALL must list every variant"
+        );
+    }
+
+    /// The test-local list and the derived one are the same list.
+    ///
+    /// `ALL` is still spelled out here because the assertions below read
+    /// nicely over an array, but it may not be a SECOND registry: the chain in
+    /// [`ErrorCode::all`] is the one a new variant cannot escape, so this
+    /// binds the copy to it in both directions.
+    #[test]
+    fn all_matches_the_derived_chain() {
+        assert_eq!(
+            ALL.to_vec(),
+            ErrorCode::all(),
+            "the hand-written ALL and `ErrorCode::all()` disagree — a variant \
+             was added to one of them only"
+        );
     }
 
     /// `as_str` is a second hand-written match over the same variants as the

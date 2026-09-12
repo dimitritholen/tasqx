@@ -283,7 +283,7 @@ pub const COMMAND_REF: &[CmdDoc] = &[
             "The same screen a bare `tasqx` opens on a terminal. Spelling it explicitly works even when `dashboard.enabled` is off — that setting protects the meaning of the BARE invocation, and typing the verb is not a breaking change to anything.",
             "It needs a terminal of at least 56x14 on stdin AND stdout, and says which it got when it refuses. A bare `tasqx` in a window that small falls back to the working-set table instead, silently: whoever typed nothing did not ask for a dashboard.",
             "`--json` skips both of those checks, because it opens no screen. It is the only verb where `--json` decides whether the terminal gate applies, and it is what makes the panel data reachable from a script.",
-            "`--panels tasks,burndown` narrows the `--json` document to those panels, on that one call — it does not touch `dashboard.panels` or the interactive screen. The task rows are row-capped per group with `total`/`truncated` alongside them, because the list tracks the store's size rather than the screen's (#152). The four panel names D80 retired — `now`, `next`, `due`, `blocked`, `recent` — still parse, and all mean `tasks`, which is where their rows went.",
+            "`--panels tasks,burndown` narrows the `--json` document to those panels, on that one call — it does not touch `dashboard.panels` or the interactive screen. The task rows are row-capped per group with `total`/`truncated` alongside them, because the list tracks the store's size rather than the screen's (#152). The five panel names D80 retired — `now`, `next`, `due`, `blocked`, `recent` — still parse, and all mean `tasks`, which is where their rows went.",
             "Read-only, with one exception: `p` opens `pick`, the task browser, over the working set — or, from a PROJECTS row, over that project. Enter there reads a task and `s` starts it, which brings you back here; `q` or `esc` there comes back having started nothing. `q`, `esc` and ctrl-c close the dashboard.",
             "Every key (also behind `?` in the screen itself): `1-6` focus a panel; `s` cycles the list order between urgency, due and touched; `tab`/`S-tab` cycle panels; `j`/`k` move the cursor; `g`/`G` jump to the first/last row; `r` refreshes now; `R` toggles auto-refresh; `w` cycles the burndown window; `enter` opens the row under the cursor; `l` leaves and prints the task list.",
         ],
@@ -1083,6 +1083,39 @@ mod tests {
                 checked > 0,
                 "{name} no longer promises anything is counted, so this guard is \
                  asserting nothing"
+            );
+        }
+    }
+
+    /// The `dashboard` page states how many panel names D80 retired, and that
+    /// count belongs to `RETIRED_PANEL_NAMES`, not to a sentence.
+    ///
+    /// It said "The four panel names D80 retired" and then listed five of them
+    /// in the same clause. Nothing could see it: the names were right, the
+    /// array was right, and only the number between them was wrong — the exact
+    /// shape a reader trusts and no gate reads.
+    #[test]
+    fn the_dashboard_note_counts_the_panel_names_d80_retired() {
+        let retired = crate::tui::dashboard::model::RETIRED_PANEL_NAMES;
+        let note = find("dashboard")
+            .expect("dashboard is documented")
+            .notes
+            .iter()
+            .find(|n| n.contains("D80 retired"))
+            .expect("the dashboard page says which panel names D80 retired");
+
+        let word = [
+            "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        ][retired.len()];
+        assert!(
+            note.contains(&format!("The {word} panel names D80 retired")),
+            "the note miscounts the retired panels — there are {} ({retired:?}):\n{note}",
+            retired.len()
+        );
+        for name in retired {
+            assert!(
+                note.contains(&format!("`{name}`")),
+                "the note never names `{name}`, so the count and the list disagree:\n{note}"
             );
         }
     }

@@ -13,6 +13,21 @@ Store one knowledge document. The body is kept exactly as given.
 tasqx memory add "Deploy runbook" "Deploys go through the blue-green pipeline"
 ```
 
+## tasqx memory list
+
+Browse your documents without a query — the enumeration `search` cannot do,
+since ranking needs words to rank.
+
+```console
+tasqx memory list
+```
+
+- On a terminal this opens a full-screen browser: `j`/`k` move, `/` searches
+  as you type, Enter reads the document beside the list, `q` leaves.
+- Piped, under `--json`, or with `--limit`/`--offset`, it prints one line per
+  document instead — a screen would be the wrong answer to a pipe.
+- Newest-modified first, paged the same way as `tasqx list`.
+
 ## tasqx memory search
 
 Full-text search over your documents *and* your task annotations, ranked by
@@ -34,6 +49,23 @@ Read one document whole, by the id a search hit gave you.
 ```console
 tasqx memory show 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12
 ```
+
+## tasqx memory update
+
+Correct a document in place, keeping its id.
+
+```console
+tasqx memory update 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12 --body "corrected text"
+```
+
+- `--title`, `--body`, `--source` and `--project` each replace that field;
+  omit one and it stays as it was.
+- Guarded by the same optimistic-concurrency rev `tasqx modify` uses:
+  `--expected-rev` fails with `conflict` (exit 5) if the document moved under
+  you since you read it.
+- This is the correction path, and the reason `rm` is rarely the right verb:
+  adding a fixed copy leaves the wrong one searchable, and removing loses the
+  id every search hit and annotation pointed at.
 
 ## tasqx memory import
 
@@ -58,6 +90,10 @@ tasqx memory rm 019f8422-7b3e-7c41-a2d9-6f1b0e5c8a12
 
 This is the one genuinely permanent delete in tasqx, and it exists on purpose:
 something stored wrong needs a way to be retracted. It is outside `undo`.
+
+Reach for it only when the document should not exist at all. To fix what one
+*says*, [`tasqx memory update`](#tasqx-memory-update) rewrites it in place and
+keeps the id — no permanent loss, and nothing stale left in the index.
 
 ## Why this matters for AI agents
 

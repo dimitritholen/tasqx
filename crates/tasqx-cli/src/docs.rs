@@ -1247,10 +1247,25 @@ fn page_commands() -> String {
         .map(|k| vec![format!("<code>{}</code>", esc(k.keys)), esc(k.help)])
         .collect();
     s.push_str(&table_owned(&["Key", "Does"], &dashboard_key_rows));
-    s.push_str(&p(
-        "<code>--json</code> skips the terminal gate entirely and answers the same eight panels as \
-         one document — the only verb where <code>--json</code> decides whether the gate applies.",
-    ));
+    // Both counts are DERIVED, and from DIFFERENT tables, which is the whole
+    // point. The sentence said "eight" for as long as D80's fold had shipped;
+    // deriving it from `PANEL_NAMES` fixed the number but pinned it to the
+    // screen's roster, and `--json` does not answer with the screen's six —
+    // `document` writes a payload for four of them.
+    s.push_str(&p(&format!(
+        "<code>--json</code> skips the terminal gate entirely — the only verb where \
+         <code>--json</code> decides whether the gate applies. It is not the screen in text: the \
+         screen has {} panels, and the document carries a payload for {} of them ({}), beside the \
+         <code>status</code> header it always writes and a <code>panels</code> array naming what \
+         was asked for. The other two are drawn from the screen's own model, so \
+         <code>--panels pulse,effort</code> is a valid request that answers with no panel \
+         payload at all.",
+        count_word(crate::tui::dashboard::model::PANEL_NAMES.len()),
+        count_word(crate::tui::dashboard::json::PAYLOAD_PANELS.len()),
+        crate::tui::dashboard::json::PAYLOAD_PANELS
+            .map(|p| format!("<code>{p}</code>"))
+            .join(", "),
+    )));
 
     // ---- pick
     s.push_str(&h3("pick"));
@@ -1499,10 +1514,11 @@ fn page_commands() -> String {
         &["Code", "Meaning"],
         &[
             &["<code>0</code>", "Success."],
-            &["<code>1</code>", "Could not open the store, or a local I/O failure."],
+            &["<code>1</code>", "<code>internal</code>, or a failure beneath the request: the store would not open, a local write failed, or <code>watch</code> had no daemon to follow."],
             &["<code>2</code>", "<code>bad_request</code> — a bad value, an unparseable date, contradictory flags."],
             &["<code>4</code>", "<code>not_found</code> — no such task, project, or reference."],
             &["<code>5</code>", "<code>conflict</code> — a lost <code>--expected-rev</code> race, or a lifecycle rule."],
+            &["<code>6</code>", "<code>unsupported_version</code> — the <code>tasqx</code> major you sent is not this build's."],
         ],
     ));
     s.push_str(&snippet(
@@ -2241,7 +2257,7 @@ fn page_api() -> String {
             ],
             &[
                 "<code>unsupported_version</code>",
-                "—",
+                "6",
                 "The <code>tasqx</code> major you sent is not this build's.",
             ],
             &[
@@ -2749,6 +2765,21 @@ fn h3(text: &str) -> String {
 /// these builders comes from the store or from argv.
 fn p(html: &str) -> String {
     format!("<p>{html}</p>")
+}
+
+/// A small count as an English word, for prose that states a number the code
+/// owns. Panics past the table rather than dropping a digit into a sentence
+/// written for a word — extending it is a one-line edit the day a roster grows
+/// that far, which is cheaper than the sentence going stale unwatched.
+fn count_word(n: usize) -> &'static str {
+    const WORDS: [&str; 13] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve",
+    ];
+    WORDS
+        .get(n)
+        .copied()
+        .unwrap_or_else(|| panic!("count {n} is past the number-word table; extend it"))
 }
 
 fn note(html: &str) -> String {
@@ -3785,6 +3816,44 @@ mod tests {
             undocumented.is_empty(),
             "non-TASQX env vars the code reads but the guide never documents: {undocumented:?}"
         );
+    }
+
+    /// The Errors table's Exit column must be `ErrorCode::exit_code`.
+    ///
+    /// It printed `—` for `unsupported_version` — "this code has no exit
+    /// status" — while the binary exits 6:
+    ///
+    /// ```console
+    /// $ echo '{"tasqx":"2","method":"task.list","params":{}}' | tasqx api ; echo $?
+    /// 6
+    /// ```
+    ///
+    /// Every other row carried a real number, so the dash read as a documented
+    /// fact rather than a gap. The column is now compared against the mapping
+    /// that decides it, cell by cell, so renumbering a code reddens here
+    /// instead of leaving the page asserting a stale literal.
+    #[test]
+    fn the_errors_table_exit_column_matches_the_code_mapping() {
+        use tasqx_core::ErrorCode;
+        let doc = generate();
+        // Membership from the enum. Retyped here, a sixth variant reached this
+        // page with the guard green and no row to show for it.
+        for code in ErrorCode::all() {
+            // The row as `table_owned` renders it: the code cell, then the
+            // exit cell. Pinning them ADJACENTLY is the point — asserting the
+            // number appears somewhere on the page would pass on any table.
+            let want = format!(
+                "<td><code>{}</code></td><td>{}</td>",
+                code.as_str(),
+                code.exit_code()
+            );
+            assert!(
+                doc.contains(&want),
+                "the Errors table does not give `{}` exit {} — the CLI does",
+                code.as_str(),
+                code.exit_code()
+            );
+        }
     }
 
     /// `modify --clear` takes a closed set; the page prints it. If

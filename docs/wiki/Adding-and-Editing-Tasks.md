@@ -59,8 +59,8 @@ tasqx modify 42 --clear due --clear remind
 ```
 
 `--clear` works for: `project`, `priority`, `due`, `scheduled`, `wait`,
-`remind`, `recurrence`, `estimate`. Tags are the exception — a tag comes off
-by name, with [`tasqx untag`](#tasqx-untag).
+`remind`, `recurrence`, `estimate`, `tracked`. Tags are the exception — a tag
+comes off by name, with [`tasqx untag`](#tasqx-untag).
 
 For scripts that must not clobber a concurrent edit: `--expected-rev` makes
 the modify fail (exit 5) if the task changed since you last read it.
