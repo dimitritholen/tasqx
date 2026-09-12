@@ -858,7 +858,7 @@ fn page_install() -> String {
     s.push_str(&snippet(
         "tasqx add \"Ship the v1 JSON API freeze +api +release project:work.tasqx !high due:friday est:4h\"",
         "▌ #1  Ship the v1 JSON API freeze\n\
-         ▌ added   H ▄▄▄▄ 16.0   work.tasqx   due Fri   +api +release   est 4h",
+         ▌ added   H ▄▄▄▄ 15.7   work.tasqx   due Fri   +api +release   est 4h",
     ));
 
     s.push_str(&p(
@@ -869,7 +869,7 @@ fn page_install() -> String {
     s.push_str(&snippet(
         "tasqx add \"Write the user guide +docs due:friday\"",
         "▌ #2  Write the user guide\n\
-         ▌ added   - ▄▄▄▂ 10.0   work.tasqx   due Fri   +docs",
+         ▌ added   - ▄▄▄▁ 9.7   work.tasqx   due Fri   +docs",
     ));
 
     s.push_str(&p(
@@ -901,9 +901,9 @@ fn page_install() -> String {
         "@working   3 tasks · 1 overdue\n\
          \n\
          \x20 ID          URG  TASK                         PROJECT     DUE        TAGS\n\
-         \x20  1  H ▄▄▄▄ 16.0  Ship the v1 JSON API freeze  work.tasqx  Fri        +api +release\n\
+         \x20  1  H ▄▄▄▄ 15.7  Ship the v1 JSON API freeze  work.tasqx  Fri        +api +release\n\
          \x20  3  - ▄▄▄▄ 12.0  Renew the TLS cert           work.tasqx  yesterday  +ops\n\
-         \x20  2  - ▄▄▄▂ 10.0  Write the user guide         work.tasqx  Fri        +docs",
+         \x20  2  - ▄▄▄▁  9.7  Write the user guide         work.tasqx  Fri        +docs",
     ));
 
     s.push_str(&p(
@@ -921,7 +921,7 @@ fn page_install() -> String {
     s.push_str(&snippet(
         "tasqx next",
         "next    #1  Ship the v1 JSON API freeze\n\
-         \x20       H ▄▄▄▄ 16.0   work.tasqx   due Fri   +api +release\n\
+         \x20       H ▄▄▄▄ 15.7   work.tasqx   due Fri   +api +release\n\
          \x20       tasqx start 1  ·  tasqx why 1",
     ));
 
@@ -933,20 +933,20 @@ fn page_install() -> String {
         "#1  Ship the v1 JSON API freeze\n\
          \n\
          \x20 priority   H                 6.0\n\
-         \x20 deadline   due Fri          10.0\n\
+         \x20 deadline   due Fri           9.7\n\
          \x20 age        created today     0.0\n\
-         \x20 urgency                     16.0",
+         \x20 urgency                     15.7",
     ));
 
     s.push_str(&h3("Work it, finish it"));
     s.push_str(&snippet(
         "tasqx start 1\ntasqx stop 1\ntasqx done 1",
         "▌ #1  Ship the v1 JSON API freeze\n\
-         ▶ started   H ▄▄▄▄ 16.0   work.tasqx   due Fri   +api +release   est 4h\n\
+         ▶ started   H ▄▄▄▄ 15.7   work.tasqx   due Fri   +api +release   est 4h\n\
          ▌ #1  Ship the v1 JSON API freeze\n\
-         ▌ stopped   H ▄▄▄▄ 16.0   work.tasqx   due Fri   +api +release   est 4h\n\
+         ▌ stopped   H ▄▄▄▄ 15.7   work.tasqx   due Fri   +api +release   est 4h\n\
          ▌ #1  Ship the v1 JSON API freeze\n\
-         ▌ done today 16:20   work.tasqx   due Fri   +api +release   est 4h",
+         ▌ done today   work.tasqx   due Fri   +api +release   est 4h",
     ));
 
     s.push_str(&h3("Where to go next"));
@@ -1076,7 +1076,7 @@ fn page_commands() -> String {
         "home\n\
          created   default stays work.tasqx   tasqx use \"home\"\n\
          ▌ #4  Water the plants\n\
-         ▌ added   - ▄▄▄▃ 11.7   home   due today 23:59   ↻ every 3 days",
+         ▌ added   - ▄▄▄▃ 11.4   home   due today 23:59   ↻ every 3 days",
     ));
 
     // ---- modify
@@ -1088,7 +1088,7 @@ fn page_commands() -> String {
     s.push_str(&snippet(
         "tasqx modify 2 due:monday !medium",
         "▌ #2  Write the user guide\n\
-         ▌ modified   M ▄▄▄▃ 11.3   due Mon   work.tasqx   +docs   rev 2",
+         ▌ modified   M ▄▄▄▃ 11.0   due Mon   work.tasqx   +docs   rev 2",
     ));
     s.push_str(&p(
         "Setting and clearing are deliberately different shapes. A value is <code>due:friday</code> \
@@ -1099,7 +1099,7 @@ fn page_commands() -> String {
     s.push_str(&snippet(
         "tasqx modify 2 --clear priority",
         "▌ #2  Write the user guide\n\
-         ▌ modified   priority cleared   - ▄▄▂▁ 7.4   work.tasqx   due Mon   +docs   rev 3",
+         ▌ modified   priority cleared   - ▄▄▂▁ 7.1   work.tasqx   due Mon   +docs   rev 3",
     ));
     s.push_str(&p("<code>--clear</code> is repeatable over a closed set:"));
     s.push_str(&pre_plain(&DOCUMENTED_CLEAR_FIELDS.join("   ")));
@@ -1295,11 +1295,11 @@ fn page_commands() -> String {
         "tasqx show 1",
         "▌ #1  Ship the v1 JSON API freeze\n\
          ▌\n\
-         ▌ status      pending           urgency     H ▄▄▄▄ 16.0\n\
-         ▌ project     work.tasqx        due         Fri (in 2 days)\n\
+         ▌ status      pending           urgency     H ▄▄▄▄ 15.7\n\
+         ▌ project     work.tasqx        due         Fri (in 3 days)\n\
          ▌ estimate    4h                tags        +api +release\n\
-         ▌ created     today 16:20 (just now)\n\
-         ▌ modified    today 16:20 (just now)\n\
+         ▌ created     today 07:22 (just now)\n\
+         ▌ modified    today 07:22 (just now)\n\
          ▌ rev         2\n\
          ▌\n\
          ▌ · Blocked on the D12 decision",
@@ -1324,7 +1324,7 @@ fn page_commands() -> String {
     s.push_str(&snippet(
         "tasqx dep 2 1",
         "▌ #2  Write the user guide\n\
-         ⊘ blocked by #1 · Ship the v1 JSON API freeze   - ▄▄▂▁ 7.4   work.tasqx   due Mon   +docs",
+         ⊘ blocked by #1 · Ship the v1 JSON API freeze   - ▄▄▂▁ 7.1   work.tasqx   due Mon   +docs",
     ));
     s.push_str(&p(
         "Note that #2 has vanished from the working set — it is blocked by #1:",
@@ -1334,14 +1334,14 @@ fn page_commands() -> String {
         "@working   3 tasks · 1 overdue · 1 due today\n\
          \n\
          \x20 ID          URG  TASK                         PROJECT     DUE          TAGS\n\
-         \x20  1  H ▄▄▄▄ 16.0  Ship the v1 JSON API freeze  work.tasqx  Fri          +api +release\n\
+         \x20  1  H ▄▄▄▄ 15.7  Ship the v1 JSON API freeze  work.tasqx  Fri          +api +release\n\
          \x20  3  - ▄▄▄▄ 12.0  Renew the TLS cert           work.tasqx  yesterday    +ops\n\
-         \x20  4  - ▄▄▄▃ 11.7  Water the plants             home        today 23:59",
+         \x20  4  - ▄▄▄▃ 11.4  Water the plants             home        today 23:59",
     ));
     s.push_str(&snippet(
         "tasqx undep 2 1",
         "▌ #2  Write the user guide\n\
-         ▌ no longer waits on #1   - ▄▄▂▁ 7.4   work.tasqx   due Mon   +docs",
+         ▌ no longer waits on #1   - ▄▄▂▁ 7.1   work.tasqx   due Mon   +docs",
     ));
 
     // ---- projects
@@ -1454,7 +1454,7 @@ fn page_commands() -> String {
     s.push_str(&snippet(
         "tasqx done 4",
         "▌ #4  Water the plants\n\
-         ▌ done today 16:20   home   due today 23:59\n\
+         ▌ done today   home   due today 23:59\n\
          \x20 #6  next, due Fri",
     ));
 
@@ -1761,16 +1761,16 @@ fn page_scheduling() -> String {
     s.push_str(&snippet(
         "tasqx add \"Water the plants project:home repeat:\\\"every 3 days\\\" due:today\"\ntasqx done 4\ntasqx show 5",
         "▌ #4  Water the plants\n\
-         ▌ added   - ▄▄▄▃ 11.7   home   due today 23:59   ↻ every 3 days\n\
+         ▌ added   - ▄▄▄▃ 11.4   home   due today 23:59   ↻ every 3 days\n\
          ▌ #4  Water the plants\n\
-         ▌ done today 16:20   home   due today 23:59\n\
+         ▌ done today   home   due today 23:59\n\
          \x20 #5  next, due Fri\n\
          ▌ #5  Water the plants\n\
          ▌\n\
-         ▌ status      pending           urgency     - ▄▄▄▁ 9.2\n\
-         ▌ project     home              due         Fri (in 3 days)\n\
-         ▌ repeats     every 3 days      created     today 16:20 (just now)\n\
-         ▌ modified    today 16:20 (just now)\n\
+         ▌ status      pending           urgency     - ▄▄▃▁ 8.8\n\
+         ▌ project     home              due         Fri (in 4 days)\n\
+         ▌ repeats     every 3 days      created     today 07:22 (just now)\n\
+         ▌ modified    today 07:22 (just now)\n\
          ▌ rev         1",
     ));
 
@@ -1842,14 +1842,14 @@ fn page_reminders() -> String {
     s.push_str(&snippet(
         "tasqx modify 1 --remind -1h\ntasqx show 1",
         "▌ #1  Ship the v1 JSON API freeze\n\
-         ▌ modified   remind -1h   H ▄▄▄▄ 16.0   work.tasqx   due Fri   +api +release   est 4h   rev 2\n\
+         ▌ modified   remind -1h   H ▄▄▄▄ 15.7   work.tasqx   due Fri   +api +release   est 4h   rev 2\n\
          ▌ #1  Ship the v1 JSON API freeze\n\
          ▌\n\
-         ▌ status      pending           urgency     H ▄▄▄▄ 16.0\n\
-         ▌ project     work.tasqx        due         Fri (in 2 days)\n\
+         ▌ status      pending           urgency     H ▄▄▄▄ 15.7\n\
+         ▌ project     work.tasqx        due         Fri (in 3 days)\n\
          ▌ remind      -1h               estimate    4h\n\
-         ▌ tags        +api +release     created     today 16:20 (just now)\n\
-         ▌ modified    today 16:20 (just now)\n\
+         ▌ tags        +api +release     created     today 07:22 (just now)\n\
+         ▌ modified    today 07:22 (just now)\n\
          ▌ rev         2",
     ));
     s.push_str(&note(
@@ -1867,7 +1867,7 @@ fn page_reminders() -> String {
     s.push_str(&snippet(
         "tasqx add \"Deploy the release\" --due \"2026-07-16T09:00\" --remind -1h\ntasqx daemon --socket tasqx-remdemo",
         "▌ #1  Deploy the release\n\
-         ▌ added   no project · set a default with tasqx use <project>   - ▄▄▄▂ 10.6   due Thu\n\
+         ▌ added   no project · set a default with tasqx use <project>   - ▄▄▄▂ 10.3   due Thu\n\
          tasqx daemon: listening on tasqx-remdemo (Ctrl-C to stop)\n\
          tasqx daemon: store ~/.local/share/tasqx/tasks.db\n\
          tasqx reminder: [#1] Deploy the release (due 2026-07-16T09:00:00Z)",
@@ -2032,7 +2032,7 @@ fn page_daemon() -> String {
     s.push_str(&snippet(
         "tasqx --socket tasqx-docsdemo add \"Wire up the docs page +docs project:work.tasqx due:tomorrow\"",
         "▌ #6  Wire up the docs page\n\
-         ▌ added   - ▄▄▄▃ 11.7   work.tasqx   due tomorrow   +docs",
+         ▌ added   - ▄▄▄▃ 11.4   work.tasqx   due tomorrow   +docs",
     ));
 
     s.push_str(&h3("watch"));

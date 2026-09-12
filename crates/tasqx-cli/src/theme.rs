@@ -201,7 +201,7 @@ impl Caps {
     }
 
     /// [`Caps::detect`] for stderr, where a note goes whatever stdout is
-    /// (`tasqx export > slice.json`), by the same rules (D123).
+    /// (`tasqx export > slice.json`), by the same rules (D126).
     pub fn detect_stderr() -> Caps {
         Caps::detect_for(std::io::stderr().is_terminal())
     }
@@ -238,7 +238,7 @@ pub fn detect_cols() -> usize {
 
 /// [`detect_cols`] for stderr, where a note goes: `tasqx export > slice.json`
 /// has no stdout width, but the note about it lands on a terminal that has
-/// one (D123).
+/// one (D126).
 pub fn detect_stderr_cols() -> usize {
     cols_of(std::io::stderr().is_terminal())
 }

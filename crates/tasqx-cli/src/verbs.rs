@@ -165,7 +165,7 @@ pub(crate) fn titles_of(be: &mut Backend, ids: &[i64]) -> render::Titles {
 }
 
 /// The short ids in one array field of a write's result.
-fn ids_in(result: &Value, key: &str, inner: Option<&str>) -> Vec<i64> {
+pub(crate) fn ids_in(result: &Value, key: &str, inner: Option<&str>) -> Vec<i64> {
     result
         .get(key)
         .and_then(Value::as_array)
@@ -621,7 +621,16 @@ pub(crate) fn run_simple_ref(
 pub(crate) fn run_undo(be: &mut Backend, ctx: &Ctx) -> CmdOutcome {
     let result = be.call("event.revert", &json!({}))?;
     let task = read_back(be, &result).unwrap_or_else(|| result.clone());
-    let text = render::undone(ctx, &result, &task, jiff::Timestamp::now());
+    // An undone `undep` puts a blocker back; the echo names it, so its title
+    // is read here the way every other verb reads the tasks it moved.
+    let blocker: Vec<i64> = result
+        .get("restored")
+        .and_then(|r| r.get("depends_on"))
+        .and_then(Value::as_i64)
+        .into_iter()
+        .collect();
+    let titles = titles_of(be, &blocker);
+    let text = render::undone(ctx, &result, &task, &titles, jiff::Timestamp::now());
     Ok((result, text))
 }
 

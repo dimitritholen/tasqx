@@ -299,9 +299,12 @@ fn bold_on_the_second_line_is_the_outcome_and_the_change() {
     let m = line2(modified(&ctx, &t, &set(&[("due", json!("x"))]), &[], now()));
     assert_eq!(bold_runs(&m), ["modified", "due 20 Sep"], "{m:?}");
 
-    // Which tags `tag` added, its result cannot say (it answers with the
-    // whole set), so none is bold (review round 1: `+bug` was bold on a task
-    // that already had it).
+    // The tags the command named are bold inside the whole set, so `tag` says
+    // which tags it added rather than redrawing the set unmarked. A tag the
+    // task already had and the command named again is bold on a write that
+    // changed nothing — the same residue `modify` carries for a field set to
+    // the value it already had (D126 b), and the reason `tag.add`'s own answer
+    // (the whole set) is still not what picks the bold.
     let tg = line2(tag_changed(
         &ctx,
         &json!({}),
@@ -310,7 +313,7 @@ fn bold_on_the_second_line_is_the_outcome_and_the_change() {
         &["urgent".into()],
         now(),
     ));
-    assert_eq!(bold_runs(&tg), ["tagged"], "{tg:?}");
+    assert_eq!(bold_runs(&tg), ["tagged", "+urgent"], "{tg:?}");
 
     let st = line2(stopped(
         &ctx,
@@ -459,7 +462,7 @@ fn undo_names_the_restored_tags_once() {
     });
     let mut t = task();
     t["tags"] = json!(["api", "blocking"]);
-    let out = undone(&ctx, &result, &t, now());
+    let out = undone(&ctx, &result, &t, &Titles::new(), now());
     assert_eq!(out.matches("+blocking").count(), 1, "{out}");
     assert_eq!(out.matches("+api").count(), 1, "{out}");
 }
@@ -530,7 +533,7 @@ fn every_echo(ctx: &Ctx) -> Vec<(&'static str, String, Vec<&'static str>)> {
                 &titles,
                 n,
             ),
-            vec!["done today 11:30"],
+            vec!["done today"],
         ),
         (
             "cancel",
@@ -555,9 +558,9 @@ fn every_echo(ctx: &Ctx) -> Vec<(&'static str, String, Vec<&'static str>)> {
             vec!["modified", "due 20 Sep"],
         ),
         (
-            "tag (which tags were new is unknowable)",
+            "tag (the tags the command named)",
             tag_changed(ctx, &json!({}), &t, true, &["bug".into()], n),
-            vec!["tagged"],
+            vec!["tagged", "+bug"],
         ),
         (
             "untag",
@@ -598,13 +601,20 @@ fn every_echo(ctx: &Ctx) -> Vec<(&'static str, String, Vec<&'static str>)> {
                     json!({ "interval_started": "2026-09-11T09:00:00Z" }),
                 ),
                 &running,
+                &Titles::new(),
                 n,
             ),
             vec!["undid stop"],
         ),
         (
             "undo untag",
-            undone(ctx, &undo("tag.remove", json!({ "tags": ["bug"] })), &t, n),
+            undone(
+                ctx,
+                &undo("tag.remove", json!({ "tags": ["bug"] })),
+                &t,
+                &Titles::new(),
+                n,
+            ),
             vec!["undid untag", "+bug"],
         ),
         (
@@ -644,7 +654,7 @@ fn every_echo(ctx: &Ctx) -> Vec<(&'static str, String, Vec<&'static str>)> {
     ]
 }
 
-/// D123 (b), review round 1: on every line but the title, bold is the outcome
+/// D126 (b), review round 1: on every line but the title, bold is the outcome
 /// and what the write changed, under NO_COLOR and in `mono`, where roles carry
 /// bold of their own (`danger`, `accent`, `timer.active`). `still blocked by`
 /// was bold because `danger` is; `blocked again`, `unblocked` and a moved
@@ -675,7 +685,125 @@ fn bold_is_only_the_outcome_and_the_change_on_every_echo() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// D123: the path without Unicode prints the program's own glyphs in ASCII.
+/// D126 (h), review round 3: an undone `undep` puts a blocker back and said
+/// `waits on #7 again`, leaving the reader to remember what #7 was. Every
+/// other line that names another task names it; this one now does too, as a
+/// detail, so a narrow terminal cuts the title rather than dropping the id
+/// with it.
+#[test]
+fn an_undone_undep_names_the_blocker_it_put_back() {
+    let t = task();
+    let result = json!({
+        "reverted": { "event": "e1", "op": "dependency.remove", "ts": "t" },
+        "short_id": 50,
+        "restored": { "depends_on": 7 },
+    });
+    let titles: Titles = [(7, "Review the migration plan".to_string())]
+        .into_iter()
+        .collect();
+    let out = undone(&unicode(100), &result, &t, &titles, now());
+    let line = out.lines().nth(1).expect("a second line");
+    assert!(
+        line.contains("waits on #7 again") && line.contains("Review the migration plan"),
+        "{out}"
+    );
+    // Narrow: the id survives and the title is cut, not dropped with it.
+    let narrow = undone(&unicode(46), &result, &t, &titles, now());
+    let line = narrow.lines().nth(1).expect("a second line");
+    assert!(line.contains("#7"), "the blocker's id went: {narrow}");
+    assert!(
+        !line.contains("Review the migration plan"),
+        "nothing was cut at 46 columns: {narrow}"
+    );
+}
+
+/// D126, review round 3: a `modify` that changed only the title said
+/// `modified` and nothing else on a terminal. The new title is line 1, but
+/// line 1's title is bold on EVERY echo — its own role — so nothing on the
+/// card marked which field had moved. `renamed` is that mark; the title
+/// itself is not repeated (rule 11).
+#[test]
+fn a_title_only_modify_says_which_field_moved() {
+    let mut t = task();
+    t["title"] = json!("Renew the TLS certificate");
+    let out = modified(
+        &unicode(100),
+        &t,
+        &set(&[("title", json!("Renew the TLS certificate"))]),
+        &[],
+        now(),
+    );
+    let line = out.lines().nth(1).expect("a second line");
+    assert!(line.contains("renamed"), "{out}");
+    // Once, not twice: the title is line 1 and is not repeated below it.
+    assert_eq!(
+        out.matches("Renew the TLS certificate").count(),
+        1,
+        "the title was said twice: {out}"
+    );
+    // And it is the bold, so the mark survives NO_COLOR.
+    let no = modified(
+        &no_color(100),
+        &t,
+        &set(&[("title", json!("Renew the TLS certificate"))]),
+        &[],
+        now(),
+    );
+    let line2 = no.lines().nth(1).expect("a second line");
+    assert_eq!(bold_runs(line2), ["modified", "renamed"], "{no:?}");
+}
+
+/// D126 (b), review round 3: the case the every-echo guard above could not
+/// see. Its fixture is neither overdue nor in the top urgency band, so the two
+/// roles that are bold by default and paint facts a write never touched —
+/// `overdue` on a late deadline, the ramp's top band on the figure — were
+/// never exercised. Under `NO_COLOR` a `tag` on an overdue, 18.1-urgency task
+/// bolded `▄▄▄▄ 18.1` and `2d ago` and NOT the tag it had just added, which is
+/// the one thing it changed.
+#[test]
+fn bold_is_the_write_on_an_overdue_task_in_the_danger_band() {
+    let t = json!({
+        "short_id": 48, "title": "Renew the TLS certificate",
+        "status": "pending", "priority": "H", "urgency": 18.1,
+        "project": "work", "due": "2026-09-09T09:00:00Z",
+        "tags": ["ops"], "_rev": 2, "blocked": false, "unmet_blockers": [],
+    });
+    let mono = Ctx::new(
+        theme::builtin("mono").expect("mono is built in"),
+        Caps {
+            depth: theme::ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        },
+    )
+    .with_cols(120);
+    let line2 = |out: String| out.lines().nth(1).unwrap().to_string();
+    for (label, ctx) in [("NO_COLOR", no_color(120)), ("mono", mono)] {
+        // The deadline is two days past and the score is in the top band, and
+        // this write touched neither.
+        let tagged = line2(tag_changed(
+            &ctx,
+            &json!({}),
+            &t,
+            true,
+            &["urgent".into()],
+            now(),
+        ));
+        assert_eq!(
+            bold_runs(&tagged),
+            ["tagged", "+urgent"],
+            "{label}: {tagged:?}"
+        );
+        assert!(tagged.contains("2d ago"), "{label}: {tagged:?}");
+        assert!(tagged.contains("18.1"), "{label}: {tagged:?}");
+
+        // And a start, which changes nothing a fact on the line carries.
+        let started = line2(started(&ctx, &json!({}), &t, &Titles::new(), now()));
+        assert_eq!(bold_runs(&started), ["started"], "{label}: {started:?}");
+    }
+}
+
+/// D126: the path without Unicode prints the program's own glyphs in ASCII.
 /// It printed `·` and `—`, and only `modify` was checked.
 #[test]
 fn without_unicode_every_echo_is_ascii() {
@@ -745,7 +873,7 @@ fn a_terminal_without_unicode_still_fits_the_card() {
 }
 
 /// Plain has no bold, so it has to say in words what `modify` set; the old
-/// echo listed `due <- … / priority <- M` and the first D123 plain line did
+/// echo listed `due <- … / priority <- M` and the first D126 plain line did
 /// not say which of its facts were the change.
 #[test]
 fn plain_modify_names_what_it_set() {
@@ -825,7 +953,7 @@ fn a_record_too_long_for_one_line_continues_under_itself() {
 
 // ---- review round 2 ------------------------------------------------------
 
-/// D123 (d): both sides of `of` at the same precision. The estimate was
+/// D126 (d): both sides of `of` at the same precision. The estimate was
 /// rounded to one unit beside an exact total: 3h41 against a 3h30 estimate
 /// read `tracked 3h41 of 4h`, under the estimate when it was 11m over.
 #[test]
@@ -863,7 +991,7 @@ fn a_total_that_reads_like_its_interval_is_not_repeated() {
     assert!(!out.contains("tracked"), "{out}");
 }
 
-/// D123 (h): `⊘ still blocked by #N · <title>`, at 60 columns with a long
+/// D126 (h): `⊘ still blocked by #N · <title>`, at 60 columns with a long
 /// title: the title is cut with an ellipsis, the way a moved task's title is,
 /// and not dropped whole.
 #[test]
@@ -987,7 +1115,7 @@ fn plain_undo_of_an_untag_says_which_tag_came_back() {
         "reverted": { "op": "tag.remove" }, "short_id": 50,
         "restored": { "tags": ["urgent"] },
     });
-    let out = undone(&plain(100), &result, &t, now());
+    let out = undone(&plain(100), &result, &t, &Titles::new(), now());
     assert!(
         out.lines()
             .nth(1)
@@ -997,7 +1125,7 @@ fn plain_undo_of_an_untag_says_which_tag_came_back() {
     );
 }
 
-/// A zero is not a fact (D123 c): a fresh task with no priority and no
+/// A zero is not a fact (D126 c): a fresh task with no priority and no
 /// deadline has urgency 0, and every echo drew `- ▁▁▁▁ 0.0` for it.
 #[test]
 fn a_zero_urgency_is_not_a_fact() {
