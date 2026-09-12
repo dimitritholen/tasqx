@@ -3305,8 +3305,9 @@ stored, so no test reads the wall clock against the binary's.
   and the daemon's own stderr and push lines are kept around them. Review round 4 caught
   the cost of getting this wrong: regenerating two of the four blocks that show one task
   left the other two contradicting them about the same task in the same store.
-- **`undo` chooses the newest event by id**, which an import of non-UUIDv7 events
-  defeats: #422, not this ruling's.
+- **`undo` chose the newest event by id**, which an import of non-UUIDv7 events
+  defeated: #422, not this ruling's. **Closed by D129**, which orders that one
+  read by append order instead.
 - **Stderr's width and glyphs have no guard** (`detect_stderr_cols`, `Caps::detect_stderr`):
   telling stderr's terminal from stdout's needs a pty the harness does not have.
 - **The card does not force a context fact on when there is no room**, where `keep_ranked`
@@ -3476,3 +3477,66 @@ addendum above, and both deliberately not defended here):**
 `started`), `tui/pick.rs` (`Action::Cancel`), `dashboard_screen.rs` (`after_pick`),
 `manual.rs` (`Topic::Screens`), `cmddoc.rs`, `docs.rs`, `command.rs` (the `-h` text),
 `docs/wiki/Working-on-Tasks.md`, and §5 and §11 above.
+
+### D129 — `undo` reaches the event appended last, which is `rowid` and not `id` (task #422; amends D54)
+
+**Decision:** `event.revert` picks its one row with `ORDER BY rowid DESC LIMIT 1`, not
+`ORDER BY id DESC`. "The newest event in the log" in **D54** means the row the store
+appended last, and on any store that has ever seen a `store.import` that is a different
+row from the one whose id sorts highest.
+
+**The defect.** `store.import` replays an event under the id its document carried,
+verbatim — that is what makes re-importing a shared history a no-op instead of a
+duplicate (#176) — so the log can hold ids no clock on this machine ever minted. One above
+`f`, the top digit a UUID prints, outranks every write made after it for the life of the
+store, not for a window. Reproduced in three commands on a clean store: import an event
+with id `zzzzzzzz-…`, `annotate 1 "x"`, `undo` — the undo refuses, naming the imported
+`done`. Both halves of the verb are damaged by it: here the user's own last change cannot
+be taken back and the refusal names an operation nobody ran; had the foreign row carried
+one of the four undoable ops instead, `undo` would have reversed IT and reported success
+over a task the user was not looking at.
+
+**Why `rowid`, and not the two candidates that read better.**
+
+- **Not a time-ordered id minted or demanded at import.** Rewriting an imported event's id
+  is what #176 forbids: the verbatim id is the idempotence key, and two stores replaying
+  one shared history would duplicate it instead of converging. Refusing a non-UUIDv7 id
+  instead breaks hand-written and older documents at the one door that must stay tolerant
+  — and neither variant does anything at all for a store that is already carrying such a
+  row, which is the store this has to be right about.
+- **Not `ts`, with or without the id as a tie-break.** `ts` cannot order this table. It is
+  `TEXT` with no `COLLATE`, written by `Timestamp::to_string()`, and jiff prints a
+  variable-length fractional second that it omits when zero, so SQLite answers
+  `'…:10.5Z' >= '…:10Z'` with **0**. **D59** records that same trap costing `event.list`'s
+  `from` bound every fractional event in its boundary second. A column that cannot be
+  compared cannot be a sort key — and on this path it is client-supplied besides.
+- **`rowid` is the store's own record of the order the rows arrived.** It is already what
+  the daemon's watermark, the attribution cursor and the token window mean by "since"
+  (`daemon.rs`, `attribution.rs`, `engine/tokens.rs`), it cannot be written by a document,
+  and it is correct on an existing store with no migration and no backfill. `events` is
+  append-only and never pruned, so it is monotonic, and nothing in this tree runs `VACUUM`.
+
+**What this does not change:** `event.list` still publishes newest-first by id, and its
+`from` bound is still the id range **D59** ruled. That surface is a display of the audit
+trail and survives a row out of place; `undo` is a mutation, where one wrong row changes
+the store. Making the two agree means giving `event.list` a paging key and a bound that
+are not `id`, which is D59's ruling to reopen and not this one's — left open deliberately
+rather than diverging silently, which is why `undo.rs` says so where it orders.
+
+**One consequence, stated rather than discovered:** an import writes a bookkeeping event
+per row it touches, so `undo` straight after an import refuses, naming `import`. That is
+D54's rule working — an import IS something that has happened since, and the four inverses
+are exact only while nothing has. It also retires a fixture that existed only to survive
+the old ordering: `write_echoes.rs`'s `undo_store` planted an event carrying an id above
+anything the clock can mint, because a chain of CLI writes could not be trusted to stay in
+order when the wall clock stepped back 2.4 s mid-test on this machine. Append order does
+not care what the clock does, so the fixture now makes its change with the binary.
+
+**Amends:** **D54**, whose "the newest event in the log" now says by what. **D126**'s
+open-note list, whose `undo`-by-id entry this closes. §11 was walked: its Core and CLI
+rows name `undo` as shipped and claim nothing about how the row is chosen, so they stand.
+
+**Where:** `crates/tasqx-core/src/engine/undo.rs` (the query and the module header),
+`crates/tasqx-core/tests/engine.rs` (the #422 guard, and the mirror query that restated the
+old ordering), `crates/tasqx-cli/tests/write_echoes.rs` (`undo_store`), and D126's note
+above.
