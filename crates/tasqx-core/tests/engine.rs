@@ -1688,6 +1688,60 @@ fn undo_reverses_every_operation_the_closed_set_claims() {
     );
 }
 
+/// #422: the newest event is the row written last, not the row whose id sorts
+/// highest — and on any store that has ever seen a `store.import` those are two
+/// different rows.
+///
+/// An import replays an event under the id the document gave it (#176: that
+/// verbatim id is exactly what makes re-importing a shared history a no-op
+/// instead of a duplicate), so the log can hold ids no clock on this machine
+/// ever minted. `z` is above every hex digit a UUIDv7 can carry, so an
+/// id-ordered "newest" puts this foreign `done` above every write the user
+/// makes afterwards, for the life of the store — not for a window.
+///
+/// The shape of the damage is both halves of `undo`: here the foreign row is
+/// refused, so the user's annotation cannot be taken back and the refusal names
+/// a completion nobody typed; had the foreign row carried one of the four
+/// undoable ops instead, `undo` would have reversed *it* and reported success
+/// over a task the user was not looking at.
+#[test]
+fn undo_reverses_the_last_write_not_an_imported_event_whose_id_sorts_above_it() {
+    let e = engine();
+    let task = e.task_add(&json!({ "title": "Ship v1" })).expect("add");
+    let by_ref = json!({ "ref": task["short_id"].clone() });
+
+    e.store_import(&json!({
+        "tasks": [],
+        "events": [{
+            "id": "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",
+            "entity": "task",
+            "entity_id": task["id"].clone(),
+            "op": "done",
+            "payload": {},
+            "ts": "2020-01-01T00:00:00Z",
+        }],
+    }))
+    .expect("replaying an event under its own id is what an import IS");
+
+    // The user's own last write, made after the import — the change `undo`
+    // exists to take back.
+    e.annotation_add(&json!({ "ref": task["short_id"].clone(), "body": "call the printer" }))
+        .expect("annotation.add");
+
+    let out = e
+        .event_revert()
+        .expect("undo must reach the write made last, not a row imported before it");
+    assert_eq!(
+        out["reverted"]["op"], "annotation.add",
+        "the newest event is the one appended last, whatever its id happens to sort like"
+    );
+    assert_eq!(
+        e.task_get(&by_ref).unwrap()["annotations"],
+        json!([]),
+        "and it really removed the note, rather than reporting a restoration it never made"
+    );
+}
+
 // ---- annotation.remove (D113) -----------------------------------------------
 
 /// The secret-scrub scenario D113 exists for, end to end: add a note, remove
@@ -1925,11 +1979,14 @@ fn undo_never_reaches_a_redacted_add_event_through_the_now_newer_remove_event() 
     // The newest event is annotation.remove, not the (now redacted)
     // annotation.add — undo's "exactly one step, the newest row" rule means
     // the redacted payload is never a candidate.
+    // Ordered the way `undo` orders — by append order, not by id (#422).
     let newest_op: String = e
         .conn()
-        .query_row("SELECT op FROM events ORDER BY id DESC LIMIT 1", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT op FROM events ORDER BY rowid DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(newest_op, "annotation.remove");
 

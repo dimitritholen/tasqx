@@ -35,6 +35,24 @@
 //! make that concrete: an edge spans two tasks, so "the last event on #42" can
 //! be undone by a change recorded against #7.
 //!
+//! **And "newest" means appended last, not sorted highest (#422).** The row is
+//! chosen by `rowid`, SQLite's own record of the order the rows arrived, rather
+//! than by `id`. `id` reads like the right key — the engine mints UUIDv7, and
+//! UUIDv7 sorts by time — but the engine is not the only writer: `store.import`
+//! replays an event under the id its document carried, so an id no clock here
+//! ever minted can sit in the log for good, and one above `f` outranks every
+//! write made after it for the life of the store. `event.list` still orders by
+//! id, which is a display of the audit trail and survives a row out of place;
+//! this is a mutation, and the same mistake either refuses the user's own last
+//! change by somebody else's name or, where the foreign row happens to carry an
+//! undoable op, reverses that instead and reports it as a success.
+//!
+//! One consequence of the same rule is worth stating rather than discovering:
+//! an import writes an event per row it touches, so `undo` straight after one
+//! refuses, naming `import`. That is this section doing its job — an import IS
+//! something that has happened since, and the four inverses are exact only
+//! while nothing has.
+//!
 //! The cost is stated rather than hidden: `undo` twice in a row is a refusal,
 //! because the newest event is then the `undo` itself, and `undo` is not in the
 //! closed set. There is no redo.
@@ -278,11 +296,35 @@ impl Engine {
         // afterwards would let a racing writer append between the two, and undo
         // would then reverse an operation that is no longer the last one.
         let tx = self.begin_mutation()?;
-        // events.id is UUIDv7, so ORDER BY id DESC is newest-first — the same
-        // ordering `event.list` publishes, and for the same reason.
+        // Newest means appended last, which is `rowid` and nothing else (#422).
+        // The two columns that read like better keys both lose:
+        //
+        //  * `id` is what this used to order by, reasoning that the engine mints
+        //    UUIDv7 and UUIDv7 sorts by time. Both halves are true and the
+        //    conclusion is still false, because the engine is not the only
+        //    writer: `store.import` replays an event under the id its document
+        //    carried, verbatim, since a re-import of a shared history has to be
+        //    a no-op rather than a duplicate. One imported id above `f` — the
+        //    top digit a UUID prints — therefore outranks every write made
+        //    afterwards for the life of the store, not for a window.
+        //  * `ts` cannot order this table at all. It is TEXT with no COLLATE,
+        //    written by `Timestamp::to_string()`, and jiff prints a
+        //    variable-length fractional second that it omits when zero, so
+        //    SQLite answers `'…:10.5Z' >= '…:10Z'` with 0. D59 records that same
+        //    trap costing `event.list`'s `from` bound every fractional event in
+        //    its boundary second, and an index on `ts` would only have made the
+        //    wrong answer fast.
+        //
+        // `rowid` is SQLite's own record of the order the rows arrived. It is
+        // already what the daemon's watermark, the attribution cursor and the
+        // token window mean by "since", it cannot be written by a document, and
+        // it needs no migration to be right about a store that has been carrying
+        // a foreign id since before this was fixed. It is deliberately NOT the
+        // ordering `event.list` publishes, which is still by id — see the
+        // module header.
         let newest: Option<(String, String, String, Option<String>, String)> = tx
             .query_row(
-                "SELECT id, entity_id, op, payload, ts FROM events ORDER BY id DESC LIMIT 1",
+                "SELECT id, entity_id, op, payload, ts FROM events ORDER BY rowid DESC LIMIT 1",
                 [],
                 |r| {
                     Ok((

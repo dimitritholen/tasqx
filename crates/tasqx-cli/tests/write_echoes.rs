@@ -173,53 +173,67 @@ fn seeded(tag: &str) -> Store {
     st
 }
 
-/// An event id above any the clock will mint: UUIDv7 ids open with the
-/// millisecond they were made, and `0fff…` is thousands of years out.
-const NEWEST: &str = "0fffffff-ffff-7fff-bfff-ffffffffffff";
-
-/// A store whose newest event is the one `undo` is to reverse, and nothing
-/// the wall clock decided.
+/// A store whose newest event is the one `undo` is to reverse — written by the
+/// binary rather than planted.
 ///
-/// `undo` reverses the event with the highest id (`engine/undo.rs`), and the
-/// ids of writes made by separate processes follow the wall clock. On WSL2
-/// under load that clock was seen to step back 2.4 s mid-test, which put an
-/// `add` above the `untag` written after it: a chain of CLI writes ahead of
-/// an `undo` failed by construction (#422 is the engine half). So the store
-/// is seeded through `import`, which replays events with their own ids, and
-/// the one to reverse carries [`NEWEST`]; `import`'s own bookkeeping events
-/// are minted by the clock and sort below it whatever the clock does.
+/// `undo` reverses the event appended LAST (`engine/undo.rs`), so the fixture
+/// imports the two tasks and then makes the change to be undone through the
+/// CLI, which leaves that change as the newest row whatever the wall clock
+/// does. It used to plant an event carrying an id above anything the clock can
+/// mint, because undo chose the HIGHEST id, and the ids of writes made by
+/// separate processes follow the wall clock: on WSL2 under load that clock was
+/// seen to step back 2.4 s mid-test, putting an earlier `add` above the `untag`
+/// written after it and failing a chain of CLI writes by construction. #422
+/// moved the choice to append order, which is exactly what makes an ordinary
+/// chain of CLI writes safe here — and planting no longer works anyway, since
+/// an import writes a bookkeeping event per row it touches and is therefore
+/// itself the newest thing in the log when it returns.
+///
+/// The import still seeds the tasks, because `stop` has to reverse a two-hour
+/// interval and no fast test can produce one by waiting: the task is imported
+/// `active`, carrying its open interval's anchor two hours back (D42).
 fn undo_store(tag: &str, op: &str, title: &str) -> Store {
     let st = Store::new(tag);
-    let now = jiff::Timestamp::now().to_string();
     let t1 = "019f0000-0000-7000-8000-0000000000c1";
     let t2 = "019f0000-0000-7000-8000-0000000000c2";
-    let note = "019f0000-0000-7000-8000-0000000000c3";
-    let payload = match op {
-        "stop" => serde_json::json!({ "tracked": "PT2H" }),
-        "tag.remove" => serde_json::json!({ "tags": ["urgent"] }),
-        "annotation.add" => serde_json::json!({ "id": note }),
-        "dependency.remove" => serde_json::json!({ "depends_on": t2 }),
-        other => panic!("no seed for {other}"),
-    };
+    let mut first = serde_json::json!({
+        "id": t1, "short_id": 1, "title": title, "status": "pending",
+        "project": "work", "tags": ["docs"], "tracked_seconds": 13260,
+    });
+    if op == "stop" {
+        let since = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(7200);
+        first["status"] = serde_json::json!("active");
+        first["active_since"] = serde_json::json!(since.to_string());
+    }
     let doc = serde_json::json!({
         "projects": [{ "name": "work" }],
         "tasks": [
-            {
-                "id": t1, "short_id": 1, "title": title, "status": "pending",
-                "project": "work", "tags": ["docs"], "tracked_seconds": 13260,
-                "annotations": [{ "id": note, "body": "call the printer", "created": now }],
-            },
+            first,
             { "id": t2, "short_id": 2, "title": "Review the draft", "status": "pending",
               "project": "work" },
         ],
-        "events": [{
-            "id": NEWEST, "entity": "task", "entity_id": t1, "op": op,
-            "payload": payload, "ts": now, "actor": "user",
-        }],
     });
     let path = st.path().join("undo.json");
     std::fs::write(&path, doc.to_string()).expect("write undo fixture");
     st.plain(&["import", path.to_str().expect("utf8 path")]);
+    // The change to be undone: made last, and made for real.
+    match op {
+        "stop" => {
+            st.plain(&["stop", "1"]);
+        }
+        "tag.remove" => {
+            st.plain(&["tag", "1", "urgent"]);
+            st.plain(&["untag", "1", "urgent"]);
+        }
+        "annotation.add" => {
+            st.plain(&["annotate", "1", "call the printer"]);
+        }
+        "dependency.remove" => {
+            st.plain(&["dep", "1", "2"]);
+            st.plain(&["undep", "1", "2"]);
+        }
+        other => panic!("no seed for {other}"),
+    }
     st
 }
 
