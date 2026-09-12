@@ -1057,7 +1057,7 @@ pub(crate) fn doc_summary(body: &str) -> String {
 }
 
 /// The floor of `memory list`'s title beside the id, which never goes
-/// (D123(b)): as much of what the title asks for as the terminal can give it
+/// (D125(b)): as much of what the title asks for as the terminal can give it
 /// beside the id, so the other columns go before the title gives way (rule 1,
 /// D120(c)), and never below [`MIN_TITLE_CELLS`], where a title stops telling
 /// one doc from another. Past that the row overflows, as every table's does
@@ -1172,7 +1172,7 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     out
 }
 
-/// `tasqx memory search`: one record per hit (D123(a)).
+/// `tasqx memory search`: one record per hit (D125(a)).
 ///
 /// The head line is the title, where it came from, and the handle that opens
 /// it, fitted like a table row: the source goes first, the title gives way
@@ -1186,7 +1186,7 @@ pub fn memory_table(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
 /// snippet, and `id <uuid>` on a line of its own), every one at the same
 /// weight, and closed on `N hit(s)`. #346's first cut made it a table, and at
 /// 60 and 80 columns the 36-cell id left room for the title alone.
-pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str) -> String {
+pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str, raw: bool) -> String {
     let empty = Vec::new();
     let hits = result
         .get("hits")
@@ -1209,10 +1209,16 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str) -> String {
     // The expression that ran (D69), not the words as typed: a plain query
     // comes back with each term quoted, which sets it off from the count
     // where dim does not reach the screen, and it is what a miss has to name.
-    let asked = result
-        .get("matched")
-        .and_then(Value::as_str)
-        .map_or_else(|| san(query), san);
+    let asked = result.get("matched").and_then(Value::as_str).map_or_else(
+        || san(query),
+        |m| {
+            if raw {
+                format!("\"{}\"", san(m))
+            } else {
+                san(m)
+            }
+        },
+    );
     let mut out = summary_line(ctx, Some(&asked), parts);
     out.push('\n');
 
@@ -1289,11 +1295,13 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str) -> String {
                 out.push_str(&format!("  {}\n", ctx.paint("muted", &r.handle)));
             }
             if !r.snippet.is_empty() {
+                // Four cells, under the handle's two: `muted` draws nothing
+                // under NO_COLOR, so indent is what ranks these lines there.
                 out.push_str(&format!(
-                    "  {}\n",
+                    "    {}\n",
                     ctx.paint(
                         "muted",
-                        &truncate(&r.snippet, ctx.cols.saturating_sub(2), ctx.caps.unicode)
+                        &truncate(&r.snippet, ctx.cols.saturating_sub(4), ctx.caps.unicode)
                     )
                 ));
             }
@@ -1308,17 +1316,31 @@ pub fn memory_hits(ctx: &Ctx, result: &Value, query: &str) -> String {
         // the command that shows what this screen could not.
         notes.push((None, format!("--limit {total} shows every hit")));
     }
-    // On a miss, say why an expression the summary already names came back
-    // empty (D69): every word of a plain query is a required phrase, so a
-    // question typed as a sentence comes back exactly as empty as a subject
-    // nobody ever wrote down, and the two need different next moves. At the
-    // terminal's own weight, because it is the only line that says what to
-    // do next. The expression is not repeated here (rule 11).
-    if count == 0 && result.get("matched").and_then(Value::as_str).is_some() {
-        notes.push((
-            None,
-            "every term was required; use fewer, or --raw with OR".to_string(),
-        ));
+    // On a miss, name the expression that ran and why it came back empty
+    // (D69). The summary's label is cut to half the width, so a twelve-term
+    // question showed only its first terms there; this note carries the
+    // expression WHOLE, wrapped by `prose` rather than cut, because "use
+    // fewer" cannot be acted on by a reader who cannot see which terms there
+    // were. That is why it is not a repeat of the summary (rule 11): it is
+    // the only complete copy. At the terminal's own weight, because it is the
+    // only line that says what to do next. The advice fits the search that
+    // ran: every word of a plain query is a required phrase, so dropping
+    // terms widens it, while a raw expression is already the caller's own and
+    // is widened with OR.
+    if count == 0 {
+        if let Some(matched) = result.get("matched").and_then(Value::as_str) {
+            let expr = san(matched);
+            notes.push((
+                None,
+                if raw {
+                    // Quoted like the summary's label: the engine quotes a
+                    // plain query's terms for us, a raw expression it does not.
+                    format!("nothing matched \"{expr}\" — OR widens it")
+                } else {
+                    format!("every term was required: {expr} — use fewer, or --raw with OR")
+                },
+            ));
+        }
     }
     if !notes.is_empty() {
         out.push('\n');
@@ -6078,6 +6100,7 @@ mod tests {
                 hit("release-process", "docs/release.md"),
             ] }),
             "release",
+            false,
         );
         assert!(
             out.contains("Cut build time under five minutes"),
@@ -6127,17 +6150,18 @@ mod tests {
                   "title": "release-process", "source": "docs/release.md",
                   "snippet": "How an SDK release is cut" } ] }),
             "release",
+            false,
         );
         assert!(hits.contains("release-p"), "{hits}");
         // And the handle, the one thing a search record never gives up
-        // (D123(a)), is still on the line: the row overflows instead.
+        // (D125(a)), is still on the line: the row overflows instead.
         assert!(
             hits.contains("01a0903c-bff0-76a2-9bcb-5428786a56c4"),
             "the handle was dropped to fit: {hits}"
         );
     }
 
-    /// D123: the summary names the expression that ran, which a plain query
+    /// D125: the summary names the expression that ran, which a plain query
     /// quotes, so it stands apart from the count even where dim does not
     /// reach the screen (`mono`, NO_COLOR). It printed the query bare, and
     /// `the   5 hits · 2 shown` read as a sentence.
@@ -6148,6 +6172,7 @@ mod tests {
             &ctx,
             &json!({ "count": 0, "total": 0, "hits": [], "matched": "\"the\"" }),
             "the",
+            false,
         );
         assert!(out.starts_with("\"the\"   0 hits"), "{out}");
     }
@@ -6198,6 +6223,7 @@ mod tests {
             &ctx,
             &json!({ "count": 0, "total": 0, "hits": [], "matched": "\"zebra\"" }),
             "zebra",
+            false,
         );
         let hint = out
             .lines()
@@ -6215,12 +6241,109 @@ mod tests {
             &ctx,
             &json!({ "count": 1, "total": 5, "hits": [hit], "matched": "\"cut\"" }),
             "cut",
+            false,
         );
         let note = out
             .lines()
             .find(|l| l.contains("--limit 5"))
             .unwrap_or_else(|| panic!("no note: {out:?}"));
         assert!(!note.contains(muted), "the --limit note is muted: {note:?}");
+    }
+
+    /// D69, and the round-2 review of D125: a miss names the WHOLE expression
+    /// it ran. The summary's label is cut to half the width, so a twelve-term
+    /// question printed `"how" "do" ... "rel...   0 hits` and the advice to use
+    /// fewer terms could not be acted on: the reader could not see which terms
+    /// there were. The note carries it whole, wrapped, never cut.
+    #[test]
+    fn a_search_miss_names_the_whole_expression() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(60);
+        let expr = "\"how\" \"do\" \"i\" \"cut\" \"a\" \"release\" \"for\" \"the\" \"sdk\"";
+        let out = memory_hits(
+            &ctx,
+            &json!({ "count": 0, "total": 0, "hits": [], "matched": expr }),
+            "how do i cut a release for the sdk",
+            false,
+        );
+        let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(expr),
+            "the expression is not on the screen whole: {out}"
+        );
+    }
+
+    /// Round 2 review of D125: the advice fits the search that was run. Telling
+    /// someone who already passed `--raw` to use `--raw` is advice they cannot
+    /// take, and a raw expression is not quoted by the engine, so the summary
+    /// quotes it here to set it off.
+    #[test]
+    fn a_raw_search_miss_advises_something_the_reader_can_do() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(60);
+        let out = memory_hits(
+            &ctx,
+            &json!({ "count": 0, "total": 0, "hits": [],
+                     "matched": "title:release OR body:ship" }),
+            "title:release OR body:ship",
+            true,
+        );
+        assert!(
+            !out.contains("--raw"),
+            "advises the flag the reader already used: {out}"
+        );
+        let summary = out.lines().next().expect("a summary line");
+        assert!(
+            summary.contains("\"title:release OR body:ship\""),
+            "the summary does not set the raw expression off: {summary:?}"
+        );
+        // Flattened: `prose` wraps the note at words, and a raw expression has
+        // spaces in it.
+        let note = out
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            note.contains("nothing matched \"title:release OR body:ship\""),
+            "the note does not name the expression it ran: {note:?}"
+        );
+    }
+
+    /// Round 2 review of D125: a record's lines rank by indent, so the
+    /// hierarchy survives a terminal that draws no colour. `muted` emits
+    /// nothing under NO_COLOR, and the handle's own line and the matched words
+    /// under it were both indented two cells and both unpainted.
+    #[test]
+    fn a_search_record_ranks_its_lines_by_indent() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(40);
+        let out = memory_hits(
+            &ctx,
+            &json!({ "count": 1, "total": 1, "hits": [
+                { "id": "01a0903c-c020-70e3-8c9a-7f625ab84c91", "kind": "doc",
+                  "title": "pricing-page-decisions", "source": "",
+                  "snippet": "The release of v2 waits for legal" } ] }),
+            "release",
+            false,
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        let handle = lines
+            .iter()
+            .find(|l| l.contains("01a0903c-"))
+            .unwrap_or_else(|| panic!("no handle line: {out}"));
+        let words = lines
+            .iter()
+            .find(|l| l.contains("The release of v2"))
+            .unwrap_or_else(|| panic!("no matched-words line: {out}"));
+        assert!(
+            handle.starts_with("  ") && !handle.starts_with("   "),
+            "handle line: {handle:?}"
+        );
+        assert!(
+            words.starts_with("    ") && !words.starts_with("     "),
+            "the matched words sit at the handle's depth: {words:?}"
+        );
     }
 
     /// Round 2 review of #346: each search record fits its head line to its
@@ -6243,7 +6366,7 @@ mod tests {
         ] });
         let at = |cols: usize| {
             let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(cols);
-            memory_hits(&ctx, &hits, "release")
+            memory_hits(&ctx, &hits, "release", false)
         };
         let out = at(60);
         assert!(

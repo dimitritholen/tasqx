@@ -522,11 +522,19 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
                 .chain([render::width("STYLE")])
                 .max()
                 .unwrap_or(0);
+            // A column no row fills is not drawn (D51, one screen over): in
+            // `mono` no role has a colour, and COLOUR was seventeen rows of
+            // `-` where the emphasis beside it is the whole preview.
+            let hex_w = if names.iter().any(|r| preview.theme.role(r).fg.is_some()) {
+                HEX.max(render::width("COLOUR"))
+            } else {
+                0
+            };
             let w = columns::fit(
                 &[
                     Column::fixed(role_w),
                     Column::fixed(render::width(SAMPLE)),
-                    Column::fixed(HEX.max(render::width("COLOUR"))),
+                    Column::fixed(hex_w),
                     Column::drops(style_w, style_w),
                 ],
                 preview.cols,
