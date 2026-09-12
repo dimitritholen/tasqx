@@ -623,14 +623,39 @@ Inline sugar:
 
 `tasqx modify <ref>` sets fields; `--clear <field>` removes them.
 
-Lifecycle: start · stop · done · cancel · reopen."
+Lifecycle: start · stop · done · cancel · reopen.
+
+WHAT A WRITE PRINTS
+
+Every write answers with the same card: the task it named, then the
+outcome and what changed, then the rest of that row. Bold is the write's
+own mark — it says THIS is what changed, and nothing else wears it,
+because bold is the one emphasis that survives `NO_COLOR`.
+
+  tasqx start 1
+  ▌ #1  Ship the v2 pricing page
+  ▶ started   H ▄▄▄▄ 16.7   work   due Mon   +launch
+
+The rail at the left carries the state: `▶` while the task runs, `⊘`
+while it is blocked, `▌` otherwise. Another task the write moved gets a
+line of its own under the card:
+
+  tasqx done 1
+  ▌ #1  Ship the v2 pricing page
+  ▌ done today   tracked 5m   work   due Mon   +launch
+    #2  unblocked · Rate-limit the search endpoint
+
+Through a pipe the same words print without the glyphs or the fitting,
+and `--json` is unchanged."
         }
 
         Topic::Dates => {
             "\
-Dates take natural language, and every time below is read and
-stored as UTC — `due:17:00` means 17:00 UTC, not your local
-clock.
+Dates take natural language. A bare date is midnight UTC, and a
+clock time is read in your machine's own zone and converted to UTC
+for storage: `due:17:00` on a machine set to Amsterdam is 15:00
+UTC. An offset you write yourself (`+02:00`, or a trailing `Z`) is
+honoured as written.
 
   Relative days\t`today`, `tomorrow`, `yesterday`, `now`, `eom` (end of month), `eow` (end of week).
   Weekday names\t`monday`..`sunday` or `mon`..`sat` — the next occurrence, today included if it IS that day.
@@ -662,8 +687,8 @@ naming the exact `--days` that would reach the furthest one,
 or saying `tasqx list` when it is further out than `--days`
 goes.
 
-Days are UTC days, matching the zone the dates above are stored
-in."
+Days are UTC days: a bare date is midnight UTC, so a day groups the
+same way the store holds it."
         }
 
         Topic::Filters => {
@@ -707,6 +732,55 @@ that form on both sides:
 
 `due` is compared as an instant, not a calendar day. A bare
 `tasqx` (or `tasqx list`) shows the working set."
+        }
+
+        Topic::Screens => {
+            "\
+Four commands open a screen instead of printing a table. Each needs a
+terminal on both ends; through a pipe every one of them says so rather
+than writing escape codes into your shell.
+
+  tasqx pick\tbrowse tasks, search them, read one, start one
+  tasqx dashboard\tthe overview, and what a bare `tasqx` opens
+  tasqx memory list\tyour docs, with the one under the cursor beside them
+  tasqx watch\ta table repainted on every change (needs a daemon)
+
+`tasqx list` never opens a screen. It is the verb that always prints the
+table, on a terminal and through a pipe alike.
+
+BROWSING WITH PICK
+
+`tasqx pick [filter…]` lists the rows `tasqx list` prints and lets you
+work down them:
+
+  j/k\tmove, as do the arrows; `g`/`G` jump to the ends
+  /\tsearch as you type: `wac` finds `Write API conformance tests`
+  enter\topen that task's card, the one `tasqx show` prints
+  s\tstart the task under the cursor, from the list or from its card
+  q\tleave; `esc` clears a search first, and only then leaves
+
+The bar along the bottom names the keys that can do something where you
+are, so it is shorter on an empty list, on a card, and on a narrow
+terminal — the way out is named at every width.
+
+`s` is the only key that writes. A filter can list work that is done or
+cancelled, and `s` on such a row is refused on the key bar's own row
+with the screen still open.
+
+Captured on a terminal at 64 columns, since this screen cannot be piped:
+
+  pick   @working   3 tasks · 1 overdue · #1 running
+
+         ID          URG  TASK                  PROJECT  DUE
+   ▸      4  H ▄▄▄▄ 18.0  Renew the TLS certi…  work     yesterday
+     ▶    1  H ▄▄▄▄ 16.7  Ship the v2 pricing…  work     Mon
+          3  - ▁▁▁▁  0.0  Write the migration…  work
+
+   j/k move   / search   enter open   s start   q leave
+
+Leaving without starting a task exits 4, and so does a filter that
+matches none: `pick` is there to produce one task to work on, and saying
+ok when it produced none would report success for work it did not do."
         }
 
         Topic::Reminders => {
@@ -959,6 +1033,20 @@ mod tests {
     /// as code cannot excuse its own overflow: every example command, and every
     /// indented topic line that is not a table row (a row is `term\tdefinition`;
     /// a row with no term is a line kept as written).
+    fn kept_row_lines() -> Vec<String> {
+        let mut kept = Vec::new();
+        for t in Topic::ALL {
+            for line in topic_body(t).lines().filter(|l| l.starts_with("  ")) {
+                if let Some((term, text)) = line.split_once('\t') {
+                    if term.trim().is_empty() {
+                        kept.push(text.trim().to_string());
+                    }
+                }
+            }
+        }
+        kept
+    }
+
     fn copied_lines() -> Vec<String> {
         let mut copied: Vec<String> = cmddoc::COMMAND_REF
             .iter()
@@ -1176,11 +1264,12 @@ mod tests {
     }
 
     /// House style rule 2, over the whole manual: nothing runs past the
-    /// terminal, at any width from `Ctx::MIN_COLS` to `Ctx::MAX_COLS`, except
-    /// a line a reader copies (an example command, an indented code line of a
-    /// topic, one usage piece that cannot break, or a line that is one whole
-    /// inline code span) that is wider than the terminal less the stacked
-    /// indent, so that no layout could have held it. Those are never
+    /// terminal, at any width from `Ctx::MIN_COLS` to `Ctx::MAX_COLS`, with
+    /// two exemptions. What the renderer prints verbatim may overflow: an
+    /// example command, a topic's code block or captured screen, a usage piece
+    /// that cannot break, a line that is one whole inline code span. What the
+    /// renderer PLACES may not: a row's kept continuation line overflows only
+    /// where even the stacked indent could not hold it. Those are never
     /// wrapped or cut, since a command that has been cut is a different
     /// command (rule 2's "a number never gives way", for commands).
     ///
@@ -1197,11 +1286,20 @@ mod tests {
                     // then no layout could hold it, and it may overflow. A
                     // copied line left fifteen cells in where stacking would
                     // have fitted it is a layout fault, not an exemption.
-                    let copyable =
+                    // What the renderer prints VERBATIM — an example, a
+                    // topic's code block or captured screen, a usage piece
+                    // that cannot break, a whole inline code span — may run
+                    // past the terminal: no layout choice of ours places it.
+                    // A line the renderer DOES place, a row's kept
+                    // continuation, may only overflow where even the stacked
+                    // indent could not hold it; left in a definition column it
+                    // ran past a terminal that had room for it.
+                    let verbatim =
                         copied.iter().any(|c| c == line.trim()) || a_whole_code_span(line);
-                    let unholdable =
-                        render::width(line.trim()) > cols.saturating_sub(INDENT + HANG);
-                    if render::width(line) > cols && !(copyable && unholdable) {
+                    let kept = kept_row_lines().iter().any(|c| c == line.trim());
+                    let holdable = render::width(line.trim()) <= cols.saturating_sub(INDENT + HANG);
+                    let exempt = if kept { !holdable } else { verbatim };
+                    if render::width(line) > cols && !exempt {
                         over.push(format!("{name} @{cols}: {line}"));
                     }
                 }
@@ -1635,6 +1733,114 @@ mod tests {
         assert!(
             page.lines().any(|l| l.contains("edit the startup file")),
             "the definition was split into a column too narrow for it:\n{page}"
+        );
+    }
+
+    /// The manual has a page about the screens you open, and it names each
+    /// one. `pick`'s keys, its search and its key bar were documented only on
+    /// the command page, so a reader of the contents could not find the
+    /// browser at all.
+    #[test]
+    fn the_screens_topic_names_every_screen_you_can_open() {
+        assert!(
+            Topic::ALL.iter().any(|t| t.slug() == "screens"),
+            "the contents has no screens topic"
+        );
+        let page = render(&plain(), Some("screens")).expect("`tasqx manual screens` opens");
+        for screen in [
+            "tasqx pick",
+            "tasqx dashboard",
+            "tasqx memory list",
+            "tasqx watch",
+        ] {
+            assert!(
+                page.contains(screen),
+                "the screens topic never names {screen}:\n{page}"
+            );
+        }
+    }
+
+    /// The `pick` block is a capture of a real screen, not a replay: it needs
+    /// a terminal on both ends, which the sample path cannot give it. The page
+    /// says so, as the daemon page does for `watch`, and shows the key bar,
+    /// which is the thing the topic exists to teach.
+    #[test]
+    fn the_pick_sample_shows_its_key_bar_and_says_it_was_captured() {
+        let page = render(&plain(), Some("screens")).unwrap();
+        for key in ["j/k move", "/ search", "enter open", "s start", "q leave"] {
+            // `g/G ends` is not asserted: D124 ranks the bar by what a key
+            // does, so a narrow terminal drops it and keeps the way out.
+            assert!(
+                page.contains(key),
+                "the key bar is missing {key:?}:\n{page}"
+            );
+        }
+        assert!(
+            page.to_lowercase().contains("captured"),
+            "the page must say the screen was captured, not replayed:\n{page}"
+        );
+    }
+
+    /// Capturing says what a write prints: the card, and that bold names what
+    /// the write changed. Eighteen verbs answer this way and no topic said so.
+    #[test]
+    fn capturing_says_what_a_write_prints() {
+        let page = render(&plain(), Some("capturing")).unwrap();
+        assert!(
+            page.contains("started") && page.contains("#1"),
+            "no write echo is shown:\n{page}"
+        );
+        assert!(
+            page.to_lowercase().contains("bold"),
+            "the page must say what bold means on a write echo:\n{page}"
+        );
+    }
+
+    /// The memory page says what opens a hit: a doc's id, or the task an
+    /// annotation is on.
+    #[test]
+    fn the_memory_page_says_what_opens_a_hit() {
+        let page = render(&plain(), Some("memory")).unwrap();
+        assert!(
+            page.contains("memory show"),
+            "the page never says a doc id opens with `memory show`:\n{page}"
+        );
+        assert!(
+            page.contains("annotation on #"),
+            "the page never names the annotation handle:\n{page}"
+        );
+    }
+
+    /// The theme page says what `*` marks, as the projects topic does.
+    #[test]
+    fn the_theme_page_says_what_the_star_marks() {
+        let page = render(&plain(), Some("theme")).unwrap();
+        let marked = page
+            .lines()
+            .any(|l| l.contains('*') && l.to_lowercase().contains("in effect"));
+        assert!(marked, "the page never says what `*` marks:\n{page}");
+    }
+
+    /// The dates topic states the rule the parser follows. It said the
+    /// opposite of it: `parse_when` reads a naked clock time in the machine's
+    /// own zone (`datetime.rs`, #138) and only a bare DATE stays midnight UTC,
+    /// which is what the HTML guide has said all along — the two surfaces
+    /// disagreed, and the terminal one was wrong.
+    #[test]
+    fn the_dates_topic_states_the_zone_rule_the_parser_follows() {
+        let page = render(&plain(), Some("dates")).unwrap();
+        assert!(
+            !page.contains("means 17:00 UTC"),
+            "the page still claims a typed clock time is UTC:\n{page}"
+        );
+        let lower = page.to_lowercase();
+        assert!(
+            lower.contains("your machine") || lower.contains("own zone"),
+            "the page must say a clock time is read in the machine's zone:\n{page}"
+        );
+        assert!(
+            lower.contains("midnight utc"),
+            "the page must keep the rule for a bare date:\n{page}"
         );
     }
 
