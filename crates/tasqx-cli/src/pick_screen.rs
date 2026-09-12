@@ -98,8 +98,10 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
 /// not answer.
 ///
 /// The body says `started: false` because the exit code no longer can. Both
-/// arms carry the field ([`pick_result`] sets it true), so `tasqx --json pick`
-/// answers "did this start a task" in the body rather than in `$?`.
+/// arms carry the field — [`pick_result`] sets it from `task.start`'s own
+/// `already_running`, so an idempotent re-start reports `false` here too — and
+/// `tasqx --json pick` answers "did this start a task" in the body rather than
+/// in `$?`.
 pub(crate) fn nothing_picked() -> CmdOutcome {
     Ok((json!({ "started": false }), String::new()))
 }
@@ -264,11 +266,22 @@ pub(crate) fn picked_summary(
 /// decorative: both outcomes exit 0 now, so the body is the only place a
 /// script can read whether a task was started. [`nothing_picked`] sets it
 /// false.
-pub(crate) fn pick_result(short_id: i64, title: &str, mut started: Value) -> Value {
-    if let Some(obj) = started.as_object_mut() {
+///
+/// It is read off `task.start`'s own answer rather than assumed, because
+/// reaching this function does NOT mean a timer opened: `task.start` is
+/// idempotent on an already-active task, where it answers `already_running`
+/// and opens no interval (D105). Stamping `started: true` unconditionally made
+/// that body assert `already_running: true` and `started: true` at once, which
+/// no script can read. The two may never both be true.
+pub(crate) fn pick_result(short_id: i64, title: &str, mut answer: Value) -> Value {
+    let already = answer
+        .get("already_running")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(obj) = answer.as_object_mut() {
         obj.insert("short_id".to_string(), json!(short_id));
         obj.insert("title".to_string(), json!(title));
-        obj.insert("started".to_string(), json!(true));
+        obj.insert("started".to_string(), json!(!already));
     }
-    started
+    answer
 }

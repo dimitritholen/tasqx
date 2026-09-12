@@ -448,10 +448,18 @@ pub(crate) fn after_pick(
         // an ordinary `Ok` rather than a `not_found`, so this arm has to come
         // first — without it the empty render below turns `picked` into
         // `Some("")`, and the dashboard prints a blank line into the
-        // scrollback of a user who pressed `q`. `started` and not the render's
-        // emptiness: reading the text would work by accident, and a start
-        // whose echo came back empty would quietly stop being recorded.
-        Ok((body, _)) if !body["started"].as_bool().unwrap_or(false) => {}
+        // scrollback of a user who pressed `q`.
+        //
+        // The test is `short_id`, NOT D128's `started`, because the two answer
+        // different questions. `started` is "did this invocation open a timer",
+        // and it is false on an idempotent re-start (D105) — but the reader
+        // pressed `s` there and got `render::started`'s "already running"
+        // card back, which may not vanish on the way out of the screen. What
+        // this arm asks is whether the picker acted on a task at all, and only
+        // a leave comes back without one. Reading the render's emptiness
+        // instead would work by accident, and would quietly stop recording a
+        // start whose echo came back empty.
+        Ok((body, _)) if body["short_id"].is_null() => {}
         // Every start of the session reaches the scrollback, not only the
         // last: each one can have auto-stopped another timer (D124(g)).
         Ok((_, render)) => picked.get_or_insert_with(String::new).push_str(&render),
@@ -572,13 +580,24 @@ mod tests {
     use super::*;
 
     /// What `run_pick` hands back when `s` started a task — `pick_result`'s
-    /// body, `started` included. That field is not decoration here: since D128
-    /// both outcomes are `Ok`, so it is the only thing telling this fixture
-    /// apart from a picker the reader closed.
+    /// body. `short_id` is the load-bearing field here: it is what says the
+    /// reader ACTED on a task, which is the dashboard's question. `started`
+    /// answers a different one (D128, D105) and rides along.
     fn started(n: i64) -> CmdOutcome {
         Ok((
-            json!({ "short_id": n, "started": true }),
+            json!({ "short_id": n, "started": true, "already_running": false }),
             format!("Started #{n}\n"),
+        ))
+    }
+
+    /// What `run_pick` hands back when `s` hit a task that was ALREADY running
+    /// — D105's idempotent re-start. Nothing started, so `started` is false,
+    /// but `task.start` answered and `render::started` drew its "already
+    /// running" card, which the reader pressed a key to get.
+    fn already_running(n: i64) -> CmdOutcome {
+        Ok((
+            json!({ "short_id": n, "started": false, "already_running": true }),
+            format!("#{n} already running\n"),
         ))
     }
 
@@ -607,12 +626,12 @@ mod tests {
         )
         .expect("a refused start must not end the dashboard");
         assert_eq!(said.as_deref(), Some("cannot start a done task"));
+        // `no_candidates` is what reaches the `NotFound` arm now: since D128
+        // leaving is an ordinary `Ok`, and the phrase this fixture used to
+        // carry ("nothing picked") is an outcome `run_pick` can no longer
+        // produce.
         assert_eq!(
-            after_pick(
-                Err(ApiError::not_found("nothing picked", None)),
-                &mut picked
-            )
-            .unwrap(),
+            after_pick(Err(no_candidates("+nosuchtag")), &mut picked).unwrap(),
             None
         );
         assert!(picked.is_none());
@@ -639,5 +658,26 @@ mod tests {
         // And a start still reaches it, through the same arm.
         after_pick(started(1), &mut picked).unwrap();
         assert!(picked.unwrap().contains("#1"));
+    }
+
+    /// The dashboard's question is not D128's. `started` answers "did this
+    /// invocation start a task", and is false on an idempotent re-start
+    /// (D105); what `p` has to decide is whether the reader ACTED on a task at
+    /// all. `s` on an already-running row gets `render::started`'s "already
+    /// running · running for X" card back, and a key the reader pressed and
+    /// got an answer to may not vanish on the way out of the screen. Keying
+    /// this arm on `started` swallowed it.
+    #[test]
+    fn a_restart_of_an_already_running_task_still_reaches_the_scrollback() {
+        let mut picked = None;
+        assert_eq!(
+            after_pick(already_running(7), &mut picked).unwrap(),
+            None,
+            "it is not a refusal either — nothing goes on the status line"
+        );
+        assert!(
+            picked.as_deref().is_some_and(|t| t.contains("#7")),
+            "the reader pressed `s` and got an answer; it may not be dropped: {picked:?}"
+        );
     }
 }
