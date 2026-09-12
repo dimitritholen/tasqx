@@ -528,6 +528,9 @@ fn execute(cli: Cli) -> Exit {
             Some(Command::Manual { .. }) => {
                 Some("a reading surface; it opens no store and no daemon")
             }
+            Some(Command::About) => Some(
+                "a credits screen; it names the store's path and opens neither it nor a daemon",
+            ),
             Some(Command::Completions { .. }) => {
                 Some("prints a shell registration line; it opens no store and no daemon")
             }
