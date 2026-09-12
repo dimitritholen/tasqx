@@ -3126,11 +3126,13 @@ where `add` changes.
   against 3h30 into `of 4h`, under it when it was 11 minutes over. An undone stop says `for 2h` — how long the timer has been running, by (l) — because
   what it puts back is the interval, not a total, so it is not called `tracked`.
 - **(e) The card first.** The task the command named is always the first line under the
-  prompt, and what else moved follows in the order it happened. This **reverses one line
-  of D124**: `pick`'s summary named the displaced task ABOVE the started one (#205's
-  shape), and D124 made that summary `start`'s own echo, so it now orders itself the way
-  `start` does. The facts #205 asked for — which task was displaced, and its time — are
-  all still there, one line lower.
+  prompt, and what else moved follows in the order it happened. This **reverses one line of D101**, which
+  had `pick` print `Stopped #<id> · tracked <duration>` ABOVE its "Started" line (#205's
+  shape). D124 retired that screen-local stand-in and made the summary `start`'s own echo
+  without stating a print order; this ruling states it, and the order is the opposite of
+  D101's: the task the command named comes first, and the displaced one follows on the
+  line below. The facts #205 asked for — which task was displaced, and its time — are all
+  still there.
 - **(f) `list`'s order, and one fitter.** The change leads and never drops; `list`'s
   facts drop whole from the right through `columns::fit` (D120), each fact after the
   first carrying the card's third cell of gap in its width. A change wider than the line
@@ -3140,9 +3142,10 @@ where `add` changes.
   context gives way first. A title after a `·` (the task that blocks this one, a removed
   note) is cut with an ellipsis down to eight cells before it goes, the way a moved task's
   title is: `columns::fit` runs twice, context dropping first and the title shrinking
-  after, because one pass shrinks before it drops. The lines under a card and the
-  pointer after a stderr note go through the same `fit_facts`, so there is no second
-  fitter. `pack` is not one either: it lays facts that already fit their columns into
+  after, because one pass shrinks before it drops. The lines under a card go through the same `fit_facts`, and the
+  pointer after a stderr note through `fit_note`, which calls `columns::fit` directly with
+  the pointer as a droppable second column — the same rule reaching the same fitter, so
+  there is no second fitter. `pack` is not one either: it lays facts that already fit their columns into
   continuation lines, which `columns::fit` does not do, and a single clause too wide for
   a line goes to `wrap_words`. A zero urgency (`- ▁▁▁▁ 0.0`: no priority, no deadline,
   no age) is not drawn, by (c).
@@ -3288,11 +3291,19 @@ stored, so no test reads the wall clock against the binary's.
   this ruling's (#392, #399).
 - **`memory import` still says `doc(s)`**; it is not one of the eighteen. **`next`'s facts
   line is not fitted** (#349).
-- **The docs pages are day-translated, not executed.** They were regenerated in their own
-  narrative frame (Tuesday 14 July 2026) from a run with the same offsets, because the
-  quickstart's text names weekdays that only a captured-on-Tuesday run produces. D20's
-  guards still parse the page a reader reads; what is not mechanical is the day names.
-  Re-deriving them needs a fake clock at the binary's edge, which is its own task.
+- **The docs pages are executed, then day-translated.** Every write-verb block on them is
+  real output from a scratch store driven by the dev build (`--no-daemon`, `TASQX_DB` on a
+  temporary path); what is not mechanical is the weekday NAMES, which are translated from
+  the run's own offsets into the page's narrative frame (Tuesday 14 July 2026), because the
+  quickstart's prose names weekdays only a captured-on-Tuesday run produces. Re-deriving
+  those needs a fake clock at the binary's edge, which is its own task. Two blocks are
+  reconstructed rather than replayed whole, and say so here: the daemon page's `daemon`
+  and `watch` frames cannot run under this rule at all — they need a live daemon — so
+  their tables are real `task.list` output through `render::task_table` (the renderer
+  `watch` itself calls, with the filter label stripped exactly as `watch_render` omits it)
+  and the daemon's own stderr and push lines are kept around them. Review round 4 caught
+  the cost of getting this wrong: regenerating two of the four blocks that show one task
+  left the other two contradicting them about the same task in the same store.
 - **`undo` chooses the newest event by id**, which an import of non-UUIDv7 events
   defeats: #422, not this ruling's.
 - **Stderr's width and glyphs have no guard** (`detect_stderr_cols`, `Caps::detect_stderr`):

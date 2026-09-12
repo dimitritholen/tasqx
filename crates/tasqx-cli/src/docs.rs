@@ -1158,7 +1158,7 @@ fn page_commands() -> String {
         "project:work.tasqx +api   1 task\n\
          \n\
          \x20 ID          URG  TASK                         PROJECT     DUE  TAGS\n\
-         \x20  1  H ▄▄▄▄ 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri  +api +release",
+         \x20  1  H ▄▄▄▄ 15.7  Ship the v1 JSON API freeze  work.tasqx  Fri  +api +release",
     ));
 
     // ---- agenda
@@ -1298,8 +1298,8 @@ fn page_commands() -> String {
          ▌ status      pending           urgency     H ▄▄▄▄ 15.7\n\
          ▌ project     work.tasqx        due         Fri (in 3 days)\n\
          ▌ estimate    4h                tags        +api +release\n\
-         ▌ created     today 07:22 (just now)\n\
-         ▌ modified    today 07:22 (just now)\n\
+         ▌ created     today 07:51 (just now)\n\
+         ▌ modified    today 07:51 (just now)\n\
          ▌ rev         2\n\
          ▌\n\
          ▌ · Blocked on the D12 decision",
@@ -1583,11 +1583,11 @@ fn page_filters() -> String {
     ));
     s.push_str(&snippet(
         "tasqx list \"(+api or +ops) and status:pending\"",
-        "(+api or +ops) and status:pending   2 tasks\n\
+        "(+api or +ops) and status:pending   2 tasks · 1 overdue\n\
          \n\
-         \x20 ID          URG  TASK                         PROJECT     DUE       TAGS\n\
-         \x20  1  H ▄▄▄▄ 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
-         \x20  3  - ▄▄▃▁ 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops",
+         \x20 ID          URG  TASK                         PROJECT     DUE        TAGS\n\
+         \x20  1  H ▄▄▄▄ 15.7  Ship the v1 JSON API freeze  work.tasqx  Fri        +api +release\n\
+         \x20  3  - ▄▄▄▄ 12.0  Renew the TLS cert           work.tasqx  yesterday  +ops",
     ));
 
     s.push_str(&h3("Two behaviours worth knowing"));
@@ -1767,10 +1767,10 @@ fn page_scheduling() -> String {
          \x20 #5  next, due Fri\n\
          ▌ #5  Water the plants\n\
          ▌\n\
-         ▌ status      pending           urgency     - ▄▄▃▁ 8.8\n\
+         ▌ status      pending           urgency     - ▄▄▃▁ 8.9\n\
          ▌ project     home              due         Fri (in 4 days)\n\
-         ▌ repeats     every 3 days      created     today 07:22 (just now)\n\
-         ▌ modified    today 07:22 (just now)\n\
+         ▌ repeats     every 3 days      created     today 07:51 (just now)\n\
+         ▌ modified    today 07:51 (just now)\n\
          ▌ rev         1",
     ));
 
@@ -1848,8 +1848,8 @@ fn page_reminders() -> String {
          ▌ status      pending           urgency     H ▄▄▄▄ 15.7\n\
          ▌ project     work.tasqx        due         Fri (in 3 days)\n\
          ▌ remind      -1h               estimate    4h\n\
-         ▌ tags        +api +release     created     today 07:22 (just now)\n\
-         ▌ modified    today 07:22 (just now)\n\
+         ▌ tags        +api +release     created     today 07:51 (just now)\n\
+         ▌ modified    today 07:51 (just now)\n\
          ▌ rev         2",
     ));
     s.push_str(&note(
@@ -2051,13 +2051,13 @@ fn page_daemon() -> String {
     ));
     s.push_str(&snippet(
         "tasqx watch --socket tasqx-docsdemo | cat\n# ... meanwhile, in another shell:\n#   tasqx --socket tasqx-docsdemo add \"Wire up the docs page ...\"\n#   tasqx --socket tasqx-docsdemo done 3",
-        "4 tasks\n\
+        "4 tasks · 1 overdue\n\
          \n\
-         \x20 ID          URG  TASK                         PROJECT     DUE       TAGS\n\
-         \x20  1  H ▄▄▄▄ 17.5  Ship the v1 JSON API freeze  work.tasqx  Fri       +api +release\n\
-         \x20  3  - ▄▄▃▁ 12.0  Renew the TLS cert           work.tasqx  tomorrow  +ops\n\
-         \x20  5  - ▄▄▂▁  9.7  Water the plants             home        Sun\n\
-         \x20  2  - ▄▄▁▁  8.9  Write the user guide         work.tasqx  Mon       +docs\n\
+         \x20 ID          URG  TASK                         PROJECT     DUE        TAGS\n\
+         \x20  1  H ▄▄▄▄ 15.7  Ship the v1 JSON API freeze  work.tasqx  Fri        +api +release\n\
+         \x20  3  - ▄▄▄▄ 12.0  Renew the TLS cert           work.tasqx  yesterday  +ops\n\
+         \x20  5  - ▄▄▃▁  8.9  Water the plants             home        Fri\n\
+         \x20  2  - ▄▄▂▁  7.1  Write the user guide         work.tasqx  Mon        +docs\n\
          task.changed op=add short_id=6\n\
          task.changed op=done short_id=3",
     ));
