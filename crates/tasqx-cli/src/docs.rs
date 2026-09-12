@@ -1286,7 +1286,9 @@ fn page_commands() -> String {
          rather than writing escape codes into it. Leaving without starting a task exits 0 — a \
          browser you close is not a failed run — while a filter that matches nothing still exits \
          4, having started nothing either way. Under <code>--json</code> the body's \
-         <code>started</code> says which of the two happened.",
+         <code>started</code> says whether this call actually opened a timer — false when you \
+         left, and false on a task that was already running, which \
+         <code>task.start</code> answers idempotently.",
     ));
 
     // ---- show

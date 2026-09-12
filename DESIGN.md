@@ -3405,6 +3405,20 @@ and `title` (D124), not a change to what any method returns, so §4's freeze (D5
 untouched. Without it the machine-readable answer would have lost the one fact the exit
 code used to carry.
 
+**Addendum — what `started` means on an idempotent re-start (found on a pty by review, one
+commit after this entry landed).** The field answers "did **this invocation** open a
+timer", so it is **false** when `s` hit a task that was already running: `task.start` is
+idempotent there, answering `already_running` and opening no interval (D105). The first cut
+stamped `started: true` unconditionally, so such a body asserted `already_running: true`
+and `started: true` at once — unreadable by any script, and a false claim inside a ruling
+one commit old. **The two may never both be true**, and a test pins that as an invariant
+rather than as a restatement of the code. Note what did NOT change with it: the dashboard's
+`p` asks a different question and so reads a different field. Not "did a timer open" but
+"did the reader act on a task at all", which is the presence of `short_id` — an
+already-running re-start still draws `render::started`'s "already running · running for X"
+card, and a key the reader pressed and got an answer to may not vanish on the way out of
+the screen.
+
 **The dashboard's `p` does not move, and had to be changed to stay still.** D124(g) already
 made backing out of the picker silent there, by swallowing `run_pick`'s `not_found`. With
 the leave an `Ok`, the success arm caught it instead and pushed its empty render into the
@@ -3429,7 +3443,12 @@ against each other in one place, failed on the same; and
 `a_picker_closed_without_starting_anything_leaves_nothing_behind` failed on `Some("")` —
 the dashboard defect above, found by writing the test before the fix. The three docs
 guards (`manual`, `cmddoc`, the guide's commands page) were each watched fail against the
-prose that still said exit 4, which is the same evidence as injecting the drift.
+prose that still said exit 4, which is the same evidence as injecting the drift. The
+addendum above added two more, both watched fail before their fix:
+`a_restart_of_an_already_running_task_is_not_a_start`, on a body carrying both flags, and
+`a_restart_of_an_already_running_task_still_reaches_the_scrollback`, on the card the
+dashboard had started swallowing. Every one of these guards was then made to bite by
+re-injecting the drift it claims to catch.
 
 **Where:** `crates/tasqx-cli/src/pick_screen.rs` (`nothing_picked`, `pick_result`'s
 `started`), `tui/pick.rs` (`Action::Cancel`), `dashboard_screen.rs` (`after_pick`),

@@ -903,7 +903,9 @@ pub(super) enum Command {
     /// the task it selects. Leaving without starting one exits 0 — a browser
     /// you close is not a failed run — while a filter that matches no task
     /// exits 4, having started nothing either way. Under `--json` the body's
-    /// `started` says which of the two happened.
+    /// `started` says whether this call actually opened a timer: false when you
+    /// left, and false on a task that was already running, which `start`
+    /// answers idempotently.
     ///
     /// It needs a real terminal on BOTH stdin and stdout, so it refuses in a
     /// pipe rather than writing escape codes into it (exit 2, D26).

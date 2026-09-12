@@ -1930,15 +1930,52 @@ mod tests {
     /// keys are passed through untouched beside them.
     #[test]
     fn the_pick_json_carries_the_chosen_ref_beside_the_methods_own_answer() {
-        let started = json!({ "id": "0199-uuid", "interval_started": "2026-08-03T10:00:00Z" });
+        let started = json!({
+            "id": "0199-uuid", "interval_started": "2026-08-03T10:00:00Z",
+            "already_running": false,
+        });
         let out = pick_result(42, "Ship the freeze", started);
         assert_eq!(out["short_id"], json!(42));
         assert_eq!(out["title"], json!("Ship the freeze"));
         // D128: the exit code is 0 either way now, so the BODY is where a
-        // script reads whether a task was started.
+        // script reads whether a task was started. This call did start one.
         assert_eq!(out["started"], json!(true));
         assert_eq!(out["id"], json!("0199-uuid"));
         assert_eq!(out["interval_started"], json!("2026-08-03T10:00:00Z"));
+    }
+
+    /// D128's `started` answers "did THIS invocation start a task", and
+    /// `task.start` is idempotent on an already-active one (D105 answers
+    /// `already_running` and opens no interval). Stamping `started: true`
+    /// unconditionally made the body assert both at once — unreadable by any
+    /// script, and a false claim inside a ruling one commit old.
+    ///
+    /// The last assertion is the invariant rather than a restatement: whatever
+    /// else moves, these two fields may never both be true.
+    #[test]
+    fn a_restart_of_an_already_running_task_is_not_a_start() {
+        let answer = json!({
+            "id": "0199-uuid", "already_running": true,
+            "interval_started": "2026-08-03T10:00:00Z",
+        });
+        let out = pick_result(7, "Ship the freeze", answer);
+        assert_eq!(
+            out["started"],
+            json!(false),
+            "this invocation started nothing: {out}"
+        );
+        assert_eq!(
+            out["already_running"],
+            json!(true),
+            "the method's own key is passed through untouched: {out}"
+        );
+        // The reader still ACTED on #7, so the identity is still there — that
+        // is what the dashboard reads, and it is a different question.
+        assert_eq!(out["short_id"], json!(7));
+        assert!(
+            !(out["already_running"] == json!(true) && out["started"] == json!(true)),
+            "`already_running` and `started` may never both be true: {out}"
+        );
     }
 
     // ---- the reference examples parse ---------------------------------------
