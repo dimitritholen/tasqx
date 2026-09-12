@@ -71,7 +71,14 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
         "task.start",
         &json!({ "ref": short_id.to_string(), "keep": false }),
     )?;
-    let text = picked_summary(ctx, &result);
+    // The same read-back and the same displaced-task titles `tasqx start`
+    // gathers (D124: the summary IS `start`'s echo, not a second rendering).
+    let task = verbs::read_back(be, &result).unwrap_or_else(|| result.clone());
+    let titles = verbs::titles_of(
+        be,
+        &verbs::ids_in(&result, "auto_stopped", Some("short_id")),
+    );
+    let text = picked_summary(ctx, &result, &task, &titles);
     // The title out of the snapshot the screen was built from, for the
     // `--json` body's identity fields (below).
     let title = app
@@ -220,8 +227,13 @@ pub(crate) fn pick_loop(
 /// the stop again from a snapshot of its own, so the task was named twice and
 /// the stop said twice with two different durations. D101 said its stand-in
 /// would be deleted once #75 landed; D124 did.
-pub(crate) fn picked_summary(ctx: &Ctx, result: &Value) -> String {
-    render::started(ctx, result)
+pub(crate) fn picked_summary(
+    ctx: &Ctx,
+    result: &Value,
+    task: &Value,
+    titles: &render::Titles,
+) -> String {
+    render::started(ctx, result, task, titles, jiff::Timestamp::now())
 }
 
 /// The `--json` body: `task.start`'s own answer, plus the identity of the task

@@ -2435,7 +2435,11 @@ fn the_completion_timestamp_reaches_every_human_surface() {
     assert!(run(&["init", "P"]).status.success(), "init");
     assert!(run(&["add", "Alpha"]).status.success(), "add");
 
+    // The UTC date on both sides of the write, so a run that crosses midnight
+    // is recognised rather than failed (see the wording assertion below).
+    let before_day = jiff::Timestamp::now().to_string()[..10].to_string();
     let done = run(&["done", "1"]);
+    let after_day = jiff::Timestamp::now().to_string()[..10].to_string();
     assert!(
         done.status.success(),
         "done: {}",
@@ -2454,21 +2458,38 @@ fn the_completion_timestamp_reaches_every_human_surface() {
         .expect("the API carries `completed`")
         .to_string();
 
-    // D123 spells the moment on `done` as a calendar day, the clock included
-    // because it is today: `done today 10:05`, from that same stored instant
-    // (UTC, as `due_cell` reads it). It was a 30-cell instant in nanoseconds.
-    // `yesterday` only when the completion's UTC day is no longer today's,
-    // which is a completion stamped just before midnight and drawn after.
-    let clock = &ts[11..16];
-    let today = jiff::Timestamp::now().to_string();
-    let want = if ts[..10] == today[..10] {
-        format!("done today {clock}")
+    // D126 spells the moment on `done` as a calendar day and no clock:
+    // `done today`, from that same stored instant, through `day_ago` — the
+    // past-facing half of the vocabulary. It was a 30-cell instant in
+    // nanoseconds. `yesterday` only when the completion's UTC day is no
+    // longer today's, which is a completion stamped just before midnight.
+    //
+    // Which of the two is right depends on the UTC date, so the date is read
+    // on both sides of the write: when the run did not cross midnight the
+    // wording is pinned exactly, and when it did (once a day, for one run)
+    // both readings are true and either is accepted. The old test read the
+    // date once, after the write, and failed outright on that crossing.
+    let want = if before_day == after_day {
+        vec![format!(
+            "done {}",
+            if ts[..10] == after_day {
+                "today"
+            } else {
+                "yesterday"
+            }
+        )]
     } else {
-        "done yesterday".to_string()
+        vec!["done today".to_string(), "done yesterday".to_string()]
     };
     assert!(
-        done_out.contains(&want),
-        "`done` must name the moment ({ts}), as {want:?}: {done_out}"
+        want.iter().any(|w| done_out.contains(w)),
+        "`done` must name the moment ({ts}), as one of {want:?}: {done_out}"
+    );
+    assert!(
+        !done_out.contains(&ts[11..16]) || ts[11..16] == *"00:00",
+        "`done` printed a clock ({}), which is UTC and reads as the wall \
+         clock it is not (D126 l): {done_out}",
+        &ts[11..16]
     );
 
     // D122: the terminal spells the moment as a calendar day by default

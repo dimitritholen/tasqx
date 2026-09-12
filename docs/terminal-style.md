@@ -71,8 +71,17 @@ Calendar days rather than elapsed hours is the point: a deadline at 09:00
 tomorrow is "tomorrow" to the person reading it, and `markdown::fmt_instant`'s
 "in 14 hours" hands them the arithmetic the cell exists to do.
 
-`render::due_cell` is the implementation. `agenda`'s `day_heading` is the
-vocabulary both views share.
+A clock is for what is still **ahead**. A moment that has already happened —
+a completion, a note, an event — is a day and no clock: the reader who just
+ran the command knows what time it is, and the clock a deadline carries is
+UTC, so on a past moment it reads as the wall clock and is wrong by the
+offset for everyone who is not on it (`done today 16:22`, rendered at 18:22
+CEST). Where the interesting quantity is a span rather than an instant, print
+the span (`for 12m`), which has no timezone to be wrong about.
+
+`render::due_cell` is the implementation for what is ahead and `render::day_ago`
+for what is past; `agenda`'s `day_heading` is the vocabulary both views share.
+`DESIGN.md` §12 **D126 (l)** is the ruling behind the split.
 
 ## 4. State lives in a left rail, never in a droppable column
 

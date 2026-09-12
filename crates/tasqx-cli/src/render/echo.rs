@@ -33,8 +33,8 @@
 use std::collections::HashMap;
 
 use super::{
-    due_cell, field_ts, plural_tasks, rail_marker, rail_role, s, san, status_is_open, truncate,
-    urgency_meter, urgency_scale, width, wrap_words,
+    day_ago, due_cell, field_ts, keep_ranked, plural_tasks, rail_marker, rail_role, s, san,
+    status_is_open, truncate, urgency_meter, urgency_scale, width, wrap_words,
 };
 use crate::columns::{self, Column};
 use crate::theme::{Ctx, Style};
@@ -88,7 +88,7 @@ impl Fact {
         }
     }
 
-    /// A fact in one role, and never bold: bold is the write's (D123), and
+    /// A fact in one role, and never bold: bold is the write's (D126), and
     /// several roles carry bold of their own (`danger`, and most of `mono`).
     fn role(ctx: &Ctx, role: &str, text: &str) -> Fact {
         Fact::styled(ctx, quiet_style(ctx, role), text)
@@ -143,6 +143,22 @@ fn exact_duration(ctx: &Ctx, iso: &str) -> String {
         return iso.to_string();
     }
     dur_compact(secs(iso))
+}
+
+/// How long a timer has been running, `for 12m`, exact to the minute.
+///
+/// The echo used to answer "since when" with `due_cell`, which spells a
+/// deadline's clock in UTC: at 18:22 CEST a timer started a minute earlier
+/// read `since today 18:21` only by luck of the offset, and `16:21` in fact.
+/// Elapsed time has no timezone to be wrong about, and it is the answer to the
+/// question a re-run `start` raises (D126 l).
+fn running_for(ctx: &Ctx, since: Timestamp, now: Timestamp) -> Fact {
+    let secs = (now.as_second() - since.as_second()).max(0);
+    let value = dur_compact(secs);
+    Fact::new(
+        format!("for {value}"),
+        format!("{} {value}", quiet(ctx, "card.label", "for")),
+    )
 }
 
 /// Which of `list`'s facts a card draws after the change. A fact the change
@@ -268,7 +284,12 @@ fn urgency_fact(ctx: &Ctx, task: &Value, changed: bool) -> Fact {
     let mut style = ctx.theme.role(prio_role);
     style.bold = changed;
     let letter = style.paint(prio, &ctx.caps);
-    let ramp = ctx.theme.ramp_style(urgency_scale(urg));
+    // The ramp's top band is bold in every built-in, which on a card claimed
+    // the write had moved the urgency (D126 b). The figure is never what a
+    // write changed — the priority letter above is — so the band keeps its
+    // hue and gives up its weight, here and on the meter below.
+    let mut ramp = ctx.theme.ramp_style(urgency_scale(urg));
+    ramp.bold = false;
     let figure = ramp.paint(&format!("{urg:.1}"), &ctx.caps);
     if !ctx.caps.unicode {
         return Fact::new(format!("{prio} {urg:.1}"), format!("{letter} {figure}"));
@@ -308,10 +329,14 @@ fn due_fact(ctx: &Ctx, task: &Value, now: Timestamp, changed: bool) -> Option<Fa
     let painted = match (late, changed) {
         (true, true) => ctx.paint("overdue", &plain),
         (false, true) => ctx.paint("card.strong", &plain),
+        // An overdue deadline this write did not touch keeps `list`'s red and
+        // loses its bold: the `overdue` role is bold by default, and on a card
+        // bold is the write's alone (D126 b). Before this, `tag 48 +x` bolded
+        // the deadline it had not moved and left the tag it added unbolded.
         (true, false) => format!(
             "{} {}",
             quiet(ctx, "card.label", "due"),
-            ctx.paint("overdue", &cell)
+            quiet(ctx, "overdue", &cell)
         ),
         (false, false) => format!("{} {cell}", quiet(ctx, "card.label", "due")),
     };
@@ -354,31 +379,34 @@ fn recur_fact(ctx: &Ctx, task: &Value) -> Option<Fact> {
 }
 
 /// `list`'s facts that are still to say, in `list`'s order.
-fn context_facts(ctx: &Ctx, task: &Value, c: Context, now: Timestamp) -> Vec<Fact> {
-    let mut out = Vec::new();
-    // A zero is not a fact (D123 c): no priority, no deadline and no age
+fn context_facts(ctx: &Ctx, task: &Value, c: Context, now: Timestamp) -> Vec<(Fact, u8)> {
+    // The ranks are `next`'s (D125): what the reader loses without each, not
+    // where it prints. Urgency and the deadline say why this task at all; the
+    // project and the tags only say where it lives.
+    let mut out: Vec<(Fact, u8)> = Vec::new();
+    // A zero is not a fact (D126 c): no priority, no deadline and no age
     // score `- ▁▁▁▁ 0.0`, which says nothing.
     let urgent = task
         .get("urgency")
         .and_then(Value::as_f64)
         .is_some_and(|u| u > 0.0);
     if c.urgency && urgent {
-        out.push(urgency_fact(ctx, task, false));
+        out.push((urgency_fact(ctx, task, false), 0));
     }
     if c.project {
-        out.extend(project_fact(ctx, task, false));
+        out.extend(project_fact(ctx, task, false).map(|f| (f, 3)));
     }
     if c.due {
-        out.extend(due_fact(ctx, task, now, false));
+        out.extend(due_fact(ctx, task, now, false).map(|f| (f, 1)));
     }
     if c.tags {
-        out.extend(tags_fact(ctx, task));
+        out.extend(tags_fact(ctx, task).map(|f| (f, 4)));
     }
     if c.est {
-        out.extend(est_fact(ctx, task, false));
+        out.extend(est_fact(ctx, task, false).map(|f| (f, 5)));
     }
     if c.recur {
-        out.extend(recur_fact(ctx, task));
+        out.extend(recur_fact(ctx, task).map(|f| (f, 6)));
     }
     out
 }
@@ -416,8 +444,9 @@ enum Give {
     /// Never: the outcome, the change, `rev`. Past the edge it continues on
     /// the next line (see [`pack`]).
     Keep,
-    /// Whole, from the right: `list`'s context.
-    Drop,
+    /// Whole, by rank: `list`'s context, carrying the rank D125 gives it —
+    /// what the reader loses without it, which is not where it prints.
+    Drop(u8),
     /// Cut with an ellipsis down to [`CUT_FLOOR`] cells, and only then
     /// dropped: a title, which still identifies its task when cut.
     Cut,
@@ -439,21 +468,10 @@ fn col_width(i: usize, f: &Fact) -> usize {
 /// the title while the context beside it survived, because `fit` shrinks
 /// before it drops.
 fn fit_facts(ctx: &Ctx, all: &[(Fact, Give)], budget: usize) -> Vec<Fact> {
-    let first: Vec<Column> = all
-        .iter()
-        .enumerate()
-        .map(|(i, (f, give))| {
-            let w = col_width(i, f);
-            match give {
-                Give::Drop => Column::drops(w, w),
-                _ => Column::fixed(w),
-            }
-        })
-        .collect();
     let kept: Vec<&(Fact, Give)> = all
         .iter()
-        .zip(columns::fit(&first, budget))
-        .filter(|(_, w)| *w > 0)
+        .zip(drop_by_rank(all, budget))
+        .filter(|(_, k)| *k)
         .map(|(f, _)| f)
         .collect();
     let second: Vec<Column> = kept
@@ -481,6 +499,57 @@ fn fit_facts(ctx: &Ctx, all: &[(Fact, Give)], budget: usize) -> Vec<Fact> {
             }
         })
         .collect()
+}
+
+/// Which facts survive the width, by D125's one rule for a line of facts
+/// ([`keep_ranked`]): the droppable ones are taken in rank order and the first
+/// that does not fit ends the line, so nothing less important survives a fact
+/// that was dropped. The echo used to hand them to `columns::fit` as columns
+/// that drop from the RIGHT, which is where they print and not what they are
+/// worth: at 40 columns a 32-cell project name took the deadline with it, the
+/// exact defect D125 wrote this rule to stop (`next_and_add_drop_facts_from_
+/// the_least_important_up`).
+///
+/// Two things differ from `next`'s use of it. The facts that never drop (the
+/// outcome, the change, `rev`) are not offered to the rule at all; they are
+/// subtracted from the budget first. And `keep_ranked` always keeps its
+/// lowest-ranked part, because a line with nothing on it says less — on a card
+/// the outcome is already on the line, so a context fact with no room for it
+/// is dropped rather than forced on.
+fn drop_by_rank(all: &[(Fact, Give)], budget: usize) -> Vec<bool> {
+    // Cells as they are actually printed — the fact plus the separator in
+    // front of it. NOT `col_width`, which speaks `columns::fit`'s convention
+    // (the shared gap subtracted, for `fit` to re-add between columns): fed to
+    // `keep_ranked`, whose `sep` is then 0, that measure is two cells short
+    // per fact, and the line kept facts that did not fit. It showed up as a
+    // recurrence fact spilling onto a third line of a two-line card.
+    let cells = |i: usize, f: &Fact| width(&f.plain) + gap_before(i, f);
+    // A fact that never drops is spoken for before the rule runs, a title at
+    // its full width: `list`'s context gives way first, and only then does the
+    // title shrink (the second pass below).
+    let reserved: usize = all
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, give))| !matches!(give, Give::Drop(_)))
+        .map(|(i, (f, _))| cells(i, f))
+        .sum();
+    let avail = budget.saturating_sub(reserved);
+    let droppable: Vec<(usize, usize, u8)> = all
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (f, give))| match give {
+            Give::Drop(rank) => Some((i, cells(i, f), *rank)),
+            _ => None,
+        })
+        .collect();
+    let widths: Vec<usize> = droppable.iter().map(|(_, w, _)| *w).collect();
+    let ranks: Vec<u8> = droppable.iter().map(|(_, _, r)| *r).collect();
+    let kept = keep_ranked(&widths, &ranks, 0, avail);
+    let mut out = vec![true; all.len()];
+    for ((i, w, _), k) in droppable.iter().zip(kept) {
+        out[*i] = k && *w <= avail;
+    }
+    out
 }
 
 /// A fact cut to `cells` with an ellipsis and painted in its own style.
@@ -560,7 +629,7 @@ fn draw(ctx: &Ctx, card: Card, now: Timestamp) -> String {
     facts.extend(
         context_facts(ctx, task, card.context, now)
             .into_iter()
-            .map(|f| (f, Give::Drop)),
+            .map(|(f, rank)| (f, Give::Drop(rank))),
     );
     facts.extend(rev_fact(ctx, task, card.context).map(|f| (f, Give::Keep)));
 
@@ -731,11 +800,7 @@ pub fn started(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Ti
         if let Some(since) =
             field_ts(result, "interval_started").or_else(|| field_ts(task, "active_since"))
         {
-            let when = due_cell(since, now);
-            c.lead.push(Fact::new(
-                format!("since {when}"),
-                format!("{} {when}", quiet(ctx, "card.label", "since")),
-            ));
+            c.lead.push(running_for(ctx, since, now));
         }
         c
     } else {
@@ -813,9 +878,12 @@ pub fn stopped(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> Strin
 /// closed task has no urgency to rank, so the cell goes (D126).
 pub fn done(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Timestamp) -> String {
     // When it was done, as a calendar day (P1b: the moment reaches the human
-    // surface), `done today 11:30`: a completion an agent logged is read later.
+    // surface) — through `day_ago`, the past-facing half of the vocabulary,
+    // which prints no clock. `due_cell` spells a deadline, and a deadline's
+    // clock is UTC: rendered at 18:22 CEST it said `done today 16:22`, which
+    // reads as the wall clock and is wrong by the offset (D126 l).
     let when = field_ts(result, "completed")
-        .map(|c| format!("done {}", due_cell(c, now)))
+        .map(|c| format!("done {}", day_ago(c, now)))
         .unwrap_or_else(|| "done".to_string());
     let mut card = Card::new(task, outcome(ctx, &when));
     card.context.urgency = false;
@@ -964,12 +1032,14 @@ pub fn modified(
         card.context.due = false;
     }
     if !tags.is_empty() {
-        // Which of these were new, `tag.add`'s result does not say, so none
-        // of them is bold; the set follows the outcome and replaces `list`'s
-        // tags fact, which is what marks it as the change.
+        // The tags this command named are bold inside the whole set, the same
+        // rule every other field on this card follows. `tag.add`'s result
+        // cannot say which of them were already there, so one re-added tag is
+        // bold on a write that changed nothing — exactly as a `modify` that
+        // sets a field to the value it already had is (D126 b).
         let all = tag_list(task, "tags");
         let words = format!("tags {}", plus(&merged(&all, tags)));
-        change.push((tag_set(ctx, &all, tags, false), words));
+        change.push((tag_set(ctx, &all, tags, true), words));
         card.context.tags = false;
     }
     if has("estimate") {
@@ -1023,6 +1093,14 @@ pub fn modified(
     }
     if on_terminal(ctx) {
         card.lead = change.into_iter().flat_map(|(facts, _)| facts).collect();
+        // The new title is line 1 already, so naming it again would say one
+        // thing twice (rule 11) — but line 1's title is bold on every echo,
+        // its own role, and marks nothing. `renamed` is the word that says
+        // which field moved without repeating what it moved to.
+        if has("title") {
+            card.lead
+                .insert(0, Fact::changed(ctx, "card.strong", "renamed"));
+        }
     } else {
         // Off a terminal there is no bold to mark the change, so say it (the
         // old echo's `due <- …`): what it set, a new title included, and what
@@ -1110,7 +1188,7 @@ pub fn tag_changed(
         } else {
             tag_list(result, "tags")
         };
-        card.lead.extend(tag_set(ctx, &all, asked, false));
+        card.lead.extend(tag_set(ctx, &all, asked, true));
         card.context.tags = false;
         return draw(ctx, card, now);
     }
@@ -1239,7 +1317,7 @@ pub fn annotation_removed(ctx: &Ctx, task: &Value, now: Timestamp) -> String {
 /// reversed the thing they meant. The line is driven by the reverted op, not
 /// by which keys `restored` carries; an op this build has no words for still
 /// prints its `restored` object rather than nothing.
-pub fn undone(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String {
+pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Timestamp) -> String {
     let op = result
         .get("reverted")
         .and_then(|r| r.get("op"))
@@ -1261,11 +1339,7 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String
             // interval put back on the clock, not the task's total, so it is
             // not printed as `tracked`.
             if let Some(since) = field_ts(&restored, "interval_started") {
-                let when = due_cell(since, now);
-                card.lead.push(Fact::new(
-                    format!("since {when}"),
-                    format!("{} {when}", quiet(ctx, "card.label", "since")),
-                ));
+                card.lead.push(running_for(ctx, since, now));
             }
         }
         "tag.remove" => {
@@ -1293,6 +1367,13 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, now: Timestamp) -> String
                 .unwrap_or(0);
             card.lead
                 .push(outcome(ctx, &format!("waits on #{n} again")));
+            // Which blocker, by name: `waits on #7 again` asks the reader to
+            // remember what #7 was, and every other line that names another
+            // task names it (D126 h). It is a detail, so a narrow terminal
+            // cuts it rather than dropping the id with it.
+            if let Some(title) = titles.get(&n).filter(|t| !t.is_empty()) {
+                card.detail.push((Fact::detail(ctx, title), Give::Cut));
+            }
         }
         "annotation.add" => {
             let note = s(&restored, "annotation");
@@ -1327,7 +1408,12 @@ fn record(ctx: &Ctx, name: Option<&str>, fixed: Vec<Fact>, droppable: Vec<Fact>)
     let all: Vec<(Fact, Give)> = fixed
         .into_iter()
         .map(|f| (f, Give::Keep))
-        .chain(droppable.into_iter().map(|f| (f, Give::Drop)))
+        .chain(
+            droppable
+                .into_iter()
+                .enumerate()
+                .map(|(i, f)| (f, Give::Drop(u8::try_from(i).unwrap_or(u8::MAX)))),
+        )
         .collect();
     if !on_terminal(ctx) {
         let facts: Vec<Fact> = all.into_iter().map(|(f, _)| f).collect();

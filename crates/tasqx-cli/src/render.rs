@@ -5709,7 +5709,7 @@ mod tests {
         );
 
         let ctx = ctx.with_cols(40);
-        let added = task_added_card(&ctx, &t, anchor());
+        let added = echo::added(&ctx, &t, anchor());
         let facts = added.lines().nth(1).expect("a facts line");
         assert!(
             facts.contains("due "),
@@ -7276,7 +7276,7 @@ mod tests {
             "title": "Ship v1",
             "restored": { "tags": ["api", "release"] },
         });
-        let out = undone(&ctx, &result, &result, Timestamp::now());
+        let out = undone(&ctx, &result, &result, &Titles::new(), Timestamp::now());
         // D126 names the operation by the verb that did it: `untag`.
         assert!(
             out.contains("undid untag"),
@@ -7318,19 +7318,21 @@ mod tests {
             if op == "stop" {
                 task["status"] = json!("active");
             }
-            undone(&ctx, &result, &task, Timestamp::now())
+            undone(&ctx, &result, &task, &Titles::new(), Timestamp::now())
         };
 
         assert!(line("dependency.remove", json!({ "depends_on": 3 })).contains("#3"));
-        // D126: `*` in the rail says it runs again, and the line says since
-        // when; `restored.tracked` is the interval put back, not a total.
+        // D126: `*` in the rail says it runs again, and the line says how long
+        // it has been running — elapsed, not an instant, because `due_cell`'s
+        // clock is UTC and read as the wall clock (D126 l); `restored.tracked`
+        // is the interval put back, not a total.
         let stopped = line(
             "stop",
             json!({ "tracked": "PT30M", "status": "active",
                     "interval_started": "2026-09-09T10:00:00Z" }),
         );
         assert!(
-            stopped.contains("* undid stop") && stopped.contains("since"),
+            stopped.contains("* undid stop") && stopped.contains(" for "),
             "{stopped:?}"
         );
         let noted = line(
@@ -7359,7 +7361,7 @@ mod tests {
             "title": "\u{1b}[2Jclear",
             "restored": { "annotation": "\u{1b}]0;evil\u{7}note" },
         });
-        let out = undone(&ctx, &result, &result, Timestamp::now());
+        let out = undone(&ctx, &result, &result, &Titles::new(), Timestamp::now());
         assert!(
             !out.contains('\u{1b}'),
             "escape byte reached the terminal: {out:?}"

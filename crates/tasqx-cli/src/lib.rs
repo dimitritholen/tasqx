@@ -1816,16 +1816,20 @@ mod tests {
             "already_running": false,
             "auto_stopped": [{ "id": "u", "short_id": 49, "tracked": "PT2H23M" }],
         });
-        let text = picked_summary(&plain_ctx(), &started);
+        let text = picked_summary(&plain_ctx(), &started, &started, &render::Titles::new());
         assert_eq!(text.matches("#48").count(), 1, "{text}");
-        assert_eq!(text.matches("Stopped").count(), 1, "{text}");
+        assert_eq!(text.matches("stopped").count(), 1, "{text}");
         assert!(text.contains("Renew the TLS certificate"), "{text}");
-        // #205's shape, kept: the stopped task is named, with its time, ABOVE
-        // the task that was started.
+        // #205's facts, kept: the displaced task is named, with its time. Its
+        // POSITION moved under D126 (e) — the task the command named is the
+        // first line under the prompt, and what else moved follows — so the
+        // stop line now prints BELOW the card instead of above it. D124 made
+        // this summary `start`'s own echo; it orders itself the way `start`
+        // does, or the two drift apart again.
         assert!(text.contains("#49") && text.contains("2h"), "{text}");
         assert!(
-            text.find("Stopped").unwrap() < text.find("started").unwrap(),
-            "the stop line must print ABOVE the start line: {text}"
+            text.find("started").unwrap() < text.find("stopped").unwrap(),
+            "the displaced task must print BELOW the card (D126 e): {text}"
         );
     }
 
@@ -1836,8 +1840,8 @@ mod tests {
             "id": "uuid", "short_id": 128, "title": "Next task",
             "interval_started": "2026-08-03T10:00:00Z", "auto_stopped": [],
         });
-        let text = picked_summary(&plain_ctx(), &started);
-        assert!(!text.contains("Stopped"), "{text}");
+        let text = picked_summary(&plain_ctx(), &started, &started, &render::Titles::new());
+        assert!(!text.contains("stopped"), "{text}");
         assert!(
             text.contains("#128") && text.contains("Next task"),
             "{text}"

@@ -641,12 +641,14 @@ fn a_closed_interval_is_spelled_stopped_after_everywhere() {
     assert!(line2.starts_with(&want), "want {want:?}: {stop}");
     assert!(!stop.contains("interval"), "{stop}");
 
-    // undo of a stop: `*` says it runs again, and since when. What comes back
-    // is the two-hour interval, not a total, so it is not `tracked`. On a
-    // store whose newest event is that stop (see `undo_store`).
+    // undo of a stop: `*` says it runs again, and how long it has been running.
+    // Elapsed, not an instant: `due_cell`'s clock is UTC and reads as the wall
+    // clock it is not (D126 l). What comes back is the two-hour interval, not
+    // a total, so it is not `tracked`. On a store whose newest event is that
+    // stop (see `undo_store`).
     let undo = undo_store("stopped-after-undo", "stop", "Write the report").plain(&["undo"]);
     let line2 = undo.lines().nth(1).unwrap();
-    assert!(line2.starts_with("* undid stop   since "), "{undo}");
+    assert!(line2.starts_with("* undid stop   for "), "{undo}");
     assert!(!line2.contains("tracked"), "{undo}");
     assert!(
         !undo.contains("running again"),
