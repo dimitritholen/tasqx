@@ -1171,32 +1171,32 @@ fn page_commands() -> String {
     ));
     s.push_str(&snippet(
         "tasqx agenda",
-        "through 2026-08-17 (+14d)   5 tasks · 1 overdue\n\
+        "through 2026-09-26 (+14d)   5 tasks · 1 overdue\n\
          \n\
          \x20 ID          URG  TASK                             PROJECT     WHEN            TAGS\n\
          Overdue\n\
-         \x20  3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  +bug\n\
+         \x20  3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-09-07  +bug\n\
          \n\
-         Today · Mon 2026-08-03\n\
-         \x20  2  - ▄▄▃▁ 12.0  Write API conformance tests      work.tasqx  due 12:00       +api\n\
-         \x20  1  H ▄▄▄▄ 18.0  Ship the v1 JSON API freeze      work.tasqx  due 17:00       +api +release\n\
+         Today · Sat 2026-09-12\n\
+         \x20  2  - ▄▄▄▄ 12.0  Write API conformance tests      work.tasqx  due 10:00       +api\n\
+         \x20  1  H ▄▄▄▄ 17.9  Ship the v1 JSON API freeze      work.tasqx  due 15:00       +api +release\n\
          \n\
-         Tomorrow · Tue 2026-08-04\n\
+         Tomorrow · Sun 2026-09-13\n\
          \x20  4  - ▁▁▁▁  0.0  Quarterly deps audit             work.tasqx  sched\n\
          \n\
-         Thu 2026-08-06\n\
-         \x20  5  - ▄▄▂▁ 10.1  Publish the API docs             work.tasqx\n\
+         Tue 2026-09-15\n\
+         \x20  5  - ▄▄▄▁  9.9  Publish the API docs             work.tasqx\n\
          \n\
          1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them\n\
          1 further out — `tasqx agenda --days 90` reaches the furthest",
     ));
     s.push_str(&p(
-        "That block was captured on Monday 3 August 2026, which is what <code>Today</code> names \
+        "That block was replayed on Saturday 12 September 2026, which is what <code>Today</code> names \
          there; every heading carries its date as well for exactly that reason. A task is placed \
          on the <strong>earlier</strong> of its <code>due</code> and its \
          <code>scheduled</code> — the first day it asks anything of you — and the <code>WHEN</code> \
          column says which of the two that was. #4 above is there because it is <em>scheduled</em> \
-         for Tuesday and has no deadline at all; a view built on <code>due</code> alone would not \
+         for Sunday and has no deadline at all; a view built on <code>due</code> alone would not \
          have shown it, and one built on <code>scheduled</code> alone would have lost #3. A cell \
          shows a time only when the task carries one: a date typed without a time is stored as \
          midnight, so <code>due</code> on its own means exactly what the store knows.",
@@ -4443,6 +4443,54 @@ mod tests {
                 key.help
             );
         }
+    }
+
+    /// Every urgency gauge in a sample agrees with the renderer at the figure
+    /// printed beside it. The agenda block drew `▄▄▃▁ 12.0` from before D119,
+    /// where the bar fills at `urgency::DUE_WEIGHT` (12) — a sample nobody had
+    /// replayed, showing a screen this build cannot produce (#562).
+    #[test]
+    fn every_gauge_in_a_sample_matches_the_renderer() {
+        let doc = generate();
+        let cells: Vec<char> = vec!['▄', '▁', '▂', '▃'];
+        let chars: Vec<char> = doc.chars().collect();
+        let mut wrong: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i + 4 < chars.len() {
+            if !cells.contains(&chars[i]) {
+                i += 1;
+                continue;
+            }
+            let gauge: String = chars[i..i + 4].iter().collect();
+            if !gauge.chars().all(|c| cells.contains(&c)) {
+                i += 1;
+                continue;
+            }
+            // The figure beside it: spaces, then digits with one decimal.
+            let rest: String = chars[i + 4..].iter().take(12).collect();
+            let figure: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            if let Ok(urgency) = figure.parse::<f64>() {
+                let (bar, track) =
+                    crate::render::urgency_meter(crate::render::urgency_scale(urgency));
+                let expected = format!("{bar}{track}");
+                if expected != gauge {
+                    wrong.push(format!(
+                        "{gauge} beside {figure} (renderer draws {expected})"
+                    ));
+                }
+            }
+            i += 4;
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} gauge(s) disagree with the renderer:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
     }
 
     /// The page must be substantial — a guard against a refactor quietly rendering
