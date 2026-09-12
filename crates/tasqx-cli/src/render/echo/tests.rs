@@ -1125,6 +1125,57 @@ fn plain_undo_of_an_untag_says_which_tag_came_back() {
     );
 }
 
+/// A zero is not a fact (D126 c), on the two echoes that measure a span
+/// rather than a score. Review round 4: the rule was guarded on `done` and
+/// `cancel` only, so a re-`start` inside the same second printed
+/// `already running   for 0s`, and an undone stop of a just-closed interval
+/// `undid stop   for 0s` — reachable only in the first second, and a zero
+/// either way. `already running` on its own says everything true of it.
+#[test]
+fn a_zero_span_is_not_a_fact_either() {
+    let t = task();
+    let n: Timestamp = "2026-09-12T09:00:00Z".parse().expect("a fixed now");
+    let same_second =
+        json!({ "already_running": true, "interval_started": "2026-09-12T09:00:00Z" });
+    let restart = started(&unicode(120), &same_second, &t, &Titles::new(), n);
+    let line = restart.lines().nth(1).expect("a second line");
+    assert!(line.contains("already running"), "{restart}");
+    assert!(!line.contains("for 0s"), "a zero span printed: {restart}");
+
+    let undo = undone(
+        &unicode(120),
+        &json!({
+            "reverted": { "event": "e1", "op": "stop", "ts": "t" },
+            "short_id": 50,
+            "restored": { "interval_started": "2026-09-12T09:00:00Z" },
+        }),
+        &t,
+        &Titles::new(),
+        n,
+    );
+    let line = undo.lines().nth(1).expect("a second line");
+    assert!(line.contains("undid stop"), "{undo}");
+    assert!(!line.contains("for 0s"), "a zero span printed: {undo}");
+
+    // One second later it is a fact again, so the rule is about the zero and
+    // not about dropping the span.
+    let later = started(
+        &unicode(120),
+        &same_second,
+        &t,
+        &Titles::new(),
+        "2026-09-12T09:00:01Z".parse().expect("a second later"),
+    );
+    assert!(
+        later
+            .lines()
+            .nth(1)
+            .expect("a second line")
+            .contains("for 1s"),
+        "{later}"
+    );
+}
+
 /// A zero is not a fact (D126 c): a fresh task with no priority and no
 /// deadline has urgency 0, and every echo drew `- ▁▁▁▁ 0.0` for it.
 #[test]

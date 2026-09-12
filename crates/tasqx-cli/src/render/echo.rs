@@ -152,13 +152,19 @@ fn exact_duration(ctx: &Ctx, iso: &str) -> String {
 /// read `since today 18:21` only by luck of the offset, and `16:21` in fact.
 /// Elapsed time has no timezone to be wrong about, and it is the answer to the
 /// question a re-run `start` raises (D126 l).
-fn running_for(ctx: &Ctx, since: Timestamp, now: Timestamp) -> Fact {
+fn running_for(ctx: &Ctx, since: Timestamp, now: Timestamp) -> Option<Fact> {
     let secs = (now.as_second() - since.as_second()).max(0);
+    // A zero prints as nothing (D126 c): inside the first second `for 0s` is
+    // the zero that rule is about, and `already running` on its own already
+    // says everything true of a timer that has just started.
+    if secs == 0 {
+        return None;
+    }
     let value = dur_compact(secs);
-    Fact::new(
+    Some(Fact::new(
         format!("for {value}"),
         format!("{} {value}", quiet(ctx, "card.label", "for")),
-    )
+    ))
 }
 
 /// Which of `list`'s facts a card draws after the change. A fact the change
@@ -800,7 +806,7 @@ pub fn started(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Ti
         if let Some(since) =
             field_ts(result, "interval_started").or_else(|| field_ts(task, "active_since"))
         {
-            c.lead.push(running_for(ctx, since, now));
+            c.lead.extend(running_for(ctx, since, now));
         }
         c
     } else {
@@ -1339,7 +1345,7 @@ pub fn undone(ctx: &Ctx, result: &Value, task: &Value, titles: &Titles, now: Tim
             // interval put back on the clock, not the task's total, so it is
             // not printed as `tracked`.
             if let Some(since) = field_ts(&restored, "interval_started") {
-                card.lead.push(running_for(ctx, since, now));
+                card.lead.extend(running_for(ctx, since, now));
             }
         }
         "tag.remove" => {
