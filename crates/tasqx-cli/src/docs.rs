@@ -4445,49 +4445,16 @@ mod tests {
         }
     }
 
-    /// Every urgency gauge in a sample agrees with the renderer at the figure
-    /// printed beside it. The agenda block drew `▄▄▃▁ 12.0` from before D119,
-    /// where the bar fills at `urgency::DUE_WEIGHT` (12) — a sample nobody had
-    /// replayed, showing a screen this build cannot produce (#562).
+    /// Every urgency gauge in a sample agrees with the renderer at the
+    /// figure printed beside it. The agenda block drew `▄▄▃▁ 12.0` from before
+    /// D119, where the bar fills at `urgency::DUE_WEIGHT` (12) — a sample
+    /// nobody had replayed, showing a screen this build cannot produce (#562).
     #[test]
     fn every_gauge_in_a_sample_matches_the_renderer() {
-        let doc = generate();
-        let cells: Vec<char> = vec!['▄', '▁', '▂', '▃'];
-        let chars: Vec<char> = doc.chars().collect();
-        let mut wrong: Vec<String> = Vec::new();
-        let mut i = 0;
-        while i + 4 < chars.len() {
-            if !cells.contains(&chars[i]) {
-                i += 1;
-                continue;
-            }
-            let gauge: String = chars[i..i + 4].iter().collect();
-            if !gauge.chars().all(|c| cells.contains(&c)) {
-                i += 1;
-                continue;
-            }
-            // The figure beside it: spaces, then digits with one decimal.
-            let rest: String = chars[i + 4..].iter().take(12).collect();
-            let figure: String = rest
-                .trim_start()
-                .chars()
-                .take_while(|c| c.is_ascii_digit() || *c == '.')
-                .collect();
-            if let Ok(urgency) = figure.parse::<f64>() {
-                let (bar, track) =
-                    crate::render::urgency_meter(crate::render::urgency_scale(urgency));
-                let expected = format!("{bar}{track}");
-                if expected != gauge {
-                    wrong.push(format!(
-                        "{gauge} beside {figure} (renderer draws {expected})"
-                    ));
-                }
-            }
-            i += 4;
-        }
+        let wrong = crate::render::gauges_disagreeing(&generate());
         assert!(
             wrong.is_empty(),
-            "{} gauge(s) disagree with the renderer:\n{}",
+            "{} gauge(s) in the guide disagree with the renderer:\n{}",
             wrong.len(),
             wrong.join("\n")
         );
