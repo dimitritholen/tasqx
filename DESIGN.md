@@ -3047,6 +3047,19 @@ the commit this work cut from.
 - **`*` still means two things across the dashboard**, as (d) records: a running task in
   TASKS and the default project in PROJECTS. They are two panels and two columns, and the
   alternative is a new glyph for a mark `git branch` already taught.
+- **A term longer than the terminal overflows the miss note.** `prose` wraps at words and
+  (a) never cuts the expression, so a 120-character token at 40 columns draws a 122-cell
+  line. Cutting it would defeat the note's whole purpose, which is to show WHICH terms
+  were required; the row overflows instead, as `columns::fit` lets a row overflow past its
+  floors.
+- **`add`'s echo runs 49 cells at 40 columns.** It is byte-identical on main, so it is not
+  this ruling's doing and is not fixed here; family C (#348) owns the write echoes.
+- **(c)'s refit reaches two screens outside this family.** `list` and `config list` get
+  wider titles at 40 and 60 columns, where a dropped column used to leave its cells unused,
+  and `list`'s store-health notes and the onboarding hint now wrap through `render::prose`
+  with every other note. Both were checked against main byte for byte at 40–140, plain and
+  coloured, and both are improvements rather than changes of shape — but they are changes,
+  and they are this entry's.
 
 **Where:** `crates/tasqx-cli/src/render.rs` (`memory_hits`, `lead_floor`, `memory_table`,
 `CurrentRail`, `keep_ranked`, `fit_facts`, `summary_line`, `prose`), `columns.rs`

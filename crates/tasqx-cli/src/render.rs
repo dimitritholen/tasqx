@@ -3670,9 +3670,12 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
 /// drawn at all when no row carries it. `projects` spent a seven-cell DEFAULT
 /// column on one `*`, and `theme list` nine cells of `← active` on one row.
 ///
-/// `*` is also the running marker in `list` without Unicode. The two never
-/// meet: no screen that draws this rail draws a task, and `list` has no row
-/// that is "the one in effect".
+/// `*` is also the running marker in `list` without Unicode, and the dashboard
+/// draws both at once: `*` for a running task in TASKS, `*` for the default
+/// project in PROJECTS. They are two panels and two columns, never the same
+/// column of one row, which is the collision this rail exists to prevent. An
+/// earlier cut of the ruling justified the glyph with "no screen draws both",
+/// which is false; `DESIGN.md` D125(d) carries the true reason.
 pub(crate) struct CurrentRail {
     drawn: bool,
 }
@@ -6270,6 +6273,41 @@ mod tests {
             flat.contains(expr),
             "the expression is not on the screen whole: {out}"
         );
+    }
+
+    /// D125(a) rests on the summary's label being CUT: that is why the note
+    /// carrying the expression whole is its only complete copy rather than the
+    /// summary said twice (rule 11). Nothing failed if `summary_line` stopped
+    /// truncating, so this pins the half the other guard does not.
+    #[test]
+    fn a_search_summary_keeps_its_label_cut() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(60);
+        let expr = "\"how\" \"do\" \"i\" \"cut\" \"a\" \"release\" \"for\" \"the\" \"sdk\"";
+        let out = memory_hits(
+            &ctx,
+            &json!({ "count": 0, "total": 0, "hits": [], "matched": expr }),
+            "how do i cut a release for the sdk",
+            false,
+        );
+        let summary = out.lines().next().expect("a summary line");
+        assert!(
+            !summary.contains(expr),
+            "the label is not cut, so the note repeats it (rule 11): {summary:?}"
+        );
+        assert!(
+            summary.contains("0 hits"),
+            "the count left the summary: {summary:?}"
+        );
+        // ...and the whole of it is still on the screen, in the note.
+        let rest = out
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(rest.contains(expr), "no complete copy anywhere: {out}");
     }
 
     /// Round 2 review of D125: the advice fits the search that was run. Telling
