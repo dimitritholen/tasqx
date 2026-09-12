@@ -405,7 +405,21 @@ impl Engine {
         // predicate's — the one placeholder whose position is not fixed.
         let limit_ph = format!("?{}", binds.len() + 1);
         binds.push(SqlValue::Integer(limit));
-        // events.id is UUIDv7 (time-ordered), so ORDER BY id DESC = newest first.
+        // `ORDER BY id DESC` is newest-first for every event this engine minted,
+        // because `id` is UUIDv7 and time-ordered. That is a fact about the
+        // WRITER, not a guarantee about the table: `store.import` replays an
+        // event under the id its document carried, so an imported row can sort
+        // anywhere at all, and one above `f` sorts above everything (D129, #422).
+        //
+        // Kept by id deliberately. This is a publishing surface — an audit trail
+        // read newest-first, which survives a foreign row landing out of place —
+        // and its `from` bound is an id RANGE, which D59 ruled after `ts` proved
+        // uncomparable in this store. Reordering here means replacing that bound
+        // too, and that is D59's ruling to reopen rather than this comment's.
+        // `event.revert` makes the opposite trade for the opposite reason: it
+        // MUTATES on the row it picks, so one wrong answer changes the store,
+        // and it orders by `rowid`, the store's own append order — see
+        // `engine/undo.rs`, whose header sets the two side by side.
         let sql = format!(
             "SELECT id, entity, entity_id, op, payload, ts, actor FROM events \
              {where_sql} ORDER BY id DESC LIMIT {limit_ph}"
