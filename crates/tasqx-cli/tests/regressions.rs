@@ -3049,7 +3049,7 @@ fn memory_list_off_a_terminal_is_one_line_per_doc() {
     assert!(!text.contains("---"), "frontmatter leaked: {text}");
 }
 
-/// D123: `memory search` prints one record per hit: the title, where it
+/// D125: `memory search` prints one record per hit: the title, where it
 /// came from and the handle that opens it on one line, the words that matched
 /// under it, cut to the terminal.
 ///
@@ -3148,15 +3148,23 @@ fn memory_search_off_a_terminal_is_a_record_per_hit() {
         "the flag that shows every hit is not named: {text}"
     );
 
-    // A miss still names the expression that produced it (D69), once: the
-    // summary carries it, so the hint does not say it again (rule 11).
+    // A miss names the expression that produced it (D69). The summary's label
+    // is cut to half the width, so the note carries it WHOLE: round 1 asserted
+    // exactly one copy, which this round's review overturned (D125(a)).
     let out = run(&["memory", "search", "zebra"]);
     let text = String::from_utf8(out.stdout).expect("UTF-8");
     assert!(
         text.contains("0 hits") && text.contains("every term was required"),
         "{text}"
     );
-    assert_eq!(text.matches("\"zebra\"").count(), 1, "{text}");
+    let note = text
+        .lines()
+        .find(|l| l.contains("every term was required"))
+        .unwrap_or_else(|| panic!("no miss note: {text}"));
+    assert!(
+        note.contains("\"zebra\""),
+        "the note does not carry the expression: {note:?}"
+    );
 }
 
 /// #346: `theme list` is a table. The active theme is marked in a rail, the
@@ -3208,6 +3216,37 @@ fn theme_list_marks_the_active_theme_in_a_rail() {
     assert!(
         text.contains(&*dir.join("themes").to_string_lossy()),
         "the user theme directory is not named: {text}"
+    );
+}
+
+/// Round 2 review of D125: `theme show` draws no COLOUR column where no role
+/// has a colour. In `mono` it was seventeen rows of `-` (D51's rule, one
+/// screen over: a column no row fills is not drawn).
+#[test]
+fn theme_show_drops_the_colour_column_when_no_role_has_one() {
+    let dir = fresh_config_dir("theme-show-mono-colour");
+    let show = |theme: &str| {
+        let out = bin("theme-show-mono-colour", &dir)
+            .env("COLUMNS", "100")
+            .args(["theme", "show", theme])
+            .output()
+            .expect("run tasqx");
+        String::from_utf8(out.stdout).expect("UTF-8")
+    };
+    let mono = show("mono");
+    assert!(!mono.contains("COLOUR"), "a column of dashes: {mono}");
+    assert!(
+        !mono.lines().any(|l| l.contains("sample  -")),
+        "a column of dashes: {mono}"
+    );
+    assert!(
+        mono.contains("bold"),
+        "the emphasis column went too: {mono}"
+    );
+    let nord = show("nord");
+    assert!(
+        nord.contains("COLOUR") && nord.contains("#88c0d0"),
+        "{nord}"
     );
 }
 

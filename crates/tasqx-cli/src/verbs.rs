@@ -796,7 +796,7 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
                 params["raw"] = json!(true);
             }
             let result = be.call("memory.search", &params)?;
-            let text = render::memory_hits(ctx, &result, &query.join(" "));
+            let text = render::memory_hits(ctx, &result, &query.join(" "), *raw);
             Ok((result, text))
         }
         MemoryAction::Show { id } => {
