@@ -3767,6 +3767,44 @@ pub(crate) fn truncate(s: &str, max: usize, unicode: bool) -> String {
     format!("{head}{ellipsis}")
 }
 
+/// Gauges in `text` whose glyphs disagree with what this renderer draws at the
+/// figure printed beside them, as `"<drawn> beside <figure> (renderer draws
+/// <expected>)"`. One scan defines what a stale gauge is, for the guard over
+/// the HTML guide's samples and the one over the manual's alike: a sample is
+/// a picture of this screen, and a picture that stopped matching is a screen
+/// this build cannot produce (#562).
+#[cfg(test)]
+pub(crate) fn gauges_disagreeing(text: &str) -> Vec<String> {
+    const CELLS: [char; 4] = ['▄', '▁', '▂', '▃'];
+    let chars: Vec<char> = text.chars().collect();
+    let mut wrong = Vec::new();
+    let mut i = 0;
+    while i + 4 < chars.len() {
+        let gauge: String = chars[i..i + 4].iter().collect();
+        if !gauge.chars().all(|c| CELLS.contains(&c)) {
+            i += 1;
+            continue;
+        }
+        let after: String = chars[i + 4..].iter().take(12).collect();
+        let figure: String = after
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if let Ok(urgency) = figure.parse::<f64>() {
+            let (bar, track) = urgency_meter(urgency_scale(urgency));
+            let expected = format!("{bar}{track}");
+            if expected != gauge {
+                wrong.push(format!(
+                    "{gauge} beside {figure} (renderer draws {expected})"
+                ));
+            }
+        }
+        i += 4;
+    }
+    wrong
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

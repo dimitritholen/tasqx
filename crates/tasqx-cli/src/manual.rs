@@ -645,8 +645,9 @@ line of its own under the card:
   ▌ done today   tracked 5m   work   due Mon   +launch
     #2  unblocked · Rate-limit the search endpoint
 
-Through a pipe the same words print without the glyphs or the fitting,
-and `--json` is unchanged."
+Through a pipe the same words print, unfitted: the rail spells itself
+`*` for running and `B` for blocked, and the gauge and the `▌` go.
+`--json` is unchanged."
         }
 
         Topic::Dates => {
@@ -736,9 +737,12 @@ that form on both sides:
 
         Topic::Screens => {
             "\
-Four commands open a screen instead of printing a table. Each needs a
-terminal on both ends; through a pipe every one of them says so rather
-than writing escape codes into your shell.
+Four commands open a screen instead of printing a table, and each
+answers a pipe in its own way. `tasqx pick` and `tasqx dashboard`
+refuse one outright rather than write escape codes into it. `tasqx
+memory list` prints its one-line-per-doc table instead, and `tasqx
+watch` prints each update as it arrives rather than repainting a
+screen — it needs a running daemon either way.
 
   tasqx pick\tbrowse tasks, search them, read one, start one
   tasqx dashboard\tthe overview, and what a bare `tasqx` opens
@@ -1265,7 +1269,16 @@ mod tests {
 
     /// House style rule 2, over the whole manual: nothing runs past the
     /// terminal, at any width from `Ctx::MIN_COLS` to `Ctx::MAX_COLS`, with
-    /// two exemptions. What the renderer prints verbatim may overflow: an
+    /// two exemptions.
+    ///
+    /// The `kept` branch is unreachable while the renderer is right: `table`
+    /// stacks precisely when a kept code line fits under its term and not
+    /// beside it, so every overflow that survives is one no layout could have
+    /// held. The branch is there for the drift that drops that rule, which is
+    /// how it bit when `kept_fits_only_stacked` was added — twenty injections
+    /// against correct code never reddened it, and that is the guard working,
+    /// not a hole in it.
+    /// What the renderer prints verbatim may overflow: an
     /// example command, a topic's code block or captured screen, a usage piece
     /// that cannot break, a line that is one whole inline code span. What the
     /// renderer PLACES may not: a row's kept continuation line overflows only
@@ -1281,19 +1294,16 @@ mod tests {
         for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
             for (name, page) in every_page(&at(cols)) {
                 for line in page.lines() {
-                    // Copied, and wider than the line even at the deepest
-                    // indent a copied line is given (a stacked table's):
-                    // then no layout could hold it, and it may overflow. A
-                    // copied line left fifteen cells in where stacking would
-                    // have fitted it is a layout fault, not an exemption.
                     // What the renderer prints VERBATIM — an example, a
                     // topic's code block or captured screen, a usage piece
                     // that cannot break, a whole inline code span — may run
-                    // past the terminal: no layout choice of ours places it.
-                    // A line the renderer DOES place, a row's kept
-                    // continuation, may only overflow where even the stacked
-                    // indent could not hold it; left in a definition column it
-                    // ran past a terminal that had room for it.
+                    // past the terminal at any width: no layout choice of
+                    // ours placed it, and a captured screen cannot be
+                    // re-laid out at the reader's width at all.
+                    //
+                    // A line the renderer PLACES — a row's kept continuation
+                    // — may overflow only where even the stacked indent could
+                    // not hold it.
                     let verbatim =
                         copied.iter().any(|c| c == line.trim()) || a_whole_code_span(line);
                     let kept = kept_row_lines().iter().any(|c| c == line.trim());
@@ -1691,6 +1701,26 @@ mod tests {
         }
     }
 
+    /// The manual draws gauges of its own — in the captured `pick` screen and
+    /// in the write echoes — and they must agree with the renderer at the
+    /// figure beside them, exactly as the HTML guide's samples must (#562).
+    /// The guide's guard walks `generate()` and never reached these.
+    #[test]
+    fn every_gauge_in_the_manual_matches_the_renderer() {
+        let mut wrong = Vec::new();
+        for (name, page) in every_page(&at(100)) {
+            for bad in render::gauges_disagreeing(&page) {
+                wrong.push(format!("{name}: {bad}"));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} gauge(s) in the manual disagree with the renderer:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+    }
+
     /// Every `term\tdefinition` line of every topic renders as a table row,
     /// at every width: the term two cells in, then its definition beside it
     /// or, where the terminal is too narrow for two columns, under it.
@@ -1741,6 +1771,41 @@ mod tests {
     /// the command page, so a reader of the contents could not find the
     /// browser at all.
     #[test]
+    fn the_screens_topic_says_which_screens_refuse_a_pipe_and_which_degrade() {
+        let page = render(&plain(), Some("screens")).expect("`tasqx manual screens` opens");
+        // Verified against the binary: `pick | cat` and `dashboard | cat`
+        // refuse with exit 2 (`help.rs` drives both), while `memory list`
+        // prints its table (D121: "a one-line-per-doc table everywhere else")
+        // and `watch` has a non-tty branch that skips the screen.
+        let refusing = page
+            .lines()
+            .position(|l| l.contains("refuse") || l.contains("refuses"))
+            .unwrap_or_else(|| panic!("the page never says which screens refuse a pipe:\n{page}"));
+        let refusal_para: String = page
+            .lines()
+            .skip(refusing.saturating_sub(2))
+            .take(6)
+            .collect();
+        for verb in ["pick", "dashboard"] {
+            assert!(
+                refusal_para.contains(verb),
+                "{verb} is not named among the screens that refuse a pipe:\n{page}"
+            );
+        }
+        let lower = page.to_lowercase();
+        assert!(
+            !lower.contains("every one of them says so"),
+            "the page still claims every screen refuses a pipe:\n{page}"
+        );
+        for plain_one in ["memory list", "watch"] {
+            assert!(
+                page.contains(plain_one),
+                "{plain_one} is not named:\n{page}"
+            );
+        }
+    }
+
+    #[test]
     fn the_screens_topic_names_every_screen_you_can_open() {
         assert!(
             Topic::ALL.iter().any(|t| t.slug() == "screens"),
@@ -1784,15 +1849,35 @@ mod tests {
     /// Capturing says what a write prints: the card, and that bold names what
     /// the write changed. Eighteen verbs answer this way and no topic said so.
     #[test]
+    fn capturing_says_what_a_pipe_keeps_of_the_card() {
+        let page = render(&plain(), Some("capturing")).unwrap();
+        // Verified: piped, `tasqx start 1` prints `* started   H 16.7  …` —
+        // the rail spells itself in ASCII (rule 4) and only the gauge and the
+        // `▌` go.
+        assert!(
+            page.contains("`*`") || page.contains("spells"),
+            "the page must say the rail survives a pipe as ASCII:\n{page}"
+        );
+        assert!(
+            !page.contains("without the glyphs or the fitting"),
+            "the page still claims a pipe drops every glyph:\n{page}"
+        );
+    }
+
+    #[test]
     fn capturing_says_what_a_write_prints() {
         let page = render(&plain(), Some("capturing")).unwrap();
         assert!(
             page.contains("started") && page.contains("#1"),
             "no write echo is shown:\n{page}"
         );
+        // The SENTENCE, not the word: "bold" survives later in the
+        // paragraph, so a guard on the word alone stayed green when the
+        // sentence that defines it was reworded away.
         assert!(
-            page.to_lowercase().contains("bold"),
-            "the page must say what bold means on a write echo:\n{page}"
+            page.contains("Bold is the write's"),
+            "the page must say, in its own sentence, what bold means on a \
+             write echo:\n{page}"
         );
     }
 
