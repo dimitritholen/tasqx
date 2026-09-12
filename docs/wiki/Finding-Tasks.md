@@ -66,12 +66,21 @@ from it. `why` shows the arithmetic instead of asking you to trust it:
 
 ```console
 $ tasqx why 42
-Why #42 has urgency 11.4
-  priority         6.00
-  due_proximity    5.40
-  age              0.00
-  = total          11.4
+#42  Ship the release notes
+
+  priority   H                 6.0
+  deadline   due Fri           7.5
+  age        created today     0.0
+  urgency                     13.5
 ```
+
+Each row names the input in the words the rest of the terminal uses — the
+priority letter, how the deadline reads on a list, how old the task is — and
+the last row is the score every list sorts by.
+
+Urgency is recomputed on every read, so the deadline row — and the total it
+feeds — climb as the due date approaches. The scores in any capture, including
+this one, are an illustration; the rows are the contract.
 
 If tasqx ranks something surprisingly high or low, this is where the answer
 is.

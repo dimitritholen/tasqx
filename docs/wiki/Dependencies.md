@@ -19,8 +19,9 @@ moment task 1 is done or cancelled — and `tasqx done 1` names it in the
 answer.
 
 Blocked work isn't invisible, though: the
-[dashboard](Dashboard-and-Live-View.md#tasqx-dashboard) has a BLOCKED panel
-precisely because the default filter hides these tasks everywhere else.
+[dashboard](Dashboard-and-Live-View.md#tasqx-dashboard) keeps it on screen —
+its TASKS panel holds blocked rows alongside the rest and its header counts
+them — precisely because the default filter hides these tasks everywhere else.
 
 ## tasqx undep
 

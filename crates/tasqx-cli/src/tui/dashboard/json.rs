@@ -46,6 +46,25 @@ use super::model::{Dashboard, PanelId, Task};
 /// `tasqx list`) rather than assuming the list it got was complete.
 const ROW_CAP: usize = 20;
 
+/// The panels this document writes a payload for — four of the screen's six.
+///
+/// `pulse` and `effort` have no `want(…)` block in [`document`]: both are
+/// derived in the screen's own model for drawing, and neither has ever been
+/// serialised. So `--panels pulse,effort` is a valid request that answers with
+/// the envelope and nothing else.
+///
+/// **What this guarantees**: asked for a set of panels, [`document`] writes a
+/// key for each requested panel named here and for no other panel — and it
+/// writes no non-envelope key that is not a panel at all. That is asserted
+/// over more than one window, because the guarantee is unconditional and a
+/// single-fixture test cannot see a key emitted only for some `days`.
+///
+/// Public because prose counts these. The guide's `--json` sentence and the
+/// wiki's dashboard page both state how many panels the document carries, and
+/// that number is NOT `PANEL_NAMES.len()` — a sentence pinned to the screen's
+/// roster was wrong in a way that looked derived.
+pub const PAYLOAD_PANELS: [&str; 4] = ["tasks", "projects", "burndown", "tokens"];
+
 /// The panel a `PanelId` names, in the document's vocabulary.
 ///
 /// One table, on the enum: this used to be a second copy, and a second copy of
@@ -263,15 +282,97 @@ mod tests {
         )
     }
 
+    /// Every panel, derived from the roster rather than retyped.
+    ///
+    /// A hand-written vec here was invisible to the very drift these tests
+    /// exist to catch: a `want(…)` block for a panel this list happened to
+    /// omit would never be exercised, so its payload key could never be seen.
     fn all_panels() -> Vec<PanelId> {
-        vec![
-            PanelId::Tasks,
-            PanelId::Projects,
-            PanelId::Burndown,
-            PanelId::Pulse,
-            PanelId::Effort,
-            PanelId::Tokens,
-        ]
+        crate::tui::dashboard::model::PANEL_NAMES
+            .iter()
+            .map(|n| {
+                PanelId::from_slug(n)
+                    .unwrap_or_else(|| panic!("`{n}` is in PANEL_NAMES but resolves to no PanelId"))
+            })
+            .collect()
+    }
+
+    /// Windows worth exercising: the default, and one that is not.
+    ///
+    /// Both payload tests ran only at `days = 7`, so a key written under
+    /// `if days != 7` shipped with all 888 lib tests green — every non-default
+    /// window carrying an undeclared payload nobody could see.
+    const WINDOWS: [usize; 3] = [7, 1, 30];
+
+    /// The keys [`document`] writes whatever was asked for.
+    ///
+    /// Hoisted so the two tests below share ONE definition of "a panel
+    /// payload": anything that is not envelope. Spelled per-test, the narrower
+    /// one asked only whether the four DECLARED names were absent, and a drift
+    /// that wrote an undeclared `pulse` key — the exact drift the pair exists
+    /// to catch — went straight through it.
+    const ENVELOPE: [&str; 5] = ["dashboard", "today", "window_days", "panels", "status"];
+
+    /// Every non-envelope key the document carries, sorted.
+    fn payload_keys(doc: &Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = doc
+            .as_object()
+            .expect("the document is an object")
+            .keys()
+            .map(String::as_str)
+            .filter(|k| !ENVELOPE.contains(k))
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// [`PAYLOAD_PANELS`] must be exactly the panel keys [`document`] writes.
+    ///
+    /// Asked for all six panels, the document carries four. The guide and the
+    /// wiki both state that count, and both used to state the screen's
+    /// instead — a number that read as derived because it was, from the wrong
+    /// table. This binds the declared list to the emitted one, so adding a
+    /// `want(…)` block without naming it here reddens.
+    #[test]
+    fn the_payload_panels_are_the_keys_the_document_writes() {
+        let mut declared = PAYLOAD_PANELS.to_vec();
+        declared.sort_unstable();
+
+        for days in WINDOWS {
+            let doc = document(&dashboard_with(3), days, &all_panels());
+            let written = payload_keys(&doc);
+            assert_eq!(
+                written, declared,
+                "at days={days} `document` writes {written:?} but \
+                 PAYLOAD_PANELS declares {declared:?} — the prose that counts \
+                 these is generated from the const, so the two may not disagree"
+            );
+        }
+    }
+
+    /// A panel with no payload block is still a legal request, and answers
+    /// with the envelope alone.
+    ///
+    /// Verified against the binary: `tasqx --json dashboard --panels
+    /// pulse,effort` exits 0 and carries no panel key. The wiki and the guide
+    /// both say so now, so it is worth a test rather than a memory.
+    #[test]
+    fn asking_only_for_screen_only_panels_answers_no_payload() {
+        for days in WINDOWS {
+            let doc = document(&dashboard_with(3), days, &[PanelId::Pulse, PanelId::Effort]);
+            let written = payload_keys(&doc);
+            assert!(
+                written.is_empty(),
+                "at days={days} `--panels pulse,effort` wrote {written:?}; \
+                 neither panel has a payload block, so the answer is the \
+                 envelope and nothing else"
+            );
+            assert_eq!(
+                doc["panels"],
+                json!(["pulse", "effort"]),
+                "the panels array must still name what was asked for"
+            );
+        }
     }
 
     /// #152: `recent` used to return every task the store had, with no count

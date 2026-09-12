@@ -737,15 +737,16 @@ that form on both sides:
 
         Topic::Screens => {
             "\
-Four commands open a screen instead of printing a table, and each
-answers a pipe in its own way. `tasqx pick` and `tasqx dashboard`
-refuse one outright rather than write escape codes into it. `tasqx
-memory list` prints its one-line-per-doc table instead, and `tasqx
-watch` prints each update as it arrives rather than repainting a
-screen — it needs a running daemon either way.
+Five commands open a screen instead of printing a table, and each
+answers a pipe in its own way. `tasqx pick`, `tasqx dashboard` and
+`tasqx config edit` refuse one outright rather than write escape codes
+into it. `tasqx memory list` prints its one-line-per-doc table instead,
+and `tasqx watch` prints each update as it arrives rather than
+repainting a screen — it needs a running daemon either way.
 
   tasqx pick\tbrowse tasks, search them, read one, start one
   tasqx dashboard\tthe overview, and what a bare `tasqx` opens
+  tasqx config edit\tsettings, previewing a theme as you move over it
   tasqx memory list\tyour docs, with the one under the cursor beside them
   tasqx watch\ta table repainted on every change (needs a daemon)
 
@@ -1788,7 +1789,11 @@ mod tests {
             .skip(refusing.saturating_sub(2))
             .take(6)
             .collect();
-        for verb in ["pick", "dashboard"] {
+        // `config edit` joined the list: verified against the binary, it
+        // refuses a piped stdout with exit 2 and names `config list`/`config
+        // set` instead. The topic whose job is enumerating screens had left it
+        // out entirely.
+        for verb in ["pick", "dashboard", "config edit"] {
             assert!(
                 refusal_para.contains(verb),
                 "{verb} is not named among the screens that refuse a pipe:\n{page}"
@@ -1814,16 +1819,39 @@ mod tests {
             "the contents has no screens topic"
         );
         let page = render(&plain(), Some("screens")).expect("`tasqx manual screens` opens");
-        for screen in [
+        let screens = [
             "tasqx pick",
             "tasqx dashboard",
+            "tasqx config edit",
             "tasqx memory list",
             "tasqx watch",
-        ] {
+        ];
+        for screen in screens {
             assert!(
                 page.contains(screen),
                 "the screens topic never names {screen}:\n{page}"
             );
+        }
+        // And the count it opens with is the length of that roster. The page
+        // said "Four commands" while listing four and omitting `config edit`,
+        // so a reader counting along got a consistent, wrong answer.
+        let word = [
+            "zero", "one", "two", "three", "four", "five", "six", "seven",
+        ][screens.len()];
+        let opener = format!("{} commands open a screen", ucfirst(word));
+        assert!(
+            page.contains(&opener),
+            "the screens topic must open with {opener:?} — it names {} screens:\n{page}",
+            screens.len()
+        );
+    }
+
+    /// `Five` from `five`, for a count word that opens a sentence.
+    fn ucfirst(s: &str) -> String {
+        let mut c = s.chars();
+        match c.next() {
+            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            None => String::new(),
         }
     }
 

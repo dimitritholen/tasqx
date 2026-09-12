@@ -231,6 +231,55 @@ pub fn subcommand_names() -> Vec<String> {
         .collect()
 }
 
+/// The fields `modify --clear` accepts, derived from the parser's own list.
+///
+/// Exported for the same reason [`subcommand_names`] is. `CLEARABLE` is
+/// private and `tests/` is a separate crate, so a wiki page restating the set
+/// could not be bound to it from there — and it drifted exactly that way,
+/// listing eight of the nine.
+pub fn clearable_fields() -> Vec<&'static str> {
+    CLEARABLE.to_vec()
+}
+
+/// The dashboard panels a reader can ask for, in the built-in order.
+///
+/// The roster D80 left: prose that counts panels must count these.
+pub fn dashboard_panel_names() -> Vec<&'static str> {
+    tui::dashboard::model::PANEL_NAMES.to_vec()
+}
+
+/// The panels `tasqx --json dashboard` writes a payload for.
+///
+/// Deliberately separate from [`dashboard_panel_names`]: the screen's roster
+/// and the document's are different tables and different lengths, and prose
+/// that counts "panels" has to say which one it means. Pinning the `--json`
+/// sentence to the screen's six was the second wrong number that claim had.
+pub fn dashboard_json_panel_names() -> Vec<&'static str> {
+    tui::dashboard::json::PAYLOAD_PANELS.to_vec()
+}
+
+/// The panel names D80 retired, every one of which now resolves to `tasks`.
+///
+/// Exported so prose cannot go on describing one of them as a panel that
+/// ships. Three documents were still sending readers to look for BLOCKED.
+pub fn retired_dashboard_panel_names() -> Vec<&'static str> {
+    tui::dashboard::model::RETIRED_PANEL_NAMES.to_vec()
+}
+
+/// Every `tasqx memory` subcommand clap knows, derived like [`subcommand_names`].
+///
+/// The wiki documented five of the seven: `list` (a whole screen) and
+/// `update` (the non-destructive correction path) appeared on no page.
+pub fn memory_subcommand_names() -> Vec<String> {
+    use clap::CommandFactory;
+    Cli::command()
+        .find_subcommand("memory")
+        .expect("clap has a `memory` subcommand")
+        .get_subcommands()
+        .map(|c| c.get_name().to_string())
+        .collect()
+}
+
 /// How a command leaves [`execute`].
 ///
 /// This exists to make the `--json` bypass unrepresentable. Before it, `run()`

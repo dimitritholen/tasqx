@@ -6,22 +6,31 @@ Two ways to watch your work instead of querying it.
 
 *Alias: `dash`*
 
-A full-screen overview of everything: your working set, what's due, what's
-blocked, recent activity, projects, a burndown and token spend — eight panels
-over one snapshot, with a header that counts what matters
+A full-screen overview of everything: your tasks, your projects, a burndown,
+recent activity, effort and token spend — six panels (`tasks`, `projects`,
+`burndown`, `pulse`, `effort`, `tokens`) over one snapshot, with a header that
+counts what matters
 (`17 open · 1 active · 2 overdue · 3 blocked · 8 done/week`).
 
 ```console
 tasqx                    # on a terminal, a bare tasqx opens the dashboard
 tasqx dashboard          # the same screen, spelled out
-tasqx --json dashboard   # all panels as one JSON document, no screen
+tasqx --json dashboard   # the panel data as one JSON document, no screen
 ```
 
 - It's read-only, with one exception: `p` opens the task browser,
   [`pick`](Working-on-Tasks.md#tasqx-pick). Enter there reads a task, and `s`
   starts it and brings you back. `q`, Esc and Ctrl-C all close the dashboard.
-- The BLOCKED panel exists because blocked tasks are hidden from the default
-  task list — the dashboard is where work that's standing still stays visible.
+- Blocked work stays visible here, which is the point: the default task list
+  hides it. D80 folded the old NOW, NEXT UP, DUE, BLOCKED and RECENT panels
+  into the one TASKS panel, so a blocked task keeps its row there (and its
+  `"blocked": true` under `--json`), and the header counts them (`3 blocked`).
+- `--json` is not the screen in text. The document carries a payload for four
+  of the six panels — `tasks`, `projects`, `burndown` and `tokens` — beside the
+  `status` header it always writes and a `panels` array naming what you asked
+  for. `pulse` and `effort` are drawn from the screen's own model, so
+  `tasqx --json dashboard --panels pulse,effort` is a valid request that
+  answers with no panel payload at all.
 - Layout adapts to your window; below 56×14 it won't open.
 - Configure it under `[dashboard]` in the config: which panels, in what order,
   refresh mode and time window (`tasqx config list` shows the options).
