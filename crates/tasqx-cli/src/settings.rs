@@ -426,10 +426,21 @@ pub(crate) fn run_theme(ctx: &Ctx, action: &ThemeAction) -> CmdOutcome {
             }
             if let (true, Some(dir)) = (any_user, &dir) {
                 text.push('\n');
+                // A path is ONE word to the wrapper, and the wrapper never cuts
+                // a word — by contract, so that a long name keeps its meaning
+                // rather than being sliced mid-token. The path therefore took a
+                // line of its own and ran past the terminal whenever the config
+                // dir was deeper than the screen is wide, which is the DEFAULT
+                // on both Windows (`C:\Users\…\AppData\Local\…`) and macOS
+                // (`/var/folders/…`): the one wrap D120 fits every table to
+                // avoid. Fitted from the tail, because the leaf is what tells
+                // this directory from the ones beside it; `--json` still
+                // carries the whole path under `user.dir`.
+                let from = render::tail_fit(&dir.to_string_lossy(), ctx.cols, ctx.caps.unicode);
                 text.push_str(&render::prose(
                     ctx,
                     Some("muted"),
-                    &format!("user themes are read from {}", dir.to_string_lossy()),
+                    &format!("user themes are read from {from}"),
                     "",
                 ));
             }

@@ -3767,6 +3767,31 @@ pub(crate) fn truncate(s: &str, max: usize, unicode: bool) -> String {
     format!("{head}{ellipsis}")
 }
 
+/// The END of `text` in at most `cells` cells, an ellipsis standing for what
+/// was cut from the FRONT: the mirror of [`truncate`], for the strings whose
+/// LAST characters identify them — the part of a query the reader is typing
+/// at, and a path, whose leaf says which directory this is while every
+/// sibling shares its root.
+pub(crate) fn tail_fit(text: &str, cells: usize, unicode: bool) -> String {
+    if width(text) <= cells {
+        return text.to_string();
+    }
+    let dots = if unicode { "…" } else { "..." };
+    let keep = cells.saturating_sub(width(dots));
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 0;
+    for c in text.chars().rev() {
+        let cw = width(&c.to_string());
+        if used + cw > keep {
+            break;
+        }
+        used += cw;
+        tail.push(c);
+    }
+    tail.reverse();
+    format!("{dots}{}", tail.into_iter().collect::<String>())
+}
+
 /// Gauges in `text` whose glyphs disagree with what this renderer draws at the
 /// figure printed beside them, as `"<drawn> beside <figure> (renderer draws
 /// <expected>)"`. One scan defines what a stale gauge is, for the guard over
