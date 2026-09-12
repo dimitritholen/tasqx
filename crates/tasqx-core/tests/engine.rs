@@ -2197,9 +2197,12 @@ fn undo_refuses_when_the_effect_it_would_reverse_is_already_gone() {
     // what another process editing the SQLite file does.
     e.tag_add(&json!({ "ref": task["short_id"].clone(), "tags": ["api"] }))
         .expect("tag.add");
+    // By append order, not by id (#422), like the sibling above and like `undo`
+    // itself: the row to drop is the one written LAST, and the highest id is
+    // only the same row while no import has ever put a foreign one in the log.
     e.conn()
         .execute(
-            "DELETE FROM events WHERE op = 'tag.add' AND id = (SELECT MAX(id) FROM events)",
+            "DELETE FROM events WHERE op = 'tag.add' AND rowid = (SELECT MAX(rowid) FROM events)",
             [],
         )
         .expect("drop the event so `tag.remove` is newest again");
