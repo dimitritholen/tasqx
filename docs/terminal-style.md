@@ -11,8 +11,8 @@ found any other way. §14 is the loop that makes that cheap.
 
 `list`, `agenda`, the dashboard, the memory browser, `memory search`,
 `pick`, `show`, `next`, `why`, `projects`, `report`, `theme list`,
-`theme show`, `tasqx manual` and the write echoes (`add` and every verb that
-changes something, D126) carry the style. `config list` and `tokens recompute`
+`theme show`, `tasqx manual`, `tasqx about` and the write echoes (`add` and
+every verb that changes something, D126) carry the style. `config list` and `tokens recompute`
 do not yet.
 The manual, the one screen that is mostly prose, adds conventions of its own
 (a prose measure, two heading levels, copied code never split); they are

@@ -4717,14 +4717,30 @@ fn theme_and_socket_are_noted_as_inert_the_way_json_already_is() {
 
     // `--socket` on a verb that never opens a store or a daemon. `docs` writes
     // to stdout rather than opening a browser, so the test never launches one.
-    let verb_args: [(&str, &[&str]); 3] = [
+    //
+    // The list is DERIVED, not hardcoded: the three-verb literal here could not
+    // see a new store-free verb, and did not — `about` shipped accepting
+    // `--socket` in silence while `manual` explained itself. Anything clap
+    // knows that needs no store belongs here, and a verb added to that set
+    // joins this guard on the day it is added (D30's rule, one verb over).
+    let store_free: &[(&str, &[&str])] = &[
         ("docs", &["docs", "--no-open", "--stdout"]),
         ("manual", &["manual"]),
+        ("about", &["about"]),
         ("completions", &["completions", "bash"]),
     ];
+    let known = tasqx_cli::subcommand_names();
+    for (verb, _) in store_free {
+        assert!(
+            known.iter().any(|k| k == verb),
+            "`{verb}` is not a clap subcommand any more — fix this list"
+        );
+    }
+    let verb_args = store_free;
     for (verb, base) in verb_args {
         let mut args: Vec<&str> = vec!["--socket", "/tmp/unused.sock"];
         args.extend_from_slice(base);
+        let verb = *verb;
         let out = raw(&args);
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -4733,6 +4749,47 @@ fn theme_and_socket_are_noted_as_inert_the_way_json_already_is() {
         );
     }
 }
+/// `tasqx about` names the store it WOULD open, and authors nothing.
+///
+/// Asserted against the FILESYSTEM, and with `$TASQX_DB` pointed at a path
+/// whose PARENT DOES NOT EXIST. That shape is the whole test: the only thing
+/// `db_path` adds over `db_path_read_only` is `create_dir_all(parent)`, so a
+/// fixture whose parent already exists cannot tell the two apart, and a guard
+/// written against that shape passes while the binary authors a directory.
+/// `tests/completion.rs` documents the same trap, measured: the mutation was
+/// applied, confirmed on disk, and the test stayed green.
+///
+/// `HOME` and `TASQX_CONFIG_DIR` are redirected into the fixture as well, so a
+/// resolution that ignored `$TASQX_DB` entirely would land inside the watched
+/// directory rather than in the real one on this machine.
+#[test]
+fn about_names_the_store_without_creating_it() {
+    let dir = fresh_config_dir("about-creates-nothing");
+    let db = dir.join("never-run").join("tasks.db");
+    let out = Command::new(env!("CARGO_BIN_EXE_tasqx"))
+        .env("TASQX_CONFIG_DIR", &dir)
+        .env("TASQX_DB", &db)
+        .env("HOME", &dir)
+        .arg("about")
+        .output()
+        .expect("run tasqx about");
+    assert!(out.status.success(), "`about` must not fail: {out:?}");
+    let screen = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        screen.contains(&db.to_string_lossy().into_owned()),
+        "the screen must name the store it would open:\n{screen}"
+    );
+    let left: Vec<String> = std::fs::read_dir(&dir)
+        .expect("the fixture directory")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        left.is_empty(),
+        "`about` authored {left:?} under a store that was never run"
+    );
+}
+
 /// `tasqx api`'s store-open failure fires before the request is even parsed,
 /// which used to mean it fired before `id` was even READ — the one response
 /// shape a multiplexed caller (the daemon protocol, or any batching wrapper)
