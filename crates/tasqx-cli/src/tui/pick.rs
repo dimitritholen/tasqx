@@ -139,9 +139,12 @@ pub enum Mode {
 pub enum Action {
     /// Start this task and leave the screen.
     Start { short_id: i64 },
-    /// Leave having started nothing. The caller must not treat this as
-    /// success: `pick` produced no task, and a command that produced nothing
-    /// may not exit 0 (D55).
+    /// Leave having started nothing. An ordinary end to a session since D128:
+    /// this screen is a browser, and closing one is not a failed run — the
+    /// caller exits 0 and writes nothing to the scrollback. (Under D55, when
+    /// `pick` was a chooser whose whole output was the start, this was exit
+    /// 4.) A request that could not be SERVED is still non-zero, but that is
+    /// decided before the screen opens.
     Cancel,
 }
 

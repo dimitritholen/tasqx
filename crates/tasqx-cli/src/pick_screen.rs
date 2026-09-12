@@ -55,17 +55,8 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
     let chosen = tui::with_terminal(|term| pick_loop(term, be, &mut app))
         .map_err(|e| ApiError::internal(format!("terminal error: {e}")))?;
 
-    // Cancelling is exit 4, not exit 0. `pick` exists to produce one task; when
-    // it produced none, answering ok is a command reporting success for work it
-    // did not do — this project's named recurring defect, and the reason
-    // `config edit`'s "no changes" exit 0 is NOT the precedent to copy. That
-    // screen is a session where zero edits is a legitimate outcome; this one is
-    // a selection whose entire output is the choice.
     let Some(short_id) = chosen else {
-        return Err(ApiError::not_found(
-            "nothing picked — no task was started",
-            None,
-        ));
+        return nothing_picked();
     };
     let result = be.call(
         "task.start",
@@ -88,6 +79,29 @@ pub(crate) fn run_pick(be: &mut Backend, ctx: &Ctx, filter: &[String]) -> CmdOut
         .map(|r| r.title.clone())
         .unwrap_or_default();
     Ok((pick_result(short_id, &title, result), text))
+}
+
+/// Leaving the browser without starting a task: exit 0, and nothing in the
+/// scrollback (D128).
+///
+/// This was exit 4 for as long as `pick` was D55's CHOOSER — a screen whose
+/// entire output was the start, so producing nothing was a run that failed.
+/// D124 made it the task BROWSER: `j`/`k` move, `/` searches, Enter opens
+/// `show`'s card, and `s` is the one key that writes. Reading without starting
+/// anything is now the ordinary way to use it, and a browser you close is not
+/// a failed run — a shell that treats `q` as an error breaks `pick && …`, a
+/// prompt indicator, and any script that opens it to look.
+///
+/// What is still non-zero is a request that could not be SERVED:
+/// [`no_candidates`] (exit 4) and the piped refusal (exit 2). The distinction
+/// D128 draws is between a session the user ended and a question tasqx could
+/// not answer.
+///
+/// The body says `started: false` because the exit code no longer can. Both
+/// arms carry the field ([`pick_result`] sets it true), so `tasqx --json pick`
+/// answers "did this start a task" in the body rather than in `$?`.
+pub(crate) fn nothing_picked() -> CmdOutcome {
+    Ok((json!({ "started": false }), String::new()))
 }
 
 /// An empty candidate set is a refusal, not an empty screen.
@@ -241,14 +255,20 @@ pub(crate) fn picked_summary(
 ///
 /// `task.start` returns `{id, interval_started}` — a UUID and a timestamp. That
 /// is the right answer for a caller who supplied the ref, and a useless one
-/// here, because the ref is the thing `pick` was asked to determine. The two
+/// here, because the ref is the thing `pick` was asked to determine. The three
 /// added fields are the CLI's own composition (as `agenda`'s `--json` body is),
 /// never a change to what the method returns: the method's keys are passed
 /// through untouched beside them.
+///
+/// `started` is the third, and D128 is what makes it load-bearing rather than
+/// decorative: both outcomes exit 0 now, so the body is the only place a
+/// script can read whether a task was started. [`nothing_picked`] sets it
+/// false.
 pub(crate) fn pick_result(short_id: i64, title: &str, mut started: Value) -> Value {
     if let Some(obj) = started.as_object_mut() {
         obj.insert("short_id".to_string(), json!(short_id));
         obj.insert("title".to_string(), json!(title));
+        obj.insert("started".to_string(), json!(true));
     }
     started
 }

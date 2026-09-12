@@ -267,7 +267,8 @@ pub(crate) fn run_dashboard(be: &mut Backend, ctx: &Ctx) -> Result<Option<String
     //
     // `p` used to hand the terminal back and let `run_pick`'s result become the
     // command's result — so backing out of the picker exited the whole process
-    // with `not_found` and code 4, and choosing a task started it and then quit.
+    // (with the `not_found` that leaving was until D128), and choosing a task
+    // started it and then quit.
     // Neither is what a key on a read-only overview should do. `pick` opens its
     // own `with_terminal`, so the dashboard's has to be closed first and
     // reopened after; D58 asks for one session with a `Screen` enum, which is
@@ -443,13 +444,21 @@ pub(crate) fn after_pick(
     picked: &mut Option<String>,
 ) -> Result<Option<String>, ApiError> {
     match outcome {
+        // Backing out of the picker leaves nothing behind. Since D128 that is
+        // an ordinary `Ok` rather than a `not_found`, so this arm has to come
+        // first — without it the empty render below turns `picked` into
+        // `Some("")`, and the dashboard prints a blank line into the
+        // scrollback of a user who pressed `q`. `started` and not the render's
+        // emptiness: reading the text would work by accident, and a start
+        // whose echo came back empty would quietly stop being recorded.
+        Ok((body, _)) if !body["started"].as_bool().unwrap_or(false) => {}
         // Every start of the session reaches the scrollback, not only the
         // last: each one can have auto-stopped another timer (D124(g)).
         Ok((_, render)) => picked.get_or_insert_with(String::new).push_str(&render),
-        // Backing out of the picker is not an error HERE. `pick` as a command
-        // exits 4 having started nothing, because its whole output is the
-        // choice (D55); reached from a screen the user is going back to,
-        // cancelling is just cancelling.
+        // An empty candidate set still refuses (`no_candidates`, exit 4), and
+        // reached from a screen the user is going back to, that is not the
+        // dashboard's error either: `p` over a project with nothing pending
+        // redraws unchanged rather than ending the session.
         Err(e) if e.code == tasqx_core::ErrorCode::NotFound => {}
         // A start `task.start` refused: the task changed under the browser,
         // a race with another writer, since `pick` refuses what it can see
@@ -562,8 +571,15 @@ pub(crate) fn burndown_members(
 mod tests {
     use super::*;
 
+    /// What `run_pick` hands back when `s` started a task — `pick_result`'s
+    /// body, `started` included. That field is not decoration here: since D128
+    /// both outcomes are `Ok`, so it is the only thing telling this fixture
+    /// apart from a picker the reader closed.
     fn started(n: i64) -> CmdOutcome {
-        Ok((json!({ "short_id": n }), format!("Started #{n}\n")))
+        Ok((
+            json!({ "short_id": n, "started": true }),
+            format!("Started #{n}\n"),
+        ))
     }
 
     /// D124(g): every start of a dashboard session reaches the scrollback
@@ -601,5 +617,27 @@ mod tests {
         );
         assert!(picked.is_none());
         assert!(after_pick(Err(ApiError::internal("disk")), &mut picked).is_err());
+    }
+
+    /// D128: leaving `pick` is exit 0 now, so the dashboard's `p` gets an `Ok`
+    /// where it used to get a `not_found`. It must still leave nothing behind
+    /// — backing out of the picker is silent (D124(g)) — and an outcome that
+    /// started nothing must not make the dashboard print an empty line into
+    /// the scrollback on its way out.
+    #[test]
+    fn a_picker_closed_without_starting_anything_leaves_nothing_behind() {
+        let mut picked = None;
+        assert_eq!(
+            after_pick(nothing_picked(), &mut picked).unwrap(),
+            None,
+            "backing out of the picker is silent"
+        );
+        assert!(
+            picked.is_none(),
+            "an empty render may not become a line in the scrollback: {picked:?}"
+        );
+        // And a start still reaches it, through the same arm.
+        after_pick(started(1), &mut picked).unwrap();
+        assert!(picked.unwrap().contains("#1"));
     }
 }
