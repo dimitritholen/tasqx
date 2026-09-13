@@ -15,6 +15,18 @@ if ! git status --porcelain | awk '{print $NF}' | grep -Eq \
   exit 0
 fi
 
+# A hook inherits the harness's PATH and reads no shell startup file, so a
+# rustup install that only a profile puts on PATH is invisible here. Load
+# rustup's env before concluding cargo is missing; say so if it still is,
+# instead of failing on the first gate with "command not found".
+if ! command -v cargo >/dev/null 2>&1 && [ -f "$HOME/.cargo/env" ]; then
+  . "$HOME/.cargo/env"
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "gate failed: cargo is not on PATH and ~/.cargo/env did not provide it" >&2
+  exit 2
+fi
+
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 fail() {
