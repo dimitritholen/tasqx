@@ -1655,10 +1655,11 @@ fn page_scheduling() -> String {
     s.push_str(&lead(
         "Every date field — <code>due</code>, <code>scheduled</code>, <code>wait</code> — takes the \
          same natural-language grammar, through the flag or through the sugar. It resolves to \
-         RFC3339 at the moment you type it: a bare DATE resolves to midnight UTC, and a date or \
-         keyword carrying an explicit TIME resolves in your machine's own zone, then converts to \
-         UTC for storage — <code>due:17:00</code> on a machine set to Amsterdam means 17:00 there, \
-         not 17:00 UTC.",
+         RFC3339 at the moment you type it, and everything is <strong>UTC</strong>: a bare DATE \
+         resolves to midnight UTC, and a TIME with no offset of its own is a UTC clock — \
+         <code>due:17:00</code> means 17:00 UTC whatever zone the machine is set to, and every \
+         screen prints it back as 17:00. Write an offset \
+         (<code>2026-07-20T17:00:00+02:00</code>) to mean another zone's clock.",
     ));
 
     s.push_str(&h3("The four date fields"));
@@ -1710,7 +1711,7 @@ fn page_scheduling() -> String {
             ],
             &[
                 "A bare time (<code>9am</code>)",
-                "Today, or tomorrow if that time already passed — \"today\" in YOUR zone.",
+                "09:00 UTC today, or tomorrow if that UTC time already passed.",
             ],
             &[
                 "A weekday that <em>is</em> today",
@@ -1718,7 +1719,8 @@ fn page_scheduling() -> String {
             ],
             &[
                 "A naive date <em>with</em> a time",
-                "Interpreted in your machine's zone, then converted to UTC for storage.",
+                "A UTC clock, whatever your zone. An explicit offset (<code>+02:00</code>) is \
+                 honoured and converted to UTC instead.",
             ],
             &[
                 "The literal <code>now</code>",

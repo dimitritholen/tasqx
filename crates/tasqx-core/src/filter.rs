@@ -1195,32 +1195,21 @@ fn predicate(tok: &str, now: Timestamp) -> Result<Pred, String> {
 
 /// Resolve a date bound against `now`, or say why it is not a date.
 ///
-/// It delegates to [`datetime::parse_when_zoned`] rather than restating what a
-/// date may look like, which is the whole point: the bound accepts exactly
-/// what `due:` accepts because it is the same parser, so the two cannot drift
-/// and the tool cannot advertise a spelling its own filter rejects.
-///
-/// The zone is pinned to UTC deliberately, NOT read from the machine the way
-/// `due:`/`scheduled:`/`wait:` now are (tasqx audit #138, DESIGN.md:458): a
-/// bound is resolved once, at parse time, and this file's own suite fixes an
-/// anchor `now` and asserts an exact instant a bare clock time in it must
-/// resolve to — reading the real machine zone here would make those
-/// assertions depend on wherever the filter happens to be evaluated. `due:`
-/// carries the naive-clock-time-is-local behaviour because a person typing a
-/// deadline means their own clock; a `due.before:`/`due.after:` bound is a
-/// query boundary, not a value someone is scheduling themselves around, so
-/// leaving it UTC-anchored is the narrower, unchanged behaviour rather than a
-/// judgment call this fix makes on the filter DSL's behalf.
+/// It delegates to [`datetime::parse_when`] rather than restating what a date
+/// may look like, which is the whole point: the bound accepts exactly what
+/// `due:` accepts because it is the same parser, so the two cannot drift and
+/// the tool cannot advertise a spelling its own filter rejects. That includes
+/// the zone: a clock time in a bound is UTC, as it is in `due:` (D132).
 ///
 /// The refusal is D27's rule applied to a value: a bound nobody can read is a
 /// caller error, and a read path loses nothing by refusing it — the user
 /// retypes. Matching nothing instead is a wrong answer shaped exactly like a
-/// right one. `parse_when_zoned`'s message already names the offending value
-/// and lists the accepted forms, so it is passed through rather than reworded.
+/// right one. `parse_when`'s message already names the offending value and
+/// lists the accepted forms, so it is passed through rather than reworded.
 fn bound(value: &str, prefix: &str, now: Timestamp) -> Result<Timestamp, String> {
-    let resolved = datetime::parse_when_zoned(value, now, &jiff::tz::TimeZone::UTC)
+    let resolved = datetime::parse_when(value, now)
         .map_err(|e| format!("`{prefix}:` needs a date — {}", e.message))?;
-    // `parse_when_zoned` promises an RFC3339 `…Z` string, so this cannot fail;
+    // `parse_when` promises an RFC3339 `…Z` string, so this cannot fail;
     // it is an `Option` only because `parse_ts` is total for untrusted input.
     parse_ts(&resolved)
         .ok_or_else(|| format!("`{prefix}:{value}` resolved to an unreadable instant {resolved:?}"))
