@@ -575,6 +575,113 @@ fn the_agent_starter_prompt_names_tools_that_exist() {
     }
 }
 
+/// Every relative link in a guide under `docs/guides/` must resolve, and every
+/// `tasqx_*` tool it tells an agent to call must exist.
+///
+/// The README link guard above covers only the README's own links, and the
+/// starter-prompt guard right above this one covers only that one guide's
+/// tool names. Between the two, a guide under `docs/guides/` can link a
+/// renamed neighbour, or tell an agent to call a renamed tool, and nothing in
+/// the build notices — the reader hits the 404, or the MCP server's `unknown
+/// tool`, before either of those guards would.
+///
+/// Parsing is deliberately minimal, matching the two guards it generalises:
+/// `](target)` spans for links and `tasqx_` runs for tool names, no markdown
+/// model. Every scan pins a floor so an empty pass cannot read as a clean one.
+#[test]
+fn every_guide_links_files_that_exist_and_names_tools_that_exist() {
+    let dir = root().join("docs/guides");
+    let mut guides: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("docs/guides is readable")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    guides.sort();
+    assert!(
+        guides.len() >= 6,
+        "found only {} guides under docs/guides/ — this guard is checking \
+         almost nothing",
+        guides.len()
+    );
+
+    let roster = tasqx_core::mcp::tool_roster();
+    let mut checked_links = 0;
+    let mut named: Vec<(String, String)> = Vec::new();
+
+    for guide in &guides {
+        let text = fs::read_to_string(guide)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", guide.display()));
+        let name = guide.file_name().unwrap().to_string_lossy();
+
+        // Every `](target)` span. http(s) links, bare anchors and empty
+        // targets are not this guard's business.
+        let mut rest = text.as_str();
+        while let Some(i) = rest.find("](") {
+            let tail = &rest[i + 2..];
+            let Some(end) = tail.find(')') else { break };
+            let target = &tail[..end];
+            rest = &tail[end..];
+            if target.starts_with("http") || target.starts_with('#') || target.is_empty() {
+                continue;
+            }
+            let target = target.split('#').next().unwrap_or(target);
+            assert!(
+                dir.join(target).exists(),
+                "{name} links {target:?}, which does not exist — a reader \
+                 following that link from the guide's page on the repo gets a \
+                 404"
+            );
+            checked_links += 1;
+        }
+
+        // Every `tasqx_…` run, the same loop as the starter-prompt guard
+        // above.
+        let mut rest = text.as_str();
+        while let Some(i) = rest.find("tasqx_") {
+            let tail = &rest[i..];
+            let end = tail
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(tail.len());
+            let run = &tail[..end];
+            rest = &tail[end..];
+            // `tasqx_*` alone is the tool family, not a name to chase.
+            if run == "tasqx_" {
+                continue;
+            }
+            // `mcp__tasqx__tasqx_complete_task`, the hook matcher spelling in
+            // self-improving-agent.md, names the real tool after the double
+            // underscore, so the tool name is what follows it.
+            let tool = run.strip_prefix("tasqx__").unwrap_or(run);
+            named.push((name.to_string(), tool.to_string()));
+        }
+    }
+
+    assert!(
+        checked_links >= 5,
+        "the link scan across docs/guides/ checked only {checked_links} paths \
+         — an empty scan must not pass as a clean one"
+    );
+
+    named.sort();
+    named.dedup();
+    let distinct: BTreeSet<&str> = named.iter().map(|(_, tool)| tool.as_str()).collect();
+    assert!(
+        distinct.len() >= 10,
+        "the tool-name scan across docs/guides/ found only {distinct:?} — an \
+         empty scan must not pass as a clean one"
+    );
+
+    for (guide, tool) in &named {
+        assert!(
+            roster.iter().any(|(n, _)| *n == tool),
+            "{guide} tells an agent to call {tool:?}, which is not in the MCP \
+             roster: {:?}",
+            roster.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+        );
+    }
+}
+
 /// The version this tree builds has a `CHANGELOG.md` section, spelled the way
 /// the release workflow looks for it.
 ///
