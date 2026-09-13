@@ -28,26 +28,26 @@ same table everywhere else — in a pipe, a redirect, or under `--json`.) Urgenc
 
 Things you cannot act on yet stay out of sight until they become actionable:
 
-```console
-tasqx add "Book the campsite wait:2026-08-01"   # backlog until August 1
-tasqx add "Prep the demo scheduled:monday"      # surfaces on Monday
-```
+| Command | What it does |
+|---|---|
+| `tasqx add "Book the campsite wait:2026-08-01"` | Backlog until August 1 |
+| `tasqx add "Prep the demo scheduled:monday"` | Surfaces on Monday |
 
 ## Defer, don't delete
 
-```console
-tasqx modify 42 due:monday        # push it out, reminder moves along
-tasqx cancel 17                   # reversible, kept in history
-tasqx reopen 17                   # changed your mind
-```
+| Command | What it does |
+|---|---|
+| `tasqx modify 42 due:monday` | Push it out, reminder moves along |
+| `tasqx cancel 17` | Reversible, kept in history |
+| `tasqx reopen 17` | Changed your mind |
 
 `cancel` is not delete: the task stays in the event log and out of your reports'
 way. There is no destructive path in daily use.
 
 ## The five-minute weekly review
 
-```console
-tasqx list "status:done completed.after:-7d"    # what got finished
-tasqx report status                             # open vs done; cancelled stays out
-tasqx chart heatmap                             # completion density, calendar-style
-```
+| Command | What it does |
+|---|---|
+| `tasqx list "status:done completed.after:-7d"` | What got finished |
+| `tasqx report status` | Open vs done; cancelled stays out |
+| `tasqx chart heatmap` | Completion density, calendar-style |

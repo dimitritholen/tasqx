@@ -39,11 +39,16 @@ build from source with `cargo install --path crates/tasqx-cli`.
 
 ## The whole loop is four commands
 
+- `tasqx init work`: create a project — just a name, no folder
+- `tasqx add Buy milk`: capture a task (lands in the default project)
+- `tasqx next`: the one thing to do now
+- `tasqx done 1`: complete it
+
 ```console
-tasqx init work        # create a project — just a name, no folder
-tasqx add Buy milk     # capture a task (lands in the default project)
-tasqx next             # the one thing to do now
-tasqx done 1           # complete it
+tasqx init work
+tasqx add Buy milk
+tasqx next
+tasqx done 1
 ```
 
 That's a working task manager. Everything else on this wiki is optional depth.
@@ -74,21 +79,21 @@ The complete guide, in your terminal. `tasqx manual` shows the table of
 contents; `tasqx manual <command>` or `tasqx manual <topic>` opens one section.
 `projects` and `daemon` are both a command and a topic, and open both pages.
 
-```console
-tasqx manual            # table of contents
-tasqx manual add        # everything about `add`
-tasqx manual filters    # the filter language
-```
+| Command | What it does |
+|---|---|
+| `tasqx manual` | Table of contents |
+| `tasqx manual add` | Everything about `add` |
+| `tasqx manual filters` | The filter language |
 
 ### tasqx docs
 
 The same guide as one self-contained HTML page, opened in your browser. No
 external requests, nothing tracked — it's generated from the binary itself.
 
-```console
-tasqx docs              # open in the browser
-tasqx docs --out guide.html   # write the file instead
-```
+| Command | What it does |
+|---|---|
+| `tasqx docs` | Open in the browser |
+| `tasqx docs --out guide.html` | Write the file instead |
 
 ### tasqx about
 

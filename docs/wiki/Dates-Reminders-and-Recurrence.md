@@ -35,10 +35,10 @@ moment arrives — the difference is what you *mean*, and
 
 `remind:` takes an offset from the due date, or an absolute time:
 
-```console
-tasqx add Call the bank due:"friday 9am" remind:-30m   # 30 minutes before
-tasqx add Water plants remind:"friday 8am"             # at an exact time
-```
+| Command | What it does |
+|---|---|
+| `tasqx add Call the bank due:"friday 9am" remind:-30m` | 30 minutes before |
+| `tasqx add Water plants remind:"friday 8am"` | At an exact time |
 
 The offset stays *symbolic*: move the due date and the reminder moves with it.
 

@@ -9,8 +9,10 @@ finishing a task tells you what it just unblocked.
 Make one task wait on another. The order is: *dependent first, prerequisite
 second*.
 
+Make task 2 wait on task 1:
+
 ```console
-tasqx dep 2 1     # task 2 waits on task 1
+tasqx dep 2 1
 ```
 
 Task 2 is now **blocked**: it disappears from `tasqx list`'s default working
@@ -27,8 +29,10 @@ them — precisely because the default filter hides these tasks everywhere else.
 
 Remove a dependency edge, same argument order as `dep`:
 
+Task 2 no longer waits on task 1:
+
 ```console
-tasqx undep 2 1   # task 2 no longer waits on task 1
+tasqx undep 2 1
 ```
 
 If that was the task's last unfinished prerequisite, it unblocks immediately.
@@ -37,12 +41,15 @@ If that was the task's last unfinished prerequisite, it unblocks immediately.
 
 Dependencies pay off when you break a feature into steps:
 
+- `tasqx dep 2 1`: migration waits on schema
+- `tasqx dep 3 2`: shipping waits on migration
+
 ```console
 tasqx add Design the schema
 tasqx add Write the migration
 tasqx add Ship it
-tasqx dep 2 1     # migration waits on schema
-tasqx dep 3 2     # shipping waits on migration
+tasqx dep 2 1
+tasqx dep 3 2
 ```
 
 Now `tasqx next` walks you through the chain in order, one actionable task at

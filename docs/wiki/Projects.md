@@ -22,8 +22,10 @@ tasqx init home --desc "Everything around the house"
 
 Choose the default project — the one a bare `tasqx add` files tasks into.
 
+After this, `tasqx add ...` lands in `home`:
+
 ```console
-tasqx use home     # from now on, `tasqx add ...` lands in home
+tasqx use home
 ```
 
 - The project must already exist and not be archived.
@@ -33,10 +35,10 @@ tasqx use home     # from now on, `tasqx add ...` lands in home
 
 List your projects.
 
-```console
-tasqx projects          # the live ones, default marked with *
-tasqx projects --all    # include archived ones
-```
+| Command | What it does |
+|---|---|
+| `tasqx projects` | The live ones, with the default marked `*` |
+| `tasqx projects --all` | Include archived ones |
 
 `--all` is the only way to see archived projects — without it the table shows
 only the projects that `add` and `use` will accept.

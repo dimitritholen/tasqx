@@ -46,9 +46,12 @@ the alternate buffer.
 
 Either of these is enough:
 
+- `tasqx list`: the verb always means the table
+- `TASQX_DASHBOARD=false tasqx`: switches the screen off for the whole image instead
+
 ```console
-tasqx list                    # the verb always means the table
-TASQX_DASHBOARD=false tasqx   # or switch the screen off for the whole image
+tasqx list
+TASQX_DASHBOARD=false tasqx
 ```
 
 The MCP server above is unaffected: it speaks JSON-RPC over pipes, so it is on

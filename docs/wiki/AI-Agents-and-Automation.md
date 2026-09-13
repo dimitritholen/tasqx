@@ -10,9 +10,12 @@ properties you do.
 The built-in [MCP](https://modelcontextprotocol.io) server — the standard way
 AI tools like Claude Code connect to external systems.
 
+- `tasqx mcp serve`: read-only by default
+- `tasqx mcp serve --scope write`: explicit write access
+
 ```console
-tasqx mcp serve                  # read-only by default
-tasqx mcp serve --scope write    # explicit write access
+tasqx mcp serve
+tasqx mcp serve --scope write
 ```
 
 Wiring it into Claude Code is one line:
@@ -100,10 +103,10 @@ log-parsing fallback fills gaps by reading session transcripts, and it
 *refuses* to guess: a sample claimed by two tasks' time windows is dropped
 rather than attributed to the wrong one.
 
-```console
-tasqx tokens recompute            # dry run: shows what would change, writes nothing
-tasqx tokens recompute --apply    # actually rewrite the log-parse attributions
-```
+| Command | What it does |
+|---|---|
+| `tasqx tokens recompute` | Dry run: shows what would change, writes nothing |
+| `tasqx tokens recompute --apply` | Actually rewrite the log-parse attributions |
 
 Stop any running daemon before `--apply` — this one runs strictly in-process.
 

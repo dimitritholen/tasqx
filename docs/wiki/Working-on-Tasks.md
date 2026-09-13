@@ -9,9 +9,11 @@ it. Nothing here destroys data; every change is recorded and reversible.
 
 Mark a task active and start its timer.
 
+- `tasqx start 42 --keep`: keep other active tasks running too
+
 ```console
 tasqx start 42
-tasqx start 42 --keep    # keep other active tasks running too
+tasqx start 42 --keep
 ```
 
 By default starting one task stops any other active one ("single-active") —
@@ -81,10 +83,10 @@ back), and `s` starts the task under the cursor. `/` searches, fuzzy-search
 style — `wac` finds "**W**rite **A**PI **c**onformance tests" — and Enter or Esc
 keeps the filter. Esc in the list clears it, and `q` leaves.
 
-```console
-tasqx pick                  # browse the working set
-tasqx pick project:work     # narrow the candidates first
-```
+| Command | What it does |
+|---|---|
+| `tasqx pick` | Browse the working set |
+| `tasqx pick project:work` | Narrow the candidates first |
 
 `pick` needs a real terminal (it draws a screen), so in scripts use
 `tasqx next` to ask the same question and `tasqx start <ref>` to act on it.

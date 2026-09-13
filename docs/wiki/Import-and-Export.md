@@ -7,9 +7,11 @@ story, and the "way back" for anything archived.
 
 Dump tasks as canonical JSON to stdout.
 
+- `tasqx export project:work > work.json`: any filter narrows it
+
 ```console
 tasqx export > backup.json
-tasqx export project:work > work.json    # any filter narrows it
+tasqx export project:work > work.json
 ```
 
 - The document carries projects and your default-project setting too, so a
@@ -22,9 +24,11 @@ tasqx export project:work > work.json    # any filter narrows it
 
 Load tasks from a JSON file, or from stdin with `-`.
 
+- `tasqx export | tasqx import -`: round-trip
+
 ```console
 tasqx import backup.json
-tasqx export | tasqx import -     # round-trip
+tasqx export | tasqx import -
 ```
 
 Import is also the one way to un-archive a project: the export document
@@ -33,8 +37,10 @@ records each project's archived flag, and importing restores it. See
 
 ## Good habits
 
+A dated backup, in one line:
+
 ```console
-tasqx export > "backup-$(date +%F).json"   # dated backup, one line
+tasqx export > "backup-$(date +%F).json"
 ```
 
 The store itself is a single SQLite file (`tasqx config store` prints its
