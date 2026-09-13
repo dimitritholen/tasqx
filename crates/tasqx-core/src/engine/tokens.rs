@@ -1,5 +1,5 @@
 //! Token-accounting domain methods for Engine
-//! (docs/research/token-accounting.md, backlog #11).
+//! (DESIGN.md §10, backlog #11).
 //!
 //! `token_usage` rows are per-task child records like annotations, with one
 //! deliberate difference: recording a measurement does NOT bump the task's

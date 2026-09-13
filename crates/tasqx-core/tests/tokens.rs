@@ -1,4 +1,4 @@
-//! Per-task AI token accounting (docs/research/token-accounting.md, #11-#13):
+//! Per-task AI token accounting (DESIGN.md §10, #11-#13):
 //! the `token.add` mutation, its read surfaces (task.get, export), the D12
 //! round trip, and the no-rev-bump rule that keeps async attribution from
 //! breaking a client's `expected_rev`.

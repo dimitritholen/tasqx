@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Render a tasqx screen to a PNG so it can be judged as an image.
-# The loop behind docs/terminal-style.md §13-14.
+# The loop behind docs/maintainers/terminal-style.md §13-14.
 #
 #   scripts/snap.sh <name> <width> -- <tasqx args...>
 #

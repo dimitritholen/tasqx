@@ -17,7 +17,7 @@ pub(super) struct StartTask {
 }
 
 /// Correlation metadata captured at the moment work starts or completes
-/// (docs/research/token-accounting.md, #12): which agent session did it, in
+/// (DESIGN.md §10, #12): which agent session did it, in
 /// which transcript the tokens will be found. Stored ONLY in the start/done
 /// event payloads — the events table is already the durable per-occurrence
 /// record with its own timestamp, and a task column could hold one value

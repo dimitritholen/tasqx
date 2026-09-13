@@ -1,5 +1,5 @@
 //! Shared types and vocabularies for per-task AI token accounting
-//! (docs/research/token-accounting.md).
+//! (DESIGN.md §10).
 //!
 //! This module is deliberately pure: no SQL, no parsing of any tool's log
 //! format. The engine-side writer/readers live in `engine::tokens`; the

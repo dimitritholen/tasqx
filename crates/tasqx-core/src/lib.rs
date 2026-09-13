@@ -102,7 +102,7 @@ mod doc_gate_tests {
     /// The two places the last mutation sweep is written down, and the config
     /// that decides what a sweep covers at all. Same `include_str!` reasoning as
     /// above.
-    const MUTATION_DOC: &str = include_str!("../../../docs/mutation-testing.md");
+    const MUTATION_DOC: &str = include_str!("../../../docs/maintainers/mutation-testing.md");
     const MUTANTS_TOML: &str = include_str!("../../../.cargo/mutants.toml");
 
     /// The lines of the one workflow step whose `run:` mentions `needle`,
@@ -200,7 +200,7 @@ mod doc_gate_tests {
     //
     // Two files write down the same `cargo mutants` run in prose: the comment
     // above the `mutants` job in ci.yml, and the "Known surviving mutants"
-    // section of docs/mutation-testing.md. Both read "160 mutants, 143 caught,
+    // section of docs/maintainers/mutation-testing.md. Both read "160 mutants, 143 caught,
     // 0 missed" from an undated local sweep while two consecutive CI sweeps
     // reported 203 mutants and a survivor — and the sentence a reader would
     // have acted on, "`missed` is now 0", sat directly under the heading BEFORE
@@ -467,7 +467,7 @@ mod doc_gate_tests {
     #[test]
     fn the_mutation_sweep_note_is_one_dated_reading_both_files_agree_on() {
         let ci_where = ".github/workflows/ci.yml";
-        let doc_where = "docs/mutation-testing.md";
+        let doc_where = "docs/maintainers/mutation-testing.md";
         let (ci_idx, ci_line, ci_counts) = sweep_summary(CI, ci_where);
         let (doc_idx, doc_line, _) = sweep_summary(MUTATION_DOC, doc_where);
         assert_eq!(
@@ -663,7 +663,7 @@ mod doc_gate_tests {
             assert!(
                 named.contains(name.as_str()),
                 "`{name}` is {why}. No row of the known-survivors table in \
-                 docs/mutation-testing.md names it: either write the row or \
+                 docs/maintainers/mutation-testing.md names it: either write the row or \
                  stop leaving the mutant alone. Rows name {named:?}"
             );
         }

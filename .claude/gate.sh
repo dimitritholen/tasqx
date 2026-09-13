@@ -8,10 +8,10 @@ set -u
 cd "$(dirname "$0")/.." || exit 0
 
 # Only pay the cargo runs when something gate-relevant is dirty: source,
-# manifests, the lockfile, workflows and docs/mutation-testing.md (both
+# manifests, the lockfile, workflows and docs/maintainers/mutation-testing.md (both
 # include_str!'d by doc_gate_tests in tasqx-core).
 if ! git status --porcelain | awk '{print $NF}' | grep -Eq \
-  '\.rs$|\.toml$|^Cargo\.lock$|\.github/workflows/|^docs/mutation-testing\.md$'; then
+  '\.rs$|\.toml$|^Cargo\.lock$|\.github/workflows/|^docs/maintainers/mutation-testing\.md$'; then
   exit 0
 fi
 

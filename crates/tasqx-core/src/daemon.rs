@@ -1467,7 +1467,7 @@ fn reminder_tick(
     Ok(seen)
 }
 
-// ---- token attribution (DESIGN.md §10, docs/research/token-accounting.md) ----
+// ---- token attribution (DESIGN.md §10) ----
 
 /// How one attribution is recorded. Only ever [`attribution::attribute_one`] in
 /// production; the indirection mirrors [`FireFn`] so a test can inject a failing

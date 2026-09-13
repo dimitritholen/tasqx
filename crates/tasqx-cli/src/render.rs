@@ -2399,7 +2399,7 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
 // they are deliberately achromatic in every built-in.
 
 /// Which parts of a line of facts survive the width, by the one rule every
-/// such line follows (`docs/terminal-style.md` rule 9): the parts are taken
+/// such line follows (`docs/maintainers/terminal-style.md` rule 9): the parts are taken
 /// in rank order, lowest rank first, and the first that does not fit ends the
 /// line, so nothing less important survives a part that was dropped.
 /// Dropping says less; truncating mid-word would say something else. The
@@ -2872,7 +2872,7 @@ pub fn project_table(ctx: &Ctx, result: &Value) -> String {
 /// `projects`' default and `theme list`'s active theme (#346). `*`, the way
 /// `git branch` marks the branch that is checked out.
 ///
-/// It is `docs/terminal-style.md` rule 4 applied to a table that is not a task
+/// It is `docs/maintainers/terminal-style.md` rule 4 applied to a table that is not a task
 /// table: two cells at the far left, never dropped by the width fit, and not
 /// drawn at all when no row carries it. `projects` spent a seven-cell DEFAULT
 /// column on one `*`, and `theme list` nine cells of `← active` on one row.
@@ -3165,7 +3165,7 @@ pub fn report(
     // Set off by a blank line (rule 7): in `mono` and under NO_COLOR the
     // dim label alone did not tell TOTAL from a group named in capitals.
     out.push('\n');
-    // A row with a label, not a title (#346, `docs/terminal-style.md`
+    // A row with a label, not a title (#346, `docs/maintainers/terminal-style.md`
     // rule 12). The whole line was painted `header`, the role for `TASQX
     // MANUAL` and a task's own name, so the sums shouted over the rows they
     // sum. `TOTAL` is structure and takes the column labels' role; the
@@ -4031,7 +4031,7 @@ mod tests {
             "estimate must read as a humanized duration, not PT4H: {out_rel:?}"
         );
         // D122: in the terminal, the relative forms are calendar days, rule 3
-        // of docs/terminal-style.md, not elapsed prose.
+        // of docs/maintainers/terminal-style.md, not elapsed prose.
         assert!(
             out_rel.contains("tomorrow"),
             "a future due date must read as a calendar day: {out_rel:?}"
@@ -5183,7 +5183,7 @@ mod tests {
 
     /// #346: the default is marked in a two-cell rail, the way `git branch`
     /// marks the checked-out branch, and archived is a word on the rows it is
-    /// true of (`docs/terminal-style.md` rules 2 and 4).
+    /// true of (`docs/maintainers/terminal-style.md` rules 2 and 4).
     ///
     /// The table spent a seven-cell DEFAULT column on one `*`, and an
     /// eight-cell ARCHIVED column that, without `--all`, could only ever say
@@ -5214,7 +5214,7 @@ mod tests {
 
     /// #346: the TOTAL row is a row with a label, not a title. It was painted
     /// in `header`, the role for `TASQX MANUAL` and a task's own name, so the
-    /// sums competed with the rows they sum (`docs/terminal-style.md`
+    /// sums competed with the rows they sum (`docs/maintainers/terminal-style.md`
     /// rule 12). The label takes `table.label` like the column labels, and the
     /// figures print at the terminal's own foreground.
     #[test]
@@ -6167,7 +6167,7 @@ mod tests {
     /// The house style's Contract table is BUILT from the renderer, then
     /// looked for in the doc.
     ///
-    /// `docs/terminal-style.md` is what anyone touching a screen reads first,
+    /// `docs/maintainers/terminal-style.md` is what anyone touching a screen reads first,
     /// and a guide describing a screen the binary no longer prints is worse
     /// than no guide — it is a wrong answer carrying the repo's authority. So
     /// the rows are generated here and asserted present there, which catches
@@ -6183,7 +6183,7 @@ mod tests {
     /// silent orphaning.
     #[test]
     fn the_house_style_doc_still_describes_the_screens() {
-        const DOC: &str = include_str!("../../../docs/terminal-style.md");
+        const DOC: &str = include_str!("../../../docs/maintainers/terminal-style.md");
 
         let task = |status: &str, blocked: bool| {
             json!({ "short_id": 1, "urgency": 1.0, "priority": "M", "title": "t",
@@ -6260,7 +6260,7 @@ mod tests {
         ] {
             assert!(
                 DOC.contains(&row),
-                "docs/terminal-style.md's Contract table is missing the row the \
+                "docs/maintainers/terminal-style.md's Contract table is missing the row the \
                  renderer produces:\n{row}"
             );
         }

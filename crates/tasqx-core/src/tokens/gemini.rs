@@ -3,7 +3,7 @@
 //! # SCHEMA-FROM-DOCS — NOT EMPIRICALLY VERIFIED
 //!
 //! Unlike the Claude Code / Codex parsers, this module was written from the
-//! documented telemetry schema (docs/research/token-accounting.md and the
+//! documented telemetry schema (DESIGN.md §10 and the
 //! upstream gemini-cli telemetry docs), NOT from real session files — this
 //! machine has no Gemini install to sample. Every field name, envelope shape,
 //! and timestamp encoding below is a documented expectation, not an observed
@@ -20,7 +20,7 @@
 //! and a whole-file JSON array as degenerate cases. The records we care about
 //! are `gemini_cli.api_response` log events carrying per-request token counts.
 //!
-//! # Mapping (see docs/research/token-accounting.md and #16a)
+//! # Mapping (see DESIGN.md §10 and #16a)
 //!
 //! - `input_tokens`  = `input_token_count`.
 //! - `output_tokens` = `output_token_count` + `thoughts_token_count`. Thought

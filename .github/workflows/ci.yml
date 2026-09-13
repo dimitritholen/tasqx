@@ -239,7 +239,7 @@ jobs:
   # Advisory, NOT a gate — the same reasoning that kept clippy advisory until
   # its findings were cleaned. The scoped sweep still ends with survivors, all
   # of them triaged and deliberately left; the note below says how many and
-  # which, and docs/mutation-testing.md carries the verdict on each. A job that
+  # which, and docs/maintainers/mutation-testing.md carries the verdict on each. A job that
   # is red on its first run trains everyone to ignore it, and `cargo mutants`
   # exits 3 whenever ANY mutant survives — including the ones no test could
   # ever kill.
@@ -258,7 +258,7 @@ jobs:
   # `cargo mutants` prints, or from the `mutants-report` artefact uploaded
   # below, and say which run it came from. Paste that line VERBATIM, duration
   # and all: the guards in tasqx-core's lib.rs read the counts off it and check
-  # it against the identical line in docs/mutation-testing.md, and they match
+  # it against the identical line in docs/maintainers/mutation-testing.md, and they match
   # the shape the tool prints rather than a tidied-up version of it.
   #
   # Last sweep: run 30811736799 on a2f767b (2026-08-03), which matched the

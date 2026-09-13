@@ -1,4 +1,4 @@
-//! Opt-in local OTLP/HTTP receiver (backlog #18, docs/research/token-accounting.md).
+//! Opt-in local OTLP/HTTP receiver (backlog #18, DESIGN.md §10).
 //!
 //! The three big coding CLIs (Claude Code, Gemini CLI, Codex) can be pointed at
 //! an OpenTelemetry endpoint to emit per-request token telemetry with timestamps

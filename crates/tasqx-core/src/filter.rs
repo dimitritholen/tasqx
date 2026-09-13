@@ -1007,7 +1007,7 @@ fn spacing_hint(toks: &[Tok], pos: usize) -> Option<String> {
     // a token starting with `@` never starts with one of the eight prefixes and
     // vice versa, so `||` weakened to `&&` disabled the suppression entirely
     // and left the whole workspace green — the one survivor of the 2026-08-03
-    // sweep (docs/mutation-testing.md). Pinned now by
+    // sweep (docs/maintainers/mutation-testing.md). Pinned now by
     // `a_token_opening_a_value_predicate_is_never_hinted_as_a_split_value` and
     // `a_mistyped_at_keyword_is_never_hinted_as_a_split_value`, one per
     // disjunct, both built out of VALUE_PREFIXES and KEYWORDS so a ninth prefix

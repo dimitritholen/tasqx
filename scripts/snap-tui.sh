@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Render a full-screen tasqx screen (dashboard, pick, settings) to a PNG.
-# The pty half of the loop in docs/terminal-style.md §14.
+# The pty half of the loop in docs/maintainers/terminal-style.md §14.
 #
 #   scripts/snap-tui.sh <name> <cols> <rows> -- <tasqx args...>
 #

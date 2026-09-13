@@ -472,7 +472,7 @@ abs_path() {
 
 # The last line the user sees, and the one that decides whether this install
 # was any use. Everything above it can be true while the shell still runs a
-# different tasqx: CLAUDE.md tells every contributor to `cargo install --path`,
+# different tasqx: CONTRIBUTING.md tells every contributor to `cargo install --path`,
 # and ~/.cargo/bin normally precedes ~/.local/bin on PATH. An installer that
 # says "installed" while another binary answers `tasqx --version` gets read as
 # broken — or, worse, is not noticed at all.

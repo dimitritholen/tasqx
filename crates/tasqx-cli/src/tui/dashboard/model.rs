@@ -1380,8 +1380,8 @@ fn column_table(rung: Rung) -> Vec<Vec<PanelId>> {
         //
         // The list gets a column to itself; everything that gives it context —
         // where the work is, how it is burning down, what it has cost — shares
-        // the other. That is the mockup's arrangement (`docs/specs/
-        // 2026-09-02-dashboard-redesign-mockup.html`) and D80's.
+        // the other. That is D80's
+        // arrangement.
         Rung::Xl | Rung::L => vec![
             vec![
                 PanelId::Projects,
