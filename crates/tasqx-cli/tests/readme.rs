@@ -575,6 +575,37 @@ fn the_agent_starter_prompt_names_tools_that_exist() {
     }
 }
 
+/// The version this tree builds has a `CHANGELOG.md` section, spelled the way
+/// the release workflow looks for it.
+///
+/// `release.yml` lifts the `## X.Y.Z` section into the release notes, and a tag
+/// whose section is missing still publishes — with only the generated commit
+/// list, which is the release page nobody reads. The version bump is the moment
+/// the section has to exist, and nothing else notices its absence until the
+/// release is already public. So the bump is what goes red.
+#[test]
+fn the_changelog_has_a_section_for_the_workspace_version() {
+    let changelog =
+        fs::read_to_string(root().join("CHANGELOG.md")).expect("CHANGELOG.md is readable");
+    let heading = format!("## {}", env!("CARGO_PKG_VERSION"));
+    let body: Vec<&str> = changelog
+        .lines()
+        .skip_while(|l| *l != heading)
+        .skip(1)
+        .take_while(|l| !l.starts_with("## "))
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert!(
+        changelog.lines().any(|l| l == heading),
+        "CHANGELOG.md has no `{heading}` line, so the release workflow would publish \
+         this version with generated notes only"
+    );
+    assert!(
+        !body.is_empty(),
+        "CHANGELOG.md's `{heading}` section is empty"
+    );
+}
+
 /// Every archive the Homebrew formula points at is one the release workflow
 /// actually builds.
 ///

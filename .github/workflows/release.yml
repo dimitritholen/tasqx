@@ -210,9 +210,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The version's CHANGELOG.md section leads the notes; --notes-file
+          # with --generate-notes prepends it to the commit list. A missing
+          # section still publishes (the readme tests fail the bump that forgot
+          # it, long before a tag), but says so in the run.
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v h="## ${VERSION}" '$0 == h { f = 1; next } f && /^## / { exit } f' \
+            CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::warning::CHANGELOG.md has no '## ${VERSION}' section; publishing generated notes only"
+          fi
           gh release create "${GITHUB_REF_NAME}" dist/* install.sh install.ps1 \
             --verify-tag \
             --title "tasqx ${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
             --generate-notes
 
   # The tap and the bucket hold a rendered copy of what this run just
