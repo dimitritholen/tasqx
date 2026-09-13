@@ -508,20 +508,12 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: b
     }
     let weeks_n = days.len() / 7;
 
-    // The swatches are two glyphs wide because the cells are: a legend whose
-    // key is half the size of the thing it explains is one the eye has to
-    // translate.
-    let legend = if ctx.caps.unicode {
-        "░░ 0  ▒▒ 1–2  ▓▓ 3–4  ██ 5+"
-    } else {
-        ".. 0  :: 1-2  ++ 3-4  ## 5+"
-    };
     let mut out = String::new();
     out.push_str(&ctx.paint(
         "header",
         &format!("Completions {} last {weeks_n} weeks", ctx.mid()),
     ));
-    out.push_str(&format!("   {}\n", ctx.paint("muted", legend)));
+    out.push_str(&format!("   {}\n", heatmap_legend(ctx)));
 
     // A month strip over the columns. Twelve weeks of grid with no date on it
     // anywhere is a shape a reader cannot place: "when was that gap" has no
@@ -594,6 +586,38 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: b
             )
         )
     ));
+    out
+}
+
+/// The heatmap's legend: one real grid swatch per level, not a description of
+/// one.
+///
+/// It used to be a single string painted as ONE span in ONE role (`muted`),
+/// so every bucket — the empty day and the busiest one alike — came out the
+/// same dim slate colour and the same weight; only the glyph inside told them
+/// apart, and in the `mono` theme even the swatch for "5+" was not bold like
+/// the grid's own `5+` cells are. A legend is a key to the grid, so each
+/// swatch is built by calling `cell` with a representative count for that
+/// bucket — the exact function, and therefore the exact painted bytes, the
+/// grid itself uses for a day at that level. Only the number labels beside
+/// the swatches stay `muted`; they are captions, not data.
+fn heatmap_legend(ctx: &Ctx) -> String {
+    let dash = if ctx.caps.unicode { "–" } else { "-" };
+    let entries: [(u32, String); 4] = [
+        (0, "0".to_string()),
+        (1, format!("1{dash}2")),
+        (3, format!("3{dash}4")),
+        (5, "5+".to_string()),
+    ];
+    let mut out = String::new();
+    for (i, (level, label)) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push_str("  ");
+        }
+        out.push_str(&cell(*level, ctx));
+        out.push(' ');
+        out.push_str(&ctx.paint("muted", label));
+    }
     out
 }
 
@@ -1114,7 +1138,7 @@ pub fn render_burndown_sized(
     let facts = format!(
         "{last} left {m} {trend}{proj}",
         m = ctx.mid(),
-        proj = project_finish(series, ctx.mid())
+        proj = project_finish(series.len(), i64::from(last), delta, ctx.mid())
     );
     out.push_str(&format!(
         "{}   {}\n\n",
@@ -1232,23 +1256,31 @@ fn axis_labels(first: Date, last: Date, width: usize, unicode: bool) -> String {
     }
 }
 
-fn project_finish(series: &[RemainingPoint], mid: &str) -> String {
-    if series.len() < 2 {
+/// The clearing estimate beside the trend clause — derived from the SAME
+/// rate `render_burndown_sized` already computed for that clause (`delta`
+/// over the full `len`-day window), not a second rate of its own.
+///
+/// It used to average a *different* window: the trend clause read "flat over
+/// 30 days" (or even "up") from the whole span, while this recomputed its own
+/// rate over the last `min(7, n)` days and could disagree with the sentence
+/// right next to it — "flat over 30 days · ~30d to clear at current rate" is
+/// two windows contradicting each other under one summary. One rate over the
+/// stated window means: a window that is flat or rising has no rate a
+/// clearing date can come from, so the estimate is omitted rather than
+/// printed from a rate the trend clause never mentioned.
+fn project_finish(len: usize, last: i64, delta: i64, mid: &str) -> String {
+    if len < 2 {
         return String::new();
     }
-    let last = series.last().unwrap().remaining as i64;
     if last == 0 {
         return format!(" {mid} cleared");
     }
-    // Recent burn rate over the last min(7, n) days.
-    let n = series.len();
-    let look = n.clamp(2, 7);
-    let a = series[n - look].remaining as i64;
-    let b = last;
-    let per_day = (a - b) as f64 / (look - 1) as f64;
-    if per_day <= 0.0 {
-        return format!(" {mid} not burning down");
+    if delta >= 0 {
+        // Flat (delta == 0) or rising (delta > 0): the window's own rate is
+        // not falling, so "days to clear" has no window to project from.
+        return String::new();
     }
+    let per_day = (-delta) as f64 / (len - 1) as f64;
     let days = (last as f64 / per_day).ceil() as i64;
     format!(" {mid} ~{days}d to clear at current rate")
 }
@@ -2394,5 +2426,165 @@ mod tests {
 
         // A non-empty store still draws the grid, even over an all-zero window.
         assert!(render_heatmap(&ctx, &days, anchor(), false).contains("Mon"));
+    }
+
+    /// #13: the legend must be a KEY to the grid — each swatch painted with
+    /// exactly the style (glyph + role) `cell` uses for a day at that level —
+    /// not one flat span in one muted colour with only the glyph changing.
+    ///
+    /// Checked under truecolor, under the `mono` theme (where a grid cell's
+    /// non-zero levels are bold and the zero level is dim — no colour is
+    /// involved at all, so a legend that merely recolours itself uniformly
+    /// cannot pass here even by accident) and under plain/NO_COLOR (where the
+    /// glyph alone still has to carry the distinction).
+    #[test]
+    fn heatmap_legend_swatches_match_grid_cells() {
+        use crate::theme::{self, Caps, ColorDepth};
+        let truecolor = Caps {
+            depth: ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        };
+        let cases = [
+            (
+                "nord/truecolor",
+                Ctx::new(theme::default_theme(), truecolor),
+            ),
+            (
+                "mono/truecolor",
+                Ctx::new(theme::builtin("mono").expect("mono is built in"), truecolor),
+            ),
+            (
+                "plain/no-color",
+                Ctx::new(theme::default_theme(), Caps::PLAIN),
+            ),
+        ];
+        // 84 empty days (12 weeks) — the legend sits in the header line
+        // regardless of what the grid underneath draws.
+        let days: Vec<DayCount> = (0..84)
+            .map(|i| DayCount {
+                date: anchor().saturating_sub(((83 - i) as i64).days()),
+                count: 0,
+            })
+            .collect();
+        for (name, ctx) in &cases {
+            let out = render_heatmap(ctx, &days, anchor(), false);
+            let legend_line = out.lines().next().expect("a header line");
+            for level in [0u32, 1, 3, 5] {
+                let swatch = cell(level, ctx);
+                assert!(
+                    legend_line.contains(&swatch),
+                    "[{name}] legend is missing the level-{level} grid swatch \
+                     {swatch:?} (painted the same way a grid cell would be): \
+                     legend line = {legend_line:?}"
+                );
+            }
+        }
+    }
+
+    /// #14: the trend clause and the clearing estimate must come from ONE
+    /// rate over the stated window, not two different windows that can
+    /// disagree.
+    ///
+    /// This series falls 10 over its full 30-day span but is flat over its
+    /// last 7 days (the window the old, buggy projection used on its own) —
+    /// so the old code's "recent burn rate" was zero right when the headline
+    /// trend was falling, and it printed "not burning down" beside a falling
+    /// trend. Deriving both from the one 30-day rate keeps them agreeing.
+    #[test]
+    fn burndown_facts_falling_window_uses_the_trend_clauses_own_rate() {
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let vals: [u32; 31] = [
+            30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, // 10/10 days, 1/day
+            20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20,
+            20, // flat
+        ];
+        let series: Vec<RemainingPoint> = vals
+            .iter()
+            .enumerate()
+            .map(|(i, &remaining)| RemainingPoint {
+                date: anchor().saturating_sub(((vals.len() - 1 - i) as i64).days()),
+                remaining,
+            })
+            .collect();
+        let out = render_burndown(&ctx, &series, "all tasks", true);
+        assert!(
+            out.contains("down 10 over 31 days"),
+            "trend clause missing or wrong: {out:?}"
+        );
+        assert!(
+            !out.contains("not burning down"),
+            "a falling trend must not also claim it is not burning down: {out:?}"
+        );
+        assert!(
+            out.contains("~60d to clear at current rate"),
+            "the clearing estimate must use the SAME 30-day rate as the trend \
+             clause (10 over 30 days => 1/3 per day => 60d for the 20 left), \
+             not a separate last-7-days rate: {out:?}"
+        );
+    }
+
+    /// #14: the exact shape of the reported bug — "remaining open · all
+    /// tasks   15 left · flat over 30 days · ~Nd to clear at current rate".
+    /// The series is flat end-to-end (15 -> 15 over 30 days) but dips down
+    /// and back up in its last week, which is what let the old
+    /// last-7-days-only projection compute a positive rate and print a
+    /// clearing estimate beside a trend clause that says nothing is moving.
+    #[test]
+    fn burndown_facts_flat_window_omits_the_clearing_estimate() {
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let mut vals = vec![15u32; 23]; // days 0..=22, unchanged
+        vals.extend([20, 19, 18, 17, 16, 15, 15]); // days 23..=29: down then flat
+        assert_eq!(vals.len(), 30);
+        let series: Vec<RemainingPoint> = vals
+            .iter()
+            .enumerate()
+            .map(|(i, &remaining)| RemainingPoint {
+                date: anchor().saturating_sub(((vals.len() - 1 - i) as i64).days()),
+                remaining,
+            })
+            .collect();
+        let out = render_burndown(&ctx, &series, "all tasks", true);
+        assert!(
+            out.contains("15 left"),
+            "expected the last value in the facts line: {out:?}"
+        );
+        assert!(
+            out.contains("flat over 30 days"),
+            "trend clause missing or wrong: {out:?}"
+        );
+        assert!(
+            !out.contains("to clear"),
+            "a flat window's net rate is zero, so a clearing estimate has no \
+             meaning and must be omitted, not computed from a shorter \
+             recent-days window: {out:?}"
+        );
+        assert!(
+            !out.contains("not burning down"),
+            "omitted means absent, not replaced with another clause: {out:?}"
+        );
+    }
+
+    /// #14: a rising window likewise has no rate a clearing date can come
+    /// from, so the estimate must be OMITTED — not printed as "not burning
+    /// down", which still reads as a clause about clearing.
+    #[test]
+    fn burndown_facts_rising_window_omits_the_clearing_estimate() {
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let series: Vec<RemainingPoint> = (0..21)
+            .map(|i| RemainingPoint {
+                date: anchor().saturating_sub(((20 - i) as i64).days()),
+                remaining: 10 + i as u32, // 10 -> 30, straight rise
+            })
+            .collect();
+        let out = render_burndown(&ctx, &series, "all tasks", true);
+        assert!(
+            out.contains("up 20 over 21 days"),
+            "trend clause missing or wrong: {out:?}"
+        );
+        assert!(
+            !out.contains("to clear") && !out.contains("not burning down"),
+            "a rising window must carry no clearing clause at all: {out:?}"
+        );
     }
 }

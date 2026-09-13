@@ -2659,7 +2659,7 @@ fn page_themes() -> String {
         "Remaining open - all tasks\n\
          \x20   4  ______#\n\
          \x20   0  2026-07-10 -> 2026-07-16\n\
-         \x20 > 4 left - up 4 over 7 days - not burning down",
+         \x20 > 4 left - up 4 over 7 days",
     ));
     s.push_str(&table(
         &["Chart", "Flags"],
