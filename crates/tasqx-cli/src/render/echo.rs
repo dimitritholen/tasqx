@@ -41,6 +41,7 @@ use crate::theme::{Ctx, Style};
 use crate::tui::dashboard::panels::dur_compact;
 use jiff::Timestamp;
 use serde_json::Value;
+use tasqx_core::filter::overdue_at;
 
 /// Titles of the other tasks a write moved, read back by the verb, keyed by
 /// short id. A missing entry prints the id alone.
@@ -328,7 +329,7 @@ fn project_fact(ctx: &Ctx, task: &Value, changed: bool) -> Option<Fact> {
 fn due_fact(ctx: &Ctx, task: &Value, now: Timestamp, changed: bool) -> Option<Fact> {
     let due = field_ts(task, "due")?;
     let cell = due_cell(due, now);
-    let late = due < now && status_is_open(&s(task, "status"));
+    let late = overdue_at(due, now) && status_is_open(&s(task, "status"));
     let plain = format!("due {cell}");
     // A changed fact is bold whole, label and all; an unchanged one keeps
     // `list`'s weights, where only a late deadline is loud.

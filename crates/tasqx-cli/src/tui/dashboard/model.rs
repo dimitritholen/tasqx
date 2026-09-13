@@ -169,14 +169,13 @@ impl Task {
         self.project.as_deref()
     }
 
-    /// The calendar date this task is due, in UTC.
-    ///
-    /// Bucketing is by DATE, never by instant. A date-only `due` normalises to
-    /// midnight UTC, so an instant comparison calls a task due *today* overdue
-    /// from one second past midnight — which is exactly what `report.summary`'s
-    /// `overdue` metric does, and the reason this dashboard derives its own.
-    pub fn due_date(&self) -> Option<Date> {
-        self.due.map(|t| t.to_zoned(TimeZone::UTC).date())
+    /// Open and past its deadline at `now`, by core's one definition of overdue
+    /// (D131, `tasqx_core::filter::overdue_at`).
+    pub fn is_overdue(&self, now: Timestamp) -> bool {
+        self.status.is_open()
+            && self
+                .due
+                .is_some_and(|d| tasqx_core::filter::overdue_at(d, now))
     }
 
     fn from_json(v: &Value) -> Option<Self> {
@@ -333,7 +332,7 @@ impl Sort {
 /// Under `Sort::Touched` the grouping is DROPPED — "what did I touch last" is a
 /// question about the store, not about a project, and grouping it would sort
 /// the answer away from the top of the screen.
-pub fn group_tasks(rows: Vec<Task>, today: Date, sort: Sort) -> Tasks {
+pub fn group_tasks(rows: Vec<Task>, now: Timestamp, sort: Sort) -> Tasks {
     // Which rows belong in the list is a property of the ORDER it is in.
     //
     // Under urgency and due it is open work: a finished task has no urgency to
@@ -347,7 +346,7 @@ pub fn group_tasks(rows: Vec<Task>, today: Date, sort: Sort) -> Tasks {
         _ => rows.into_iter().filter(|t| t.status.is_open()).collect(),
     };
     let total = rows.len();
-    let overdue_of = |t: &Task| t.due_date().is_some_and(|d| d < today);
+    let overdue_of = |t: &Task| t.is_overdue(now);
 
     let order = |a: &Task, b: &Task| match sort {
         Sort::Urgency => b
@@ -539,6 +538,9 @@ pub struct Dashboard {
     /// would be untestable at a fixed instant, and would disagree with the
     /// buckets it is drawing whenever a redraw straddles midnight.
     pub today: Date,
+    /// The instant `today` was taken from, and what "overdue" is measured
+    /// against (D131): a deadline with a time is late once this passes it.
+    pub now: Timestamp,
     pub status: StatusBar,
     pub projects: Projects,
     pub burndown: Burndown,
@@ -629,10 +631,7 @@ pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -
             t.running_secs = Some(t.tracked_secs + elapsed);
         }
     }
-    let overdue_now = rows
-        .iter()
-        .filter(|t| t.status.is_open() && t.due_date().is_some_and(|d| d < today))
-        .count();
+    let overdue_now = rows.iter().filter(|t| t.is_overdue(now)).count();
     let blocked_now = rows
         .iter()
         .filter(|t| t.status.is_open() && t.blocked)
@@ -697,7 +696,7 @@ pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -
     };
 
     // ---- PROJECTS + TOKENS: one summary, joined to the snapshot ----------
-    let (projects_panel, tokens_panel) = build_projects_and_tokens(&all, summary, projects, today);
+    let (projects_panel, tokens_panel) = build_projects_and_tokens(&all, summary, projects, now);
 
     // ---- BURNDOWN ---------------------------------------------------------
     // Status and creation date come from the SAME snapshot the status bar
@@ -765,10 +764,11 @@ pub fn build_sorted(src: Sources<'_>, now: Timestamp, today: Date, sort: Sort) -
 
     Dashboard {
         today,
+        now,
         status,
         pulse,
         effort,
-        tasks: group_tasks(rows, today, sort),
+        tasks: group_tasks(rows, now, sort),
         projects: projects_panel,
         burndown,
         tokens: tokens_panel,
@@ -791,7 +791,7 @@ fn build_projects_and_tokens(
     all: &[Task],
     summary: &Value,
     projects: &Value,
-    today: Date,
+    now: Timestamp,
 ) -> (Projects, Tokens) {
     // `report.summary` spells the project-less bucket "(none)" — a name a user
     // can really create, so it only maps to `None` when no real project owns it.
@@ -889,9 +889,7 @@ fn build_projects_and_tokens(
                 archived,
                 is_default,
                 open: mine().filter(|t| t.status.is_open()).count(),
-                overdue: mine()
-                    .filter(|t| t.status.is_open() && t.due_date().is_some_and(|d| d < today))
-                    .count(),
+                overdue: mine().filter(|t| t.is_overdue(now)).count(),
                 est_secs: a.map(|a| a.est).unwrap_or(0),
                 tracked_secs: a.map(|a| a.tracked).unwrap_or(0),
             }

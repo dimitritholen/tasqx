@@ -10,6 +10,7 @@ use jiff::civil::{Date, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Unit};
 use serde_json::{json, Value};
+use tasqx_core::filter::overdue_at;
 
 use crate::theme::Ctx;
 use crate::AGENDA_MAX_DAYS;
@@ -1049,7 +1050,7 @@ pub(crate) fn task_row(t: &Value, now: Timestamp, unicode: bool) -> TaskRow {
             Some(d) => due_cell(d, now),
             None => s(t, "due"),
         },
-        overdue: field_ts(t, "due").map(|d| d < now).unwrap_or(false)
+        overdue: field_ts(t, "due").is_some_and(|d| overdue_at(d, now))
             && status_is_open(&s(t, "status")),
         // #228.16: rendered bare (`cardtag`), the one filter spelling that
         // does not parse (`tasqx list cardtag` -> "unknown filter token") is
@@ -1156,7 +1157,7 @@ pub(crate) fn table_summary(
         .iter()
         .filter(|t| {
             field_ts(t, "due").is_some_and(|d| {
-                d >= now
+                !overdue_at(d, now)
                     && d.to_zoned(TimeZone::UTC).date() == today
                     && status_is_open(&s(t, "status"))
             })
@@ -1460,6 +1461,9 @@ struct Entry<'a> {
     at: Timestamp,
     day: Date,
     kind: When,
+    /// Late by [`overdue_at`] at the instant that placed the row (D131). A late
+    /// row leads the table under `Overdue` even when its day is today.
+    overdue: bool,
 }
 
 /// A `task.list` answer arranged as an agenda: the rows that have a place on the
@@ -1612,13 +1616,15 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda<'_> 
             a.reach_days = Some(a.reach_days.map_or(need, |cur: usize| cur.max(need)));
             continue;
         }
+        let late = overdue_at(at, now);
         let entry = Entry {
             task: t,
             at,
             day,
             kind,
+            overdue: late,
         };
-        if day < today {
+        if late {
             overdue.push(entry);
         } else {
             a.entries.push(entry);
@@ -1642,7 +1648,7 @@ pub fn agenda_select(result: &Value, days: usize, now: Timestamp) -> Agenda<'_> 
     // STABLE, and by the instant alone. The rows arrive in the engine's
     // `-urgency` order, so two tasks landing on the same instant keep the
     // ranking the rest of the tool would give them instead of an arbitrary one.
-    a.entries.sort_by_key(|e| e.at);
+    a.entries.sort_by_key(|e| (!e.overdue, e.at));
     a
 }
 
@@ -1657,11 +1663,11 @@ enum Group {
     Day(Date),
 }
 
-fn group_of(day: Date, today: Date) -> Group {
-    if day < today {
+fn group_of(e: &Entry) -> Group {
+    if e.overdue {
         Group::Overdue
     } else {
-        Group::Day(day)
+        Group::Day(e.day)
     }
 }
 
@@ -1765,7 +1771,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
     //
     // D117 moved it from a trailer to the head of the table, where `list`'s
     // filter sits: both views open by naming the question they answered.
-    let has_future = a.entries.iter().any(|e| e.day >= a.today);
+    let has_future = a.entries.iter().any(|e| !e.overdue);
     let horizon = if a.entries.is_empty() || has_future {
         format!("through {} (+{}d)", a.through, a.days)
     } else {
@@ -1779,7 +1785,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
             .iter()
             .map(|e| {
                 let mut r = task_row(e.task, a.at_start_of_today(), ctx.caps.unicode);
-                let overdue = e.day < a.today;
+                let overdue = e.overdue;
                 r.due = when_cell(e.kind, e.at, overdue);
                 // Repainted from the AGENDA instant, not from `due` alone: a
                 // task scheduled last week and due next month is late on the
@@ -1807,7 +1813,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
 
         let mut current: Option<Group> = None;
         for (e, r) in a.entries.iter().zip(&rows) {
-            let g = group_of(e.day, a.today);
+            let g = group_of(e);
             if current != Some(g) {
                 // A blank line ahead of every heading but the first. Groups run
                 // flush otherwise, and a heading with no air above it reads as
@@ -2651,7 +2657,7 @@ fn task_detail_card(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             // does in `list`: the same fact in the same colour on both.
             DetailField::Due => (
                 Some(
-                    if field_ts(result, "due").is_some_and(|d| d < now)
+                    if field_ts(result, "due").is_some_and(|d| overdue_at(d, now))
                         && status_is_open(&s(result, "status"))
                     {
                         "overdue"
@@ -3449,7 +3455,7 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     }
     if let Some(due) = field_ts(t, "due") {
         let cell = format!("due {}", due_cell(due, now));
-        let painted = if due < now {
+        let painted = if overdue_at(due, now) {
             ctx.paint("overdue", &cell)
         } else {
             cell.clone()
@@ -3567,7 +3573,7 @@ pub fn why(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
                 "deadline",
                 match field_ts(result, "due") {
                     None => "none".to_string(),
-                    Some(due) if due < now => format!("overdue, {}", day_ago(due, now)),
+                    Some(due) if overdue_at(due, now) => format!("overdue, {}", day_ago(due, now)),
                     Some(due) => format!("due {}", due_cell(due, now)),
                 },
                 *v,
@@ -7696,6 +7702,91 @@ mod tests {
             row("at a real time").contains("due 17:00"),
             "a time the store holds is still shown: {:?}",
             row("at a real time")
+        );
+    }
+
+    /// D131: `list` and `agenda` answer "how many are overdue" with one rule.
+    /// Found by rendering a store: a task due at 17:00 read `today 17:00` in
+    /// red with `2 overdue` in `list`, while `agenda` filed it under `Today`
+    /// and said `1 overdue` — `list` compared instants and `agenda` compared
+    /// days. A deadline with a time is late once it passes; a date-only one
+    /// (midnight UTC) is late once its day has.
+    #[test]
+    fn list_and_agenda_agree_on_what_is_overdue_today() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let payload = json!({
+            "tasks": [
+                dated(1, "missed this morning", "2026-08-03T08:00:00Z", ""),
+                dated(2, "due today no time", "2026-08-03T00:00:00Z", ""),
+                dated(3, "due yesterday no time", "2026-08-02T00:00:00Z", ""),
+                dated(4, "due this evening", "2026-08-03T17:00:00Z", ""),
+            ],
+            "count": 4,
+            "total": 4,
+        });
+        let listed = task_table(&ctx, &payload, anchor());
+        let agenda = agenda_text(&ctx, &agenda_of(&payload, 14));
+        let head = |out: &str| out.lines().next().unwrap_or_default().to_string();
+
+        assert!(head(&listed).contains("2 overdue"), "list:\n{listed}");
+        assert!(head(&agenda).contains("2 overdue"), "agenda:\n{agenda}");
+        assert!(
+            head(&listed).contains("2 due today"),
+            "the date-only deadline is still due today:\n{listed}"
+        );
+
+        let lines: Vec<&str> = agenda.lines().collect();
+        let at = |needle: &str| {
+            lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} missing:\n{agenda}"))
+        };
+        let today = at("Today");
+        assert!(
+            at("missed this morning") < today,
+            "a deadline that passed this morning is in the Overdue group:\n{agenda}"
+        );
+        assert!(
+            at("due today no time") > today,
+            "a date-only deadline today stays under Today:\n{agenda}"
+        );
+    }
+
+    /// D131 on the two single-task screens: `why` and the `show` card said
+    /// `overdue` for a date-only deadline from one second past midnight.
+    #[test]
+    fn why_and_the_card_do_not_call_a_date_only_deadline_overdue_on_its_own_day() {
+        let now: Timestamp = "2026-09-11T11:00:00Z".parse().unwrap();
+        let plain = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let task = |due: &str| {
+            json!({
+                "short_id": 48, "title": "Renew the TLS certificate", "priority": "H",
+                "urgency": 18.0, "due": due, "created": "2026-09-02T10:00:00Z",
+                "blocked": false,
+                "urgency_breakdown": { "priority": 6.0, "due_proximity": 12.0, "age": 0.0 }
+            })
+        };
+        let date_only = why(&plain, &task("2026-09-11T00:00:00Z"), now);
+        assert!(!date_only.contains("overdue"), "{date_only}");
+        assert!(date_only.contains("due today"), "{date_only}");
+        let missed = why(&plain, &task("2026-09-11T09:00:00Z"), now);
+        assert!(missed.contains("overdue, today"), "{missed}");
+
+        let color = Ctx::new(
+            theme::default_theme(),
+            Caps {
+                depth: theme::ColorDepth::Truecolor,
+                ansi: true,
+                unicode: true,
+            },
+        );
+        let mut t = detail_fixture();
+        t["due"] = json!("2026-09-11T00:00:00Z");
+        let card = task_detail(&color, &t, now);
+        assert!(
+            !card.contains(&color.paint("overdue", "today")),
+            "a date-only deadline today is not painted overdue: {card:?}"
         );
     }
 

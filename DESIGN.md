@@ -3530,3 +3530,15 @@ above.
 **Rejected:** `--notes-from-tag`, an annotated tag message — `gh` refuses it together with `--generate-notes`, and a tag message is text that never passes review. Failing the publish job on a missing section — by then the tag is already pushed, so the failure would strand a tag with no release; the guard sits at the version bump instead, where fixing it is a commit.
 
 **Where:** `CHANGELOG.md`, `.github/workflows/release.yml` (publish step), `crates/tasqx-cli/tests/readme.rs`, `CONTRIBUTING.md` ("Releasing").
+
+### D131 — "Overdue" has one definition: a deadline with a time is late once it passes, a date-only deadline once its day has ended (amends D53, #148)
+
+**Decision:** `tasqx_core::filter::overdue_at(due, now)` is the only test for "overdue". A `due` at exactly 00:00:00 UTC — the store's spelling of a date typed without a time (D53) — is overdue once `now`'s UTC date is past that date; any other `due` is overdue once `now` passes it. `report.summary`, `project.archive`'s `open_overdue`, `list`, `agenda`, `show`, `next`, `why`, the write echoes, the HTML report and the dashboard all call it, through `filter::is_overdue` or the dashboard's `Task::is_overdue`.
+
+**Why:** rendering a store showed `list` saying `2 overdue`, with a task due at 17:00 three hours earlier painted red, while `agenda` filed the same row under `Today` and said `1 overdue`. `list`, `report` and `why` compared instants, so a date-only deadline was overdue from one second past midnight of its own day. The dashboard and `agenda` compared days, so a deadline at 09:00 stayed out of "overdue" until the next day. Each rule existed to prevent the other's failure; this one prevents both.
+
+**The agenda:** a late row leads the table under `Overdue` even when its day is today, because D53 promises overdue rows first. The placing instant stays the earlier of `due` and `scheduled`, so a start time that has passed also files a row there, as a start date in the past already did.
+
+**Not changed:** `due.before:now` filters on a literal instant and still matches a date-only deadline from midnight; #148's agreement between it and the report holds for deadlines with a time. Urgency's `due_proximity` term is a score, not this label, and is untouched. D104's period-end keywords, which already resolve to 23:59:59, are unaffected.
+
+**Where:** `crates/tasqx-core/src/filter.rs` (`overdue_at`, `is_overdue`), `engine/projects.rs`, `crates/tasqx-cli/src/render.rs` (`task_row`, `table_summary`, `agenda_select`, `agenda_text`, the `show` card, `next`, `why`), `render/echo.rs`, `html.rs`, `tui/dashboard/model.rs` (`Task::is_overdue`, `Dashboard::now`) and `tui/dashboard/panels.rs`.

@@ -1226,23 +1226,37 @@ fn bound(value: &str, prefix: &str, now: Timestamp) -> Result<Timestamp, String>
         .ok_or_else(|| format!("`{prefix}:{value}` resolved to an unreadable instant {resolved:?}"))
 }
 
-/// Whether an OPEN task with this `due` is overdue at `now` — one INSTANT-
-/// based definition, shared so `report.summary`'s `overdue` metric cannot
-/// independently drift from `due.before:now`, the filter DSL's own overdue
-/// query (#148: the two used to disagree, because `now` itself resolved to
-/// midnight — see `datetime.rs` #144 — not because either side had its own
-/// idea of "overdue").
+/// Whether a deadline at `due` has been missed at `now` — the ONE definition of
+/// "overdue" every surface reads (D131): `report.summary`, `project.archive`'s
+/// count, `list`, `agenda`, `show`, `why`, the write echoes, the HTML report
+/// and the dashboard.
 ///
-/// This is deliberately NOT the dashboard's definition. `tasqx-cli`'s
-/// `tui::dashboard::model` buckets by calendar DATE on purpose, documented at
-/// its own `Task::due_date`: an instant comparison calls a task due *today*
-/// overdue one second past midnight, which the dashboard was built to avoid.
-/// That is a separate, already-reasoned product decision about a panel
-/// display, not an accidental divergence in date PARSING — the seam this
-/// cluster owns — so this fix unifies the two surfaces that share one
-/// definition and leaves that one alone rather than overriding it here.
+/// A deadline with a time is missed once that instant passes. A deadline typed
+/// without one is stored as midnight UTC (`datetime.rs`, D53) and means "by the
+/// end of that day", so it is missed only once its UTC day has ended. The
+/// instant rule alone called a task due today overdue one second past midnight,
+/// which the dashboard refused and bucketed by date instead; the date rule alone
+/// kept a task due at 09:00 out of "overdue" until the next day, which `list`
+/// refused. The two screens then disagreed about the same row. This rule is
+/// what each of them was protecting.
+///
+/// `due.before:now` is a filter over a literal instant and is deliberately NOT
+/// this: it still matches a date-only deadline from midnight. #148 aligned the
+/// report with it for timed deadlines, where the two still agree.
+pub fn overdue_at(due: Timestamp, now: Timestamp) -> bool {
+    let tz = jiff::tz::TimeZone::UTC;
+    let at = due.to_zoned(tz.clone());
+    let t = at.time();
+    if t.hour() == 0 && t.minute() == 0 && t.second() == 0 && t.subsec_nanosecond() == 0 {
+        at.date() < now.to_zoned(tz).date()
+    } else {
+        due < now
+    }
+}
+
+/// Whether an OPEN task with this `due` is overdue at `now`, by [`overdue_at`].
 pub fn is_overdue(status_is_open: bool, due: Option<&str>, now: Timestamp) -> bool {
-    status_is_open && due.and_then(parse_ts).is_some_and(|d| d < now)
+    status_is_open && due.and_then(parse_ts).is_some_and(|d| overdue_at(d, now))
 }
 
 #[cfg(test)]
@@ -2784,5 +2798,44 @@ mod tests {
         let f = Filter::parse(&flat, anchor())
             .unwrap_or_else(|e| panic!("5000 sibling groups nest one deep, so: {e}"));
         assert!(f.matches(&ctx));
+    }
+
+    /// D131: a deadline with a time is late once that instant has passed; a
+    /// deadline typed without one is stored as midnight UTC and is late only
+    /// once its whole day has. The instant rule alone called a task due today
+    /// overdue one second past midnight; the day rule alone kept a task due at
+    /// 09:00 out of "overdue" until the next day.
+    #[test]
+    fn a_date_only_deadline_is_due_by_the_end_of_its_day() {
+        let at = |s: &str| s.parse::<Timestamp>().expect("a real instant");
+        let noon = at("2026-07-19T12:00:00Z");
+        assert!(
+            !is_overdue(true, Some("2026-07-19T00:00:00Z"), noon),
+            "a date-only deadline today is not late at noon"
+        );
+        assert!(
+            is_overdue(true, Some("2026-07-19T09:00:00Z"), noon),
+            "a deadline at 09:00 today has passed by noon"
+        );
+        assert!(
+            !is_overdue(true, Some("2026-07-19T17:00:00Z"), noon),
+            "a deadline this evening has not"
+        );
+        assert!(
+            is_overdue(true, Some("2026-07-18T00:00:00Z"), noon),
+            "yesterday's date-only deadline is late"
+        );
+        assert!(
+            is_overdue(
+                true,
+                Some("2026-07-19T00:00:00Z"),
+                at("2026-07-20T00:00:00Z")
+            ),
+            "a date-only deadline is late from the first second of the next day"
+        );
+        assert!(
+            !is_overdue(false, Some("2026-07-18T00:00:00Z"), noon),
+            "a closed task is never overdue"
+        );
     }
 }

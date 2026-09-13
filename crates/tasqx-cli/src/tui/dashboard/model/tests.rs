@@ -439,10 +439,7 @@ fn the_status_bar_counts_agree_with_the_panels_below_it() {
     // and it now binds the header to the rows the one list draws.
     assert_eq!(
         d.status.overdue,
-        rows(&d)
-            .iter()
-            .filter(|t| t.due_date().is_some_and(|x| x < d.today))
-            .count(),
+        rows(&d).iter().filter(|t| t.is_overdue(now())).count(),
         "the header may never disagree with the list under it"
     );
     assert_eq!(
@@ -453,10 +450,43 @@ fn the_status_bar_counts_agree_with_the_panels_below_it() {
     assert_eq!(d.status.done_week, 1, "only the recent completion counts");
 }
 
-/// The bug this bucketing exists to avoid: a date-only `due` normalises to
-/// midnight, so an instant comparison calls a task due TODAY overdue from one
-/// second past midnight. `report.summary`'s own `overdue` metric does exactly
-/// that, which is why the dashboard derives its own.
+/// D131: bucketing by date kept a date-only deadline out of "overdue" on its
+/// own day — and kept a deadline WITH a time out of it too, for the rest of
+/// that day. A task due at 09:00 must be overdue at noon.
+#[test]
+fn a_deadline_with_a_time_earlier_today_is_overdue() {
+    let tasks = task_list(vec![
+        with(
+            task_row(1, "due 09:00 today"),
+            "due",
+            json!("2026-08-05T09:00:00Z"),
+        ),
+        with(
+            task_row(2, "due 17:00 today"),
+            "due",
+            json!("2026-08-05T17:00:00Z"),
+        ),
+        with(
+            task_row(3, "due today, no time"),
+            "due",
+            json!("2026-08-05T00:00:00Z"),
+        ),
+    ]);
+    let d = build_with(tasks, summary(vec![]), project_list(vec![]));
+    assert_eq!(
+        d.status.overdue, 1,
+        "only the 09:00 deadline has passed at noon"
+    );
+    assert_eq!(
+        d.tasks.groups.iter().map(|g| g.overdue).sum::<usize>(),
+        1,
+        "the group headings count the same overdue the header does"
+    );
+}
+
+/// A date-only `due` normalises to midnight UTC, so a bare instant comparison
+/// would call a task due TODAY overdue from one second past midnight. D131
+/// counts it as due by the end of its day, here and on every other surface.
 #[test]
 fn a_task_due_today_at_midnight_is_today_and_not_overdue() {
     let tasks = task_list(vec![
@@ -502,7 +532,7 @@ fn a_task_due_today_at_midnight_is_today_and_not_overdue() {
         .groups
         .iter()
         .flat_map(|g| &g.rows)
-        .filter(|t| t.due_date().is_some_and(|x| x < d.today))
+        .filter(|t| t.is_overdue(now()))
         .map(|t| t.short_id)
         .collect();
     assert_eq!(overdue, vec![2]);
