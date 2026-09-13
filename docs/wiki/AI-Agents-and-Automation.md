@@ -54,7 +54,9 @@ Safety properties worth knowing:
 For the full workflow — what deserves a backlog entry, searching memory before
 starting, annotating before completing — see the
 [AI agent guide](../guides/ai-agent-workflow.md) and the
-[agent starter prompt](../guides/agent-starter-prompt.md).
+[agent starter prompt](../guides/agent-starter-prompt.md). For the retrospective
+hook that fires on `tasqx_complete_task` and has the agent record what it
+learned, see [A self-improving agent](../guides/self-improving-agent.md).
 
 ## tasqx api
 

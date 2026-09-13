@@ -28,6 +28,9 @@ rustc-ice-*.txt
 mutants.out/
 mutants.out.old/
 
+# hookify rules are per-machine guards, not part of the repo.
+.claude/*.local.md
+
 # Stray agent skills — kept on disk, not part of this project.
 .agents/
 

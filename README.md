@@ -323,6 +323,8 @@ The worked guides each take five minutes and end with commands you can paste:
   feature, ordered by dependencies. The solo alternative to a board.
 - [Driving tasqx from an AI agent](docs/guides/ai-agent-workflow.md) — wire up
   MCP and let an agent work the backlog end to end.
+- [A self-improving agent](docs/guides/self-improving-agent.md) — a hook on task
+  completion that makes the agent write down what it learned.
 - [Giving an agent memory in any client](docs/guides/agent-starter-prompt.md)
   — a paste-anywhere block for clients without a tasqx skill.
 - [Personal task management](docs/guides/personal-gtd.md) — frictionless
