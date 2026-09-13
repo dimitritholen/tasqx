@@ -13,7 +13,7 @@
 # somebody's shell history.
 #
 # Run it with a bare `cargo mutants` — the scope and timeouts below are the
-# defaults, so nobody has to remember the flags. See docs/mutation-testing.md
+# defaults, so nobody has to remember the flags. See docs/maintainers/mutation-testing.md
 # for how to read the output and how to triage a survivor.
 
 # SCOPE — the deliberate part.
@@ -77,7 +77,7 @@ cap_lints = true
 #
 # Suppressing a survivor is only legitimate when it is provably unkillable.
 # Anything that is merely hard to test belongs in the known-survivors table in
-# docs/mutation-testing.md, not here.
+# docs/maintainers/mutation-testing.md, not here.
 #
 # A suppressed mutant is invisible in the sweep output by construction, so it
 # has to be visible somewhere: every entry below must have a row in that table,

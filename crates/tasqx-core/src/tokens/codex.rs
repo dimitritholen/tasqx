@@ -32,7 +32,7 @@
 //! four-field schema comparable across tools: everywhere in tasqx,
 //! `input_tokens` means *fresh* input and cache reads live in their own field.
 //!
-//! # The dedup rule (empirically verified — see docs/research/token-accounting.md)
+//! # The dedup rule (empirically verified — see DESIGN.md §10)
 //!
 //! `token_count` events are duplicated (~2x) and each carries both a cumulative
 //! `total_token_usage` and a per-request `last_token_usage`, with the invariant

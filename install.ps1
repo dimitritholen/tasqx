@@ -748,7 +748,7 @@ function Resolve-InstallDirectory {
 
 # What the user's shell will actually run, asked of the shell rather than
 # inferred from the PATH string. A cargo-installed tasqx in ~\.cargo\bin is the
-# likely shadow -- CLAUDE.md tells every contributor to create one -- and an
+# likely shadow -- CONTRIBUTING.md tells every contributor to create one -- and an
 # installer that reports success while a different binary answers
 # `tasqx --version` is the worst outcome available here: the user concludes the
 # installer is broken, or does not notice.

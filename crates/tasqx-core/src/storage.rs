@@ -245,7 +245,7 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         );
         CREATE INDEX IF NOT EXISTS idx_annotations_task ON annotations(task_id);
 
-        -- AI token measurements, many per task (docs/research/token-accounting.md).
+        -- AI token measurements, many per task (DESIGN.md §10).
         -- Four separate counts by design — cache tokens cost a fraction of fresh
         -- ones, so a blended total destroys what a cost report needs. `tool` is
         -- free-form (new agents appear faster than releases); `source` and
@@ -269,7 +269,7 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         CREATE INDEX IF NOT EXISTS idx_token_usage_task ON token_usage(task_id);
 
         -- Raw per-request OTLP samples buffered by the opt-in local receiver
-        -- (#18, docs/research/token-accounting.md). Deliberately NOT joined to a
+        -- (#18, DESIGN.md §10). Deliberately NOT joined to a
         -- task: these arrive over telemetry *before* any attribution and are
         -- matched to a task later by `session_id` + time window, so there is no
         -- `task_id` and no foreign key. `session_id` is nullable because a tool

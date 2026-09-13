@@ -8,7 +8,7 @@
 # only) -> no bump, exit 0 without touching anything.
 #
 # This is a local tool, run by hand as part of the release step (see
-# docs/agents/... release workflow: local ff-merge into main, no PR, no
+# CONTRIBUTING.md, "Releasing": local ff-merge into main, no PR, no
 # CI bot committing to main). It never tags or pushes.
 #
 # Usage:

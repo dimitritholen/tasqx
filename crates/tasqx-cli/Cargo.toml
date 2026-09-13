@@ -34,10 +34,9 @@ clap = { version = "4.6.1", features = ["derive"] }
 #
 # Chosen over static `clap_complete::aot` generation, which IS stable API,
 # because every value this feature exists to supply — the user's projects, tags
-# and open task ids — is knowable only at Tab time. See
-# docs/specs/2026-08-01-shell-completion-design.md for the two rejected
-# alternatives and why five hand-maintained shell scripts is the same drift shape
-# this repo has been bitten by before.
+# and open task ids — is knowable only at Tab time. Five hand-maintained
+# shell scripts would be the same drift shape this repo has been bitten by
+# before.
 #
 # It does NOT raise the measured MSRV: clap_complete 4.6.7 declares
 # rust-version 1.85, well under the workspace's 1.95 floor. `unstable-dynamic`

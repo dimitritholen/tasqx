@@ -3216,7 +3216,7 @@ fn memory_search_off_a_terminal_is_a_record_per_hit() {
 /// `table.label`, not a `header`.
 ///
 /// It printed `Built-in themes` in the `header` role, a group label painted
-/// as a title (`docs/terminal-style.md` rule 12), and spent nine cells of
+/// as a title (`docs/maintainers/terminal-style.md` rule 12), and spent nine cells of
 /// `← active` on one row.
 #[test]
 fn theme_list_marks_the_active_theme_in_a_rail() {
@@ -3510,7 +3510,7 @@ fn theme_show_names_each_roles_colour_and_emphasis() {
 /// The band preview carries a note saying what 12 means, and at 60 columns the
 /// line ran to 66 and wrapped. The note is dropped rather than the line cut,
 /// because the swatches and their band starts are the preview and the note
-/// only explains it (`docs/terminal-style.md` rule 9). It returns at a width
+/// only explains it (`docs/maintainers/terminal-style.md` rule 9). It returns at a width
 /// that holds it.
 #[test]
 fn the_theme_show_ramp_line_fits_and_drops_its_note_rather_than_wrap() {

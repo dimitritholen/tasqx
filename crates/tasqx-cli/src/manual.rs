@@ -5,7 +5,7 @@
 //! `tasqx manual <name>`; there is no pager (kept dependency-free and portable).
 //! For the exhaustive browser guide, `tasqx docs`.
 //!
-//! The page follows `docs/terminal-style.md`, plus six conventions of its
+//! The page follows `docs/maintainers/terminal-style.md`, plus six conventions of its
 //! own, because it is the one screen that is mostly prose:
 //!
 //! - Prose keeps a measure (`MEASURE`) rather than running to the edge.

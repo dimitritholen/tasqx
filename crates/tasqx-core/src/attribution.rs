@@ -1,4 +1,4 @@
-//! Async token attribution (docs/research/token-accounting.md, backlog #17).
+//! Async token attribution (DESIGN.md §10, backlog #17).
 //!
 //! When a task is completed, the daemon reconstructs the tokens spent during the
 //! task's time window by parsing the AI tool's own local transcript, and stores
@@ -1400,7 +1400,7 @@ pub fn pending_attributions(engine: &Engine) -> Result<Vec<PendingAttribution>, 
         // marker banked before sample ids were persisted carries no claim, so
         // a moved-stamp theft against a pre-upgrade bank is closed only by the
         // full ordered recompute D50 Decision 3 mandates
-        // (docs/specs/2026-07-31-attribution-direction-design.md).
+        // (DESIGN.md §12, D50).
         let consumed_sample_ids: HashSet<String> = consumed_by_task
             .iter()
             .filter(|(other_id, _)| *other_id != task_id)

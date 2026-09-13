@@ -10,7 +10,7 @@ targets = [
 unmaintained = "workspace"
 unsound = "workspace"
 # Exceptions must use the structured owner/reason/expiry format documented in
-# docs/dependency-policy.md. Bare advisory IDs and blanket ignores are banned.
+# docs/maintainers/dependency-policy.md. Bare advisory IDs and blanket ignores are banned.
 ignore = []
 
 [licenses]
