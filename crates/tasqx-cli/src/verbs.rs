@@ -883,11 +883,18 @@ pub(crate) fn run_memory(be: &mut Backend, ctx: &Ctx, action: &MemoryAction) -> 
         MemoryAction::Show { id } => {
             let result = be.call("memory.get", &json!({ "id": id }))?;
             let source = result["source"].as_str().unwrap_or("—");
+            // D135: `body` in the JSON result is exactly what was stored —
+            // `--json` on this same command must show the fence, if any, so
+            // a caller can round-trip it. The TEXT rendering, like the D121
+            // memory browser's own, reads a leading frontmatter block as
+            // `key  value` prose instead: one reader should not have to
+            // parse `---`/`key:` lines the browser already stopped printing.
+            let body = tasqx_core::frontmatter::flatten(result["body"].as_str().unwrap_or(""));
             let text = format!(
                 "{}  ({})\n{}\n",
                 render::san(result["title"].as_str().unwrap_or("?")),
                 render::san(source),
-                render::san_multiline(result["body"].as_str().unwrap_or("")),
+                render::san_multiline(&body),
             );
             Ok((result, text))
         }
@@ -994,35 +1001,6 @@ pub(crate) fn run_memory_import(be: &mut Backend, path: &str) -> CmdOutcome {
     Ok((result, text))
 }
 
-/// Split a leading YAML frontmatter block (`---` … `---`) off `body`.
-///
-/// Returns `(frontmatter, rest)`: `frontmatter` is the text between the two
-/// fence lines (or `None` when the file does not open with one), and `rest`
-/// is everything after the closing fence, ready to store and index. Anything
-/// short of a real closing fence is left alone — a body that merely starts
-/// with a horizontal rule is not frontmatter, and reading it as one would eat
-/// the entire file looking for a `---` that never comes.
-fn split_frontmatter(body: &str) -> (Option<&str>, &str) {
-    let Some(after_open) = body.strip_prefix("---\n") else {
-        return (None, body);
-    };
-    // `\n---` alone would also match `\n---\n` inside a fenced code block that
-    // happens to contain three dashes; scanning line-by-line from the top
-    // (rather than a substring search) is what makes this only ever the FIRST
-    // real fence line, which is the one YAML frontmatter promises.
-    let mut consumed = 0;
-    for line in after_open.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches('\n');
-        if trimmed == "---" {
-            let fm = &after_open[..consumed];
-            let rest = &after_open[consumed + line.len()..];
-            return (Some(fm), rest);
-        }
-        consumed += line.len();
-    }
-    (None, body)
-}
-
 /// The title a frontmatter block would have given the document, if any:
 /// `title:` or `name:` (`title` first), a bare or single-quoted scalar value.
 /// Deliberately not a YAML parser — the values this needs to read are the
@@ -1094,8 +1072,14 @@ pub(crate) fn memory_docs_from_path(path: &str) -> Result<Vec<Value>, tasqx_core
         // idiom) opens with one, and `originSessionId`/`modified`/`type` then
         // dominated search snippets over the prose that answers the query.
         // Cut before the title/heading scan below, so a frontmatter `title:`
-        // does not race the body's own `# ` heading.
-        let (frontmatter, body) = split_frontmatter(body);
+        // does not race the body's own `# ` heading. `frontmatter::block` is
+        // the one fence-finder (task #12/D135) — shared with the memory
+        // browser's own renderer and `render::doc_summary` instead of each
+        // reading `---\n...\n---\n` its own way.
+        let (frontmatter, body) = match tasqx_core::frontmatter::block(body) {
+            Some((fm, rest)) => (Some(fm), rest),
+            None => (None, body),
+        };
         // Title: the first `# ` heading, else frontmatter's `title:`/`name:`,
         // else the file stem. The heading STAYS in the body — the title is an
         // index entry, not a cut. Frontmatter is cut; nothing there is prose

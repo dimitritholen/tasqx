@@ -44,12 +44,15 @@ impl Facts {
 }
 
 pub(crate) fn render(ctx: &Ctx, f: &Facts) -> String {
-    let rows: [(&str, &str); 5] = [
+    // `times`: every clock tasqx reads and prints is UTC (D132), and this is
+    // the screen that says what kind of tasqx is in front of you.
+    let rows: [(&str, &str); 6] = [
         ("made by", AUTHOR),
         ("linkedin", LINKEDIN),
         ("github", GITHUB),
         ("build", f.version),
         ("store", &f.store),
+        ("times", "UTC"),
     ];
     // `columns::fit` sizes the label column and the gap, as it does for every
     // other table here. Both columns are FIXED, for the same reason a number
@@ -155,7 +158,7 @@ mod tests {
         let f = facts();
         for cols in Ctx::MIN_COLS..=Ctx::MAX_COLS {
             let screen = render(&at(cols), &f);
-            for label in ["made by", "linkedin", "github", "build", "store"] {
+            for label in ["made by", "linkedin", "github", "build", "store", "times"] {
                 assert!(
                     screen.lines().any(|l| l.starts_with(&format!("  {label}"))),
                     "the label {label:?} is cut or moved at {cols}:\n{screen}"
@@ -207,6 +210,22 @@ mod tests {
         assert!(
             row.ends_with(crate::VERSION),
             "the build row is not `--version`'s own string: {row:?}"
+        );
+    }
+
+    /// D132: every clock time tasqx reads and prints is UTC, and `about` is
+    /// where a person looks up what kind of build and store they have — so it
+    /// says which clock that is.
+    #[test]
+    fn the_screen_names_the_clock_as_utc() {
+        let screen = render(&at(100), &facts());
+        let row = screen
+            .lines()
+            .find(|l| l.trim_start().starts_with("times"))
+            .expect("a times row");
+        assert!(
+            row.ends_with("UTC"),
+            "the times row does not say UTC: {row:?}"
         );
     }
 
