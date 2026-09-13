@@ -652,10 +652,10 @@ Through a pipe the same words print, unfitted: the rail spells itself
 
         Topic::Dates => {
             "\
-Dates take natural language. A bare date is midnight UTC, and a
-clock time is read in your machine's own zone and converted to UTC
-for storage: `due:17:00` on a machine set to Amsterdam is 15:00
-UTC. An offset you write yourself (`+02:00`, or a trailing `Z`) is
+Dates take natural language. Everything is UTC: a bare date is
+midnight UTC, and a clock time is a UTC clock — `due:17:00` is 17:00
+UTC wherever you type it, and every screen prints it back as 17:00.
+An offset you write yourself (`+02:00`, or a trailing `Z`) is
 honoured as written.
 
   Relative days\t`today`, `tomorrow`, `yesterday`, `now`, `eom` (end of month), `eow` (end of week).
@@ -1961,22 +1961,23 @@ mod tests {
         assert!(marked, "the page never says what `*` marks:\n{page}");
     }
 
-    /// The dates topic states the rule the parser follows. It said the
-    /// opposite of it: `parse_when` reads a naked clock time in the machine's
-    /// own zone (`datetime.rs`, #138) and only a bare DATE stays midnight UTC,
-    /// which is what the HTML guide has said all along — the two surfaces
-    /// disagreed, and the terminal one was wrong.
+    /// The dates topic states the rule the parser follows (D132): a clock
+    /// time with no offset is UTC, and a bare date is midnight UTC. It said a
+    /// clock time was read in the machine's own zone, which was true until
+    /// D132 and would now be a page describing a parser that no longer exists.
     #[test]
     fn the_dates_topic_states_the_zone_rule_the_parser_follows() {
         let page = render(&plain(), Some("dates")).unwrap();
-        assert!(
-            !page.contains("means 17:00 UTC"),
-            "the page still claims a typed clock time is UTC:\n{page}"
-        );
         let lower = page.to_lowercase();
+        for stale in ["your machine", "own zone", "amsterdam"] {
+            assert!(
+                !lower.contains(stale),
+                "the page still says a clock time is local ({stale:?}):\n{page}"
+            );
+        }
         assert!(
-            lower.contains("your machine") || lower.contains("own zone"),
-            "the page must say a clock time is read in the machine's zone:\n{page}"
+            page.contains("`due:17:00` is 17:00 UTC"),
+            "the page must say a clock time is UTC:\n{page}"
         );
         assert!(
             lower.contains("midnight utc"),

@@ -2143,7 +2143,26 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
     // `Thu 10 Sep` / `in 2 days` identically on both surfaces. Only the
     // *values* converge here; the layout stays each renderer's own (D78's rail
     // card is untouched by this).
-    let fmt_i = |v: &str| instant_value(ctx, v, now);
+    // D132: every clock on this screen is UTC, and the first one that shows a
+    // clock says so — once, after the clock, not on every cell. `iso` prints
+    // the stored `…Z`, which already says it, and a card with no clock on it
+    // has nothing to mark.
+    let marked = std::cell::Cell::new(false);
+    let fmt_i = |v: &str| {
+        let out = instant_value(ctx, v, now);
+        if marked.get()
+            || ctx.time_format == tasqx_core::markdown::TimeFormat::Iso
+            || v.parse::<Timestamp>().is_err()
+        {
+            return out;
+        }
+        let (day, rest) = out.split_at(out.find(" (").unwrap_or(out.len()));
+        if !day.contains(':') {
+            return out;
+        }
+        marked.set(true);
+        format!("{day} UTC{rest}")
+    };
     let fmt_d = |v: &str| duration_value(ctx, v, now);
 
     let mut rows = Vec::new();
@@ -4048,6 +4067,50 @@ mod tests {
             out_iso, out_rel,
             "detail.time_format had no effect on `show`'s output"
         );
+    }
+
+    /// D132: every clock `show` prints is UTC, and the screen says so once —
+    /// on the first time value that carries a clock, not on every cell. Before
+    /// it, `today 17:00` read as the wall clock to anyone not on UTC.
+    #[test]
+    fn show_says_utc_once_on_its_first_clock() {
+        let now: Timestamp = "2026-09-13T12:00:00Z".parse().unwrap();
+        let t = json!({
+            "short_id": 55, "title": "C", "status": "pending",
+            "urgency": 8.0, "project": "work",
+            "due": "2026-09-13T17:00:00Z", "scheduled": "2026-09-14T09:00:00Z",
+            "created": "2026-09-01T10:00:00Z", "modified": "2026-09-13T11:00:00Z",
+            "_rev": 2
+        });
+        for (layout, ctx) in [
+            ("plain", Ctx::new(theme::default_theme(), Caps::PLAIN)),
+            ("card", Ctx::new(theme::default_theme(), card_caps())),
+        ] {
+            let out = task_detail(&ctx, &t, now);
+            assert_eq!(
+                out.matches("UTC").count(),
+                1,
+                "{layout}: UTC must be said exactly once:\n{out}"
+            );
+            assert!(
+                out.contains("today 17:00 UTC"),
+                "{layout}: the marker is not on the first clock:\n{out}"
+            );
+        }
+        // No clock on the screen, nothing to mark: a date is a date.
+        let mut dated = t.clone();
+        dated["due"] = json!("2026-09-20T00:00:00Z");
+        dated["scheduled"] = json!("");
+        dated["modified"] = json!("2026-09-10T11:00:00Z");
+        let out = task_detail(&Ctx::new(theme::default_theme(), Caps::PLAIN), &dated, now);
+        assert!(
+            !out.contains("UTC"),
+            "a clockless card grew a marker:\n{out}"
+        );
+        // `iso` prints the stored `…Z`, which already says it.
+        let iso = Ctx::new(theme::default_theme(), Caps::PLAIN).with_time_format(TimeFormat::Iso);
+        let out = task_detail(&iso, &t, now);
+        assert!(!out.contains("UTC"), "iso mode doubled its Z:\n{out}");
     }
 
     /// The capability level the card renders at, measurable: `unicode` turns

@@ -5062,3 +5062,66 @@ fn api_task_list_with_no_limit_gets_the_engine_default_page() {
         "{v}"
     );
 }
+
+/// D132: a clock time typed with no offset is UTC, whatever `$TZ` says.
+///
+/// Reproduced on a Europe/London box in summer time: `add "C"
+/// due:2026-09-13T09:00` stored `2026-09-13T08:00:00Z`, and `list` then showed
+/// `today 08:00` — an hour off what was typed, in a view that prints UTC. The
+/// child runs under a POSIX `TZ` nine hours east so the drift is unmistakable
+/// and no tz database is needed. Every CLI spelling is driven: the inline sugar,
+/// each date flag, and `modify`'s flag, because each reaches the parser from its
+/// own call site.
+#[test]
+fn a_typed_clock_time_is_stored_as_that_utc_clock_whatever_tz_says() {
+    let dir = fresh_config_dir("utc-clock");
+    let run = |args: &[&str]| {
+        let out = bin("utc-clock", &dir)
+            .env("TZ", "JST-9")
+            .args(args)
+            .output()
+            .expect("run tasqx");
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    let field = |id: &str, name: &str| -> String {
+        let out = run(&["--json", "show", id]);
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        v[name].as_str().unwrap_or_default().to_string()
+    };
+    run(&["init", "work"]);
+
+    run(&[
+        "add",
+        "C",
+        "due:2026-09-13T09:00",
+        "remind:2026-09-13T08:00",
+    ]);
+    assert_eq!(field("1", "due"), "2026-09-13T09:00:00Z");
+    assert_eq!(field("1", "remind"), "2026-09-13T08:00:00Z");
+
+    run(&[
+        "add",
+        "D",
+        "--due",
+        "2026-09-20 17:30",
+        "--scheduled",
+        "2026-09-19T08:00",
+        "--wait",
+        "2026-09-18T07:45",
+    ]);
+    assert_eq!(field("2", "due"), "2026-09-20T17:30:00Z");
+    assert_eq!(field("2", "scheduled"), "2026-09-19T08:00:00Z");
+    assert_eq!(field("2", "wait"), "2026-09-18T07:45:00Z");
+
+    run(&["modify", "2", "--due", "2026-09-21T06:00"]);
+    assert_eq!(field("2", "due"), "2026-09-21T06:00:00Z");
+
+    // An offset written out keeps its meaning.
+    run(&["modify", "2", "--due", "2026-09-21T06:00:00+02:00"]);
+    assert_eq!(field("2", "due"), "2026-09-21T04:00:00Z");
+}
