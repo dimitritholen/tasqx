@@ -57,9 +57,13 @@ fn phrase_escape(query: &str) -> Result<String, ApiError> {
 /// already reporting a failure.
 fn fts5_columns_for(scope: &str) -> &'static str {
     match scope {
-        "docs" => "title, body",
+        // D135: `docs_fts`'s second column is `search_body` (the derived,
+        // frontmatter-flattened text `snippet()` reads), not `docs.body`
+        // itself — a `--raw` caller who wants the FTS5 `col:query` grammar
+        // against a doc's text names the column that actually exists.
+        "docs" => "title, search_body",
         "annotations" => "body",
-        _ => "title, body (docs) or body (annotations)",
+        _ => "title, search_body (docs) or body (annotations)",
     }
 }
 
@@ -102,9 +106,21 @@ impl Engine {
     /// global/unscoped rather than defaulting it onto whatever project is
     /// current — the same reasoning `task.add`'s `default_project` explicitly
     /// does NOT extend to memory.
+    ///
+    /// Task #12/D135: `body` is stored exactly as given — `memory.get`,
+    /// `memory show` and `store.export` all see it byte for byte, and a
+    /// `store.export`/`store.import` round-trip stays lossless. What a
+    /// leading YAML frontmatter block gets is a SEPARATE, derived
+    /// `search_body` ([`crate::frontmatter::flatten`]), read only by
+    /// `docs_fts` (see `crate::storage::migrate_memory`) — so `memory.add`
+    /// is the one write door every client shares (CLI, MCP's
+    /// `tasqx_add_memory`, `memory.import`'s per-doc insert) is also the one
+    /// place that keeps the index in step with the body, without the body
+    /// itself ever losing a byte of what was written.
     pub fn memory_add(&self, p: &Value) -> Result<Value, ApiError> {
         let title = req_str(p, "title")?;
         let body = req_str(p, "body")?;
+        let search_body = crate::frontmatter::flatten(&body).into_owned();
         let source = opt_str(p, "source")?;
         let project = opt_str_nonempty(p, "project")?;
 
@@ -112,9 +128,9 @@ impl Engine {
         let ts = now();
         let tx = self.begin_mutation()?;
         tx.execute(
-            "INSERT INTO docs (id, source, title, body, project, created, modified) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-            params![id, source, title, body, project, ts],
+            "INSERT INTO docs (id, source, title, body, search_body, project, created, modified) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![id, source, title, body, search_body, project, ts],
         )?;
         insert_event(
             &tx,
@@ -155,7 +171,13 @@ impl Engine {
             let dv = import_shape("", "doc", dv)?;
             import_keys("", "doc", dv, &["title", "body", "source"])?;
             let title = req_str(dv, "title")?;
+            // The CLI's own importer already cuts frontmatter before it ever
+            // reaches this call (#228.4's throwaway agent-memory metadata),
+            // so `search_body` equals `body` there; it only matters for a
+            // caller on the JSON API directly, which gets `memory.add`'s same
+            // index guarantee without `body` itself being touched.
             let body = req_str(dv, "body")?;
+            let search_body = crate::frontmatter::flatten(&body).into_owned();
             let source = opt_str_nonempty(dv, "source")?;
             // A doc whose `source` matches an existing row is a RE-IMPORT of
             // the same logical document (a directory re-run after an edit),
@@ -185,12 +207,12 @@ impl Engine {
             // the SET list, so a source-replace keeps the ORIGINAL creation
             // date rather than pretending the doc is new.
             tx.execute(
-                "INSERT INTO docs (id, source, title, body, created, modified) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
+                "INSERT INTO docs (id, source, title, body, search_body, created, modified) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) \
                  ON CONFLICT(id) DO UPDATE SET \
                  source=excluded.source, title=excluded.title, body=excluded.body, \
-                 modified=excluded.modified",
-                params![id, source, title, body, ts],
+                 search_body=excluded.search_body, modified=excluded.modified",
+                params![id, source, title, body, search_body, ts],
             )?;
             insert_event(
                 &tx,
@@ -579,6 +601,10 @@ impl Engine {
         let id = req_str(p, "id")?;
         require_uuid_shape(&id)?;
         let title = opt_str_nonempty(p, "title")?;
+        // Task #12/D135: `body` is stored as given, same as `memory.add` —
+        // only `search_body` (below) is derived from it, so a doc corrected
+        // to open with a fresh frontmatter block gets the index kept in
+        // step without the stored body ever being rewritten.
         let body = opt_str_nonempty(p, "body")?;
         let source = opt_str(p, "source")?;
         let project = opt_str_nonempty(p, "project")?;
@@ -627,17 +653,19 @@ impl Engine {
 
         let new_title = title.clone().unwrap_or(cur_title);
         let new_body = body.clone().unwrap_or(cur_body);
+        let new_search_body = crate::frontmatter::flatten(&new_body).into_owned();
         let new_source = source.clone().or(cur_source);
         let new_project = project.clone().or(cur_project);
         let new_rev = cur_rev + 1;
         let ts = now();
 
         tx.execute(
-            "UPDATE docs SET title = ?1, body = ?2, source = ?3, project = ?4, \
-             rev = ?5, modified = ?6 WHERE id = ?7",
+            "UPDATE docs SET title = ?1, body = ?2, search_body = ?3, source = ?4, \
+             project = ?5, rev = ?6, modified = ?7 WHERE id = ?8",
             params![
                 new_title,
                 new_body,
+                new_search_body,
                 new_source,
                 new_project,
                 new_rev,

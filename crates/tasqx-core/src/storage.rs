@@ -358,6 +358,20 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
 /// unconditionally would rescan every body on every open, so it runs only when
 /// this call actually created the index — or, since #128, actually changed the
 /// tokenizer.
+///
+/// Task #12/D135: `docs_fts`'s text column is `search_body`, not `body`
+/// itself — a derived, frontmatter-flattened copy ([`crate::frontmatter::flatten`])
+/// that `memory.add`/`memory.update`/`memory.import`/`store.import` all keep
+/// in step with `body` at write time. `body` stays exactly what was written
+/// (`memory.get`, `memory show` and `store.export` all read it unchanged; a
+/// `store.export`/`store.import` round-trip stays byte-for-byte), while the
+/// INDEX reads text with a leading fence's `---` delimiters and raw
+/// `key: value` lines turned into D121(e)'s `key  value` prose, so
+/// `memory.search`'s FTS5 `snippet()` — which, being external-content, reads
+/// its named column straight from the content table — never surfaces either.
+/// A store written before this existed can hold a `docs.search_body` that is
+/// stale or, on first open under this code, entirely absent; see the
+/// backfill below.
 fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
     // One transaction around gate + DDL + rebuild (review finding): the gate
     // below is "annotations_fts exists", and the CREATE that makes it exist
@@ -401,46 +415,123 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
     let docs_needs_porter = docs_fts_sql
         .as_deref()
         .is_some_and(|sql| !sql.contains("porter"));
+    // D135: a store whose `docs_fts` still declares its second column
+    // `body` predates the derived-column fix — it must be recreated onto
+    // `search_body` exactly as a tokenizer change forces a recreate, since a
+    // virtual table's column list is no more ALTERable than its `tokenize=`.
+    let docs_needs_search_body_col = docs_fts_sql
+        .as_deref()
+        .is_some_and(|sql| !sql.contains("search_body"));
+    let docs_needs_recreate = docs_needs_porter || docs_needs_search_body_col;
     let annotations_needs_porter = annotations_fts_sql
         .as_deref()
         .is_some_and(|sql| !sql.contains("porter"));
-    if docs_needs_porter {
-        tx.execute_batch("DROP TABLE docs_fts;")?;
+    if docs_needs_recreate {
+        // The TABLE and its TRIGGERs both name the old column: `DROP TABLE`
+        // alone would leave `docs_fts_ai`/`ad`/`au` referencing a dropped
+        // table (the next write to `docs` would fail with "no such table:
+        // docs_fts"), and `CREATE TRIGGER IF NOT EXISTS` below would not
+        // replace a same-named trigger that already exists, old body and
+        // all — so the triggers must go too, unconditionally, not
+        // conditionally on porter alone as before D135.
+        tx.execute_batch(
+            "DROP TABLE docs_fts; \
+             DROP TRIGGER IF EXISTS docs_fts_ai; \
+             DROP TRIGGER IF EXISTS docs_fts_ad; \
+             DROP TRIGGER IF EXISTS docs_fts_au;",
+        )?;
     }
     if annotations_needs_porter {
         tx.execute_batch("DROP TABLE annotations_fts;")?;
     }
 
+    // The `docs` TABLE first, alone — deliberately split from the
+    // `docs_fts`/trigger DDL below. `docs.search_body` must already hold
+    // correct values (the backfill just after this) before ANY trigger that
+    // reads `new.search_body`/`old.search_body` exists, or the very first
+    // write through such a trigger fires a 'delete' for a rowid the
+    // freshly-(re)created, still-empty `docs_fts` never held — confirmed as
+    // an FTS5 "database disk image is malformed" error, not a graceful
+    // no-op. Doing the column ALTERs and the backfill UPDATE here, before
+    // `docs_fts`/its triggers exist at all in this transaction, means that
+    // UPDATE fires no trigger and raises no such question.
     tx.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS docs (
+        "CREATE TABLE IF NOT EXISTS docs (
             id       TEXT PRIMARY KEY,
             source   TEXT,
             title    TEXT NOT NULL,
             body     TEXT NOT NULL,
             created  TEXT NOT NULL,
             modified TEXT NOT NULL
-        );
+        );",
+    )?;
 
+    // #134: optional project scoping, additive and nullable — a doc with no
+    // project stays global rather than being forced onto a default.
+    // #135: `rev` for `memory.update`'s optimistic-concurrency guard, the
+    // exact shape `task.modify`'s `expected_rev` already uses. Both are
+    // additive columns, so existing rows read back as unscoped/rev-0 rather
+    // than breaking.
+    add_column_if_missing(&tx, "docs", "project", "TEXT")?;
+    add_column_if_missing(&tx, "docs", "rev", "INTEGER NOT NULL DEFAULT 0")?;
+    // D135: `search_body` itself — additive, default `''`, same shape as
+    // `project`/`rev` above.
+    add_column_if_missing(&tx, "docs", "search_body", "TEXT NOT NULL DEFAULT ''")?;
+
+    // Any row still at that default needs backfilling: every row on a store
+    // that just got the column for the first time (the common case, once
+    // ever, per store), but ALSO a row written directly against `docs` by
+    // something that never set `search_body` at all — an old binary's own
+    // `INSERT`, run against a store a newer build had already upgraded —
+    // which is a real mixed-version case, not a hypothetical one, so this
+    // runs every open rather than gating on "did this open just add the
+    // column". Cheap on a healthy store: an equality filter over a column
+    // that is never legitimately `''` (a doc's `body` is never empty),
+    // costing a scan of `search_body` alone, not of every `body`.
+    let candidates: Vec<(String, String)> = tx
+        .prepare("SELECT id, body FROM docs WHERE search_body = ''")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (id, body) in candidates {
+        let search_body = crate::frontmatter::flatten(&body).into_owned();
+        tx.execute(
+            "UPDATE docs SET search_body = ?1 WHERE id = ?2",
+            params![search_body, id],
+        )?;
+    }
+
+    tx.execute_batch(
+        r#"
         -- External-content FTS: the index stores no second copy of the text;
         -- rows are joined back by rowid. Triggers are the only writers.
         -- `tokenize='porter unicode61'` (#128) stems each term through the
         -- unicode61 tokenizer before matching, so a plain AND-of-terms query
         -- still requires every word — just its STEM, not its exact spelling.
+        -- D135: the second column is `search_body`, matching
+        -- `docs.search_body` — the derived, frontmatter-flattened text —
+        -- NOT `docs.body`; external-content FTS5 resolves a content column
+        -- by NAME, so this is what makes `snippet()` read the flattened copy
+        -- while `docs.body` itself stays exactly what was written. By the
+        -- time this table (and the triggers below) exist, `docs.search_body`
+        -- is already correct for every row (see the backfill above) — the
+        -- ordering that keeps a trigger's own 'delete' honest.
         CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
-            title, body, content='docs', content_rowid='rowid', tokenize='porter unicode61'
+            title, search_body, content='docs', content_rowid='rowid',
+            tokenize='porter unicode61'
         );
         CREATE TRIGGER IF NOT EXISTS docs_fts_ai AFTER INSERT ON docs BEGIN
-            INSERT INTO docs_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
+            INSERT INTO docs_fts(rowid, title, search_body)
+                VALUES (new.rowid, new.title, new.search_body);
         END;
         CREATE TRIGGER IF NOT EXISTS docs_fts_ad AFTER DELETE ON docs BEGIN
-            INSERT INTO docs_fts(docs_fts, rowid, title, body)
-                VALUES ('delete', old.rowid, old.title, old.body);
+            INSERT INTO docs_fts(docs_fts, rowid, title, search_body)
+                VALUES ('delete', old.rowid, old.title, old.search_body);
         END;
         CREATE TRIGGER IF NOT EXISTS docs_fts_au AFTER UPDATE ON docs BEGIN
-            INSERT INTO docs_fts(docs_fts, rowid, title, body)
-                VALUES ('delete', old.rowid, old.title, old.body);
-            INSERT INTO docs_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
+            INSERT INTO docs_fts(docs_fts, rowid, title, search_body)
+                VALUES ('delete', old.rowid, old.title, old.search_body);
+            INSERT INTO docs_fts(rowid, title, search_body)
+                VALUES (new.rowid, new.title, new.search_body);
         END;
 
         CREATE VIRTUAL TABLE IF NOT EXISTS annotations_fts USING fts5(
@@ -461,16 +552,7 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
         "#,
     )?;
 
-    // #134: optional project scoping, additive and nullable — a doc with no
-    // project stays global rather than being forced onto a default.
-    // #135: `rev` for `memory.update`'s optimistic-concurrency guard, the
-    // exact shape `task.modify`'s `expected_rev` already uses. Both are
-    // additive columns, so existing rows read back as unscoped/rev-0 rather
-    // than breaking.
-    add_column_if_missing(&tx, "docs", "project", "TEXT")?;
-    add_column_if_missing(&tx, "docs", "rev", "INTEGER NOT NULL DEFAULT 0")?;
-
-    if !fts_existed || docs_needs_porter {
+    if !fts_existed || docs_needs_recreate {
         tx.execute_batch("INSERT INTO docs_fts(docs_fts) VALUES('rebuild');")?;
     }
     if !fts_existed || annotations_needs_porter {
@@ -549,13 +631,16 @@ fn add_dependency_foreign_keys_if_missing(conn: &Connection) -> Result<(), ApiEr
 
 /// Add `col` to `table` when it isn't there yet — the additive-migration
 /// primitive for stores created by an older build. SQLite has no
-/// `ADD COLUMN IF NOT EXISTS`, so the column list is checked first.
+/// `ADD COLUMN IF NOT EXISTS`, so the column list is checked first. Returns
+/// whether it actually added the column, so a caller that needs to backfill
+/// the new column exactly once (D135's `docs.search_body`) can gate on that
+/// instead of re-deriving "is this a fresh store" some other way.
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
     col: &str,
     decl: &str,
-) -> Result<(), ApiError> {
+) -> Result<bool, ApiError> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let present = stmt
         .query_map([], |r| r.get::<_, String>(1))?
@@ -564,7 +649,7 @@ fn add_column_if_missing(
     if !present {
         conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"))?;
     }
-    Ok(())
+    Ok(!present)
 }
 
 /// Allocate the next monotonic `short_id` inside `tx`. Never recycles: the
@@ -1270,6 +1355,164 @@ mod tests {
         assert_eq!(
             sql, sql_again,
             "a second migrate() must not touch a store already on porter"
+        );
+    }
+
+    /// Task #12/D135: a store written by code that predates `docs.search_body`
+    /// entirely has none — `docs_fts`'s content column no longer even
+    /// exists there. `migrate()` must add it and backfill it from `body` so
+    /// `memory.search`'s FTS5 `snippet()` (external-content, so it reads
+    /// `docs.search_body` straight from the row) stops leaking a leading
+    /// fence's `---` and raw `key: value` lines — WITHOUT ever touching
+    /// `docs.body` itself, unlike this fix's first cut (review finding):
+    /// `memory.get`/`memory show`/`store.export` must all still see the doc
+    /// exactly as written.
+    ///
+    /// Simulated the same way the porter-tokenizer migration above is: the
+    /// pre-migration schema (no `search_body` column, `docs_fts` still
+    /// declared over `body`) is hand-built and a row inserted directly,
+    /// exactly as an old binary's write would have landed before this column
+    /// existed.
+    #[test]
+    fn migration_backfills_search_body_and_leaves_the_stored_body_alone() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE docs (
+                id       TEXT PRIMARY KEY,
+                source   TEXT,
+                title    TEXT NOT NULL,
+                body     TEXT NOT NULL,
+                created  TEXT NOT NULL,
+                modified TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE docs_fts USING fts5(
+                title, body, content='docs', content_rowid='rowid', tokenize='porter unicode61'
+            );
+            CREATE TRIGGER docs_fts_ai AFTER INSERT ON docs BEGIN
+                INSERT INTO docs_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
+            END;
+            CREATE TRIGGER docs_fts_ad AFTER DELETE ON docs BEGIN
+                INSERT INTO docs_fts(docs_fts, rowid, title, body)
+                    VALUES ('delete', old.rowid, old.title, old.body);
+            END;
+            CREATE TRIGGER docs_fts_au AFTER UPDATE ON docs BEGIN
+                INSERT INTO docs_fts(docs_fts, rowid, title, body)
+                    VALUES ('delete', old.rowid, old.title, old.body);
+                INSERT INTO docs_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
+            END;
+            CREATE TABLE annotations (
+                id TEXT PRIMARY KEY, task_id TEXT NOT NULL, body TEXT NOT NULL, created TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE annotations_fts USING fts5(
+                body, content='annotations', content_rowid='rowid', tokenize='porter unicode61'
+            );
+            "#,
+        )
+        .unwrap();
+        let raw_body = "---\ndescription: How an SDK release is cut\n---\nCut the branch.";
+        conn.execute(
+            "INSERT INTO docs (id, source, title, body, created, modified) \
+             VALUES ('d1', NULL, 'release-process', ?1, 't', 't')",
+            params![raw_body],
+        )
+        .unwrap();
+
+        // Re-running migrate() is exactly what the next `tasqx` open does on
+        // this same file — the path an upgrade actually takes.
+        migrate(&conn).unwrap();
+
+        let body: String = conn
+            .query_row("SELECT body FROM docs WHERE id = 'd1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            body, raw_body,
+            "the stored body must stay exactly what was written"
+        );
+
+        let search_body: String = conn
+            .query_row("SELECT search_body FROM docs WHERE id = 'd1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            !search_body.contains("---"),
+            "the derived search text must not fence: {search_body:?}"
+        );
+        assert!(
+            search_body.contains("description  How an SDK release is cut"),
+            "the description survives as prose in the index text: {search_body:?}"
+        );
+
+        // The index must read the backfilled column, not just the row: a
+        // query for a word that lived only in the frontmatter must still
+        // resolve, and its snippet must be clean.
+        let snip: String = conn
+            .query_row(
+                "SELECT snippet(docs_fts, 1, '', '', '…', 12) FROM docs_fts \
+                 WHERE docs_fts MATCH 'SDK'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !snip.contains("---"),
+            "the reindexed snippet still fences: {snip:?}"
+        );
+
+        // A store already migrated must not be touched again.
+        migrate(&conn).unwrap();
+        let body_again: String = conn
+            .query_row("SELECT body FROM docs WHERE id = 'd1'", [], |r| r.get(0))
+            .unwrap();
+        let search_body_again: String = conn
+            .query_row("SELECT search_body FROM docs WHERE id = 'd1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(body, body_again, "a third migrate() must be a no-op here");
+        assert_eq!(search_body, search_body_again);
+    }
+
+    /// A YAML list item or a folded block scalar's continuation line has no
+    /// `:` — the exact case a review finding caught the first cut of this fix
+    /// dropping entirely, silently un-finding a doc by any word that lived
+    /// only in one. `migrate()`'s backfill must carry those words into
+    /// `search_body` too.
+    #[test]
+    fn migration_backfill_keeps_a_frontmatter_list_items_words_searchable() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        migrate(&conn).unwrap();
+        // A direct INSERT that omits `search_body`, landing it at its `''`
+        // default — the same shape an old binary's write (or a hand-restored
+        // row) takes against a store this code has already upgraded once.
+        conn.execute(
+            "INSERT INTO docs (id, source, title, body, created, modified) \
+             VALUES ('d1', NULL, 'runbook', \
+             '---\ntags:\n  - deploy\n  - kubernetes\n---\nRoll out the change.', 't', 't')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let body: String = conn
+            .query_row("SELECT body FROM docs WHERE id = 'd1'", [], |r| r.get(0))
+            .unwrap();
+        assert!(body.contains("---"), "the stored body must stay untouched");
+
+        let hit: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'kubernetes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            hit, 1,
+            "a word that lived only inside a frontmatter list must still be found"
         );
     }
 
