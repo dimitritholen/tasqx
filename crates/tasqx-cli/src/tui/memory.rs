@@ -26,6 +26,7 @@ use crate::columns::{self, Column};
 use crate::render;
 use crate::theme::{Caps, Theme};
 use crate::tui::{self, first_visible, fuzzy, rt_style, Hint, Key};
+use tasqx_core::frontmatter;
 
 /// Below this the screen is not drawn and `memory list` prints its table.
 pub const MIN_WIDTH: u16 = 48;
@@ -536,38 +537,34 @@ pub type DocLine = Vec<(Ink, String)>;
 pub fn doc_lines(body: &str, width: usize, unicode: bool) -> Vec<DocLine> {
     let width = width.max(8);
     let mut out: Vec<DocLine> = Vec::new();
-    let mut lines = body.lines().peekable();
 
-    if lines.peek().is_some_and(|l| l.trim() == "---") {
-        let rest: Vec<&str> = lines.clone().skip(1).collect();
-        if let Some(end) = rest.iter().position(|l| l.trim() == "---") {
-            let key_w = rest[..end]
-                .iter()
-                .filter_map(|l| l.split_once(':'))
-                .map(|(k, _)| render::width(k.trim()))
-                .max()
-                .unwrap_or(0);
-            for l in &rest[..end] {
-                if let Some((k, v)) = l.split_once(':') {
-                    let key = render::pad(k.trim(), key_w + 2);
-                    let value = v.trim().trim_matches('"');
-                    let words = words_of(&[(Ink::Text, value.to_string())]);
-                    wrap(
-                        &mut out,
-                        words,
-                        width,
-                        (Ink::Label, key.clone()),
-                        " ".repeat(key_w + 2),
-                        unicode,
-                    );
-                }
-            }
-            out.push(Vec::new());
-            for _ in 0..end + 2 {
-                lines.next();
-            }
+    // The block-finding and `key: value` splitting is `frontmatter::split`'s
+    // job (task #12/D135), shared with `memory.add`'s write-time flatten so
+    // there is one parser, not a second one reading the same fence by hand.
+    // A store written before that fix can still hold a raw fence here, which
+    // is exactly the case this screen keeps its own rendering for.
+    let (pairs, rest) = frontmatter::split(body);
+    if !pairs.is_empty() {
+        let key_w = pairs
+            .iter()
+            .map(|(k, _)| render::width(k))
+            .max()
+            .unwrap_or(0);
+        for (k, v) in &pairs {
+            let key = render::pad(k, key_w + 2);
+            let words = words_of(&[(Ink::Text, (*v).to_string())]);
+            wrap(
+                &mut out,
+                words,
+                width,
+                (Ink::Label, key.clone()),
+                " ".repeat(key_w + 2),
+                unicode,
+            );
         }
+        out.push(Vec::new());
     }
+    let lines = rest.lines();
 
     // Consecutive lines are one block, as in markdown: a note wrapped at 80
     // columns in its source is still one paragraph, and a bullet's second

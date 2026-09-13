@@ -102,9 +102,19 @@ impl Engine {
     /// global/unscoped rather than defaulting it onto whatever project is
     /// current — the same reasoning `task.add`'s `default_project` explicitly
     /// does NOT extend to memory.
+    ///
+    /// Task #12/D135: a leading YAML frontmatter block is flattened to plain
+    /// `key  value` lines ([`crate::frontmatter::flatten`]) before the body
+    /// ever reaches storage. `memory.add` is the one write door every client
+    /// shares — CLI, MCP's `tasqx_add_memory`, `memory.import`'s per-doc
+    /// insert — so flattening here is what makes `memory.search`'s snippet,
+    /// `memory.get`, and the memory browser all read the same clean text
+    /// instead of a raw `---` fence surfacing only in the interactive
+    /// screen's own renderer.
     pub fn memory_add(&self, p: &Value) -> Result<Value, ApiError> {
         let title = req_str(p, "title")?;
         let body = req_str(p, "body")?;
+        let body = crate::frontmatter::flatten(&body).into_owned();
         let source = opt_str(p, "source")?;
         let project = opt_str_nonempty(p, "project")?;
 
@@ -155,7 +165,11 @@ impl Engine {
             let dv = import_shape("", "doc", dv)?;
             import_keys("", "doc", dv, &["title", "body", "source"])?;
             let title = req_str(dv, "title")?;
-            let body = req_str(dv, "body")?;
+            // The CLI's own importer already cuts frontmatter before it ever
+            // reaches this call (#228.4's throwaway agent-memory metadata),
+            // so this is a no-op there; it only matters for a caller on the
+            // JSON API directly, which gets `memory.add`'s same guarantee.
+            let body = crate::frontmatter::flatten(&req_str(dv, "body")?).into_owned();
             let source = opt_str_nonempty(dv, "source")?;
             // A doc whose `source` matches an existing row is a RE-IMPORT of
             // the same logical document (a directory re-run after an edit),
@@ -579,7 +593,11 @@ impl Engine {
         let id = req_str(p, "id")?;
         require_uuid_shape(&id)?;
         let title = opt_str_nonempty(p, "title")?;
-        let body = opt_str_nonempty(p, "body")?;
+        // Task #12/D135: the same write-time flatten `memory.add` applies —
+        // a doc corrected to open with a fresh frontmatter block must not
+        // reintroduce the leak `memory.search`'s snippet once had.
+        let body =
+            opt_str_nonempty(p, "body")?.map(|b| crate::frontmatter::flatten(&b).into_owned());
         let source = opt_str(p, "source")?;
         let project = opt_str_nonempty(p, "project")?;
         if title.is_none() && body.is_none() && source.is_none() && project.is_none() {
