@@ -1172,20 +1172,20 @@ fn page_commands() -> String {
     ));
     s.push_str(&snippet(
         "tasqx agenda",
-        "through 2026-09-26 (+14d)   5 tasks · 1 overdue\n\
+        "through 26 Sep (+14d)   5 tasks · 1 overdue\n\
          \n\
-         \x20 ID          URG  TASK                             PROJECT     WHEN            TAGS\n\
+         \x20 ID          URG  TASK                             PROJECT     WHEN        TAGS\n\
          Overdue\n\
-         \x20  3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-09-07  +bug\n\
+         \x20  3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 5d ago  +bug\n\
          \n\
-         Today · Sat 2026-09-12\n\
-         \x20  2  - ▄▄▄▄ 12.0  Write API conformance tests      work.tasqx  due 10:00       +api\n\
-         \x20  1  H ▄▄▄▄ 17.9  Ship the v1 JSON API freeze      work.tasqx  due 15:00       +api +release\n\
+         Today · Sat 12 Sep\n\
+         \x20  2  - ▄▄▄▄ 12.0  Write API conformance tests      work.tasqx  due 10:00   +api\n\
+         \x20  1  H ▄▄▄▄ 17.9  Ship the v1 JSON API freeze      work.tasqx  due 15:00   +api +release\n\
          \n\
-         Tomorrow · Sun 2026-09-13\n\
+         Tomorrow · Sun 13 Sep\n\
          \x20  4  - ▁▁▁▁  0.0  Quarterly deps audit             work.tasqx  sched\n\
          \n\
-         Tue 2026-09-15\n\
+         Tue 15 Sep\n\
          \x20  5  - ▄▄▄▁  9.9  Publish the API docs             work.tasqx\n\
          \n\
          1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them\n\

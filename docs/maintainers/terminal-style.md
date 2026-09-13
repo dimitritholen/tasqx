@@ -80,7 +80,9 @@ CEST). Where the interesting quantity is a span rather than an instant, print
 the span (`for 12m`), which has no timezone to be wrong about.
 
 `render::due_cell` is the implementation for what is ahead and `render::day_ago`
-for what is past; `agenda`'s `day_heading` is the vocabulary both views share.
+for what is past. Both spell a date through `render::calendar_date` (`13 Sep`,
+`4 Jan 27`), and so do `agenda`'s day headings, its horizon and its footer, so
+the two views cannot name one day two ways (D133).
 `DESIGN.md` §12 **D126 (l)** is the ruling behind the split.
 
 ## 4. State lives in a left rail, never in a droppable column
@@ -209,8 +211,9 @@ under it says nothing — it is blank. Its `due today` fact is suppressed for th
 same reason.
 
 But `sched` still prints bare, because "you meant to start here" is not the
-default reading of a row, and the overdue group keeps full dates, because it
-spans many days and has no heading to defer to. The rule is *redundant with
+default reading of a row, and the overdue group's cells carry the day in
+`list`'s words (`due 2d ago`, `due today 17:00`), because it spans many days and
+has no heading to defer to. The rule is *redundant with
 what is already on screen*, not *short*.
 
 ## 12. A column label is not a title
