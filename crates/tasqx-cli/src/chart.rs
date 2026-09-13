@@ -1138,7 +1138,7 @@ pub fn render_burndown_sized(
     let facts = format!(
         "{last} left {m} {trend}{proj}",
         m = ctx.mid(),
-        proj = project_finish(series, ctx.mid())
+        proj = project_finish(series.len(), i64::from(last), delta, ctx.mid())
     );
     out.push_str(&format!(
         "{}   {}\n\n",
@@ -1256,23 +1256,31 @@ fn axis_labels(first: Date, last: Date, width: usize, unicode: bool) -> String {
     }
 }
 
-fn project_finish(series: &[RemainingPoint], mid: &str) -> String {
-    if series.len() < 2 {
+/// The clearing estimate beside the trend clause — derived from the SAME
+/// rate `render_burndown_sized` already computed for that clause (`delta`
+/// over the full `len`-day window), not a second rate of its own.
+///
+/// It used to average a *different* window: the trend clause read "flat over
+/// 30 days" (or even "up") from the whole span, while this recomputed its own
+/// rate over the last `min(7, n)` days and could disagree with the sentence
+/// right next to it — "flat over 30 days · ~30d to clear at current rate" is
+/// two windows contradicting each other under one summary. One rate over the
+/// stated window means: a window that is flat or rising has no rate a
+/// clearing date can come from, so the estimate is omitted rather than
+/// printed from a rate the trend clause never mentioned.
+fn project_finish(len: usize, last: i64, delta: i64, mid: &str) -> String {
+    if len < 2 {
         return String::new();
     }
-    let last = series.last().unwrap().remaining as i64;
     if last == 0 {
         return format!(" {mid} cleared");
     }
-    // Recent burn rate over the last min(7, n) days.
-    let n = series.len();
-    let look = n.clamp(2, 7);
-    let a = series[n - look].remaining as i64;
-    let b = last;
-    let per_day = (a - b) as f64 / (look - 1) as f64;
-    if per_day <= 0.0 {
-        return format!(" {mid} not burning down");
+    if delta >= 0 {
+        // Flat (delta == 0) or rising (delta > 0): the window's own rate is
+        // not falling, so "days to clear" has no window to project from.
+        return String::new();
     }
+    let per_day = (-delta) as f64 / (len - 1) as f64;
     let days = (last as f64 / per_day).ceil() as i64;
     format!(" {mid} ~{days}d to clear at current rate")
 }
@@ -2472,5 +2480,111 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #14: the trend clause and the clearing estimate must come from ONE
+    /// rate over the stated window, not two different windows that can
+    /// disagree.
+    ///
+    /// This series falls 10 over its full 30-day span but is flat over its
+    /// last 7 days (the window the old, buggy projection used on its own) —
+    /// so the old code's "recent burn rate" was zero right when the headline
+    /// trend was falling, and it printed "not burning down" beside a falling
+    /// trend. Deriving both from the one 30-day rate keeps them agreeing.
+    #[test]
+    fn burndown_facts_falling_window_uses_the_trend_clauses_own_rate() {
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let vals: [u32; 31] = [
+            30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, // 10/10 days, 1/day
+            20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20,
+            20, // flat
+        ];
+        let series: Vec<RemainingPoint> = vals
+            .iter()
+            .enumerate()
+            .map(|(i, &remaining)| RemainingPoint {
+                date: anchor().saturating_sub(((vals.len() - 1 - i) as i64).days()),
+                remaining,
+            })
+            .collect();
+        let out = render_burndown(&ctx, &series, "all tasks", true);
+        assert!(
+            out.contains("down 10 over 31 days"),
+            "trend clause missing or wrong: {out:?}"
+        );
+        assert!(
+            !out.contains("not burning down"),
+            "a falling trend must not also claim it is not burning down: {out:?}"
+        );
+        assert!(
+            out.contains("~60d to clear at current rate"),
+            "the clearing estimate must use the SAME 30-day rate as the trend \
+             clause (10 over 30 days => 1/3 per day => 60d for the 20 left), \
+             not a separate last-7-days rate: {out:?}"
+        );
+    }
+
+    /// #14: the exact shape of the reported bug — "remaining open · all
+    /// tasks   15 left · flat over 30 days · ~Nd to clear at current rate".
+    /// The series is flat end-to-end (15 -> 15 over 30 days) but dips down
+    /// and back up in its last week, which is what let the old
+    /// last-7-days-only projection compute a positive rate and print a
+    /// clearing estimate beside a trend clause that says nothing is moving.
+    #[test]
+    fn burndown_facts_flat_window_omits_the_clearing_estimate() {
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let mut vals = vec![15u32; 23]; // days 0..=22, unchanged
+        vals.extend([20, 19, 18, 17, 16, 15, 15]); // days 23..=29: down then flat
+        assert_eq!(vals.len(), 30);
+        let series: Vec<RemainingPoint> = vals
+            .iter()
+            .enumerate()
+            .map(|(i, &remaining)| RemainingPoint {
+                date: anchor().saturating_sub(((vals.len() - 1 - i) as i64).days()),
+                remaining,
+            })
+            .collect();
+        let out = render_burndown(&ctx, &series, "all tasks", true);
+        assert!(
+            out.contains("15 left"),
+            "expected the last value in the facts line: {out:?}"
+        );
+        assert!(
+            out.contains("flat over 30 days"),
+            "trend clause missing or wrong: {out:?}"
+        );
+        assert!(
+            !out.contains("to clear"),
+            "a flat window's net rate is zero, so a clearing estimate has no \
+             meaning and must be omitted, not computed from a shorter \
+             recent-days window: {out:?}"
+        );
+        assert!(
+            !out.contains("not burning down"),
+            "omitted means absent, not replaced with another clause: {out:?}"
+        );
+    }
+
+    /// #14: a rising window likewise has no rate a clearing date can come
+    /// from, so the estimate must be OMITTED — not printed as "not burning
+    /// down", which still reads as a clause about clearing.
+    #[test]
+    fn burndown_facts_rising_window_omits_the_clearing_estimate() {
+        let ctx = Ctx::new(crate::theme::default_theme(), crate::theme::Caps::PLAIN);
+        let series: Vec<RemainingPoint> = (0..21)
+            .map(|i| RemainingPoint {
+                date: anchor().saturating_sub(((20 - i) as i64).days()),
+                remaining: 10 + i as u32, // 10 -> 30, straight rise
+            })
+            .collect();
+        let out = render_burndown(&ctx, &series, "all tasks", true);
+        assert!(
+            out.contains("up 20 over 21 days"),
+            "trend clause missing or wrong: {out:?}"
+        );
+        assert!(
+            !out.contains("to clear") && !out.contains("not burning down"),
+            "a rising window must carry no clearing clause at all: {out:?}"
+        );
     }
 }
