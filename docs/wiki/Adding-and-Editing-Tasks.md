@@ -46,10 +46,10 @@ A task without a project lands in your default project
 
 Change an existing task. Takes the same inline sugar and dates as `add`:
 
-```console
-tasqx modify 42 due:friday !high     # set fields
-tasqx modify 42 Fix the login bug    # bare words replace the title
-```
+| Command | What it does |
+|---|---|
+| `tasqx modify 42 due:friday !high` | Set fields |
+| `tasqx modify 42 Fix the login bug` | Bare words replace the title |
 
 **Setting and clearing are different moves.** Setting is `due:friday`;
 removing is `--clear due`. There is no magic empty value:
@@ -69,10 +69,10 @@ the modify fail (exit 5) if the task changed since you last read it.
 
 Attach one or more tags.
 
-```console
-tasqx tag 42 api release    # two tags, one command
-tasqx tag 42 +api           # the leading + is optional
-```
+| Command | What it does |
+|---|---|
+| `tasqx tag 42 api release` | Two tags, one command |
+| `tasqx tag 42 +api` | The leading + is optional |
 
 Re-adding a tag the task already has is fine — the answer is simply the
 resulting tag set.

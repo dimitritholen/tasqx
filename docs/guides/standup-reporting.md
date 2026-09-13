@@ -6,21 +6,24 @@ Everything below is a pure read of the same API the CLI uses — reports never m
 
 What you finished, what is in flight, what is stuck:
 
+- `tasqx list "status:done completed.after:yesterday"`: yesterday's output
+- `tasqx list`: today's working set
+
 ```console
-tasqx list "status:done completed.after:yesterday"    # yesterday's output
-tasqx list                                            # today's working set
+tasqx list "status:done completed.after:yesterday"
+tasqx list
 tasqx list "status:pending" --json | jq '[.tasks[] | select(.blocked)]'
 ```
 
 ## The weekly view
 
-```console
-tasqx report                     # per-project: count, estimates, overdue, tracked, tokens
-tasqx report status              # the same, grouped by lifecycle state
-tasqx chart throughput           # added vs done per ISO week
-tasqx chart heatmap              # completion density, calendar-style
-tasqx chart burndown             # remaining open tasks over the last N days
-```
+| Command | What it does |
+|---|---|
+| `tasqx report` | Per-project: count, estimates, overdue, tracked, tokens |
+| `tasqx report status` | The same, grouped by lifecycle state |
+| `tasqx chart throughput` | Added vs done per ISO week |
+| `tasqx chart heatmap` | Completion density, calendar-style |
+| `tasqx chart burndown` | Remaining open tasks over the last N days |
 
 Charts render natively in the terminal from the event log — every add, done and
 cancel was recorded transactionally, so the history is complete by construction,

@@ -75,10 +75,10 @@ confidence downgraded to `low`, never deleted blind.
 
 ## Repairing old history
 
-```console
-tasqx tokens recompute             # dry-run: per-task delta, writes nothing
-tasqx tokens recompute --apply     # write the repair
-```
+| Command | What it does |
+|---|---|
+| `tasqx tokens recompute` | Dry-run: per-task delta, writes nothing |
+| `tasqx tokens recompute --apply` | Write the repair |
 
 The one verb in the API built to delete measurement rows, so the dry-run
 default is the safety, not a convenience. It parses transcripts and runs

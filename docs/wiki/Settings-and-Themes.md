@@ -6,15 +6,15 @@ theme preview.
 
 ## tasqx config
 
-```console
-tasqx config list                     # every setting: value, source, default
-tasqx config get theme.name           # one resolved value
-tasqx config set theme.name gruvbox   # write it (your file comments survive)
-tasqx config unset theme.name         # back to the default
-tasqx config path                     # where config.toml lives
-tasqx config store                    # which task store you'd be writing to
-tasqx config edit                     # interactive full-screen editor
-```
+| Command | What it does |
+|---|---|
+| `tasqx config list` | Every setting: value, source, default |
+| `tasqx config get theme.name` | One resolved value |
+| `tasqx config set theme.name gruvbox` | Write it (your file comments survive) |
+| `tasqx config unset theme.name` | Back to the default |
+| `tasqx config path` | Where config.toml lives |
+| `tasqx config store` | Which task store you'd be writing to |
+| `tasqx config edit` | Interactive full-screen editor |
 
 Worth knowing:
 
@@ -31,11 +31,11 @@ Worth knowing:
 
 ## tasqx theme
 
-```console
-tasqx theme list          # built-ins + your own theme files
-tasqx theme show nord     # preview a theme's colors and roles
-tasqx theme set nord      # persist the choice
-```
+| Command | What it does |
+|---|---|
+| `tasqx theme list` | Built-ins + your own theme files |
+| `tasqx theme show nord` | Preview a theme's colors and roles |
+| `tasqx theme set nord` | Persist the choice |
 
 Built-ins: `nord`, `gruvbox`, `dracula`, `solarized`, `mono` — plus any theme
 file you drop in yourself. A one-off try is

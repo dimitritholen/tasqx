@@ -7,17 +7,19 @@ terminal, or as an HTML page you can send to someone.
 
 Summary counts, optionally grouped.
 
-```console
-tasqx report                    # totals
-tasqx report project            # grouped by project
-tasqx report status             # or by status, or priority
-tasqx report +urgent            # any filter narrows the scope
-```
+| Command | What it does |
+|---|---|
+| `tasqx report` | Totals |
+| `tasqx report project` | Grouped by project |
+| `tasqx report status` | Grouped by status (or `priority`) |
+| `tasqx report +urgent` | Any filter narrows the scope |
 
 Two output modes, same numbers:
 
+One self-contained HTML file:
+
 ```console
-tasqx report --html --out review.html   # one self-contained HTML file
+tasqx report --html --out review.html
 ```
 
 The HTML report is a single file with inline styling and no external
@@ -33,11 +35,11 @@ decided not to do.
 
 Charts drawn right in the terminal, from the event log.
 
-```console
-tasqx chart throughput      # tasks added vs done, per week
-tasqx chart heatmap         # GitHub-style activity calendar
-tasqx chart burndown        # open tasks over the last N days
-```
+| Command | What it does |
+|---|---|
+| `tasqx chart throughput` | Tasks added vs done, per week |
+| `tasqx chart heatmap` | GitHub-style activity calendar |
+| `tasqx chart burndown` | Open tasks over the last N days |
 
 - **throughput** answers "am I finishing as fast as I'm adding?"
 - **heatmap** answers "when do I actually get things done?"

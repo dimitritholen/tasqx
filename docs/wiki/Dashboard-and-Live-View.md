@@ -12,11 +12,11 @@ recent activity, effort and token spend — six panels (`tasks`, `projects`,
 counts what matters
 (`17 open · 1 active · 2 overdue · 3 blocked · 8 done/week`).
 
-```console
-tasqx                    # on a terminal, a bare tasqx opens the dashboard
-tasqx dashboard          # the same screen, spelled out
-tasqx --json dashboard   # the panel data as one JSON document, no screen
-```
+| Command | What it does |
+|---|---|
+| `tasqx` | On a terminal, a bare `tasqx` opens the dashboard |
+| `tasqx dashboard` | The same screen, spelled out |
+| `tasqx --json dashboard` | The panel data as one JSON document, no screen |
 
 - It's read-only, with one exception: `p` opens the task browser,
   [`pick`](Working-on-Tasks.md#tasqx-pick). Enter there reads a task, and `s`
@@ -47,10 +47,10 @@ the verb: `tasqx list` always means the table.
 A task list that redraws itself the moment anything changes — from another
 terminal, from an AI agent, from anywhere.
 
-```console
-tasqx daemon              # in one terminal: the server
-tasqx watch project:work  # in another: the live view
-```
+| Command | What it does |
+|---|---|
+| `tasqx daemon` | In one terminal: the server |
+| `tasqx watch project:work` | In another: the live view |
 
 `watch` needs a running [daemon](AI-Agents-and-Automation.md#tasqx-daemon);
 the daemon pushes a change notification on every write, and `watch`
