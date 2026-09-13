@@ -57,13 +57,11 @@ fn phrase_escape(query: &str) -> Result<String, ApiError> {
 /// already reporting a failure.
 fn fts5_columns_for(scope: &str) -> &'static str {
     match scope {
-        // D135: `docs_fts`'s second column is `search_body` (the derived,
-        // frontmatter-flattened text `snippet()` reads), not `docs.body`
-        // itself — a `--raw` caller who wants the FTS5 `col:query` grammar
-        // against a doc's text names the column that actually exists.
-        "docs" => "title, search_body",
+        // D135: `docs_fts.body` reads the derived `docs.search_body` through
+        // the `docs_search` view, but keeps the column name D41 published.
+        "docs" => "title, body",
         "annotations" => "body",
-        _ => "title, search_body (docs) or body (annotations)",
+        _ => "title, body (docs) or body (annotations)",
     }
 }
 

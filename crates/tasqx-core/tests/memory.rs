@@ -1000,6 +1000,65 @@ fn memory_search_snippet_never_shows_frontmatter_but_the_stored_body_is_untouche
     );
 }
 
+/// An empty fence (`---\n---\n`) has no lines, but it is still a fence, and
+/// its delimiters must not reach the snippet any more than a full one's do.
+#[test]
+fn an_empty_frontmatter_fence_never_reaches_the_snippet() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "empty-fence", "body": "---\n---\nZebrafish husbandry notes." }),
+    )
+    .expect("memory.add");
+
+    let found = call(&e, "memory.search", json!({ "query": "zebrafish" })).expect("search");
+    assert_eq!(found["count"], 1, "{found}");
+    let snippet = found["hits"][0]["snippet"].as_str().unwrap();
+    assert!(
+        !snippet.contains("---"),
+        "an empty fence's delimiters leaked into the snippet: {snippet:?}"
+    );
+}
+
+/// D41 advertises FTS5 column filters under `raw`, and `docs_fts`'s text
+/// column has always been called `body`. Pointing the index at the derived
+/// frontmatter-flattened text (D135) must not rename that column out from
+/// under a caller: `body:release` found this doc before D135 and must still.
+#[test]
+fn a_raw_body_column_filter_still_finds_a_doc() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({
+            "title": "release-process",
+            "body": "---\ndescription: How an SDK is shipped\n---\nCut the release branch on Monday.",
+        }),
+    )
+    .expect("memory.add");
+
+    let found = call(
+        &e,
+        "memory.search",
+        json!({ "query": "body:release", "raw": true, "scope": "docs" }),
+    )
+    .expect("`body` is the docs index's text column");
+    assert_eq!(found["count"], 1, "{found}");
+
+    // And the column reads the flattened text, not the raw body: a word that
+    // lives only in the frontmatter is found through it, fence-free.
+    let fm = call(
+        &e,
+        "memory.search",
+        json!({ "query": "body:SDK", "raw": true, "scope": "docs" }),
+    )
+    .expect("search");
+    assert_eq!(fm["count"], 1, "{fm}");
+    let snippet = fm["hits"][0]["snippet"].as_str().unwrap();
+    assert!(!snippet.contains("---"), "{snippet:?}");
+}
+
 /// A term that only ever appears inside the frontmatter block (the
 /// `description`'s own words, never repeated in the prose body) must still
 /// find the doc — flattening turns the fence into prose, it does not cut it,
