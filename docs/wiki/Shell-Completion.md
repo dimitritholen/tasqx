@@ -19,22 +19,35 @@ to your startup file, and asks before writing. Run twice it leaves one block;
 `--uninstall` restores the file byte for byte.
 
 Prefer doing it by hand? `tasqx completions <shell>` prints the one line, and
-this is where each line belongs:
+this is where each line belongs.
+
+bash, in `~/.bashrc`:
 
 ```console
-# bash — ~/.bashrc
 source <(TASQX_COMPLETE=bash tasqx)
+```
 
-# zsh — ~/.zshrc, after your compinit line
+zsh, in `~/.zshrc`, after your `compinit` line:
+
+```console
 source <(TASQX_COMPLETE=zsh tasqx)
+```
 
-# fish — ~/.config/fish/completions/tasqx.fish
+fish, in `~/.config/fish/completions/tasqx.fish`:
+
+```console
 TASQX_COMPLETE=fish tasqx | source
+```
 
-# elvish — ~/.elvish/rc.elv
+elvish, in `~/.elvish/rc.elv`:
+
+```console
 eval (E:TASQX_COMPLETE=elvish tasqx | slurp)
+```
 
-# PowerShell — $PROFILE
+PowerShell, in `$PROFILE`:
+
+```console
 $env:TASQX_COMPLETE = "powershell"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\TASQX_COMPLETE
 ```
 

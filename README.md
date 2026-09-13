@@ -279,22 +279,35 @@ echo '{"tasqx":"1","method":"task.list","params":{"filter":"@working"}}' | tasqx
   PowerShell: verbs, flags, file paths, your task ids (with titles where the
   shell allows), projects, tags, the capture sugar and the filter grammar.
   `tasqx completions --install` sets it up and asks before touching anything;
-  or add the line yourself:
+  or add the line for your shell yourself.
+
+bash, in `~/.bashrc`:
 
 ```console
-# bash — ~/.bashrc
 source <(TASQX_COMPLETE=bash tasqx)
+```
 
-# zsh — ~/.zshrc, after your compinit line
+zsh, in `~/.zshrc`, after your `compinit` line:
+
+```console
 source <(TASQX_COMPLETE=zsh tasqx)
+```
 
-# fish — ~/.config/fish/completions/tasqx.fish
+fish, in `~/.config/fish/completions/tasqx.fish`:
+
+```console
 TASQX_COMPLETE=fish tasqx | source
+```
 
-# elvish — ~/.elvish/rc.elv
+elvish, in `~/.elvish/rc.elv`:
+
+```console
 eval (E:TASQX_COMPLETE=elvish tasqx | slurp)
+```
 
-# PowerShell — $PROFILE
+PowerShell, in `$PROFILE`:
+
+```console
 $env:TASQX_COMPLETE = "powershell"; tasqx | Out-String | Invoke-Expression; Remove-Item Env:\TASQX_COMPLETE
 ```
 
