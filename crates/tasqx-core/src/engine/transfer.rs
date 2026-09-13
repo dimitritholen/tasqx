@@ -602,14 +602,31 @@ impl Engine {
                 // doc at rev 0, exactly what a fresh `memory.add` would mint.
                 let project = opt_str_nonempty(dv, "project")?;
                 let rev = opt_i64(dv, "_rev")?.unwrap_or(0);
+                // D135: `search_body` is derived, never carried by the export
+                // itself (it is not part of the exported doc shape) — always
+                // recomputed here from the imported `body`, the same way
+                // `memory.add`/`memory.import` compute it at their own write
+                // doors, so a restored store's index matches its content.
+                let search_body = crate::frontmatter::flatten(&body).into_owned();
                 tx.execute(
-                    "INSERT INTO docs (id, source, title, body, project, rev, created, modified) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
+                    "INSERT INTO docs \
+                     (id, source, title, body, search_body, project, rev, created, modified) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) \
                      ON CONFLICT(id) DO UPDATE SET \
                      source=excluded.source, title=excluded.title, body=excluded.body, \
-                     project=excluded.project, rev=excluded.rev, \
-                     created=excluded.created, modified=excluded.modified",
-                    params![did, source, title, body, project, rev, created, modified],
+                     search_body=excluded.search_body, project=excluded.project, \
+                     rev=excluded.rev, created=excluded.created, modified=excluded.modified",
+                    params![
+                        did,
+                        source,
+                        title,
+                        body,
+                        search_body,
+                        project,
+                        rev,
+                        created,
+                        modified
+                    ],
                 )?;
                 insert_event(
                     &tx,
