@@ -1239,14 +1239,12 @@ fn split_ideal(line: &str, ideal: char) -> Vec<(bool, String)> {
     runs
 }
 
+/// The two ends of the time axis, in the calendar words `list` and `agenda`
+/// use (D133). Measured from the last day, so a window reaching back past New
+/// Year gives its first day a year and not its last.
 fn axis_labels(first: Date, last: Date, width: usize, unicode: bool) -> String {
-    let fs = format!(
-        "{:04}-{:02}-{:02}",
-        first.year(),
-        first.month(),
-        first.day()
-    );
-    let ls = format!("{:04}-{:02}-{:02}", last.year(), last.month(), last.day());
+    let fs = crate::render::calendar_date(first, last);
+    let ls = crate::render::calendar_date(last, last);
     let arrow = if unicode { "→" } else { "->" };
     if width <= fs.len() + ls.len() + 1 {
         format!("{fs} {arrow} {ls}")
@@ -1444,6 +1442,23 @@ mod tests {
         let days = heatmap(&result(evs), &members, 2, anchor());
         assert_eq!(current_streak(&days, anchor()), 3);
         assert_eq!(best_streak(&days), 3);
+    }
+
+    /// #54: the axis ends were the one date on the chart screens still spelled
+    /// in ISO, beside `list` and `agenda` saying `15 Aug` (D133).
+    #[test]
+    fn burndown_axis_ends_use_calendar_words() {
+        let day = |y: i16, m: i8, d: i8| jiff::civil::date(y, m, d);
+        let same = axis_labels(day(2026, 8, 15), day(2026, 9, 13), 60, true);
+        assert!(
+            same.starts_with("15 Aug") && same.ends_with("13 Sep"),
+            "{same:?}"
+        );
+        let across = axis_labels(day(2025, 12, 20), day(2026, 1, 10), 60, true);
+        assert!(
+            across.starts_with("20 Dec 25") && across.ends_with("10 Jan"),
+            "a first day outside the last day's year carries its year: {across:?}"
+        );
     }
 
     #[test]
