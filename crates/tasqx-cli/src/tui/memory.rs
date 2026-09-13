@@ -539,28 +539,30 @@ pub fn doc_lines(body: &str, width: usize, unicode: bool) -> Vec<DocLine> {
     let mut out: Vec<DocLine> = Vec::new();
 
     // The block-finding and `key: value` splitting is `frontmatter::split`'s
-    // job (task #12/D135), shared with `memory.add`'s write-time flatten so
-    // there is one parser, not a second one reading the same fence by hand.
-    // A store written before that fix can still hold a raw fence here, which
-    // is exactly the case this screen keeps its own rendering for.
+    // job (task #12/D135), shared with `render::doc_summary` and
+    // `memory import`'s own cut so there is one parser, not several reading
+    // the same fence by hand. `docs.body` is never rewritten (D135's second
+    // cut), so every doc that ever opened with a fence still does here.
     let (pairs, rest) = frontmatter::split(body);
     if !pairs.is_empty() {
         let key_w = pairs
             .iter()
-            .map(|(k, _)| render::width(k))
+            .filter_map(|(k, _)| k.map(render::width))
             .max()
             .unwrap_or(0);
+        let indent = " ".repeat(key_w + 2);
         for (k, v) in &pairs {
-            let key = render::pad(k, key_w + 2);
+            // A key: `key  value`, labelled and aligned. A colonless line —
+            // a YAML list item, a folded block scalar's continuation — has
+            // no key to label, so it reads as plain text at the same indent
+            // rather than being dropped (the bug a review finding caught in
+            // `flatten`'s own first cut).
+            let lead = match k {
+                Some(k) => (Ink::Label, render::pad(k, key_w + 2)),
+                None => (Ink::Text, indent.clone()),
+            };
             let words = words_of(&[(Ink::Text, (*v).to_string())]);
-            wrap(
-                &mut out,
-                words,
-                width,
-                (Ink::Label, key.clone()),
-                " ".repeat(key_w + 2),
-                unicode,
-            );
+            wrap(&mut out, words, width, lead, indent.clone(), unicode);
         }
         out.push(Vec::new());
     }
@@ -1459,6 +1461,40 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.iter().any(|(ink, t)| *ink == Ink::Heading && t == "Why")));
+    }
+
+    /// CRLF regression: a Windows-authored doc's fence lines end `\r\n`
+    /// (CI runs on Windows), and must read exactly like a Unix one rather
+    /// than being missed as a fence at all and printed with its dashes.
+    #[test]
+    fn a_crlf_frontmatter_fence_is_read_as_fields_too() {
+        let lines = doc_lines("---\r\nname: deploy\r\n---\r\nBody.", 60, true);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.iter().map(|(_, t)| t.as_str()).collect())
+            .collect();
+        assert!(!text.iter().any(|l| l.trim() == "---"), "{text:?}");
+        assert!(
+            text[0].starts_with("name") && text[0].contains("deploy"),
+            "{text:?}"
+        );
+    }
+
+    /// A colonless line inside the fence (a YAML list item, a folded block
+    /// scalar's continuation) is a value with no key — read as plain text at
+    /// the same indent, not dropped (the review finding that caught
+    /// `flatten`'s own first cut silently discarding these).
+    #[test]
+    fn a_colonless_frontmatter_line_reads_as_text_not_a_dropped_line() {
+        let lines = doc_lines("---\ntags:\n  - kubernetes\n---\nBody.", 60, true);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.iter().map(|(_, t)| t.as_str()).collect())
+            .collect();
+        assert!(
+            text.iter().any(|l| l.contains("kubernetes")),
+            "a colonless frontmatter line must still be rendered: {text:?}"
+        );
     }
 
     #[test]

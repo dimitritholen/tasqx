@@ -650,24 +650,21 @@ pub(crate) fn day_ago(at: Timestamp, now: Timestamp) -> String {
 /// memories open with a `---` block, and printing it verbatim is how
 /// `name: vh-mcp-standaard description: "…` came to be every preview's first
 /// words. Otherwise the first line of prose, without its markdown markers.
+///
+/// The fence itself is found by `tasqx_core::frontmatter::split` (task
+/// #12/D135) — the same parser `tui::memory::doc_lines` and
+/// `verbs::memory_docs_from_path`'s import cut both call — rather than a
+/// second hand-rolled `---` scan reading the same bytes its own way.
 pub(crate) fn doc_summary(body: &str) -> String {
-    let mut lines = body.lines().peekable();
-    if lines.peek().is_some_and(|l| l.trim() == "---") {
-        lines.next();
-        let mut description = None;
-        for l in lines.by_ref() {
-            if l.trim() == "---" {
-                break;
-            }
-            if let Some(v) = l.strip_prefix("description:") {
-                description = Some(v.trim().trim_matches('"').to_string());
-            }
-        }
-        if let Some(d) = description.filter(|d| !d.is_empty()) {
-            return san(&d);
-        }
+    let (pairs, rest) = tasqx_core::frontmatter::split(body);
+    if let Some(d) = pairs
+        .iter()
+        .find_map(|(k, v)| (*k == Some("description")).then_some(*v))
+        .filter(|d| !d.is_empty())
+    {
+        return san(d);
     }
-    lines
+    rest.lines()
         .map(|l| {
             l.trim()
                 .trim_start_matches(['#', '-', '*', '>', ' '])
@@ -3864,6 +3861,30 @@ mod tests {
         for s in tasqx_core::types::Status::ALL {
             assert_eq!(status_is_open(s.as_str()), s.is_open(), "{s:?}");
         }
+    }
+
+    /// Task #12/D135: `docs.body` is never rewritten, so `doc_summary` reads
+    /// exactly the body `memory.get` would hand back (the demo store's own
+    /// `release-process` doc, verbatim) — a labelled `description` value,
+    /// not the whole `key: value` line and not the fence. Shares
+    /// `tasqx_core::frontmatter::split` with `tui::memory::doc_lines`
+    /// instead of its own `---` scan (review finding).
+    #[test]
+    fn doc_summary_reads_the_bare_description_from_a_body_memory_get_would_return() {
+        let body = "---\ndescription: How an SDK release is cut, tagged and announced\n---\n\
+                     Cut the release branch on Monday.";
+        assert_eq!(
+            doc_summary(body),
+            "How an SDK release is cut, tagged and announced"
+        );
+    }
+
+    /// No `description` key: the summary falls back to the first line of
+    /// prose AFTER the fence, not the fence's other fields.
+    #[test]
+    fn doc_summary_falls_back_to_the_first_prose_line_when_there_is_no_description() {
+        let body = "---\nname: deploy\nauthor: infra\n---\nRoll out the change on Monday.";
+        assert_eq!(doc_summary(body), "Roll out the change on Monday.");
     }
 
     #[test]
