@@ -574,8 +574,8 @@ fn month_abbrev(m: i8) -> String {
 /// CALENDAR days, not elapsed hours, and that is the difference from
 /// `fmt_instant`: a deadline at 09:00 tomorrow is "tomorrow" to the person
 /// reading it, and "in 14 hours" hands them the arithmetic this cell exists to
-/// do. The vocabulary is [`day_heading`]'s, so `list` and `agenda` name the
-/// same day the same way.
+/// do. A date is spelled by [`calendar_date`], which [`day_heading`] shares, so
+/// `list` and `agenda` name the same day the same way (D133).
 ///
 /// Inside the next week the weekday alone identifies the day — there is
 /// exactly one Sunday in any six-day window — so the date is not spelled out
@@ -606,15 +606,29 @@ pub(crate) fn due_cell(due: Timestamp, now: Timestamp) -> String {
         -1 => "yesterday".to_string(),
         d if d < -1 => format!("{}d ago", -d),
         d if d < 7 => weekday_abbrev(day).to_string(),
-        _ if day.year() == today.year() => {
-            format!("{} {}", day.day(), month_abbrev(day.month()))
-        }
-        _ => format!(
+        _ => calendar_date(day, today),
+    }
+}
+
+/// `13 Sep`, `4 Jan 27`: the one spelling of a calendar date on the terminal
+/// screens, with the two-digit year only once the date leaves the current one.
+///
+/// ONE function because two spellings drifted: `list` said `2d ago` and
+/// `22 Sep` while `agenda`, over the same rows, printed `due 2026-09-11`,
+/// `Wed 2026-09-16` and `through 2026-09-27`. [`due_cell`], [`day_ago`],
+/// [`day_heading`], the agenda horizon and its overdue footer all call this,
+/// so the views cannot come to name one day two ways again (D133). The
+/// `--json` objects stay ISO: those are a machine contract, not a screen.
+pub(crate) fn calendar_date(day: Date, today: Date) -> String {
+    if day.year() == today.year() {
+        format!("{} {}", day.day(), month_abbrev(day.month()))
+    } else {
+        format!(
             "{} {} {:02}",
             day.day(),
             month_abbrev(day.month()),
             day.year().rem_euclid(100)
-        ),
+        )
     }
 }
 
@@ -634,13 +648,7 @@ pub(crate) fn day_ago(at: Timestamp, now: Timestamp) -> String {
         d if d <= 0 => "today".to_string(),
         1 => "yesterday".to_string(),
         d if d < 7 => format!("{d}d ago"),
-        _ if day.year() == today.year() => format!("{} {}", day.day(), month_abbrev(day.month())),
-        _ => format!(
-            "{} {} {:02}",
-            day.day(),
-            month_abbrev(day.month()),
-            day.year().rem_euclid(100)
-        ),
+        _ => calendar_date(day, today),
     }
 }
 
@@ -1163,7 +1171,7 @@ pub(crate) fn table_summary(
             })
         })
         .count();
-    // An agenda prints its own `Today · Thu 2026-09-10` heading with the rows
+    // An agenda prints its own `Today · Thu 10 Sep` heading with the rows
     // under it, so the count is already on the screen in a form that also says
     // WHICH rows. Printing it again beside the heading that made it redundant
     // is the kind of line a reader learns to skip.
@@ -1686,11 +1694,13 @@ fn weekday_abbrev(d: Date) -> &'static str {
     }
 }
 
-/// `Today · Mon 2026-08-03`. The date is spelled out on every heading, today's
+/// `Today · Mon 3 Aug`. The date is spelled out on every heading, today's
 /// included: "Today" alone is the one label that means something different
-/// tomorrow, and terminal output gets pasted into tickets.
+/// tomorrow, and terminal output gets pasted into tickets. It is spelled by
+/// [`calendar_date`], `list`'s spelling, not ISO (D133), so a heading more than
+/// a year out keeps its two-digit year and still names exactly one day.
 fn day_heading(day: Date, today: Date) -> String {
-    let stamp = format!("{} {day}", weekday_abbrev(day));
+    let stamp = format!("{} {}", weekday_abbrev(day), calendar_date(day, today));
     let tomorrow = today.tomorrow().ok();
     if day == today {
         format!("Today · {stamp}")
@@ -1712,26 +1722,24 @@ fn day_heading(day: Date, today: Date) -> String {
 /// store itself distinguishes.
 ///
 /// The overdue group spans many days and so has no date in its heading. Its
-/// cells carry the full date instead — `due 2026-07-29` — because "how late" is
-/// the whole content of that group.
-fn when_cell(kind: When, at: Timestamp, dated: bool) -> String {
-    let z = at.to_zoned(TimeZone::UTC);
-    let t = z.time();
-    let clock = if t.hour() == 0 && t.minute() == 0 {
+/// cells carry the day instead, in [`due_cell`]'s words — `due 2d ago`,
+/// `due today 17:00` — because "how late" is the whole content of that group,
+/// and `list` beside it spells the same row that way (D133). `overdue_now` is
+/// the instant those words are relative to; `None` is a row under a heading.
+fn when_cell(kind: When, at: Timestamp, overdue_now: Option<Timestamp>) -> String {
+    if let Some(now) = overdue_now {
+        return format!("{} {}", kind.label(), due_cell(at, now));
+    }
+    let t = at.to_zoned(TimeZone::UTC).time();
+    let stamp = if t.hour() == 0 && t.minute() == 0 {
         String::new()
     } else {
         format!("{:02}:{:02}", t.hour(), t.minute())
     };
-    let stamp = match (dated, clock.is_empty()) {
-        (true, true) => z.date().to_string(),
-        (true, false) => format!("{} {clock}", z.date()),
-        (false, true) => String::new(),
-        (false, false) => clock,
-    };
     match (stamp.is_empty(), kind) {
         // A deadline on the day its own heading names, with no time in the
         // store: the heading is the whole answer, and a column of rows reading
-        // `due` `due` `due` beneath `Tomorrow · Fri 2026-09-11` spends cells
+        // `due` `due` `due` beneath `Tomorrow · Fri 11 Sep` spends cells
         // repeating it. Blank here means "the heading said it" — and if every
         // row on the agenda is one of these, `TaskCols::fit` drops the column
         // outright, which is the correct answer to a view whose day headings
@@ -1739,8 +1747,7 @@ fn when_cell(kind: When, at: Timestamp, dated: bool) -> String {
         (true, When::Due) => String::new(),
         // `sched` is not the default reading, so it says so even bare: this row
         // is on this day because you meant to START it, not because anything is
-        // owed. Same for the overdue group, which spans many days and therefore
-        // has no heading to defer to — `dated` is what puts the date in `stamp`.
+        // owed. (The overdue group never reaches here: it returned above.)
         (true, When::Scheduled) => kind.label().to_string(),
         (false, _) => format!("{} {stamp}", kind.label()),
     }
@@ -1773,7 +1780,11 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
     // filter sits: both views open by naming the question they answered.
     let has_future = a.entries.iter().any(|e| !e.overdue);
     let horizon = if a.entries.is_empty() || has_future {
-        format!("through {} (+{}d)", a.through, a.days)
+        format!(
+            "through {} (+{}d)",
+            calendar_date(a.through, a.today),
+            a.days
+        )
     } else {
         "all overdue".to_string()
     };
@@ -1786,7 +1797,7 @@ pub fn agenda_text(ctx: &Ctx, a: &Agenda) -> String {
             .map(|e| {
                 let mut r = task_row(e.task, a.at_start_of_today(), ctx.caps.unicode);
                 let overdue = e.overdue;
-                r.due = when_cell(e.kind, e.at, overdue);
+                r.due = when_cell(e.kind, e.at, overdue.then(|| a.at_start_of_today()));
                 // Repainted from the AGENDA instant, not from `due` alone: a
                 // task scheduled last week and due next month is late on the
                 // thing this row is about, and `task_row`'s answer is about the
@@ -1935,7 +1946,7 @@ impl Agenda<'_> {
             // `--days` (rule 3) never reaches the past side anyway.
             let oldest = self
                 .overdue_oldest
-                .map(|d| d.to_string())
+                .map(|d| calendar_date(d, self.today))
                 .unwrap_or_default();
             v.push(format!(
                 "{} more overdue, oldest {oldest} — `tasqx list due.before:today` shows them",
@@ -7654,7 +7665,7 @@ mod tests {
             "the note must name the window that reaches the furthest row: {out}"
         );
         // ...and the horizon really is a fortnight by default, stated on screen.
-        assert!(out.contains("through 2026-08-17 (+14d)"), "{out}");
+        assert!(out.contains("through 17 Aug (+14d)"), "{out}");
 
         // Raising it brings them in, which is the other half of the promise.
         let wide = agenda_out(tasks, 90);
@@ -7819,9 +7830,10 @@ mod tests {
             "past days collapse into one heading:\n{out}"
         );
         assert!(out.contains("late by a month"), "{out}");
-        // The date, not a bare `due`: which day it was late on is the whole
-        // content of this group.
-        assert!(out.contains("due 2026-07-01"), "{out}");
+        // The day, not a bare `due`: how late it is is the whole content of
+        // this group — spelled as `list` spells it (D133).
+        assert!(out.contains("due 33d ago"), "{out}");
+        assert!(out.contains("due 7d ago"), "{out}");
         // A time-of-day is shown only where the store has one. `2026-07-01` was
         // typed without a time and resolves to midnight, so printing `00:00`
         // would be a time nobody entered.
@@ -7831,7 +7843,9 @@ mod tests {
 
     /// Today and tomorrow get their words, and every heading carries the date
     /// anyway -- "Today" alone is the one label that means something else
-    /// tomorrow, and terminal output gets pasted into tickets.
+    /// tomorrow, and terminal output gets pasted into tickets. The date is
+    /// `list`'s calendar spelling, not ISO (D133), with the two-digit year
+    /// only once it leaves the current one.
     #[test]
     fn day_headings_name_the_relative_day_and_the_date() {
         let out = agenda_out(
@@ -7839,14 +7853,114 @@ mod tests {
                 dated(1, "a", "2026-08-03T00:00:00Z", ""),
                 dated(2, "b", "2026-08-04T00:00:00Z", ""),
                 dated(3, "c", "2026-08-06T00:00:00Z", ""),
+                dated(4, "d", "2027-01-04T00:00:00Z", ""),
+            ],
+            200,
+        );
+        assert!(out.contains("\nToday · Mon 3 Aug\n"), "{out}");
+        assert!(out.contains("\nTomorrow · Tue 4 Aug\n"), "{out}");
+        assert!(out.contains("\nThu 6 Aug\n"), "{out}");
+        assert!(out.contains("\nMon 4 Jan 27\n"), "{out}");
+        assert!(
+            out.starts_with("through 19 Feb 27 (+200d)"),
+            "the horizon is spelled the same way: {out}"
+        );
+        assert!(
+            !out.contains("2026-"),
+            "no ISO date on the text agenda: {out}"
+        );
+        assert!(
+            !out.contains("2027-"),
+            "no ISO date on the text agenda: {out}"
+        );
+    }
+
+    /// The Overdue group has no heading to carry a day, so its cells do — in
+    /// `list`'s words (D133). It used to print `due 2026-08-02` beside a
+    /// `list` that said `yesterday` for the same row.
+    #[test]
+    fn overdue_when_cells_speak_lists_calendar_words() {
+        let out = agenda_out(
+            vec![
+                dated(1, "missed this morning", "2026-08-03T08:00:00Z", ""),
+                dated(2, "due yesterday", "2026-08-02T00:00:00Z", ""),
+                dated(3, "meant to start", "", "2026-08-01T00:00:00Z"),
             ],
             14,
         );
-        assert!(out.contains("Today"), "{out}");
-        assert!(out.contains("Mon 2026-08-03"), "{out}");
-        assert!(out.contains("Tomorrow"), "{out}");
-        assert!(out.contains("Tue 2026-08-04"), "{out}");
-        assert!(out.contains("\nThu 2026-08-06\n"), "{out}");
+        let row = |title: &str| {
+            out.lines()
+                .find(|l| l.contains(title))
+                .unwrap_or_else(|| panic!("{title:?} missing:\n{out}"))
+                .to_string()
+        };
+        assert!(
+            row("missed this morning").contains("due today 08:00"),
+            "{out}"
+        );
+        assert!(row("due yesterday").contains("due yesterday"), "{out}");
+        assert!(row("meant to start").contains("sched 2d ago"), "{out}");
+        assert!(
+            !out.contains("2026-"),
+            "no ISO date on the text agenda: {out}"
+        );
+    }
+
+    /// D133's guard: `list` and `agenda` spell the same day identically for
+    /// the same row, because both go through one spelling. Asserted as
+    /// agreement between the two renders rather than as either's text, so a
+    /// third spelling on either side reddens it.
+    #[test]
+    fn list_and_agenda_spell_the_same_day_the_same_way() {
+        let ctx = || Ctx::new(theme::default_theme(), Caps::PLAIN).with_cols(200);
+        let rows = [
+            (1, "late by two days", "2026-08-01T00:00:00Z"),
+            (2, "missed at eight", "2026-08-03T08:00:00Z"),
+            (3, "on thursday", "2026-08-06T00:00:00Z"),
+            (4, "in a fortnight", "2026-08-15T00:00:00Z"),
+            (5, "next year", "2027-01-04T00:00:00Z"),
+        ];
+        let payload = json!({
+            "tasks": rows.iter().map(|(id, t, d)| dated(*id, t, d, "")).collect::<Vec<_>>(),
+            "count": rows.len(),
+        });
+        let listed = task_table(&ctx(), &payload, anchor());
+        let agenda = agenda_text(&ctx(), &agenda_of(&payload, 200));
+        let line_of = |out: &str, title: &str| {
+            out.lines()
+                .position(|l| l.contains(title))
+                .unwrap_or_else(|| panic!("{title:?} missing:\n{out}"))
+        };
+        for (_, title, due) in rows {
+            let spelled = due_cell(due.parse().unwrap(), anchor());
+            let l = listed.lines().nth(line_of(&listed, title)).unwrap();
+            assert!(
+                l.contains(&spelled),
+                "list spells {due} as {spelled:?}: {l:?}"
+            );
+
+            let agenda_lines: Vec<&str> = agenda.lines().collect();
+            let at = line_of(&agenda, title);
+            let row = agenda_lines[at];
+            if row.contains("due ") {
+                // An Overdue row carries the day in its own cell.
+                assert!(
+                    row.contains(&format!("due {spelled}")),
+                    "agenda must spell {due} as list does ({spelled:?}):\n{agenda}"
+                );
+            } else {
+                // A row under a day heading: the heading carries the day.
+                let heading = agenda_lines[..at]
+                    .iter()
+                    .rev()
+                    .find(|l| !l.starts_with(' ') && !l.is_empty())
+                    .unwrap();
+                assert!(
+                    heading.contains(spelled.as_str()),
+                    "agenda heading {heading:?} must carry list's {spelled:?}:\n{agenda}"
+                );
+            }
+        }
     }
 
     /// One layout for every group, and it is the D51 one: the columns are
@@ -8200,6 +8314,12 @@ mod tests {
             out.contains("more overdue"),
             "the rows the cap held back must be counted and named, the same way \
              undated and beyond-horizon rows already are: {out:?}"
+        );
+        // D133: the oldest is spelled as `list` spells a date, the year kept
+        // because it is not this one.
+        assert!(
+            out.contains("5 more overdue, oldest 1 Jan 23 "),
+            "the footer spells its oldest day in list's words: {out:?}"
         );
         assert!(
             !out.contains("+14d"),
