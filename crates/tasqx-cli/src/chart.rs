@@ -508,20 +508,12 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: b
     }
     let weeks_n = days.len() / 7;
 
-    // The swatches are two glyphs wide because the cells are: a legend whose
-    // key is half the size of the thing it explains is one the eye has to
-    // translate.
-    let legend = if ctx.caps.unicode {
-        "░░ 0  ▒▒ 1–2  ▓▓ 3–4  ██ 5+"
-    } else {
-        ".. 0  :: 1-2  ++ 3-4  ## 5+"
-    };
     let mut out = String::new();
     out.push_str(&ctx.paint(
         "header",
         &format!("Completions {} last {weeks_n} weeks", ctx.mid()),
     ));
-    out.push_str(&format!("   {}\n", ctx.paint("muted", legend)));
+    out.push_str(&format!("   {}\n", heatmap_legend(ctx)));
 
     // A month strip over the columns. Twelve weeks of grid with no date on it
     // anywhere is a shape a reader cannot place: "when was that gap" has no
@@ -594,6 +586,38 @@ pub fn render_heatmap(ctx: &Ctx, days: &[DayCount], anchor: Date, store_empty: b
             )
         )
     ));
+    out
+}
+
+/// The heatmap's legend: one real grid swatch per level, not a description of
+/// one.
+///
+/// It used to be a single string painted as ONE span in ONE role (`muted`),
+/// so every bucket — the empty day and the busiest one alike — came out the
+/// same dim slate colour and the same weight; only the glyph inside told them
+/// apart, and in the `mono` theme even the swatch for "5+" was not bold like
+/// the grid's own `5+` cells are. A legend is a key to the grid, so each
+/// swatch is built by calling `cell` with a representative count for that
+/// bucket — the exact function, and therefore the exact painted bytes, the
+/// grid itself uses for a day at that level. Only the number labels beside
+/// the swatches stay `muted`; they are captions, not data.
+fn heatmap_legend(ctx: &Ctx) -> String {
+    let dash = if ctx.caps.unicode { "–" } else { "-" };
+    let entries: [(u32, String); 4] = [
+        (0, "0".to_string()),
+        (1, format!("1{dash}2")),
+        (3, format!("3{dash}4")),
+        (5, "5+".to_string()),
+    ];
+    let mut out = String::new();
+    for (i, (level, label)) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push_str("  ");
+        }
+        out.push_str(&cell(*level, ctx));
+        out.push(' ');
+        out.push_str(&ctx.paint("muted", label));
+    }
     out
 }
 
@@ -2394,5 +2418,59 @@ mod tests {
 
         // A non-empty store still draws the grid, even over an all-zero window.
         assert!(render_heatmap(&ctx, &days, anchor(), false).contains("Mon"));
+    }
+
+    /// #13: the legend must be a KEY to the grid — each swatch painted with
+    /// exactly the style (glyph + role) `cell` uses for a day at that level —
+    /// not one flat span in one muted colour with only the glyph changing.
+    ///
+    /// Checked under truecolor, under the `mono` theme (where a grid cell's
+    /// non-zero levels are bold and the zero level is dim — no colour is
+    /// involved at all, so a legend that merely recolours itself uniformly
+    /// cannot pass here even by accident) and under plain/NO_COLOR (where the
+    /// glyph alone still has to carry the distinction).
+    #[test]
+    fn heatmap_legend_swatches_match_grid_cells() {
+        use crate::theme::{self, Caps, ColorDepth};
+        let truecolor = Caps {
+            depth: ColorDepth::Truecolor,
+            ansi: true,
+            unicode: true,
+        };
+        let cases = [
+            (
+                "nord/truecolor",
+                Ctx::new(theme::default_theme(), truecolor),
+            ),
+            (
+                "mono/truecolor",
+                Ctx::new(theme::builtin("mono").expect("mono is built in"), truecolor),
+            ),
+            (
+                "plain/no-color",
+                Ctx::new(theme::default_theme(), Caps::PLAIN),
+            ),
+        ];
+        // 84 empty days (12 weeks) — the legend sits in the header line
+        // regardless of what the grid underneath draws.
+        let days: Vec<DayCount> = (0..84)
+            .map(|i| DayCount {
+                date: anchor().saturating_sub(((83 - i) as i64).days()),
+                count: 0,
+            })
+            .collect();
+        for (name, ctx) in &cases {
+            let out = render_heatmap(ctx, &days, anchor(), false);
+            let legend_line = out.lines().next().expect("a header line");
+            for level in [0u32, 1, 3, 5] {
+                let swatch = cell(level, ctx);
+                assert!(
+                    legend_line.contains(&swatch),
+                    "[{name}] legend is missing the level-{level} grid swatch \
+                     {swatch:?} (painted the same way a grid cell would be): \
+                     legend line = {legend_line:?}"
+                );
+            }
+        }
     }
 }
