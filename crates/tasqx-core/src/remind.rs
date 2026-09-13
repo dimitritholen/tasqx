@@ -16,12 +16,9 @@
 //! the reference instant explicitly (it needs one only for the absolute branch)
 //! and [`parse_spec`] / [`resolve`] need **no clock at all** — the stored form is
 //! already canonical, so the scheduler's hot path can never read a hidden clock.
-//! Like `datetime::parse_when`, the absolute branch also reads the machine's
-//! zone (exactly once, at [`parse_remind`]'s own boundary) to interpret a naive
-//! clock time — DESIGN.md:458, tasqx audit #138 — via the crate-private
-//! `parse_remind_zoned`, which this module's own suite pins to UTC.
+//! Like `datetime::parse_when`, the absolute branch reads no zone either: a
+//! clock time with no offset is UTC (D132).
 
-use jiff::tz::TimeZone;
 use jiff::Timestamp;
 
 use crate::datetime;
@@ -41,14 +38,6 @@ pub enum Remind {
 /// `now` is only consulted for the absolute branch (it is handed straight to
 /// [`datetime::parse_when`]); offsets are clock-free.
 pub fn parse_remind(input: &str, now: Timestamp) -> Result<Remind, ApiError> {
-    parse_remind_zoned(input, now, &TimeZone::system())
-}
-
-/// [`parse_remind`], with the zone a naive clock time resolves in taken as a
-/// parameter — see [`datetime::parse_when_zoned`], which this delegates to.
-/// Crate-private and test-only in practice: [`parse_remind`] is the one real
-/// entry point, reading the machine's zone itself.
-fn parse_remind_zoned(input: &str, now: Timestamp, tz: &TimeZone) -> Result<Remind, ApiError> {
     let raw = input.trim();
     if raw.is_empty() {
         return Err(ApiError::bad_request("empty reminder expression"));
@@ -63,7 +52,7 @@ fn parse_remind_zoned(input: &str, now: Timestamp, tz: &TimeZone) -> Result<Remi
     }
     // No sign: an absolute date expression, resolved once through the single
     // natural-language date parser so `remind:` and `due:` accept the same forms.
-    Ok(Remind::At(datetime::parse_when_zoned(raw, now, tz)?))
+    Ok(Remind::At(datetime::parse_when(raw, now)?))
 }
 
 /// Parse a **stored canonical** spec (as produced by [`spec_to_string`]) with no
@@ -153,14 +142,10 @@ mod tests {
         "2026-07-15T12:00:00Z".parse().unwrap()
     }
 
-    /// Pinned to UTC through the crate-private zoned entry point, exactly as
-    /// `datetime.rs`'s own suite pins it — every assertion below predates the
-    /// local-zone behaviour (#138) and was written against UTC, so this must
-    /// not depend on the zone of whatever machine runs it. `absolute_reminder_
-    /// resolves_against_the_given_zone` below exercises a real non-UTC zone to
-    /// prove the feature itself.
+    /// The parser reads no zone (D132); `tests/utc_clock.rs` proves that under
+    /// a non-UTC `TZ`.
     fn p(s: &str) -> Remind {
-        parse_remind_zoned(s, now(), &TimeZone::UTC).unwrap()
+        parse_remind(s, now()).unwrap()
     }
 
     #[test]
@@ -185,26 +170,6 @@ mod tests {
         );
         assert_eq!(p("tomorrow"), Remind::At("2026-07-16T00:00:00Z".into()));
         assert_eq!(p("friday 9am"), Remind::At("2026-07-17T09:00:00Z".into()));
-    }
-
-    /// #138 (DESIGN.md:458): `remind:` is a second entry point into the naive
-    /// date grammar, so a clock time typed with no offset must resolve in the
-    /// machine's zone here too, exactly as it does for `due:` — a `remind`
-    /// silently stored two hours off its intended fire time is no better than
-    /// a `due` stored the same way.
-    #[test]
-    fn absolute_reminder_resolves_against_the_given_zone() {
-        let cest = TimeZone::fixed(jiff::tz::offset(2));
-        assert_eq!(
-            parse_remind_zoned("2026-07-20T17:00", now(), &cest).unwrap(),
-            Remind::At("2026-07-20T15:00:00Z".into())
-        );
-        // A bare date has no time to localize and stays UTC midnight either
-        // way — same split `datetime::parse_when` makes.
-        assert_eq!(
-            parse_remind_zoned("2026-07-20", now(), &cest).unwrap(),
-            Remind::At("2026-07-20T00:00:00Z".into())
-        );
     }
 
     #[test]

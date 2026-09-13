@@ -1172,20 +1172,20 @@ fn page_commands() -> String {
     ));
     s.push_str(&snippet(
         "tasqx agenda",
-        "through 2026-09-26 (+14d)   5 tasks · 1 overdue\n\
+        "through 26 Sep (+14d)   5 tasks · 1 overdue\n\
          \n\
-         \x20 ID          URG  TASK                             PROJECT     WHEN            TAGS\n\
+         \x20 ID          URG  TASK                             PROJECT     WHEN        TAGS\n\
          Overdue\n\
-         \x20  3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-09-07  +bug\n\
+         \x20  3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 5d ago  +bug\n\
          \n\
-         Today · Sat 2026-09-12\n\
-         \x20  2  - ▄▄▄▄ 12.0  Write API conformance tests      work.tasqx  due 10:00       +api\n\
-         \x20  1  H ▄▄▄▄ 17.9  Ship the v1 JSON API freeze      work.tasqx  due 15:00       +api +release\n\
+         Today · Sat 12 Sep\n\
+         \x20  2  - ▄▄▄▄ 12.0  Write API conformance tests      work.tasqx  due 10:00   +api\n\
+         \x20  1  H ▄▄▄▄ 17.9  Ship the v1 JSON API freeze      work.tasqx  due 15:00   +api +release\n\
          \n\
-         Tomorrow · Sun 2026-09-13\n\
+         Tomorrow · Sun 13 Sep\n\
          \x20  4  - ▁▁▁▁  0.0  Quarterly deps audit             work.tasqx  sched\n\
          \n\
-         Tue 2026-09-15\n\
+         Tue 15 Sep\n\
          \x20  5  - ▄▄▄▁  9.9  Publish the API docs             work.tasqx\n\
          \n\
          1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them\n\
@@ -1655,10 +1655,11 @@ fn page_scheduling() -> String {
     s.push_str(&lead(
         "Every date field — <code>due</code>, <code>scheduled</code>, <code>wait</code> — takes the \
          same natural-language grammar, through the flag or through the sugar. It resolves to \
-         RFC3339 at the moment you type it: a bare DATE resolves to midnight UTC, and a date or \
-         keyword carrying an explicit TIME resolves in your machine's own zone, then converts to \
-         UTC for storage — <code>due:17:00</code> on a machine set to Amsterdam means 17:00 there, \
-         not 17:00 UTC.",
+         RFC3339 at the moment you type it, and everything is <strong>UTC</strong>: a bare DATE \
+         resolves to midnight UTC, and a TIME with no offset of its own is a UTC clock — \
+         <code>due:17:00</code> means 17:00 UTC whatever zone the machine is set to, and every \
+         screen prints it back as 17:00. Write an offset \
+         (<code>2026-07-20T17:00:00+02:00</code>) to mean another zone's clock.",
     ));
 
     s.push_str(&h3("The four date fields"));
@@ -1710,7 +1711,7 @@ fn page_scheduling() -> String {
             ],
             &[
                 "A bare time (<code>9am</code>)",
-                "Today, or tomorrow if that time already passed — \"today\" in YOUR zone.",
+                "09:00 UTC today, or tomorrow if that UTC time already passed.",
             ],
             &[
                 "A weekday that <em>is</em> today",
@@ -1718,7 +1719,8 @@ fn page_scheduling() -> String {
             ],
             &[
                 "A naive date <em>with</em> a time",
-                "Interpreted in your machine's zone, then converted to UTC for storage.",
+                "A UTC clock, whatever your zone. An explicit offset (<code>+02:00</code>) is \
+                 honoured and converted to UTC instead.",
             ],
             &[
                 "The literal <code>now</code>",
@@ -2657,7 +2659,7 @@ fn page_themes() -> String {
         "Remaining open - all tasks\n\
          \x20   4  ______#\n\
          \x20   0  2026-07-10 -> 2026-07-16\n\
-         \x20 > 4 left - up 4 over 7 days - not burning down",
+         \x20 > 4 left - up 4 over 7 days",
     ));
     s.push_str(&table(
         &["Chart", "Flags"],

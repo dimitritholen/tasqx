@@ -67,6 +67,7 @@ pub mod dispatch;
 pub mod engine;
 pub mod error;
 pub mod filter;
+pub mod frontmatter;
 pub mod markdown;
 pub mod mcp;
 pub mod notify;

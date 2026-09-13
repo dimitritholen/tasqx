@@ -3211,6 +3211,103 @@ fn memory_search_off_a_terminal_is_a_record_per_hit() {
     );
 }
 
+/// Task #12/D135: a doc whose body opens with `---\nkey: value\n---\n`
+/// (`scripts/demo-store.py`'s own `release-process` doc, verbatim) used to
+/// put the fence and the raw `key: value` line straight into the snippet:
+///
+///     release-process  docs/release.md  01a09c55-...
+///         …How an SDK release is cut, tagged and announced --- Cut the release…
+///
+/// D135 indexes a leading frontmatter block as flattened prose (a derived
+/// `docs.search_body`, never `docs.body` itself), so the snippet `memory
+/// search` prints — the same JSON `memory.search` hands `tasqx_search_memory`
+/// over MCP — carries neither the `---` delimiter nor a raw `key:` prefix,
+/// and a term that lived only inside the frontmatter is still findable, while
+/// `docs.body` itself (and so a `--json` read of it) stays exactly what was
+/// written.
+#[test]
+fn memory_search_snippet_never_shows_a_frontmatter_fence() {
+    let dir = fresh_config_dir("memory-search-frontmatter");
+    let run = |args: &[&str]| {
+        bin("memory-search-frontmatter", &dir)
+            .env("COLUMNS", "100")
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let out = run(&[
+        "memory",
+        "add",
+        "--source",
+        "docs/release.md",
+        "--",
+        "release-process",
+        "---\ndescription: How an SDK release is cut, tagged and announced\n---\n\
+         Cut the release branch on Monday, tag after the canary has run for a day, \
+         and announce in the changelog feed once the packages are live.",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = run(&["memory", "search", "release"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        !text.contains("---"),
+        "a frontmatter delimiter leaked: {text}"
+    );
+    assert!(
+        !text.contains("description:"),
+        "raw `key: value` frontmatter leaked as body text: {text}"
+    );
+
+    // The description's own words still find the doc: flattening keeps the
+    // text as prose, `memory.import`'s unrelated frontmatter cut (#228.4)
+    // does not apply here.
+    let out = run(&["memory", "search", "SDK"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    // The exact count line (review finding): a loose `contains("hits")`
+    // would pass just as happily on "0 hits" as on the "1 hit" a word that
+    // lives only in frontmatter must produce.
+    let summary = text.lines().next().unwrap_or("");
+    assert!(
+        summary.trim_end().ends_with("1 hit") && !summary.contains("hits"),
+        "a word that lived only in frontmatter must still find exactly one doc: {summary:?}"
+    );
+    assert!(text.contains("release-process"), "{text}");
+
+    // `memory show` (`memory.get`) must agree: no client shows a raw fence.
+    // `show` takes an id, not a query — reuse the id `memory search` names.
+    let search_out = run(&["--json", "memory", "search", "release"]);
+    let v: serde_json::Value = serde_json::from_slice(&search_out.stdout).expect("json");
+    let id = v["hits"][0]["id"].as_str().expect("a doc id").to_string();
+    let out = run(&["memory", "show", &id]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(!text.contains("---"), "`memory show` still fences: {text}");
+    assert!(
+        text.contains("description  How an SDK release is cut"),
+        "{text}"
+    );
+
+    // `--json memory show` is `memory.get`'s raw result: the stored body,
+    // fence and all, so a caller reading the JSON API directly (or
+    // round-tripping via `store.export`/`store.import`) never loses it — the
+    // human TEXT rendering above is the only surface that flattens.
+    let out = run(&["--json", "memory", "show", &id]);
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let json_body = v["body"].as_str().expect("a body field");
+    assert!(
+        json_body.contains("---") && json_body.contains("description:"),
+        "the JSON body must stay exactly what was written: {json_body:?}"
+    );
+}
+
 /// #346: `theme list` is a table. The active theme is marked in a rail, the
 /// way `git branch` marks the checked-out one, and the column header is a
 /// `table.label`, not a `header`.
@@ -5061,4 +5158,67 @@ fn api_task_list_with_no_limit_gets_the_engine_default_page() {
         tasqx_core::engine::task::DEFAULT_TASK_LIST_LIMIT,
         "{v}"
     );
+}
+
+/// D132: a clock time typed with no offset is UTC, whatever `$TZ` says.
+///
+/// Reproduced on a Europe/London box in summer time: `add "C"
+/// due:2026-09-13T09:00` stored `2026-09-13T08:00:00Z`, and `list` then showed
+/// `today 08:00` — an hour off what was typed, in a view that prints UTC. The
+/// child runs under a POSIX `TZ` nine hours east so the drift is unmistakable
+/// and no tz database is needed. Every CLI spelling is driven: the inline sugar,
+/// each date flag, and `modify`'s flag, because each reaches the parser from its
+/// own call site.
+#[test]
+fn a_typed_clock_time_is_stored_as_that_utc_clock_whatever_tz_says() {
+    let dir = fresh_config_dir("utc-clock");
+    let run = |args: &[&str]| {
+        let out = bin("utc-clock", &dir)
+            .env("TZ", "JST-9")
+            .args(args)
+            .output()
+            .expect("run tasqx");
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    let field = |id: &str, name: &str| -> String {
+        let out = run(&["--json", "show", id]);
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        v[name].as_str().unwrap_or_default().to_string()
+    };
+    run(&["init", "work"]);
+
+    run(&[
+        "add",
+        "C",
+        "due:2026-09-13T09:00",
+        "remind:2026-09-13T08:00",
+    ]);
+    assert_eq!(field("1", "due"), "2026-09-13T09:00:00Z");
+    assert_eq!(field("1", "remind"), "2026-09-13T08:00:00Z");
+
+    run(&[
+        "add",
+        "D",
+        "--due",
+        "2026-09-20 17:30",
+        "--scheduled",
+        "2026-09-19T08:00",
+        "--wait",
+        "2026-09-18T07:45",
+    ]);
+    assert_eq!(field("2", "due"), "2026-09-20T17:30:00Z");
+    assert_eq!(field("2", "scheduled"), "2026-09-19T08:00:00Z");
+    assert_eq!(field("2", "wait"), "2026-09-18T07:45:00Z");
+
+    run(&["modify", "2", "--due", "2026-09-21T06:00"]);
+    assert_eq!(field("2", "due"), "2026-09-21T06:00:00Z");
+
+    // An offset written out keeps its meaning.
+    run(&["modify", "2", "--due", "2026-09-21T06:00:00+02:00"]);
+    assert_eq!(field("2", "due"), "2026-09-21T04:00:00Z");
 }
