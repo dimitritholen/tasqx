@@ -582,7 +582,7 @@ impl App {
                         .iter()
                         .flat_map(|g| g.rows.iter().cloned())
                         .collect(),
-                    self.dash.today,
+                    self.dash.now,
                     self.sort,
                 );
                 self.status = format!("sorted by {}", self.sort.label());

@@ -325,7 +325,7 @@ impl Engine {
                 if due
                     .as_deref()
                     .and_then(parse_ts)
-                    .is_some_and(|d| d < now_ts)
+                    .is_some_and(|d| crate::filter::overdue_at(d, now_ts))
                 {
                     overdue += 1;
                 }

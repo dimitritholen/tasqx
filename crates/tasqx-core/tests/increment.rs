@@ -613,6 +613,36 @@ fn overdue_count_matches_the_due_before_now_filter() {
     );
 }
 
+/// D131: `report.summary` counts a date-only deadline as due by the end of its
+/// day. A task due today with no time was counted overdue from one second past
+/// midnight, so the report and the dashboard disagreed about it all day.
+#[test]
+fn a_date_only_deadline_today_is_not_yet_overdue_in_report_summary() {
+    let e = engine();
+    let today = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date();
+    let yesterday = today.yesterday().expect("a day before today");
+    e.task_add(&json!({ "title": "due today, no time", "due": today.to_string() }))
+        .unwrap();
+    e.task_add(&json!({ "title": "due yesterday, no time", "due": yesterday.to_string() }))
+        .unwrap();
+
+    let rep = e
+        .report_summary(&json!({ "metrics": ["overdue"] }))
+        .unwrap();
+    let total_overdue: i64 = rep["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["overdue"].as_i64().unwrap())
+        .sum();
+    assert_eq!(
+        total_overdue, 1,
+        "only yesterday's date-only deadline is overdue: {rep}"
+    );
+}
+
 /// Attach one token measurement to a task via `token.add`. Source/confidence
 /// come from the closed vocabularies; the four bucket counts are the payload.
 /// `confidence: medium` — not `high` — because a self-report cannot claim

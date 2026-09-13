@@ -21,7 +21,7 @@ today rolls to tomorrow. Full RFC3339 works when you want to be exact.
 
 | Field | What it says | Effect |
 |---|---|---|
-| `due` | When it must be finished | Drives urgency up as it approaches; overdue tasks stay loudly visible |
+| `due` | When it must be finished | Drives urgency up as it approaches; overdue tasks stay loudly visible. A deadline with a time is overdue once it passes; a date without a time is due by the end of that day (UTC) |
 | `scheduled` | When you plan to start | A future value parks the task in the backlog until then |
 | `wait` | Hide it until this moment | Same parking, different intent: "not my problem yet" |
 | `remind` | When to nudge you | Fires a reminder; see below |

@@ -314,6 +314,7 @@ fn tasks_body(dash: &Dashboard, ctx: &PanelCtx, cursor: Cursor) -> Vec<Line<'sta
                 task,
                 at == cursor.row && cursor.shown,
                 dash.today,
+                dash.now,
                 ctx,
                 id_w,
                 head_w,
@@ -356,6 +357,7 @@ fn task_line(
     t: &Task,
     on_cursor: bool,
     today: Date,
+    now: jiff::Timestamp,
     ctx: &PanelCtx,
     id_w: usize,
     head_w: usize,
@@ -403,7 +405,7 @@ fn task_line(
         .due
         .map(|d| render::due_cell(d, midnight))
         .unwrap_or_default();
-    let overdue = t.due_date().is_some_and(|d| d < today);
+    let overdue = t.is_overdue(now);
     // Capped the way `TaskCols::MAX_TAGS` caps it in `list`: the tail of a tag
     // list identifies far less than its head, and every cell it takes comes off
     // the title, which is the column the row is read for.

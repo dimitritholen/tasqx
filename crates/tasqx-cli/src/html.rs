@@ -375,7 +375,7 @@ impl<'a> Report<'a> {
                     active.push(t);
                 }
                 if let Some(due) = t.get("due").and_then(Value::as_str).and_then(parse_ts) {
-                    if due < now_ts {
+                    if tasqx_core::filter::overdue_at(due, now_ts) {
                         overdue += 1;
                         overdue_tasks.push(t);
                     } else if due <= horizon {
