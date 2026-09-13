@@ -56,3 +56,6 @@ __pycache__/
 
 # nodeterm's local project metadata, not part of this repo.
 .nodeterm/
+
+# Finder metadata macOS drops into any directory it opens.
+.DS_Store
