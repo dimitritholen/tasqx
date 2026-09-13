@@ -945,3 +945,136 @@ fn update_replaces_fields_in_place_and_a_stale_expected_rev_conflicts() {
     .expect("update with the fresh rev");
     assert_eq!(retried["_rev"], 2, "{retried}");
 }
+
+// ---- task #12 / D135: frontmatter never reaches a search snippet ----------
+
+/// The reported defect, byte for byte: a doc whose body opens with a
+/// `---\n...\n---\n` block (D121(e)'s "frontmatter becomes `key  value`
+/// lines", never brought to the write path) put `---` and the raw
+/// `description:` line straight into `memory.search`'s FTS5 `snippet()`,
+/// because `docs_fts` is external-content and reads `docs.body` verbatim.
+/// `memory.add` now flattens the fence away at write time (D135), so the
+/// snippet — read by the CLI *and* `tasqx_search_memory` over MCP, since both
+/// are clients of this one JSON result — never carries it.
+#[test]
+fn memory_add_flattens_frontmatter_so_a_search_snippet_never_shows_it() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({
+            "title": "release-process",
+            "body": "---\ndescription: How an SDK release is cut, tagged and announced\n---\n\
+                      Cut the release branch on Monday, tag after the canary has run for a day, \
+                      and announce in the changelog feed once the packages are live.",
+            "source": "docs/release.md",
+        }),
+    )
+    .expect("memory.add");
+
+    let found = call(&e, "memory.search", json!({ "query": "release" })).expect("memory.search");
+    assert_eq!(found["count"], 1, "{found}");
+    let snippet = found["hits"][0]["snippet"].as_str().unwrap();
+    assert!(
+        !snippet.contains("---"),
+        "a frontmatter delimiter leaked into the snippet: {snippet:?}"
+    );
+    assert!(
+        !snippet.contains("description:"),
+        "raw `key: value` frontmatter leaked into the snippet as body text: {snippet:?}"
+    );
+
+    // `memory.get` (and so `memory show`, `tasqx_get_memory`) must agree: the
+    // same doc read whole carries no fence either.
+    let id = found["hits"][0]["id"].as_str().unwrap();
+    let whole = call(&e, "memory.get", json!({ "id": id })).expect("memory.get");
+    let body = whole["body"].as_str().unwrap();
+    assert!(
+        !body.contains("---"),
+        "the stored body still fences: {body:?}"
+    );
+    assert!(
+        body.contains("description  How an SDK release is cut"),
+        "the description survives as prose, not discarded: {body:?}"
+    );
+}
+
+/// A term that only ever appears inside the frontmatter block (the
+/// `description`'s own words, never repeated in the prose body) must still
+/// find the doc — flattening turns the fence into prose, it does not cut it,
+/// unlike `memory.import`'s unrelated agent-memory frontmatter cut (#228.4).
+#[test]
+fn a_query_matching_only_inside_frontmatter_still_finds_the_doc() {
+    let e = engine();
+    call(
+        &e,
+        "memory.add",
+        json!({
+            "title": "release-process",
+            "body": "---\ndescription: How an SDK release is cut, tagged and announced\n---\n\
+                      Cut the release branch on Monday.",
+        }),
+    )
+    .expect("memory.add");
+
+    // "SDK" appears nowhere but the frontmatter description.
+    let found = call(&e, "memory.search", json!({ "query": "SDK" })).expect("memory.search");
+    assert_eq!(
+        found["count"], 1,
+        "a word that lived only in frontmatter must still be findable: {found}"
+    );
+}
+
+/// A body that merely opens with a horizontal rule (`---` with no matching
+/// close) is not frontmatter — flattening must leave it alone exactly as
+/// `memory.import`'s own `split_frontmatter` already promises, rather than
+/// eating the whole body hunting a fence that never comes.
+#[test]
+fn a_bare_leading_horizontal_rule_is_not_frontmatter() {
+    let e = engine();
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "notes", "body": "---\nThis is just a rule up top, no closing fence." }),
+    )
+    .expect("memory.add");
+    let id = added["id"].as_str().unwrap();
+    let whole = call(&e, "memory.get", json!({ "id": id })).expect("memory.get");
+    assert_eq!(
+        whole["body"],
+        json!("---\nThis is just a rule up top, no closing fence."),
+        "a body with no closing fence must be stored unchanged"
+    );
+}
+
+/// `memory.update`'s body gets the same treatment: a doc corrected to open
+/// with a fresh frontmatter block must not reintroduce the leak.
+#[test]
+fn memory_update_flattens_a_newly_added_frontmatter_block_too() {
+    let e = engine();
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "runbook", "body": "v1 of the deploy steps" }),
+    )
+    .expect("add");
+    let id = added["id"].as_str().unwrap().to_string();
+
+    call(
+        &e,
+        "memory.update",
+        json!({
+            "id": id,
+            "body": "---\nauthor: infra\n---\nv2 of the deploy steps",
+        }),
+    )
+    .expect("update");
+
+    let fetched = call(&e, "memory.get", json!({ "id": id })).expect("get");
+    let body = fetched["body"].as_str().unwrap();
+    assert!(
+        !body.contains("---"),
+        "the updated body still fences: {body:?}"
+    );
+    assert!(body.contains("author  infra"), "{body:?}");
+}

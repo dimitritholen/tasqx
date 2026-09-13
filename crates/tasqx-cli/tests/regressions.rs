@@ -3211,6 +3211,84 @@ fn memory_search_off_a_terminal_is_a_record_per_hit() {
     );
 }
 
+/// Task #12/D135: a doc whose body opens with `---\nkey: value\n---\n`
+/// (`scripts/demo-store.py`'s own `release-process` doc, verbatim) used to
+/// put the fence and the raw `key: value` line straight into the snippet:
+///
+///     release-process  docs/release.md  01a09c55-...
+///         …How an SDK release is cut, tagged and announced --- Cut the release…
+///
+/// `memory.add` now flattens a leading frontmatter block before it ever
+/// reaches storage (D135), so the snippet `memory search` prints — the same
+/// JSON `memory.search` hands `tasqx_search_memory` over MCP — carries
+/// neither the `---` delimiter nor a raw `key:` prefix, and a term that lived
+/// only inside the frontmatter is still findable.
+#[test]
+fn memory_search_snippet_never_shows_a_frontmatter_fence() {
+    let dir = fresh_config_dir("memory-search-frontmatter");
+    let run = |args: &[&str]| {
+        bin("memory-search-frontmatter", &dir)
+            .env("COLUMNS", "100")
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let out = run(&[
+        "memory",
+        "add",
+        "--source",
+        "docs/release.md",
+        "--",
+        "release-process",
+        "---\ndescription: How an SDK release is cut, tagged and announced\n---\n\
+         Cut the release branch on Monday, tag after the canary has run for a day, \
+         and announce in the changelog feed once the packages are live.",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = run(&["memory", "search", "release"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        !text.contains("---"),
+        "a frontmatter delimiter leaked: {text}"
+    );
+    assert!(
+        !text.contains("description:"),
+        "raw `key: value` frontmatter leaked as body text: {text}"
+    );
+
+    // The description's own words still find the doc: flattening keeps the
+    // text as prose, `memory.import`'s unrelated frontmatter cut (#228.4)
+    // does not apply here.
+    let out = run(&["memory", "search", "SDK"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(
+        text.contains("1 hit") || text.contains("hits"),
+        "a word that lived only in frontmatter must still be found: {text}"
+    );
+    assert!(text.contains("release-process"), "{text}");
+
+    // `memory show` (`memory.get`) must agree: no client shows a raw fence.
+    // `show` takes an id, not a query — reuse the id `memory search` names.
+    let search_out = run(&["--json", "memory", "search", "release"]);
+    let v: serde_json::Value = serde_json::from_slice(&search_out.stdout).expect("json");
+    let id = v["hits"][0]["id"].as_str().expect("a doc id").to_string();
+    let out = run(&["memory", "show", &id]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("UTF-8");
+    assert!(!text.contains("---"), "`memory show` still fences: {text}");
+    assert!(
+        text.contains("description  How an SDK release is cut"),
+        "{text}"
+    );
+}
+
 /// #346: `theme list` is a table. The active theme is marked in a rail, the
 /// way `git branch` marks the checked-out one, and the column header is a
 /// `table.label`, not a `header`.

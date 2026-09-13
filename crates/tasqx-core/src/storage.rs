@@ -340,6 +340,7 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
     add_dependency_foreign_keys_if_missing(conn)?;
     repair_stale_default_project(conn)?;
     migrate_memory(conn)?;
+    flatten_stored_frontmatter(conn)?;
 
     // D113: `annotation.remove` tombstones a row rather than deleting it — the
     // removal event, the id and the timestamp stay, only `body` is overwritten.
@@ -477,6 +478,51 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
         tx.execute_batch("INSERT INTO annotations_fts(annotations_fts) VALUES('rebuild');")?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+/// Task #12/D135: a doc's leading YAML frontmatter is flattened to plain
+/// `key  value` lines at `memory.add`/`memory.update` time now
+/// ([`crate::frontmatter::flatten`]), so a store written by OLDER code can
+/// still hold a `docs.body` that opens with a raw `---\n...\n---\n` fence.
+/// `memory.search`'s FTS5 `snippet()` reads `docs.body` directly (`docs_fts`
+/// is external-content), so an un-migrated doc would go on leaking `---` and
+/// `key: value` lines into every hit that named it, forever.
+///
+/// Repaired the same way [`repair_stale_default_project`] mends a store
+/// above it: a targeted `UPDATE` per affected row. An `UPDATE`, not a
+/// separate reindex — `docs_fts_au` already fires on it and keeps the index
+/// in step for free, the same trigger-carries-the-invariant property
+/// [`migrate_memory`]'s own module doc describes.
+///
+/// Skipped entirely when nothing in the store opens with a fence, so a
+/// healthy store (the overwhelming majority, and every store from here on)
+/// pays one indexed `EXISTS` rather than a body-by-body rescan on every open.
+fn flatten_stored_frontmatter(conn: &Connection) -> Result<(), ApiError> {
+    let any_fenced: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM docs WHERE substr(body, 1, 4) = '---' || char(10))",
+        [],
+        |r| r.get(0),
+    )?;
+    if !any_fenced {
+        return Ok(());
+    }
+    let candidates: Vec<(String, String)> = conn
+        .prepare("SELECT id, body FROM docs WHERE substr(body, 1, 4) = '---' || char(10)")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (id, body) in candidates {
+        // The `substr` filter above only proves an OPENING fence; `flatten`
+        // still checks for a real CLOSING one (a bare horizontal rule is not
+        // frontmatter), so a false positive here is simply a no-op UPDATE.
+        let flattened = crate::frontmatter::flatten(&body);
+        if flattened != body {
+            conn.execute(
+                "UPDATE docs SET body = ?1 WHERE id = ?2",
+                params![flattened.as_ref(), id],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1271,6 +1317,68 @@ mod tests {
             sql, sql_again,
             "a second migrate() must not touch a store already on porter"
         );
+    }
+
+    /// Task #12/D135: a store written by code older than the write-time
+    /// flatten ([`crate::frontmatter::flatten`]) can hold a `docs.body` that
+    /// still opens with a raw `---\n...\n---\n` fence — `memory.search`'s
+    /// FTS5 `snippet()` reads `docs.body` directly (`docs_fts` is
+    /// external-content), so that doc's snippet would go on leaking `---`
+    /// and `key: value` lines forever. `migrate()` must repair it in place: a
+    /// targeted `UPDATE` per affected row, which fires `docs_fts_au` and
+    /// keeps the index in step for free.
+    ///
+    /// Simulated the same way the porter-tokenizer migration above is: the
+    /// row is inserted directly, bypassing `memory_add`'s flatten, exactly as
+    /// an old binary's write would have landed before this fix existed.
+    #[test]
+    fn migration_flattens_a_leading_frontmatter_block_already_stored() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO docs (id, source, title, body, created, modified) \
+             VALUES ('d1', NULL, 'release-process', \
+             '---\ndescription: How an SDK release is cut\n---\nCut the branch.', 't', 't')",
+            [],
+        )
+        .unwrap();
+
+        // Re-running migrate() is exactly what the next `tasqx` open does on
+        // this same file — the path an upgrade actually takes.
+        migrate(&conn).unwrap();
+
+        let body: String = conn
+            .query_row("SELECT body FROM docs WHERE id = 'd1'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!body.contains("---"), "the fence must be gone: {body:?}");
+        assert!(
+            body.contains("description  How an SDK release is cut"),
+            "the description survives as prose: {body:?}"
+        );
+
+        // The index must have followed the UPDATE (docs_fts_au), not just the
+        // column: a query for a word that lived only in the frontmatter must
+        // still resolve, and its snippet must be clean.
+        let snip: String = conn
+            .query_row(
+                "SELECT snippet(docs_fts, 1, '', '', '…', 12) FROM docs_fts \
+                 WHERE docs_fts MATCH 'SDK'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !snip.contains("---"),
+            "the reindexed snippet still fences: {snip:?}"
+        );
+
+        // A store already flattened must not be touched again.
+        migrate(&conn).unwrap();
+        let body_again: String = conn
+            .query_row("SELECT body FROM docs WHERE id = 'd1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(body, body_again, "a third migrate() must be a no-op here");
     }
 
     /// A `tags` row this function cannot *read* is a store fault, not "no such
