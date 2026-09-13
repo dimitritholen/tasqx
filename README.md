@@ -318,8 +318,10 @@ example must parse, and the safe ones are executed for real. `cargo mutants`
 breaks the code on purpose to check the tests notice; it once caught a
 one-line deletion that made `(a or b) and c` silently parse as
 `a or (b and c)` — a bug that would have returned a perfectly normal-looking
-table of exactly the wrong rows. `DESIGN.md` is the spec and carries the
-decision log explaining why things are the way they are.
+table of exactly the wrong rows. [`DESIGN.md`](DESIGN.md) is the spec and
+carries the decision log explaining why things are the way they are;
+[`CONTRIBUTING.md`](CONTRIBUTING.md) covers building, the gates and releases,
+and [`CHANGELOG.md`](CHANGELOG.md) what changed in each version.
 
 ## License
 
