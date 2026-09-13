@@ -134,7 +134,7 @@ fn enum_of(values: impl IntoIterator<Item = &'static str>) -> Value {
 /// that, claiming RFC3339 only, which is the narrowest of the spellings the tool
 /// prints in its own parse error.
 const WHEN_GRAMMAR: &str = "Date/time in the tool's date grammar: \"tomorrow\", \
-    \"friday\", \"2026-07-20\", \"in 3 days\", \"eom\", or \"2026-07-20T17:00\".";
+    \"friday\", \"2026-07-20\", \"in 3 days\", \"eom\", or \"2026-07-20T17:00\" (a clock is UTC unless it carries an offset).";
 
 /// How many annotations `tasqx_get_task` returns when the caller names no page
 /// size.
@@ -2599,6 +2599,25 @@ mod tests {
             add.description.contains("backlog"),
             "`tasqx_add_task` returns `status: \"backlog\"` for a future `scheduled` or `wait` \
              and its description never warns that a date can park the task"
+        );
+    }
+
+    /// The date grammar offers a clock with no offset, and D132 reads that
+    /// clock as UTC. An agent in Amsterdam sending `2026-07-20T17:00` from a
+    /// description that never names the zone means 17:00 local and gets 19:00
+    /// local — the one reader of this sentence who cannot see a `show` card's
+    /// UTC marker is the one it must tell.
+    #[test]
+    fn the_date_grammar_says_an_offsetless_clock_is_utc() {
+        assert!(
+            WHEN_GRAMMAR.contains("UTC"),
+            "the date grammar offers \"2026-07-20T17:00\" and never says the clock is UTC \
+             (D132): {WHEN_GRAMMAR}"
+        );
+        assert!(
+            WHEN_GRAMMAR.contains("offset"),
+            "the date grammar says UTC without saying an explicit offset keeps its meaning: \
+             {WHEN_GRAMMAR}"
         );
     }
 }
