@@ -952,12 +952,15 @@ fn update_replaces_fields_in_place_and_a_stale_expected_rev_conflicts() {
 /// `---\n...\n---\n` block (D121(e)'s "frontmatter becomes `key  value`
 /// lines", never brought to the write path) put `---` and the raw
 /// `description:` line straight into `memory.search`'s FTS5 `snippet()`,
-/// because `docs_fts` is external-content and reads `docs.body` verbatim.
-/// `memory.add` now flattens the fence away at write time (D135), so the
-/// snippet — read by the CLI *and* `tasqx_search_memory` over MCP, since both
-/// are clients of this one JSON result — never carries it.
+/// because `docs_fts` is external-content and reads its indexed text
+/// verbatim. D135's second cut points that index at a DERIVED
+/// `docs.search_body` (flattened) rather than rewriting `docs.body` itself,
+/// so `memory.get`/`memory show`/`tasqx_get_memory` see the fence exactly as
+/// written (a `store.export`/`store.import` round-trip stays byte-for-byte)
+/// while the snippet — read by the CLI *and* `tasqx_search_memory` over MCP,
+/// since both are clients of this one JSON result — never carries it.
 #[test]
-fn memory_add_flattens_frontmatter_so_a_search_snippet_never_shows_it() {
+fn memory_search_snippet_never_shows_frontmatter_but_the_stored_body_is_untouched() {
     let e = engine();
     call(
         &e,
@@ -984,18 +987,16 @@ fn memory_add_flattens_frontmatter_so_a_search_snippet_never_shows_it() {
         "raw `key: value` frontmatter leaked into the snippet as body text: {snippet:?}"
     );
 
-    // `memory.get` (and so `memory show`, `tasqx_get_memory`) must agree: the
-    // same doc read whole carries no fence either.
+    // `memory.get` (and so `memory show`'s `--json`, `tasqx_get_memory`) must
+    // see the doc exactly as written — the fence and all. Rewriting `body`
+    // itself was this fix's own first cut, and a review finding caught it:
+    // it broke `store.export`/`store.import`'s byte-for-byte round-trip.
     let id = found["hits"][0]["id"].as_str().unwrap();
     let whole = call(&e, "memory.get", json!({ "id": id })).expect("memory.get");
     let body = whole["body"].as_str().unwrap();
     assert!(
-        !body.contains("---"),
-        "the stored body still fences: {body:?}"
-    );
-    assert!(
-        body.contains("description  How an SDK release is cut"),
-        "the description survives as prose, not discarded: {body:?}"
+        body.contains("---") && body.contains("description:"),
+        "the stored body must stay exactly what was written: {body:?}"
     );
 }
 
@@ -1025,10 +1026,44 @@ fn a_query_matching_only_inside_frontmatter_still_finds_the_doc() {
     );
 }
 
+/// The review finding's own repro: a YAML list (`tags:\n  - deploy\n  -
+/// kubernetes`) and a folded block scalar (`summary: >\n  folded block
+/// text`) both have lines with no `:` — `flatten`'s first cut silently
+/// dropped every one of them, so `kubernetes` (a word that lives only inside
+/// the list) stopped finding the doc entirely (`count: 0`) where it used to
+/// before this fix existed. `memory.get` must also return `body` completely
+/// unchanged — the stored copy is never flattened, only the search index is.
+#[test]
+fn a_frontmatter_list_items_word_still_finds_the_doc_and_the_body_is_unchanged() {
+    let e = engine();
+    let raw_body = "---\ntags:\n  - deploy\n  - kubernetes\nsummary: >\n  folded block text\n\
+                     ---\nBody.";
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "deploy-notes", "body": raw_body }),
+    )
+    .expect("memory.add");
+    let id = added["id"].as_str().unwrap();
+
+    let found = call(&e, "memory.search", json!({ "query": "kubernetes" })).expect("search");
+    assert_eq!(
+        found["count"], 1,
+        "a word that lives only in a frontmatter list item must still find the doc: {found}"
+    );
+
+    let whole = call(&e, "memory.get", json!({ "id": id })).expect("memory.get");
+    assert_eq!(
+        whole["body"].as_str().unwrap(),
+        raw_body,
+        "memory.get must return the body exactly as written"
+    );
+}
+
 /// A body that merely opens with a horizontal rule (`---` with no matching
 /// close) is not frontmatter — flattening must leave it alone exactly as
-/// `memory.import`'s own `split_frontmatter` already promises, rather than
-/// eating the whole body hunting a fence that never comes.
+/// `frontmatter::block`'s own doc promises, rather than eating the whole
+/// body hunting a fence that never comes.
 #[test]
 fn a_bare_leading_horizontal_rule_is_not_frontmatter() {
     let e = engine();
@@ -1047,10 +1082,12 @@ fn a_bare_leading_horizontal_rule_is_not_frontmatter() {
     );
 }
 
-/// `memory.update`'s body gets the same treatment: a doc corrected to open
-/// with a fresh frontmatter block must not reintroduce the leak.
+/// `memory.update`'s index gets the same treatment as `memory.add`'s: a doc
+/// corrected to open with a fresh frontmatter block must not reintroduce the
+/// snippet leak — but `memory.get` must still see the correction exactly as
+/// given, fence and all.
 #[test]
-fn memory_update_flattens_a_newly_added_frontmatter_block_too() {
+fn memory_update_reindexes_a_newly_added_frontmatter_block_without_rewriting_it() {
     let e = engine();
     let added = call(
         &e,
@@ -1073,8 +1110,18 @@ fn memory_update_flattens_a_newly_added_frontmatter_block_too() {
     let fetched = call(&e, "memory.get", json!({ "id": id })).expect("get");
     let body = fetched["body"].as_str().unwrap();
     assert!(
-        !body.contains("---"),
-        "the updated body still fences: {body:?}"
+        body.contains("---") && body.contains("author: infra"),
+        "the stored body must stay exactly what memory.update was given: {body:?}"
     );
-    assert!(body.contains("author  infra"), "{body:?}");
+
+    let found = call(&e, "memory.search", json!({ "query": "infra" })).expect("search");
+    assert_eq!(
+        found["count"], 1,
+        "a word that lives only in the new frontmatter must still find the doc: {found}"
+    );
+    let snippet = found["hits"][0]["snippet"].as_str().unwrap();
+    assert!(
+        !snippet.contains("---"),
+        "a frontmatter delimiter leaked into the reindexed snippet: {snippet:?}"
+    );
 }

@@ -3218,11 +3218,13 @@ fn memory_search_off_a_terminal_is_a_record_per_hit() {
 ///     release-process  docs/release.md  01a09c55-...
 ///         …How an SDK release is cut, tagged and announced --- Cut the release…
 ///
-/// `memory.add` now flattens a leading frontmatter block before it ever
-/// reaches storage (D135), so the snippet `memory search` prints — the same
-/// JSON `memory.search` hands `tasqx_search_memory` over MCP — carries
-/// neither the `---` delimiter nor a raw `key:` prefix, and a term that lived
-/// only inside the frontmatter is still findable.
+/// D135 indexes a leading frontmatter block as flattened prose (a derived
+/// `docs.search_body`, never `docs.body` itself), so the snippet `memory
+/// search` prints — the same JSON `memory.search` hands `tasqx_search_memory`
+/// over MCP — carries neither the `---` delimiter nor a raw `key:` prefix,
+/// and a term that lived only inside the frontmatter is still findable, while
+/// `docs.body` itself (and so a `--json` read of it) stays exactly what was
+/// written.
 #[test]
 fn memory_search_snippet_never_shows_a_frontmatter_fence() {
     let dir = fresh_config_dir("memory-search-frontmatter");
@@ -3268,9 +3270,13 @@ fn memory_search_snippet_never_shows_a_frontmatter_fence() {
     let out = run(&["memory", "search", "SDK"]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).expect("UTF-8");
+    // The exact count line (review finding): a loose `contains("hits")`
+    // would pass just as happily on "0 hits" as on the "1 hit" a word that
+    // lives only in frontmatter must produce.
+    let summary = text.lines().next().unwrap_or("");
     assert!(
-        text.contains("1 hit") || text.contains("hits"),
-        "a word that lived only in frontmatter must still be found: {text}"
+        summary.trim_end().ends_with("1 hit") && !summary.contains("hits"),
+        "a word that lived only in frontmatter must still find exactly one doc: {summary:?}"
     );
     assert!(text.contains("release-process"), "{text}");
 
@@ -3286,6 +3292,19 @@ fn memory_search_snippet_never_shows_a_frontmatter_fence() {
     assert!(
         text.contains("description  How an SDK release is cut"),
         "{text}"
+    );
+
+    // `--json memory show` is `memory.get`'s raw result: the stored body,
+    // fence and all, so a caller reading the JSON API directly (or
+    // round-tripping via `store.export`/`store.import`) never loses it — the
+    // human TEXT rendering above is the only surface that flattens.
+    let out = run(&["--json", "memory", "show", &id]);
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let json_body = v["body"].as_str().expect("a body field");
+    assert!(
+        json_body.contains("---") && json_body.contains("description:"),
+        "the JSON body must stay exactly what was written: {json_body:?}"
     );
 }
 
