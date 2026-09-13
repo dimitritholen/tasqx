@@ -6,15 +6,19 @@ single SQLite file on your own disk — no account, no cloud, works offline.
 ## Install
 
 With a package manager — updates then come from `brew upgrade tasqx` /
-`scoop update tasqx`, and brew switches Tab completion on by itself:
+`scoop update tasqx`, and brew switches Tab completion on by itself.
+
+macOS and Linux, with Homebrew:
 
 ```console
-brew install dimitritholen/tasqx/tasqx    # macOS and Linux
+brew install dimitritholen/tasqx/tasqx
 ```
+
+Windows, with Scoop:
 
 ```console
 scoop bucket add tasqx https://github.com/dimitritholen/scoop-tasqx
-scoop install tasqx                       # Windows
+scoop install tasqx
 ```
 
 Or without one — Linux and macOS:
@@ -23,7 +27,7 @@ Or without one — Linux and macOS:
 curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh
 ```
 
-Windows (the first line makes older PowerShell able to download at all):
+Windows (the first statement makes older PowerShell able to download at all):
 
 ```console
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1 | iex

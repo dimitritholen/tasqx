@@ -59,17 +59,21 @@ the same JSON API every other surface goes through.
 
 ## Sixty seconds to a working setup
 
-Install — with a package manager, which owns the update path from then on
+Install with a package manager, which owns the update path from then on
 (`brew upgrade tasqx` / `scoop update tasqx`) and, through brew, switches Tab
-completion on without another step:
+completion on without another step.
+
+macOS and Linux, with Homebrew:
 
 ```console
-brew install dimitritholen/tasqx/tasqx    # macOS and Linux
+brew install dimitritholen/tasqx/tasqx
 ```
+
+Windows, with Scoop:
 
 ```console
 scoop bucket add tasqx https://github.com/dimitritholen/scoop-tasqx
-scoop install tasqx                       # Windows
+scoop install tasqx
 ```
 
 No package manager? The scripts do the same job on a bare machine — Linux and
@@ -79,19 +83,20 @@ macOS:
 curl -fsSL https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.sh | sh
 ```
 
-Windows (the first line lets older PowerShell negotiate TLS at all):
+Windows (the first statement lets older PowerShell negotiate TLS at all):
 
 ```console
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/dimitritholen/tasqx/main/install.ps1 | iex
 ```
 
-Then:
+Then create a project (just a name, no folder), add a task to it, ask what to
+do now, and complete it:
 
 ```console
-tasqx init work              # a project is just a name, no folder
-tasqx add Buy milk           # lands in the default project
-tasqx next                   # the one thing to do now
-tasqx done 1                 # complete it
+tasqx init work
+tasqx add Buy milk
+tasqx next
+tasqx done 1
 ```
 
 That's the whole loop. When you want depth: `tasqx manual` is a real manual in
@@ -178,9 +183,16 @@ in anything automated, spell the verb — `tasqx list` always means the table.
 
 ## Give your agent a backlog and a memory
 
+The MCP server is read-only by default:
+
 ```console
-tasqx mcp serve                  # read-only by default
-tasqx mcp serve --scope write    # explicit write access
+tasqx mcp serve
+```
+
+Write access is something you grant explicitly:
+
+```console
+tasqx mcp serve --scope write
 ```
 
 Wiring it into Claude Code is one line:
