@@ -601,20 +601,20 @@ never reaches it.
 
 ```console
 $ tasqx agenda
-through 2026-08-17 (+14d)   5 tasks · 1 overdue
+through 17 Aug (+14d)   5 tasks · 1 overdue
 
-  ID          URG  TASK                             PROJECT     WHEN            TAGS
+  ID          URG  TASK                             PROJECT     WHEN        TAGS
 Overdue
-   3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 2026-07-29  +bug
+   3  H ▄▄▄▄ 18.0  Fix WAL busy_timeout on Windows  work.tasqx  due 5d ago  +bug
 
-Today · Mon 2026-08-03
-   2  - ▄▄▃▁ 12.0  Write API conformance tests      work.tasqx  due 12:00       +api
-   1  H ▄▄▄▄ 18.0  Ship the v1 JSON API freeze      work.tasqx  due 17:00       +api +release
+Today · Mon 3 Aug
+   2  - ▄▄▃▁ 12.0  Write API conformance tests      work.tasqx  due 12:00   +api
+   1  H ▄▄▄▄ 18.0  Ship the v1 JSON API freeze      work.tasqx  due 17:00   +api +release
 
-Tomorrow · Tue 2026-08-04
+Tomorrow · Tue 4 Aug
    4  - ▁▁▁▁  0.0  Quarterly deps audit             work.tasqx  sched
 
-Thu 2026-08-06
+Thu 6 Aug
    5  - ▄▄▂▁ 10.1  Publish the API docs             work.tasqx
 1 undated — no due or scheduled date, so nothing puts them on a day; `tasqx list` shows them
 1 further out — `tasqx agenda --days 90` reaches the furthest
@@ -1500,7 +1500,7 @@ This is the third appearance of the bug class D14 exists to prevent, and the sec
 
 **Decision:** `tasqx agenda [filter…] [--days N]` (aliases `ag`, `cal`) is a **read with no method of its own**. It sends the same `task.list {filter, sort:["-urgency"]}` `list` sends and does the rest in the renderer, because everything that makes it an agenda — the day grouping, the horizon, the ordering key — is a function of fields the row already carries. Four rules:
 
-1. **Which field orders it: both.** A task is placed on the **earlier** of its `due` and its `scheduled` — the first day it asks anything of you — and the `WHEN` column names which of the two that was (`due 17:00`, `sched`). `due` alone loses every planned-but-undeadlined task, which is most of what a week contains; `scheduled` alone loses every deadline. On a tie the label is `due`: a deadline is the more consequential reading of one instant. A time is printed only when there is one, because a date typed without a time is stored as midnight UTC and `due 00:00` on every row is a time nobody typed. The ordering is NOT a `sort` key: `min(due, scheduled)` is not in `SORT_KEYS` and adding it would grow the frozen v1 contract to express a presentation choice. The client stable-sorts by the instant, so two tasks at the same minute keep the engine's urgency ranking.
+1. **Which field orders it: both.** A task is placed on the **earlier** of its `due` and its `scheduled` — the first day it asks anything of you — and the `WHEN` column names which of the two that was (`due 17:00`, `sched`). `due` alone loses every planned-but-undeadlined task, which is most of what a week contains; `scheduled` alone loses every deadline. On a tie the label is `due`: a deadline is the more consequential reading of one instant. A time is printed only when there is one, because a date typed without a time is stored as midnight UTC and `due 00:00` on every row is a time nobody typed. The ordering is NOT a `sort` key: `min(due, scheduled)` is not in `SORT_KEYS` and adding it would grow the frozen v1 contract to express a presentation choice. The client stable-sorts by the instant, so two tasks at the same minute keep the engine's urgency ranking. **Amended by D133:** every date on the text agenda (headings, horizon, Overdue cells, footer) is spelled in `list`'s calendar words through `render::calendar_date`, not ISO; `--json` stays ISO.
 2. **A task with neither date is not on the agenda, and is counted.** There is no honest day to put it on, and a "Someday" bucket would sort the undated backlog into the same screen as this week — which is what `list`'s urgency order is already for. So it is omitted from the table and reported under it, naming `tasqx list` as the view that shows it. Same for rows past the horizon, which additionally report the **exact `--days` that reaches the furthest one**, so widening the window is a paste rather than a guess — *unless* that distance exceeds the `--days` ceiling (rule 3), in which case the line says the widest window does not reach it and names `tasqx list`. The reach is a raw distance, and a footer that pasted it unclamped handed out `tasqx agenda --days 12204` for a task due in 2060, a command the parser exits 2 on: the ceiling therefore lives in `render::AGENDA_MAX_DAYS` and `command::window_parser` reads it, so the recommender and the refuser cannot hold different numbers. The count is unconditional either way; only the advice changes.
 3. **Fourteen days ahead by default, overridden by `--days N` (1–3650, bounded at parse time).** A week ends on a boundary the reader is standing on — on a Friday it shows two working days — so the question the view exists to answer is the one it cannot. A month puts thirty headings on the screen. **Overdue rows ignore the horizon entirely** and lead the table under one `Overdue` heading: a horizon is a question about the future, and one heading per past day would open the view with a hundred headings nobody can act on.
 4. **Done and cancelled are out unless the filter names a status** — D24's resolution order, applied on the wire. The default filter is **every open status**, derived from `Status::ALL`/`is_open`, and deliberately NOT `list`'s `@working`: a future `scheduled` (or `wait`) parks a task in `backlog` until that instant arrives, and `@working` is pending|active, so `@working` excludes precisely what is scheduled for later. Measured, not reasoned: `add "Quarterly deps audit" scheduled:2026-08-04` then `agenda` on the 3rd showed no Tuesday at all. A caller's own filter is ANDed with the default in parentheses unless it already constrains status; a filter this build cannot parse is forwarded verbatim so the engine's refusal quotes the caller's words (D45). Blocked tasks are shown — the date arrives whether or not the dependency cleared.
@@ -3552,3 +3552,13 @@ above.
 **Not changed:** the HTML report footer's generation instant (D95) still renders in the generator's zone with its abbreviation, since it names a moment and says its zone.
 
 **Where:** `crates/tasqx-core/src/datetime.rs`, `remind.rs`, `filter.rs` (`bound`), `crates/tasqx-core/tests/utc_clock.rs`; `crates/tasqx-cli/src/render.rs` (`detail_rows`), `about.rs`, `manual.rs` (dates topic), `docs.rs` (scheduling page), `tests/regressions.rs`.
+
+### D133 — `agenda` spells a date in `list`'s calendar words, through one function (task #15; amends D53)
+
+**Decision:** every date `agenda` prints on the terminal goes through `render::calendar_date`, the function `list`'s `due_cell` and `day_ago` already spell dates with: `13 Sep` in the current year, `4 Jan 27` outside it. Day headings keep the weekday and the `Today`/`Tomorrow` words and lose the ISO date (`Today · Sun 13 Sep`, `Wed 16 Sep`). The horizon reads `through 27 Sep (+14d)`. The Overdue group's `WHEN` cells use `due_cell`'s words after the label (`due 2d ago`, `due yesterday`, `due today 17:00`, `sched 3d ago`). The overdue-cap footer's `oldest` is spelled the same way. Rows under a day heading are unchanged: time only, or blank/`sched` when the heading says it all. `tasqx agenda --json` stays ISO (`agenda.today`, `agenda.through`, `agenda.overdue_oldest`), because it is a machine contract, and the frozen JSON API is untouched.
+
+**Why:** over the same rows of a demo store, `list` printed `2d ago`, `today 17:00` and `22 Sep`, while `agenda` printed `due 2026-09-11`, `due 2026-09-13 17:00`, `Wed 2026-09-16` and `through 2026-09-27`. D117 and D126 (l) made calendar words the terminal's spelling of a day, and `agenda` was the view left on the store's spelling. Two helpers spelling one day is how they drifted, so there is now one, and `render::tests::list_and_agenda_spell_the_same_day_the_same_way` asserts the two renders agree rather than pinning either one's text.
+
+**D53's "the date is spelled out on every heading" still holds:** a heading still carries its date beside `Today`, because output gets pasted into tickets. D133 changes only how that date is spelled. A heading more than a year out keeps its year, so a pasted heading still names one day.
+
+**Where:** `crates/tasqx-cli/src/render.rs` (`calendar_date`, `due_cell`, `day_ago`, `day_heading`, `when_cell`, `agenda_text`, `Agenda::omissions`), the agenda samples in `docs.rs` and §8 above, and `docs/maintainers/terminal-style.md` §3 and §11.
