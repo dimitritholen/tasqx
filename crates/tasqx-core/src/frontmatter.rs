@@ -95,11 +95,16 @@ pub fn split(body: &str) -> (Vec<(Option<&str>, &str)>, &str) {
 /// must still be able to find.
 ///
 /// A body with no leading frontmatter block is returned unchanged (as a
-/// borrow, so the common case allocates nothing new).
+/// borrow, so the common case allocates nothing new). A fence with nothing
+/// in it — empty, or blank lines only — is still a fence: it flattens to the
+/// text after it, delimiters gone, with no leading blank line.
 pub fn flatten(body: &str) -> std::borrow::Cow<'_, str> {
+    if block(body).is_none() {
+        return std::borrow::Cow::Borrowed(body);
+    }
     let (pairs, rest) = split(body);
     if pairs.is_empty() {
-        return std::borrow::Cow::Borrowed(body);
+        return std::borrow::Cow::Borrowed(rest);
     }
     let mut out = String::with_capacity(body.len());
     for (k, v) in pairs {
@@ -204,6 +209,23 @@ mod tests {
     fn a_folded_block_scalars_continuation_lines_are_kept() {
         let body = "---\nsummary: >\n  folded block text\n---\nBody.";
         assert_eq!(flatten(body), "summary  >\nfolded block text\n\nBody.");
+    }
+
+    /// An empty fence is still a fence: `block` finds it, so its delimiters
+    /// must not survive into the index text just because it held no lines.
+    /// Deciding on "no pairs" instead of "no fence" returned the body whole,
+    /// `---\n---\n` and all, and the snippet showed the dashes.
+    #[test]
+    fn an_empty_fence_leaves_no_delimiters_behind() {
+        assert_eq!(flatten("---\n---\nBody."), "Body.");
+        assert_eq!(flatten("---\r\n---\r\nBody."), "Body.");
+    }
+
+    /// `split` drops blank lines, so a fence holding only blank lines has no
+    /// pairs either, and the same rule applies.
+    #[test]
+    fn a_blank_only_fence_leaves_no_delimiters_behind() {
+        assert_eq!(flatten("---\n\n  \n---\nBody."), "Body.");
     }
 
     /// CRLF regression: a Windows-authored file's fence lines end `\r\n`, and

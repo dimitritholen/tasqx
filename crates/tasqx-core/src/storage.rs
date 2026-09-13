@@ -359,7 +359,8 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
 /// this call actually created the index — or, since #128, actually changed the
 /// tokenizer.
 ///
-/// Task #12/D135: `docs_fts`'s text column is `search_body`, not `body`
+/// Task #12/D135: `docs_fts`'s text column, still named `body`, reads
+/// `docs.search_body` through the `docs_search` view rather than `docs.body`
 /// itself — a derived, frontmatter-flattened copy ([`crate::frontmatter::flatten`])
 /// that `memory.add`/`memory.update`/`memory.import`/`store.import` all keep
 /// in step with `body` at write time. `body` stays exactly what was written
@@ -415,14 +416,16 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
     let docs_needs_porter = docs_fts_sql
         .as_deref()
         .is_some_and(|sql| !sql.contains("porter"));
-    // D135: a store whose `docs_fts` still declares its second column
-    // `body` predates the derived-column fix — it must be recreated onto
-    // `search_body` exactly as a tokenizer change forces a recreate, since a
-    // virtual table's column list is no more ALTERable than its `tokenize=`.
-    let docs_needs_search_body_col = docs_fts_sql
+    // D135: a store whose `docs_fts` still reads `docs` directly predates
+    // the derived-column fix — it must be recreated onto the `docs_search`
+    // view exactly as a tokenizer change forces a recreate, since a virtual
+    // table's `content=` is no more ALTERable than its `tokenize=`. Keyed on
+    // the content table, not a column name: the text column stays `body`
+    // either way, because raw `body:` filters are part of the API (D41).
+    let docs_needs_search_view = docs_fts_sql
         .as_deref()
-        .is_some_and(|sql| !sql.contains("search_body"));
-    let docs_needs_recreate = docs_needs_porter || docs_needs_search_body_col;
+        .is_some_and(|sql| sql.contains("content='docs'"));
+    let docs_needs_recreate = docs_needs_porter || docs_needs_search_view;
     let annotations_needs_porter = annotations_fts_sql
         .as_deref()
         .is_some_and(|sql| !sql.contains("porter"));
@@ -507,30 +510,34 @@ fn migrate_memory(conn: &Connection) -> Result<(), ApiError> {
         -- `tokenize='porter unicode61'` (#128) stems each term through the
         -- unicode61 tokenizer before matching, so a plain AND-of-terms query
         -- still requires every word — just its STEM, not its exact spelling.
-        -- D135: the second column is `search_body`, matching
+        -- D135: the index's text column keeps the name `body` (raw `body:`
+        -- column filters are part of the API, D41) but reads
         -- `docs.search_body` — the derived, frontmatter-flattened text —
-        -- NOT `docs.body`; external-content FTS5 resolves a content column
-        -- by NAME, so this is what makes `snippet()` read the flattened copy
-        -- while `docs.body` itself stays exactly what was written. By the
-        -- time this table (and the triggers below) exist, `docs.search_body`
-        -- is already correct for every row (see the backfill above) — the
-        -- ordering that keeps a trigger's own 'delete' honest.
+        -- through the `docs_search` view. External-content FTS5 resolves a
+        -- content column by NAME, so the view's `search_body AS body` is
+        -- what makes `snippet()` read the flattened copy while `docs.body`
+        -- itself stays exactly what was written. By the time this table
+        -- (and the triggers below) exist, `docs.search_body` is already
+        -- correct for every row (see the backfill above) — the ordering
+        -- that keeps a trigger's own 'delete' honest.
+        CREATE VIEW IF NOT EXISTS docs_search AS
+            SELECT rowid, title, search_body AS body FROM docs;
         CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
-            title, search_body, content='docs', content_rowid='rowid',
+            title, body, content='docs_search', content_rowid='rowid',
             tokenize='porter unicode61'
         );
         CREATE TRIGGER IF NOT EXISTS docs_fts_ai AFTER INSERT ON docs BEGIN
-            INSERT INTO docs_fts(rowid, title, search_body)
+            INSERT INTO docs_fts(rowid, title, body)
                 VALUES (new.rowid, new.title, new.search_body);
         END;
         CREATE TRIGGER IF NOT EXISTS docs_fts_ad AFTER DELETE ON docs BEGIN
-            INSERT INTO docs_fts(docs_fts, rowid, title, search_body)
+            INSERT INTO docs_fts(docs_fts, rowid, title, body)
                 VALUES ('delete', old.rowid, old.title, old.search_body);
         END;
         CREATE TRIGGER IF NOT EXISTS docs_fts_au AFTER UPDATE ON docs BEGIN
-            INSERT INTO docs_fts(docs_fts, rowid, title, search_body)
+            INSERT INTO docs_fts(docs_fts, rowid, title, body)
                 VALUES ('delete', old.rowid, old.title, old.search_body);
-            INSERT INTO docs_fts(rowid, title, search_body)
+            INSERT INTO docs_fts(rowid, title, body)
                 VALUES (new.rowid, new.title, new.search_body);
         END;
 
@@ -1461,6 +1468,17 @@ mod tests {
             "the reindexed snippet still fences: {snip:?}"
         );
 
+        // The index's text column keeps the name D41 gave it, so a raw
+        // `body:` column filter still resolves after the upgrade.
+        let by_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'body:SDK'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(by_column, 1, "`body:` must still name the text column");
+
         // A store already migrated must not be touched again.
         migrate(&conn).unwrap();
         let body_again: String = conn
@@ -1514,6 +1532,63 @@ mod tests {
             hit, 1,
             "a word that lived only inside a frontmatter list must still be found"
         );
+    }
+
+    /// A store opened by a build whose `docs_fts` declared its text column
+    /// `search_body` straight over `docs` must be moved onto the `body`
+    /// column that reads it through `docs_search`, or a raw `body:` filter
+    /// stays broken on exactly the stores that ran that build.
+    #[test]
+    fn migration_moves_a_search_body_column_index_back_to_body() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch(
+            r#"
+            DROP TRIGGER docs_fts_ai; DROP TRIGGER docs_fts_ad; DROP TRIGGER docs_fts_au;
+            DROP TABLE docs_fts;
+            CREATE VIRTUAL TABLE docs_fts USING fts5(
+                title, search_body, content='docs', content_rowid='rowid',
+                tokenize='porter unicode61'
+            );
+            CREATE TRIGGER docs_fts_ai AFTER INSERT ON docs BEGIN
+                INSERT INTO docs_fts(rowid, title, search_body)
+                    VALUES (new.rowid, new.title, new.search_body);
+            END;
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO docs (id, source, title, body, search_body, created, modified) \
+             VALUES ('d1', NULL, 'runbook', 'Cut the release.', 'Cut the release.', 't', 't')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let hit: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'body:release'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hit, 1);
+        // And a write after the upgrade goes through the recreated triggers.
+        conn.execute(
+            "UPDATE docs SET search_body = 'Tag it.' WHERE id = 'd1'",
+            [],
+        )
+        .unwrap();
+        let tagged: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'body:tag'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tagged, 1);
     }
 
     /// A `tags` row this function cannot *read* is a store fault, not "no such
