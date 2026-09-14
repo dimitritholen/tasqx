@@ -421,6 +421,9 @@ impl Engine {
                 "estimate": t.estimate,
                 "recurrence": t.recurrence,
                 "remind": t.remind,
+                // D139: an export is self-contained (D12, D37), so the gauge
+                // travels with the task it belongs to.
+                "budget_tokens": t.budget_tokens,
                 "depends_on": kept,
                 "annotations": snapshot.annotations,
                 "urgency": urgency::score_at(t.priority, t.due.as_deref(), &t.created, now_ts),
@@ -873,6 +876,17 @@ impl Engine {
             // `parse_remind` validates the SHAPE without collapsing it: an
             // offset stays the symbolic `-1h` that re-anchors when `due` moves,
             // and only the absolute branch resolves — exactly as on `add`.
+            // D139. Absent on a legacy export, which is NULL — no threshold,
+            // which is the same thing the store said before the column existed.
+            let budget_tokens =
+                match import_field(id, "budget_tokens", opt_i64(tv, "budget_tokens"))? {
+                    Some(n) if n < 0 => {
+                        return Err(ApiError::bad_request(format!(
+                            "task {id}: budget_tokens must be a non-negative integer"
+                        )))
+                    }
+                    other => other,
+                };
             let remind = match import_field(id, "remind", opt_str_nonempty(tv, "remind"))? {
                 Some(s) => Some(
                     import_field(id, "remind", remind::parse_remind(&s, now_ts))
@@ -1016,17 +1030,18 @@ impl Engine {
             tx.execute(
                 "INSERT INTO tasks (id, short_id, title, status, priority, project, due, \
                  scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
-                 rev, created, modified, completed, remind) \
+                 rev, created, modified, completed, remind, budget_tokens) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12, \
                  CASE WHEN ?4 = 'active' THEN COALESCE(?18,?19) ELSE NULL END, \
-                 COALESCE(?20,0),?13,?14,?15,?16,?17) \
+                 COALESCE(?20,0),?13,?14,?15,?16,?17,?21) \
                  ON CONFLICT(id) DO UPDATE SET \
                  short_id=?2, title=?3, status=?4, priority=?5, project=?6, due=?7, \
                  scheduled=?8, wait=?9, estimate=?10, recurrence=?11, urgency=?12, \
                  active_since = CASE WHEN ?4 = 'active' \
                  THEN COALESCE(?18, active_since, ?19) ELSE NULL END, \
                  tracked_seconds = COALESCE(?20, tracked_seconds), \
-                 rev=?13, created=?14, modified=?15, completed=?16, remind=?17",
+                 rev=?13, created=?14, modified=?15, completed=?16, remind=?17, \
+                 budget_tokens=?21",
                 params![
                     id,
                     short_id,
@@ -1047,7 +1062,8 @@ impl Engine {
                     remind,
                     active_since,
                     now(),
-                    tracked_seconds
+                    tracked_seconds,
+                    budget_tokens
                 ],
             )?;
 

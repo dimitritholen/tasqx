@@ -2237,6 +2237,7 @@ enum DetailField {
     Created,
     Modified,
     Rev,
+    Budget,
     Tokens,
     Annotation,
 }
@@ -2443,6 +2444,28 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
                 .collect();
             row("blocks", DetailField::Blocks, refs.join(" "));
         }
+    }
+    // D139: the gauge, and only when a threshold was set — `fresh_tokens`
+    // alone is a number with nothing to read it against, and the TOKENS row
+    // below already says what was spent. Sits above `created` for the reason
+    // `tracked` sits where it does: it is a fact about the work, not about the
+    // row's bookkeeping.
+    if let Some(budget) = result.get("budget_tokens").and_then(Value::as_i64) {
+        let fresh = result
+            .get("fresh_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let over = result.get("over").and_then(Value::as_bool).unwrap_or(false);
+        row(
+            "budget",
+            DetailField::Budget,
+            format!(
+                "{} / {} fresh{}",
+                crate::tokens::compact(fresh),
+                crate::tokens::compact(budget),
+                if over { " — over" } else { "" }
+            ),
+        );
     }
     // Always rendered, unconditionally — the same rule D49 states for
     // `tasqx_get_task`: `status`, `priority`, `project`, `created`, `modified`
@@ -3146,6 +3169,9 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     if has("abandonment") {
         labels.push("DROPPED".into());
     }
+    if has("overrun") {
+        labels.push("OVER".into());
+    }
     if has("cost") {
         labels.push("TOKENS".into());
     }
@@ -3174,6 +3200,9 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
             });
         }
         if let Some(m) = g.get("abandonment") {
+            cells.push(over(m, "count"));
+        }
+        if let Some(m) = g.get("overrun") {
             cells.push(over(m, "count"));
         }
         if let Some(m) = g.get("cost") {
@@ -3267,10 +3296,10 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     out.push_str(&prose(
         ctx,
         Some("muted"),
-        "REWORK / SILENT / DROPPED read count over the completions or closings they \
-         were counted against — a rate with no denominator beside it is not a rate. \
-         CALIB is the median tracked-over-estimate ratio and the number of \
-         completions carrying both figures.",
+        "REWORK / SILENT / DROPPED / OVER read count over the completions or closings \
+         they were counted against — a rate with no denominator beside it is not a rate, \
+         and OVER counts only the completions that HAD a budget. CALIB is the median \
+         tracked-over-estimate ratio and the number of completions carrying both figures.",
         "",
     ));
     out
@@ -5678,6 +5707,54 @@ mod tests {
         let out = report(&ctx, &groups(2), "project", None);
         assert!(out.contains("2 cancelled tasks excluded"), "{out}");
         assert!(!out.contains("task(s)"), "{out}");
+    }
+
+    /// D139: the pair renders as one row, and only when a threshold was set —
+    /// `fresh_tokens` alone is a number with nothing to read it against, and
+    /// the TOKENS row already reports the spend.
+    #[test]
+    fn a_budget_renders_as_one_row_and_only_when_it_exists() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let with = json!({
+            "short_id": 1, "title": "t", "status": "pending",
+            "budget_tokens": 1000, "fresh_tokens": 1300, "over": true,
+        });
+        let out = task_detail(&ctx, &with, Timestamp::now());
+        assert!(out.contains("1.3K / 1.0K fresh"), "{out}");
+        assert!(out.contains("over"), "the verdict is on the row: {out}");
+
+        let without = json!({
+            "short_id": 1, "title": "t", "status": "pending",
+            "budget_tokens": null, "fresh_tokens": 1300, "over": null,
+        });
+        let out = task_detail(&ctx, &without, Timestamp::now());
+        assert!(
+            !out.contains("budget"),
+            "no threshold, no row — 1300 against nothing says nothing: {out}"
+        );
+    }
+
+    /// The gauge must not be readable as a bill: cache reads are excluded from
+    /// it, so the row it prints and the TOKENS row are different numbers on
+    /// purpose and both have to be legible at once.
+    #[test]
+    fn the_budget_row_and_the_token_row_coexist() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let t = json!({
+            "short_id": 1, "title": "t", "status": "pending",
+            "budget_tokens": 1000, "fresh_tokens": 1300, "over": true,
+            "tokens": [{
+                "input_tokens": 900, "output_tokens": 400,
+                "cache_read_tokens": 500_000, "cache_creation_tokens": 0,
+                "confidence": "medium", "tool": "claude-code", "source": "self-report"
+            }],
+        });
+        let out = task_detail(&ctx, &t, Timestamp::now());
+        assert!(out.contains("1.3K / 1.0K fresh"), "the gauge: {out}");
+        assert!(
+            out.contains("cacheR 500.0K") || out.contains("cacheR 500000"),
+            "and the spend, undiminished by the gauge's definition: {out}"
+        );
     }
 
     /// The brief's reason for existing, on the screen: the prerequisite's own

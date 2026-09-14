@@ -262,6 +262,16 @@ impl Engine {
             Some(s) => Some(remind::spec_to_string(&remind::parse_remind(&s, now_ts)?)),
             None => None,
         };
+        // D139: a size gauge over fresh tokens. Refused negative at the parse
+        // boundary (D45) rather than stored and puzzled over later.
+        let budget_tokens = match opt_i64(p, "budget_tokens")? {
+            Some(n) if n < 0 => {
+                return Err(ApiError::bad_request(
+                    "budget_tokens must be a non-negative integer",
+                ))
+            }
+            other => other,
+        };
 
         // #141/#142: validated together, once every date field has resolved,
         // so the message can name the actual instants rather than the raw
@@ -301,7 +311,7 @@ impl Engine {
         tx.execute(
             &format!(
                 "INSERT INTO tasks ({TASK_COLS}) VALUES \
-                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"
+                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"
             ),
             params![
                 id,
@@ -323,6 +333,7 @@ impl Engine {
                 ts,
                 Option::<String>::None, // completed
                 remind,
+                budget_tokens,
             ],
         )?;
         for tag in &tags {
@@ -739,6 +750,22 @@ impl Engine {
         // same `token_usage` rows to skip log-parse for exactly this task),
         // so the hint reads it too rather than contradicting a fact the
         // engine has in hand.
+        // D139: an overrun is named where the caller will see it, and named
+        // FIRST — it is the one thing on this response that might change what
+        // the reader does next. It stops nothing: the completion above already
+        // happened, and a store an agent calls between turns could not have
+        // stopped it anyway.
+        if let Some(budget) = task.budget_tokens {
+            let fresh = self.fresh_tokens(&task.id)?;
+            if fresh > budget {
+                out["budget_hint"] = json!(format!(
+                    "over budget: {fresh} fresh tokens against a budget of {budget} \
+                     (fresh = input + output + cache creation; cache reads are not counted). \
+                     Nothing was blocked — this is a size signal, and a task that blew its \
+                     budget is usually one that was too big to hand to an agent whole."
+                ));
+            }
+        }
         if usage.is_none() {
             let already_self_reported: bool = self.conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM token_usage WHERE task_id = ?1 AND source = ?2)",
@@ -840,7 +867,7 @@ impl Engine {
         tx.execute(
             &format!(
                 "INSERT INTO tasks ({TASK_COLS}) VALUES \
-                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"
+                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"
             ),
             params![
                 new_id,
@@ -862,6 +889,10 @@ impl Engine {
                 ts,
                 Option::<String>::None, // completed
                 new_remind,
+                // A recurring template's budget carries to each occurrence, as
+                // `estimate` and `recurrence` do: the next instance is the same
+                // work again and is the same size.
+                template.budget_tokens,
             ],
         )?;
         for tag in template_tags {
@@ -976,6 +1007,7 @@ impl Engine {
         "recurrence",
         "remind",
         "status",
+        "budget_tokens",
     ];
 
     /// `task.modify` — set fields on a task. Params: `ref`, `set` (a non-empty
@@ -1192,6 +1224,23 @@ impl Engine {
                         let norm = remind::spec_to_string(&remind::parse_remind(s, now_ts)?);
                         remind_effective = Some(norm.clone());
                         assignments.push(("remind", Value::String(norm)));
+                    }
+                }
+                "budget_tokens" => {
+                    // D139. Null clears it (D13's rule: `--clear` is the only
+                    // way to unset), and a negative one is refused where it is
+                    // parsed rather than stored and puzzled over later (D45) —
+                    // a negative threshold would make `over` true on a task
+                    // nobody has spent anything on.
+                    if v.is_null() {
+                        assignments.push(("budget_tokens", Value::Null));
+                    } else {
+                        let n = v.as_i64().filter(|n| *n >= 0).ok_or_else(|| {
+                            ApiError::bad_request(
+                                "budget_tokens must be a non-negative integer, or null to clear",
+                            )
+                        })?;
+                        assignments.push(("budget_tokens", json!(n)));
                     }
                 }
                 "status" => {
@@ -1957,6 +2006,16 @@ impl Engine {
             Value::Null
         };
         obj["tokens"] = json!(self.tokens_of(&task.id)?);
+        // D139: the gauge, beside the four buckets rather than instead of
+        // them. `fresh_tokens` is always reported — it is a fact about the
+        // task whether or not anybody set a threshold to read it against —
+        // and `over` is null without one, because there is no verdict to give.
+        let fresh = self.fresh_tokens(&task.id)?;
+        obj["fresh_tokens"] = json!(fresh);
+        obj["over"] = match task.budget_tokens {
+            Some(budget) => json!(fresh > budget),
+            None => Value::Null,
+        };
         obj["blocked"] = json!(self.is_blocked(&task.id)?);
 
         // Finding #8 (audit-2026-09): `blocked` said THAT the task cannot be
@@ -1985,6 +2044,31 @@ impl Engine {
             obj["urgency_breakdown"] = Value::Object(breakdown);
         }
         Ok(obj)
+    }
+
+    /// A task's spend as D139's gauge counts it: `input + output +
+    /// cache_creation`, with cache reads excluded.
+    ///
+    /// Not a blend in the sense D48/D50 forbid. Those rulings govern a COST
+    /// report, where one number destroys the split a reader needs because a
+    /// cache read costs a fraction of a fresh token. This is a SIZE gauge, and
+    /// the same fact decides the definition: a budget dominated by cache reads
+    /// measures how often the agent re-read its own context, not how much work
+    /// the task was. D103 is the precedent for the boundary — an internal sum
+    /// may exist to compare, and what gets reported as cost stays split.
+    ///
+    /// Saturating, for `report_summary`'s reason: one measurement is bounded,
+    /// a sum over arbitrarily many rows is not, and a clamped total is
+    /// wrong-but-visible where a wrapped one is negative nonsense.
+    fn fresh_tokens(&self, task_id: &str) -> Result<i64, ApiError> {
+        let sum: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) \
+                  + COALESCE(SUM(cache_creation_tokens), 0) \
+             FROM token_usage WHERE task_id = ?1",
+            params![task_id],
+            |r| r.get(0),
+        )?;
+        Ok(sum)
     }
 
     /// The actor holding the one active clock, with the task it is on — or
@@ -3497,6 +3581,7 @@ mod tests {
                 "estimate" => json!("1h"),
                 "recurrence" => json!("every 1 days"),
                 "remind" => json!("-1h"),
+                "budget_tokens" => json!(1_000),
                 "status" => json!("cancelled"),
                 other => panic!("no sample value wired for {other:?} — add one"),
             }

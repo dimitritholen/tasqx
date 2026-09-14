@@ -36,7 +36,7 @@ const READ_ONLY_BUSY_TIMEOUT_MS: u64 = 30;
 /// index untouched.
 pub const TASK_COLS: &str = "id, short_id, title, status, priority, project, due, \
     scheduled, wait, estimate, recurrence, urgency, active_since, tracked_seconds, \
-    rev, created, modified, completed, remind";
+    rev, created, modified, completed, remind, budget_tokens";
 
 /// Open (creating if needed) the store at `path`, apply pragmas + migration.
 pub fn open(path: &str) -> Result<Connection, ApiError> {
@@ -206,7 +206,13 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
             completed       TEXT,
             -- Reminder spec (§9): a signed offset anchored to `due` (`-1h`) or an
             -- absolute RFC3339 instant. See `crate::remind` for the canonical form.
-            remind          TEXT
+            remind          TEXT,
+            -- D139: a size gauge over FRESH tokens (input + output + cache
+            -- creation), never cache reads. NULL means no threshold, which is
+            -- the default and deliberately not a number: a shipped default
+            -- would be a guess about workloads tasqx has no data on, applied
+            -- to every task in every store.
+            budget_tokens   INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_status  ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
@@ -328,6 +334,7 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
     // column, so additive columns need an explicit ALTER for existing files.
     // Fresh stores get `remind` from the CREATE and skip this.
     add_column_if_missing(conn, "tasks", "remind", "TEXT")?;
+    add_column_if_missing(conn, "tasks", "budget_tokens", "INTEGER")?;
 
     // Must follow the ALTER: on an upgraded store the column does not exist
     // until the statement above runs. Partial, because the scheduler only ever
@@ -897,6 +904,7 @@ pub fn map_task_row_at(row: &Row, now: Timestamp) -> rusqlite::Result<Task> {
         modified: row.get(16)?,
         completed: row.get(17)?,
         remind: row.get(18)?,
+        budget_tokens: row.get(19)?,
     })
 }
 

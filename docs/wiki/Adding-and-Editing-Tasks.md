@@ -59,8 +59,27 @@ tasqx modify 42 --clear due --clear remind
 ```
 
 `--clear` works for: `project`, `priority`, `due`, `scheduled`, `wait`,
-`remind`, `recurrence`, `estimate`, `tracked`. Tags are the exception — a tag
-comes off by name, with [`tasqx untag`](#tasqx-untag).
+`remind`, `recurrence`, `estimate`, `tracked`, `budget_tokens`. Tags are the
+exception — a tag comes off by name, with [`tasqx untag`](#tasqx-untag).
+
+## Token budgets
+
+`--budget-tokens` sets a size gauge on a task:
+
+```console
+tasqx add Port the payment adapter --budget-tokens 200000
+```
+
+It counts **fresh** tokens — input, output and cache creation — and ignores
+cache reads, because a budget dominated by re-reads measures how often an agent
+re-read its own context rather than how big the work was. `tasqx show` prints
+the pair once a budget is set.
+
+**It stops nothing.** tasqx is a file on your disk that an agent talks to
+between turns; it never sees the turn and could not interrupt one. An overrun
+is a signal, and usually one signal in particular: the task was too big to hand
+over whole. `tasqx report --outcomes` counts overruns so you can see which kinds
+of work keep being cut too large.
 
 For scripts that must not clobber a concurrent edit: `--expected-rev` makes
 the modify fail (exit 5) if the task changed since you last read it.

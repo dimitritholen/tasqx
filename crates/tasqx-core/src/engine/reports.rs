@@ -498,6 +498,9 @@ impl Engine {
             abandoned: Vec<i64>,
             abandoned_secs: i64,
             ratios: Vec<f64>,
+            /// Completions that carried a budget — `overrun`'s denominator.
+            budgeted: i64,
+            overrun: Vec<i64>,
             tokens_in: i64,
             tokens_out: i64,
             tokens_cache_read: i64,
@@ -567,6 +570,8 @@ impl Engine {
                 abandoned: Vec::new(),
                 abandoned_secs: 0,
                 ratios: Vec::new(),
+                budgeted: 0,
+                overrun: Vec::new(),
                 tokens_in: 0,
                 tokens_out: 0,
                 tokens_cache_read: 0,
@@ -602,6 +607,23 @@ impl Engine {
             if let Some(est) = t.estimate.as_deref().and_then(duration_secs) {
                 if est > 0 && t.tracked_seconds > 0 {
                     agg.ratios.push(t.tracked_seconds as f64 / est as f64);
+                }
+            }
+            // D139: the overrun, and the first evidence this roadmap has had
+            // about task size. The gauge is recomputed from the same
+            // measurements the cost buckets below read, rather than from a
+            // stored verdict: `over` is derived on every read precisely so it
+            // cannot go stale against a budget somebody edited afterwards.
+            if let Some(budget) = t.budget_tokens {
+                agg.budgeted += 1;
+                let fresh: i64 = snapshot.tokens.iter().fold(0, |sum, m| {
+                    let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
+                    sum.saturating_add(bucket("input_tokens"))
+                        .saturating_add(bucket("output_tokens"))
+                        .saturating_add(bucket("cache_creation_tokens"))
+                });
+                if fresh > budget {
+                    agg.overrun.push(t.short_id);
                 }
             }
             let mut contributed = false;
@@ -710,6 +732,18 @@ impl Engine {
                         "n": agg.completions,
                         "rate": rate(agg.silent.len() as i64, agg.completions),
                         "refs": agg.silent,
+                    }),
+                );
+            }
+            if wants("overrun") {
+                agg.overrun.sort_unstable();
+                obj.insert(
+                    "overrun".into(),
+                    json!({
+                        "count": agg.overrun.len(),
+                        "n": agg.budgeted,
+                        "rate": rate(agg.overrun.len() as i64, agg.budgeted),
+                        "refs": agg.overrun,
                     }),
                 );
             }

@@ -149,8 +149,12 @@ const METHODS: [(&str, &str, &str); 39] = [
         "task.add",
         "<code>title</code>, <code>project?</code>, <code>priority?</code>, <code>due?</code>, \
          <code>scheduled?</code>, <code>wait?</code>, <code>recurrence?</code>, \
-         <code>remind?</code>, <code>estimate?</code>, <code>tags?</code>",
-        "The new task, incl. the <code>project</code> it landed in (the default, if none given).",
+         <code>remind?</code>, <code>estimate?</code>, <code>tags?</code>, \
+         <code>budget_tokens?</code>",
+        "The new task, incl. the <code>project</code> it landed in (the default, if none given). \
+         <code>budget_tokens</code> (D139) is a size gauge over FRESH tokens — input, output and \
+         cache creation, never cache reads — which stops nothing and is read back as \
+         <code>fresh_tokens</code> and <code>over</code> on <code>task.get</code>.",
     ),
     (
         "task.list",
@@ -464,7 +468,7 @@ fn verb_summary(verb: &str) -> &'static str {
 }
 
 /// The fields `modify --clear` accepts. Asserted equal to `crate::CLEARABLE`.
-pub const DOCUMENTED_CLEAR_FIELDS: [&str; 9] = [
+pub const DOCUMENTED_CLEAR_FIELDS: [&str; 10] = [
     "project",
     "priority",
     "due",
@@ -474,6 +478,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 9] = [
     "recurrence",
     "estimate",
     "tracked",
+    "budget_tokens",
 ];
 
 /// The MCP tool table the MCP page renders: `(tool, is_write, what it does)`.

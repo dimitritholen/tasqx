@@ -327,6 +327,13 @@ pub(super) enum Command {
         /// Effort estimate — human duration (4h, 90m, 1h30m, 2d) or ISO PT4H.
         #[arg(long, short = 'e')]
         estimate: Option<String>,
+        /// Token budget — a size gauge over FRESH tokens (input + output +
+        /// cache creation; cache reads are not counted). It stops nothing:
+        /// tasqx is a store an agent calls between turns and cannot preempt
+        /// one. An overrun is a signal that the task was probably too big to
+        /// hand over whole.
+        #[arg(long, value_name = "N")]
+        budget_tokens: Option<i64>,
         /// Repeatable tag flag.
         // `value_name` is what brings this into
         // `every_tag_valued_arg_offers_tag_names`'s scope; the derive would
@@ -400,6 +407,13 @@ pub(super) enum Command {
         /// adding to it; clear it back to zero with `--clear tracked`.
         #[arg(long)]
         tracked: Option<String>,
+        /// Token budget — a size gauge over FRESH tokens (input + output +
+        /// cache creation; cache reads are not counted). It stops nothing:
+        /// tasqx is a store an agent calls between turns and cannot preempt
+        /// one. An overrun is a signal that the task was probably too big to
+        /// hand over whole.
+        #[arg(long, value_name = "N")]
+        budget_tokens: Option<i64>,
         /// Add a tag (repeatable). Routed to tag.add.
         #[arg(
             long = "tag",

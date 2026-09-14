@@ -57,6 +57,8 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "tags",
             "recurrence",
             "remind",
+            // D139: a size gauge over fresh tokens, null for no threshold.
+            "budget_tokens",
         ],
         false,
     ),

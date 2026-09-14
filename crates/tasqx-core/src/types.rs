@@ -433,6 +433,22 @@ pub struct Task {
     /// Reminder spec (§9), canonical form: a signed offset anchored to `due`
     /// (`-1h`) or an absolute RFC3339 instant. See [`crate::remind`].
     pub remind: Option<String>,
+    /// A size gauge over fresh tokens (D139), or `None` for no threshold.
+    ///
+    /// Compared against `input + output + cache_creation` and never against
+    /// cache reads: this is not a cost report — where D48/D50 forbid a blend
+    /// because a cache read costs a fraction of a fresh token — it is one
+    /// number to hold a task against, and a budget dominated by cache reads
+    /// measures how often the agent re-read its own context rather than how
+    /// much work the task was.
+    ///
+    /// It stops nothing. tasqx is a store an agent calls BETWEEN turns; it
+    /// does not see the turn, cannot preempt it, and learns the spend
+    /// afterwards. A budget that claimed to halt work would be lying about
+    /// where tasqx sits in the loop. It is a gauge and a flag, and what acts
+    /// on the flag is the agent reading its brief or a hook the operator
+    /// installed — both parties that ARE in the loop.
+    pub budget_tokens: Option<i64>,
     /// The cached [`crate::urgency`] score. A DERIVED value that is also
     /// persisted, so it is only as fresh as the last write to this row — the
     /// due-proximity and age terms both move with the wall clock.

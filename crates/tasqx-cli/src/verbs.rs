@@ -122,6 +122,9 @@ pub(crate) fn run_add(
     if let Some(e) = parsed.estimate {
         params["estimate"] = Value::String(datetime::parse_duration(&e)?);
     }
+    if let Some(n) = parsed.budget_tokens {
+        params["budget_tokens"] = json!(n);
+    }
     if !parsed.tags.is_empty() {
         params["tags"] = Value::Array(parsed.tags.into_iter().map(Value::String).collect());
     }
@@ -267,6 +270,13 @@ pub(crate) fn run_modify(
             "tracked".into(),
             Value::String(datetime::parse_duration(&t)?),
         );
+    }
+
+    // D139, the same shape as `tracked` above: flag-only, so `run_add` passes
+    // `None` and the scanner never fills it.
+    if let Some(n) = parsed.budget_tokens {
+        guard_set_and_clear(&set, "budget_tokens", &n.to_string())?;
+        set.insert("budget_tokens".into(), json!(n));
     }
 
     if set.is_empty() && parsed.tags.is_empty() {
@@ -570,6 +580,16 @@ pub(crate) fn run_done(
     // The hint about the write goes to stderr, after the card (D126): the
     // card is the first thing under the prompt, and core's paragraph was 190
     // cells of stdout under every completion. `--json` keeps it whole.
+    // D139's overrun goes out FIRST, on the same stderr channel and by the
+    // same rule: it is the one thing on this response that might change what
+    // the reader does next, and unlike the tokens hint it appears precisely
+    // when the spend IS known.
+    if let Some(hint) = result.get("budget_hint").and_then(Value::as_str) {
+        let unicode = crate::theme::Caps::detect_stderr().unicode;
+        if let Some(note) = render::budget_note(hint, crate::theme::detect_stderr_cols(), unicode) {
+            crate::note_after_output(note);
+        }
+    }
     if let Some(note) = result
         .get("tokens_hint")
         .and_then(Value::as_str)

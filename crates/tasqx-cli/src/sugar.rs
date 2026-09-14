@@ -76,6 +76,9 @@ pub struct ParsedAdd {
     /// [`AddFlags::tracked`] passed through, never filled by the scanner
     /// below.
     pub tracked: Option<String>,
+    /// [`AddFlags::budget_tokens`] passed through. There is no sugar key for
+    /// it, so the scanner never fills this.
+    pub budget_tokens: Option<i64>,
     /// The project name came from an UNQUOTED `project:`/`proj:` sugar token,
     /// which ends at the first space. If the core then cannot find that name we
     /// genuinely do not know whether it is a typo or the first word of a longer
@@ -130,6 +133,10 @@ pub struct AddFlags {
     /// `modify`-only (D98); `add` always passes `None`. See
     /// [`ParsedAdd::tracked`].
     pub tracked: Option<String>,
+    /// D139's size gauge. A flag only — there is deliberately no capture-sugar
+    /// key for it: the sugar exists for what a person types dozens of times a
+    /// day, and a token budget is not that.
+    pub budget_tokens: Option<i64>,
 }
 
 /// Which field a value key fills.
@@ -363,6 +370,7 @@ pub fn parse_add(
         remind,
         estimate,
         tracked: flags.tracked,
+        budget_tokens: flags.budget_tokens,
         project_may_be_truncated,
     })
 }

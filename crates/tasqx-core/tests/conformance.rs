@@ -309,6 +309,10 @@ const TASK_CORE: &[Field] = &[
     req("created", Ty::Str),
     req("modified", Ty::Str),
     nul("completed", Ty::Str),
+    // D139: the size gauge, null when no threshold was set. Joins the shape
+    // rather than being tolerated, because a shape that tolerates unknown keys
+    // cannot tell an addition from a rename.
+    nul("budget_tokens", Ty::Int),
     req("_rev", Ty::Int),
 ];
 
@@ -573,7 +577,15 @@ const R_TASK_LIST_PROJECTED: Shape = &[&[
     ),
 ]];
 
+/// D139's derived pair, on the reads that assemble a whole task.
+///
+/// `fresh_tokens` is always present — a spend is a fact about the task whether
+/// or not anybody set a threshold to read it against — and `over` is null
+/// without a budget, because there is no verdict to give.
+const TASK_BUDGET_GAUGE: &[Field] = &[req("fresh_tokens", Ty::Int), nul("over", Ty::Bool)];
+
 const R_TASK_GET: Shape = &[
+    TASK_BUDGET_GAUGE,
     TASK_CORE,
     TASK_LIVE_TIME,
     TASK_RELATIONS,
@@ -912,6 +924,9 @@ const OUTCOME_GROUP_ROW: &[Field] = &[
     req_of("cost", Ty::Object, &[OUTCOME_COST]),
     req_of("silent", Ty::Object, &[OUTCOME_RATE]),
     req_of("abandonment", Ty::Object, &[OUTCOME_ABANDONMENT]),
+    // D139. Same rate shape as the rest; its denominator is completions that
+    // HAD a budget, which is why it carries its own `n` like every other.
+    req_of("overrun", Ty::Object, &[OUTCOME_RATE]),
 ];
 
 /// Abandonment adds the time inside the dropped work to the rate shape —
@@ -1641,6 +1656,11 @@ fn cases() -> Vec<Case> {
                 // buckets and the optional `confidence` is actually observed —
                 // an optional key no fixture emits is documentation rather
                 // than a frozen shape.
+                // D139: a budget small enough that the self-report below blows
+                // it, so `overrun.refs` carries a row and its frozen shape is
+                // actually checked rather than merely declared.
+                e.task_modify(&json!({ "ref": 1, "set": { "budget_tokens": 10 } }))
+                    .expect("budget");
                 e.task_done(&json!({
                     "ref": 1,
                     "tool": "claude-code",

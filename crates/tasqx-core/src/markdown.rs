@@ -115,6 +115,25 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
         "modified",
         &fmt_instant(&str_of(result, "modified"), opts),
     );
+    // D139: the gauge, and only when a threshold was set. `fresh_tokens` on
+    // its own is a number with nothing to read it against, and the four
+    // buckets below already say what was spent — so an unbudgeted task gets no
+    // row rather than a row saying nothing.
+    if let Some(budget) = result.get("budget_tokens").and_then(Value::as_i64) {
+        let fresh = result
+            .get("fresh_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let over = result.get("over").and_then(Value::as_bool).unwrap_or(false);
+        row(
+            &mut out,
+            "budget",
+            &format!(
+                "{fresh} / {budget} fresh tokens{}",
+                if over { " — over" } else { "" }
+            ),
+        );
+    }
     let rev = result.get("_rev").and_then(Value::as_i64).unwrap_or(0);
     row(&mut out, "rev", &rev.to_string());
 

@@ -98,7 +98,17 @@ pub const SUMMARY_METRICS: [&str; 8] = [
 /// completions carrying no annotation, not "bad completions". D137 refuses a
 /// composite score for the same reason these stay five names — the blend
 /// destroys the split that makes a figure actionable.
-pub const OUTCOME_METRICS: [&str; 5] = ["rework", "calibration", "cost", "silent", "abandonment"];
+pub const OUTCOME_METRICS: [&str; 6] = [
+    "rework",
+    "calibration",
+    "cost",
+    "silent",
+    "abandonment",
+    // D139. Its denominator is completions that HAD a budget, not every
+    // completion: a rate over all of them would shrink as unbudgeted work
+    // landed, which would read as improvement and be nothing of the kind.
+    "overrun",
+];
 
 /// `memory.search`'s default page when the caller names no `limit`.
 ///
@@ -168,6 +178,7 @@ pub static TASK_FIELDS: LazyLock<Vec<String>> = LazyLock::new(|| {
         created: String::new(),
         modified: String::new(),
         completed: None,
+        budget_tokens: None,
     };
     match list_row_json(&probe, &[], false, Some(&[]), Some(&Value::Null)) {
         Value::Object(m) => m.keys().cloned().collect(),
@@ -789,6 +800,9 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     // import reads it as `Option` and an absent value PRESERVES the stored
     // total rather than zeroing it (see the upsert's COALESCE).
     "tracked_seconds",
+    // D139's size gauge. Absent on a legacy export, which is NULL — no
+    // threshold, the same thing the store said before the column existed.
+    "budget_tokens",
     // Present only while a task is `active`. Both timing columns are read
     // through the same gate as every other field: a payload that names one is
     // held to it, and one that does not keeps what the store already has.
@@ -1003,6 +1017,11 @@ fn update_column(
     match val {
         Value::Null => tx.execute(&sql, params![Option::<String>::None, id])?,
         Value::String(s) => tx.execute(&sql, params![s, id])?,
+        // D139's `budget_tokens` is the first modifiable column that is not
+        // text. The arm is narrow on purpose — an integer, nothing else — so
+        // the refusal below still catches an object or array reaching a column
+        // update, which is what it was written for.
+        Value::Number(n) if n.is_i64() => tx.execute(&sql, params![n.as_i64(), id])?,
         _ => return Err(ApiError::internal("non-scalar column update")),
     };
     Ok(())
@@ -1042,6 +1061,9 @@ pub fn task_to_json(t: &Task, tags: &[String]) -> Value {
             "created": t.created,
             "modified": t.modified,
             "completed": t.completed,
+            // D139: null when unset, which is a true answer rather than a
+            // silent zero — zero is a real budget somebody might set.
+            "budget_tokens": t.budget_tokens,
             "_rev": t.rev,
         }),
     )
@@ -1308,6 +1330,7 @@ mod tests {
             created: "2026-08-30T12:00:00Z".to_string(),
             modified: "2026-08-30T12:00:00Z".to_string(),
             completed: None,
+            budget_tokens: None,
         };
         let mut b = a.clone();
         b.id = "b".to_string();
@@ -1402,6 +1425,7 @@ mod tests {
             created: "2026-08-30T12:00:00Z".to_string(),
             modified: "2026-08-30T12:00:00Z".to_string(),
             completed: None,
+            budget_tokens: None,
         };
         let mut b = a.clone();
         b.id = "b".to_string();

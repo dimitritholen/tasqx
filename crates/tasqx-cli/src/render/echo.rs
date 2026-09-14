@@ -940,6 +940,18 @@ pub fn tokens_note(hint: &str, cols: usize, unicode: bool) -> Option<String> {
     Some(fit_note(&format!("note: {first}"), &pointer, cols))
 }
 
+/// The one line `done`'s `budget_hint` becomes on a terminal (D139), on
+/// stderr beside [`tokens_note`] and by the same rule: its first clause, then
+/// where to look. `--json` keeps core's text whole (D56).
+///
+/// Unlike the tokens hint there is no silent variant: core emits this key ONLY
+/// on an overrun, so every hint that arrives here has something to say.
+pub fn budget_note(hint: &str, cols: usize, unicode: bool) -> Option<String> {
+    let first = hint.split(" (").next().unwrap_or(hint).trim();
+    let pointer = format!("{}nothing was blocked", dash(unicode));
+    Some(fit_note(&format!("note: {first}"), &pointer, cols))
+}
+
 /// A note and its pointer, the pointer dropped whole when the two do not
 /// fit: two columns through `columns::fit`, the pointer's own separator in
 /// its width, so a note gives way by the same rule a card's line does.

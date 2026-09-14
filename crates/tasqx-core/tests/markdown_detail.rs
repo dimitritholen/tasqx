@@ -539,6 +539,18 @@ const RENDERED_AS: &[(&str, Shows)] = &[
     // edge added above, so its OWN `task.get` — not task 2's — is where this
     // ever renders non-empty.
     ("blocks", Shows::Cell("| blocks | #2 |")),
+    // D139: one row for the pair, because a spend with no threshold beside it
+    // is a number the reader has nothing to do with, and the buckets below
+    // already report the spend.
+    (
+        "budget_tokens",
+        Shows::Cell("| budget | 12 / 1000 fresh tokens |"),
+    ),
+    (
+        "fresh_tokens",
+        Shows::Cell("| budget | 12 / 1000 fresh tokens |"),
+    ),
+    ("over", Shows::Cell("| budget | 12 / 1000 fresh tokens |")),
     ("created", Shows::Row("created")),
     ("modified", Shows::Row("modified")),
     ("_rev", Shows::Row("rev")),
@@ -603,7 +615,10 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
             // in `backlog`, which cannot be started, and this fixture needs an
             // `active_since`.
             "scheduled": "2020-01-02T00:00:00Z", "wait": "2020-01-01T00:00:00Z",
-            "remind": "-1h", "recurrence": "weekly on mon"
+            "remind": "-1h", "recurrence": "weekly on mon",
+            // D139's gauge needs a threshold to render at all, and the fixture
+            // is the one task here that carries every field.
+            "budget_tokens": 1000
         }),
     );
     d("dependency.add", &json!({ "ref": 2, "depends_on": 1 }));

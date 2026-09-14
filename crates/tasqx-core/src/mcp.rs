@@ -833,6 +833,16 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "remind": {
                         "type": "string",
                         "description": "Reminder: a signed offset from `due` (\"-1h\", \"-30m\", \"-2d\", \"+15m\") or an absolute date in the `due` grammar."
+                    },
+                    "budget_tokens": {
+                        "type": "integer",
+                        "description": "Token budget (D139): a size gauge over FRESH tokens \
+                            (input + output + cache creation; cache reads are not counted, \
+                            because a budget dominated by them measures re-reading rather than \
+                            work). It STOPS NOTHING — tasqx is a store you call between turns \
+                            and cannot preempt one — so read it as a signal: a task that blows \
+                            its budget was usually too big to hand over whole. `task.get` and \
+                            `task.brief` report `fresh_tokens` and `over` against it."
                     }
                 },
                 "required": ["title"]
