@@ -21,7 +21,8 @@ use serde_json::{json, Map, Value};
 
 use crate::dispatch::dispatch;
 use crate::engine::{
-    shell_quote, Engine, MEMORY_SCOPES, SORT_KEYS, SUMMARY_GROUP_BY, SUMMARY_METRICS, TASK_FIELDS,
+    shell_quote, Engine, MEMORY_SCOPES, OUTCOME_METRICS, SORT_KEYS, SUMMARY_GROUP_BY,
+    SUMMARY_METRICS, TASK_FIELDS,
 };
 use crate::types::Priority;
 
@@ -544,6 +545,59 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "until": {
                         "type": "string",
                         "description": "The other end of `since`'s window: excludes anything at or after this instant. `since`/`until` together window WHEN the spend happened, e.g. \"what did this project cost this week\" — the fix for a report that used to answer that question by task completion date and silently missed spend on tasks that hadn't closed."
+                    }
+                }
+            }),
+        },
+        // Read-scoped on purpose (D137), for the reason `tasqx_search_memory`
+        // is: an agent with no write access should still be able to see its own
+        // record. A retrospective that can cite the project's rework rate is
+        // answering from evidence rather than from its memory of the session,
+        // which is the failure mode `docs/guides/self-improving-agent.md`
+        // already names.
+        ToolSpec {
+            name: "tasqx_outcomes",
+            method: "report.outcomes",
+            write: false,
+            destructive: false,
+            idempotent: true,
+            description: "How the work went, rather than what it cost: rework (completions that \
+                were reopened), estimate calibration, token cost, completions with no annotation, \
+                and started-then-cancelled work. Every rate comes back beside the `n` it was \
+                computed over — a rate over three completions and one over ninety are different \
+                claims. Scope is tasks that CLOSED: a task still open is not an outcome yet, and \
+                `tasqx_summary` is the read for work in flight. Pure read, no side effects.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "group_by": {
+                        "type": "string",
+                        "enum": enum_of(SUMMARY_GROUP_BY),
+                        "description": format!("Grouping axis. Optional; defaults to {}.", SUMMARY_GROUP_BY[0])
+                    },
+                    "filter": { "type": "string", "description": "Optional filter DSL to scope the report — the same grammar `tasqx_list_tasks` takes." },
+                    "metrics": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": enum_of(OUTCOME_METRICS)
+                        },
+                        "description": "Which metrics to emit. Omit for ALL of them, which is \
+                             the intended reading: a rework rate with no cost beside it invites \
+                             the wrong fix. Unlike `tasqx_summary`, naming none does not mean a \
+                             bare count."
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Only count tasks that closed at or after this instant. \
+                             `since`/`until` window WHEN THE TASK CLOSED — its `done`, or its \
+                             cancellation — which is a different axis from `tasqx_summary`'s \
+                             window over when spend happened. Same date grammar as `due` \
+                             (relative words, offsets, RFC3339; a bare clock time is UTC)."
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "The other end of `since`'s window: excludes tasks that closed at or after this instant."
                     }
                 }
             }),

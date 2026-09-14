@@ -389,6 +389,467 @@ impl Engine {
         }))
     }
 
+    // ---- report.outcomes -----------------------------------------------------
+
+    /// `report.outcomes` — D137. What the work did, as opposed to what it cost.
+    /// Params: `group_by` (one of [`SUMMARY_GROUP_BY`], default the first),
+    /// `filter`, `metrics` (a subset of [`OUTCOME_METRICS`], default all of
+    /// them), `since`/`until`.
+    ///
+    /// Writes nothing and adds no table: every figure is derived from rows the
+    /// store already held. That is the ruling's own load-bearing claim — it is
+    /// what makes the first run of this report **retroactive**, so D136, D138
+    /// and D139 have a baseline without a measurement period first.
+    ///
+    /// The unit is the task, and a task is in scope when its most recent
+    /// CLOSING event — a `done`, a `cancel`, or the `modify` that set
+    /// `status: cancelled` — falls inside the window. Current status is
+    /// deliberately not the scope test: a completion that was reopened is
+    /// `pending` again, and scoping on status would drop precisely the rework
+    /// this report exists to count.
+    ///
+    /// Every rate is emitted beside the `n` it was computed over. D137 rules
+    /// that a rate over three completions and one over ninety are different
+    /// claims that print identically, so no rate here is reachable without its
+    /// denominator.
+    pub fn report_outcomes(&self, p: &Value) -> Result<Value, ApiError> {
+        let group_by = opt_str(p, "group_by")?.unwrap_or_else(|| SUMMARY_GROUP_BY[0].to_string());
+        if !SUMMARY_GROUP_BY.contains(&group_by.as_str()) {
+            return Err(ApiError::bad_request(format!(
+                "group_by must be {} (got {group_by:?})",
+                SUMMARY_GROUP_BY.join("|")
+            )));
+        }
+        // Absent means ALL of them, which is where this differs from
+        // `report.summary`'s `count`-only default: the metrics are meant to be
+        // read together, and a rework rate with no cost beside it invites the
+        // wrong fix. An unknown name is refused rather than dropped, the
+        // `SUMMARY_METRICS` lesson applied before it can be relearned here.
+        let metrics: Vec<String> = match p.get("metrics") {
+            None => OUTCOME_METRICS.iter().map(|m| m.to_string()).collect(),
+            Some(Value::Array(a)) => {
+                let mut v = Vec::with_capacity(a.len());
+                for m in a {
+                    let name = m.as_str().filter(|s| OUTCOME_METRICS.contains(s));
+                    let Some(name) = name else {
+                        return Err(ApiError::bad_request(format!(
+                            "unknown metric {m} (valid metrics: {})",
+                            OUTCOME_METRICS.join(", ")
+                        )));
+                    };
+                    v.push(name.to_string());
+                }
+                v
+            }
+            Some(_) => {
+                return Err(ApiError::bad_request(
+                    "`metrics` must be an array of metric names",
+                ))
+            }
+        };
+        let wants = |m: &str| metrics.iter().any(|x| x == m);
+
+        let filter_str = opt_str(p, "filter")?.unwrap_or_default();
+        let now_ts = Timestamp::now();
+        let filter = Filter::parse(&filter_str, now_ts).map_err(ApiError::bad_request)?;
+        validate_filter_projects(self.conn(), &filter)?;
+
+        // D97's window vocabulary, not a second one — but over a different
+        // axis than `report.summary` uses it for. There it bounds WHEN SPEND
+        // HAPPENED inside a task's life; here it bounds WHEN THE TASK CLOSED,
+        // because every metric below is a property of a closing rather than of
+        // an interval.
+        let since = opt_when(p, "since", now_ts)?
+            .map(|when| {
+                parse_ts(&when).ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "`since` resolved to an unreadable instant {when:?}"
+                    ))
+                })
+            })
+            .transpose()?;
+        let until = opt_when(p, "until", now_ts)?
+            .map(|when| {
+                parse_ts(&when).ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "`until` resolved to an unreadable instant {when:?}"
+                    ))
+                })
+            })
+            .transpose()?;
+        if let (Some(s), Some(u)) = (since, until) {
+            if u <= s {
+                return Err(ApiError::bad_request(format!(
+                    "`until` ({u}) must be after `since` ({s})"
+                )));
+            }
+        }
+
+        let history = self.task_closing_history()?;
+        let annotated = self.annotated_task_ids()?;
+
+        struct Agg {
+            /// Tasks in scope whose most recent close was a completion.
+            completions: i64,
+            /// Tasks in scope, closed either way — abandonment's denominator.
+            closed: i64,
+            rework: Vec<i64>,
+            silent: Vec<i64>,
+            abandoned: Vec<i64>,
+            abandoned_secs: i64,
+            ratios: Vec<f64>,
+            tokens_in: i64,
+            tokens_out: i64,
+            tokens_cache_read: i64,
+            tokens_cache_creation: i64,
+            /// Completions that contributed at least one measurement — the
+            /// denominator `cost` is read against, which is NOT `completions`:
+            /// a report whose cost covers three of twelve completions must not
+            /// look like one that covers all twelve.
+            measured: i64,
+            /// D50's trust hierarchy survives the sum, exactly as it does in
+            /// `report.summary`: the group's WORST grading, carried beside a
+            /// total that has erased which measurement contributed what.
+            confidence: Option<String>,
+        }
+        use std::collections::BTreeMap;
+        let mut groups: BTreeMap<String, Agg> = BTreeMap::new();
+
+        for snapshot in
+            self.load_task_snapshots_for(super::task::SnapshotParts::REPORT_SUMMARY, now_ts)?
+        {
+            let t = snapshot.task;
+            let Some(close) = history.get(&t.id) else {
+                // Never closed: open work is not an outcome yet. This is the
+                // one exclusion in the report and it is a definition, not a
+                // filter — `report.summary` is the read for work in flight.
+                continue;
+            };
+            if let Some(s) = since {
+                if close.at < s {
+                    continue;
+                }
+            }
+            if let Some(u) = until {
+                if close.at >= u {
+                    continue;
+                }
+            }
+            let ctx = MatchCtx {
+                status: t.status,
+                priority: t.priority,
+                project: t.project.as_deref(),
+                tags: &snapshot.tags,
+                due: t.due.as_deref(),
+                completed: t.completed.as_deref(),
+                blocked: snapshot.blocked,
+            };
+            if !filter.matches(&ctx) {
+                continue;
+            }
+            let key = match group_by.as_str() {
+                "project" => t.project.clone().unwrap_or_else(|| "(none)".to_string()),
+                // D28's choke point, for the same reason `report.summary` uses
+                // it: the group key is a read surface and may not print a
+                // placeholder as fact.
+                "status" => t.status_text().to_string(),
+                "priority" => t
+                    .priority
+                    .map(|x| x.as_str().to_string())
+                    .unwrap_or_else(|| "(none)".to_string()),
+                _ => unreachable!(),
+            };
+            let agg = groups.entry(key).or_insert(Agg {
+                completions: 0,
+                closed: 0,
+                rework: Vec::new(),
+                silent: Vec::new(),
+                abandoned: Vec::new(),
+                abandoned_secs: 0,
+                ratios: Vec::new(),
+                tokens_in: 0,
+                tokens_out: 0,
+                tokens_cache_read: 0,
+                tokens_cache_creation: 0,
+                measured: 0,
+                confidence: None,
+            });
+            agg.closed += 1;
+            if !close.completed {
+                // Abandonment is work that was STARTED and then cancelled. A
+                // task cancelled without ever being started cost nothing and
+                // is not abandoned effort — it is a task that went away, which
+                // is what cancelling is for.
+                if close.ever_started {
+                    agg.abandoned.push(t.short_id);
+                    agg.abandoned_secs = agg.abandoned_secs.saturating_add(t.tracked_seconds);
+                }
+                continue;
+            }
+            agg.completions += 1;
+            // Rework is a completion that came back. `reopen` carries `from`,
+            // so a reopen out of `cancelled` — resurrecting abandoned work —
+            // is not counted here: nothing was completed to come back.
+            if close.reopened_from_done {
+                agg.rework.push(t.short_id);
+            }
+            if !annotated.contains(&t.id) {
+                agg.silent.push(t.short_id);
+            }
+            // Calibration needs both numbers to be a ratio at all; a
+            // completion missing either contributes to no `n`, which is why
+            // the metric reports its own rather than borrowing `completions`.
+            if let Some(est) = t.estimate.as_deref().and_then(duration_secs) {
+                if est > 0 && t.tracked_seconds > 0 {
+                    agg.ratios.push(t.tracked_seconds as f64 / est as f64);
+                }
+            }
+            let mut contributed = false;
+            for m in &snapshot.tokens {
+                let bucket = |name: &str| m.get(name).and_then(Value::as_i64).unwrap_or(0);
+                let (i, o, cr, cc) = (
+                    bucket("input_tokens"),
+                    bucket("output_tokens"),
+                    bucket("cache_read_tokens"),
+                    bucket("cache_creation_tokens"),
+                );
+                if i == 0 && o == 0 && cr == 0 && cc == 0 {
+                    // D65: `tool`/`model` are recorded without a count and
+                    // write no measurement — but a zero-count row reaching
+                    // here from anywhere else must not inflate `measured`
+                    // either, for the same reason: it is not an observation.
+                    continue;
+                }
+                contributed = true;
+                agg.tokens_in = agg.tokens_in.saturating_add(i);
+                agg.tokens_out = agg.tokens_out.saturating_add(o);
+                agg.tokens_cache_read = agg.tokens_cache_read.saturating_add(cr);
+                agg.tokens_cache_creation = agg.tokens_cache_creation.saturating_add(cc);
+                // A closure parameter rather than a literal key, the shape
+                // `report_summary` uses two hundred lines up and for the same
+                // reason: D32's guard bans the literal chain store-wide because
+                // it cannot tell "absent" from "wrong type".
+                let str_field = |name: &str| m.get(name).and_then(Value::as_str);
+                if let Some(c) = str_field("confidence") {
+                    let is_worse = match agg.confidence.as_deref() {
+                        Some(existing) => {
+                            crate::tokens::confidence_rank(c)
+                                < crate::tokens::confidence_rank(existing)
+                        }
+                        None => true,
+                    };
+                    if is_worse {
+                        agg.confidence = Some(c.to_string());
+                    }
+                }
+            }
+            if contributed {
+                agg.measured += 1;
+            }
+        }
+
+        let mut out = Vec::new();
+        for (key, mut agg) in groups {
+            let mut obj = Map::new();
+            obj.insert(group_by.clone(), Value::String(key));
+            obj.insert("completions".into(), json!(agg.completions));
+            obj.insert("closed".into(), json!(agg.closed));
+            if wants("rework") {
+                agg.rework.sort_unstable();
+                obj.insert(
+                    "rework".into(),
+                    json!({
+                        "count": agg.rework.len(),
+                        "n": agg.completions,
+                        "rate": rate(agg.rework.len() as i64, agg.completions),
+                        "refs": agg.rework,
+                    }),
+                );
+            }
+            if wants("calibration") {
+                obj.insert(
+                    "calibration".into(),
+                    json!({
+                        "median_ratio": median(&mut agg.ratios),
+                        "n": agg.ratios.len(),
+                    }),
+                );
+            }
+            if wants("cost") {
+                // The four keys `report.summary` already uses, not the
+                // `input_tokens` spelling `task.done` and `task.get` use for
+                // the same quantity. Both spellings exist in the store today,
+                // so the question is which neighbourhood `cost` belongs to,
+                // and it is this one: it is a report aggregate, it is read
+                // beside `report.summary`'s groups, and the shared render
+                // helpers (`tokens::BUCKETS`, `tokens::dominant_cell`) key off
+                // these names. A sibling method spelling the same sum
+                // differently is the drift D30 legislates against.
+                let mut cost = Map::new();
+                cost.insert("tokens_in".into(), json!(agg.tokens_in));
+                cost.insert("tokens_out".into(), json!(agg.tokens_out));
+                cost.insert("tokens_cache_read".into(), json!(agg.tokens_cache_read));
+                cost.insert(
+                    "tokens_cache_creation".into(),
+                    json!(agg.tokens_cache_creation),
+                );
+                cost.insert("n".into(), json!(agg.measured));
+                // Absent rather than null when nothing was measured: a
+                // confidence grading describes figures, and there are none.
+                if let Some(c) = &agg.confidence {
+                    cost.insert("confidence".into(), json!(c));
+                }
+                obj.insert("cost".into(), Value::Object(cost));
+            }
+            if wants("silent") {
+                agg.silent.sort_unstable();
+                obj.insert(
+                    "silent".into(),
+                    json!({
+                        "count": agg.silent.len(),
+                        "n": agg.completions,
+                        "rate": rate(agg.silent.len() as i64, agg.completions),
+                        "refs": agg.silent,
+                    }),
+                );
+            }
+            if wants("abandonment") {
+                agg.abandoned.sort_unstable();
+                obj.insert(
+                    "abandonment".into(),
+                    json!({
+                        "count": agg.abandoned.len(),
+                        "n": agg.closed,
+                        "rate": rate(agg.abandoned.len() as i64, agg.closed),
+                        "tracked_total": iso_duration(agg.abandoned_secs),
+                        "refs": agg.abandoned,
+                    }),
+                );
+            }
+            out.push(Value::Object(obj));
+        }
+
+        Ok(json!({
+            "groups": out,
+            "group_by": group_by,
+            "metrics": metrics,
+            "generated": now_ts.to_string(),
+            // Echoed for D69's reason, the same one `report.summary` echoes
+            // them for: a rate read against the wrong scope or period is worse
+            // than no rate, because it is actionable and wrong.
+            "filter": filter_str,
+            "since": since.map(|t| t.to_string()),
+            "until": until.map(|t| t.to_string()),
+            "store_empty": self.store_is_empty()?,
+        }))
+    }
+
+    /// Every task's closing history, read from the event log in one pass.
+    ///
+    /// `at`/`completed` describe the task's most recent CLOSE: a `done`, a
+    /// `cancel`, or the `modify` that set `status: cancelled` — because
+    /// `task.modify` is a second, equally valid path to cancellation (§7,
+    /// "Cancellation goes through task.modify status:cancelled") and it writes
+    /// a `modify` event rather than a `cancel` one. Reading only `cancel`
+    /// would count one path and silently miss the other.
+    ///
+    /// `modify` is the one high-frequency op here, so the SQL pre-filters it
+    /// on the payload text before any of it is parsed: an edit that named no
+    /// status is not a close and never reaches this reader. `op` leads
+    /// `idx_events_op`, so the other four are index seeks.
+    ///
+    /// `reopened_from_done` is a property of the TASK rather than of one
+    /// close: a task done, reopened and done again came back, and the report
+    /// says so on the completion that is in scope.
+    fn task_closing_history(&self) -> Result<HashMap<String, TaskClose>, ApiError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT entity_id, op, ts, payload FROM events \
+             WHERE entity = 'task' \
+               AND op IN ('done', 'cancel', 'reopen', 'start', 'modify') \
+               AND (op <> 'modify' OR payload LIKE '%\"status\"%') \
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+
+        let mut out: HashMap<String, TaskClose> = HashMap::new();
+        for row in rows {
+            let (task_id, op, ts, payload) = row?;
+            let entry = out.entry(task_id).or_default();
+            if op == "start" {
+                entry.ever_started = true;
+                continue;
+            }
+            // A row whose instant will not parse contributes no close rather
+            // than aborting the report — `task_tracked_intervals`' rule, for
+            // the same reason.
+            let Some(at) = parse_ts(&ts) else { continue };
+            let from = payload
+                .as_deref()
+                .and_then(|p| serde_json::from_str::<Value>(p).ok());
+            match op.as_str() {
+                "done" => {
+                    entry.at = at;
+                    entry.completed = true;
+                    entry.closed = true;
+                }
+                "cancel" => {
+                    entry.at = at;
+                    entry.completed = false;
+                    entry.closed = true;
+                }
+                "modify" => {
+                    // The pre-filter above only proves the word `status`
+                    // appears in the payload; this is where it has to actually
+                    // BE a cancellation. `task.modify` refuses every other
+                    // status target, but the payload is the caller's `set`
+                    // object and this reader may not assume that.
+                    let cancelled = payload_str(from.as_ref(), "status") == Some("cancelled");
+                    if cancelled {
+                        entry.at = at;
+                        entry.completed = false;
+                        entry.closed = true;
+                    }
+                }
+                "reopen" => {
+                    // D137's rule: rework is a COMPLETION that came back.
+                    // `reopen` carries the status it reopened out of, so
+                    // resurrecting a cancelled task is visibly not that.
+                    let was_done = payload_str(from.as_ref(), "from") == Some("done");
+                    if was_done {
+                        entry.reopened_from_done = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.retain(|_, v| v.closed);
+        Ok(out)
+    }
+
+    /// The ids of tasks carrying at least one annotation.
+    ///
+    /// A set, not [`super::task::SnapshotParts`]'s `annotations` gate: `silent`
+    /// asks whether there is any note at all, and loading every note to answer
+    /// it is the log-shaped cost `REPORT_SUMMARY` was carved out to avoid.
+    fn annotated_task_ids(&self) -> Result<HashSet<String>, ApiError> {
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT DISTINCT task_id FROM annotations")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = HashSet::new();
+        for row in rows {
+            out.insert(row?);
+        }
+        Ok(out)
+    }
+
     /// Reconstruct every task's tracked intervals — `(start, end)` pairs — from
     /// the event log, the only place that knows WHEN each second of
     /// `tracked_seconds` was earned. The `tasks` row itself carries only the
@@ -826,4 +1287,72 @@ mod tests {
             "confidence leaked without a token metric requested: {out}"
         );
     }
+}
+
+/// One task's closing history, as [`Engine::task_closing_history`] reads it.
+///
+/// `closed` rather than an `Option<Timestamp>` because `ever_started` is
+/// collected for tasks that never closed at all (a `start` alone creates the
+/// entry), and those are dropped at the end rather than being representable
+/// half-way through.
+#[derive(Default)]
+struct TaskClose {
+    /// The instant of the most recent close. Meaningless unless `closed`.
+    at: Timestamp,
+    /// Whether that most recent close was a completion rather than a
+    /// cancellation.
+    completed: bool,
+    closed: bool,
+    /// Whether this task has ever been reopened out of `done`.
+    reopened_from_done: bool,
+    /// Whether this task has ever had its clock started. Abandonment counts
+    /// work that was picked up and dropped, not a task that was struck off.
+    ever_started: bool,
+}
+
+/// `numerator / denominator` as a JSON number, or `null` when there is nothing
+/// to divide by.
+///
+/// Null rather than 0.0 because the two say different things and a reader
+/// cannot tell them apart once printed: 0.0 is "none of them", null is "there
+/// were none". D137 asks every rate to carry its denominator; this is the case
+/// where the denominator is what there is to say.
+fn rate(numerator: i64, denominator: i64) -> Value {
+    if denominator <= 0 {
+        return Value::Null;
+    }
+    json!(numerator as f64 / denominator as f64)
+}
+
+/// The median of `samples`, or `null` when there are none. Sorts in place.
+///
+/// A median and not a mean, because one task that ran ten times its estimate
+/// would otherwise become the project's calibration figure. At even `n` it is
+/// the mean of the two middle samples, the ordinary convention.
+fn median(samples: &mut [f64]) -> Value {
+    if samples.is_empty() {
+        return Value::Null;
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = samples.len() / 2;
+    let m = if samples.len().is_multiple_of(2) {
+        (samples[mid - 1] + samples[mid]) / 2.0
+    } else {
+        samples[mid]
+    };
+    json!(m)
+}
+
+/// One string field out of an event payload, or `None`.
+///
+/// A function taking the key as a parameter rather than four literal
+/// `.get("...")` chains: D32's guard bans that shape across the engine because
+/// it cannot tell an absent value from a wrong-typed one, and `report_summary`
+/// already reads its measurement fields through the same closure form. An
+/// event payload is not a caller param, so `util`'s typed layer — which
+/// answers with an `ApiError` naming the offending param — is the wrong tool
+/// here: a malformed payload row degrades to "no close" rather than failing
+/// the whole report.
+fn payload_str<'a>(payload: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    payload.and_then(|v| v.get(key)).and_then(Value::as_str)
 }

@@ -31,6 +31,38 @@ Cancelled tasks are not counted unless you pass `--all` or your filter names a
 status explicitly — a report about work shouldn't be padded by work you
 decided not to do.
 
+## tasqx report --outcomes
+
+`tasqx report` says what the work cost. `--outcomes` says how it went.
+
+```console
+tasqx report --outcomes
+```
+
+```
+PROJECT  CLOSED  DONE  REWORK  SILENT     CALIB  DROPPED  TOKENS
+work          4     3     1/3     2/3  ×1.00 n2      1/4       -
+```
+
+| Column | What it counts |
+|---|---|
+| REWORK | Completions that were later reopened |
+| SILENT | Completions carrying no annotation |
+| CALIB | Median tracked-over-estimate, and how many completions had both |
+| DROPPED | Work that was started and then cancelled |
+| TOKENS | The largest token bucket, as everywhere else |
+
+Every rate reads `count/n` rather than a percentage, deliberately: "3/12" and
+"3/3" are the same percentage and very different news, and a rate over three
+completions is not evidence of anything. Check the denominator before you act
+on the number.
+
+The scope is tasks that **closed**, by the date they closed — so a completion
+that was later reopened still counts, which is the whole point of the REWORK
+column. Open work is invisible here; plain `tasqx report` is the view for work
+in flight. Group and filter as usual (`tasqx report --outcomes project`,
+`tasqx report --outcomes +api`), and window with `--since`/`--until`.
+
 ## tasqx chart
 
 Charts drawn right in the terminal, from the event log.

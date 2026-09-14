@@ -615,16 +615,18 @@ pub const COMMAND_REF: &[CmdDoc] = &[
     CmdDoc {
         verb: "report",
         aliases: &[],
-        method: "report.summary",
-        summary: "Summary counts, optionally grouped, as text or HTML.",
-        usage: "tasqx report [group_by] [filter…] [--all] [--since WHEN] [--until WHEN] \
-                [--metrics list] [--html] [--out FILE]",
+        method: "report.summary + report.outcomes",
+        summary: "Summary counts, or outcomes, optionally grouped, as text or HTML.",
+        usage: "tasqx report [group_by] [filter…] [--all] [--outcomes] [--since WHEN] \
+                [--until WHEN] [--metrics list] [--html] [--out FILE]",
         examples: &[
             ex("tasqx report"),
             ex("tasqx report project"),
             ex("tasqx report --all"),
             ex("tasqx report --metrics tokens_in,tokens_out,tokens_cache_read,tokens_cache_creation"),
             ex("tasqx report --since -7d"),
+            ex("tasqx report --outcomes"),
+            ex("tasqx report --outcomes project --since -30d"),
             ex_norun("tasqx report --html --out review.html", "self-contained HTML"),
             // The usage line always promised `[filter…]` alongside `--html`; for a
             // long time only the terminal path kept that promise. Documented as an

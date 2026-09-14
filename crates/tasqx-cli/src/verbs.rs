@@ -817,6 +817,7 @@ pub(crate) fn report_params(
     Ok(params)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_report(
     be: &mut Backend,
     ctx: &Ctx,
@@ -825,12 +826,27 @@ pub(crate) fn run_report(
     since: Option<String>,
     until: Option<String>,
     metrics: Option<Vec<String>>,
+    outcomes: bool,
 ) -> CmdOutcome {
-    let params = report_params(&args, all, since, until, now_ts())?;
+    let mut params = report_params(&args, all, since, until, now_ts())?;
     let group_by = params["group_by"]
         .as_str()
         .unwrap_or(tasqx_core::engine::SUMMARY_GROUP_BY[0])
         .to_string();
+    if outcomes {
+        // `report_params` seeds `metrics` with `SUMMARY_METRICS`, which is the
+        // other method's vocabulary — sent here it would be refused by name
+        // (D34), so it is dropped rather than translated. Omitting `metrics`
+        // is what asks `report.outcomes` for all of its own, which is the
+        // intended reading of the report anyway (D137). `all` is rejected at
+        // the clap layer, so nothing removes it here.
+        if let Some(obj) = params.as_object_mut() {
+            obj.remove("metrics");
+        }
+        let result = be.call("report.outcomes", &params)?;
+        let text = render::outcomes(ctx, &result, &group_by);
+        return Ok((result, text));
+    }
     let result = be.call("report.summary", &params)?;
     let text = render::report(ctx, &result, &group_by, metrics.as_deref());
     Ok((result, text))

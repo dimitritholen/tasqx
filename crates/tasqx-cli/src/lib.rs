@@ -1024,8 +1024,18 @@ fn execute(cli: Cli) -> Exit {
             since,
             until,
             metrics,
+            outcomes,
             ..
-        }) => run_report(&mut backend, &ctx, args, all, since, until, metrics),
+        }) => run_report(
+            &mut backend,
+            &ctx,
+            args,
+            all,
+            since,
+            until,
+            metrics,
+            outcomes,
+        ),
         Some(Command::Config { action }) => {
             run_config(&mut backend, &ctx, &action, theme_flag.as_deref())
         }
@@ -2791,8 +2801,8 @@ mod tests {
             }
             e.task_cancel(&json!({ "ref": "2" })).unwrap();
             let mut be = Backend::Local(e);
-            let (result, _) =
-                run_report(&mut be, &ctx, vec![], all, None, None, None).expect("report ran");
+            let (result, _) = run_report(&mut be, &ctx, vec![], all, None, None, None, false)
+                .expect("report ran");
             result["groups"]
                 .as_array()
                 .unwrap()

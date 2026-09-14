@@ -5,7 +5,7 @@ description: Use tasqx (MCP tools + CLI) as the primary system for task manageme
 
 # tasqx workflow
 
-tasqx is a local task manager with one JSON API behind three clients: a CLI (`tasqx`), an MCP server (twenty-four `tasqx_*` tools), and HTML reports. Tasks live in a SQLite file on this machine; every change lands in an append-only event log, which is why nothing here is ever truly destructive. Treat it as the system of record for multi-step work: the backlog outlives the session, so work you record here is work a future session can pick up.
+tasqx is a local task manager with one JSON API behind three clients: a CLI (`tasqx`), an MCP server (twenty-five `tasqx_*` tools), and HTML reports. Tasks live in a SQLite file on this machine; every change lands in an append-only event log, which is why nothing here is ever truly destructive. Treat it as the system of record for multi-step work: the backlog outlives the session, so work you record here is work a future session can pick up.
 
 Prefer the MCP tools when they're available in the session — they return structured JSON and skip shell quoting. Fall back to the CLI for the verbs the MCP deliberately lacks: `next`, `why` and `agenda` (picking and explaining), `chart`, `export`, `import`, `report --html`, `memory import`, `undo`, `use`, `archive`, and `tokens recompute` — that last one is stricter still: it is refused over the daemon socket, so it runs in-process as `tasqx --no-daemon tokens recompute`. `reopen`, `undep`, `memory rm` and `cancel` are NOT on that list — they are `tasqx_reopen_task`, `tasqx_remove_dependency`, `tasqx_remove_memory` and `tasqx_cancel_task` (D64, D67, D114). Fall back to the CLI too when the MCP server isn't connected. If neither responds, say so and track the work conversationally instead — don't fake it.
 
@@ -45,6 +45,8 @@ Wrote something that turned out to be wrong? Retract it with `tasqx_remove_memor
 ## Reporting
 
 `tasqx_summary` groups open work by project, status, or priority with count/estimate/tracked metrics. One default worth knowing (D24): a report with no status term in its filter counts done work in every metric and skips only cancelled tasks — so don't add `status:` filters you don't need, and don't be surprised that finished work shows up. For a shareable artifact, the CLI emits a self-contained HTML page: `tasqx report --html --out review.html` (optionally scoped by a filter).
+
+`tasqx_outcomes` answers the other question — not what the work cost but how it went: **rework** (completions that were later reopened), **calibration** (median tracked-over-estimate), **cost**, **silent** (completions carrying no annotation) and **abandonment** (started, then cancelled). It reads only tasks that CLOSED, so an open backlog is invisible to it by design; `tasqx_summary` is the read for work in flight. Every rate comes back beside the `n` it was computed over, so check the denominator before you act on a rate — three completions is not evidence. It is read-scoped, so it works without write access, and it is worth consulting before a big piece of work on a project you have touched before: a high `silent` count says the annotations a future session will search for are not being written, and a high `rework` count says completions are being called too early.
 
 ## Nothing is ever destroyed
 

@@ -827,6 +827,74 @@ const SUMMARY_GROUP_ROW: &[Field] = &[
     req("overdue", Ty::Int),
 ];
 
+/// D137's per-metric sub-objects. Each is frozen separately because each is
+/// reachable on its own through `metrics`, and because the rule the whole
+/// report exists to keep — a rate never travels without the `n` it was
+/// computed over — is a property of these objects rather than of the envelope.
+/// `rate` is nullable: with nothing to divide by it is `null` and not `0.0`,
+/// which are different claims that print identically.
+const OUTCOME_RATE: &[Field] = &[
+    req("count", Ty::Int),
+    req("n", Ty::Int),
+    nul("rate", Ty::Num),
+    req("refs", Ty::Array),
+];
+
+const OUTCOME_CALIBRATION: &[Field] = &[nul("median_ratio", Ty::Num), req("n", Ty::Int)];
+
+/// The four buckets, never a blend (D48, D50, D103). `confidence` is absent
+/// rather than null when nothing was measured: a grading describes figures,
+/// and there are none to describe.
+const OUTCOME_COST: &[Field] = &[
+    req("tokens_in", Ty::Int),
+    req("tokens_out", Ty::Int),
+    req("tokens_cache_read", Ty::Int),
+    req("tokens_cache_creation", Ty::Int),
+    req("n", Ty::Int),
+    opt("confidence", Ty::Str),
+];
+
+/// As with [`SUMMARY_GROUP_ROW`], the group key is *named by* `group_by` and
+/// the metric objects are the ones the caller selected, so this row belongs to
+/// the case that asks for it rather than to the method.
+const OUTCOME_GROUP_ROW: &[Field] = &[
+    req("project", Ty::Str),
+    req("completions", Ty::Int),
+    req("closed", Ty::Int),
+    req_of("rework", Ty::Object, &[OUTCOME_RATE]),
+    req_of("calibration", Ty::Object, &[OUTCOME_CALIBRATION]),
+    req_of("cost", Ty::Object, &[OUTCOME_COST]),
+    req_of("silent", Ty::Object, &[OUTCOME_RATE]),
+    req_of("abandonment", Ty::Object, &[OUTCOME_ABANDONMENT]),
+];
+
+/// Abandonment adds the time inside the dropped work to the rate shape —
+/// counting abandoned tasks without it would answer how many and not how much.
+const OUTCOME_ABANDONMENT: &[Field] = &[
+    req("count", Ty::Int),
+    req("n", Ty::Int),
+    nul("rate", Ty::Num),
+    req("tracked_total", Ty::Str),
+    req("refs", Ty::Array),
+];
+
+const R_REPORT_OUTCOMES: Shape = &[&[
+    req_of("groups", Ty::Array, &[OUTCOME_GROUP_ROW]),
+    // Echoed so the reader knows which axis and which metrics produced the
+    // rows — the same D69 reason `filter` is echoed below.
+    req("group_by", Ty::Str),
+    req("metrics", Ty::Array),
+    req("generated", Ty::Str),
+    req("filter", Ty::Str),
+    // The window over WHEN A TASK CLOSED — null unless the caller set it.
+    // There is deliberately no `all`: D24's cancelled-work escape hatch has
+    // nothing to turn on here, because a cancellation is a measured outcome
+    // rather than noise to exclude.
+    nul("since", Ty::Str),
+    nul("until", Ty::Str),
+    req("store_empty", Ty::Bool),
+]];
+
 const R_REPORT_SUMMARY: Shape = &[&[
     req_of("groups", Ty::Array, &[SUMMARY_GROUP_ROW]),
     req("generated", Ty::Str),
@@ -1484,6 +1552,39 @@ fn cases() -> Vec<Case> {
                 })
             },
             R_REPORT_SUMMARY,
+        ),
+        case(
+            "report.outcomes",
+            "a completion that came back, a completion that stayed done, and abandoned work",
+            |e| {
+                rich_task(e);
+                plain_task(e);
+                // #1 is completed, reopened and completed again: rework, and
+                // the case that proves scope is the CLOSING rather than the
+                // current status — a task scoped by status would be `pending`
+                // between the two and absent from the report entirely.
+                e.task_done(&json!({ "ref": 1 })).expect("done");
+                e.task_reopen(&json!({ "ref": 1 })).expect("reopen");
+                // Completed WITH a self-report, so `cost` carries real
+                // buckets and the optional `confidence` is actually observed —
+                // an optional key no fixture emits is documentation rather
+                // than a frozen shape.
+                e.task_done(&json!({
+                    "ref": 1,
+                    "tool": "claude-code",
+                    "input_tokens": 120,
+                    "output_tokens": 40,
+                    "cache_read_tokens": 9_000,
+                    "cache_creation_tokens": 250,
+                }))
+                .expect("done again");
+                // #2 is started and then dropped, so `abandonment` has both a
+                // ref and a nonzero `tracked_total` to freeze.
+                e.task_start(&json!({ "ref": 2 })).expect("start");
+                e.task_cancel(&json!({ "ref": 2 })).expect("cancel");
+                json!({ "group_by": "project", "filter": "" })
+            },
+            R_REPORT_OUTCOMES,
         ),
         case(
             "store.export",

@@ -803,6 +803,22 @@ pub(super) enum Command {
             value_parser = tasqx_core::engine::SUMMARY_METRICS
         )]
         metrics: Option<Vec<String>>,
+        /// Report outcomes instead of counts (D137): rework, estimate
+        /// calibration, cost, silent completions and abandoned work, over the
+        /// tasks that CLOSED.
+        ///
+        /// A second method under one verb rather than a verb of its own,
+        /// because a reader asking "how is this going" reaches for `report`
+        /// either way — the same shape `--html` already has.
+        ///
+        /// Rejected alongside `--html` and `--all`: the HTML page builds its
+        /// own scope and has no outcomes section, and `--all` is D24's
+        /// cancelled-work escape hatch, which `report.outcomes` has no use for
+        /// — there a cancellation is a measured outcome, not noise. Accepting
+        /// either and ignoring it is the silent omission `--out` above is
+        /// guarded against.
+        #[arg(long, conflicts_with_all = ["html", "all", "metrics"])]
+        outcomes: bool,
     },
     /// Native terminal charts from the event log (DESIGN.md §8).
     #[command(after_help = crate::cmddoc::after_help("chart"))]

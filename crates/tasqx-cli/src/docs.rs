@@ -102,7 +102,7 @@ const VERBS: [(&str, &str, &str); 41] = [
     ("dep", "—", "dependency.add"),
     ("undep", "—", "dependency.remove"),
     ("projects", "—", "project.list"),
-    ("report", "—", "report.summary"),
+    ("report", "—", "report.summary + report.outcomes"),
     ("chart", "—", "event.list"),
     ("theme", "—", "— (no store)"),
     ("config", "—", "— (registry + core.capabilities)"),
@@ -122,7 +122,7 @@ const VERBS: [(&str, &str, &str); 41] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 37] = [
+const METHODS: [(&str, &str, &str); 38] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -348,6 +348,21 @@ const METHODS: [(&str, &str, &str); 37] = [
          completion date; both are <code>null</code> unless the caller sets them.",
     ),
     (
+        "report.outcomes",
+        "<code>group_by?</code>, <code>filter?</code>, <code>metrics?</code>, \
+         <code>since?</code>, <code>until?</code>",
+        "<code>{groups, group_by, metrics, generated, filter, since, until, store_empty}</code>. \
+         What the work DID, as against what it cost (D137): <code>rework</code> (completions that \
+         were reopened), <code>calibration</code> (median tracked-over-estimate), \
+         <code>cost</code> (the four token buckets, never blended), <code>silent</code> \
+         (completions carrying no annotation) and <code>abandonment</code> (started, then \
+         cancelled). Every rate comes back beside the <code>n</code> it was computed over. \
+         Scope is tasks that CLOSED, by the instant they closed — so a completion that was \
+         reopened still counts, which is the whole point. Omitting <code>metrics</code> emits \
+         all of them; there is no <code>all</code>, because here a cancellation is a measured \
+         outcome rather than noise D24 excludes.",
+    ),
+    (
         "store.export",
         "<code>filter?</code>",
         "<code>{tasks, projects, docs, events, default_project, dropped_dependencies}</code>. \
@@ -450,7 +465,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 9] = [
 /// free-prose rows nothing compared, which is the same shape the verb table was
 /// in before the drift guards: a tool could be added, renamed, or moved across
 /// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 24] = [
+const MCP_TOOLS: [(&str, bool, &str); 25] = [
     (
         "tasqx_list_tasks",
         false,
@@ -461,6 +476,11 @@ const MCP_TOOLS: [(&str, bool, &str); 24] = [
         "tasqx_summary",
         false,
         "Aggregate report by project/status/priority.",
+    ),
+    (
+        "tasqx_outcomes",
+        false,
+        "Rework, calibration, cost, silent completions, abandoned work — each rate beside its n (D137).",
     ),
     ("tasqx_list_projects", false, "List projects."),
     (
@@ -3360,11 +3380,12 @@ mod tests {
         // everything, the test would pass while guarding nothing. Re-derive from
         // the count this guard reports rather than adding the rows you wrote:
         // it went 7 -> 8 when `event.revert` joined, 8 -> 9 when `otlp.status`
-        // (#222) did, 9 -> 10 when `memory.list` (#133) did, and a floor that
-        // drifts below the truth is a guard that has stopped guarding.
+        // (#222) did, 9 -> 10 when `memory.list` (#133) did, 10 -> 11 when
+        // `report.outcomes` (D137) did, and a floor that drifts below the
+        // truth is a guard that has stopped guarding.
         assert_eq!(
-            checked, 10,
-            "expected to check all 10 bare-callable return shapes; a row that stopped being \
+            checked, 11,
+            "expected to check all 11 bare-callable return shapes; a row that stopped being \
              checkable is coverage lost silently"
         );
     }

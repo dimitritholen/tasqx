@@ -96,6 +96,27 @@ during one task resurface during the next:
 2. Hits come back bm25-ranked with snippets — docs and past annotations alike.
 3. After the work, `tasqx_add_memory` stores what the next session should know.
 
+## Read how the last run went
+
+`tasqx_outcomes` is the other half of measurement: `tasqx_summary` answers what
+the work cost, this answers whether it worked. Over the tasks that **closed**,
+it reports rework (completions that were later reopened), estimate calibration,
+token cost, silent completions (no annotation written) and abandoned work —
+each rate beside the `n` it was computed over, because a rework rate over three
+completions is not evidence.
+
+```console
+tasqx report --outcomes project --since -30d
+```
+
+It is on the **read** scope, so a read-only agent has it, and it is worth a
+call before a big piece of work on a project you have touched before: a high
+silent count means the annotations your next session will search for are not
+being written, and a high rework count means completions are being called too
+early. A retrospective ([A self-improving agent](self-improving-agent.md)) that
+cites these numbers is answering from evidence rather than from its own memory
+of the session.
+
 ## Safety properties you get for free
 
 - `tasqx_modify_task` is optimistic-concurrency-checked: the server pins the

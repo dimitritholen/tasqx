@@ -154,6 +154,15 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         &["group_by", "filter", "metrics", "all", "since", "until"],
         false,
     ),
+    // D137. No `all`: that param is `report.summary`'s D24 escape hatch for
+    // whether CANCELLED work counts, and here a cancellation is a measured
+    // outcome rather than noise to exclude — there is nothing for it to turn
+    // on. A caller who wants only completions says so in the `filter`.
+    (
+        "report.outcomes",
+        &["group_by", "filter", "metrics", "since", "until"],
+        false,
+    ),
     ("store.export", &["filter"], false),
     (
         "store.import",
@@ -266,6 +275,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "memory.list" => engine.memory_list(params),
         "memory.update" => engine.memory_update(params),
         "report.summary" => engine.report_summary(params),
+        "report.outcomes" => engine.report_outcomes(params),
         "store.export" => engine.store_export(params),
         "store.import" => engine.store_import(params),
         "event.list" => engine.event_list(params),

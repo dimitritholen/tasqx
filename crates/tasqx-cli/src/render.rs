@@ -2974,6 +2974,197 @@ fn human_or_dash(iso: &str) -> String {
 /// otherwise leaves this table alone: COUNT/EST/OVERDUE/TRACKED are its fixed
 /// axis, and the terminal's actual gap with the other two surfaces is
 /// specifically the token ranking, not those four.
+/// `tasqx report --outcomes` — D137's scorecard as one fitted table.
+///
+/// Every rate is printed as `count/n`, never as a percentage. That is the
+/// ruling's own requirement made typographic: "3/12" carries its denominator
+/// in the cell, and "25%" does not — and the difference between a rework rate
+/// over twelve completions and one over three is the difference between a
+/// figure a maintainer should act on and one they should ignore.
+///
+/// Same skeleton as [`report`] above (D117/D120): the key column is the one
+/// that gives when the terminal is narrow, every other column is a number and
+/// a number is never cut to fit.
+pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
+    let empty = Vec::new();
+    let groups = result
+        .get("groups")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    if groups.is_empty() {
+        return if store_is_empty(result) {
+            onboarding_hint(ctx)
+        } else {
+            // Not "no matching tasks": the scope test here is that a task
+            // CLOSED, so an open backlog matching the filter perfectly still
+            // lands here, and a reader told "no matching tasks" would go
+            // looking for a filter bug that is not there.
+            "No closed work in scope — outcomes are measured on tasks that finished.\n".to_string()
+        };
+    }
+
+    // `a/b` — the count over the denominator it was computed against. A cell
+    // with nothing to divide by prints `-`, not `0/0`.
+    let over = |m: &Value, key: &str| -> String {
+        let n = m.get("n").and_then(Value::as_i64).unwrap_or(0);
+        if n <= 0 {
+            return "-".to_string();
+        }
+        let c = m.get(key).and_then(Value::as_i64).unwrap_or(0);
+        format!("{c}/{n}")
+    };
+
+    struct Row {
+        key: String,
+        rework: i64,
+        cells: Vec<String>,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    let mut labels: Vec<String> = vec!["CLOSED".into(), "DONE".into()];
+    let first = &groups[0];
+    let has = |m: &str| first.get(m).is_some();
+    if has("rework") {
+        labels.push("REWORK".into());
+    }
+    if has("silent") {
+        labels.push("SILENT".into());
+    }
+    if has("calibration") {
+        labels.push("CALIB".into());
+    }
+    if has("abandonment") {
+        labels.push("DROPPED".into());
+    }
+    if has("cost") {
+        labels.push("TOKENS".into());
+    }
+
+    for g in groups {
+        let key = san(g.get(group_by).and_then(Value::as_str).unwrap_or(""));
+        let closed = g.get("closed").and_then(Value::as_i64).unwrap_or(0);
+        let done = g.get("completions").and_then(Value::as_i64).unwrap_or(0);
+        let mut cells = vec![closed.to_string(), done.to_string()];
+        let mut rework_count = 0;
+        if let Some(m) = g.get("rework") {
+            rework_count = m.get("count").and_then(Value::as_i64).unwrap_or(0);
+            cells.push(over(m, "count"));
+        }
+        if let Some(m) = g.get("silent") {
+            cells.push(over(m, "count"));
+        }
+        if let Some(m) = g.get("calibration") {
+            let n = m.get("n").and_then(Value::as_i64).unwrap_or(0);
+            // `×1.8 n7`: the ratio and the sample size it came from, in the
+            // cell, for the same reason the rates carry their denominator. A
+            // median over one completion is not a calibration.
+            cells.push(match m.get("median_ratio").and_then(Value::as_f64) {
+                Some(r) if n > 0 => format!("×{r:.2} n{n}"),
+                _ => "-".to_string(),
+            });
+        }
+        if let Some(m) = g.get("abandonment") {
+            cells.push(over(m, "count"));
+        }
+        if let Some(m) = g.get("cost") {
+            // The group's dominant bucket, the D92 cell — `cost` is keyed with
+            // `report.summary`'s own bucket names precisely so this helper
+            // reads it unchanged, and so the reader is never shown a blend.
+            let cell = crate::tokens::dominant_cell(m);
+            cells.push(match m.get("confidence").and_then(Value::as_str) {
+                Some(c) if c != tasqx_core::tokens::CONFIDENCE_HIGH => format!("{cell} ~{c}"),
+                _ => cell,
+            });
+        }
+        rows.push(Row {
+            key,
+            rework: rework_count,
+            cells,
+        });
+    }
+
+    const MIN_KEY: usize = 8;
+    const MAX_KEY: usize = 32;
+    let header_label = group_by.to_uppercase();
+    let key_w = rows
+        .iter()
+        .map(|r| width(&r.key))
+        .chain([width(&header_label)])
+        .max()
+        .unwrap_or(0)
+        .min(MAX_KEY);
+    let mut cols = vec![Column::shrinks(key_w, MIN_KEY.min(key_w))];
+    for (n, label) in labels.iter().enumerate() {
+        let w = rows
+            .iter()
+            .map(|r| width(&r.cells[n]))
+            .chain([width(label)])
+            .max()
+            .unwrap_or(0);
+        cols.push(Column::fixed(w));
+    }
+    let w = columns::fit(&cols, ctx.cols);
+
+    let line = |key: String, cells: Vec<(Option<&str>, String)>| {
+        let mut parts = vec![key];
+        for ((role, c), cw) in cells.into_iter().zip(&w[1..]) {
+            if *cw == 0 {
+                continue;
+            }
+            let pad = " ".repeat(cw.saturating_sub(width(&c)));
+            let c = match role {
+                Some(r) => ctx.paint(r, &c),
+                None => c,
+            };
+            parts.push(format!("{pad}{c}"));
+        }
+        join_cells(parts)
+    };
+
+    let rework_col = labels.iter().position(|l| l == "REWORK");
+    let mut out = ctx.paint(
+        "table.label",
+        &line(
+            pad(&header_label, w[0]),
+            labels.iter().map(|l| (None, l.clone())).collect(),
+        ),
+    );
+    out.push('\n');
+    for r in rows {
+        // REWORK is the one figure here that is a problem when it is nonzero,
+        // so it takes `warn` then and `muted` otherwise — the rule the OVERDUE
+        // column already follows in `report`. Every other column is neutral:
+        // a high SILENT count is a habit to fix, not an alarm, and DROPPED
+        // work is often the right call.
+        let cells = r
+            .cells
+            .into_iter()
+            .enumerate()
+            .map(|(n, c)| {
+                let role =
+                    (Some(n) == rework_col).then_some(if r.rework > 0 { "warn" } else { "muted" });
+                (role, c)
+            })
+            .collect::<Vec<_>>();
+        out.push_str(&line(cell(ctx, Some("project"), &r.key, w[0]), cells));
+        out.push('\n');
+    }
+
+    // The legend earns its place for the same reason D92's does: `3/12` and
+    // `×1.8 n7` are compact because they are dense, and a dense cell nobody
+    // can read is not compact. Set off by a blank line (rule 7).
+    out.push('\n');
+    out.push_str(&prose(
+        ctx,
+        Some("muted"),
+        "REWORK / SILENT / DROPPED read count over the completions or closings they \
+         were counted against — a rate with no denominator beside it is not a rate. \
+         CALIB is the median tracked-over-estimate ratio and the number of \
+         completions carrying both figures.",
+        "",
+    ));
+    out
+}
+
 pub fn report(
     ctx: &Ctx,
     result: &Value,
@@ -5376,6 +5567,68 @@ mod tests {
         let out = report(&ctx, &groups(2), "project", None);
         assert!(out.contains("2 cancelled tasks excluded"), "{out}");
         assert!(!out.contains("task(s)"), "{out}");
+    }
+
+    /// D137's denominator rule, made typographic. `3/12` and `3/3` are the same
+    /// percentage and very different news, so the cell carries the `n` it was
+    /// computed against and no cell anywhere prints a `%`.
+    #[test]
+    fn outcome_rates_print_over_their_denominator_and_never_as_a_percentage() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({ "groups": [{
+            "project": "work",
+            "closed": 4, "completions": 3,
+            "rework": { "count": 1, "n": 3, "rate": 0.333, "refs": [2] },
+            "silent": { "count": 2, "n": 3, "rate": 0.667, "refs": [2, 3] },
+            "calibration": { "median_ratio": 1.5, "n": 2 },
+            "abandonment": { "count": 1, "n": 4, "rate": 0.25, "tracked_total": "PT20M", "refs": [4] },
+            "cost": { "tokens_in": 1, "tokens_out": 2, "tokens_cache_read": 900, "tokens_cache_creation": 3, "n": 1 },
+        }] });
+        let out = outcomes(&ctx, &result, "project");
+        assert!(out.contains("1/3"), "rework reads count over n: {out}");
+        assert!(out.contains("2/3"), "silent reads count over n: {out}");
+        assert!(out.contains("1/4"), "abandonment reads count over n: {out}");
+        assert!(
+            out.contains("×1.50 n2"),
+            "calibration carries its sample size: {out}"
+        );
+        assert!(
+            !out.contains('%'),
+            "a percentage drops the denominator D137 requires: {out}"
+        );
+        // D48/D50/D103: the cell names one bucket, never a blend.
+        assert!(out.contains("cacheR"), "{out}");
+    }
+
+    /// A rate with nothing to divide by prints `-`, not `0/0`: "none of them"
+    /// and "there were none" are different answers.
+    #[test]
+    fn an_outcome_rate_with_no_denominator_prints_a_dash() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({ "groups": [{
+            "project": "work",
+            "closed": 1, "completions": 0,
+            "rework": { "count": 0, "n": 0, "rate": null, "refs": [] },
+            "calibration": { "median_ratio": null, "n": 0 },
+        }] });
+        let out = outcomes(&ctx, &result, "project");
+        assert!(!out.contains("0/0"), "{out}");
+        assert!(out.contains('-'), "{out}");
+    }
+
+    /// An empty outcomes report may not say "no matching tasks": the scope test
+    /// is that a task CLOSED, so a perfectly matching open backlog lands here
+    /// and that wording would send the reader hunting a filter bug.
+    #[test]
+    fn an_empty_outcomes_report_says_the_scope_is_closed_work() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let out = outcomes(
+            &ctx,
+            &json!({ "groups": [], "store_empty": false }),
+            "project",
+        );
+        assert!(out.contains("No closed work in scope"), "{out}");
+        assert!(!out.contains("No matching tasks"), "{out}");
     }
 
     /// #346: the prose `next`, `agenda`, `projects` and `report` print wraps at

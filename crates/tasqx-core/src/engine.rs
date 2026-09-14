@@ -84,6 +84,22 @@ pub const SUMMARY_METRICS: [&str; 8] = [
     "tokens_cache_creation",
 ];
 
+/// The metrics `report.outcomes` can emit per group (D137). Unlike
+/// [`SUMMARY_METRICS`] there is no always-present one and no default subset:
+/// omitting `metrics` emits all of them, because the point of the report is the
+/// set read together — a rework rate without the cost beside it invites the
+/// wrong fix.
+///
+/// Source of truth for the same reason as [`SUMMARY_GROUP_BY`]: the engine
+/// validates against it, its rejection message is built from it, and the MCP
+/// tool schema renders its `enum` from it.
+///
+/// Each name is what the metric MEASURES, never a verdict about it: `silent` is
+/// completions carrying no annotation, not "bad completions". D137 refuses a
+/// composite score for the same reason these stay five names — the blend
+/// destroys the split that makes a figure actionable.
+pub const OUTCOME_METRICS: [&str; 5] = ["rework", "calibration", "cost", "silent", "abandonment"];
+
 /// The keys `task.list` can sort by. A `-` prefix on any of them sorts
 /// descending; the default when `sort` is omitted is `-urgency`.
 ///
