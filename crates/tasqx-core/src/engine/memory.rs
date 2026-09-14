@@ -556,17 +556,29 @@ impl Engine {
             ""
         };
         let count_sql = format!("SELECT COUNT(*) FROM docs {where_clause}");
-        // `modified DESC` for recency, `id DESC` as the stable tiebreak two
-        // docs written the same instant still need (UUIDv7 ids sort
-        // chronologically, so this is also a secondary recency signal, not
-        // an arbitrary one) — the same reasoning `task.list`'s `compare_by`
-        // always ends on a tiebreak so a page walked over a changing order
-        // never shows a row twice or skips one.
+        // Newest-modified first (D115 #133), `id DESC` as the stable
+        // tiebreak two docs written the same instant still need (UUIDv7 ids
+        // sort chronologically, so this is also a secondary recency signal,
+        // not an arbitrary one) — the same reasoning `task.list`'s
+        // `compare_by` always ends on a tiebreak so a page walked over a
+        // changing order never shows a row twice or skips one.
+        //
+        // The key is `modified` with its `Z` stripped, not the column itself
+        // (D144). `util::now` prints a variable-length fractional second —
+        // trailing zeros trimmed, absent at a whole second — and under
+        // BINARY collation `'Z'` sorts above `'.'` and every digit, so
+        // `...10Z` > `...10.9Z` and `...10.12Z` > `...10.123Z`: an older doc
+        // above a newer one. Without the terminator a trimmed decimal
+        // fraction compares correctly as a plain prefix string (`10` <
+        // `10.9`, `10.12` < `10.123`). `id` alone cannot replace it, unlike
+        // D142's annotations: `modified` moves on `memory.update` and on an
+        // import that replaces by source, and this list promises to show
+        // that.
         let row_sql = format!(
             "SELECT id, title, source, project, created, modified, rev, \
                     substr(body, 1, 160) AS preview, length(body) AS body_len \
              FROM docs {where_clause} \
-             ORDER BY modified DESC, id DESC \
+             ORDER BY rtrim(modified, 'Z') DESC, id DESC \
              LIMIT :limit OFFSET :offset"
         );
 
@@ -745,6 +757,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::params;
     use serde_json::json;
 
     /// #229 item 4: a malformed identifier was `bad_request` for a task
@@ -793,5 +806,148 @@ mod tests {
             "{}",
             missing.message
         );
+    }
+
+    /// memory.list is newest-modified first, and the variable-length `modified`
+    /// text may not decide it (D142's defect, on docs).
+    ///
+    /// `util::now` prints a jiff Timestamp whose fractional second is trimmed —
+    /// entirely absent on a whole second — and under SQLite's BINARY collation
+    /// 'Z' (0x5A) sorts above '.' and above every digit, so `...10Z` >
+    /// `...10.1Z` > `...10.12Z` > `...10.123Z` while each is later than the
+    /// last. Ordering by that text put a doc stamped on a whole second above
+    /// every doc written after it in the same second; the paging test in
+    /// tests/memory.rs failed once under load for exactly this reason.
+    #[test]
+    fn memory_list_orders_by_modified_instant_not_the_variable_length_text() {
+        let e = crate::Engine::open_in_memory().unwrap();
+
+        let mut ids = Vec::new();
+        for i in 0..4 {
+            let out = e
+                .memory_add(&json!({ "title": format!("doc {i}"), "body": format!("body {i}") }))
+                .unwrap();
+            ids.push(out["id"].as_str().unwrap().to_string());
+        }
+
+        // Chronological, and deliberately fully INVERTED in BINARY text
+        // order: 'Z' beats '1', '2' and '3'.
+        let stamps = [
+            "2026-01-01T00:00:10Z",
+            "2026-01-01T00:00:10.1Z",
+            "2026-01-01T00:00:10.12Z",
+            "2026-01-01T00:00:10.123Z",
+        ];
+        for (i, ts) in stamps.iter().enumerate() {
+            let n = e
+                .conn
+                .execute(
+                    "UPDATE docs SET modified = ?1 WHERE id = ?2",
+                    params![ts, ids[i]],
+                )
+                .unwrap();
+            assert_eq!(n, 1, "doc {i} must exist exactly once to be stamped");
+        }
+
+        let out = e.memory_list(&json!({})).unwrap();
+        let listed: Vec<String> = out["docs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap().to_string())
+            .collect();
+        let expected: Vec<String> = ids.iter().rev().cloned().collect();
+        assert_eq!(
+            listed, expected,
+            "the newest-modified doc must come first regardless of how its stamp's text sorts"
+        );
+
+        let page = e.memory_list(&json!({ "limit": 1 })).unwrap();
+        let page_ids: Vec<String> = page["docs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            page_ids,
+            vec![ids[3].clone()],
+            "the first page must hold the doc modified last, not the whole-second one"
+        );
+    }
+
+    /// memory.list is newest-MODIFIED first, not newest-created (D115 #133,
+    /// D144): a `memory.update` moves a doc to the top even though its UUIDv7
+    /// id stays where it was minted. Ordering by `id` alone would read as
+    /// correct on every fresh store and only lie once a doc is edited.
+    #[test]
+    fn memory_list_puts_an_updated_doc_first_even_though_its_id_is_the_oldest() {
+        let e = crate::Engine::open_in_memory().unwrap();
+
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let out = e
+                .memory_add(&json!({ "title": format!("doc {i}"), "body": format!("body {i}") }))
+                .unwrap();
+            ids.push(out["id"].as_str().unwrap().to_string());
+        }
+
+        // Strictly increasing, and in write order, so the baseline (before
+        // the update below) is unambiguous regardless of how fast the
+        // machine that runs this test is.
+        let stamps = [
+            "2026-01-01T00:00:10Z",
+            "2026-01-01T00:00:11Z",
+            "2026-01-01T00:00:12Z",
+        ];
+        for (i, ts) in stamps.iter().enumerate() {
+            let n = e
+                .conn
+                .execute(
+                    "UPDATE docs SET modified = ?1 WHERE id = ?2",
+                    params![ts, ids[i]],
+                )
+                .unwrap();
+            assert_eq!(n, 1, "doc {i} must exist exactly once to be stamped");
+        }
+
+        // Update the OLDEST id (doc 0) — memory.update sets util::now(),
+        // which is later than the crafted stamps, but this pins it
+        // explicitly so the test does not depend on the wall clock.
+        e.memory_update(&json!({ "id": ids[0], "body": "edited" }))
+            .unwrap();
+        let n = e
+            .conn
+            .execute(
+                "UPDATE docs SET modified = ?1 WHERE id = ?2",
+                params!["2026-01-01T00:00:13Z", ids[0]],
+            )
+            .unwrap();
+        assert_eq!(
+            n, 1,
+            "the updated doc must exist exactly once to be stamped"
+        );
+
+        let out = e.memory_list(&json!({})).unwrap();
+        let listed: Vec<String> = out["docs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            listed,
+            vec![ids[0].clone(), ids[2].clone(), ids[1].clone()],
+            "the edited doc surfaces first; the rest stay newest-modified first"
+        );
+
+        let page = e.memory_list(&json!({ "limit": 1 })).unwrap();
+        let page_ids: Vec<String> = page["docs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(page_ids, vec![ids[0].clone()]);
     }
 }
