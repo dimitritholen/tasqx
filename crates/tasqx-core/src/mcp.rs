@@ -357,6 +357,11 @@ const TRANSPORT_ONLY_ARGS: &[(&str, &str, &str)] = &[
         "whether the response carries the machine-readable block beside the rendered view.      The two blocks are the same result twice (D49), so on a task whose bulk is annotation      prose the second is that prose again — 54% of a 6.4 KB response for ONE annotation,      66% for a task read with `annotations_limit: 0`. D66 spends that duplicate only when      the budget is already blown, which left every ordinary read paying it in full and no      way to decline. `task.get` has no opinion on how many blocks its answer is wrapped in.",
     ),
     (
+        "tasqx_brief_task",
+        "include_json",
+        "whether the response carries the machine-readable block beside the rendered view.      Same argument, same reason and same default as `tasqx_get_task`'s (D49/D66): the two      blocks are one result twice, and a brief's second block is the larger of the pair      because it carries the neighbourhood and the memory snippets as well. `task.brief`      has no opinion on how many blocks its answer is wrapped in.",
+    ),
+    (
         "tasqx_annotate_task",
         "include_body",
         "whether the response echoes the annotation body back beside its id and timestamp.      D72/D75 keep the echo ON by default — it is the caller's only evidence that a body      promised to be stored verbatim really was — so this is opt-OUT, not a reversal: a      caller who already holds every byte it sent (the common case for a long note) can      decline paying to receive them again, and one that wants the verbatim proof still      gets it by doing nothing. `annotation.add` has no opinion on how its own result is      echoed back over one particular transport.",
@@ -502,6 +507,46 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                             agent deciding whether to trust or override the ranking otherwise \
                             gets the one number it already had and no way to see the arithmetic \
                             behind it (#150)."
+                    }
+                },
+                "required": ["ref"]
+            }),
+        },
+        // D136. Read-scoped like every other orientation tool, and deliberately
+        // NOT a flag on `tasqx_get_task`: the two answer different questions
+        // ("what is this task" vs "what do I need before starting it"), and a
+        // flag that swings one result between two shapes is a method with two
+        // shapes and one name.
+        ToolSpec {
+            name: "tasqx_brief_task",
+            method: "task.brief",
+            write: false,
+            destructive: false,
+            idempotent: true,
+            description: "Everything you need before starting one task, in ONE call: the task \
+                itself, the tasks it depends on with what each of THEM concluded, what it \
+                blocks, and relevant memory — under a query tasqx derives from the task's own \
+                title, tags and project, so you do not have to guess search terms. Prefer this \
+                over get_task + search_memory when you are about to START work; use get_task \
+                when you only need the task. Pure read, no side effects.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": { "type": ["integer", "string"], "description": "Task short_id or UUID." },
+                    "memory_limit": {
+                        "type": "integer",
+                        "description": format!(
+                            "How many memory hits to return. Optional; defaults to {}.",
+                            crate::engine::MEMORY_SEARCH_LIMIT
+                        )
+                    },
+                    "include_json": {
+                        "type": "boolean",
+                        "description": "Send the machine-readable JSON block as well as the \
+                             rendered view. Default true. The two blocks are the same result \
+                             twice, and a brief's JSON half is the bigger one — it carries the \
+                             neighbourhood and every memory snippet again. Pass false when you \
+                             only need to READ the brief."
                     }
                 },
                 "required": ["ref"]
@@ -662,6 +707,15 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "project": {
                         "type": "string",
                         "description": "Scope to one project: docs stored with this `project`, and annotations whose task carries it. Omit to search across every project (and unscoped docs)."
+                    },
+                    "include_unscoped": {
+                        "type": "boolean",
+                        "description": "Widen a `project` scope to also return docs and \
+                             annotations belonging to NO project — which is what \
+                             `tasqx memory import` produces, so a strict scope hides every \
+                             imported ADR. Never admits ANOTHER project's documents. Needs \
+                             `project`; without one there is nothing to widen from and it is \
+                             refused."
                     }
                 },
                 "required": ["query"]
@@ -1504,6 +1558,16 @@ impl<'e> McpServer<'e> {
                 // tool name to match the `task.modify`/`task.start` checks
                 // above; exactly one tool maps to `task.get`, so this is the
                 // same set either way.
+                if spec.method == "task.brief" {
+                    let opts = crate::markdown::DetailOpts {
+                        time: self.time_format,
+                        now: jiff::Timestamp::now(),
+                    };
+                    if !prepared.include_json {
+                        return tool_ok_text(&crate::markdown::task_brief(&result, &opts));
+                    }
+                    return self.fit_brief_to_budget(result, &prepared.args, &opts);
+                }
                 if spec.method == "task.get" {
                     let opts = crate::markdown::DetailOpts {
                         time: self.time_format,
@@ -1650,6 +1714,72 @@ impl<'e> McpServer<'e> {
                 // annotation is larger than the budget, and cutting into a body
                 // is the one thing this will not do.
                 if mid == 1 {
+                    view = rendered;
+                    break;
+                }
+                hi = mid - 1;
+            }
+        }
+        tool_ok_view_only(&best.unwrap_or(view))
+    }
+
+    /// Fit a `task.brief` response to [`RESPONSE_BUDGET_BYTES`] (D136).
+    ///
+    /// D66's three steps, one method over: both blocks if they fit, then the
+    /// rendered view alone, then the largest `memory_limit` that fits, found by
+    /// bisection rather than by halving. The lever is the memory page and
+    /// nothing else — the task half and the neighbourhood are what the caller
+    /// asked for, and a brief that cut the prerequisite's outcome to make room
+    /// for a search hit would have dropped the more valuable half.
+    ///
+    /// A caller that named its own `memory_limit` is answered exactly as asked,
+    /// however large, which is the same rule `fit_to_budget` keeps for
+    /// `annotations_limit` and for the same reason: a request second-guessed is
+    /// a caller who can never ask for a big page on purpose.
+    fn fit_brief_to_budget(
+        &self,
+        first: Value,
+        args: &Value,
+        opts: &crate::markdown::DetailOpts,
+    ) -> Value {
+        let render = |result: &Value| crate::markdown::task_brief(result, opts);
+        let json_len = |result: &Value| serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
+        let view_only_fits = |view: &str| view_only_text(view).len() <= RESPONSE_BUDGET_BYTES;
+
+        let named_own_limit = args.get("memory_limit").is_some_and(|v| !v.is_null());
+        let view = render(&first);
+        if named_own_limit || view.len() + json_len(&first) <= RESPONSE_BUDGET_BYTES {
+            return tool_ok_with_view(view, &first);
+        }
+        if view_only_fits(&view) {
+            return tool_ok_view_only(&view);
+        }
+
+        let mut view = view;
+        let mut lo = 0u64;
+        let mut hi = crate::engine::MEMORY_SEARCH_LIMIT;
+        let mut best: Option<String> = None;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let mut retry = args.clone();
+            match retry.as_object_mut() {
+                Some(obj) => obj.insert("memory_limit".to_string(), json!(mid)),
+                None => break,
+            };
+            let Ok(candidate) = dispatch(self.engine, "task.brief", &retry) else {
+                break;
+            };
+            let rendered = render(&candidate);
+            if view_only_fits(&rendered) {
+                best = Some(rendered);
+                lo = mid + 1;
+            } else {
+                // The floor is ZERO hits, not one: unlike an annotation page,
+                // dropping memory entirely still leaves a useful brief — the
+                // task and what its prerequisites decided. If even that does
+                // not fit, the task itself is past the budget and there is no
+                // lever here that would help.
+                if mid == 0 {
                     view = rendered;
                     break;
                 }

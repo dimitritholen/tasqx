@@ -589,6 +589,23 @@ pub(crate) fn run_show(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome
     Ok((result, text))
 }
 
+/// `tasqx brief <ref>` (D136) — the task, what its prerequisites concluded,
+/// and memory under a query derived from the task itself.
+pub(crate) fn run_brief(
+    be: &mut Backend,
+    ctx: &Ctx,
+    r#ref: String,
+    memory_limit: Option<u64>,
+) -> CmdOutcome {
+    let mut params = json!({ "ref": r#ref });
+    if let Some(n) = memory_limit {
+        params["memory_limit"] = json!(n);
+    }
+    let result = be.call("task.brief", &params)?;
+    let text = render::task_brief(ctx, &result, jiff::Timestamp::now());
+    Ok((result, text))
+}
+
 /// A method taking only `{ref}` and returning `{short_id, status}`:
 /// `task.cancel` and `task.reopen`, and the dependents each moved.
 pub(crate) fn run_simple_ref(

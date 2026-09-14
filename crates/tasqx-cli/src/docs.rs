@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 41] = [
+const VERBS: [(&str, &str, &str); 42] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -102,6 +102,7 @@ const VERBS: [(&str, &str, &str); 41] = [
     ("dep", "—", "dependency.add"),
     ("undep", "—", "dependency.remove"),
     ("projects", "—", "project.list"),
+    ("brief", "—", "task.brief"),
     ("report", "—", "report.summary + report.outcomes"),
     ("chart", "—", "event.list"),
     ("theme", "—", "— (no store)"),
@@ -122,7 +123,7 @@ const VERBS: [(&str, &str, &str); 41] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 38] = [
+const METHODS: [(&str, &str, &str); 39] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -291,7 +292,7 @@ const METHODS: [(&str, &str, &str); 38] = [
     (
         "memory.search",
         "<code>query</code>, <code>limit?</code>, <code>scope?</code>, <code>raw?</code>, \
-         <code>project?</code>",
+         <code>project?</code>, <code>include_unscoped?</code>",
         "<code>{count, total, has_more, hits, matched}</code> — bm25-ranked over docs + \
          annotations, stemmed (porter tokenizer, #128) so \"reviewing\" matches a doc that only \
          says \"review\". <code>matched</code> is the FTS5 expression actually run, which is how \
@@ -346,6 +347,20 @@ const METHODS: [(&str, &str, &str); 38] = [
          spend happened — a different axis from <code>filter</code>'s \
          <code>completed.after:</code>/<code>completed.before:</code>, which selects tasks by \
          completion date; both are <code>null</code> unless the caller sets them.",
+    ),
+    (
+        "task.brief",
+        "<code>ref</code>, <code>memory_limit?</code>",
+        "<code>{task, neighbourhood, memory}</code>. Everything needed before starting one task \
+         (D136): <code>task</code> is <code>task.get</code>'s own result verbatim; \
+         <code>neighbourhood.depends_on</code> names each prerequisite with its NEWEST \
+         annotation — what that task concluded — and <code>neighbourhood.blocks</code> names \
+         what this one releases, title and status only; <code>memory</code> is a \
+         <code>memory.search</code> result under an expression tasqx DERIVES from the task's \
+         title, tags and project, echoed in <code>matched</code>, scoped to that project and \
+         reported in <code>project</code>. The derived expression is a disjunction: a caller's \
+         query states what they want and is ANDed, a derived one is a bag of the task's own \
+         words and would answer nothing if it were.",
     ),
     (
         "report.outcomes",
@@ -465,7 +480,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 9] = [
 /// free-prose rows nothing compared, which is the same shape the verb table was
 /// in before the drift guards: a tool could be added, renamed, or moved across
 /// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 25] = [
+const MCP_TOOLS: [(&str, bool, &str); 26] = [
     (
         "tasqx_list_tasks",
         false,
@@ -476,6 +491,11 @@ const MCP_TOOLS: [(&str, bool, &str); 25] = [
         "tasqx_summary",
         false,
         "Aggregate report by project/status/priority.",
+    ),
+    (
+        "tasqx_brief_task",
+        false,
+        "The task, its prerequisites' conclusions, and memory under a derived query (D136).",
     ),
     (
         "tasqx_outcomes",

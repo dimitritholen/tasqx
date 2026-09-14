@@ -5,7 +5,7 @@ description: Use tasqx (MCP tools + CLI) as the primary system for task manageme
 
 # tasqx workflow
 
-tasqx is a local task manager with one JSON API behind three clients: a CLI (`tasqx`), an MCP server (twenty-five `tasqx_*` tools), and HTML reports. Tasks live in a SQLite file on this machine; every change lands in an append-only event log, which is why nothing here is ever truly destructive. Treat it as the system of record for multi-step work: the backlog outlives the session, so work you record here is work a future session can pick up.
+tasqx is a local task manager with one JSON API behind three clients: a CLI (`tasqx`), an MCP server (twenty-six `tasqx_*` tools), and HTML reports. Tasks live in a SQLite file on this machine; every change lands in an append-only event log, which is why nothing here is ever truly destructive. Treat it as the system of record for multi-step work: the backlog outlives the session, so work you record here is work a future session can pick up.
 
 Prefer the MCP tools when they're available in the session — they return structured JSON and skip shell quoting. Fall back to the CLI for the verbs the MCP deliberately lacks: `next`, `why` and `agenda` (picking and explaining), `chart`, `export`, `import`, `report --html`, `memory import`, `undo`, `use`, `archive`, and `tokens recompute` — that last one is stricter still: it is refused over the daemon socket, so it runs in-process as `tasqx --no-daemon tokens recompute`. `reopen`, `undep`, `memory rm` and `cancel` are NOT on that list — they are `tasqx_reopen_task`, `tasqx_remove_dependency`, `tasqx_remove_memory` and `tasqx_cancel_task` (D64, D67, D114). Fall back to the CLI too when the MCP server isn't connected. If neither responds, say so and track the work conversationally instead — don't fake it.
 
@@ -23,11 +23,13 @@ A backlog entry costs attention every time someone reads the list, so only real 
 
 Ask for the working set, not the whole list: `tasqx_list_tasks` with filter `"project:<name> @working"`. Blocked, waiting, and completed tasks are invisible there **by design** — an empty working set with open tasks elsewhere means everything is blocked, not that the work is gone.
 
-To read one task, `tasqx_get_task` answers with two content blocks (D49): tasqx-rendered markdown first, then the JSON. Use the markdown as-is — layout is tasqx's job — instead of recomposing the detail from the JSON fields.
+To read one task, `tasqx_get_task` answers with two content blocks (D49): tasqx-rendered markdown first, then the JSON. Use the markdown as-is — layout is tasqx's job — instead of recomposing the detail from the JSON fields. When you are about to START the task rather than just look at it, use `tasqx_brief_task` instead: same task, same rendering, plus what its prerequisites decided and the memory you would otherwise have had to guess a query for.
 
 For each task the loop is:
 
-1. **Consult memory first.** `tasqx_search_memory` on the task's key terms — conventions, prior decisions, and annotations from earlier work all come back bm25-ranked with snippets. Plain-text queries are matched as phrases, so hyphenated and dotted terms (`grep-check`, `tokens.css`) are safe as-is; only pass `raw: true` when you actually want FTS5 operators (`prefix*`, `AND`/`OR`), and expect a `bad_request` on invalid syntax rather than silent weirdness.
+1. **Brief yourself.** `tasqx_brief_task` on the ref, and that is the whole step: it returns the task, each prerequisite with **what that task concluded** (its newest annotation), what this task blocks, and relevant memory — under a query tasqx derives from the task's own title, tags and project. You do not supply search terms, which is the point: a guessed term that finds nothing looks exactly like a store with nothing in it, and you would never know. Pass `include_json: false` when you only need to read it.
+
+   Reach for `tasqx_search_memory` yourself when you want something the brief's scope does not cover — another project, a subject the task's own words do not name, or FTS5 operators via `raw: true` (plain queries are matched as phrases, so `grep-check` and `tokens.css` are safe as-is; invalid raw syntax is a `bad_request`, not silent weirdness).
 2. **Start the timer**: `tasqx_start_timer`. This moves the task to `active` and makes tracked time honest. Starting also auto-stops whatever timer was already running — one clock at a time — unless you pass `keep`.
 3. Do the work.
 4. **Record the outcome** as an annotation before completing: what was done, what was measured, what a future reader needs. This matters more than it looks — annotations feed the same search index as memory docs (`scope: "annotations"`, source `task:#N`), so every completed task becomes retrievable knowledge automatically.

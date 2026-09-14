@@ -1876,6 +1876,17 @@ impl Engine {
         // read and holds without taking the write lock. Bound to a NAME: `let _`
         // drops the guard on the spot and turns the whole thing into a no-op.
         let _snapshot = self.conn.unchecked_transaction()?;
+        self.task_detail_within_snapshot(p)
+    }
+
+    /// [`Engine::task_get`]'s body, with the caller owning the snapshot.
+    ///
+    /// Split out for `task.brief` (D136), which assembles this answer plus two
+    /// more sets of reads and so has to hold ONE snapshot across all of them —
+    /// `unchecked_transaction` is not reentrant, and the alternative was a
+    /// second copy of this shape, which is precisely the drift the one-API rule
+    /// exists to stop.
+    fn task_detail_within_snapshot(&self, p: &Value) -> Result<Value, ApiError> {
         let task = self.resolve_ref(p)?;
         let tags = task_tags(&self.conn, &task.id)?;
         let mut obj = task_to_json(&task, &tags);
@@ -1940,6 +1951,219 @@ impl Engine {
             obj["urgency_breakdown"] = Value::Object(breakdown);
         }
         Ok(obj)
+    }
+
+    // ---- task.brief ----------------------------------------------------------
+
+    /// `task.brief` — D136. Everything needed before starting one task, in one
+    /// read. Params: `ref`, `memory_limit?`.
+    ///
+    /// Three parts and no new data: the task exactly as [`Engine::task_get`]
+    /// returns it, the dependency neighbourhood with each prerequisite's
+    /// newest annotation, and memory hits under a query DERIVED FROM THE TASK
+    /// rather than supplied by the caller.
+    ///
+    /// The derived query is the part that cannot be composed client-side. The
+    /// other two reads can — that is the four-round-trip status quo D136
+    /// removes — but a client composing the query is a client guessing, which
+    /// is what `.claude/skills/tasqx-workflow/SKILL.md` step 1 asks an agent to
+    /// do today ("search memory on the task's key terms") and what fails
+    /// silently when the guess is wrong: an empty result is byte-identical to
+    /// a store that holds nothing.
+    pub fn task_brief(&self, p: &Value) -> Result<Value, ApiError> {
+        // One snapshot over all three parts, for `task_get`'s own reason: this
+        // answer is assembled from more separate reads than that one, and a
+        // write landing between any two of them ships a brief that never
+        // existed. DEFERRED and bound to a name, exactly as there.
+        let _snapshot = self.conn.unchecked_transaction()?;
+        let task = self.resolve_ref(p)?;
+        let tags = task_tags(&self.conn, &task.id)?;
+
+        // The task half is `task.get`'s own result, not a reshaping of it: a
+        // caller that can read one can read the other, and D49's renderer can
+        // be pointed straight at it. `annotations_limit` is deliberately not
+        // forwarded — the brief is what you read BEFORE starting, so the
+        // task's own history is the part least worth truncating, and the
+        // transport's byte budget (D66) is where a too-large answer is cut.
+        let detail = self.task_detail_within_snapshot(&json!({ "ref": task.short_id }))?;
+
+        let neighbourhood = json!({
+            "depends_on": self.prerequisites_with_outcome(&task.id)?,
+            "blocks": self.dependents_brief(&task.id)?,
+        });
+
+        let memory = self.derived_memory(&task, &tags, opt_u64(p, "memory_limit")?)?;
+
+        Ok(json!({
+            "task": detail,
+            "neighbourhood": neighbourhood,
+            "memory": memory,
+        }))
+    }
+
+    /// Each task this one depends on, with its newest annotation.
+    ///
+    /// Of everything the neighbourhood could carry, the prerequisite's last
+    /// note earns its bytes on evidence: the task that unblocked this one was
+    /// finished by somebody who wrote down what they did (the skill's step 4,
+    /// and the whole mechanism of `docs/guides/self-improving-agent.md`), and
+    /// reading it cost a second `task.get` that the agent usually did not make.
+    ///
+    /// One statement, not one per dependency: a point query per row here is
+    /// the N+1 `SnapshotParts` exists to forbid. The correlated subquery picks
+    /// the newest note by `created` then `id`, the same tiebreak
+    /// `annotations_page` orders by, so "newest" means one thing in the store.
+    fn prerequisites_with_outcome(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
+        let now = Timestamp::now();
+        // `TASK_COLS` and `map_task_row_at`, not a hand-picked `t.status`:
+        // status is a read surface and goes through the one derivation every
+        // other reader uses (D28, D29). Read raw, a task parked behind a future
+        // `wait` reports `pending` here while `list` and `show` call the same
+        // row `backlog`, and a row whose stored status is not one of the five
+        // prints the placeholder rather than its own text.
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {}, \
+                    (SELECT a.body FROM annotations a WHERE a.task_id = t.id \
+                     ORDER BY a.created DESC, a.id DESC LIMIT 1), \
+                    (SELECT a.created FROM annotations a WHERE a.task_id = t.id \
+                     ORDER BY a.created DESC, a.id DESC LIMIT 1) \
+             FROM dependencies d JOIN tasks t ON t.id = d.depends_on_id \
+             WHERE d.task_id = ?1 ORDER BY t.short_id",
+            TASK_COLS
+                .split(", ")
+                .map(|c| format!("t.{}", c.trim()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))?;
+        let ncols = TASK_COLS.split(',').count();
+        let rows = stmt.query_map(params![task_id], |r| {
+            let task = map_task_row_at(r, now)?;
+            let body: Option<String> = r.get(ncols)?;
+            let created: Option<String> = r.get(ncols + 1)?;
+            Ok(json!({
+                "short_id": task.short_id,
+                "title": task.title,
+                "status": task.status_text(),
+                // Null rather than omitted: a prerequisite nobody wrote on is
+                // still a prerequisite, and a reader must be able to tell
+                // "nothing was written" from "this row is shaped differently".
+                "annotation": match (body, created) {
+                    (Some(body), Some(created)) => json!({ "body": body, "created": created }),
+                    _ => Value::Null,
+                },
+            }))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Each task this one blocks — title and status, and deliberately no
+    /// annotation.
+    ///
+    /// An agent starting work needs what was decided upstream, not the context
+    /// of what it is about to release; `task.done`'s `unblocked` already
+    /// reports the forward direction at the moment that direction matters.
+    fn dependents_brief(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
+        let now = Timestamp::now();
+        // Through the same derivation as the prerequisites above, and for the
+        // same reason (D28, D29): status is a read surface.
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM dependencies d JOIN tasks t ON t.id = d.task_id \
+             WHERE d.depends_on_id = ?1 ORDER BY t.short_id",
+            TASK_COLS
+                .split(", ")
+                .map(|c| format!("t.{}", c.trim()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))?;
+        let rows = stmt.query_map(params![task_id], |r| {
+            let task = map_task_row_at(r, now)?;
+            Ok(json!({
+                "short_id": task.short_id,
+                "title": task.title,
+                "status": task.status_text(),
+            }))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// The memory half: `memory.search` run under an expression derived from
+    /// the task, scoped to the task's project.
+    ///
+    /// **Why this goes through `memory.search` in raw mode rather than beside
+    /// it.** There is one FTS path and one ranking in this store, and D136 says
+    /// so; `raw` is the existing, documented way for a caller to supply the
+    /// MATCH expression itself, which is exactly what is happening. So the
+    /// hits, their `rank`, the `snippet`, `total`/`has_more` and the `matched`
+    /// echo all come back the way every other search answers, and a change to
+    /// retrieval reaches the brief without anyone remembering to update it.
+    ///
+    /// **Why the expression is a disjunction.** A caller's query is a statement
+    /// of what they want, so `phrase_escape`'s implicit AND is right for it. A
+    /// DERIVED query is a bag of the task's own words, and ANDing five words of
+    /// a title answers `count: 0` on a store holding exactly the document the
+    /// agent needed — silently, because empty reads the same as a store with
+    /// nothing in it. The two are different questions and take different
+    /// operators.
+    ///
+    /// **Scope.** The task's project (D115), reported back so it is never
+    /// inferred. There is no fallback to an unscoped search when the scoped one
+    /// is empty: that would make the result depend on a branch the caller
+    /// cannot see, and D69's rule is that a result says what it answered about.
+    /// A caller who wants wider still has `memory.search`, unchanged.
+    fn derived_memory(
+        &self,
+        task: &Task,
+        tags: &[String],
+        limit: Option<u64>,
+    ) -> Result<Value, ApiError> {
+        let project = task.project.clone();
+        let Some(expr) = derive_match_expr(&task.title, tags, project.as_deref()) else {
+            // Nothing searchable: a title of function words, no tags, no
+            // project. An empty MATCH expression is an FTS5 syntax error, so
+            // this is recognised here rather than reported as one — and
+            // `matched` is null, which says no expression ran. That is a
+            // different answer from "an expression ran and matched nothing",
+            // and the two must not print the same.
+            return Ok(json!({
+                "count": 0,
+                "total": 0,
+                "has_more": false,
+                "hits": [],
+                "matched": Value::Null,
+                "project": project,
+            }));
+        };
+        let mut params = json!({ "query": expr, "raw": true });
+        if let Some(n) = limit {
+            params["limit"] = json!(n);
+        }
+        if let Some(p) = &project {
+            params["project"] = json!(p);
+            // A doc with no project is knowledge belonging to no ONE project —
+            // which is what `memory import` produces — so a brief that hid it
+            // would hide the ADRs its reader fed the store. This is not the
+            // fallback D136 refuses: that one is a second search whose
+            // existence depends on the first being empty and which the caller
+            // cannot see. This is ONE scope, applied always, meaning "this
+            // project's knowledge, and the knowledge belonging to no project".
+            params["include_unscoped"] = json!(true);
+        }
+        let mut out = self.memory_search(&params)?;
+        // Additive to `memory.search`'s own shape: which project the hits were
+        // scoped to. The search echoes the expression it ran; the brief chose
+        // the scope as well, so it echoes that too.
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("project".to_string(), json!(project));
+        }
+        Ok(out)
     }
 
     // ---- task.cancel ---------------------------------------------------------
@@ -2073,6 +2297,83 @@ impl Engine {
         }
         Ok(out)
     }
+}
+
+/// English function words dropped from a derived query (D136).
+///
+/// **This list cannot hide a document, and that is what makes it safe to be a
+/// list.** The derived expression is a disjunction, so a term dropped here
+/// still leaves every other term matching — the only documents it removes are
+/// ones whose sole connection to the task is a function word, which were never
+/// relevant. It is English-only, and the cost of that on a title in another
+/// language is noise in the ranking, never a missed hit: the same cost as
+/// having no list at all.
+///
+/// Kept deliberately short. A long stopword list starts making judgements
+/// about which content words matter, and bm25 already does that better — a
+/// term present in most documents contributes almost nothing to the score.
+/// This list exists only so that a title made entirely of them produces no
+/// query rather than one matching the whole store.
+const QUERY_STOPWORDS: [&str; 24] = [
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "in", "is", "it", "of",
+    "on", "or", "that", "the", "this", "to", "with", "we", "our",
+];
+
+/// The FTS5 MATCH expression for one task's brief, or `None` when the task
+/// carries no searchable word at all.
+///
+/// Terms are the title's words, its tags, and the project's last dotted
+/// segment — `work.tasqx` contributes `tasqx`, because the parent is an
+/// organising prefix shared by every sibling project and matches accordingly.
+/// Each is lowercased, stripped of surrounding punctuation, deduplicated, and
+/// quoted as its own phrase; the phrases are joined with `OR`.
+///
+/// Quoting is `phrase_escape`'s rule (a `"` inside a term is doubled), because
+/// the words are the caller's even though the expression is tasqx's: an
+/// unescaped quote ends a phrase early and leaves the whole expression
+/// unparseable, which would turn a brief into a `bad_request` on nothing worse
+/// than a quoted word in a title.
+pub(super) fn derive_match_expr(
+    title: &str,
+    tags: &[String],
+    project: Option<&str>,
+) -> Option<String> {
+    let mut terms: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut push = |word: &str| {
+        let w: String = word
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        // One character is never a useful disjunct and is often punctuation
+        // that survived the trim; a stopword is dropped for the reason the
+        // list above gives.
+        if w.chars().count() < 2 || QUERY_STOPWORDS.contains(&w.as_str()) {
+            return;
+        }
+        if seen.insert(w.clone()) {
+            terms.push(w);
+        }
+    };
+    for word in title.split_whitespace() {
+        push(word);
+    }
+    for tag in tags {
+        push(tag);
+    }
+    if let Some(p) = project {
+        // The leaf, not the whole dotted path: `work.tasqx` and `work.notes`
+        // share `work`, so the prefix is an organising word rather than a
+        // subject and matching on it would pull in every sibling.
+        push(p.rsplit('.').next().unwrap_or(p));
+    }
+    if terms.is_empty() {
+        return None;
+    }
+    let quoted: Vec<String> = terms
+        .iter()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    Some(quoted.join(" OR "))
 }
 
 #[cfg(test)]
@@ -2305,58 +2606,85 @@ mod tests {
     /// feature — the only way to drive a write from between two of our reads —
     /// is not compiled in.
     #[test]
-    fn task_get_opens_its_snapshot_before_the_first_read() {
+    fn every_detail_read_opens_its_snapshot_before_the_first_read() {
         let source = include_str!("task.rs");
         // Assembled rather than written out: `dispatch`'s accepted-key guard
         // splits this same source at every `fn NAME(`, so a marker spelled in
         // full would register here as a second definition of the handler.
-        let marker = format!("pub fn {}(", "task_get");
-        let marker = marker.as_str();
-        let start = source.find(marker).expect("task_get exists");
-        let rest = &source[start..];
-        // BOTH visibilities, unlike the `store_export` scan: the next item after
-        // `task_get` is `pub fn task_cancel`, so a terminator of `\n    fn `
-        // alone runs the slice on into every later handler — and one of those
-        // opens a write transaction, which this guard then reports as a defect
-        // in a function that never had one.
-        let end = ["\n    pub fn ", "\n    fn "]
-            .iter()
-            .filter_map(|t| rest[marker.len()..].find(t))
-            .min()
-            .map(|offset| marker.len() + offset)
-            .unwrap_or(rest.len());
-        // Comments out: this function's prose names the constructor it does not
-        // use, and a scanner that cannot tell code from a comment would read
-        // that as the defect it warns about.
-        let body: String = rest[..end]
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let body = body.as_str();
+        let body_of = |name: &str| -> String {
+            let marker = format!("fn {name}(");
+            let start = source
+                .find(&marker)
+                .unwrap_or_else(|| panic!("{name} exists"));
+            let rest = &source[start..];
+            // BOTH visibilities: the next item after one of these is often
+            // `pub fn`, so a terminator of `\n    fn ` alone runs the slice on
+            // into every later handler — and one of those opens a write
+            // transaction, which this guard would then report as a defect in a
+            // function that never had one.
+            let end = ["\n    pub fn ", "\n    fn "]
+                .iter()
+                .filter_map(|t| rest[marker.len()..].find(t))
+                .min()
+                .map(|offset| marker.len() + offset)
+                .unwrap_or(rest.len());
+            // Comments out: this function's prose names the constructor it does
+            // not use, and a scanner that cannot tell code from a comment would
+            // read that as the defect it warns about.
+            rest[..end]
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
 
-        let guard = body
-            .find("unchecked_transaction()")
-            .expect("task.get must open a transaction so its reads share one snapshot");
-        let first_read = body
-            .find("self.resolve_ref(p)")
-            .expect("task.get resolves the ref before anything else");
+        // D136 split the detail read in two: `task_get` opens the snapshot and
+        // delegates, `task_brief` opens one and then assembles this answer plus
+        // two more sets of reads under it. Both are entry points and both carry
+        // the obligation, so both are scanned — a guard that still named only
+        // `task_get` would have gone quiet the moment the second one appeared.
+        for (entry, first_read) in [
+            ("task_get", "self.task_detail_within_snapshot"),
+            ("task_brief", "self.resolve_ref(p)"),
+        ] {
+            let body = body_of(entry);
+            let guard = body.find("unchecked_transaction()").unwrap_or_else(|| {
+                panic!("{entry} must open a transaction so its reads share one snapshot")
+            });
+            let read = body
+                .find(first_read)
+                .unwrap_or_else(|| panic!("{entry} reaches the store via {first_read}"));
+            assert!(
+                guard < read,
+                "{entry}: the snapshot pins at the first read, so the transaction \
+                 must be opened before it"
+            );
+            assert!(
+                !body.contains("let _ = self.conn.unchecked_transaction"),
+                "{entry}: a `_` binding drops the transaction on the spot, making \
+                 the guard a no-op"
+            );
+        }
+
+        // The shared body relies on ITS CALLER's snapshot and must not open a
+        // second: `unchecked_transaction` is not reentrant, so one here is an
+        // `internal` error on every `task.brief` rather than a subtle one.
         assert!(
-            guard < first_read,
-            "the snapshot pins at the first read, so the transaction must be opened before it"
+            !body_of("task_detail_within_snapshot").contains("unchecked_transaction"),
+            "the shared detail body takes the caller's snapshot, never its own"
         );
-        assert!(
-            !body.contains("let _ = self.conn.unchecked_transaction"),
-            "a `_` binding drops the transaction on the spot, making the guard a no-op"
-        );
+
         // DEFERRED, never IMMEDIATE: a reader that takes the write lock blocks
         // every writer for its duration, which §2's "concurrent readers never
         // block" forbids.
-        for forbidden in ["begin_mutation", "Immediate"] {
-            assert!(
-                !body.contains(forbidden),
-                "task.get is a read and must not take the write lock (`{forbidden}`)"
-            );
+        for name in ["task_get", "task_brief", "task_detail_within_snapshot"] {
+            let body = body_of(name);
+            for forbidden in ["begin_mutation", "Immediate"] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{name} is a read and must not take the write lock (`{forbidden}`)"
+                );
+            }
         }
     }
 

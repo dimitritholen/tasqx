@@ -81,18 +81,19 @@ fn full_protocol_sequence() {
     }));
     assert!(note.is_none(), "notifications must not produce a response");
 
-    // 3. tools/list — all 25 tools present, each with an inputSchema.
+    // 3. tools/list — all 26 tools present, each with an inputSchema.
     let listed = server
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 25, "expected 25 tools");
+    assert_eq!(tools.len(), 26, "expected 26 tools");
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for expected in [
         "tasqx_list_tasks",
         "tasqx_get_task",
         "tasqx_summary",
         "tasqx_outcomes",
+        "tasqx_brief_task",
         "tasqx_list_projects",
         "tasqx_search_memory",
         "tasqx_add_task",
@@ -257,13 +258,14 @@ fn read_scope_tools_list_hides_write_tools() {
         .handle_message(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
         .expect("tools/list is a request");
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    // A read-only session advertises only the eight read tools — including all
+    // A read-only session advertises only the nine read tools — including all
     // three memory readers: a read-only agent may consult knowledge (D41), D71
     // made "consult" mean the document rather than an excerpt of it, and #133
     // added browsing to that same read-only set. D137's `tasqx_outcomes` joined
     // them for the same reason: an agent that cannot write should still be able
-    // to see its own record.
-    assert_eq!(tools.len(), 8, "read scope should list only the read tools");
+    // to see its own record, and D136's `tasqx_brief_task` for the reason
+    // beside it — orienting is a read.
+    assert_eq!(tools.len(), 9, "read scope should list only the read tools");
     for t in tools {
         assert_eq!(
             t["annotations"]["readOnlyHint"], true,

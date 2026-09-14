@@ -3,6 +3,32 @@
 The lifecycle: start, stop, done — with cancel, reopen, pick and undo around
 it. Nothing here destroys data; every change is recorded and reversible.
 
+## tasqx brief
+
+Everything you need before starting a task, in one read.
+
+```console
+tasqx brief 42
+tasqx brief 42 --memory-limit 3
+```
+
+You get the task's own card, then two things `tasqx show` never carried:
+
+- **Depends on** — each prerequisite with **what it concluded**: its newest
+  annotation, printed under it. That is usually the single most useful thing to
+  read before picking work up, and it used to cost one `tasqx show` per
+  prerequisite.
+- **From memory** — documents and past annotations relevant to this task, found
+  under a query tasqx builds from the task's own title, tags and project. You
+  do not supply search terms, which matters because a guessed term that finds
+  nothing looks exactly like a store with nothing in it.
+
+Memory is scoped to the task's project and stays scoped when that finds
+nothing — it will not quietly search everything instead. When you want wider,
+[`tasqx memory search`](Memory.md) is the read for it.
+
+`tasqx show` is still the right command when you only want the task.
+
 ## tasqx start
 
 *Alias: `s`*

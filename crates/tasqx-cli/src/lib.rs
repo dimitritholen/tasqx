@@ -997,6 +997,10 @@ fn execute(cli: Cli) -> Exit {
             self_report,
         }) => run_done(&mut backend, &ctx, r#ref, &correlation, &self_report),
         Some(Command::Show { r#ref }) => run_show(&mut backend, &ctx, r#ref),
+        Some(Command::Brief {
+            r#ref,
+            memory_limit,
+        }) => run_brief(&mut backend, &ctx, r#ref, memory_limit),
         Some(Command::Cancel { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.cancel", r#ref),
         Some(Command::Reopen { r#ref }) => run_simple_ref(&mut backend, &ctx, "task.reopen", r#ref),
         Some(Command::Undo) => run_undo(&mut backend, &ctx),

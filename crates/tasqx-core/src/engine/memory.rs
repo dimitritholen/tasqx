@@ -259,12 +259,14 @@ impl Engine {
         // Checked, not `as i64`: a value above i64::MAX wrapped negative, and
         // SQLite reads a negative LIMIT as UNLIMITED — the exact opposite of
         // the bound the caller asked for (review finding).
-        let limit = i64::try_from(opt_u64(p, "limit")?.unwrap_or(10)).map_err(|_| {
-            ApiError::bad_request(format!(
-                "`limit` must be at most {}, or omitted for the default",
-                i64::MAX
-            ))
-        })?;
+        let limit =
+            i64::try_from(opt_u64(p, "limit")?.unwrap_or(crate::engine::MEMORY_SEARCH_LIMIT))
+                .map_err(|_| {
+                    ApiError::bad_request(format!(
+                        "`limit` must be at most {}, or omitted for the default",
+                        i64::MAX
+                    ))
+                })?;
         let scope = opt_str(p, "scope")?.unwrap_or_else(|| MEMORY_SCOPES[0].to_string());
         if !MEMORY_SCOPES.contains(&scope.as_str()) {
             return Err(ApiError::bad_request(format!(
@@ -273,6 +275,22 @@ impl Engine {
             )));
         }
         let project = opt_str_nonempty(p, "project")?;
+        // D136: a document with no project is GLOBAL knowledge — `tasqx memory
+        // import docs/` sets no project on anything it imports, so a strict
+        // project scope hides every ADR a reader fed the store. Opt-in and
+        // additive, because D115's strict scope stays the right answer when a
+        // caller is asking about one project's own notes.
+        let include_unscoped = opt_bool(p, "include_unscoped")?.unwrap_or(false);
+        if include_unscoped && project.is_none() {
+            // D33: a value that changes nothing is refused rather than
+            // accepted and ignored. With no project there is nothing to widen
+            // FROM — an unscoped search already returns every document — and a
+            // caller who sent this believes a scope is being applied.
+            return Err(ApiError::bad_request(
+                "`include_unscoped` widens a `project` scope to documents that have no \
+                 project, so it needs a `project` to widen from",
+            ));
+        }
         // Echoed on the result (D69). Every word of a plain query becomes a
         // required quoted phrase, so a thirteen-word question is thirteen AND
         // terms and comes back `count: 0` — byte-identical to the answer for a
@@ -305,10 +323,19 @@ impl Engine {
         // it from their task" split `memory_add`'s doc column and the
         // pre-existing `task:#` source already draw.
         let (docs_arm, ann_arm) = if project.is_some() {
-            (
-                format!("{DOCS_ARM} AND d.project = :project"),
-                format!("{ANN_ARM} AND t.project = :project"),
-            )
+            // `IS NULL`, not `IS NOT :project`: the widening admits documents
+            // belonging to NO project, never documents belonging to another
+            // one. An annotation inherits its task's project — the same split
+            // `memory_add`'s doc column and the `task:#` source already draw.
+            let (d, a) = if include_unscoped {
+                (
+                    "AND (d.project = :project OR d.project IS NULL)",
+                    "AND (t.project = :project OR t.project IS NULL)",
+                )
+            } else {
+                ("AND d.project = :project", "AND t.project = :project")
+            };
+            (format!("{DOCS_ARM} {d}"), format!("{ANN_ARM} {a}"))
         } else {
             (DOCS_ARM.to_string(), ANN_ARM.to_string())
         };

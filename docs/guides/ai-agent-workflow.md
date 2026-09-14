@@ -63,12 +63,17 @@ The tool surface is designed around one loop — work the backlog one task at a 
 
 1. `tasqx_list_tasks` with `"project:myapp.checkout"` — see the feature, blocked
    tasks marked.
-2. `tasqx_get_task` — read the annotations: acceptance criteria, links, context.
-   The answer is two content blocks: tasqx-rendered markdown first, then the raw
-   JSON. The markdown is the intended reading — layout is tasqx's job, so the
-   agent uses it as-is rather than recomposing the detail from JSON — and the
-   `detail.time_format` config key (`iso`, `relative` or `both`) decides how it
-   writes timestamps.
+2. `tasqx_brief_task` — everything needed before starting, in one call: the task
+   and its annotations, each prerequisite with **what that task concluded**, what
+   this one blocks, and relevant memory under a query tasqx derives from the
+   task's own title, tags and project. The answer is two content blocks:
+   tasqx-rendered markdown first, then the raw JSON. The markdown is the intended
+   reading — layout is tasqx's job, so the agent uses it as-is rather than
+   recomposing the detail from JSON — and the `detail.time_format` config key
+   (`iso`, `relative` or `both`) decides how it writes timestamps. Pass
+   `include_json: false` when the agent only needs to read it.
+
+   `tasqx_get_task` is still the right call when you only want the task itself.
 3. `tasqx_start_timer`, do the work, `tasqx_complete_task` — the completion result
    names any tasks it unblocked, which is the agent's cue for what to pick up next.
    Pass the turn's token counts on completion (`input_tokens`, `output_tokens`,
@@ -85,16 +90,22 @@ with `tasqx_add_task`, wire the order, then work the chain.
 ## Give the agent memory
 
 `tasqx memory import docs/` turns a directory of markdown docs — ADRs, runbooks,
-company patterns — into a searchable knowledge store, and `tasqx_search_memory`
-lets the agent consult it mid-task (it works even read-only, deliberately). The
+company patterns — into a searchable knowledge store. `tasqx_brief_task` consults
+it for you at the moment you pick a task up; `tasqx_search_memory` is for
+consulting it mid-task (both work read-only, deliberately). Imported docs carry
+no project, which makes them *global*: a brief scoped to one project still
+surfaces them, and only another project's notes are held back. The
 import is not recursive: a directory means its own `*.md` files, so run it once
 per folder that holds docs rather than pointing it at the root of a tree. Task
 annotations are searchable through the same tool, so decisions written down
 during one task resurface during the next:
 
-1. `tasqx_search_memory` with `"payment idempotency"` before touching payment code.
+1. `tasqx_brief_task` before touching payment code — the query is derived from the
+   task, so nothing is guessed.
 2. Hits come back bm25-ranked with snippets — docs and past annotations alike.
-3. After the work, `tasqx_add_memory` stores what the next session should know.
+3. `tasqx_search_memory` with `"payment idempotency"` for anything the brief's
+   scope did not reach.
+4. After the work, `tasqx_add_memory` stores what the next session should know.
 
 ## Read how the last run went
 

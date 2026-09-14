@@ -119,6 +119,7 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         // easiest place to emit something that is not JSON at all.
         c("agenda", &["agenda"]),
         c("show", &["show", "1"]),
+        c("brief", &["brief", "1"]),
         c("modify", &["modify", "1", "--priority", "high"]),
         c("annotate", &["annotate", "1", "a note"]),
         // `unannotate` needs a real annotation id, which is a UUID minted at

@@ -100,6 +100,15 @@ pub const SUMMARY_METRICS: [&str; 8] = [
 /// destroys the split that makes a figure actionable.
 pub const OUTCOME_METRICS: [&str; 5] = ["rework", "calibration", "cost", "silent", "abandonment"];
 
+/// `memory.search`'s default page when the caller names no `limit`.
+///
+/// A named constant because three places need the same number and one of them
+/// is a different crate's concern: the engine applies it, and the MCP
+/// transport's D136 brief-fitting uses it as the ceiling it bisects down from.
+/// A transport bisecting from a hardcoded 10 while the engine served 20 would
+/// silently cap every brief at half the hits.
+pub const MEMORY_SEARCH_LIMIT: u64 = 10;
+
 /// The keys `task.list` can sort by. A `-` prefix on any of them sorts
 /// descending; the default when `sort` is omitted is `-urgency`.
 ///

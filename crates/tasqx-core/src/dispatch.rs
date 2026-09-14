@@ -70,6 +70,10 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
         &["ref", "annotations_limit", "annotations_offset", "explain"],
         false,
     ),
+    // D136. No `annotations_limit`: a brief is what is read BEFORE starting,
+    // so the task's own history is the part least worth truncating, and the
+    // transport's byte budget is where an oversized answer is cut (D66).
+    ("task.brief", &["ref", "memory_limit"], false),
     // task.start/task.done also take the #12 correlation params: they are
     // stored in the start/done event payloads, the durable per-occurrence
     // record the async token-attribution engine reads later.
@@ -132,7 +136,14 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("memory.add", &["title", "body", "source", "project"], false),
     (
         "memory.search",
-        &["query", "limit", "scope", "raw", "project"],
+        &[
+            "query",
+            "limit",
+            "scope",
+            "raw",
+            "project",
+            "include_unscoped",
+        ],
         false,
     ),
     ("memory.get", &["id"], false),
@@ -253,6 +264,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "task.done" => engine.task_done(params),
         "task.modify" => engine.task_modify(params),
         "task.get" => engine.task_get(params),
+        "task.brief" => engine.task_brief(params),
         "task.cancel" => engine.task_cancel(params),
         "task.reopen" => engine.task_reopen(params),
         "tag.add" => engine.tag_add(params),

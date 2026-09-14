@@ -613,6 +613,26 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Projects,
     },
     CmdDoc {
+        verb: "brief",
+        aliases: &[],
+        method: "task.brief",
+        summary: "Everything needed before starting a task, in one read.",
+        usage: "tasqx brief <ref> [--memory-limit N]",
+        examples: &[
+            ex("tasqx brief 1"),
+            ex("tasqx brief 1 --memory-limit 3"),
+        ],
+        notes: &[
+            "The task, what each of its prerequisites concluded, what it blocks, and memory \
+             found under a query tasqx derives from the task's own title, tags and project — \
+             so nobody has to guess search terms.",
+            "Memory is scoped to the task's project and does not widen when that finds \
+             nothing: `tasqx memory search` is the wider read.",
+        ],
+        see_also: &["show", "next", "memory"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
         verb: "report",
         aliases: &[],
         method: "report.summary + report.outcomes",

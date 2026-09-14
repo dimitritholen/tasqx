@@ -547,6 +547,16 @@ pub(super) enum Command {
         #[arg(add = crate::complete::candidates::task_ids())]
         r#ref: String,
     },
+    /// Everything needed before starting a task, in one read (maps to task.brief).
+    #[command(after_help = crate::cmddoc::after_help("brief"))]
+    Brief {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// How many memory hits to show.
+        #[arg(long, value_name = "N")]
+        memory_limit: Option<u64>,
+    },
     /// Cancel a task (maps to task.cancel).
     #[command(
         alias = "delete",

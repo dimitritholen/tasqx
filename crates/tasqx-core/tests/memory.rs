@@ -1184,3 +1184,71 @@ fn memory_update_reindexes_a_newly_added_frontmatter_block_without_rewriting_it(
         "a frontmatter delimiter leaked into the reindexed snippet: {snippet:?}"
     );
 }
+
+/// `include_unscoped` widens a project scope to documents belonging to NO
+/// project — never to documents belonging to ANOTHER one (D136).
+#[test]
+fn include_unscoped_admits_global_docs_and_still_excludes_other_projects() {
+    let e = engine();
+    for (title, project) in [
+        ("alpha note", Some("alpha")),
+        ("beta note", Some("beta")),
+        ("global note", None),
+    ] {
+        let mut params = json!({ "title": title, "body": "retries are bounded and logged" });
+        if let Some(p) = project {
+            params["project"] = json!(p);
+        }
+        call(&e, "memory.add", params).expect("doc");
+    }
+
+    let titles = |v: &Value| -> Vec<String> {
+        let mut t: Vec<String> = v["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["title"].as_str().unwrap().to_string())
+            .collect();
+        t.sort();
+        t
+    };
+
+    let strict = call(
+        &e,
+        "memory.search",
+        json!({ "query": "retries", "project": "alpha" }),
+    )
+    .expect("strict");
+    assert_eq!(titles(&strict), ["alpha note"], "D115's scope is unchanged");
+
+    let widened = call(
+        &e,
+        "memory.search",
+        json!({ "query": "retries", "project": "alpha", "include_unscoped": true }),
+    )
+    .expect("widened");
+    assert_eq!(
+        titles(&widened),
+        ["alpha note", "global note"],
+        "the global doc joins; beta's does not"
+    );
+}
+
+/// With no `project` there is nothing to widen from, and a caller who sent
+/// this believes a scope is being applied (D33).
+#[test]
+fn include_unscoped_without_a_project_is_refused() {
+    let e = engine();
+    let err = call(
+        &e,
+        "memory.search",
+        json!({ "query": "retries", "include_unscoped": true }),
+    )
+    .expect_err("a value that changes nothing is refused, not ignored");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(
+        err.message.contains("project"),
+        "the refusal names what is missing: {}",
+        err.message
+    );
+}

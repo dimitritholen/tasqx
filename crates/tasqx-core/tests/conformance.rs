@@ -827,6 +827,52 @@ const SUMMARY_GROUP_ROW: &[Field] = &[
     req("overdue", Ty::Int),
 ];
 
+/// D136's neighbourhood rows. `depends_on` carries the prerequisite's newest
+/// annotation — nullable, because a prerequisite nobody wrote on is still a
+/// prerequisite — and `blocks` deliberately does not: an agent starting work
+/// needs what was decided upstream, and `task.done`'s `unblocked` already
+/// reports the forward direction when that direction matters.
+const BRIEF_PREREQUISITE: &[Field] = &[
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    req("status", Ty::Str),
+    nul("annotation", Ty::Object),
+];
+
+const BRIEF_DEPENDENT: &[Field] = &[
+    req("short_id", Ty::Int),
+    req("title", Ty::Str),
+    req("status", Ty::Str),
+];
+
+const BRIEF_NEIGHBOURHOOD: &[Field] = &[
+    req_of("depends_on", Ty::Array, &[BRIEF_PREREQUISITE]),
+    req_of("blocks", Ty::Array, &[BRIEF_DEPENDENT]),
+];
+
+/// `memory.search`'s own result, plus the project the brief scoped it to.
+/// `matched` is nullable HERE and not there: a task with no searchable word
+/// runs no expression at all, and "none ran" is a different answer from "one
+/// ran and matched nothing".
+const BRIEF_MEMORY: &[Field] = &[
+    req("count", Ty::Int),
+    req("total", Ty::Int),
+    req("has_more", Ty::Bool),
+    req("hits", Ty::Array),
+    nul("matched", Ty::Str),
+    nul("project", Ty::Str),
+];
+
+const R_TASK_BRIEF: Shape = &[&[
+    // The task half is `task.get`'s whole result, so it is frozen by that
+    // method's own case rather than restated here — restating it would be a
+    // second copy to keep in step, and the one thing D136 promises about this
+    // key is that it IS the other method's answer.
+    req("task", Ty::Object),
+    req_of("neighbourhood", Ty::Object, &[BRIEF_NEIGHBOURHOOD]),
+    req_of("memory", Ty::Object, &[BRIEF_MEMORY]),
+]];
+
 /// D137's per-metric sub-objects. Each is frozen separately because each is
 /// reachable on its own through `metrics`, and because the rule the whole
 /// report exists to keep — a rate never travels without the `n` it was
@@ -1552,6 +1598,32 @@ fn cases() -> Vec<Case> {
                 })
             },
             R_REPORT_SUMMARY,
+        ),
+        case(
+            "task.brief",
+            "a task with an annotated prerequisite, a dependent, and a memory doc it matches",
+            |e| {
+                rich_task(e);
+                plain_task(e);
+                // #1 briefed: #2 is its prerequisite and #3 is what it
+                // releases, so BOTH neighbourhood arrays carry a row and both
+                // frozen row shapes are actually checked.
+                e.task_add(&json!({ "title": "waits on the brief's subject" }))
+                    .expect("dependent");
+                e.dependency_add(&json!({ "ref": 1, "depends_on": 2 }))
+                    .expect("dependency");
+                e.dependency_add(&json!({ "ref": 3, "depends_on": 1 }))
+                    .expect("dependent edge");
+                e.annotation_add(&json!({ "ref": 2, "body": "decided: the envelope is frozen" }))
+                    .expect("the prerequisite's conclusion");
+                e.memory_add(&json!({
+                    "title": "Envelope rules",
+                    "body": "Every request carries a tasqx version and a method."
+                }))
+                .expect("doc");
+                json!({ "ref": 1 })
+            },
+            R_TASK_BRIEF,
         ),
         case(
             "report.outcomes",

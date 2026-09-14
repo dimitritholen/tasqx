@@ -256,6 +256,105 @@ fn annotations(out: &mut String, result: &Value, opts: &DetailOpts) {
 /// One table row. Central so every row is spaced identically — a golden test
 /// over the whole output turns any drift here into a failure, which is only
 /// useful if there is one place to fix.
+/// Render one `task.brief` result as markdown (D136).
+///
+/// The task half is [`task_detail`] unchanged — one task reads the same
+/// whether it arrived through `task.get` or through a brief, which is D49's
+/// whole point and would be undone by a second layout for the same object.
+/// What follows it is the part a detail view has never carried: what the
+/// prerequisites decided, and what the store already knows about this subject.
+///
+/// Pure, like everything else here. A section with nothing in it is omitted
+/// rather than printed empty: the brief is read before work starts, and a
+/// heading over "none" spends the reader's attention to say nothing.
+pub fn task_brief(result: &Value, opts: &DetailOpts) -> String {
+    let mut out = task_detail(result.get("task").unwrap_or(result), opts);
+
+    let n = result.get("neighbourhood");
+    let list = |key: &str| -> &[Value] {
+        n.and_then(|v| v.get(key))
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    };
+
+    let depends_on = list("depends_on");
+    if !depends_on.is_empty() {
+        out.push_str("\n### Depends on\n\n");
+        for d in depends_on {
+            let sid = d.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+            out.push_str(&format!(
+                "- **#{sid}** {} · {}\n",
+                str_of(d, "title"),
+                str_of(d, "status")
+            ));
+            // The prerequisite's own last word, indented under it. This is the
+            // field the section exists for: what the upstream task concluded
+            // is what a reader needs before starting, and it used to cost a
+            // second `task.get` that nobody made.
+            if let Some(a) = d.get("annotation").filter(|a| !a.is_null()) {
+                for line in str_of(a, "body").lines() {
+                    out.push_str(&format!("  > {line}\n"));
+                }
+            }
+        }
+    }
+
+    let blocks = list("blocks");
+    if !blocks.is_empty() {
+        out.push_str("\n### Blocks\n\n");
+        for b in blocks {
+            let sid = b.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+            out.push_str(&format!(
+                "- **#{sid}** {} · {}\n",
+                str_of(b, "title"),
+                str_of(b, "status")
+            ));
+        }
+    }
+
+    let hits = result
+        .get("memory")
+        .and_then(|m| m.get("hits"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if !hits.is_empty() {
+        out.push_str("\n### From memory\n\n");
+        for h in hits {
+            let source = h
+                .get("source")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(" · `{s}`"))
+                .unwrap_or_default();
+            out.push_str(&format!("- **{}**{source}\n", str_of(h, "title")));
+            let snippet = str_of(h, "snippet");
+            if !snippet.is_empty() {
+                out.push_str(&format!("  {snippet}\n"));
+            }
+        }
+        // Said in the view, not left to the JSON block a caller may have
+        // declined: a reader who cannot tell a bounded page from the whole
+        // answer will read the page as the whole answer (D70's rule, one
+        // surface over).
+        let (count, total) = (
+            hits.len() as i64,
+            result
+                .get("memory")
+                .and_then(|m| m.get("total"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+        );
+        if total > count {
+            out.push_str(&format!(
+                "\n{count} of {total} matches shown — `tasqx_search_memory` reaches the rest.\n"
+            ));
+        }
+    }
+    out
+}
+
 fn row(out: &mut String, label: &str, value: &str) {
     out.push_str(&format!("| {label} | {value} |\n"));
 }

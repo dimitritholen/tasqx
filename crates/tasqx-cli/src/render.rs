@@ -2046,6 +2046,117 @@ pub fn task_detail(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     out
 }
 
+/// `tasqx brief` (D136): `show`'s card, then what the prerequisites concluded,
+/// then what the store already knows about this subject.
+///
+/// The task half is [`task_detail`] unchanged, for D49's reason one surface
+/// over: one task reads the same however it was asked for, and a second layout
+/// for the same object is how two screens start disagreeing about one row.
+/// Each section is omitted when empty rather than printed with "none" under it
+/// — house style rule 12, and a brief is read before work starts, so a heading
+/// that says nothing costs attention at the worst moment.
+pub fn task_brief(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
+    let mut out = task_detail(ctx, result.get("task").unwrap_or(result), now);
+
+    let list = |key: &str| -> Vec<Value> {
+        result
+            .get("neighbourhood")
+            .and_then(|v| v.get(key))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let heading = |out: &mut String, text: &str| {
+        out.push('\n');
+        out.push_str(&ctx.paint("table.label", text));
+        out.push('\n');
+    };
+    let ref_line = |v: &Value| {
+        let sid = v.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+        format!(
+            "  {}  {}  {}",
+            ctx.paint("accent", &format!("#{sid}")),
+            san(&s(v, "title")),
+            ctx.paint("muted", &san(&s(v, "status")))
+        )
+    };
+
+    let depends_on = list("depends_on");
+    if !depends_on.is_empty() {
+        heading(&mut out, "DEPENDS ON");
+        for d in &depends_on {
+            out.push_str(&ref_line(d));
+            out.push('\n');
+            // The prerequisite's last word, wrapped to the terminal under it.
+            // This is the row the section exists for: what the upstream task
+            // concluded is what a reader needs before starting, and reading it
+            // used to cost a second `tasqx show`.
+            if let Some(a) = d.get("annotation").filter(|a| !a.is_null()) {
+                for line in wrap_words(&san(&s(a, "body")), ctx.cols.saturating_sub(6).max(20)) {
+                    out.push_str(&format!("    {}\n", ctx.paint("muted", &line)));
+                }
+            }
+        }
+    }
+
+    let blocks = list("blocks");
+    if !blocks.is_empty() {
+        heading(&mut out, "BLOCKS");
+        for b in &blocks {
+            out.push_str(&ref_line(b));
+            out.push('\n');
+        }
+    }
+
+    let hits = result
+        .get("memory")
+        .and_then(|m| m.get("hits"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !hits.is_empty() {
+        heading(&mut out, "FROM MEMORY");
+        for h in &hits {
+            let source = s(h, "source");
+            out.push_str(&format!(
+                "  {}{}\n",
+                san(&s(h, "title")),
+                if source.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", ctx.paint("muted", &san(&source)))
+                }
+            ));
+            let snippet = san(&s(h, "snippet"));
+            if !snippet.is_empty() {
+                for line in wrap_words(&snippet, ctx.cols.saturating_sub(6).max(20)) {
+                    out.push_str(&format!("    {}\n", ctx.paint("muted", &line)));
+                }
+            }
+        }
+        // D70's rule one surface over: a bounded page that does not say it is
+        // bounded is read as the whole answer.
+        let total = result
+            .get("memory")
+            .and_then(|m| m.get("total"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if total > hits.len() as i64 {
+            out.push('\n');
+            out.push_str(&prose(
+                ctx,
+                Some("muted"),
+                &format!(
+                    "{} of {total} matches shown — tasqx memory search reaches the rest.",
+                    hits.len()
+                ),
+                "",
+            ));
+        }
+    }
+    out
+}
+
 /// An instant as a detail view spells it (D122): the stored text under
 /// `detail.time_format = iso`, and otherwise the calendar day `list` would
 /// print (`Wed 16 Sep`, `today 17:00`, `3d ago`), followed by the elapsed
@@ -5567,6 +5678,76 @@ mod tests {
         let out = report(&ctx, &groups(2), "project", None);
         assert!(out.contains("2 cancelled tasks excluded"), "{out}");
         assert!(!out.contains("task(s)"), "{out}");
+    }
+
+    /// The brief's reason for existing, on the screen: the prerequisite's own
+    /// last word, under the prerequisite.
+    #[test]
+    fn a_brief_prints_what_each_prerequisite_concluded() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "task": { "short_id": 2, "title": "Audit the retry path", "status": "pending" },
+            "neighbourhood": {
+                "depends_on": [{
+                    "short_id": 1, "title": "Freeze the envelope", "status": "done",
+                    "annotation": { "body": "the key is the request id, never the order id",
+                                    "created": "2026-09-01T00:00:00Z" }
+                }],
+                "blocks": [{ "short_id": 3, "title": "Ship the notes", "status": "pending" }],
+            },
+            "memory": { "hits": [
+                { "title": "Idempotency", "source": "docs/adr/014.md",
+                  "snippet": "retries must not double-charge" }
+            ], "total": 1 },
+        });
+        let out = task_brief(&ctx, &result, Timestamp::now());
+        assert!(out.contains("DEPENDS ON"), "{out}");
+        assert!(
+            out.contains("the key is the request id, never the order id"),
+            "the prerequisite's conclusion is the row this section exists for: {out}"
+        );
+        assert!(
+            out.contains("BLOCKS") && out.contains("Ship the notes"),
+            "{out}"
+        );
+        assert!(
+            out.contains("FROM MEMORY") && out.contains("Idempotency"),
+            "{out}"
+        );
+    }
+
+    /// An empty section is omitted, not printed with nothing under it: a brief
+    /// is read before work starts and a heading that says nothing costs
+    /// attention at the worst moment (house style rule 12).
+    #[test]
+    fn a_brief_with_no_neighbours_prints_no_empty_headings() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "task": { "short_id": 1, "title": "alone", "status": "pending" },
+            "neighbourhood": { "depends_on": [], "blocks": [] },
+            "memory": { "hits": [], "total": 0 },
+        });
+        let out = task_brief(&ctx, &result, Timestamp::now());
+        for heading in ["DEPENDS ON", "BLOCKS", "FROM MEMORY"] {
+            assert!(
+                !out.contains(heading),
+                "{heading} printed over nothing: {out}"
+            );
+        }
+    }
+
+    /// D70's rule one surface over: a bounded page that does not say it is
+    /// bounded is read as the whole answer.
+    #[test]
+    fn a_brief_says_when_it_withheld_memory_hits() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let result = json!({
+            "task": { "short_id": 1, "title": "t", "status": "pending" },
+            "neighbourhood": { "depends_on": [], "blocks": [] },
+            "memory": { "hits": [{ "title": "one", "snippet": "s" }], "total": 9 },
+        });
+        let out = task_brief(&ctx, &result, Timestamp::now());
+        assert!(out.contains("1 of 9 matches shown"), "{out}");
     }
 
     /// D137's denominator rule, made typographic. `3/12` and `3/3` are the same
