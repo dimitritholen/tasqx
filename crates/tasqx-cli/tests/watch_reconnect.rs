@@ -60,6 +60,7 @@ fn watch_reconnects_after_its_daemon_dies_instead_of_exiting() {
     let mut watch = Command::new(env!("CARGO_BIN_EXE_tasqx"))
         .args(["watch", "@working"])
         .env("TASQX_SOCK", &sock)
+        .env("TASQX_DB", &db)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -94,6 +95,9 @@ fn watch_reconnects_after_its_daemon_dies_instead_of_exiting() {
     // rather than leaving it half-open.
     let _ = daemon1.kill();
     let _ = daemon1.wait();
+    // A SIGKILLed daemon leaves its socket file behind, so wait_for_socket
+    // would otherwise return before daemon 2 is actually listening.
+    let _ = std::fs::remove_file(&sock);
 
     // While nothing is listening, the fixed `watch` must still be running —
     // the pre-fix behaviour was `exit(1)` the instant the read failed.
@@ -132,6 +136,10 @@ fn watch_reconnects_after_its_daemon_dies_instead_of_exiting() {
     {
         let adder = Command::new(env!("CARGO_BIN_EXE_tasqx"))
             .env("TASQX_SOCK", &sock)
+            // The in-process fallback when the connect fails is silent, so
+            // TASQX_DB is the belt to TASQX_SOCK's braces: even on fallback
+            // this must open the test's own temp db, never the real store.
+            .env("TASQX_DB", &db)
             .args(["add", "reconnect proof"])
             .output()
             .expect("add through the reconnected daemon");
