@@ -50,6 +50,9 @@ Safety properties worth knowing:
 - The one permanent delete (`remove_memory`, for retracting a wrongly stored
   document) says so in its own description, so the host's confirmation gate
   applies.
+- **`initialize` answers with `instructions`,** a scope-aware workflow the
+  host may inject into the agent's system prompt; under read-only scope it
+  names no write tool.
 
 For the full workflow — what deserves a backlog entry, searching memory before
 starting, annotating before completing — see the

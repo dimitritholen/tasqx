@@ -1,12 +1,14 @@
 # Giving an agent memory in any client
 
-The MCP server tells an agent what it *can* call and nothing tells it *when*. The
-`initialize` result carries no instructions field, and the `tasqx_search_memory`
-description says what the tool searches, not when to reach for it — so a fresh install
-has no in-band nudge toward memory at all. What makes memory actually get used today is
-a client-specific instructions file, and those do not travel between clients.
+The `initialize` result now carries an `instructions` field: a condensed form of the
+block below, so a host that surfaces server instructions — Claude Code and others do —
+gets the nudge with no setup at all. The paste block below still earns its place for
+three reasons: hosts that ignore `instructions`, or truncate it; the fuller version here,
+which carries the reasons behind each rule and not just the rule; and the placeholders
+you tune to your setup — the import directory, and cutting the write half for a
+read-only server.
 
-The block below is that nudge, written so it works anywhere the tools are: `CLAUDE.md`,
+The block below is the full nudge, written so it works anywhere the tools are: `CLAUDE.md`,
 `AGENTS.md`, `.cursorrules` or `.cursor/rules/`, a Zed rules file, a Codex instructions
 file, or the system prompt of a bare MCP host. It covers the backlog as well as memory,
 because the two are one store: an annotation written while working a task is what the

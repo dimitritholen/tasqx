@@ -1366,6 +1366,70 @@ pub fn tool_roster() -> Vec<(&'static str, bool)> {
     tool_specs().iter().map(|s| (s.name, s.write)).collect()
 }
 
+/// The server-level workflow a host may inject into the agent's system prompt,
+/// scope-aware (D141).
+///
+/// `tools/list` tells a host what an agent CAN call and nothing in the protocol
+/// tells it WHEN: a tool description is read only once a caller has already
+/// decided to call that tool, which is too late for "search before you decide".
+/// `initialize`'s `instructions` is the one in-band place a cross-tool loop
+/// fits, and until it carried one the loop had to be pasted into a per-client
+/// instructions file that does not travel between clients.
+///
+/// The read variant is not the write text shortened. Under [`Scope::Read`] the
+/// write tools are absent from `tools/list` entirely, so naming one here would
+/// aim the agent at a tool it will be refused — and the refusal would be the
+/// first it hears of the scope. It states the scope instead, and says what to
+/// do with what it cannot store. Shared paragraphs are one literal each so the
+/// two variants cannot drift into disagreeing about the same advice.
+pub fn instructions(scope: Scope) -> String {
+    const INTRO: &str = "tasqx is this workspace's backlog and long-term memory: one searchable \
+        index over imported knowledge docs and the annotations written on tasks. Use it instead \
+        of an in-conversation todo list or a memory file.";
+
+    const SEARCH: &str = "Search first. Call tasqx_search_memory before resuming work, choosing \
+        between designs, touching a convention-bearing file, or asserting how this project does \
+        something. Query with two or three keywords, never a sentence: every word is required, \
+        and `matched` shows what ran. Try a second wording before concluding nothing is there. A \
+        hit is a snippet: read a doc whole with tasqx_get_memory, and an annotation (source \
+        `task:#<id>`) with tasqx_get_task.";
+
+    const TRACK: &str = "Track multi-step work as tasks. Anything with more than one step, or \
+        that could outlive this session, goes in the backlog: tasqx_list_projects before \
+        tasqx_create_project, tasqx_add_task per piece, tasqx_add_dependency to order them, \
+        tasqx_add_check for acceptance criteria. Pick work with tasqx_list_tasks and the filter \
+        `@working`; blocked and waiting tasks are hidden there by design. Per task: \
+        tasqx_brief_task, then tasqx_start_timer, do the work, tasqx_annotate_task with what was \
+        decided and delivered, and tasqx_complete_task naming in checks_passed what you proved. \
+        Obsolete work is cancelled with tasqx_cancel_task, never left open.";
+
+    const WRITE_BACK: &str = "Write as you go. Only annotation bodies are indexed, never titles, \
+        so name files and symbols in them. Call tasqx_add_memory when a decision settles or you \
+        learn a convention written down nowhere: the ruling in the first line, the why under it, \
+        the path in source. A wrong entry is removed with tasqx_remove_memory (permanent), not \
+        corrected beside.";
+
+    const READ_ONLY: &str = "This server is read-only: no write tool is listed. Say so once, keep \
+        searching, and put what you would have stored (decisions and their reasons, outcomes, \
+        conventions) into your reply rather than dropping it. The operator grants writes by \
+        relaunching with `tasqx mcp serve --scope write`.";
+
+    const SEED: &str = "An empty store is a store nobody seeded. If searches keep returning \
+        nothing, ask the user to run `tasqx memory import <docs-dir>` once per markdown folder; \
+        no MCP tool imports. The CLI is always `tasqx <verb>`: a bare `tasqx` opens a full-screen \
+        dashboard and hangs a tool call.";
+
+    let mut parts = vec![INTRO, SEARCH];
+    if scope.allows_write() {
+        parts.push(TRACK);
+        parts.push(WRITE_BACK);
+    } else {
+        parts.push(READ_ONLY);
+    }
+    parts.push(SEED);
+    parts.join("\n\n")
+}
+
 /// The methods deliberately left off the tool surface, as `(method, why)`.
 ///
 /// Public for the same reason [`tool_roster`] is: the guards that hold this
@@ -1492,7 +1556,11 @@ impl<'e> McpServer<'e> {
             "serverInfo": {
                 "name": SERVER_NAME,
                 "version": env!("CARGO_PKG_VERSION")
-            }
+            },
+            // D141: what to do with the tools, not just which ones exist. Read
+            // off the session's own scope, because the read variant may not
+            // name a tool this server will refuse.
+            "instructions": instructions(self.scope)
         })
     }
 

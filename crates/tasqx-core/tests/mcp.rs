@@ -74,6 +74,8 @@ fn full_protocol_sequence() {
     assert!(init["result"]["protocolVersion"].is_string());
     // capabilities.tools must be present (an object).
     assert!(init["result"]["capabilities"]["tools"].is_object());
+    // …and the handshake carries the workflow, not just the inventory.
+    assert!(init["result"]["instructions"].is_string());
 
     // 2. notifications/initialized — a notification yields NO response.
     let note = server.handle_message(&json!({
@@ -386,6 +388,137 @@ fn initialize_negotiates_supported_protocol_version() {
         }))
         .expect("initialize is a request");
     assert_eq!(unknown["result"]["protocolVersion"], "2025-06-18");
+}
+
+// ---- initialize instructions -------------------------------------------------
+
+/// The `instructions` string as a live server answers it over the wire, so
+/// every claim below is about the handshake a host actually reads and not
+/// about a helper nobody is wired to.
+fn instructions_of(scope: Scope) -> String {
+    let engine = engine();
+    let server = McpServer::new(&engine, scope);
+    let init = server
+        .handle_message(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18", "capabilities": {} }
+        }))
+        .expect("initialize is a request");
+    init["result"]["instructions"]
+        .as_str()
+        .expect("initialize carries instructions as a string")
+        .to_string()
+}
+
+/// Every `tasqx_…` run in a piece of prose, however it is punctuated around.
+///
+/// The same scan the guides' drift guard uses (`readme.rs`), kept regex-free
+/// for the same reason: a tool name is an identifier run, and stopping at the
+/// first character that cannot be in one is the whole parser.
+fn tool_names_in(text: &str) -> Vec<String> {
+    let mut named: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("tasqx_") {
+        let tail = &rest[i..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(tail.len());
+        let run = &tail[..end];
+        if run.len() > "tasqx_".len() {
+            named.push(run.to_string());
+        }
+        rest = &tail[end..];
+    }
+    named.sort();
+    named.dedup();
+    named
+}
+
+/// The MCP server tells a host what it CAN call and, until now, nothing told it
+/// WHEN. `instructions` is the one in-band place a cross-tool workflow can live
+/// — hosts such as Claude Code inject it into the agent's system prompt — so a
+/// write-scoped handshake has to carry the whole loop: search, then track, then
+/// write back.
+#[test]
+fn initialize_instructions_carry_the_write_scope_workflow() {
+    let text = instructions_of(Scope::Write);
+    assert!(!text.is_empty(), "instructions must not be an empty string");
+    for phrase in [
+        "tasqx_search_memory",
+        "tasqx_annotate_task",
+        "tasqx_complete_task",
+        "tasqx_add_memory",
+        "@working",
+    ] {
+        assert!(
+            text.contains(phrase),
+            "the write-scope instructions must name {phrase:?}:\n{text}"
+        );
+    }
+}
+
+/// Under a read-only scope the write tools are not in `tools/list`, so naming
+/// one in the instructions is worse than saying nothing: it sends the agent at
+/// a tool it will be refused, and the refusal is the first it hears of the
+/// scope. The read variant says the scope out loud instead.
+#[test]
+fn initialize_instructions_under_read_scope_name_no_write_tool() {
+    let text = instructions_of(Scope::Read);
+    assert!(
+        text.contains("tasqx_search_memory"),
+        "the read-only instructions must still point at the one tool that works:\n{text}"
+    );
+    assert!(
+        text.contains("read-only"),
+        "the read-only instructions must say the server is read-only:\n{text}"
+    );
+    let roster = tasqx_core::mcp::tool_roster();
+    let writes: Vec<&str> = roster
+        .iter()
+        .filter(|(_, write)| *write)
+        .map(|(n, _)| *n)
+        .collect();
+    assert!(
+        writes.len() >= 10,
+        "the write half of the roster shrank to {writes:?} — an empty scan \
+         must not pass as a clean one"
+    );
+    for name in writes {
+        assert!(
+            !text.contains(name),
+            "the read-only instructions tell an agent to call {name:?}, which is \
+             not listed under this scope:\n{text}"
+        );
+    }
+}
+
+/// The instructions are prose with no generator behind them, and a tool name
+/// misspelled in them is a tool call that fails as `unknown tool` — in the
+/// agent's system prompt, where nothing in the build would ever look. Both
+/// scopes are scanned: the read variant drops two paragraphs, so a rename
+/// could survive in exactly the half the other test does not read.
+#[test]
+fn initialize_instructions_name_only_tools_that_exist() {
+    let roster = tasqx_core::mcp::tool_roster();
+    for scope in [Scope::Read, Scope::Write] {
+        let text = instructions_of(scope);
+        let named = tool_names_in(&text);
+        assert!(
+            named.len() >= 3,
+            "the scan of the {} instructions found only {named:?} — an empty \
+             scan must not pass as a clean one",
+            scope.as_str()
+        );
+        for name in &named {
+            assert!(
+                roster.iter().any(|(n, _)| n == name),
+                "the {} instructions tell an agent to call {name:?}, which is not \
+                 in the MCP roster: {:?}",
+                scope.as_str(),
+                roster.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+            );
+        }
+    }
 }
 
 // ---- annotation.add over MCP -------------------------------------------------

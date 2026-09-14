@@ -260,10 +260,13 @@ What makes this more than remote CRUD:
   (`remove_memory`, for retracting a wrongly stored document) says so in its
   own description.
 
-The server tells an agent what it can call; the skill in
-[`.claude/skills/tasqx-workflow/`](.claude/skills/tasqx-workflow/SKILL.md)
-tells it how to *work* — Claude Code picks it up automatically inside this
-repo, and the paste-anywhere block in
+The server tells an agent what it can call, and also when: `initialize`
+carries a scope-aware `instructions` block that a host such as Claude Code
+puts in the agent's system prompt, so a fresh install already nudges the
+agent to search before deciding and to write as it works. The skill in
+[`.claude/skills/tasqx-workflow/`](.claude/skills/tasqx-workflow/SKILL.md) is
+the fuller version of how to *work* — Claude Code picks it up automatically
+inside this repo — and the paste-anywhere block in
 [Giving an agent memory in any client](docs/guides/agent-starter-prompt.md)
 does the same for any other client. Scripts can skip MCP entirely and talk to
 the API directly:

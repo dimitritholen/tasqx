@@ -2235,8 +2235,14 @@ fn page_mcp() -> String {
         "Newline-delimited JSON-RPC 2.0 on stdin/stdout. Diagnostics go to stderr <em>only</em> — \
          stdout carries nothing but responses, so the transport is never corrupted by a log line.",
     ));
+    s.push_str(&p(
+        "The <code>initialize</code> result carries <code>instructions</code>: a scope-aware \
+         workflow the host may inject into the agent's system prompt, so the agent is told \
+         <em>when</em> to reach for tasqx and not only what it can call. It is elided below \
+         because it is a few paragraphs long.",
+    ));
     s.push_str(&snippet(
-        "echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"demo\",\"version\":\"1\"}}}' | tasqx mcp serve 2>/dev/null",
+        "echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"demo\",\"version\":\"1\"}}}' | tasqx mcp serve 2>/dev/null | sed 's/\"instructions\":\"[^\"]*\"/\"instructions\":\"…\"/'",
         // The version comes from the crate, not from a copy of it. This snippet
         // shipped `"version":"0.1.0"` for the whole of 0.2.x: a captured output
         // is a claim about what the binary answers, and a hand-typed one stops
@@ -2245,8 +2251,8 @@ fn page_mcp() -> String {
         // place and the page cannot drift again.
         &format!(
             "{{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{{\"capabilities\":{{\"tools\":{{}}}},\
-             \"protocolVersion\":\"2024-11-05\",\"serverInfo\":{{\"name\":\"tasqx\",\
-             \"version\":\"{}\"}}}}}}",
+             \"instructions\":\"…\",\"protocolVersion\":\"2024-11-05\",\
+             \"serverInfo\":{{\"name\":\"tasqx\",\"version\":\"{}\"}}}}}}",
             env!("CARGO_PKG_VERSION")
         ),
     ));
