@@ -556,12 +556,13 @@ impl Engine {
             ""
         };
         let count_sql = format!("SELECT COUNT(*) FROM docs {where_clause}");
-        // Newest-modified first (D115 #133), `id DESC` as the stable
-        // tiebreak two docs written the same instant still need (UUIDv7 ids
-        // sort chronologically, so this is also a secondary recency signal,
-        // not an arbitrary one) — the same reasoning `task.list`'s
-        // `compare_by` always ends on a tiebreak so a page walked over a
-        // changing order never shows a row twice or skips one.
+        // Newest-modified first (D115 #133), `id DESC` as the tiebreak two
+        // docs written the same instant still need so they list in one
+        // deterministic order (UUIDv7 ids sort chronologically, so it is
+        // also a secondary recency signal, not an arbitrary one) — the same
+        // reasoning `task.list`'s `compare_by` always ends on a tiebreak.
+        // It settles tie order only: a doc updated between two OFFSET pages
+        // still moves across the boundary, as on any offset-paged list.
         //
         // The key is `modified` with its `Z` stripped, not the column itself
         // (D144). `util::now` prints a variable-length fractional second —
@@ -808,6 +809,46 @@ mod tests {
         );
     }
 
+    /// `n` docs titled `doc {i}` with body `body {i}`, returned as ids in
+    /// write order — UUIDv7, so id order is write order.
+    fn add_docs(e: &crate::Engine, n: usize) -> Vec<String> {
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let out = e
+                .memory_add(&json!({ "title": format!("doc {i}"), "body": format!("body {i}") }))
+                .unwrap();
+            ids.push(out["id"].as_str().unwrap().to_string());
+        }
+        ids
+    }
+
+    /// Stamp each `id` with its paired `modified` text directly — writing it
+    /// this way is the only way to reproduce a specific spelling without
+    /// racing a clock.
+    fn stamp_docs(e: &crate::Engine, ids: &[String], stamps: &[&str]) {
+        assert_eq!(ids.len(), stamps.len());
+        for (i, (id, ts)) in ids.iter().zip(stamps.iter()).enumerate() {
+            let n = e
+                .conn
+                .execute(
+                    "UPDATE docs SET modified = ?1 WHERE id = ?2",
+                    params![ts, id],
+                )
+                .unwrap();
+            assert_eq!(n, 1, "doc {i} must exist exactly once to be stamped");
+        }
+    }
+
+    /// The `docs` array's `id` strings, in order.
+    fn listed_ids(out: &serde_json::Value) -> Vec<String> {
+        out["docs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
     /// memory.list is newest-modified first, and the variable-length `modified`
     /// text may not decide it (D142's defect, on docs).
     ///
@@ -821,14 +862,7 @@ mod tests {
     #[test]
     fn memory_list_orders_by_modified_instant_not_the_variable_length_text() {
         let e = crate::Engine::open_in_memory().unwrap();
-
-        let mut ids = Vec::new();
-        for i in 0..4 {
-            let out = e
-                .memory_add(&json!({ "title": format!("doc {i}"), "body": format!("body {i}") }))
-                .unwrap();
-            ids.push(out["id"].as_str().unwrap().to_string());
-        }
+        let ids = add_docs(&e, 4);
 
         // Chronological, and deliberately fully INVERTED in BINARY text
         // order: 'Z' beats '1', '2' and '3'.
@@ -838,24 +872,10 @@ mod tests {
             "2026-01-01T00:00:10.12Z",
             "2026-01-01T00:00:10.123Z",
         ];
-        for (i, ts) in stamps.iter().enumerate() {
-            let n = e
-                .conn
-                .execute(
-                    "UPDATE docs SET modified = ?1 WHERE id = ?2",
-                    params![ts, ids[i]],
-                )
-                .unwrap();
-            assert_eq!(n, 1, "doc {i} must exist exactly once to be stamped");
-        }
+        stamp_docs(&e, &ids, &stamps);
 
         let out = e.memory_list(&json!({})).unwrap();
-        let listed: Vec<String> = out["docs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|d| d["id"].as_str().unwrap().to_string())
-            .collect();
+        let listed = listed_ids(&out);
         let expected: Vec<String> = ids.iter().rev().cloned().collect();
         assert_eq!(
             listed, expected,
@@ -863,12 +883,7 @@ mod tests {
         );
 
         let page = e.memory_list(&json!({ "limit": 1 })).unwrap();
-        let page_ids: Vec<String> = page["docs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|d| d["id"].as_str().unwrap().to_string())
-            .collect();
+        let page_ids = listed_ids(&page);
         assert_eq!(
             page_ids,
             vec![ids[3].clone()],
@@ -883,14 +898,7 @@ mod tests {
     #[test]
     fn memory_list_puts_an_updated_doc_first_even_though_its_id_is_the_oldest() {
         let e = crate::Engine::open_in_memory().unwrap();
-
-        let mut ids = Vec::new();
-        for i in 0..3 {
-            let out = e
-                .memory_add(&json!({ "title": format!("doc {i}"), "body": format!("body {i}") }))
-                .unwrap();
-            ids.push(out["id"].as_str().unwrap().to_string());
-        }
+        let ids = add_docs(&e, 3);
 
         // Strictly increasing, and in write order, so the baseline (before
         // the update below) is unambiguous regardless of how fast the
@@ -900,41 +908,17 @@ mod tests {
             "2026-01-01T00:00:11Z",
             "2026-01-01T00:00:12Z",
         ];
-        for (i, ts) in stamps.iter().enumerate() {
-            let n = e
-                .conn
-                .execute(
-                    "UPDATE docs SET modified = ?1 WHERE id = ?2",
-                    params![ts, ids[i]],
-                )
-                .unwrap();
-            assert_eq!(n, 1, "doc {i} must exist exactly once to be stamped");
-        }
+        stamp_docs(&e, &ids, &stamps);
 
         // Update the OLDEST id (doc 0) — memory.update sets util::now(),
         // which is later than the crafted stamps, but this pins it
         // explicitly so the test does not depend on the wall clock.
         e.memory_update(&json!({ "id": ids[0], "body": "edited" }))
             .unwrap();
-        let n = e
-            .conn
-            .execute(
-                "UPDATE docs SET modified = ?1 WHERE id = ?2",
-                params!["2026-01-01T00:00:13Z", ids[0]],
-            )
-            .unwrap();
-        assert_eq!(
-            n, 1,
-            "the updated doc must exist exactly once to be stamped"
-        );
+        stamp_docs(&e, &ids[..1], &["2026-01-01T00:00:13Z"]);
 
         let out = e.memory_list(&json!({})).unwrap();
-        let listed: Vec<String> = out["docs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|d| d["id"].as_str().unwrap().to_string())
-            .collect();
+        let listed = listed_ids(&out);
         assert_eq!(
             listed,
             vec![ids[0].clone(), ids[2].clone(), ids[1].clone()],
@@ -942,12 +926,7 @@ mod tests {
         );
 
         let page = e.memory_list(&json!({ "limit": 1 })).unwrap();
-        let page_ids: Vec<String> = page["docs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|d| d["id"].as_str().unwrap().to_string())
-            .collect();
+        let page_ids = listed_ids(&page);
         assert_eq!(page_ids, vec![ids[0].clone()]);
     }
 }
