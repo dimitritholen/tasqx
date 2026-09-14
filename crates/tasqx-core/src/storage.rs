@@ -243,6 +243,35 @@ fn migrate(conn: &Connection) -> Result<(), ApiError> {
         );
         CREATE INDEX IF NOT EXISTS idx_deps_dependson ON dependencies(depends_on_id);
 
+        -- D138: acceptance criteria with a state and a citation.
+        --
+        -- Its own table rather than a convention inside an annotation body: a
+        -- check has a STATE MACHINE, and state in prose is unqueryable,
+        -- unfilterable, silently broken by an edit, and impossible to carry
+        -- across an export without re-parsing free text. D135 is the recent
+        -- lesson on what it costs when an index has to read structure out of a
+        -- body.
+        --
+        -- `evidence` is the caller's proof — a test name, a command's output,
+        -- a commit sha — stored verbatim and NEVER interpreted. tasqx executes
+        -- nothing: §1 holds the core to local-first and offline, and shelling
+        -- out to run a caller-supplied string is a larger breach of that than a
+        -- network call, since the string arrives over MCP from a model.
+        --
+        -- `position` and not `created`: criteria are written as a sequence, and
+        -- two added in the same second would otherwise sort arbitrarily.
+        CREATE TABLE IF NOT EXISTS checks (
+            id       TEXT PRIMARY KEY,
+            task_id  TEXT NOT NULL REFERENCES tasks(id),
+            body     TEXT NOT NULL,
+            state    TEXT NOT NULL,
+            evidence TEXT,
+            position INTEGER NOT NULL,
+            created  TEXT NOT NULL,
+            modified TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_checks_task ON checks(task_id, position);
+
         CREATE TABLE IF NOT EXISTS annotations (
             id      TEXT PRIMARY KEY,
             task_id TEXT NOT NULL,

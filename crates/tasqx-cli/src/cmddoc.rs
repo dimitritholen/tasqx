@@ -613,6 +613,32 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         topic: Topic::Projects,
     },
     CmdDoc {
+        verb: "check",
+        aliases: &[],
+        method: "check.add + check.set + check.remove",
+        summary: "Acceptance criteria on a task: add, mark, drop.",
+        usage: "tasqx check <add <ref> <criterion…>|set <ref> <check_id> <state> [--evidence e]|remove <ref> <check_id>>",
+        examples: &[
+            ex_norun("tasqx check add 1 the notes name every breaking change", "add a criterion"),
+            ex_norun(
+                "tasqx check set 1 019f-abc passed --evidence \"suite green\"",
+                "mark it",
+            ),
+            ex_norun("tasqx check rm 1 019f-abc", "drop a criterion"),
+        ],
+        notes: &[
+            "tasqx NEVER RUNS a check. The criterion is a claim and the evidence is a citation; \
+             both are stored verbatim and neither is interpreted. A hook you installed is what \
+             runs commands, calling `check set` like any other client.",
+            "Completing with a criterion still open is not refused — nothing is blocked — but \
+             `tasqx report --outcomes` counts it as an unproven completion.",
+            "`failed` is a normal outcome. Use `rm` only when the criterion was the wrong thing \
+             to ask; removing one the work failed hides the finding.",
+        ],
+        see_also: &["done", "show", "report"],
+        topic: Topic::Capturing,
+    },
+    CmdDoc {
         verb: "brief",
         aliases: &[],
         method: "task.brief",

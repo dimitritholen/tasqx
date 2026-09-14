@@ -211,14 +211,14 @@ Any other MCP client takes the same shape:
 }
 ```
 
-Twenty-six tools, one verb each. Nine reads: `list_tasks`, `get_task`,
+Twenty-nine tools, one verb each. Nine reads: `list_tasks`, `get_task`,
 `brief_task`, `summary`, `outcomes`, `list_projects`, `search_memory`,
 `get_memory`, `list_memory`.
-Seventeen writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
+Twenty writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
 `cancel_task`, `start_timer`, `stop_timer`, `tag_task`, `untag_task`,
-`annotate_task`, `remove_annotation`, `add_dependency`, `remove_dependency`,
-`add_memory`, `update_memory`, `remove_memory`, `create_project`
-(all prefixed `tasqx_`).
+`annotate_task`, `remove_annotation`, `add_check`, `set_check`,
+`remove_check`, `add_dependency`, `remove_dependency`, `add_memory`,
+`update_memory`, `remove_memory`, `create_project` (all prefixed `tasqx_`).
 
 What makes this more than remote CRUD:
 

@@ -571,6 +571,12 @@ pub(super) enum Command {
         #[arg(long, value_name = "N")]
         memory_limit: Option<u64>,
     },
+    /// Acceptance criteria on a task (maps to check.add/set/remove).
+    #[command(after_help = crate::cmddoc::after_help("check"))]
+    Check {
+        #[command(subcommand)]
+        action: CheckAction,
+    },
     /// Cancel a task (maps to task.cancel).
     #[command(
         alias = "delete",
@@ -1196,6 +1202,44 @@ pub(super) enum ChartKind {
         /// Number of days to show (1-3650; default 30).
         #[arg(long, allow_hyphen_values = true, value_parser = window_parser(MAX_CHART_DAYS))]
         days: Option<usize>,
+    },
+}
+
+/// D138. Three verbs under one noun, like `memory` and `theme`: a criterion is
+/// added, marked and dropped, and a reader looking for any of those reaches for
+/// the same word.
+#[derive(Subcommand)]
+pub(super) enum CheckAction {
+    /// Add an acceptance criterion to a task.
+    Add {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// The criterion, in your own words.
+        body: Vec<String>,
+    },
+    /// Mark a criterion passed or failed, with the evidence for it.
+    Set {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// The check's id, from `tasqx show`.
+        check_id: String,
+        /// open | passed | failed.
+        #[arg(value_parser = tasqx_core::engine::CHECK_STATES)]
+        state: String,
+        /// Your proof: a test name, an excerpt of output, a commit sha.
+        #[arg(long)]
+        evidence: Option<String>,
+    },
+    /// Drop a criterion that was the wrong thing to ask.
+    #[command(alias = "rm")]
+    Remove {
+        /// short_id or UUID.
+        #[arg(add = crate::complete::candidates::task_ids())]
+        r#ref: String,
+        /// The check's id.
+        check_id: String,
     },
 }
 

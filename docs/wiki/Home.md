@@ -43,6 +43,7 @@ task, and where to find help.
 | Command | What it does | Page |
 |---|---|---|
 | `brief` | Everything needed before starting a task, in one read | [Working on Tasks](Working-on-Tasks.md#tasqx-brief) |
+| `check` | Acceptance criteria: add, mark, drop | [Adding and Editing Tasks](Adding-and-Editing-Tasks.md#tasqx-check) |
 | `start` / `stop` | Track time on a task | [Working on Tasks](Working-on-Tasks.md#tasqx-start) |
 | `done` | Complete a task | [Working on Tasks](Working-on-Tasks.md#tasqx-done) |
 | `cancel` | Cancel a task (reversibly) | [Working on Tasks](Working-on-Tasks.md#tasqx-cancel) |

@@ -551,6 +551,8 @@ const RENDERED_AS: &[(&str, Shows)] = &[
         Shows::Cell("| budget | 12 / 1000 fresh tokens |"),
     ),
     ("over", Shows::Cell("| budget | 12 / 1000 fresh tokens |")),
+    // D138: the criterion renders as a checklist line, its state as the marker.
+    ("checks", Shows::Cell("- [x] the criterion")),
     ("created", Shows::Row("created")),
     ("modified", Shows::Row("modified")),
     ("_rev", Shows::Row("rev")),
@@ -627,6 +629,16 @@ fn every_field_task_get_returns_is_accounted_for_in_the_view() {
     // renders on task 1's side of the same fixture edge.
     let blocker = d("task.get", &json!({ "ref": 1 }));
     d("annotation.add", &json!({ "ref": 2, "body": "note" }));
+    // D138: marked, so the state's marker and the evidence line are both
+    // exercised rather than merely declared.
+    let check = d("check.add", &json!({ "ref": 2, "body": "the criterion" }));
+    d(
+        "check.set",
+        &json!({
+            "ref": 2, "check_id": check["check"]["id"],
+            "state": "passed", "evidence": "proof"
+        }),
+    );
     d(
         "token.add",
         &json!({

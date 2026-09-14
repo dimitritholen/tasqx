@@ -137,10 +137,41 @@ pub fn task_detail(result: &Value, opts: &DetailOpts) -> String {
     let rev = result.get("_rev").and_then(Value::as_i64).unwrap_or(0);
     row(&mut out, "rev", &rev.to_string());
 
+    checks(&mut out, result);
     tokens(&mut out, result);
     annotations(&mut out, result, opts);
 
     out
+}
+
+/// D138's acceptance criteria, as a checklist. Only rendered when there is at
+/// least one — an "Acceptance (0)" heading on every task without criteria is a
+/// heading that teaches nothing, the same rule [`tokens`] below follows.
+///
+/// The marker carries the state and the evidence sits under its criterion,
+/// because the citation is only meaningful beside the claim it supports.
+fn checks(out: &mut String, result: &Value) {
+    let Some(rows) = result.get("checks").and_then(Value::as_array) else {
+        return;
+    };
+    if rows.is_empty() {
+        return;
+    }
+    out.push_str(&format!("\n### Acceptance ({})\n\n", rows.len()));
+    for c in rows {
+        let mark = match str_of(c, "state").as_str() {
+            "passed" => "x",
+            "failed" => "!",
+            _ => " ",
+        };
+        out.push_str(&format!("- [{mark}] {}\n", str_of(c, "body")));
+        let evidence = str_of(c, "evidence");
+        if !evidence.is_empty() {
+            for line in evidence.lines() {
+                out.push_str(&format!("  > {line}\n"));
+            }
+        }
+    }
 }
 
 /// Measurements as a table. Only rendered when there is at least one: a

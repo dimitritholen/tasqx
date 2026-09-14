@@ -62,6 +62,34 @@ tasqx modify 42 --clear due --clear remind
 `remind`, `recurrence`, `estimate`, `tracked`, `budget_tokens`. Tags are the
 exception — a tag comes off by name, with [`tasqx untag`](#tasqx-untag).
 
+## tasqx check
+
+Acceptance criteria: the things that have to be true for a task to count as
+done.
+
+```console
+tasqx check add 42 the notes name every breaking change
+tasqx check set 42 <id> passed --evidence "cargo test: 0 failed"
+tasqx check rm 42 <id>
+```
+
+**tasqx never runs a check.** The criterion is a claim and the evidence is a
+citation — both are stored exactly as you typed them and neither is
+interpreted. If you want something run, a hook you installed runs it and calls
+`tasqx check set` with the result, like any other client would.
+
+Criteria in an annotation look the same and are not: an annotation is prose,
+so nothing can ask at completion time whether it was met. A check has a state.
+
+Completing a task with a criterion still open is **not refused** — tasqx is a
+file on your disk, not a supervisor, and a refusal is something a script routes
+around. It is counted instead: `tasqx report --outcomes` has an OPEN column for
+completions whose criteria nobody marked, which is where the pattern shows up.
+
+`failed` is a normal outcome and worth recording. Remove a check only when the
+criterion was the wrong thing to ask — deleting one the work failed hides the
+finding.
+
 ## Token budgets
 
 `--budget-tokens` sets a size gauge on a task:

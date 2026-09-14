@@ -120,6 +120,7 @@ fn cases(tmp: &str) -> Vec<(Case, Vec<String>)> {
         c("agenda", &["agenda"]),
         c("show", &["show", "1"]),
         c("brief", &["brief", "1"]),
+        c("check", &["check", "add", "1", "a", "criterion"]),
         c("modify", &["modify", "1", "--priority", "high"]),
         c("annotate", &["annotate", "1", "a note"]),
         // `unannotate` needs a real annotation id, which is a UUID minted at

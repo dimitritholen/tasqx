@@ -2032,6 +2032,18 @@ pub fn task_detail(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             out.push_str(&format!("  {} {}\n", ctx.paint("muted", "·"), row.value));
             continue;
         }
+        // D138: the marker carries the state, so it is painted and the
+        // criterion is not — a failed check should catch the eye at the marker
+        // rather than shouting its whole line.
+        if matches!(row.field, DetailField::Check) {
+            let role = match row.label {
+                "[x]" => "ok",
+                "[!]" => "danger",
+                _ => "muted",
+            };
+            out.push_str(&format!("  {} {}\n", ctx.paint(role, row.label), row.value));
+            continue;
+        }
         // The plain layout's emphasis map over the SAME row set the card
         // renders — the facts and their conditions live in `detail_rows`.
         let cell = match row.field {
@@ -2239,6 +2251,7 @@ enum DetailField {
     Rev,
     Budget,
     Tokens,
+    Check,
     Annotation,
 }
 
@@ -2529,6 +2542,27 @@ fn detail_rows(ctx: &Ctx, result: &Value, now: Timestamp) -> Vec<DetailRow> {
                     sum("cache_creation_tokens")
                 ),
             );
+        }
+    }
+    // D138: the criteria, above the annotations and below the facts — each on
+    // its own line with the state as a marker, and its evidence indented under
+    // it, because a citation is only meaningful beside the claim it supports.
+    if let Some(checks) = result.get("checks").and_then(Value::as_array) {
+        for c in checks {
+            let mark = match s(c, "state").as_str() {
+                "passed" => "[x]",
+                "failed" => "[!]",
+                _ => "[ ]",
+            };
+            row(
+                mark,
+                DetailField::Check,
+                san_multiline(c.get("body").and_then(Value::as_str).unwrap_or("")),
+            );
+            let evidence = s(c, "evidence");
+            if !evidence.is_empty() {
+                row("   ", DetailField::Check, san_multiline(&evidence));
+            }
         }
     }
     if let Some(anns) = result.get("annotations").and_then(Value::as_array) {
@@ -3172,6 +3206,9 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     if has("overrun") {
         labels.push("OVER".into());
     }
+    if has("unproven") {
+        labels.push("UNPROVEN".into());
+    }
     if has("cost") {
         labels.push("TOKENS".into());
     }
@@ -3203,6 +3240,9 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
             cells.push(over(m, "count"));
         }
         if let Some(m) = g.get("overrun") {
+            cells.push(over(m, "count"));
+        }
+        if let Some(m) = g.get("unproven") {
             cells.push(over(m, "count"));
         }
         if let Some(m) = g.get("cost") {
@@ -3296,10 +3336,11 @@ pub fn outcomes(ctx: &Ctx, result: &Value, group_by: &str) -> String {
     out.push_str(&prose(
         ctx,
         Some("muted"),
-        "REWORK / SILENT / DROPPED / OVER read count over the completions or closings \
-         they were counted against — a rate with no denominator beside it is not a rate, \
-         and OVER counts only the completions that HAD a budget. CALIB is the median \
-         tracked-over-estimate ratio and the number of completions carrying both figures.",
+        "REWORK / SILENT / DROPPED / OVER / UNPROVEN read count over the completions or \
+         closings they were counted against — a rate with no denominator beside it is not \
+         a rate. OVER counts only the completions that had a budget and UNPROVEN only those \
+         that had acceptance criteria. CALIB is the median tracked-over-estimate ratio and \
+         the number of completions carrying both figures.",
         "",
     ));
     out
@@ -5707,6 +5748,46 @@ mod tests {
         let out = report(&ctx, &groups(2), "project", None);
         assert!(out.contains("2 cancelled tasks excluded"), "{out}");
         assert!(!out.contains("task(s)"), "{out}");
+    }
+
+    /// D138: the state is the marker, and the evidence sits under the claim it
+    /// supports.
+    #[test]
+    fn a_check_renders_with_its_state_as_a_marker_and_its_evidence_under_it() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let t = json!({
+            "short_id": 1, "title": "t", "status": "pending",
+            "checks": [
+                { "body": "passed one", "state": "passed", "evidence": "the proof" },
+                { "body": "failed one", "state": "failed", "evidence": null },
+                { "body": "open one", "state": "open", "evidence": null },
+            ],
+        });
+        let out = task_detail(&ctx, &t, Timestamp::now());
+        assert!(out.contains("[x] passed one"), "{out}");
+        assert!(out.contains("[!] failed one"), "{out}");
+        assert!(out.contains("[ ] open one"), "{out}");
+        let lines: Vec<&str> = out.lines().collect();
+        let at = lines.iter().position(|l| l.contains("passed one")).unwrap();
+        assert!(
+            lines[at + 1].contains("the proof"),
+            "the citation sits under its claim: {out}"
+        );
+    }
+
+    /// A task with no criteria gets no marker lines at all — the same rule the
+    /// budget row follows.
+    #[test]
+    fn a_task_without_criteria_renders_no_check_lines() {
+        let ctx = Ctx::new(theme::default_theme(), Caps::PLAIN);
+        let t = json!({ "short_id": 1, "title": "t", "status": "pending", "checks": [] });
+        let out = task_detail(&ctx, &t, Timestamp::now());
+        for marker in ["[x]", "[!]", "[ ]"] {
+            assert!(
+                !out.contains(marker),
+                "{marker} printed over nothing: {out}"
+            );
+        }
     }
 
     /// D139: the pair renders as one row, and only when a threshold was set —

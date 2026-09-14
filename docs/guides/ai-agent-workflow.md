@@ -84,6 +84,13 @@ The tool surface is designed around one loop — work the backlog one task at a 
 4. `tasqx_annotate_task` — write back what was done, decisions made, anything the
    next session needs.
 
+`tasqx_add_check` puts acceptance criteria somewhere a completion can be held to
+them: an annotation is prose and nothing can ask whether it was met, while a
+check has a state. tasqx never runs one — the criterion is a claim and the
+evidence a citation, both stored verbatim — so the agent marks them itself, or
+names them in `checks_passed` on completion. Completing with a criterion still
+open is not refused; it is counted, and `tasqx_outcomes` reports the count.
+
 `tasqx_add_dependency` lets the agent decompose a feature itself: capture subtasks
 with `tasqx_add_task`, wire the order, then work the chain.
 
@@ -112,9 +119,9 @@ during one task resurface during the next:
 `tasqx_outcomes` is the other half of measurement: `tasqx_summary` answers what
 the work cost, this answers whether it worked. Over the tasks that **closed**,
 it reports rework (completions that were later reopened), estimate calibration,
-token cost, silent completions (no annotation written) and abandoned work —
-each rate beside the `n` it was computed over, because a rework rate over three
-completions is not evidence.
+token cost, silent completions (no annotation written), abandoned work, token
+overruns and unproven completions — each rate beside the `n` it was computed
+over, because a rework rate over three completions is not evidence.
 
 ```console
 tasqx report --outcomes project --since -30d

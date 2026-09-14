@@ -932,6 +932,19 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "cache_creation_tokens": {
                         "type": "integer",
                         "description": "Self-reported cache-creation tokens this task cost (0 or more)."
+                    },
+                    "checks_passed": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Ids of the acceptance criteria this work proved (D138). \
+                            Completing with criteria still open is NOT refused — nothing is \
+                            blocked — but it is counted as an unproven completion by \
+                            `tasqx_outcomes`, so mark what you actually proved."
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": "One citation covering the `checks_passed` above: a test \
+                            name, an excerpt of output, a commit sha. Stored verbatim."
                     }
                 },
                 "required": ["ref"]
@@ -1054,6 +1067,74 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "tags": { "type": "array", "items": { "type": "string" } }
                 },
                 "required": ["ref", "tags"]
+            }),
+        },
+        // D138. Write-scoped; `check_add` is append-only so it is not
+        // destructive, while `set` overwrites a state and `remove` drops a row.
+        ToolSpec {
+            name: "tasqx_add_check",
+            method: "check.add",
+            write: true,
+            destructive: false,
+            idempotent: false,
+            description: "Add an acceptance criterion to a task — one thing that must be true \
+                for the task to count as done. tasqx NEVER RUNS a check: it is a claim you mark \
+                later with evidence, not a command. Use these instead of burying criteria in an \
+                annotation, where nothing can ask at completion time whether they were met.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "body": { "type": "string", "description": "The criterion, in your own words. Stored verbatim." }
+                },
+                "required": ["ref", "body"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_set_check",
+            method: "check.set",
+            write: true,
+            destructive: true,
+            idempotent: true,
+            description: "Mark one acceptance criterion passed or failed, with the evidence for \
+                it. `failed` is a normal outcome, not an error — recording that a criterion was \
+                NOT met is useful. Evidence is stored verbatim and never interpreted.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "check_id": { "type": "string", "description": "The check's id, from `tasqx_get_task` or the add result." },
+                    "state": {
+                        "type": "string",
+                        "enum": enum_of(crate::engine::CHECK_STATES),
+                        "description": "open | passed | failed."
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": "Your proof: a test name, an excerpt of command output, a \
+                            commit sha. Optional — some criteria are met by something nobody can \
+                            quote, and inventing a citation is worse than an unproven `passed`."
+                    }
+                },
+                "required": ["ref", "check_id", "state"]
+            }),
+        },
+        ToolSpec {
+            name: "tasqx_remove_check",
+            method: "check.remove",
+            write: true,
+            destructive: true,
+            idempotent: true,
+            description: "Drop an acceptance criterion that turned out to be the wrong thing to \
+                ask. Use `tasqx_set_check` with `failed` when the criterion was right and the \
+                work did not meet it — deleting it there would hide the finding.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "ref": ref_schema(),
+                    "check_id": { "type": "string", "description": "The check's id." }
+                },
+                "required": ["ref", "check_id"]
             }),
         },
         ToolSpec {

@@ -586,6 +586,7 @@ const TASK_BUDGET_GAUGE: &[Field] = &[req("fresh_tokens", Ty::Int), nul("over", 
 
 const R_TASK_GET: Shape = &[
     TASK_BUDGET_GAUGE,
+    TASK_CHECKS,
     TASK_CORE,
     TASK_LIVE_TIME,
     TASK_RELATIONS,
@@ -839,6 +840,38 @@ const SUMMARY_GROUP_ROW: &[Field] = &[
     req("overdue", Ty::Int),
 ];
 
+/// One acceptance criterion (D138). `evidence` is nullable: a criterion can be
+/// met by something nobody can quote, and inventing a citation is worse than an
+/// unproven pass.
+const TASK_CHECK: &[Field] = &[
+    req("id", Ty::Str),
+    req("body", Ty::Str),
+    req("state", Ty::Str),
+    nul("evidence", Ty::Str),
+    req("position", Ty::Int),
+    req("created", Ty::Str),
+    req("modified", Ty::Str),
+];
+
+const TASK_CHECKS: &[Field] = &[req_of("checks", Ty::Array, &[TASK_CHECK])];
+
+const R_CHECK_ADD: Shape = &[&[
+    req("short_id", Ty::Int),
+    req_of("check", Ty::Object, &[TASK_CHECK]),
+]];
+
+const R_CHECK_SET: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("check_id", Ty::Str),
+    req("state", Ty::Str),
+]];
+
+const R_CHECK_REMOVE: Shape = &[&[
+    req("short_id", Ty::Int),
+    req("check_id", Ty::Str),
+    req("removed", Ty::Bool),
+]];
+
 /// D136's neighbourhood rows. `depends_on` carries the prerequisite's newest
 /// annotation — nullable, because a prerequisite nobody wrote on is still a
 /// prerequisite — and `blocks` deliberately does not: an agent starting work
@@ -927,6 +960,8 @@ const OUTCOME_GROUP_ROW: &[Field] = &[
     // D139. Same rate shape as the rest; its denominator is completions that
     // HAD a budget, which is why it carries its own `n` like every other.
     req_of("overrun", Ty::Object, &[OUTCOME_RATE]),
+    // D138. Same rate shape; its denominator is completions that HAD criteria.
+    req_of("unproven", Ty::Object, &[OUTCOME_RATE]),
 ];
 
 /// Abandonment adds the time inside the dropped work to the rate shape —
@@ -988,6 +1023,9 @@ const R_STORE_EXPORT: Shape = &[&[
             TASK_EXPORT_TOKENS,
             TASK_RELATIONS,
             TASK_STATUS_FLAG,
+            // D138: an export is self-contained (D12, D37), so the criteria
+            // travel with the task like its annotations do.
+            TASK_CHECKS,
         ],
     ),
     req("dropped_dependencies", Ty::Int),
@@ -1288,7 +1326,7 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "task.get",
-            "a pending task with tags, a dependency, an annotation and a measurement",
+            "a pending task with tags, a dependency, an annotation, a check and a measurement",
             |e| {
                 rich_task(e);
                 plain_task(e);
@@ -1296,6 +1334,19 @@ fn cases() -> Vec<Case> {
                     .expect("dep");
                 e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
                     .expect("annotate");
+                // D138: marked, so `evidence` is observed non-null — an
+                // optional key no fixture emits is documentation rather than a
+                // frozen shape.
+                let check = e
+                    .check_add(&json!({ "ref": 1, "body": "the criterion" }))
+                    .expect("check");
+                e.check_set(&json!({
+                    "ref": 1,
+                    "check_id": check["check"]["id"],
+                    "state": "passed",
+                    "evidence": "proof"
+                }))
+                .expect("set");
                 e.token_add(&self_report(1)).expect("token");
                 json!({ "ref": 1 })
             },
@@ -1311,6 +1362,11 @@ fn cases() -> Vec<Case> {
                     .expect("dep");
                 e.annotation_add(&json!({ "ref": 1, "body": "a note" }))
                     .expect("annotate");
+                // D138: `checks` is on every `task.get`, so every case that
+                // freezes that shape has to emit a row — the suite refuses to
+                // freeze a row shape no fixture produces.
+                e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
+                    .expect("check");
                 e.token_add(&self_report(1)).expect("token");
                 json!({ "ref": 1, "explain": true })
             },
@@ -1327,6 +1383,8 @@ fn cases() -> Vec<Case> {
                 e.task_start(&json!({ "ref": 1 })).expect("start");
                 e.annotation_add(&json!({ "ref": 1, "body": "still going" }))
                     .expect("annotate");
+                e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
+                    .expect("check");
                 e.token_add(&self_report(1)).expect("token");
                 json!({ "ref": 1 })
             },
@@ -1615,6 +1673,44 @@ fn cases() -> Vec<Case> {
             R_REPORT_SUMMARY,
         ),
         case(
+            "check.add",
+            "a task gaining its first acceptance criterion",
+            |e| {
+                plain_task(e);
+                json!({ "ref": 1, "body": "the notes name every breaking change" })
+            },
+            R_CHECK_ADD,
+        ),
+        case(
+            "check.set",
+            "one criterion marked passed, with its citation",
+            |e| {
+                plain_task(e);
+                let added = e
+                    .check_add(&json!({ "ref": 1, "body": "the suite is green" }))
+                    .expect("check");
+                json!({
+                    "ref": 1,
+                    "check_id": added["check"]["id"],
+                    "state": "passed",
+                    "evidence": "cargo test --workspace: 0 failed"
+                })
+            },
+            R_CHECK_SET,
+        ),
+        case(
+            "check.remove",
+            "a criterion that was the wrong thing to ask",
+            |e| {
+                plain_task(e);
+                let added = e
+                    .check_add(&json!({ "ref": 1, "body": "wrong criterion" }))
+                    .expect("check");
+                json!({ "ref": 1, "check_id": added["check"]["id"] })
+            },
+            R_CHECK_REMOVE,
+        ),
+        case(
             "task.brief",
             "a task with an annotated prerequisite, a dependent, and a memory doc it matches",
             |e| {
@@ -1661,6 +1757,10 @@ fn cases() -> Vec<Case> {
                 // actually checked rather than merely declared.
                 e.task_modify(&json!({ "ref": 1, "set": { "budget_tokens": 10 } }))
                     .expect("budget");
+                // D138: left open through the completion, so `unproven.refs`
+                // carries a row rather than freezing a shape no fixture emits.
+                e.check_add(&json!({ "ref": 1, "body": "nobody proved this" }))
+                    .expect("check");
                 e.task_done(&json!({
                     "ref": 1,
                     "tool": "claude-code",
@@ -1680,9 +1780,11 @@ fn cases() -> Vec<Case> {
         ),
         case(
             "store.export",
-            "a document carrying a done task, an active task, a project and a doc",
+            "a document carrying a done task, an active task, a project, a doc and a check",
             |e| {
                 rich_task(e);
+                e.check_add(&json!({ "ref": 1, "body": "the criterion" }))
+                    .expect("check");
                 plain_task(e);
                 e.task_start(&json!({ "ref": 2 })).expect("start");
                 e.task_stop(&json!({ "ref": 2 })).expect("stop");
@@ -1695,6 +1797,11 @@ fn cases() -> Vec<Case> {
                     .expect("annotate");
                 e.annotation_add(&json!({ "ref": 2, "body": "and another" }))
                     .expect("annotate");
+                // D138, and for the annotations' reason one relation over: the
+                // row shape under `checks` is checked PER ROW, so a task
+                // without one leaves that row's nested keys unexamined.
+                e.check_add(&json!({ "ref": 2, "body": "a second criterion" }))
+                    .expect("check");
                 e.memory_add(&json!({ "title": "kept", "body": "knowledge", "source": "x.md" }))
                     .expect("doc");
                 // A start/stop inside one test run banks zero seconds — both

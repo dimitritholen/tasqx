@@ -584,6 +584,15 @@ pub(crate) fn run_done(
     // same rule: it is the one thing on this response that might change what
     // the reader does next, and unlike the tokens hint it appears precisely
     // when the spend IS known.
+    // D138's unproven completion, on the same stderr channel as the other two
+    // and first of the three: an open criterion is the one that says the work
+    // may not actually be finished.
+    if let Some(hint) = result.get("checks_hint").and_then(Value::as_str) {
+        let unicode = crate::theme::Caps::detect_stderr().unicode;
+        if let Some(note) = render::checks_note(hint, crate::theme::detect_stderr_cols(), unicode) {
+            crate::note_after_output(note);
+        }
+    }
     if let Some(hint) = result.get("budget_hint").and_then(Value::as_str) {
         let unicode = crate::theme::Caps::detect_stderr().unicode;
         if let Some(note) = render::budget_note(hint, crate::theme::detect_stderr_cols(), unicode) {
@@ -606,6 +615,43 @@ pub(crate) fn run_done(
 pub(crate) fn run_show(be: &mut Backend, ctx: &Ctx, r#ref: String) -> CmdOutcome {
     let result = be.call("task.get", &json!({ "ref": r#ref }))?;
     let text = render::task_detail(ctx, &result, jiff::Timestamp::now());
+    Ok((result, text))
+}
+
+/// `tasqx check add|set|rm` (D138) — acceptance criteria on a task.
+pub(crate) fn run_check(be: &mut Backend, ctx: &Ctx, action: &CheckAction) -> CmdOutcome {
+    let (method, params) = match action {
+        CheckAction::Add { r#ref, body } => {
+            let body = body.join(" ");
+            if body.trim().is_empty() {
+                return Err(ApiError::bad_request(
+                    "a check needs a criterion — what has to be true for this task to be done?",
+                ));
+            }
+            ("check.add", json!({ "ref": r#ref, "body": body }))
+        }
+        CheckAction::Set {
+            r#ref,
+            check_id,
+            state,
+            evidence,
+        } => {
+            let mut p = json!({ "ref": r#ref, "check_id": check_id, "state": state });
+            if let Some(e) = evidence {
+                p["evidence"] = Value::String(e.clone());
+            }
+            ("check.set", p)
+        }
+        CheckAction::Remove { r#ref, check_id } => (
+            "check.remove",
+            json!({ "ref": r#ref, "check_id": check_id }),
+        ),
+    };
+    let result = be.call(method, &params)?;
+    // The echo is the task's card (D126), like every other write on a task:
+    // a criterion only means anything beside the work it qualifies.
+    let task = read_back(be, &result).unwrap_or_else(|| result.clone());
+    let text = render::task_detail(ctx, &task, jiff::Timestamp::now());
     Ok((result, text))
 }
 

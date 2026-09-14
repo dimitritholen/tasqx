@@ -793,12 +793,15 @@ An agent must never dither over *which* tool. So: **one verb = one tool**, names
 | `tasqx_list_projects` | R | `include_archived?` | `projects[]` | `project.list` |
 | `tasqx_add_task` | W | `title`, `project?`, `priority?`, `due?`, `tags?`, `estimate?` | `{short_id, urgency}` | `task.add` |
 | `tasqx_modify_task` | W | `ref`, `set{}`, `expected_rev?` | `{short_id, _rev}` | `task.modify` |
-| `tasqx_complete_task` | W | `ref` | `{status, unblocked[]}` | `task.done` |
+| `tasqx_complete_task` | W | `ref`, `checks_passed[]?`, `evidence?`, the self-report counts | `{status, unblocked[]}`, plus `checks_hint` when a criterion is still open (D138), `budget_hint` on an overrun (D139) and `tokens_hint` when no counts were given (D65) | `task.done` |
 | `tasqx_reopen_task` | W | `ref` | `{short_id, status, blocked[]}` (D67, D69) — done\|cancelled → pending, naming the dependents it put back | `task.reopen` |
 | `tasqx_start_timer` / `tasqx_stop_timer` | W | `ref` | interval / `tracked` | `task.start` / `task.stop` |
 | `tasqx_tag_task` | W | `ref`, `tags[]` | resulting tag set | `tag.add` |
 | `tasqx_untag_task` | W | `ref`, `tags[]` | resulting tag set (D67) | `tag.remove` |
 | `tasqx_search_memory` | R | `query`, `limit?`, `scope?`, `raw?` | `{count, hits[], matched}` bm25-ranked (D41); `matched` is the expression actually run (D69) | `memory.search` |
+| `tasqx_add_check` | W | `ref`, `body` | `{short_id, check{id, body, state, evidence, position, created, modified}}` (D138) — one acceptance criterion, appended and starting `open`. tasqx never RUNS it: the body is a claim, `evidence` a citation, both stored verbatim | `check.add` |
+| `tasqx_set_check` | W | `ref`, `check_id`, `state`, `evidence?` | `{short_id, check_id, state}` — `open`\|`passed`\|`failed`; `failed` is a normal outcome, not an error | `check.set` |
+| `tasqx_remove_check` | W | `ref`, `check_id` | `{short_id, check_id, removed}` — for a criterion that was the wrong thing to ask | `check.remove` |
 | `tasqx_annotate_task` | W | `ref`, `body` (verbatim text; markdown fine), `include_body?` (transport-only, default true, D89) | `{short_id, annotation{id, body, created}}`; `body` → `body_bytes` when `include_body: false` (D89) | `annotation.add` |
 | `tasqx_remove_annotation` | W | `ref`, `annotation_id` | `{short_id, removed{id, removed}}` — hard-deletes the body in storage, never echoes it; permanent, outside `undo` (D113) | `annotation.remove` |
 | `tasqx_add_dependency` | W | `ref`, `depends_on` (short_id or UUID) | `{short_id, depends_on[], blocked}`; cycle → `conflict` | `dependency.add` |
@@ -808,7 +811,7 @@ An agent must never dither over *which* tool. So: **one verb = one tool**, names
 | `tasqx_remove_memory` | W | `id` | `{id, removed}` (D64) — permanent, outside `undo` | `memory.remove` |
 | `tasqx_create_project` | W | `name`, `description?` | `{id, name}` | `project.create` |
 
-**Scheduled, ruled, and not in the roster above.** Two §12 entries add to this surface and neither has been built; the table stays the shipped set, because the guide and the README derive their rosters from the running server and a row here that the server does not serve is a roster with two truths. (D136's `tasqx_brief_task` and D137's `tasqx_outcomes` have shipped, so they are in the table itself.) `tasqx_add_check` / `tasqx_set_check` / `tasqx_remove_check` (W, `check.*`, **D138**) carry acceptance criteria as stateful rows with an `evidence` citation tasqx stores and never interprets, and `tasqx_complete_task` grows `checks_passed[]` and `evidence?`. Every read tool is on the **read** scope on purpose, `tasqx_brief_task` and `tasqx_outcomes` included, for the reason `tasqx_search_memory` is: an agent that cannot write should still be able to orient itself and to see its own record.
+**Every read tool is on the read scope on purpose** — `tasqx_brief_task` and `tasqx_outcomes` included — for the reason `tasqx_search_memory` is: an agent that cannot write should still be able to orient itself and to see its own record. The table above is the shipped set and nothing is pending behind it: the guide and the README derive their rosters from the running server, so a row here the server does not serve is a roster with two truths.
 
 **Why these, not a `modify` overload:** completion, timing, and tagging get distinct imperative tools because the model picks better from distinct names than from a `set` blob — and because they map to distinct core methods with distinct side effects (`task.done` returns `unblocked`; `task.stop` returns `tracked`).
 

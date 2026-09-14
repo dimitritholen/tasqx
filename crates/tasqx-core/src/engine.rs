@@ -12,6 +12,12 @@ mod commands;
 mod memory;
 mod projects;
 mod relationships;
+
+/// D138's check-state vocabulary, re-exported beside the other closed
+/// vocabularies this module publishes ([`SUMMARY_GROUP_BY`],
+/// [`OUTCOME_METRICS`], [`MEMORY_SCOPES`]) so the MCP schema renders its `enum`
+/// from the list the engine validates against.
+pub use relationships::CHECK_STATES;
 mod reports;
 pub mod task;
 mod tokens;
@@ -98,7 +104,7 @@ pub const SUMMARY_METRICS: [&str; 8] = [
 /// completions carrying no annotation, not "bad completions". D137 refuses a
 /// composite score for the same reason these stay five names — the blend
 /// destroys the split that makes a figure actionable.
-pub const OUTCOME_METRICS: [&str; 6] = [
+pub const OUTCOME_METRICS: [&str; 7] = [
     "rework",
     "calibration",
     "cost",
@@ -108,6 +114,10 @@ pub const OUTCOME_METRICS: [&str; 6] = [
     // completion: a rate over all of them would shrink as unbudgeted work
     // landed, which would read as improvement and be nothing of the kind.
     "overrun",
+    // D138. Its denominator is completions that HAD criteria, for the same
+    // reason `overrun`'s is completions that had a budget: a rate over every
+    // completion would shrink as uncriteriaed work landed.
+    "unproven",
 ];
 
 /// `memory.search`'s default page when the caller names no `limit`.
@@ -213,7 +223,13 @@ impl MutationContext<'_> {
     }
 }
 
-const SNAPSHOT_QUERY_COUNT: usize = 6;
+/// Statements one whole-relation snapshot runs, independent of task count.
+///
+/// Seven since D138: tasks, tags, blocked, dependencies, annotations, checks
+/// and token measurements. The number is pinned rather than derived so that
+/// adding a relation is a decision somebody takes on purpose — the contract
+/// this guards is O(1) statements, not O(1) relations.
+const SNAPSHOT_QUERY_COUNT: usize = 7;
 
 struct TaskSnapshot {
     task: Task,
@@ -221,6 +237,9 @@ struct TaskSnapshot {
     blocked: bool,
     depends_on: Vec<String>,
     annotations: Vec<Value>,
+    /// D138's acceptance criteria, in `position` order. Gated like
+    /// `annotations`: only `store.export` reads the whole relation.
+    checks: Vec<Value>,
     /// Token measurements in the canonical object shape, oldest first. Loaded
     /// set-based like every other side table — a per-task point query here is
     /// the N+1 the statement-count test exists to forbid.
@@ -807,10 +826,18 @@ pub const IMPORT_TASK_KEYS: &[&str] = &[
     // through the same gate as every other field: a payload that names one is
     // held to it, and one that does not keeps what the store already has.
     "active_since",
+    // D138's acceptance criteria, carried whole like `annotations`.
+    "checks",
 ];
 
 /// Every key an exported annotation object can carry. D34.
 pub const IMPORT_ANNOTATION_KEYS: &[&str] = &["id", "body", "created"];
+
+/// Every key an exported check object can carry (D138). D34, like the
+/// annotation list above.
+pub const IMPORT_CHECK_KEYS: &[&str] = &[
+    "id", "body", "state", "evidence", "position", "created", "modified",
+];
 
 /// Every key an exported token measurement object can carry. D34.
 ///

@@ -56,7 +56,7 @@ use crate::html::esc;
 /// which is unassertable prose-equivalence. So the column is gone and the page
 /// renders [`crate::cmddoc`]'s summary instead. One string per verb, used by
 /// both surfaces, with no second copy left to drift.
-const VERBS: [(&str, &str, &str); 42] = [
+const VERBS: [(&str, &str, &str); 43] = [
     ("init", "—", "project.create"),
     ("use", "—", "project.use"),
     ("archive", "—", "project.archive"),
@@ -103,6 +103,7 @@ const VERBS: [(&str, &str, &str); 42] = [
     ("undep", "—", "dependency.remove"),
     ("projects", "—", "project.list"),
     ("brief", "—", "task.brief"),
+    ("check", "—", "check.add + check.set + check.remove"),
     ("report", "—", "report.summary + report.outcomes"),
     ("chart", "—", "event.list"),
     ("theme", "—", "— (no store)"),
@@ -123,7 +124,7 @@ const VERBS: [(&str, &str, &str); 42] = [
 
 /// The method table the JSON API page renders: `(method, params, returns)`.
 /// Single source, same reason as [`VERBS`].
-const METHODS: [(&str, &str, &str); 39] = [
+const METHODS: [(&str, &str, &str); 42] = [
     (
         "project.create",
         "<code>name</code>, <code>description?</code>",
@@ -203,7 +204,8 @@ const METHODS: [(&str, &str, &str); 39] = [
         "<code>ref</code>, <code>session_id?</code>, \
          <code>transcript_path?</code>, <code>client?</code>, <code>tool?</code>, \
          <code>model?</code>, <code>input_tokens?</code>, <code>output_tokens?</code>, \
-         <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>",
+         <code>cache_read_tokens?</code>, <code>cache_creation_tokens?</code>, \
+         <code>checks_passed?</code>, <code>evidence?</code>",
         "The task; plus the spawned next instance if recurring. Correlation params \
          land in the done event, and so do <code>tool</code> and <code>model</code> on \
          their own (D65) — a caller that cannot count its tokens still records who did \
@@ -247,6 +249,30 @@ const METHODS: [(&str, &str, &str); 39] = [
         "annotation.add",
         "<code>ref</code>, <code>body</code>",
         "The annotation.",
+    ),
+    (
+        "check.add",
+        "<code>ref</code>, <code>body</code>",
+        "<code>{short_id, check{id, body, state, evidence, position, created, modified}}</code>. \
+         One acceptance criterion (D138), appended at the end and starting <code>open</code>. \
+         tasqx NEVER RUNS a check: the body is a claim and <code>evidence</code> is a citation, \
+         both stored verbatim and neither interpreted. What runs commands is a hook the operator \
+         installed, calling <code>check.set</code> like any other client.",
+    ),
+    (
+        "check.set",
+        "<code>ref</code>, <code>check_id</code>, <code>state</code>, <code>evidence?</code>",
+        "<code>{short_id, check_id, state}</code>. <code>state</code> is \
+         <code>open|passed|failed</code>; <code>failed</code> is a normal outcome, not an error. \
+         <code>evidence</code> is optional — some criteria are met by something nobody can \
+         quote, and inventing a citation is worse than an unproven pass.",
+    ),
+    (
+        "check.remove",
+        "<code>ref</code>, <code>check_id</code>",
+        "<code>{short_id, check_id, removed}</code>. For a criterion that was the wrong thing to \
+         ask; use <code>check.set failed</code> when the criterion was right and the work did \
+         not meet it.",
     ),
     (
         "annotation.remove",
@@ -489,7 +515,7 @@ pub const DOCUMENTED_CLEAR_FIELDS: [&str; 10] = [
 /// free-prose rows nothing compared, which is the same shape the verb table was
 /// in before the drift guards: a tool could be added, renamed, or moved across
 /// the read/write fence with every gate green.
-const MCP_TOOLS: [(&str, bool, &str); 26] = [
+const MCP_TOOLS: [(&str, bool, &str); 29] = [
     (
         "tasqx_list_tasks",
         false,
@@ -548,6 +574,21 @@ const MCP_TOOLS: [(&str, bool, &str); 26] = [
     ("tasqx_stop_timer", true, "Stop the timer."),
     ("tasqx_tag_task", true, "Add tags."),
     ("tasqx_untag_task", true, "Remove tags."),
+    (
+        "tasqx_add_check",
+        true,
+        "Add an acceptance criterion — a claim, never a command tasqx runs (D138).",
+    ),
+    (
+        "tasqx_set_check",
+        true,
+        "Mark a criterion passed or failed, with the evidence for it.",
+    ),
+    (
+        "tasqx_remove_check",
+        true,
+        "Drop a criterion that was the wrong thing to ask.",
+    ),
     (
         "tasqx_annotate_task",
         true,

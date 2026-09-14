@@ -157,6 +157,143 @@ impl Engine {
 
     // ---- annotation.add ------------------------------------------------------
 
+    // ---- check.add / check.set / check.remove (D138) -------------------------
+
+    /// `check.add` — append one acceptance criterion. Params: `ref`, `body`.
+    ///
+    /// The criterion is prose the caller wrote; what makes it a check rather
+    /// than an annotation is that it carries a STATE, so something can ask at
+    /// completion time whether it was met. It starts `open`.
+    pub fn check_add(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
+        let body = req_str(p, "body")?;
+        let id = Uuid::now_v7().to_string();
+        let ts = now();
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_on(&tx, p)?;
+        // Appended at the end, computed inside the write so two concurrent
+        // adds cannot land on one position.
+        let position: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM checks WHERE task_id = ?1",
+            params![task.id],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO checks (id, task_id, body, state, evidence, position, created, modified) \
+             VALUES (?1, ?2, ?3, 'open', NULL, ?4, ?5, ?5)",
+            params![id, task.id, body, position, ts],
+        )?;
+        tx.execute(
+            "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
+            params![task.rev + 1, ts, task.id],
+        )?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "check.add",
+            &json!({ "id": id, "body": body }),
+        )?;
+        tx.commit()?;
+        Ok(json!({
+            "short_id": task.short_id,
+            "check": {
+                "id": id, "body": body, "state": "open",
+                "evidence": Value::Null, "position": position,
+                "created": ts, "modified": ts,
+            },
+        }))
+    }
+
+    /// `check.set` — mark one criterion. Params: `ref`, `check_id`, `state`,
+    /// `evidence?`.
+    ///
+    /// `evidence` is the citation and tasqx stores it verbatim. It is optional
+    /// because a criterion can be met by something nobody can quote — a human
+    /// looked and it was right — and refusing that would push the caller to
+    /// invent a proof, which is worse than an unproven `passed`.
+    pub fn check_set(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
+        let check_id = req_str(p, "check_id")?;
+        let state = req_str(p, "state")?;
+        if !CHECK_STATES.contains(&state.as_str()) {
+            return Err(ApiError::bad_request(format!(
+                "state must be {} (got {state:?})",
+                CHECK_STATES.join("|")
+            )));
+        }
+        let evidence = opt_str_nonempty(p, "evidence")?;
+        let ts = now();
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_on(&tx, p)?;
+        // `task_id` in the WHERE, not just the id: the `ref` scopes the child
+        // row, so naming another task's check answers `not_found` rather than
+        // reaching across tasks (the D113 shape, one relation over).
+        let changed = tx.execute(
+            "UPDATE checks SET state = ?1, evidence = COALESCE(?2, evidence), modified = ?3 \
+             WHERE id = ?4 AND task_id = ?5",
+            params![state, evidence, ts, check_id, task.id],
+        )?;
+        if changed == 0 {
+            return Err(ApiError::not_found(
+                format!("task #{} has no check {check_id}", task.short_id),
+                None,
+            ));
+        }
+        tx.execute(
+            "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
+            params![task.rev + 1, ts, task.id],
+        )?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "check.set",
+            &json!({ "id": check_id, "state": state }),
+        )?;
+        tx.commit()?;
+        Ok(json!({ "short_id": task.short_id, "check_id": check_id, "state": state }))
+    }
+
+    /// `check.remove` — drop one criterion. Params: `ref`, `check_id`.
+    ///
+    /// A criterion that turned out to be wrong is deleted rather than marked,
+    /// because the states say whether the work met it and none of them says
+    /// "this was never the right thing to ask". Unlike `annotation.remove`
+    /// (D113) this scrubs no prose anybody relied on: a check's body is a
+    /// criterion, not a record of what happened, and the event log keeps the
+    /// text it was added with.
+    pub fn check_remove(&self, p: &Value) -> Result<Value, ApiError> {
+        let _ = ref_param(p)?;
+        let check_id = req_str(p, "check_id")?;
+        let ts = now();
+        let tx = self.begin_mutation()?;
+        let task = self.resolve_ref_on(&tx, p)?;
+        let removed = tx.execute(
+            "DELETE FROM checks WHERE id = ?1 AND task_id = ?2",
+            params![check_id, task.id],
+        )?;
+        if removed == 0 {
+            return Err(ApiError::not_found(
+                format!("task #{} has no check {check_id}", task.short_id),
+                None,
+            ));
+        }
+        tx.execute(
+            "UPDATE tasks SET rev=?1, modified=?2 WHERE id=?3",
+            params![task.rev + 1, ts, task.id],
+        )?;
+        insert_event(
+            &tx,
+            Entity::Task,
+            &task.id,
+            "check.remove",
+            &json!({ "id": check_id }),
+        )?;
+        tx.commit()?;
+        Ok(json!({ "short_id": task.short_id, "check_id": check_id, "removed": true }))
+    }
+
     /// `annotation.add` — append a timestamped note to a task. Params: `ref`,
     /// `body`. Annotations are indexed alongside docs by `memory.search`, which
     /// is why the note is worth writing rather than editing into the title.
@@ -466,6 +603,19 @@ impl Engine {
         }))
     }
 }
+
+/// The states a check may be in (D138).
+///
+/// A closed vocabulary, refused by name on a typo (D34), and the source of
+/// truth for the engine's validation, its rejection message and the MCP
+/// schema's `enum` — the shape [`crate::engine::SUMMARY_GROUP_BY`] established
+/// and for the same reason: a drifted schema either forbids a valid state
+/// forever or produces calls the engine rejects, with nothing going red.
+///
+/// `failed` is a first-class state and not an error: recording that a criterion
+/// was NOT met is a normal, useful write, and a vocabulary of `open`/`passed`
+/// alone would force a caller to delete the check or lie.
+pub const CHECK_STATES: [&str; 3] = ["open", "passed", "failed"];
 
 #[cfg(test)]
 mod tests {

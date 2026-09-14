@@ -940,6 +940,18 @@ pub fn tokens_note(hint: &str, cols: usize, unicode: bool) -> Option<String> {
     Some(fit_note(&format!("note: {first}"), &pointer, cols))
 }
 
+/// The one line `done`'s `checks_hint` becomes on a terminal (D138), on stderr
+/// beside the other two notes and by the same rule: its first clause, then
+/// where to look. `--json` keeps core's text whole (D56).
+///
+/// Core emits this key ONLY when a criterion is still open, so every hint that
+/// arrives here has something to say.
+pub fn checks_note(hint: &str, cols: usize, unicode: bool) -> Option<String> {
+    let first = hint.split(';').next().unwrap_or(hint).trim();
+    let pointer = format!("{}tasqx check --help", dash(unicode));
+    Some(fit_note(&format!("note: {first}"), &pointer, cols))
+}
+
 /// The one line `done`'s `budget_hint` becomes on a terminal (D139), on
 /// stderr beside [`tokens_note`] and by the same rule: its first clause, then
 /// where to look. `--json` keeps core's text whole (D56).

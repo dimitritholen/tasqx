@@ -128,7 +128,11 @@ impl SnapshotParts {
     pub(super) const fn statement_count(self) -> usize {
         Self::BASE_STATEMENTS
             + self.depends_on as usize
-            + self.annotations as usize
+            // D138: the `annotations` gate opens TWO statements now — the notes
+            // and the checks — because both are the whole-relation reads only
+            // `store.export` wants, and splitting the gate would let a future
+            // caller ask for one and silently pay for the other.
+            + (self.annotations as usize) * 2
             + self.tokens as usize
     }
 }
@@ -644,6 +648,10 @@ impl Engine {
         // that only exists when a count was given.
         let (named_tool, named_model) = (report.tool.clone(), report.model.clone());
         let usage = report.into_usage(&correlation)?;
+        // D138: which criteria this completion proved, and the one citation
+        // covering them. Parsed here with the rest, before the lock.
+        let checks_passed = opt_str_array(p, "checks_passed")?;
+        let evidence = opt_str_nonempty(p, "evidence")?;
         let tx = self.begin_mutation()?;
         let task = self.resolve_ref_on(&tx, p)?;
         match task.status {
@@ -704,6 +712,24 @@ impl Engine {
         if let Some(u) = &usage {
             done_payload["tokens"] = tokens::record_token_usage(&tx, &task.id, u)?;
         }
+        // D138. Refused WHOLE rather than half-applied: a completion that
+        // marked what it could and reported an error about the rest would
+        // leave the caller unable to tell which happened, and this is inside
+        // the same transaction as the completion, so the refusal takes the
+        // completion with it.
+        for id in &checks_passed {
+            let changed = tx.execute(
+                "UPDATE checks SET state = 'passed', evidence = COALESCE(?1, evidence), \
+                 modified = ?2 WHERE id = ?3 AND task_id = ?4",
+                params![evidence, ts, id, task.id],
+            )?;
+            if changed == 0 {
+                return Err(ApiError::not_found(
+                    format!("task #{} has no check {id}", task.short_id),
+                    None,
+                ));
+            }
+        }
         insert_event(&tx, Entity::Task, &task.id, "done", &done_payload)?;
 
         // Spawn the next recurring instance in the SAME transaction: if this
@@ -750,6 +776,33 @@ impl Engine {
         // same `token_usage` rows to skip log-parse for exactly this task),
         // so the hint reads it too rather than contradicting a fact the
         // engine has in hand.
+        // D138: an unproven completion is COUNTED, not blocked. Refusing here
+        // breaks every caller that exists, makes `done` unreachable for
+        // criteria nobody can mechanically prove (which is most of them), and
+        // is authority a store called BETWEEN turns does not have — a refusal
+        // is something the caller routes around, not something that stops the
+        // work. D65 settled the shape: make the value change something rather
+        // than refuse it. What gives this teeth is `report.outcomes`' own
+        // `unproven` metric, where a maintainer sees the pattern instead of an
+        // agent hitting one wall at a time.
+        //
+        // Silent when nothing is open, including when there are no criteria at
+        // all: a hint on the good path teaches the reader to stop reading
+        // hints, and every completion that exists today must keep answering
+        // exactly as it did.
+        let still_open: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM checks WHERE task_id = ?1 AND state = 'open'",
+            params![task.id],
+            |r| r.get(0),
+        )?;
+        if still_open > 0 {
+            out["checks_hint"] = json!(format!(
+                "completed with {still_open} acceptance {} still open; nothing was blocked, \
+                 and `report.outcomes` counts this as an unproven completion. Pass \
+                 checks_passed (with evidence) on completion, or check.set them first.",
+                if still_open == 1 { "check" } else { "checks" }
+            ));
+        }
         // D139: an overrun is named where the caller will see it, and named
         // FIRST — it is the one thing on this response that might change what
         // the reader does next. It stops nothing: the completion above already
@@ -1502,6 +1555,36 @@ impl Engine {
             }
         }
 
+        // D138, on the annotations gate and for the same reason: only
+        // `store.export` emits the whole relation, and a task's criteria are
+        // small but grow with the store rather than with the requested page.
+        let mut checks: HashMap<String, Vec<Value>> = HashMap::new();
+        if parts.annotations {
+            statements += 1;
+            let mut stmt = self.conn.prepare(
+                "SELECT task_id, id, body, state, evidence, position, created, modified \
+                 FROM checks ORDER BY task_id, position",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    json!({
+                        "id": row.get::<_, String>(1)?,
+                        "body": row.get::<_, String>(2)?,
+                        "state": row.get::<_, String>(3)?,
+                        "evidence": row.get::<_, Option<String>>(4)?,
+                        "position": row.get::<_, i64>(5)?,
+                        "created": row.get::<_, String>(6)?,
+                        "modified": row.get::<_, String>(7)?,
+                    }),
+                ))
+            })?;
+            for row in rows {
+                let (task_id, check) = row?;
+                checks.entry(task_id).or_default().push(check);
+            }
+        }
+
         // Same gate, same reason as annotations above: `token_usage` is written
         // once per attributed turn and never pruned, so an ungated read here
         // put the growth of the telemetry log on the critical path of every
@@ -1534,6 +1617,7 @@ impl Engine {
                     blocked: blocked.contains(id),
                     depends_on: dependencies.remove(id).unwrap_or_default(),
                     annotations: annotations.remove(id).unwrap_or_default(),
+                    checks: checks.remove(id).unwrap_or_default(),
                     tokens: token_rows.remove(id).unwrap_or_default(),
                     task,
                 }
@@ -2005,6 +2089,11 @@ impl Engine {
         } else {
             Value::Null
         };
+        // D138: the criteria, in the order they were written. Always present,
+        // empty array included — a caller that has to tell "no criteria" from
+        // "this shape does not carry them" cannot, and the difference matters
+        // to anything deciding whether a completion was proven.
+        obj["checks"] = json!(self.checks_of(&task.id)?);
         obj["tokens"] = json!(self.tokens_of(&task.id)?);
         // D139: the gauge, beside the four buckets rather than instead of
         // them. `fresh_tokens` is always reported — it is a fact about the
@@ -2044,6 +2133,30 @@ impl Engine {
             obj["urgency_breakdown"] = Value::Object(breakdown);
         }
         Ok(obj)
+    }
+
+    /// A task's acceptance criteria, in `position` order (D138).
+    pub(super) fn checks_of(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, body, state, evidence, position, created, modified \
+             FROM checks WHERE task_id = ?1 ORDER BY position",
+        )?;
+        let rows = stmt.query_map(params![task_id], |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "body": r.get::<_, String>(1)?,
+                "state": r.get::<_, String>(2)?,
+                "evidence": r.get::<_, Option<String>>(3)?,
+                "position": r.get::<_, i64>(4)?,
+                "created": r.get::<_, String>(5)?,
+                "modified": r.get::<_, String>(6)?,
+            }))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// A task's spend as D139's gauge counts it: `input + output +

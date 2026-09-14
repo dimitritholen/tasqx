@@ -107,6 +107,10 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
             "client",
             "tool",
             "model",
+            // D138: which criteria this completion proved, and the one citation
+            // covering them.
+            "checks_passed",
+            "evidence",
             "input_tokens",
             "output_tokens",
             "cache_read_tokens",
@@ -120,6 +124,16 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     ("tag.add", &["ref", "tags"], false),
     ("tag.remove", &["ref", "tags"], false),
     ("annotation.add", &["ref", "body"], false),
+    // D138: acceptance criteria. `ref` + a child id, the shape D113 settled
+    // for annotations and for the same reason — naming it `check_id` says
+    // which child row a `ref`-scoped call means.
+    ("check.add", &["ref", "body"], false),
+    (
+        "check.set",
+        &["ref", "check_id", "state", "evidence"],
+        false,
+    ),
+    ("check.remove", &["ref", "check_id"], false),
     // D113: `id` alone would collide with every other method's `id`-shaped
     // reads this table already has (`memory.get`, `memory.remove`) — naming it
     // `annotation_id` says which child row a `ref`-scoped call means.
@@ -284,6 +298,9 @@ pub fn dispatch(engine: &Engine, method: &str, params: &Value) -> Result<Value, 
         "project.list" => engine.project_list(params),
         "project.use" => engine.project_use(params),
         "project.archive" => engine.project_archive(params),
+        "check.add" => engine.check_add(params),
+        "check.set" => engine.check_set(params),
+        "check.remove" => engine.check_remove(params),
         "annotation.add" => engine.annotation_add(params),
         "annotation.remove" => engine.annotation_remove(params),
         "token.add" => engine.token_add(params),

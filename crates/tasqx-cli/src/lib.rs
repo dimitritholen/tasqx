@@ -69,8 +69,8 @@ use tasqx_core::{
 };
 
 use command::{
-    cli_command, ChartKind, Cli, Command, ConfigAction, McpAction, MemoryAction, ThemeAction,
-    TokensAction,
+    cli_command, ChartKind, CheckAction, Cli, Command, ConfigAction, McpAction, MemoryAction,
+    ThemeAction, TokensAction,
 };
 use theme::{Caps, Ctx};
 
@@ -1048,6 +1048,7 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Config { action }) => {
             run_config(&mut backend, &ctx, &action, theme_flag.as_deref())
         }
+        Some(Command::Check { action }) => run_check(&mut backend, &ctx, &action),
         Some(Command::Memory { action }) => run_memory(&mut backend, &ctx, &action),
         Some(Command::Tokens { action }) => run_tokens(&mut backend, &ctx, &action),
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),

@@ -487,6 +487,10 @@ impl Engine {
 
         let history = self.task_closing_history()?;
         let annotated = self.annotated_task_ids()?;
+        // Hoisted: one grouped read for the whole report, never one per task —
+        // the N+1 `SnapshotParts` exists to forbid, and this loop walks every
+        // task in the store.
+        let open_checks = self.open_check_counts()?;
 
         struct Agg {
             /// Tasks in scope whose most recent close was a completion.
@@ -501,6 +505,10 @@ impl Engine {
             /// Completions that carried a budget — `overrun`'s denominator.
             budgeted: i64,
             overrun: Vec<i64>,
+            /// Completions that carried acceptance criteria — `unproven`'s
+            /// denominator.
+            criteriaed: i64,
+            unproven: Vec<i64>,
             tokens_in: i64,
             tokens_out: i64,
             tokens_cache_read: i64,
@@ -572,6 +580,8 @@ impl Engine {
                 ratios: Vec::new(),
                 budgeted: 0,
                 overrun: Vec::new(),
+                criteriaed: 0,
+                unproven: Vec::new(),
                 tokens_in: 0,
                 tokens_out: 0,
                 tokens_cache_read: 0,
@@ -607,6 +617,18 @@ impl Engine {
             if let Some(est) = t.estimate.as_deref().and_then(duration_secs) {
                 if est > 0 && t.tracked_seconds > 0 {
                     agg.ratios.push(t.tracked_seconds as f64 / est as f64);
+                }
+            }
+            // D138: a completion carrying a criterion nobody marked. This is
+            // what gives the counted-not-blocked ruling its teeth — a
+            // maintainer sees the pattern here, rather than an agent hitting
+            // one refusal at a time.
+            if let Some((total, open)) = open_checks.get(&t.id).copied() {
+                if total > 0 {
+                    agg.criteriaed += 1;
+                    if open > 0 {
+                        agg.unproven.push(t.short_id);
+                    }
                 }
             }
             // D139: the overrun, and the first evidence this roadmap has had
@@ -732,6 +754,18 @@ impl Engine {
                         "n": agg.completions,
                         "rate": rate(agg.silent.len() as i64, agg.completions),
                         "refs": agg.silent,
+                    }),
+                );
+            }
+            if wants("unproven") {
+                agg.unproven.sort_unstable();
+                obj.insert(
+                    "unproven".into(),
+                    json!({
+                        "count": agg.unproven.len(),
+                        "n": agg.criteriaed,
+                        "rate": rate(agg.unproven.len() as i64, agg.criteriaed),
+                        "refs": agg.unproven,
                     }),
                 );
             }
@@ -864,6 +898,33 @@ impl Engine {
             }
         }
         out.retain(|_, v| v.closed);
+        Ok(out)
+    }
+
+    /// Per task, `(criteria, still open)` — the two numbers `unproven` needs
+    /// (D138).
+    ///
+    /// One grouped statement rather than a set of ids like
+    /// [`Self::annotated_task_ids`], because this metric asks two questions of
+    /// the same rows: whether the task had criteria at all (its denominator)
+    /// and whether any went unmarked (its count). A task absent from the map
+    /// has no criteria and is in neither.
+    fn open_check_counts(&self) -> Result<HashMap<String, (i64, i64)>, ApiError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT task_id, COUNT(*), SUM(CASE WHEN state = 'open' THEN 1 ELSE 0 END) \
+             FROM checks GROUP BY task_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?),
+            ))
+        })?;
+        let mut out = HashMap::new();
+        for r in rows {
+            let (id, counts) = r?;
+            out.insert(id, counts);
+        }
         Ok(out)
     }
 

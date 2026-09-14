@@ -1,6 +1,7 @@
 //! Transfer domain methods for Engine.
 
 use super::*;
+use crate::engine::CHECK_STATES;
 
 impl Engine {
     // ---- store.export --------------------------------------------------------
@@ -172,6 +173,55 @@ impl Engine {
                     params![aid, id, body, acreated],
                 )?;
             }
+        }
+        Ok(())
+    }
+
+    /// Replace one task's acceptance criteria, wholesale like annotations
+    /// (D138): the payload's task object is authoritative about its own child
+    /// rows.
+    ///
+    /// `state` passes the same closed-vocabulary gate `check.set` enforces,
+    /// with `import_field` naming the task — carrying an unknown state
+    /// verbatim would let one bad payload re-export the corruption to every
+    /// downstream store (D16).
+    fn import_checks(tx: &rusqlite::Transaction, id: &str, tv: &Value) -> Result<(), ApiError> {
+        tx.execute("DELETE FROM checks WHERE task_id = ?1", params![id])?;
+        let Some(rows) = import_field(id, "checks", opt_array(tv, "checks"))? else {
+            return Ok(());
+        };
+        for (n, c) in rows.iter().enumerate() {
+            import_keys(&format!("task {id}, "), "checks[]", c, IMPORT_CHECK_KEYS)?;
+            let cid = import_field(id, "checks[].id", opt_str_nonempty(c, "id"))?
+                .unwrap_or_else(|| Uuid::now_v7().to_string());
+            let body = import_field(id, "checks[].body", req_str(c, "body"))?;
+            let state = import_field(id, "checks[].state", opt_str_nonempty(c, "state"))?
+                .unwrap_or_else(|| CHECK_STATES[0].to_string());
+            if !CHECK_STATES.contains(&state.as_str()) {
+                return Err(ApiError::bad_request(format!(
+                    "task {id}, checks[]: state must be {} (got {state:?})",
+                    CHECK_STATES.join("|")
+                )));
+            }
+            let evidence = import_field(id, "checks[].evidence", opt_str_nonempty(c, "evidence"))?;
+            // Absent falls back to the array's own order, which is what an
+            // export emits anyway — a payload hand-written without positions
+            // still round-trips in the order it was written.
+            let position =
+                import_field(id, "checks[].position", opt_i64(c, "position"))?.unwrap_or(n as i64);
+            let created = import_field(id, "checks[].created", opt_str_nonempty(c, "created"))?
+                .unwrap_or_else(now);
+            let modified = import_field(id, "checks[].modified", opt_str_nonempty(c, "modified"))?
+                .unwrap_or_else(|| created.clone());
+            tx.execute(
+                "INSERT INTO checks (id, task_id, body, state, evidence, position, created, \
+                 modified) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                 task_id=excluded.task_id, body=excluded.body, state=excluded.state, \
+                 evidence=excluded.evidence, position=excluded.position, \
+                 created=excluded.created, modified=excluded.modified",
+                params![cid, id, body, state, evidence, position, created, modified],
+            )?;
         }
         Ok(())
     }
@@ -425,6 +475,9 @@ impl Engine {
                 // travels with the task it belongs to.
                 "budget_tokens": t.budget_tokens,
                 "depends_on": kept,
+                // D138: an export is self-contained (D12, D37), so the criteria
+                // travel with the task like its annotations do.
+                "checks": snapshot.checks,
                 "annotations": snapshot.annotations,
                 "urgency": urgency::score_at(t.priority, t.due.as_deref(), &t.created, now_ts),
                 "created": t.created,
@@ -1077,6 +1130,7 @@ impl Engine {
             }
 
             Self::import_annotations(&tx, id, tv)?;
+            Self::import_checks(&tx, id, tv)?;
             Self::import_token_measurements(&tx, id, tv)?;
 
             // Edges are deferred to pass 2: a payload may list a target *after*

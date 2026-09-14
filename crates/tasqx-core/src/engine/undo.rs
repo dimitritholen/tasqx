@@ -164,6 +164,25 @@ pub const NOT_UNDOABLE: &[(&str, &str)] = &[
          <ref>` completes it again with a real one.",
     ),
     (
+        "check.add",
+        "A criterion cannot be un-added by this path: the `add` event names an id the check \
+         table would no longer hold, and the positions of everything after it have already \
+         closed over the gap. `tasqx check rm <ref> <id>` takes it back and writes its own \
+         event.",
+    ),
+    (
+        "check.set",
+        "A `check.set` event records the state that was SET, never the one it replaced, nor the \
+         evidence it overwrote — the same shape as `modify` below, and the log holds nothing to \
+         restore. `tasqx check set <ref> <id> <state>` puts back whatever it should have been.",
+    ),
+    (
+        "check.remove",
+        "The row is gone and the event carries only its id, not the body, state, evidence or \
+         position it held — so an inverse would have to invent all four. `tasqx check add` \
+         writes the criterion again, at the end.",
+    ),
+    (
         "modify",
         "A `modify` event records the values that were SET, never the ones they replaced, so the \
          log holds nothing to restore. `tasqx show <ref>` and a second `modify` is the way back \
