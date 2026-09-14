@@ -200,7 +200,7 @@ impl App {
     /// nobody drew.
     ///
     /// It also owns the demand closure, which needs the CONFIGURED slot
-    /// members: the analytics slot is one rectangle for three panels, and it is
+    /// members: the analytics slot is one rectangle for several panels, and it is
     /// sized for the tallest of them so that `6`/`7`/`8` swap the occupant
     /// without resizing the box under the reader.
     pub fn screen(&self, width: u16, height: u16) -> Option<Screen> {
@@ -366,7 +366,7 @@ impl App {
     /// or it can be summoned into the analytics slot.
     ///
     /// The slot half is guarded by `order` as well, and that is not belt and
-    /// braces: the slot is one rectangle shared by three panels, so "a slot
+    /// braces: the slot is one rectangle shared by several panels, so "a slot
     /// exists" says nothing about WHICH members were configured. Without the
     /// guard a digit summoned any of the three into it, overriding
     /// `dashboard.panels` from the keyboard.

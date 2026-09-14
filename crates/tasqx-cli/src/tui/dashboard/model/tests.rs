@@ -380,20 +380,21 @@ fn the_fit_drops_panels_from_the_bottom_rather_than_overflowing() {
 /// never placed, and removing one must not strand the others.
 #[test]
 fn a_panel_left_out_of_the_configured_order_is_never_placed() {
-    let order = vec![PanelId::Tasks, PanelId::Tasks];
+    let order = vec![PanelId::Tasks, PanelId::Pulse];
     let screen = layout(120, 40, &order, ANY).unwrap();
     for p in &screen.panels {
         assert!(
-            p.id == PanelId::Tasks || p.id == PanelId::Tasks,
+            p.id == PanelId::Tasks || p.id == PanelId::Pulse || p.id == PanelId::Slot,
             "{:?} was placed but is not in the configured order",
             p.id
         );
     }
     assert!(screen.placement(PanelId::Tasks).is_some());
-    assert!(screen.placement(PanelId::Tasks).is_some());
+    assert!(screen.placement(PanelId::Pulse).is_some());
 
-    // Dropping all three slot members drops the slot with them.
-    let no_analytics = vec![PanelId::Tasks, PanelId::Tasks, PanelId::Tasks];
+    // Dropping every slot member drops the slot with them. `Tasks` is the only
+    // configurable panel that is not one, so this is the whole of the rest.
+    let no_analytics = vec![PanelId::Tasks];
     let screen = layout(80, 24, &no_analytics, ANY).unwrap();
     assert!(
         !screen.has_slot(),

@@ -1040,7 +1040,7 @@ impl PanelId {
         })
     }
 
-    /// The three panels that share the analytics slot when space is short.
+    /// The panels that share the analytics slot when space is short.
     pub const SLOT_MEMBERS: [PanelId; 5] = [
         PanelId::Projects,
         PanelId::Burndown,
