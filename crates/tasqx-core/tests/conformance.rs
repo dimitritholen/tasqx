@@ -822,6 +822,7 @@ const IMPORTED_DOC_ROW: &[Field] = &[
     req("title", Ty::Str),
     nul("source", Ty::Str),
     req("replaced", Ty::Bool),
+    req("_rev", Ty::Int),
 ];
 
 const R_MEMORY_IMPORT: Shape = &[&[

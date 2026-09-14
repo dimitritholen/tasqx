@@ -79,6 +79,9 @@ tasqx memory import docs/adr
 - One transaction: if any file fails, nothing is imported.
 - Re-importing the same directory *replaces* those documents instead of
   duplicating them, so it's safe to re-run whenever the sources change.
+- A replace bumps the document's revision, so an `update --expected-rev`
+  taken before the re-import is refused with `conflict` instead of silently
+  overwriting the freshly imported text.
 
 ## tasqx memory rm
 

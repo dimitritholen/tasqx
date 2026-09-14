@@ -342,8 +342,9 @@ const METHODS: [(&str, &str, &str); 42] = [
     (
         "memory.import",
         "<code>docs</code>",
-        "<code>{imported, replaced, docs}</code>. One transaction; same <code>source</code> \
-         replaces IN PLACE (id and creation date kept) and is counted in <code>replaced</code>.",
+        "<code>{imported, replaced, docs}</code>, each doc <code>{id, title, source, replaced, _rev}</code>. \
+         One transaction; same <code>source</code> replaces IN PLACE (id and creation date kept), \
+         bumps that doc's <code>_rev</code> (D143) and is counted in <code>replaced</code>.",
     ),
     (
         "memory.list",

@@ -186,16 +186,21 @@ impl Engine {
             // 404'd the moment ANY re-run happened — announced nowhere, and
             // at scale on a real store one source had been silently
             // overwritten 34 times.
-            let existing: Option<String> = match &source {
+            let existing: Option<(String, i64)> = match &source {
                 Some(src) => tx
-                    .query_row("SELECT id FROM docs WHERE source = ?1", params![src], |r| {
-                        r.get(0)
-                    })
+                    .query_row(
+                        "SELECT id, rev FROM docs WHERE source = ?1",
+                        params![src],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
                     .optional()?,
                 None => None,
             };
             let is_replace = existing.is_some();
-            let id = existing.unwrap_or_else(|| Uuid::now_v7().to_string());
+            let (id, rev) = match existing {
+                Some((id, cur_rev)) => (id, cur_rev + 1),
+                None => (Uuid::now_v7().to_string(), 0),
+            };
             // ON CONFLICT DO UPDATE, never DELETE+INSERT (D41's own rule,
             // learned the hard way for the annotation upsert): a DELETE does
             // not fire `docs_fts`'s delete trigger for free, and re-doing it
@@ -204,13 +209,21 @@ impl Engine {
             // keeps the index honest. `created` is deliberately absent from
             // the SET list, so a source-replace keeps the ORIGINAL creation
             // date rather than pretending the doc is new.
+            //
+            // `rev` is in the SET list because a source-replace is a revision
+            // of the same document (D143): a `memory.update` still holding
+            // the pre-import `expected_rev` must conflict, not clobber the
+            // import. The value is the looked-up row's rev + 1, computed here
+            // the way `memory_update` and `store.import` do it; the lookup
+            // and the upsert sit in one IMMEDIATE transaction
+            // (`begin_mutation`), so nothing can move the row between them.
             tx.execute(
-                "INSERT INTO docs (id, source, title, body, search_body, created, modified) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) \
+                "INSERT INTO docs (id, source, title, body, search_body, rev, created, modified) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) \
                  ON CONFLICT(id) DO UPDATE SET \
                  source=excluded.source, title=excluded.title, body=excluded.body, \
-                 search_body=excluded.search_body, modified=excluded.modified",
-                params![id, source, title, body, search_body, ts],
+                 search_body=excluded.search_body, modified=excluded.modified, rev=excluded.rev",
+                params![id, source, title, body, search_body, rev, ts],
             )?;
             insert_event(
                 &tx,
@@ -222,12 +235,19 @@ impl Engine {
                     "source": source,
                     "via": "memory.import",
                     "replaced": is_replace,
+                    "rev": rev,
                 }),
             )?;
             if is_replace {
                 replaced += 1;
             }
-            out.push(json!({ "id": id, "title": title, "source": source, "replaced": is_replace }));
+            out.push(json!({
+                "id": id,
+                "title": title,
+                "source": source,
+                "replaced": is_replace,
+                "_rev": rev,
+            }));
         }
         tx.commit()?;
 

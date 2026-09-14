@@ -502,6 +502,60 @@ fn memory_import_keeps_the_doc_id_stable_across_a_source_replace_and_reports_it(
     assert_eq!(found["count"], 1, "{found}");
 }
 
+/// D143 (task #67): a re-import that replaces a doc by `source` used to leave
+/// `rev` untouched, so a `memory.update` carrying the PRE-import `expected_rev`
+/// passed the optimistic-concurrency guard and silently overwrote the freshly
+/// imported text — the exact clobber that guard exists to refuse.
+/// `store.import` already carried `rev`; `memory.import` now bumps it too.
+#[test]
+fn memory_import_bumps_rev_on_a_source_replace_so_a_stale_expected_rev_conflicts() {
+    let e = engine();
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "Deploy", "body": "v1 of the deploy steps", "source": "deploy.md" }),
+    )
+    .unwrap();
+    let id = added["id"].as_str().unwrap().to_string();
+    let before = call(&e, "memory.get", json!({ "id": id.clone() })).unwrap();
+    assert_eq!(before["_rev"], 0, "{before}");
+
+    // The file is edited on disk and the directory import re-run.
+    let imported = call(
+        &e,
+        "memory.import",
+        json!({ "docs": [{ "title": "Deploy", "body": "v2 from the re-import", "source": "deploy.md" }] }),
+    )
+    .unwrap();
+    assert_eq!(imported["replaced"], 1, "{imported}");
+    assert_eq!(imported["docs"][0]["id"], id, "{imported}");
+    assert_eq!(
+        imported["docs"][0]["_rev"], 1,
+        "the per-doc result must carry the new revision: {imported}"
+    );
+
+    let after = call(&e, "memory.get", json!({ "id": id.clone() })).unwrap();
+    assert_eq!(after["body"], "v2 from the re-import");
+    assert_eq!(after["_rev"], 1, "a source-replace is a revision: {after}");
+
+    // A writer still holding the pre-import rev must be refused, not let
+    // through to clobber the import.
+    let err = call(
+        &e,
+        "memory.update",
+        json!({ "id": id.clone(), "body": "stale text from before the import", "expected_rev": 0 }),
+    )
+    .expect_err("a stale expected_rev must conflict after an import");
+    assert_eq!(err.code, ErrorCode::Conflict, "{err:?}");
+    assert_eq!(err.data.as_ref().unwrap()["expected"], 0, "{err:?}");
+    assert_eq!(err.data.as_ref().unwrap()["current"], 1, "{err:?}");
+    let untouched = call(&e, "memory.get", json!({ "id": id })).unwrap();
+    assert_eq!(
+        untouched["body"], "v2 from the re-import",
+        "the refused update must write nothing"
+    );
+}
+
 /// Review finding: `limit as i64` wrapped a u64 above i64::MAX negative, and
 /// SQLite treats a negative LIMIT as unlimited — the opposite of what the
 /// caller bounded.
