@@ -983,6 +983,16 @@ fn build_tool_specs() -> Vec<ToolSpec> {
                     "keep": {
                         "type": "boolean",
                         "description": "Keep other active tasks running (opt out of single-active)."
+                    },
+                    "actor": {
+                        "type": "string",
+                        "description": "Who is asking for the clock (D140). Filled in \
+                            automatically with this connection's id when omitted, so you do not \
+                            normally pass it — supply your own only if you have a stable agent \
+                            identity worth recording. Starting a task while ANOTHER actor holds \
+                            an active clock is refused with `conflict` rather than silently \
+                            stopping their timer and leaving their work untracked; pass \
+                            keep:true to run both deliberately."
                     }
                 },
                 "required": ["ref"]
@@ -1287,6 +1297,20 @@ pub struct McpServer<'e> {
     /// one late-bound field of per-process session state — not state of
     /// record, which stays in the store.
     client_info: std::cell::RefCell<Option<Value>>,
+    /// D140: this connection's identity, minted once per `tasqx mcp serve`
+    /// process and injected on `task.start` the way `client` is.
+    ///
+    /// It answers "is this the same client that started the other timer", and
+    /// nothing else — not who that client is. tasqx cannot authenticate a
+    /// caller (§7 says so of `--scope` in as many words), but each serve is its
+    /// own process with its own handshake, so telling two connections apart is
+    /// a question the store CAN answer.
+    ///
+    /// Deliberately not minted by the CLI: a one-shot `tasqx start` is a fresh
+    /// process every time, so a CLI-minted id would make a person at a shell a
+    /// different actor on every command and refuse them their own auto-stop.
+    /// Absent is the right value there, and absent means "behave as before".
+    connection_id: String,
     /// How the rendered detail view writes time. Session state, fixed at
     /// construction: the CLI resolves the setting once per process, and a value
     /// that could change mid-session would mean two `get_task` calls in one
@@ -1304,6 +1328,7 @@ impl<'e> McpServer<'e> {
             engine,
             scope,
             client_info: std::cell::RefCell::new(None),
+            connection_id: format!("mcp:{}", uuid::Uuid::now_v7()),
             time_format: crate::markdown::TimeFormat::Both,
         }
     }
@@ -1536,6 +1561,21 @@ impl<'e> McpServer<'e> {
                     if let Some(label) = self.client_label() {
                         obj.insert("client".to_string(), Value::String(label));
                     }
+                }
+            }
+        }
+        // D140, the same pattern one field over: a caller that names its own
+        // `actor` is respected as-is (a fleet with stable agent ids has better
+        // names than a connection), and one that names none is stamped with
+        // this connection's. `task.done` is not stamped, because it takes no
+        // `actor` — only starting a clock can collide with one.
+        if spec.method == "task.start" {
+            if let Some(obj) = args.as_object_mut() {
+                if obj.get("actor").is_none_or(Value::is_null) {
+                    obj.insert(
+                        "actor".to_string(),
+                        Value::String(self.connection_id.clone()),
+                    );
                 }
             }
         }

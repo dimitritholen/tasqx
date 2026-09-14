@@ -14,6 +14,14 @@ pub(super) struct StartTask {
     pub(super) target: TaskTarget,
     pub(super) keep: bool,
     pub(super) correlation: Correlation,
+    /// Who is asking for the clock (D140).
+    ///
+    /// Deliberately NOT `Correlation::session_id`, though the ruling offers it
+    /// first: that field is read by the attribution engine to match OTLP
+    /// samples, and the MCP transport injecting a minted value into it would
+    /// have the store searching telemetry for a session id no exporter ever
+    /// emitted. This one is only ever compared with itself.
+    pub(super) actor: Option<String>,
 }
 
 /// Correlation metadata captured at the moment work starts or completes
@@ -59,6 +67,7 @@ pub(super) fn parse_start_task(p: &Value) -> Result<StartTask, ApiError> {
         target: parse_task_target(p)?,
         keep: opt_bool(p, "keep")?.unwrap_or(false),
         correlation: parse_correlation(p)?,
+        actor: opt_str_nonempty(p, "actor")?,
     })
 }
 

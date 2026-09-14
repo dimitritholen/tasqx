@@ -45,6 +45,12 @@ tasqx start 42 --keep
 By default starting one task stops any other active one ("single-active") —
 `--keep` opts out.
 
+That stays true for you at a shell. It stops being true across *sessions*: if
+an AI agent holds a running timer, starting a task from another session is
+refused rather than silently stopping their clock, because stopping it would
+leave the rest of their work untracked and tell only you about it. `--keep`
+runs both deliberately.
+
 The extra flags (`--client`, `--session-id`, `--transcript-path`) are for AI
 agents reporting who is doing the work; see
 [AI Agents and Automation](AI-Agents-and-Automation.md#token-accounting).

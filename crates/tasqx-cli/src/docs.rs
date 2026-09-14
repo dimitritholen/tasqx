@@ -177,11 +177,15 @@ const METHODS: [(&str, &str, &str); 39] = [
     (
         "task.start",
         "<code>ref</code>, <code>keep?</code>, <code>session_id?</code>, \
-         <code>transcript_path?</code>, <code>client?</code>",
+         <code>transcript_path?</code>, <code>client?</code>, <code>actor?</code>",
         "The task, timer running. Correlation params land in the start event. \
          <code>auto_stopped</code> lists whichever other task D6's single-active \
          rule just stopped to make room for this one — empty unless <code>keep</code> \
-         was omitted and something else was running.",
+         was omitted and something else was running. <code>actor</code> (D140) says who \
+         is asking for the clock: a start against a timer a DIFFERENT actor holds is \
+         refused <code>conflict</code> rather than silently stopping it, since that would \
+         leave the other party's work untracked. Absent on both sides — a shell — keeps \
+         D6's behaviour exactly; the MCP server fills it in with its own connection id.",
     ),
     (
         "task.stop",

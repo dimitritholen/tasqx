@@ -79,7 +79,17 @@ pub const PARAMS: &[(&str, &[&str], bool)] = &[
     // record the async token-attribution engine reads later.
     (
         "task.start",
-        &["ref", "keep", "session_id", "transcript_path", "client"],
+        &[
+            "ref",
+            "keep",
+            "session_id",
+            "transcript_path",
+            "client",
+            // D140: who is asking for the clock. Distinct from `session_id`,
+            // which the attribution engine reads to match telemetry — this one
+            // is only ever compared with itself.
+            "actor",
+        ],
         false,
     ),
     ("task.stop", &["ref"], false),

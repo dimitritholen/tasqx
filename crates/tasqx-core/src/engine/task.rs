@@ -462,6 +462,31 @@ impl Engine {
 
         let ts = now();
 
+        // D140: the auto-stop below is scoped to the caller's own clock. D6
+        // wrote "the currently active one" for one actor and it reads as one
+        // for as long as there is one; with two, it reaches across callers and
+        // the OTHER party's task leaves `active` mid-work with its remaining
+        // time untracked, reported only to the caller that caused it.
+        //
+        // Two unknowns are not evidence of two parties, so the refusal needs
+        // BOTH sides named: a person at a shell (who names no actor) keeps the
+        // auto-stop against an agent's clock and against another shell, which
+        // is every single-actor store and therefore almost every store.
+        if !command.keep {
+            if let Some(mine) = command.actor.as_deref() {
+                if let Some((held_by, short_id, title)) = self.active_clock_holder()? {
+                    if held_by != mine {
+                        return Err(ApiError::conflict(format!(
+                            "#{short_id} \"{title}\" is active and its clock is held by another \
+                             session ({held_by}); stopping it here would leave that session's \
+                             work untracked. Pass keep:true to run both clocks deliberately \
+                             (D6), or wait for it to stop."
+                        )));
+                    }
+                }
+            }
+        }
+
         // D6: single active by default — auto-stop any currently active task.
         let mut auto_stopped: Vec<commands::AutoStopped> = Vec::new();
         if !command.keep {
@@ -519,6 +544,15 @@ impl Engine {
         // which session/transcript covered this interval.
         let mut start_payload = json!({ "interval_started": ts });
         command.correlation.apply(&mut start_payload);
+        // D140: the durable half of the actor check. The next `task.start`
+        // compares against THIS, so the record has to outlive the call —
+        // `tasks` carries no column for it because a task holds a clock only
+        // while it is active, and the event log is already the per-occurrence
+        // record with its own timestamp (the same argument `Correlation` makes
+        // for living here).
+        if let Some(actor) = &command.actor {
+            start_payload["actor"] = json!(actor);
+        }
         insert_event(&tx, Entity::Task, &task.id, "start", &start_payload)?;
         tx.commit()?;
 
@@ -1953,6 +1987,43 @@ impl Engine {
         Ok(obj)
     }
 
+    /// The actor holding the one active clock, with the task it is on — or
+    /// `None` when nothing is active or the running timer names no actor.
+    ///
+    /// Read from the most recent `start` event of the active task rather than
+    /// from a column, because that event is where D140 wrote it and because a
+    /// column would have to be cleared on every stop, done and cancel — three
+    /// more places to forget.
+    ///
+    /// A task can be active with no `actor` on its start (a shell, or a client
+    /// predating D140), and that answers `None`: two unknowns are not evidence
+    /// of two parties, and refusing on a guess would break the ordinary case of
+    /// a person who started a task and then pointed an agent at the store.
+    fn active_clock_holder(&self) -> Result<Option<(String, i64, String)>, ApiError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.payload, t.short_id, t.title FROM tasks t \
+             JOIN events e ON e.entity_id = t.id AND e.op = 'start' \
+             WHERE t.status = 'active' \
+             ORDER BY e.rowid DESC LIMIT 1",
+        )?;
+        let row = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .next();
+        let Some(row) = row else { return Ok(None) };
+        let (payload, short_id, title) = row?;
+        let actor = payload
+            .as_deref()
+            .and_then(|p| serde_json::from_str::<Value>(p).ok())
+            .and_then(|v| payload_field(&v, "actor"));
+        Ok(actor.map(|a| (a, short_id, title)))
+    }
+
     // ---- task.brief ----------------------------------------------------------
 
     /// `task.brief` — D136. Everything needed before starting one task, in one
@@ -2297,6 +2368,15 @@ impl Engine {
         }
         Ok(out)
     }
+}
+
+/// One string field out of an event payload.
+///
+/// A function taking the key as a parameter rather than a literal
+/// `.get("actor")` chain: D32's guard bans that shape across the engine because
+/// it cannot tell an absent value from a wrong-typed one.
+fn payload_field(payload: &Value, key: &str) -> Option<String> {
+    payload.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
 /// English function words dropped from a derived query (D136).
