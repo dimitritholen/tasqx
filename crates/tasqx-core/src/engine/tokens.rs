@@ -368,7 +368,7 @@ impl Engine {
                 .query_row(
                     "SELECT source, input_tokens, output_tokens, cache_read_tokens, \
                      cache_creation_tokens FROM token_usage \
-                     WHERE task_id = ?1 AND source != ?2 ORDER BY created LIMIT 1",
+                     WHERE task_id = ?1 AND source != ?2 ORDER BY id LIMIT 1",
                     params![task.id, SOURCE_SELF_REPORT],
                     |r| {
                         Ok((
@@ -863,13 +863,14 @@ impl Engine {
         // the residue is a direct-store writer racing a recompute on purpose.
         let read_tx = self.conn.unchecked_transaction()?;
 
-        // Every task's stored log-parse rows, oldest first per task.
+        // Every task's stored log-parse rows, oldest first per task — by `id`,
+        // the UUIDv7 that is creation order, never by the `created` text (D142).
         let mut stored: HashMap<String, Vec<StoredLogParse>> = HashMap::new();
         {
             let mut stmt = self.conn.prepare(
                 "SELECT task_id, id, tool, input_tokens, output_tokens, cache_read_tokens, \
                  cache_creation_tokens, confidence FROM token_usage \
-                 WHERE source = ?1 ORDER BY created, id",
+                 WHERE source = ?1 ORDER BY id",
             )?;
             let rows = stmt.query_map(params![SOURCE_LOG_PARSE], |r| {
                 Ok((
@@ -1132,9 +1133,14 @@ impl Engine {
 
     /// Measurements of a task as canonical objects, oldest first (the
     /// `annotations_of` shape, for `task.get`).
+    ///
+    /// Oldest first *by `id`*, which is UUIDv7 and therefore creation order.
+    /// Not by `created`: that TEXT column carries a variable-length fractional
+    /// second and sorts an older row above a newer one under BINARY collation
+    /// (D142, and `storage::event_id_floor` for the whole story).
     pub(super) fn tokens_of(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {TOKEN_COLS} FROM token_usage WHERE task_id = ?1 ORDER BY created, id"
+            "SELECT {TOKEN_COLS} FROM token_usage WHERE task_id = ?1 ORDER BY id"
         ))?;
         let rows = stmt.query_map(params![task_id], |r| measurement_from_row(r, 0))?;
         let mut v = Vec::new();

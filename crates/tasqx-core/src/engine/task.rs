@@ -1535,9 +1535,11 @@ impl Engine {
             // Removed (D113) annotations are tombstones, not history a backup
             // should carry forward — the same reason a filtered export trims
             // dependency edges rather than exporting a dangling one.
+            // By `id`, not `created`: creation order, since UUIDv7 (D142, and
+            // the same reason `export_docs` orders that way).
             let mut stmt = self.conn.prepare(
                 "SELECT task_id, id, body, created FROM annotations WHERE removed IS NULL \
-                 ORDER BY task_id, created, id",
+                 ORDER BY task_id, id",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
@@ -1593,7 +1595,10 @@ impl Engine {
         if parts.tokens {
             statements += 1;
             let mut stmt = self.conn.prepare(&format!(
-                "SELECT task_id, {} FROM token_usage ORDER BY task_id, created, id",
+                // By `id` for the reason the annotations query above gives
+                // (D142): `token_usage.id` is UUIDv7 too, so it is creation
+                // order without the variable-length-fraction hazard.
+                "SELECT task_id, {} FROM token_usage ORDER BY task_id, id",
                 tokens::TOKEN_COLS
             ))?;
             let rows = stmt.query_map([], |row| {
@@ -1958,10 +1963,14 @@ impl Engine {
     /// into chronological order, because the page is read as a history while
     /// the interesting end of a long one is the near end.
     ///
-    /// The ordering carries `id` as a tiebreak in BOTH directions. `created`
-    /// alone is not unique — several annotations can share a timestamp — and a
-    /// window whose tie order differs between two queries pages inconsistently:
-    /// a row is shown twice, or skipped, and the reader has no way to notice.
+    /// **The ordering is `id` and only `id` (D142).** `created` is TEXT written
+    /// by [`crate::util::now`], whose fractional second is variable-length, and
+    /// under BINARY collation an older stamp can sort above a newer one — the
+    /// defect [`crate::storage::event_id_floor`] documents at length for
+    /// `events.ts`. Sorting on it paged a newer annotation out and an older one
+    /// into its place. `id` is UUIDv7, minted in creation order, unique, and
+    /// already the PRIMARY KEY, so one column settles both the order and the
+    /// tie that `created` could never settle on its own.
     fn annotations_page(
         &self,
         task_id: &str,
@@ -1984,7 +1993,7 @@ impl Engine {
         let sql_offset = i64::try_from(offset).unwrap_or(i64::MAX);
         let mut stmt = self.conn.prepare(
             "SELECT id, body, created FROM annotations WHERE task_id = ?1 AND removed IS NULL \
-             ORDER BY created DESC, id DESC LIMIT ?2 OFFSET ?3",
+             ORDER BY id DESC LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(params![task_id, sql_limit, sql_offset], |r| {
             Ok(json!({
@@ -2279,8 +2288,8 @@ impl Engine {
     ///
     /// One statement, not one per dependency: a point query per row here is
     /// the N+1 `SnapshotParts` exists to forbid. The correlated subquery picks
-    /// the newest note by `created` then `id`, the same tiebreak
-    /// `annotations_page` orders by, so "newest" means one thing in the store.
+    /// the newest note by `id`, the same key `annotations_page` orders by
+    /// (D142), so "newest" means one thing in the store.
     fn prerequisites_with_outcome(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
         let now = Timestamp::now();
         // `TASK_COLS` and `map_task_row_at`, not a hand-picked `t.status`:
@@ -2292,9 +2301,9 @@ impl Engine {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {}, \
                     (SELECT a.body FROM annotations a WHERE a.task_id = t.id \
-                     ORDER BY a.created DESC, a.id DESC LIMIT 1), \
+                     ORDER BY a.id DESC LIMIT 1), \
                     (SELECT a.created FROM annotations a WHERE a.task_id = t.id \
-                     ORDER BY a.created DESC, a.id DESC LIMIT 1) \
+                     ORDER BY a.id DESC LIMIT 1) \
              FROM dependencies d JOIN tasks t ON t.id = d.depends_on_id \
              WHERE d.task_id = ?1 ORDER BY t.short_id",
             TASK_COLS
@@ -2816,6 +2825,125 @@ mod tests {
             .map(|a| a["body"].as_str().unwrap())
             .collect();
         assert_eq!(bodies, ["note 4", "note 5", "note 6"]);
+    }
+
+    /// Stamp each `note {i}` with a hand-picked `created`, so a test can put
+    /// the store in the state a fast machine reaches by itself.
+    ///
+    /// `crate::util::now` prints a jiff `Timestamp`, whose fractional second is
+    /// VARIABLE-LENGTH — trailing zeros trimmed, the fraction gone entirely at
+    /// a whole second. The stamps below are what ten annotations a few hundred
+    /// microseconds apart genuinely look like; writing them directly is the
+    /// only way to reproduce it without racing a clock.
+    fn stamp_annotations(e: &Engine, stamps: &[&str]) {
+        for (i, ts) in stamps.iter().enumerate() {
+            let n = e
+                .conn
+                .execute(
+                    "UPDATE annotations SET created = ?1 WHERE body = ?2",
+                    params![ts, format!("note {i}")],
+                )
+                .unwrap();
+            assert_eq!(n, 1, "note {i} must exist exactly once to be stamped");
+        }
+    }
+
+    /// The page is ordered by `id`, and `created` may not get a vote (D142).
+    ///
+    /// Ordering by the `created` TEXT put an OLDER annotation above a newer
+    /// one: under SQLite's BINARY collation `'Z'` (0x5A) sorts above every
+    /// digit and above `'.'`, so `...10.1Z` > `...10.12Z` > `...10.123Z` even
+    /// though each is later than the last. A release run caught it — the
+    /// aarch64 runner is fast enough that ten annotations land inside one
+    /// millisecond, and any one whose last digit is a zero gets trimmed and
+    /// jumps the queue. The newest page then returns the wrong rows, and a
+    /// reader has no way to notice.
+    #[test]
+    fn annotations_page_orders_by_id_not_the_variable_length_created_text() {
+        let e = with_annotations(4);
+        // Chronological, and deliberately DESCENDING in BINARY text order for
+        // the first three: 'Z' beats '2', which beats nothing at all.
+        stamp_annotations(
+            &e,
+            &[
+                "2026-01-01T00:00:10.1Z",
+                "2026-01-01T00:00:10.12Z",
+                "2026-01-01T00:00:10.123Z",
+                "2026-01-01T00:00:11Z",
+            ],
+        );
+
+        let page = |limit: u64, offset: u64| -> Vec<String> {
+            let out = e
+                .task_get(&json!({
+                    "ref": 1,
+                    "annotations_limit": limit,
+                    "annotations_offset": offset,
+                }))
+                .unwrap();
+            out["annotations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a["body"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        assert_eq!(
+            page(2, 0),
+            ["note 2", "note 3"],
+            "the newest page is the last two WRITTEN, whatever their text stamps sort like"
+        );
+        assert_eq!(
+            page(2, 2),
+            ["note 0", "note 1"],
+            "and the offset walks back over the other two, with no row shown twice or skipped"
+        );
+        assert_eq!(
+            page(4, 0),
+            ["note 0", "note 1", "note 2", "note 3"],
+            "the whole history stays in the order it was written"
+        );
+    }
+
+    /// `task.brief` picks the prerequisite's newest note by the same key
+    /// (D142): the two correlated subqueries order by `id` as well.
+    ///
+    /// This is the surface where the wrong row is most expensive — the
+    /// prerequisite's LAST note is "what it concluded", and an older one in its
+    /// place reads as a conclusion that was since revised.
+    #[test]
+    fn brief_takes_the_prerequisites_newest_annotation_by_id() {
+        let e = Engine::open_in_memory().unwrap();
+        e.task_add(&json!({ "title": "blocker" })).unwrap();
+        e.task_add(&json!({ "title": "dependent" })).unwrap();
+        e.dependency_add(&json!({ "ref": 2, "depends_on": 1 }))
+            .unwrap();
+        for i in 0..3 {
+            e.annotation_add(&json!({ "ref": 1, "body": format!("note {i}") }))
+                .unwrap();
+        }
+        stamp_annotations(
+            &e,
+            &[
+                "2026-01-01T00:00:10.1Z",
+                "2026-01-01T00:00:10.12Z",
+                "2026-01-01T00:00:10.123Z",
+            ],
+        );
+
+        let out = e.task_brief(&json!({ "ref": 2 })).unwrap();
+        let annotation = &out["neighbourhood"]["depends_on"][0]["annotation"];
+        assert_eq!(
+            annotation["body"],
+            json!("note 2"),
+            "the conclusion is the LAST note written, not the one whose text stamp sorts highest"
+        );
+        assert_eq!(
+            annotation["created"],
+            json!("2026-01-01T00:00:10.123Z"),
+            "and its own stamp comes back with it — body and created must be the same row"
+        );
     }
 
     /// Elision must be SAID, not merely done.

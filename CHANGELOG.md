@@ -6,9 +6,9 @@ where the binaries, checksums and installers are.
 
 ## 0.9.0
 
-One change, aimed at the first minute after `claude mcp add tasqx`: the server
-now tells an agent *when* to use it, not only what it can call. Nothing changes
-for a person at a terminal.
+One addition aimed at the first minute after `claude mcp add tasqx` — the
+server now tells an agent *when* to use it, not only what it can call — and one
+ordering defect that could hand any reader the wrong annotation.
 
 ### Added
 
@@ -25,6 +25,19 @@ for a person at a terminal.
   prompt that calls the old name. The paste-anywhere block in
   [Giving an agent memory in any client](docs/guides/agent-starter-prompt.md)
   remains the fuller version, for hosts that ignore or truncate the field.
+
+### Fixed
+
+- **Annotations could come back out of order, with a newer note paged out and
+  an older one in its place.** The sort key was the stored timestamp text,
+  whose fractional second is variable-length — trailing zeros trimmed, the
+  fraction gone at a whole second — and compared as text an older stamp can
+  sort above a newer one. Two notes written inside the same millisecond, which
+  is what an agent annotating in a burst produces, were enough to trigger it.
+  Ordering now follows the time-ordered id, so `show`, `brief`'s "what the
+  prerequisite concluded", `task.get` paging and `store.export` all agree on
+  which note is the newest. Token measurements, ordered the same way, got the
+  same fix.
 
 ## 0.8.0
 
