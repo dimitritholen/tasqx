@@ -4,6 +4,28 @@ What changed in each tasqx release, newest first. Every release also lists its
 commits on the [releases page](https://github.com/dimitritholen/tasqx/releases),
 where the binaries, checksums and installers are.
 
+## 0.9.0
+
+One change, aimed at the first minute after `claude mcp add tasqx`: the server
+now tells an agent *when* to use it, not only what it can call. Nothing changes
+for a person at a terminal.
+
+### Added
+
+- **`initialize` carries `instructions`.** Every MCP host that surfaces server
+  instructions (Claude Code and Cursor put them in the agent's system prompt)
+  now receives a condensed workflow with no setup: search memory before
+  deciding, track multi-step work as tasks, brief, start, annotate and
+  complete each one, store decisions with their reasons, import your markdown
+  on day one, and always spell the verb. The text is built from the server's
+  scope: under the default read-only scope it names no write tool, says once
+  that the server is read-only, and tells the agent to put what it could not
+  store into its reply instead of dropping it. A test binds every tool name in
+  the text to the live roster, so a renamed tool cannot ship inside a system
+  prompt that calls the old name. The paste-anywhere block in
+  [Giving an agent memory in any client](docs/guides/agent-starter-prompt.md)
+  remains the fuller version, for hosts that ignore or truncate the field.
+
 ## 0.8.0
 
 Five things an AI agent does with tasqx got cheaper, provable, or both — and
