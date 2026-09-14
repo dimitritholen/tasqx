@@ -4,6 +4,53 @@ What changed in each tasqx release, newest first. Every release also lists its
 commits on the [releases page](https://github.com/dimitritholen/tasqx/releases),
 where the binaries, checksums and installers are.
 
+## 0.8.0
+
+Five things an AI agent does with tasqx got cheaper, provable, or both — and
+one of them was a bug. Nothing here changes how tasqx behaves for a person at a
+terminal, apart from two new verbs and two new rows on `tasqx show`.
+
+### Added
+
+- **`tasqx report --outcomes`** answers the question `tasqx report` never did:
+  not what the work cost, but whether it worked. Rework (completions that came
+  back), estimate calibration, token cost, completions with no annotation,
+  abandoned work, budget overruns and unproven completions. It reads history
+  the store already holds, so it has something to say the first time you run
+  it. Every rate prints as `count/n` rather than a percentage, deliberately:
+  3/12 and 3/3 are the same percentage and very different news.
+- **`tasqx brief <ref>`** is everything needed before starting a task, in one
+  read: the task, each prerequisite with **what it concluded** (its newest
+  annotation), what this task blocks, and relevant memory — under a query tasqx
+  derives from the task's own title, tags and project. You do not supply search
+  terms, which matters because a guessed term that finds nothing looks exactly
+  like a store with nothing in it.
+- **`tasqx check add|set|rm`** puts acceptance criteria somewhere a completion
+  can be held to them. tasqx never RUNS a check: the criterion is a claim and
+  the evidence is a citation, both stored verbatim. Completing with one still
+  open is not refused — it is counted by `report --outcomes`.
+- **`--budget-tokens`** on `add` and `modify`: a size gauge over *fresh* tokens
+  (input, output and cache creation; cache reads are not counted). It stops
+  nothing. An overrun is a signal that the task was probably too big to hand
+  over whole.
+- **Five MCP tools**: `tasqx_brief_task` and `tasqx_outcomes` on the read
+  scope, `tasqx_add_check` / `tasqx_set_check` / `tasqx_remove_check` on write.
+  `tasqx_complete_task` takes `checks_passed` and `evidence`.
+- **`memory.search` gains `include_unscoped`**, which widens a project scope to
+  documents belonging to no project — what `tasqx memory import` produces, so a
+  strict scope used to hide every imported ADR.
+
+### Fixed
+
+- **A timer another session was holding is no longer stopped silently.** Two
+  agents on one store, neither passing `--keep`: the second `start` stopped
+  every active task, so the first agent's task left `active` while it was still
+  working, its remaining time went untracked, and only the second agent was
+  told. Starting against a clock a different session holds is now refused;
+  `--keep` still runs both deliberately. A person at a shell sees no change.
+- A dashboard test asserted a panel equalled itself and had stopped guarding
+  what its name claimed.
+
 ## 0.7.0
 
 The terminal was rebuilt around a single house style: every table, card and

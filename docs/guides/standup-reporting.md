@@ -46,3 +46,21 @@ input, output — one per bucket, never blended into a single total.
 `tasqx start`/`stop` accumulate tracked time per task, and reports show tracked
 against estimate per project — which is how you find out your "4h" tasks are 9h
 tasks before you promise the next deadline.
+
+## The retrospective the numbers can carry
+
+`tasqx report` says what the work cost. `--outcomes` says how it went:
+
+```console
+tasqx report --outcomes project --since -30d
+```
+
+REWORK counts completions that were later reopened. SILENT counts completions
+nobody annotated — the ones that taught the next session nothing. CALIB is the
+median tracked-over-estimate ratio, which is the "4h tasks are 9h tasks"
+sentence above as a number. DROPPED is work that was started and then cancelled.
+
+Every rate reads `count/n`, never a percentage, and the reason is worth a
+sentence at a standup: 3/12 and 3/3 are the same percentage and very different
+news. Check the denominator before you act on the number — a rework rate over
+three completions is not evidence of anything.

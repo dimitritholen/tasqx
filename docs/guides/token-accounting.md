@@ -73,6 +73,26 @@ is contested and banked for no one. Only contest ever removes tokens: a
 transcript that goes missing or re-reads differently keeps its counts with
 confidence downgraded to `low`, never deleted blind.
 
+## Budgets: the other direction
+
+Accounting tells you what a task cost once it is over. A budget is the same
+number read before that:
+
+```console
+tasqx add Port the payment adapter --budget-tokens 200000
+```
+
+It counts **fresh** tokens — input, output and cache creation — and ignores
+cache reads, because a budget dominated by re-reads measures how often the agent
+re-read its own context rather than how big the work was. That is not a blend of
+the four buckets; those stay split everywhere they are reported.
+
+**It stops nothing.** tasqx is a store an agent calls between turns: it never
+sees the turn and could not interrupt one. An overrun is a signal, and usually
+one signal in particular — the task was too big to hand over whole.
+`tasqx report --outcomes` counts overruns so you can see which kinds of work
+keep being cut too large.
+
 ## Repairing old history
 
 | Command | What it does |

@@ -50,8 +50,13 @@ the same JSON API every other surface goes through.
   and why `tasqx undo` can tell you exactly what it took back.
 - **AI agents are users, not an afterthought.** An agent reads the backlog,
   completes a task, learns what that unblocked, and stores what it figured
-  out — searchable next session. Token accounting tells you what the agent
-  work actually cost, per task.
+  out — searchable next session. `tasqx brief` hands it everything it needs
+  before starting, in one call, including what each prerequisite concluded.
+- **It measures whether the work worked, not just what it cost.**
+  `tasqx report --outcomes` reads your own history for rework, estimate
+  calibration, token spend, completions nobody documented and work that was
+  started and dropped. Every rate arrives beside the `n` it was computed over,
+  because a rework rate over three completions is not evidence of anything.
 - **Capture in one line.**
   `tasqx add Ship it due:friday +api !high est:4h` parses as it reads, dates
   take natural language (`tomorrow`, `in 3 days`, `eom`), and Tab completion
@@ -222,9 +227,22 @@ Twenty writes: `add_task`, `modify_task`, `complete_task`, `reopen_task`,
 
 What makes this more than remote CRUD:
 
+- **One call before starting, instead of five.** `brief_task` returns the task,
+  each prerequisite with **what that task concluded**, what this one blocks, and
+  relevant memory — under a query tasqx derives from the task's own title, tags
+  and project. The agent supplies no search terms, which matters because a
+  guessed term that finds nothing looks exactly like a store with nothing in it.
 - **Completing a task returns what it unblocked**, so an agent can decompose a
   feature into a dependency chain with `add_dependency` and then walk it,
   picking up each task the moment its prerequisites clear.
+- **"Done" can mean something.** Acceptance criteria are rows with a state and a
+  citation (`add_check`, `set_check`), not prose in an annotation that nothing
+  can ask about. tasqx never *runs* a check — the criterion is a claim and the
+  evidence is text it stores verbatim. Completing with one still open is not
+  refused; it is counted.
+- **The agent can read its own record.** `outcomes` is on the read scope, so
+  even a read-only session can ask what its rework rate on this project is
+  before deciding how carefully to work.
 - **Agents get long-term memory.** `search_memory` gives even a read-only
   agent bm25-ranked retrieval over your imported docs *and* every task
   annotation — feed it your ADRs with `tasqx memory import docs/`, and past
@@ -266,7 +284,8 @@ echo '{"tasqx":"1","method":"task.list","params":{"filter":"@working"}}' | tasqx
 - **Reports you can send.** Grouped summaries in the terminal, throughput /
   heatmap / burndown charts drawn from the event log, or a self-contained
   themed HTML page with zero external requests. Five built-in themes, and
-  output degrades cleanly down to a colorless terminal.
+  output degrades cleanly down to a colorless terminal. `--outcomes` reports
+  the other axis — rework, calibration, silent completions, abandoned work.
 
   ![The HTML weekly review: headline counts, then what needs attention](docs/img/report.png)
 - **Built for scripts too.** Every command with a result takes `--json`, and

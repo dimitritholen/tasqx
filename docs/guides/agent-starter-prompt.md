@@ -65,14 +65,17 @@ a one-line fix does not; do it and move on.
 - One project per repo or initiative. Check `tasqx_list_projects` before
   `tasqx_create_project`; name it after the repo so every session finds the same one.
 - Decompose with `tasqx_add_task` (title, project, priority H/M/L, estimate) and order
-  the pieces with `tasqx_add_dependency`. Acceptance criteria and context go in an
-  annotation, not the title.
+  the pieces with `tasqx_add_dependency`. Acceptance criteria go in `tasqx_add_check`,
+  where something can ask at completion time whether they were met; other context goes
+  in an annotation, not the title.
 - Pick work from `tasqx_list_tasks` with filter `project:<name> @working`. Blocked and
   waiting tasks are hidden there by design: an empty working set with open tasks means
   everything is blocked, not that the work is gone.
-- Per task: search memory on its key terms, `tasqx_start_timer`, do the work, annotate
-  the outcome, then `tasqx_complete_task`. Its `unblocked` result names what to pick up
-  next; pass token counts on completion when you know them.
+- Per task: `tasqx_brief_task` for everything you need before starting — the task, what
+  each prerequisite concluded, and relevant memory under a query tasqx derives, so you
+  supply no search terms. Then `tasqx_start_timer`, do the work, annotate the outcome,
+  and `tasqx_complete_task` naming in `checks_passed` what you actually proved. Its
+  `unblocked` result names what to pick up next; pass token counts when you know them.
 - Work that became obsolete is cancelled (`tasqx_cancel_task`, or `tasqx cancel <id>`),
   never left open. Nothing in the backlog is hard-deleted.
 
