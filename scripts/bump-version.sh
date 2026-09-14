@@ -71,13 +71,16 @@ patch)
 esac
 
 if $apply; then
-    sed -i -E "0,/^version = \"[^\"]+\"/s//version = \"${new}\"/" Cargo.toml
+    # perl, not sed -i: BSD sed takes -i's argument as a backup suffix and
+    # has no GNU `0,/re/` address, so on macOS the sed form wrote nothing
+    # and left a `Cargo.toml-E` behind.
+    perl -pi -e "if (!\$done && s/^version = \"[^\"]+\"/version = \"${new}\"/) { \$done = 1 }" Cargo.toml
     # tasqx-cli's path dependency on tasqx-core pins a literal version
     # requirement rather than inheriting workspace.package.version (Cargo
     # has no `version.workspace = true` for a dependency's version req) —
     # left at the old value this is a silent staleness, not an error, until
     # someone tries to publish. Bump it alongside.
-    sed -i -E "s/(tasqx-core = \{ path = \"\.\.\/tasqx-core\", version = \")[^\"]+(\" \})/\1${new}\2/" \
+    perl -pi -e "s/(tasqx-core = \{ path = \"\.\.\/tasqx-core\", version = \")[^\"]+(\" \})/\${1}${new}\$2/" \
         crates/tasqx-cli/Cargo.toml
     # Keep Cargo.lock's own recorded crate versions in sync immediately,
     # rather than leaving that for whoever next runs a cargo command to
