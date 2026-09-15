@@ -232,9 +232,9 @@ mod tests {
     /// (`report_summary`, `report_outcomes`) take the WORST grade of a set by
     /// comparing ranks, never the last one seen. A swap of the HIGH and
     /// MEDIUM values would silently invert which measurement a roll-up
-    /// trusts least, and every existing caller only ever graded a single
-    /// measurement, so nothing behavioural pinned the order until now. An
-    /// unrecognized confidence must rank alongside [`CONFIDENCE_LOW`], never
+    /// trusts least, and no test mixed HIGH with MEDIUM, so a swap of exactly
+    /// those two ranks survived. An unrecognized confidence must rank
+    /// alongside [`CONFIDENCE_LOW`], never
     /// above it — the "unknown must not be silently treated as trustworthy"
     /// half of the contract.
     #[test]

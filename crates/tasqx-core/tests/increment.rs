@@ -721,9 +721,13 @@ fn report_summary_sums_token_measurements_per_group() {
 /// swap between high and medium, or a last-one-seen aggregation instead of a
 /// minimum, would let a medium self-report get laundered by a high log-parse
 /// measurement. Proved in both insertion orders so a bug tied to which task
-/// was written first cannot hide behind one ordering; a third, unaffected
-/// case (low beside high) keeps this test from passing only because low and
-/// high happen to swap together.
+/// was written first cannot hide behind one ordering. A third case (low
+/// beside high on one task) is deliberately not repeated here: a HIGH↔LOW
+/// rank swap already fails the `e` block above (high's swapped rank would
+/// then read below medium's), a MEDIUM↔LOW swap is killed by the unit test
+/// `confidence_rank_orders_high_above_medium_above_low`, and the
+/// high+low→low case itself is `report_summary_carries_the_groups_worst_confidence`
+/// verbatim.
 #[test]
 fn report_summary_confidence_is_the_worst_grade_regardless_of_insertion_order() {
     let e = engine();
@@ -777,32 +781,6 @@ fn report_summary_confidence_is_the_worst_grade_regardless_of_insertion_order() 
     assert_eq!(
         g2["tokens_confidence"], "medium",
         "reversing which measurement is recorded first must not change the worst grade: {g2}"
-    );
-
-    // A third case, low beside high: answers "low" either way round, so it
-    // cannot by itself catch a high/medium swap, but it pins the grade this
-    // test's two cases above deliberately leave unexercised.
-    let e3 = engine();
-    e3.project_create(&json!({ "name": "P" })).unwrap();
-    e3.task_add(&json!({ "title": "a", "project": "P" }))
-        .unwrap(); // ref 1
-    e3.token_add(&json!({
-        "ref": "1", "tool": "claude-code", "source": "log-parse",
-        "confidence": "low", "input_tokens": 1,
-    }))
-    .unwrap();
-    e3.token_add(&json!({
-        "ref": "1", "tool": "claude-code", "source": "log-parse",
-        "confidence": "high", "input_tokens": 1,
-    }))
-    .unwrap();
-    let g3 = report(
-        &e3,
-        json!({ "group_by": "project", "metrics": ["tokens_in"] }),
-    );
-    assert_eq!(
-        g3["tokens_confidence"], "low",
-        "low beside high must still answer low: {g3}"
     );
 }
 
