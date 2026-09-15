@@ -716,6 +716,74 @@ fn report_summary_sums_token_measurements_per_group() {
     assert_eq!(err.code, ErrorCode::BadRequest);
 }
 
+/// #217: `report.summary`'s `tokens_confidence` is the WORST grade among the
+/// group's measurements, never "whichever `token.add` ran last" — a rank
+/// swap between high and medium, or a last-one-seen aggregation instead of a
+/// minimum, would let a medium self-report get laundered by a high log-parse
+/// measurement. Proved in both insertion orders so a bug tied to which task
+/// was written first cannot hide behind one ordering. A third case (low
+/// beside high on one task) is deliberately not repeated here: a HIGH↔LOW
+/// rank swap already fails the `e` block above (high's swapped rank would
+/// then read below medium's), a MEDIUM↔LOW swap is killed by the unit test
+/// `confidence_rank_orders_high_above_medium_above_low`, and the
+/// high+low→low case itself is `report_summary_carries_the_groups_worst_confidence`
+/// verbatim.
+#[test]
+fn report_summary_confidence_is_the_worst_grade_regardless_of_insertion_order() {
+    let e = engine();
+    e.project_create(&json!({ "name": "P" })).unwrap(); // D23
+    e.task_add(&json!({ "title": "a", "project": "P" }))
+        .unwrap(); // ref 1
+    e.task_add(&json!({ "title": "b", "project": "P" }))
+        .unwrap(); // ref 2
+                   // A log-parse source may claim high; only a self-report may not (#216, D50).
+    e.token_add(&json!({
+        "ref": "1", "tool": "claude-code", "source": "log-parse",
+        "confidence": "high", "input_tokens": 10,
+    }))
+    .unwrap();
+    e.token_add(&json!({
+        "ref": "2", "tool": "claude-code", "source": "self-report",
+        "confidence": "medium", "input_tokens": 20,
+    }))
+    .unwrap();
+    let g = report(
+        &e,
+        json!({ "group_by": "project", "metrics": ["tokens_in"] }),
+    );
+    assert_eq!(
+        g["tokens_confidence"], "medium",
+        "the medium measurement must not be laundered by the high one: {g}"
+    );
+
+    // Reversed insertion order: the medium measurement is recorded first,
+    // the high one second.
+    let e2 = engine();
+    e2.project_create(&json!({ "name": "P" })).unwrap();
+    e2.task_add(&json!({ "title": "a", "project": "P" }))
+        .unwrap(); // ref 1
+    e2.task_add(&json!({ "title": "b", "project": "P" }))
+        .unwrap(); // ref 2
+    e2.token_add(&json!({
+        "ref": "1", "tool": "claude-code", "source": "self-report",
+        "confidence": "medium", "input_tokens": 20,
+    }))
+    .unwrap();
+    e2.token_add(&json!({
+        "ref": "2", "tool": "claude-code", "source": "log-parse",
+        "confidence": "high", "input_tokens": 10,
+    }))
+    .unwrap();
+    let g2 = report(
+        &e2,
+        json!({ "group_by": "project", "metrics": ["tokens_in"] }),
+    );
+    assert_eq!(
+        g2["tokens_confidence"], "medium",
+        "reversing which measurement is recorded first must not change the worst grade: {g2}"
+    );
+}
+
 /// #19 + D24: token measurements attributed to a cancelled task were still
 /// genuinely spent, but a report is an aggregation, so they must not inflate the
 /// default roll-up any more than the task's own count does. `all:true` is the

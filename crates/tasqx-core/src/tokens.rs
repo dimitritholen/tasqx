@@ -228,6 +228,32 @@ mod tests {
         }
     }
 
+    /// #217: the rank order IS the contract — both consumers
+    /// (`report_summary`, `report_outcomes`) take the WORST grade of a set by
+    /// comparing ranks, never the last one seen. A swap of the HIGH and
+    /// MEDIUM values would silently invert which measurement a roll-up
+    /// trusts least, and no test mixed HIGH with MEDIUM, so a swap of exactly
+    /// those two ranks survived. An unrecognized confidence must rank
+    /// alongside [`CONFIDENCE_LOW`], never
+    /// above it — the "unknown must not be silently treated as trustworthy"
+    /// half of the contract.
+    #[test]
+    fn confidence_rank_orders_high_above_medium_above_low() {
+        assert!(
+            confidence_rank(CONFIDENCE_HIGH) > confidence_rank(CONFIDENCE_MEDIUM),
+            "high must outrank medium"
+        );
+        assert!(
+            confidence_rank(CONFIDENCE_MEDIUM) > confidence_rank(CONFIDENCE_LOW),
+            "medium must outrank low"
+        );
+        assert_eq!(
+            confidence_rank("absolute"),
+            confidence_rank(CONFIDENCE_LOW),
+            "an unrecognized confidence must rank alongside low, never above it"
+        );
+    }
+
     #[test]
     fn totals_saturate_rather_than_wrap() {
         let mut t = TokenTotals {
