@@ -4519,6 +4519,53 @@ fn next_takes_a_filter_and_still_skips_blocked_work_in_scope() {
     );
 }
 
+/// #90 gave `next` `--card`/`--ascii` beside the `filter` tail #151 gave it
+/// above, both bound to the same `Command::Next` variant — so a regression in
+/// `Command::filter_tail_mut`'s `Command::Next { filter, .. }` pattern (the
+/// `..` that skips the new fields) would either fail to compile or make one
+/// half of the parse invisible to the other. This drives the real binary to
+/// pin that `--card` and a project filter parse together, and that the filter
+/// still narrows the candidate the same way it does without `--card`.
+#[test]
+fn next_card_and_a_filter_coexist() {
+    let dir = fresh_config_dir("next-card-filter");
+    let run = |args: &[&str]| {
+        bin("next-card-filter", &dir)
+            .args(args)
+            .output()
+            .expect("run tasqx")
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = run(args);
+        assert!(
+            out.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    ok(&["init", "demo"]);
+    ok(&["init", "other"]);
+    ok(&["add", "demo task", "project:demo"]);
+    ok(&["add", "other high task", "project:other"]);
+    ok(&["modify", "2", "--priority", "high"]);
+
+    let scoped = ok(&["next", "--card", "project:demo"]);
+    assert!(
+        scoped.starts_with('┌'),
+        "`--card` must still draw the D146 box card once a filter word follows it: {scoped}"
+    );
+    assert!(
+        scoped.contains("demo task"),
+        "`project:demo` must narrow `next --card` to that project: {scoped}"
+    );
+    assert!(
+        !scoped.contains("other high task"),
+        "the filter must actually exclude the other project's higher-urgency task, not just parse: {scoped}"
+    );
+}
+
 /// #185: `stop` printed the interval it had just closed under the label
 /// `tracked` — the exact word `show`, `--json` and `report` use for the
 /// *cumulative* total. On a task that already carried an hour of tracked

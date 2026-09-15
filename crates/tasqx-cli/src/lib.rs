@@ -1057,9 +1057,15 @@ fn execute(cli: Cli) -> Exit {
         Some(Command::Tokens { action }) => run_tokens(&mut backend, &ctx, &action),
         Some(Command::Export { filter }) => run_export(&mut backend, &filter),
         Some(Command::Import { file }) => run_import(&mut backend, &ctx, file),
-        Some(Command::Next { filter }) => run_next(&mut backend, &ctx, &filter),
+        Some(Command::Next {
+            filter,
+            card,
+            ascii,
+        }) => run_next(&mut backend, &ctx, &filter, card, ascii),
         Some(Command::Pick { filter }) => run_pick(&mut backend, &ctx, &filter),
-        Some(Command::Why { r#ref }) => run_why(&mut backend, &ctx, r#ref),
+        Some(Command::Why { r#ref, card, ascii }) => {
+            run_why(&mut backend, &ctx, r#ref, card, ascii)
+        }
         Some(Command::Chart { .. }) => unreachable!("handled above"),
         Some(Command::Theme { .. }) => unreachable!("handled above"),
         Some(Command::Docs { .. }) => unreachable!("handled above"),

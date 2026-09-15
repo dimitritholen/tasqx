@@ -3896,7 +3896,34 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     out
 }
 
-/// Urgency breakdown (`tasqx why`).
+/// Urgency breakdown (`tasqx why`): the task by name, then [`why_terms`].
+///
+/// D122: the task by name, and each term by what drove it. `why` used to say
+/// `Why #48 has urgency 18.1` over `due_proximity 12.00`, which named neither
+/// the task nor the fact that it was two days overdue.
+pub fn why(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
+    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
+    let title = s(result, "title");
+    let mut out = String::new();
+    if title.is_empty() {
+        out.push_str(&ctx.paint("card.label", &format!("#{sid}")));
+    } else {
+        out.push_str(&format!(
+            "{}  {}",
+            ctx.paint("card.label", &format!("#{sid}")),
+            ctx.paint("card.strong", &title)
+        ));
+    }
+    out.push_str("\n\n");
+    out.push_str(&why_terms(ctx, result, now));
+    out
+}
+
+/// The urgency arithmetic alone: each term, what drove it, and the total,
+/// followed by the blocked-by line — everything [`why`] prints after its
+/// title header. Split out so `tasqx why --card` (D146+) can follow the box
+/// card, which already carries the title as its own header row, with this
+/// alone rather than repeating it.
 ///
 /// #150: reads the `urgency_breakdown` the engine returns for a `task.get
 /// {explain: true}` call — the same numbers `--json` carries, one clock read
@@ -3909,9 +3936,8 @@ pub fn next_task(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
 /// every blocked row (D53's rule), so a task can score highest here and still
 /// never be offered. `task.get` already carries `blocked`/`depends_on`
 /// (`show` renders both), so the one line this appends costs no extra call.
-pub fn why(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
+pub fn why_terms(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
     use tasqx_core::{urgency, Priority};
-    let sid = result.get("short_id").and_then(Value::as_i64).unwrap_or(0);
 
     let from_breakdown_field = result
         .get("urgency_breakdown")
@@ -3941,21 +3967,6 @@ pub fn why(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
         }
     };
 
-    // D122: the task by name, and each term by what drove it. `why` used to
-    // say `Why #48 has urgency 18.1` over `due_proximity 12.00`, which named
-    // neither the task nor the fact that it was two days overdue.
-    let title = s(result, "title");
-    let mut out = String::new();
-    if title.is_empty() {
-        out.push_str(&ctx.paint("card.label", &format!("#{sid}")));
-    } else {
-        out.push_str(&format!(
-            "{}  {}",
-            ctx.paint("card.label", &format!("#{sid}")),
-            ctx.paint("card.strong", &title)
-        ));
-    }
-    out.push_str("\n\n");
     let rows: Vec<(&str, String, f64)> = parts
         .iter()
         .map(|(name, v)| match *name {
@@ -3992,7 +4003,7 @@ pub fn why(ctx: &Ctx, result: &Value, now: Timestamp) -> String {
             other => (other, String::new(), *v),
         })
         .collect();
-    out.push_str(&why_table(ctx, &rows));
+    let mut out = why_table(ctx, &rows);
     out.push_str(&blocked_line_for_why(ctx, result));
     out
 }

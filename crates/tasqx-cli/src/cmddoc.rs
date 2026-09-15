@@ -252,11 +252,18 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "task.list",
         summary: "The one highest-urgency unblocked task.",
-        usage: "tasqx next [filter…]",
-        examples: &[ex("tasqx next"), ex("tasqx next project:work")],
+        usage: "tasqx next [filter…] [--card [--ascii]]",
+        examples: &[
+            ex("tasqx next"),
+            ex("tasqx next project:work"),
+            ex("tasqx next --card"),
+        ],
         notes: &[
             "The single highest-urgency unblocked task — the \"what now\" button.",
             "A filter narrows `@working` rather than replacing it: `tasqx next project:work` still skips blocked and backlog tasks in that project, unlike `tasqx list project:work` which shows every status once a filter is given.",
+            "`--card` prints the picked task as a fixed 72-column box-drawn card meant to be \
+             pasted into a document (a chat, a PR); `--ascii` draws its borders with `+ - |`. \
+             The default screen is unchanged (D146).",
         ],
         see_also: &["list", "why", "start"],
         topic: Topic::GettingStarted,
@@ -339,9 +346,14 @@ pub const COMMAND_REF: &[CmdDoc] = &[
         aliases: &[],
         method: "task.get",
         summary: "Explain a task's urgency score.",
-        usage: "tasqx why <ref>",
-        examples: &[ex("tasqx why 1")],
-        notes: &["Explains the urgency score component by component (DESIGN D1)."],
+        usage: "tasqx why <ref> [--card [--ascii]]",
+        examples: &[ex("tasqx why 1"), ex("tasqx why 1 --card")],
+        notes: &[
+            "Explains the urgency score component by component (DESIGN D1).",
+            "`--card` prints the fixed 72-column box-drawn card (D146) first, with the \
+             arithmetic underneath instead of the plain text header; `--ascii` draws the \
+             card's borders with `+ - |`.",
+        ],
         see_also: &["next", "show", "list"],
         topic: Topic::Reports,
     },

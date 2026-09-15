@@ -219,3 +219,176 @@ fn show_card_json_still_prints_json_on_stdout() {
         "the JSON body is task.get's result, unaffected by --card: {v}"
     );
 }
+
+/// `tasqx next --card` (D146+): a `task.list` row carries no checks, no
+/// unmet_blockers and no annotations, so the card can only be right if
+/// `run_next` re-reads the picked task through `task.get` rather than
+/// rendering the list row directly. Two tasks so the picked one is not the
+/// only candidate: `+api !high` picks it over the plain background task on
+/// urgency, and its check/annotation are what proves the second call
+/// happened — neither survives a `task.list` row.
+#[test]
+fn next_card_reads_the_full_task_via_task_get() {
+    let store = Store::new("next-card");
+    store.plain(&["init", "work"]);
+    store.plain(&["add", "Background task", "--project", "work", "!low"]);
+    let picked = {
+        let added = store.plain(&["add", "Picked task", "--project", "work", "!high"]);
+        added
+            .lines()
+            .next()
+            .and_then(|l| l.trim_start_matches('#').split_whitespace().next())
+            .expect("`add` echoes `#<id> ...`")
+            .to_string()
+    };
+    store.plain(&[
+        "annotate",
+        &picked,
+        "a plain-language paragraph about this task",
+    ]);
+    store.plain(&["check", "add", &picked, "tests pass"]);
+
+    let out = store.plain(&["next", "--card"]);
+
+    assert!(
+        !out.contains('\u{1b}'),
+        "a card must never be painted:\n{out}"
+    );
+
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(!lines.is_empty(), "the card must print something");
+    for line in &lines {
+        assert_eq!(
+            UnicodeWidthStr::width(*line),
+            72,
+            "every card line must be exactly 72 display cells: {line:?}"
+        );
+    }
+    assert!(
+        lines[0].starts_with('┌'),
+        "`next --card` must draw the D146 box card: {:?}",
+        lines[0]
+    );
+    assert!(
+        out.contains(&format!("Task #{picked}")),
+        "the card must name the picked task: {out}"
+    );
+    assert!(
+        out.contains("[ ] tests pass"),
+        "a task.list row carries no checks — this proves task.get was used: {out}"
+    );
+    assert!(
+        out.contains("a plain-language paragraph about this task"),
+        "a task.list row carries no annotations — this proves task.get was used: {out}"
+    );
+}
+
+/// An empty working set has no task to re-read, so `--card` must fall back to
+/// exactly what `next` prints without it — the "Nothing actionable"/onboarding
+/// message, not an empty or missing card.
+#[test]
+fn next_card_on_an_empty_working_set_matches_next_without_card() {
+    let store = Store::new("next-card-empty");
+    store.plain(&["init", "work"]);
+
+    let plain = store.plain(&["next"]);
+    let carded = store.plain(&["next", "--card"]);
+
+    assert_eq!(
+        plain, carded,
+        "an empty working set must print the same message with or without --card"
+    );
+}
+
+#[test]
+fn next_ascii_without_card_is_a_clap_usage_error() {
+    let store = Store::new("next-ascii-alone");
+    store.plain(&["init", "work"]);
+
+    let out = store.run(&["next", "--ascii"]);
+    assert!(
+        !out.status.success(),
+        "--ascii without --card must be refused"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a clap usage error exits 2: stderr was {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `tasqx why --card`: the box card first (its header already carries the
+/// title), then a blank line, then the urgency arithmetic — WITHOUT the plain
+/// `why` header repeating the title a second time.
+#[test]
+fn why_card_prints_the_card_then_the_arithmetic() {
+    let store = Store::new("why-card");
+    store.plain(&["init", "work"]);
+    let id = {
+        let added = store.plain(&[
+            "add",
+            "Why card task",
+            "--project",
+            "work",
+            "!high",
+            "due:friday",
+        ]);
+        added
+            .lines()
+            .next()
+            .and_then(|l| l.trim_start_matches('#').split_whitespace().next())
+            .expect("`add` echoes `#<id> ...`")
+            .to_string()
+    };
+
+    let out = store.plain(&["why", &id, "--card"]);
+
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(
+        lines[0].starts_with('┌'),
+        "`why --card` must draw the D146 box card first: {:?}",
+        lines.first()
+    );
+    assert_eq!(
+        out.matches("Why card task").count(),
+        1,
+        "the title must occur exactly once — the card's header carries it, and \
+         the arithmetic below must not repeat it: {out}"
+    );
+    let closing = lines
+        .iter()
+        .rposition(|l| l.starts_with('└'))
+        .expect("a card has a closing rule");
+    let after_card = lines[closing + 1..].join("\n");
+    assert!(
+        after_card.contains("priority"),
+        "the urgency arithmetic must follow the closing rule: {out}"
+    );
+    assert!(
+        after_card.contains("urgency"),
+        "the urgency arithmetic must follow the closing rule: {out}"
+    );
+}
+
+/// `why` without `--card` must be byte-identical to what it printed before
+/// `render::why` was split into a header and `why_terms` for `--card` to
+/// reuse. Golden captured from the binary at commit fac87f5, before that
+/// split: `tasqx init work && tasqx add "Golden why task" --project work &&
+/// tasqx why 1`. No priority, no due date and a task read back a moment
+/// after it was created keep every row time-stable ("created today" holds
+/// for the life of the test).
+#[test]
+fn why_without_card_is_unchanged_by_the_split() {
+    let store = Store::new("why-plain-golden");
+    store.plain(&["init", "work"]);
+    store.plain(&["add", "Golden why task", "--project", "work"]);
+
+    let out = store.plain(&["why", "1"]);
+
+    assert_eq!(
+        out,
+        "#1  Golden why task\n\n  priority   none              0.0\n  deadline   none              0.0\n  age        created today     0.0\n  urgency                      0.0\n",
+        "`why` without --card must be byte-identical to before the render::why split"
+    );
+}
