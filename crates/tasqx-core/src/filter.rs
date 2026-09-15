@@ -214,7 +214,9 @@ pub enum Pred {
     CompletedAfter(Timestamp),
     /// `@working`: pending|active AND not blocked.
     Working,
-    /// The blocked flag: a task with >=1 dependency not yet `done` (DESIGN §3).
+    /// The blocked flag: an open task with >=1 dependency not yet resolved —
+    /// `done` or `cancelled` (DESIGN §3, D11, D145); a closed task is never
+    /// blocked.
     Blocked,
     /// Always matches. Reachable from exactly one place: the empty filter,
     /// meaning the caller asked for no filtering. It is deliberately NOT what
@@ -260,10 +262,11 @@ pub struct MatchCtx<'a> {
     /// satisfy any bound on when it was, which is the rule `due` already has
     /// for a task with no due date.
     pub completed: Option<&'a str>,
-    /// Whether the row has at least one dependency that is not yet `done`.
-    /// Precomputed by the caller: it needs a join, and re-deriving it per
-    /// predicate would run that join once for `@working` and again for
-    /// `@blocked` in the same expression.
+    /// Whether the row is an open task with at least one dependency not yet
+    /// resolved — `done` or `cancelled` (DESIGN §3, D11, D145); a closed task
+    /// is never blocked. Precomputed by the caller: it needs a join, and
+    /// re-deriving it per predicate would run that join once for `@working`
+    /// and again for `@blocked` in the same expression.
     pub blocked: bool,
 }
 
