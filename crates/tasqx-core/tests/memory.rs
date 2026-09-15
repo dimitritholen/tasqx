@@ -13,8 +13,30 @@ fn call(e: &Engine, method: &str, params: Value) -> Result<Value, tasqx_core::Ap
     dispatch(e, method, &params)
 }
 
-fn count(e: &Engine, sql: &str) -> i64 {
-    e.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+/// Rows the FTS index itself holds for `term` — read directly, not through
+/// `memory.search`'s rowid join, which is what hides a stale entry.
+fn fts_hits(e: &Engine, table: &str, term: &str) -> i64 {
+    let sql = format!("SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?1");
+    e.conn()
+        .query_row(&sql, [format!("\"{}\"", term.replace('"', "\"\""))], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+/// FTS5's own external-content audit: `integrity-check` with `rank = 1`
+/// compares the index against the content table (here the `docs_search`
+/// view / `annotations`) and raises SQLITE_CORRUPT on any disagreement —
+/// every trigger half at once, including the insert halves. Without the
+/// rank argument it only checks the index's internal structure and passes
+/// silently over a stale entry.
+fn assert_fts_intact(e: &Engine) {
+    for table in ["docs_fts", "annotations_fts"] {
+        let sql = format!("INSERT INTO {table}({table}, rank) VALUES ('integrity-check', 1)");
+        e.conn()
+            .execute(&sql, [])
+            .unwrap_or_else(|err| panic!("{table} disagrees with its content table: {err}"));
+    }
 }
 
 #[test]
@@ -67,17 +89,17 @@ fn add_search_remove_round_trip() {
 
 // ---- task #70: the delete half of the FTS triggers, checked directly -------
 //
-// `memory.search` joins `docs_fts`/`annotations_fts` back to their content
-// tables by rowid, so a stale index entry left behind by a neutered delete
-// trigger is invisible through that join — every test above stays green even
-// if `docs_fts_ad`, `docs_fts_au`'s 'delete' half, or `annotations_fts_ad` is
-// emptied out. These read the FTS tables directly through `e.conn()` instead.
+// `memory.search` joins the FTS tables back to their content tables by
+// rowid. A stale entry left by a neutered delete trigger is therefore
+// invisible after a DELETE (no row to join) and a false hit after an UPDATE
+// (the row is live). The tests read the FTS tables directly through
+// `e.conn()` so each trigger half has one assertion that names it, and
+// finish with FTS5's own integrity-check.
 
 /// `docs_fts_au`'s first statement — the 'delete' insert for the OLD row — is
-/// the only thing that removes superseded text from the index; `memory.search`
-/// would still answer correctly even with that statement gone, because its
-/// rowid join hides the stale entry behind the still-live row. Reading
-/// `docs_fts` directly is the only way to see it.
+/// the only thing that removes superseded text from the index. Without it
+/// the old term stays indexed on the live rowid and `memory.search` would
+/// answer the doc for text it no longer contains.
 #[test]
 fn memory_update_removes_the_old_body_from_the_fts_index_not_just_the_join() {
     let e = engine();
@@ -89,6 +111,12 @@ fn memory_update_removes_the_old_body_from_the_fts_index_not_just_the_join() {
     .unwrap();
     let id = added["id"].as_str().unwrap().to_string();
 
+    assert_eq!(
+        fts_hits(&e, "docs_fts", "originalword"),
+        1,
+        "the term must be indexed before the update, or the guard below is vacuous"
+    );
+
     call(
         &e,
         "memory.update",
@@ -97,23 +125,16 @@ fn memory_update_removes_the_old_body_from_the_fts_index_not_just_the_join() {
     .expect("update");
 
     assert_eq!(
-        count(
-            &e,
-            "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'originalword'"
-        ),
+        fts_hits(&e, "docs_fts", "originalword"),
         0,
         "the old term must be OUT of the index, not just hidden by the join"
     );
-    assert_eq!(
-        count(
-            &e,
-            "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'replacementword'"
-        ),
-        1
-    );
+    assert_eq!(fts_hits(&e, "docs_fts", "replacementword"), 1);
 
     let found = call(&e, "memory.search", json!({ "query": "replacementword" })).unwrap();
     assert_eq!(found["count"], 1, "{found}");
+
+    assert_fts_intact(&e);
 }
 
 /// `docs_fts_ad` is the only writer of a doc's delete. A stale entry left on a
@@ -131,16 +152,13 @@ fn memory_remove_scrubs_the_doc_from_the_fts_index_so_a_reused_rowid_cannot_inhe
     .unwrap();
     let id = added["id"].as_str().unwrap().to_string();
 
-    call(&e, "memory.remove", json!({ "id": id })).expect("remove");
-
     assert_eq!(
-        count(
-            &e,
-            "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'secretword'"
-        ),
-        0,
-        "a removed doc's text must be OUT of the index directly, not just via the join"
+        fts_hits(&e, "docs_fts", "secretword"),
+        1,
+        "the term must be indexed before the remove, or the guard below is vacuous"
     );
+
+    call(&e, "memory.remove", json!({ "id": id })).expect("remove");
 
     call(
         &e,
@@ -155,6 +173,15 @@ fn memory_remove_scrubs_the_doc_from_the_fts_index_so_a_reused_rowid_cannot_inhe
         "a hit here would be the innocent doc inheriting the removed text through a reused \
          rowid: {found}"
     );
+    // The trap above relies on the removed row having held max(rowid), which
+    // this direct count does not — keep both.
+    assert_eq!(
+        fts_hits(&e, "docs_fts", "secretword"),
+        0,
+        "…and the index itself must not hold the term either"
+    );
+
+    assert_fts_intact(&e);
 }
 
 /// `annotations_fts_ad` fires on the row DELETE that `event.revert` of an
@@ -174,16 +201,13 @@ fn undo_of_an_annotation_removes_its_body_from_the_fts_index() {
     )
     .unwrap();
 
-    call(&e, "event.revert", json!({})).expect("undo the annotation.add");
-
     assert_eq!(
-        count(
-            &e,
-            "SELECT COUNT(*) FROM annotations_fts WHERE annotations_fts MATCH 'mistakenword'"
-        ),
-        0,
-        "the undone note's text must be OUT of the index directly, not just via the join"
+        fts_hits(&e, "annotations_fts", "mistakenword"),
+        1,
+        "the term must be indexed before the undo, or the guard below is vacuous"
     );
+
+    call(&e, "event.revert", json!({})).expect("undo the annotation.add");
 
     call(
         &e,
@@ -197,8 +221,17 @@ fn undo_of_an_annotation_removes_its_body_from_the_fts_index() {
         old["count"], 0,
         "the corrected note must not answer for the undone one: {old}"
     );
+    // The trap above relies on the removed row having held max(rowid), which
+    // this direct count does not — keep both.
+    assert_eq!(
+        fts_hits(&e, "annotations_fts", "mistakenword"),
+        0,
+        "…and the index itself must not hold the term either"
+    );
     let new = call(&e, "memory.search", json!({ "query": "corrected" })).unwrap();
     assert_eq!(new["count"], 1, "{new}");
+
+    assert_fts_intact(&e);
 }
 
 /// The verified FTS5 sharp edge: `-` and `.` are operators in its query
@@ -493,10 +526,10 @@ fn import_moving_an_annotation_between_tasks_keeps_the_index_in_sync() {
     // Surface a dangling index entry through the public API: clear beta's
     // annotations (freeing the current max rowid) so the next insert reuses
     // the slot a dangling entry would still point at. With the broken
-    // REPLACE, the bystander below answered a search for the ORIGINAL body;
-    // this clear goes through `store.import`'s per-task annotation DELETE
-    // (engine/transfer.rs), which is `annotations_fts_ad`'s to keep in step —
-    // so the guard here is for RELOCATED, the term that DELETE owns.
+    // REPLACE, the bystander answered a search for ORIGINAL (the row REPLACE
+    // deleted without firing annotations_fts_ad); with an emptied
+    // annotations_fts_ad it answers RELOCATED (the row the clear-import
+    // DELETE removed). Both stay guarded.
     call(&e, "store.import", doc_for_clear).expect("clear beta's annotations");
     call(
         &e,
@@ -505,12 +538,16 @@ fn import_moving_an_annotation_between_tasks_keeps_the_index_in_sync() {
     )
     .unwrap();
 
-    let old = call(&e, "memory.search", json!({ "query": "relocated" })).unwrap();
-    assert_eq!(
-        old["count"], 0,
-        "the cleared body must be OUT of the index — a hit here is a dangling entry from the \
-         import DELETE resolving to the bystander: {old}"
-    );
+    for term in ["original", "relocated"] {
+        let hit = call(&e, "memory.search", json!({ "query": term })).unwrap();
+        assert_eq!(
+            hit["count"], 0,
+            "`{term}` must be OUT of the index — a hit here is a dangling entry resolving to \
+             the bystander: {hit}"
+        );
+    }
+
+    assert_fts_intact(&e);
 }
 
 /// Review finding: the export document promised to be the self-contained
