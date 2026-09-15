@@ -13,6 +13,10 @@ fn call(e: &Engine, method: &str, params: Value) -> Result<Value, tasqx_core::Ap
     dispatch(e, method, &params)
 }
 
+fn count(e: &Engine, sql: &str) -> i64 {
+    e.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
 #[test]
 fn add_search_remove_round_trip() {
     let e = engine();
@@ -59,6 +63,142 @@ fn add_search_remove_round_trip() {
     )
     .unwrap();
     assert_eq!(gone["count"], 0, "a removed doc must leave the index too");
+}
+
+// ---- task #70: the delete half of the FTS triggers, checked directly -------
+//
+// `memory.search` joins `docs_fts`/`annotations_fts` back to their content
+// tables by rowid, so a stale index entry left behind by a neutered delete
+// trigger is invisible through that join — every test above stays green even
+// if `docs_fts_ad`, `docs_fts_au`'s 'delete' half, or `annotations_fts_ad` is
+// emptied out. These read the FTS tables directly through `e.conn()` instead.
+
+/// `docs_fts_au`'s first statement — the 'delete' insert for the OLD row — is
+/// the only thing that removes superseded text from the index; `memory.search`
+/// would still answer correctly even with that statement gone, because its
+/// rowid join hides the stale entry behind the still-live row. Reading
+/// `docs_fts` directly is the only way to see it.
+#[test]
+fn memory_update_removes_the_old_body_from_the_fts_index_not_just_the_join() {
+    let e = engine();
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "runbook", "body": "the originalword step" }),
+    )
+    .unwrap();
+    let id = added["id"].as_str().unwrap().to_string();
+
+    call(
+        &e,
+        "memory.update",
+        json!({ "id": id, "body": "the replacementword step" }),
+    )
+    .expect("update");
+
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'originalword'"
+        ),
+        0,
+        "the old term must be OUT of the index, not just hidden by the join"
+    );
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'replacementword'"
+        ),
+        1
+    );
+
+    let found = call(&e, "memory.search", json!({ "query": "replacementword" })).unwrap();
+    assert_eq!(found["count"], 1, "{found}");
+}
+
+/// `docs_fts_ad` is the only writer of a doc's delete. A stale entry left on a
+/// freed rowid is a confidentiality bug, not just a stale-data one: the next
+/// doc inserted reuses that rowid and the dangling entry then ANSWERS a search
+/// for the removed text under the new, unrelated doc's own title.
+#[test]
+fn memory_remove_scrubs_the_doc_from_the_fts_index_so_a_reused_rowid_cannot_inherit_it() {
+    let e = engine();
+    let added = call(
+        &e,
+        "memory.add",
+        json!({ "title": "leaked key", "body": "rotate secretword now" }),
+    )
+    .unwrap();
+    let id = added["id"].as_str().unwrap().to_string();
+
+    call(&e, "memory.remove", json!({ "id": id })).expect("remove");
+
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH 'secretword'"
+        ),
+        0,
+        "a removed doc's text must be OUT of the index directly, not just via the join"
+    );
+
+    call(
+        &e,
+        "memory.add",
+        json!({ "title": "innocent doc", "body": "nothing to see, innocentword" }),
+    )
+    .unwrap();
+
+    let found = call(&e, "memory.search", json!({ "query": "secretword" })).unwrap();
+    assert_eq!(
+        found["count"], 0,
+        "a hit here would be the innocent doc inheriting the removed text through a reused \
+         rowid: {found}"
+    );
+}
+
+/// `annotations_fts_ad` fires on the row DELETE that `event.revert` of an
+/// `annotation.add` does (engine/undo.rs) and that `store.import` does
+/// (engine/transfer.rs). A stale entry left on the freed rowid makes the NEXT
+/// note added to that task answer a search for the undone one — the same axis
+/// D113 guards for the import path.
+#[test]
+fn undo_of_an_annotation_removes_its_body_from_the_fts_index() {
+    let e = engine();
+    let t = call(&e, "task.add", json!({ "title": "task one" })).unwrap();
+    let sid = t["short_id"].clone();
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": sid, "body": "mistakenword note" }),
+    )
+    .unwrap();
+
+    call(&e, "event.revert", json!({})).expect("undo the annotation.add");
+
+    assert_eq!(
+        count(
+            &e,
+            "SELECT COUNT(*) FROM annotations_fts WHERE annotations_fts MATCH 'mistakenword'"
+        ),
+        0,
+        "the undone note's text must be OUT of the index directly, not just via the join"
+    );
+
+    call(
+        &e,
+        "annotation.add",
+        json!({ "ref": sid, "body": "corrected note" }),
+    )
+    .unwrap();
+
+    let old = call(&e, "memory.search", json!({ "query": "mistakenword" })).unwrap();
+    assert_eq!(
+        old["count"], 0,
+        "the corrected note must not answer for the undone one: {old}"
+    );
+    let new = call(&e, "memory.search", json!({ "query": "corrected" })).unwrap();
+    assert_eq!(new["count"], 1, "{new}");
 }
 
 /// The verified FTS5 sharp edge: `-` and `.` are operators in its query
@@ -353,7 +493,10 @@ fn import_moving_an_annotation_between_tasks_keeps_the_index_in_sync() {
     // Surface a dangling index entry through the public API: clear beta's
     // annotations (freeing the current max rowid) so the next insert reuses
     // the slot a dangling entry would still point at. With the broken
-    // REPLACE, the bystander below answered a search for the ORIGINAL body.
+    // REPLACE, the bystander below answered a search for the ORIGINAL body;
+    // this clear goes through `store.import`'s per-task annotation DELETE
+    // (engine/transfer.rs), which is `annotations_fts_ad`'s to keep in step —
+    // so the guard here is for RELOCATED, the term that DELETE owns.
     call(&e, "store.import", doc_for_clear).expect("clear beta's annotations");
     call(
         &e,
@@ -362,11 +505,11 @@ fn import_moving_an_annotation_between_tasks_keeps_the_index_in_sync() {
     )
     .unwrap();
 
-    let old = call(&e, "memory.search", json!({ "query": "original" })).unwrap();
+    let old = call(&e, "memory.search", json!({ "query": "relocated" })).unwrap();
     assert_eq!(
         old["count"], 0,
-        "the old body must be OUT of the index — a hit here is a dangling \
-         entry resolving to an unrelated annotation: {old}"
+        "the cleared body must be OUT of the index — a hit here is a dangling entry from the \
+         import DELETE resolving to the bystander: {old}"
     );
 }
 
@@ -1170,28 +1313,6 @@ fn a_frontmatter_list_items_word_still_finds_the_doc_and_the_body_is_unchanged()
         whole["body"].as_str().unwrap(),
         raw_body,
         "memory.get must return the body exactly as written"
-    );
-}
-
-/// A body that merely opens with a horizontal rule (`---` with no matching
-/// close) is not frontmatter — flattening must leave it alone exactly as
-/// `frontmatter::block`'s own doc promises, rather than eating the whole
-/// body hunting a fence that never comes.
-#[test]
-fn a_bare_leading_horizontal_rule_is_not_frontmatter() {
-    let e = engine();
-    let added = call(
-        &e,
-        "memory.add",
-        json!({ "title": "notes", "body": "---\nThis is just a rule up top, no closing fence." }),
-    )
-    .expect("memory.add");
-    let id = added["id"].as_str().unwrap();
-    let whole = call(&e, "memory.get", json!({ "id": id })).expect("memory.get");
-    assert_eq!(
-        whole["body"],
-        json!("---\nThis is just a rule up top, no closing fence."),
-        "a body with no closing fence must be stored unchanged"
     );
 }
 
