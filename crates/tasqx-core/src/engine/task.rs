@@ -1490,9 +1490,9 @@ impl Engine {
         statements += 1;
         let mut blocked = HashSet::new();
         {
-            // Same gate `is_blocked` takes, and for the same reason (D-158):
-            // a dependent already `done`/`cancelled` is never blocked, no
-            // matter what its blocker's status is.
+            // Same gate `unmet_blockers` takes, and for the same reason
+            // (D-158): a dependent already `done`/`cancelled` is never
+            // blocked, no matter what its blocker's status is.
             let terminal = Status::sql_in_list(Status::is_terminal);
             let mut stmt = self.conn.prepare(&format!(
                 "SELECT DISTINCT d.task_id FROM dependencies d \
@@ -1837,47 +1837,39 @@ impl Engine {
 
     // ---- blocked / dependency helpers ---------------------------------------
 
-    /// A task is *blocked* if it has any dependency that is not yet *resolved*.
-    /// A dependency is resolved when it is `done` OR `cancelled` (DESIGN §3, D11):
-    /// a cancelled blocker will never complete, so keeping the dependent blocked
-    /// forever is a trap — cancellation releases dependents. Consistent with
-    /// `compute_unblocked`. Read helper; no mutation.
+    /// Whether `task_id` is still blocked — derived from [`Self::unmet_blockers`]
+    /// rather than computed separately, so `blocked` and `unmet_blockers` can
+    /// never disagree with each other (task #69, Sep 2026 test audit).
     pub(super) fn is_blocked(&self, task_id: &str) -> Result<bool, ApiError> {
-        // Enum-derived, never caller text — see `Status::sql_in_list`.
-        let terminal = Status::sql_in_list(Status::is_terminal);
-        // BOTH sides gate on `status NOT IN (terminal)`: a task closed
-        // (`done`/`cancelled`) is never blocked regardless of what it once
-        // depended on — `blocked` is meaningless for work that is already
-        // finished, and answering `true` for it is the D-158 defect (a task
-        // completed while its blocker was still open kept reporting
-        // `blocked: true` forever, and the flag could be set on a closed task
-        // after the fact by a fresh `dependency.add`). `self` here is the
-        // dependent named by `task_id`, joined the same way `t` (the blocker)
-        // already is.
-        let n: i64 = self.conn.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM dependencies d \
-                 JOIN tasks t ON t.id = d.depends_on_id \
-                 JOIN tasks self ON self.id = d.task_id \
-                 WHERE d.task_id = ?1 AND t.status NOT IN ({terminal}) \
-                 AND self.status NOT IN ({terminal})"
-            ),
-            params![task_id],
-            |r| r.get(0),
-        )?;
-        Ok(n > 0)
+        Ok(!self.unmet_blockers(task_id)?.is_empty())
     }
 
     /// The dependencies still keeping `task_id` blocked — short_id and title,
-    /// sorted — or an empty vec when there are none. The same resolved/not
-    /// distinction as [`Self::is_blocked`], just with the rows kept instead of
-    /// only counted (finding #8, audit-2026-09).
+    /// sorted — or an empty vec when there are none. THE one query for "what
+    /// still blocks this task": [`Self::is_blocked`] is defined in terms of it,
+    /// and `task.get` reads both off it so the two fields can never disagree
+    /// (finding #8, audit-2026-09).
     pub(super) fn unmet_blockers(&self, task_id: &str) -> Result<Vec<Value>, ApiError> {
+        // Enum-derived, never caller text — see `Status::sql_in_list`.
         let terminal = Status::sql_in_list(Status::is_terminal);
+        // BOTH sides gate on `status NOT IN (terminal)`: a task closed
+        // (`done`/`cancelled`) has no unmet blockers regardless of what it
+        // once depended on — a closed dependent is never blocked, so a
+        // blocker being open no longer counts. Missing the `self` gate here
+        // is the D-158 defect (a task completed while its blocker was still
+        // open kept reporting `blocked: true` forever, and the flag could be
+        // set on a closed task after the fact by a fresh `dependency.add`);
+        // missing it on `unmet_blockers` specifically let `blocked` and
+        // `unmet_blockers` disagree on `task.get` (task #69) even after the
+        // D-158 fix landed on `is_blocked` alone. `self` here is the
+        // dependent named by `task_id`, joined the same way `t` (the blocker)
+        // already is.
         let mut stmt = self.conn.prepare(&format!(
             "SELECT t.short_id, t.title FROM dependencies d \
              JOIN tasks t ON t.id = d.depends_on_id \
+             JOIN tasks self ON self.id = d.task_id \
              WHERE d.task_id = ?1 AND t.status NOT IN ({terminal}) \
+             AND self.status NOT IN ({terminal}) \
              ORDER BY t.short_id"
         ))?;
         let rows = stmt.query_map(params![task_id], |r| {

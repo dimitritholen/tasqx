@@ -1349,6 +1349,96 @@ fn a_repeated_dependency_add_logs_a_second_event_and_bumps_rev() {
     );
 }
 
+/// `is_blocked` gates on BOTH sides — `self.status NOT IN (terminal)` as well
+/// as the blocker's — but `unmet_blockers` used to gate on the blocker alone,
+/// so the two fields on `task.get` could disagree: a dependent marked `done`
+/// while its blocker was still open answered `blocked: false` sitting right
+/// next to a non-empty `unmet_blockers` naming that same open blocker (task
+/// #69). A closed task cannot be "blocked" by definition — there is nothing
+/// left for it to wait on — so a done dependent must report neither flag.
+#[test]
+fn a_done_dependent_answers_no_unmet_blockers_even_while_its_blocker_is_open() {
+    let e = engine();
+    let (dependent, _blocker, edge) = dependent_blocker_edge(&e);
+    e.dependency_add(&edge).expect("dependency.add");
+
+    // The blocker is left pending; only the dependent is completed.
+    e.task_done(&json!({ "ref": dependent["short_id"].clone() }))
+        .expect("task.done");
+
+    let got = e
+        .task_get(&json!({ "ref": dependent["short_id"].clone() }))
+        .expect("task.get");
+    assert_eq!(got["blocked"], false, "got {got:#?}");
+    assert_eq!(got["unmet_blockers"], json!([]), "got {got:#?}");
+    assert_eq!(
+        got["blocked"].as_bool().unwrap(),
+        !got["unmet_blockers"].as_array().unwrap().is_empty(),
+        "blocked and unmet_blockers must never disagree, got {got:#?}"
+    );
+}
+
+/// `unmet_blockers` names exactly the open blockers, by short_id and title,
+/// and nothing else — a resolved blocker (`done`) must not leak into the
+/// array even when another blocker on the same task is still open.
+#[test]
+fn unmet_blockers_names_exactly_the_open_blockers_with_short_id_and_title() {
+    let e = engine();
+    let dependent = e.task_add(&json!({ "title": "dependent" })).expect("add");
+    let open_blocker = e
+        .task_add(&json!({ "title": "open blocker" }))
+        .expect("add");
+    let done_blocker = e
+        .task_add(&json!({ "title": "done blocker" }))
+        .expect("add");
+
+    e.dependency_add(&json!({
+        "ref": dependent["short_id"].clone(),
+        "depends_on": open_blocker["short_id"].clone(),
+    }))
+    .expect("dependency.add");
+    e.dependency_add(&json!({
+        "ref": dependent["short_id"].clone(),
+        "depends_on": done_blocker["short_id"].clone(),
+    }))
+    .expect("dependency.add");
+
+    e.task_done(&json!({ "ref": done_blocker["short_id"].clone() }))
+        .expect("task.done");
+
+    let got = e
+        .task_get(&json!({ "ref": dependent["short_id"].clone() }))
+        .expect("task.get");
+    assert_eq!(got["blocked"], true, "got {got:#?}");
+    assert_eq!(
+        got["unmet_blockers"],
+        json!([{
+            "short_id": open_blocker["short_id"].clone(),
+            "title": "open blocker",
+        }]),
+        "got {got:#?}"
+    );
+}
+
+/// A dependency added onto a task that was ALREADY done before the edge
+/// existed must never show up as blocking it — `dependency.add` cannot
+/// resurrect a `blocked` state on a task that finished before the edge did.
+#[test]
+fn a_dependency_added_onto_an_already_done_task_never_shows_as_unmet() {
+    let e = engine();
+    let (dependent, _blocker, edge) = dependent_blocker_edge(&e);
+
+    e.task_done(&json!({ "ref": dependent["short_id"].clone() }))
+        .expect("task.done");
+    e.dependency_add(&edge).expect("dependency.add");
+
+    let got = e
+        .task_get(&json!({ "ref": dependent["short_id"].clone() }))
+        .expect("task.get");
+    assert_eq!(got["blocked"], false, "got {got:#?}");
+    assert_eq!(got["unmet_blockers"], json!([]), "got {got:#?}");
+}
+
 /// The whole-surface floor for the class of regression the tests above cover
 /// one handler at a time: a handler that opens a mutation transaction must also
 /// append an event inside it, because DESIGN's coupling is commit => exactly one
