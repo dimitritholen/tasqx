@@ -900,14 +900,16 @@ pub fn map_task_row_at(row: &Row, now: Timestamp) -> rusqlite::Result<Task> {
     // therefore a cache, not the truth, for backlog rows specifically — the same
     // bargain `urgency` already makes (persisted at write, recomputed on every
     // read because its inputs move on their own). Only raw SQL that filters on
-    // the `status` text can be fooled by it, and all six such queries are immune
+    // the `status` text can be fooled by it, and all five such filters are immune
     // by construction rather than by luck: `task.start`'s auto-stop sweep selects
-    // `active`, which this rule never produces, and the other five — the reminder
-    // rebuild, `compute_unblocked`, the remaining-blocker count, `is_blocked` and
-    // the snapshot loader's blocked set — take a WHOLE open or terminal set from
-    // `Status::sql_in_list`, and both sides of this edge are open while neither
-    // is terminal, so no set can hold one and not the other. The query that would
-    // break the bargain is a new one naming `backlog` or `pending` on its own.
+    // `active`, which this rule never produces, and the other four — the reminder
+    // rebuild, `compute_unblocked`, the remaining-blocker count, and the blocked
+    // predicate `unmet_blocker_source` that `is_blocked`, `unmet_blockers` and
+    // the snapshot loader's blocked set all read — take a WHOLE open or terminal
+    // set from `Status::sql_in_list`, and both sides of this edge are open while
+    // neither is terminal, so no set can hold one and not the other. The query
+    // that would break the bargain is a new one naming `backlog` or `pending`
+    // on its own.
     let scheduled: Option<String> = row.get(7)?;
     let wait: Option<String> = row.get(8)?;
     let status = effective_status(status, wait.as_deref(), scheduled.as_deref(), now);
